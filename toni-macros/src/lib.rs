@@ -6,22 +6,15 @@ use proc_macro2::Span;
 use provider::provider_struct::handle_provider_struct;
 use syn::Ident;
 
-mod controller_macro;
-mod service_struct;
 mod utils;
 mod module_macro;
-mod controller;
 mod shared;
 mod provider;
+mod controller;
 
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_macro::module_struct::module(attr, item)
-}
-
-#[proc_macro_attribute]
-pub fn controller(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    controller_macro::controller::controllers(_attr, item)
 }
 
 #[proc_macro_attribute]
@@ -43,6 +36,12 @@ pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn controller(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+
+#[proc_macro_attribute]
 pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
@@ -57,14 +56,4 @@ pub fn put(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn delete(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
-}
-
-#[proc_macro_attribute]
-pub fn provider_struct2(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    service_struct::insert_struct(_attr, item, Ident::new("ProviderTrait", Span::call_site()))
-}
-
-#[proc_macro_attribute]
-pub fn controller_struct2(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    controller_macro::controller_struct::insert_struct(_attr, item, Ident::new("ControllerTrait", Span::call_site()))
 }
