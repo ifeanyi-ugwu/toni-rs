@@ -1,0 +1,32 @@
+use std::{cell::RefCell, rc::Rc};
+
+use crate::{
+    http_adapter::HttpAdapter,
+    injector::ToniContainer, router::RoutesResolver,
+};
+
+pub struct ToniApplication<H: HttpAdapter> {
+    http_adapter: H,
+    routes_resolver: RoutesResolver,
+}
+
+impl<H: HttpAdapter> ToniApplication<H> {
+    pub fn new(http_adapter: H, container: Rc<RefCell<ToniContainer>>) -> Self {
+        Self {
+            http_adapter,
+            routes_resolver: RoutesResolver::new(container.clone()),
+        }
+    }
+
+    pub fn init(&mut self) {
+        self.routes_resolver.resolve(&mut self.http_adapter);
+        
+    }
+    pub async fn listen(self, port: u16, hostname: &str) {
+        self.http_adapter.listen(port, hostname).await;
+    }
+
+    pub fn get_http_adapter(&self) -> H {
+        self.http_adapter.clone()
+    }
+}
