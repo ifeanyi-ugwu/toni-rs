@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use syn::{FnArg, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Pat, Result, Type, TypePath, TypeReference};
+use syn::{spanned::Spanned, Error, FnArg, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Pat, Result, Type, TypePath, TypeReference};
 
 use crate::shared::dependency_info::DependencyInfo;
 
@@ -25,27 +25,27 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
       let field_ident = field.ident.as_ref()
           .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
       
-      let type_ident = extract_ident_from_type(&field.ty).unwrap();
+      let type_ident = extract_ident_from_type(&field.ty)?;
       fields.push((field_ident.clone(), type_ident.clone()));
   }
 
   Ok(DependencyInfo { fields, unique_types })
 }
 
-pub fn extract_ident_from_type(ty: &Type) -> Option<&Ident> {
+pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
   if let Type::Reference(TypeReference { elem, .. }) = ty {
       if let Type::Path(TypePath { path, .. }) = &**elem {
           if let Some(segment) = path.segments.last() {
-              return Some(&segment.ident);
+              return Ok(&segment.ident);
           }
       }
   }
   if let Type::Path(TypePath { path, .. }) = ty {
       if let Some(segment) = path.segments.last() {
-          return Some(&segment.ident);
+          return Ok(&segment.ident);
       }
   }
-  None
+  Err(Error::new(ty.span(), "Invalid type"))
 }
 
 pub fn extract_params_from_impl_fn(func: &ImplItemFn) -> Vec<(Ident, Type)> {

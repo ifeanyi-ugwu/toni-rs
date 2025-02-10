@@ -59,7 +59,7 @@ impl Parse for ConfigParser {
                         .collect()
                 }
                 "exports" => config.exports = fields.into_iter().collect(),
-                _ => return Err(syn::Error::new(key.span(), "Campo desconhecido")),
+                _ => return Err(syn::Error::new(key.span(), "Unknown field")),
             }
 
             if !input.is_empty() {

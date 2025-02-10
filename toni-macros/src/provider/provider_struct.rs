@@ -22,8 +22,7 @@ pub fn handle_provider_struct(
         &mut dependencies,
         &struct_attrs.ident,
         &trait_name,
-    )
-    .unwrap();
+    )?;
 
     let manager = generate_manager(&struct_attrs.ident, metadata, dependencies.unique_types);
     let expanded = generate_output(struct_attrs, impl_block, controllers, manager);
