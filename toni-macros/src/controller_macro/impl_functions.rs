@@ -4,7 +4,7 @@ use syn::{Ident, ImplItem, ItemImpl, Result};
 use crate::shared::dependency_info::DependencyInfo;
 use crate::shared::metadata_info::MetadataInfo;
 
-use crate::controller::controller::generate_controller_and_metadata;
+use crate::controller_macro::controller::generate_controller_and_metadata;
 use crate::utils::controller_utils::find_http_method_attribute;
 
 pub fn process_impl_functions(

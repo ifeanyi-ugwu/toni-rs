@@ -26,16 +26,11 @@ impl ToniDependenciesScanner {
         let mut stack: Vec<ModuleDefinition> = vec![module];
 
         while let Some(current_module_definition) = stack.pop() {
-            let default_module = match current_module_definition {
-                ModuleDefinition::DefaultModule(default_module) => default_module,
-            };
+            let ModuleDefinition::DefaultModule(default_module) = current_module_definition;
 
             ctx_registry.push(default_module.get_name());
 
-            let modules_imported: Vec<Box<dyn ModuleMetadata>> = match default_module.imports() {
-                Some(modules_imported) => modules_imported,
-                None => Vec::new(),
-            };
+            let modules_imported = default_module.imports().unwrap_or_default();
 
             let mut modules_imported_tokens = vec![];
 
@@ -95,7 +90,7 @@ impl ToniDependenciesScanner {
 
         if let Some(controllers) = controllers {
             for controller in controllers {
-                container.add_controller(&module_token, controller);
+                container.add_controller(&module_token, controller)?;
             }
         };
 
@@ -114,7 +109,7 @@ impl ToniDependenciesScanner {
 
         if let Some(providers) = providers {
             for provider in providers {
-                container.add_provider(&module_token, provider);
+                container.add_provider(&module_token, provider)?;
             }
         };
 
@@ -132,7 +127,7 @@ impl ToniDependenciesScanner {
         let exports = resolved_module_ref.get_metadata().exports();
         if let Some(exports) = exports {
             for export in exports {
-                container.add_export(&module_token, export);
+                container.add_export(&module_token, export)?;
             }
         };
 

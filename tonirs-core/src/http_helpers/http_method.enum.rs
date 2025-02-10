@@ -10,7 +10,7 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-  pub fn from_str(method: &str) -> Option<Self> {
+  pub fn from_string(method: &str) -> Option<Self> {
       match method.to_lowercase().as_str() {
           "get" => Some(HttpMethod::GET),
           "post" => Some(HttpMethod::POST),

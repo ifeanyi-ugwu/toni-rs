@@ -42,7 +42,7 @@ impl ToniInstanceLoader {
 
             for provider_token in ordered_providers_token {
                 let provider_manager = container
-                    .get_provider_by_token(&module_token, &provider_token)
+                    .get_provider_by_token(&module_token, &provider_token)?
                     .ok_or_else(|| anyhow!("Provider not found: {}", provider_token))?;
 
                 let dependencies = provider_manager.get_dependencies();
@@ -67,11 +67,11 @@ impl ToniInstanceLoader {
         let mut providers_tokens = Vec::new();
         for (provider_instance_token, provider_instance) in providers_instances {
             let token_manager = provider_instance.get_token_manager().clone();
-            container.add_provider_instance(module_token, provider_instance);
+            container.add_provider_instance(module_token, provider_instance)?;
             providers_tokens.push((token_manager, provider_instance_token));
         }
 
-        self.resolve_exports(&module_token, providers_tokens, container);
+        self.resolve_exports(module_token, providers_tokens, container)?;
         Ok(())
     }
 
@@ -80,9 +80,10 @@ impl ToniInstanceLoader {
         module_token: &String,
         providers_tokens: Vec<(String, String)>,
         container: RefMut<'_, ToniContainer>,
-    ) {
-        let exports = container.get_exports_tokens_vec(&module_token);
-        self.add_export_instances_tokens(module_token, providers_tokens, exports, container);
+    ) -> Result<()> {
+        let exports = container.get_exports_tokens_vec(module_token)?;
+        self.add_export_instances_tokens(module_token, providers_tokens, exports, container)?;
+        Ok(())
     }
 
     fn add_export_instances_tokens(
@@ -91,21 +92,22 @@ impl ToniInstanceLoader {
         providers_tokens: Vec<(String, String)>,
         exports: Vec<String>,
         mut container: RefMut<'_, ToniContainer>,
-    ) {
+    ) -> Result<()> {
         for (provider_manager_token, provider_instance_token) in providers_tokens {
             if exports.contains(&provider_manager_token) {
-                container.add_export_instance(module_token, provider_instance_token);
+                container.add_export_instance(module_token, provider_instance_token)?;
             }
         }
+        Ok(())
     }
 
     fn create_instances_of_controllers(&self, module_token: String) -> Result<()> {
         let controllers_instances = {
             let container = self.container.borrow();
             let mut instances = FxHashMap::default();
-            let controllers_manager = container.get_controllers_manager(&module_token);
+            let controllers_manager = container.get_controllers_manager(&module_token)?;
 
-            for (_, controller_manager) in controllers_manager {
+            for controller_manager in controllers_manager.values() {
                 let dependencies = controller_manager.get_dependencies();
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, None)?;
@@ -126,7 +128,7 @@ impl ToniInstanceLoader {
     ) -> Result<()> {
         let mut container_mut = self.container.borrow_mut();
         for (_controller_instance_token, controller_instance) in controllers_instances {
-            container_mut.add_controller_instance(&module_token, controller_instance);
+            container_mut.add_controller_instance(&module_token, controller_instance)?;
         }
         Ok(())
     }
@@ -143,12 +145,12 @@ impl ToniInstanceLoader {
         for dependency in dependencies {
             let instances = match providers_instances {
                 Some(providers_instances) => providers_instances,
-                None => container.get_providers_instance(&module_token),
+                None => container.get_providers_instance(module_token)?,
             };
             if let Some(instance) = instances.get(&dependency) {
                 resolved_dependencies.insert(dependency, instance.clone());
             } else if let Some(exported_instance) =
-                self.resolve_from_imported_modules(&module_token, &dependency)
+                self.resolve_from_imported_modules(module_token, &dependency)?
             {
                 resolved_dependencies.insert(dependency, exported_instance.clone());
             } else {
@@ -167,21 +169,21 @@ impl ToniInstanceLoader {
         &self,
         module_token: &String,
         dependency: &String,
-    ) -> Option<Arc<Box<dyn ProviderTrait>>> {
+    ) -> Result<Option<Arc<Box<dyn ProviderTrait>>>> {
         let container = self.container.borrow();
-        let imported_modules = container.get_imported_modules(&module_token);
+        let imported_modules = container.get_imported_modules(module_token)?;
         for imported_module in imported_modules {
             let exported_instances_tokens =
-                container.get_exports_instances_tokens(&imported_module);
+                container.get_exports_instances_tokens(imported_module)?;
             if exported_instances_tokens.contains(dependency) {
-                if let Some(exported_instance) =
-                    container.get_provider_instance_by_token(&imported_module, dependency)
+                if let Ok(Some(exported_instance) )=
+                    container.get_provider_instance_by_token(imported_module, dependency)
                 {
-                    return Some(exported_instance.clone());
+                    return Ok(Some(exported_instance.clone()));
                 }
             }
         }
 
-        None
+        Ok(None)
     }
 }

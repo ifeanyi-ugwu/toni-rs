@@ -11,7 +11,6 @@ pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
       .map(|attr| {
           attr.parse_args::<LitStr>()
               .map(|lit| lit.value())
-              .map_err(|e| e.into())
       })
       .transpose()
       .map(|opt| opt.unwrap_or_default())

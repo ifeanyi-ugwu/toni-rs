@@ -46,7 +46,7 @@ impl Parse for ConfigParser {
                     config.controllers = fields
                         .into_iter()
                         .map(|field| {
-                            Ident::new(&format!("{}Manager", field.to_string()), field.span())
+                            Ident::new(&format!("{}Manager", field), field.span())
                         })
                         .collect()
                 }
@@ -54,7 +54,7 @@ impl Parse for ConfigParser {
                     config.providers = fields
                         .into_iter()
                         .map(|field| {
-                            Ident::new(&format!("{}Manager", field.to_string()), field.span())
+                            Ident::new(&format!("{}Manager", field), field.span())
                         })
                         .collect()
                 }

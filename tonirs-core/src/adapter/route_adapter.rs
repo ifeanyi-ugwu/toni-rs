@@ -20,6 +20,6 @@ pub trait RouteAdapter {
         async move {
             let http_request = Self::adapt_request(request).await?;
             let http_response = controller.execute(http_request);
-            Ok(Self::adapt_response(http_response)?)
+            Self::adapt_response(http_response)
         }
     }}

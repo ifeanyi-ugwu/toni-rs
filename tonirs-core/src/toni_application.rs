@@ -20,9 +20,9 @@ impl<H: HttpAdapter> ToniApplication<H> {
         }
     }
 
-    pub fn init(&mut self) {
-        self.routes_resolver.resolve(&mut self.http_adapter);
-        
+    pub fn init(&mut self) -> Result<()> {
+        self.routes_resolver.resolve(&mut self.http_adapter)?;
+        Ok(())
     }
     pub async fn listen(self, port: u16, hostname: &str) -> Result<()> {
         self.http_adapter.listen(port, hostname).await?;

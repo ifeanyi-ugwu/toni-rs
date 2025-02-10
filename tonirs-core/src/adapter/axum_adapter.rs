@@ -26,13 +26,17 @@ impl HttpAdapter for AxumAdapter {
 
     fn add_route(
         &mut self,
-        path: &String,
+        path: &str,
         method: HttpMethod,
         handler: Arc<Box<dyn ControllerTrait>>,
     ) {
         let route_handler = move |req: Request<Body>| {
             let handler = handler.clone();
-            Box::pin(async move { AxumRouteAdapter::handle_request(req, handler).await.unwrap() })
+            Box::pin(async move {
+                AxumRouteAdapter::handle_request(req, handler)
+                    .await
+                    .unwrap()
+            })
         };
         println!("Adding route: {} {:?}", path, method);
 
@@ -47,23 +51,17 @@ impl HttpAdapter for AxumAdapter {
         };
     }
 
-    fn listen(
-        self,
-        port: u16,
-        hostname: &str,
-    ) -> impl std::future::Future<Output = Result<()>> + Send {
-        async move {
-            let addr = format!("{}:{}", hostname, port);
-            let listener: TcpListener = TcpListener::bind(&addr)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
+    async fn listen(self, port: u16, hostname: &str) -> Result<()> {
+        let addr = format!("{}:{}", hostname, port);
+        let listener: TcpListener = TcpListener::bind(&addr)
+            .await
+            .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
 
-            println!("Listening on {}", addr);
+        println!("Listening on {}", addr);
 
-            axum::serve(listener, self.instance)
-                .await
-                .with_context(|| "Axum server encountered an error")?;
-            Ok(())
-        }
+        axum::serve(listener, self.instance)
+            .await
+            .with_context(|| "Axum server encountered an error")?;
+        Ok(())
     }
 }

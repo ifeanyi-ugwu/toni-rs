@@ -20,7 +20,7 @@ impl ToniFactory {
         Self
     }
 
-    pub fn create<'a>(
+    pub fn create(
         &self,
         module: ModuleDefinition,
         http_adapter: impl HttpAdapter
@@ -31,7 +31,7 @@ impl ToniFactory {
         self.initialize(module, container.clone())?;
         
         let mut app = ToniApplication::new(http_adapter, container);
-        app.init();
+        app.init()?;
         
         Ok(app)
     }

@@ -16,7 +16,7 @@ pub fn generate_make_instances(structs_metadata: Vec<MetadataInfo>) -> Vec<Token
                     let error_message = format!(
                         "Missing dependency '{}' for field '{}' in '{}'",
                         dependency_key,
-                        field_name.to_string(),
+                        field_name,
                         &struct_name_string
                     );
 

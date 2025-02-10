@@ -17,9 +17,9 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn new(token: &String, name: &str, metadata: Box<dyn ModuleMetadata>) -> Self {
+    pub fn new(token: &str, name: &str, metadata: Box<dyn ModuleMetadata>) -> Self {
         Self {
-            _token: token.clone(),
+            _token: token.to_owned(),
             _name: name.to_string(),
             controllers: FxHashMap::default(),
             providers: FxHashMap::default(),
@@ -69,8 +69,8 @@ impl Module {
         &self.providers_instances
     }
 
-    pub fn get_provider_by_token(&self, provider_token: &String) -> Option<&Box<dyn Provider>> {
-        self.providers.get(provider_token)
+    pub fn get_provider_by_token(&self, provider_token: &String) -> Option<&dyn Provider> {
+        self.providers.get(provider_token).map(|provider| provider.as_ref())
     }
 
     pub fn get_provider_instance_by_token(
@@ -100,8 +100,8 @@ impl Module {
         &self.exports
     }
 
-    pub fn get_metadata(&self) -> &Box<dyn ModuleMetadata> {
-        &self.metadata
+    pub fn get_metadata(&self) -> &dyn ModuleMetadata {
+        &*self.metadata
     }
 
     pub fn _get_name(&self) -> &String {
@@ -115,8 +115,8 @@ impl Module {
     pub fn _get_controller_by_token(
         &self,
         controller_token: &String,
-    ) -> Option<&Box<dyn Controller>> {
-        self.controllers.get(controller_token)
+    ) -> Option<&dyn Controller> {
+        self.controllers.get(controller_token).map(|controller| controller.as_ref())
     }
 
     pub fn _get_controllers_instances(&self) -> &FxHashMap<String, Arc<Box<dyn ControllerTrait>>> {

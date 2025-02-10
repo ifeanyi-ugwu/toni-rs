@@ -12,12 +12,18 @@ pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
 }
-impl HttpResponse {
+impl HttpResponse {    
     pub fn new() -> Self {
         Self { 
             body: None,
             status: 200,
             headers: vec![],
         }
+    }
+}
+
+impl Default for HttpResponse {
+    fn default() -> Self {
+        Self::new()
     }
 }

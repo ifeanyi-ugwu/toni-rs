@@ -63,7 +63,7 @@ impl RouteAdapter for AxumRouteAdapter {
     fn adapt_response(
         response: Box<dyn http_helpers::IntoResponse<Response = HttpResponse>>,
     ) -> Result<Self::Response> {
-        let response = response.into_response();
+        let response = response.to_response();
 
         let status =
             StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -84,7 +84,7 @@ impl RouteAdapter for AxumRouteAdapter {
         let mut headers = HeaderMap::new();
         for (k, v) in &response.headers {
             if let Ok(header_name) = HeaderName::from_bytes(k.as_bytes()) {
-                if let Ok(header_value) = HeaderValue::from_str(&v) {
+                if let Ok(header_value) = HeaderValue::from_str(v) {
                     headers.insert(header_name, header_value);
                 }
             }

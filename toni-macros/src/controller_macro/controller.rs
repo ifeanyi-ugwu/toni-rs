@@ -63,15 +63,16 @@ pub fn generate_controller_and_metadata(
         field_definitions.push(quote! { #field_name: #provider_trait });
     }
 
+    let full_route_path = format!("{}{}", route_prefix, route_path);
+
     let generated_code = generate_controller_code(
         &controller_name,
         &field_definitions,
         &modified_block,
         &controller_token,
-        &route_prefix,
-        &route_path,
+        full_route_path,
         &http_method,
-        &trait_reference_name,
+        trait_reference_name,
     );
     Ok((generated_code, MetadataInfo {
         struct_name: controller_name,
@@ -84,12 +85,10 @@ fn generate_controller_code(
     field_defs: &[TokenStream],
     method_body: &syn::Block,
     controller_token: &str,
-    route_prefix: &str,
-    route_path: &str,
+    full_route_path: String,
     http_method: &str,
     trait_name: &Ident,
 ) -> TokenStream {
-    let full_route_path = format!("{}{}", route_prefix, route_path);
 
     quote! {
         struct #controller_name {
@@ -117,7 +116,7 @@ fn generate_controller_code(
 
             #[inline]
             fn get_method(&self) -> ::tonirs_core::http_helpers::HttpMethod {
-                ::tonirs_core::http_helpers::HttpMethod::from_str(#http_method).unwrap()
+                ::tonirs_core::http_helpers::HttpMethod::from_string(#http_method).unwrap()
             }
         }
     }

@@ -52,7 +52,7 @@ impl VisitMut for ExprModifier {
                         if ident_clone == provide_name.0 {
                             let method_name = method_call_name;
                             let new_field_name =
-                                create_field_struct_name(&provide_name.1.to_string(), &method_name);
+                                create_field_struct_name(&provide_name.1.to_string(), method_name);
                             let args = self.put_box_in_expr(method_args_clone.iter());
                             self.modified_exprs.push((
                                 provide_name.1.clone(),
