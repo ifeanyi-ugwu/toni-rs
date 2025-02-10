@@ -18,7 +18,7 @@ pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
 }
 
 pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<DependencyInfo> {
-  let mut unique_types = HashSet::new();
+  let unique_types = HashSet::new();
   let mut fields = Vec::new();
 
   for field in &struct_attrs.fields {
@@ -26,8 +26,6 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
           .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
       
       let type_ident = extract_ident_from_type(&field.ty).unwrap();
-      unique_types.insert(type_ident.to_string());
-      
       fields.push((field_ident.clone(), type_ident.clone()));
   }
 

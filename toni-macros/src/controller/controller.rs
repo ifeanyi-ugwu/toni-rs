@@ -1,11 +1,9 @@
-use std::collections::HashSet;
-
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Error, Ident, ImplItemFn, LitStr, spanned::Spanned};
 
 use crate::{
-    shared::metadata_info::MetadataInfo,
+    shared::{dependency_info::DependencyInfo, metadata_info::MetadataInfo},
     utils::{
         controller_utils::attr_to_string,
         create_struct_name::{create_provider_name_by_fn_and_struct_ident, create_struct_name},
@@ -17,9 +15,8 @@ use crate::{
 
 pub fn generate_controller_and_metadata(
     implementation_fn: &ImplItemFn,
-    fields_params_ident: &Vec<(Ident, Ident)>,
     original_struct_name: &Ident,
-    unique_dependencies: &mut HashSet<String>,
+    dependency_info: &mut DependencyInfo,
     trait_reference_name: &Ident,
     route_prefix: &String,
     attribute: &Attribute,
@@ -40,7 +37,7 @@ pub fn generate_controller_and_metadata(
     modify_return_method_body(&mut modified_block);
     let injections = modify_method_body(
         &mut modified_block,
-        fields_params_ident.clone(),
+        dependency_info.fields.clone(),
         original_struct_name.clone(),
     );
 
@@ -53,7 +50,7 @@ pub fn generate_controller_and_metadata(
         let provider_name =
             create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager);
 
-        if !unique_dependencies.insert(provider_name.clone()) {
+        if !dependency_info.unique_types.insert(provider_name.clone()) {
             return Err(Error::new(
                 attribute.span(),
                 format!("Conflict in dependency: {}", provider_name),

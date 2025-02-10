@@ -15,13 +15,17 @@ pub fn handle_provider_struct(
     let struct_attrs = parse2::<ItemStruct>(attr)?;
     let impl_block = parse2::<ItemImpl>(item)?;
 
-    let dependencies = extract_struct_dependencies(&struct_attrs)?;
+    let mut dependencies = extract_struct_dependencies(&struct_attrs)?;
 
-    let (controllers, metadata, unique_dependencies) =
-        process_impl_functions(&impl_block, &dependencies, &struct_attrs.ident, &trait_name)
-            .unwrap();
+    let (controllers, metadata) = process_impl_functions(
+        &impl_block,
+        &mut dependencies,
+        &struct_attrs.ident,
+        &trait_name,
+    )
+    .unwrap();
 
-    let manager = generate_manager(&struct_attrs.ident, metadata, unique_dependencies);
+    let manager = generate_manager(&struct_attrs.ident, metadata, dependencies.unique_types);
     let expanded = generate_output(struct_attrs, impl_block, controllers, manager);
 
     Ok(expanded.into())

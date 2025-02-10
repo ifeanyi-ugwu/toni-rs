@@ -16,17 +16,17 @@ pub fn handle_controller_struct(
     let impl_block = parse2::<ItemImpl>(item)?;
 
     let prefix_path = extract_controller_prefix(&impl_block)?;
-    let dependencies = extract_struct_dependencies(&struct_attrs)?;
+    let mut dependencies = extract_struct_dependencies(&struct_attrs)?;
 
-    let (controllers, metadata, unique_dependencies) = process_impl_functions(
+    let (controllers, metadata) = process_impl_functions(
         &impl_block,
-        &dependencies,
+        &mut dependencies,
         &struct_attrs.ident,
         &trait_name,
         &prefix_path,
     )?;
-
-    let manager = generate_manager(&struct_attrs.ident, metadata, unique_dependencies);
+    
+    let manager = generate_manager(&struct_attrs.ident, metadata, dependencies.unique_types);
     let expanded = generate_output(struct_attrs, impl_block, controllers, manager);
 
     Ok(expanded.into())

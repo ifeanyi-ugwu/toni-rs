@@ -1,14 +1,9 @@
-use std::{
-    collections::HashSet,
-    fmt::{Display, Formatter},
-};
-
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Error, Ident, ImplItemFn};
 
 use crate::{
-    shared::metadata_info::MetadataInfo,
+    shared::{dependency_info::DependencyInfo, metadata_info::MetadataInfo},
     utils::{
         create_struct_name::{create_provider_name_by_fn_and_struct_ident, create_struct_name},
         extracts::extract_params_from_impl_fn,
@@ -18,24 +13,10 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-pub enum ProviderGenerationError {
-    DependencyConflict(String),
-}
-
-impl Display for ProviderGenerationError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DependencyConflict(dep) => write!(f, "Conflito na dependência: {}", dep),
-        }
-    }
-}
-
 pub fn generate_provider_and_metadata(
     implementation_fn: &ImplItemFn,
-    fields_params_ident: &Vec<(Ident, Ident)>,
     original_struct_ident: &Ident,
-    unique_dependencies: &mut HashSet<String>,
+    dependency_info: &mut DependencyInfo,
     trait_reference_name: &Ident,
 ) -> Result<(TokenStream, MetadataInfo), Error> {
     let impl_fn_params: Vec<(Ident, syn::Type)> = extract_params_from_impl_fn(implementation_fn);
@@ -50,7 +31,7 @@ pub fn generate_provider_and_metadata(
     modify_return_method_body(&mut modified_block);
     let injections = modify_method_body(
         &mut modified_block,
-        fields_params_ident.clone(),
+        dependency_info.fields.clone(),
         original_struct_ident.clone(),
     );
 
@@ -64,7 +45,7 @@ pub fn generate_provider_and_metadata(
             create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager);
 
         if !provider_name.contains(&original_struct_name) {
-            if !unique_dependencies.insert(provider_name.clone()) {
+            if !dependency_info.unique_types.insert(provider_name.clone()) {
                 return Err(Error::new(
                     original_struct_ident.span(),
                     format!("Conflict in dependency: {}", provider_name),

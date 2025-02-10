@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use proc_macro2::TokenStream;
 use syn::{Ident, ImplItem, ItemImpl, Result};
 
@@ -11,27 +9,24 @@ use crate::utils::controller_utils::find_http_method_attribute;
 
 pub fn process_impl_functions(
     impl_block: &ItemImpl,
-    dependencies: &DependencyInfo,
+    dependencies: &mut DependencyInfo,
     struct_name: &syn::Ident,
     trait_name: &Ident,
     prefix_path: &str,
-) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>, HashSet<String>)> {
+) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
     let mut controllers = Vec::new();
     let mut metadata = Vec::new();
-    let mut unique_dependencies = HashSet::new();
     for item in &impl_block.items {
         if let ImplItem::Fn(method) = item {
             if let Some(attr) = find_http_method_attribute(&method.attrs) {
                 let (controller, meta) = generate_controller_and_metadata(
                     method,
-                    &dependencies.fields,
                     struct_name,
-                    &mut unique_dependencies,
+                    dependencies,
                     trait_name,
                     &prefix_path.to_string(),
                     attr,
-                )
-                .unwrap();
+                )?;
 
                 controllers.push(controller);
                 metadata.push(meta);
@@ -39,5 +34,5 @@ pub fn process_impl_functions(
         }
     }
 
-    Ok((controllers, metadata, unique_dependencies))
+    Ok((controllers, metadata))
 }
