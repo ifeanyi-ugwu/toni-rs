@@ -1,9 +1,10 @@
-use std::{cell::RefCell, error::Error, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
+
+use anyhow::{Result, anyhow};
 
 use crate::{
-    injector::ToniContainer,
-    module_helpers::module_enum::ModuleDefinition,
-    traits_helpers::{ModuleMetadata, Provider},
+    injector::ToniContainer, module_helpers::module_enum::ModuleDefinition,
+    traits_helpers::ModuleMetadata,
 };
 
 pub struct ToniDependenciesScanner {
@@ -14,15 +15,12 @@ impl ToniDependenciesScanner {
     pub fn new(container: Rc<RefCell<ToniContainer>>) -> Self {
         Self { container }
     }
-    pub fn scan(&mut self, module: ModuleDefinition) -> Result<(), Box<dyn Error>> {
-        self.scan_for_modules_with_imports(module);
+    pub fn scan(&mut self, module: ModuleDefinition) -> Result<()> {
+        self.scan_for_modules_with_imports(module)?;
         self.scan_modules_for_dependencies()?;
         Ok(())
     }
-    fn scan_for_modules_with_imports(
-        &mut self,
-        module: ModuleDefinition,
-    ) -> Result<(), Box<dyn Error>> {
+    fn scan_for_modules_with_imports(&mut self, module: ModuleDefinition) -> Result<()> {
         let mut ctx_registry: Vec<String> = vec![];
 
         let mut stack: Vec<ModuleDefinition> = vec![module];
@@ -55,12 +53,12 @@ impl ToniDependenciesScanner {
             }
             let default_module_id = default_module.get_id();
             self.insert_module(default_module);
-            self.insert_imports(default_module_id, modules_imported_tokens);
+            self.insert_imports(default_module_id, modules_imported_tokens)?;
         }
         Ok(())
     }
 
-    pub fn scan_modules_for_dependencies(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn scan_modules_for_dependencies(&mut self) -> Result<()> {
         let modules_token = self.container.borrow().get_modules_token();
         for module_token in modules_token {
             self.insert_providers(module_token.clone())?;
@@ -75,26 +73,22 @@ impl ToniDependenciesScanner {
         container.add_module(module);
     }
 
-    pub fn insert_imports(
-        &mut self,
-        module_token: String,
-        imports: Vec<String>,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn insert_imports(&mut self, module_token: String, imports: Vec<String>) -> Result<()> {
         let mut container = self.container.borrow_mut();
 
         for import in imports {
-            container.add_import(&module_token, import);
+            container.add_import(&module_token, import)?;
         }
 
         Ok(())
     }
 
-    pub fn insert_controllers(&mut self, module_token: String) -> Result<(), Box<dyn Error>> {
+    pub fn insert_controllers(&mut self, module_token: String) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let module_ref = container.get_module_by_token(&module_token);
         let resolved_module_ref = match module_ref {
             Some(module_ref) => module_ref,
-            None => return Err("Module not found".into()),
+            None => return Err(anyhow!("Module not found")),
         };
 
         let controllers = resolved_module_ref.get_metadata().controllers();
@@ -108,16 +102,15 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    pub fn insert_providers(&mut self, module_token: String) -> Result<(), Box<dyn Error>> {
+    pub fn insert_providers(&mut self, module_token: String) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let module_ref = container.get_module_by_token(&module_token);
         let resolved_module_ref = match module_ref {
             Some(module_ref) => module_ref,
-            None => return Err("Module not found".into()),
+            None => return Err(anyhow!("Module not found")),
         };
 
-        let providers =
-            resolved_module_ref.get_metadata().providers();
+        let providers = resolved_module_ref.get_metadata().providers();
 
         if let Some(providers) = providers {
             for provider in providers {
@@ -128,12 +121,12 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    pub fn insert_exports(&mut self, module_token: String) -> Result<(), Box<dyn Error>> {
+    pub fn insert_exports(&mut self, module_token: String) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let module_ref = container.get_module_by_token(&module_token);
         let resolved_module_ref = match module_ref {
             Some(module_ref) => module_ref,
-            None => return Err("Module not found".into()),
+            None => return Err(anyhow!("Module not found")),
         };
 
         let exports = resolved_module_ref.get_metadata().exports();

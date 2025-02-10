@@ -1,4 +1,5 @@
 use super::ToniContainer;
+use anyhow::{anyhow, Result};
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, rc::Rc};
 
@@ -21,7 +22,7 @@ impl DependencyGraph {
         }
     }
 
-    pub fn get_ordered_providers_token(mut self) -> Vec<String> {
+    pub fn get_ordered_providers_token(mut self) -> Result<Vec<String>> {
         let providers = {
             let container = self.container.borrow();
             let providers_map = container.get_providers_manager(&self.module_token);
@@ -33,19 +34,19 @@ impl DependencyGraph {
         let clone_providers = providers.clone();
         for (token, dependencies) in providers {
             if !self.visited.contains_key(&token) {
-                self.visit_node(token, dependencies, &clone_providers);
+                self.visit_node(token, dependencies, &clone_providers)?;
             }
         }
-        self.ordered
+        Ok(self.ordered)
     }
 
-    fn visit_node(&mut self, token: String, dependencies: Vec<String>, providers: &Vec<(String, Vec<String>)>) {
+    fn visit_node(&mut self, token: String, dependencies: Vec<String>, providers: &Vec<(String, Vec<String>)>) -> Result<()> {
         if self.temp_mark.contains_key(&token) {
-            panic!("Circular dependency detected for provider: {}", token);
+            return Err(anyhow!("Circular dependency detected for provider: {}", token));
         }
 
         if self.visited.contains_key(&token) {
-            return;
+            return Ok(());
         }
 
         self.temp_mark.insert(token.clone(), true);
@@ -55,12 +56,13 @@ impl DependencyGraph {
                 .iter()
                 .find(|(token, _dependencies)| dep_token.contains(token))
             {
-                self.visit_node(dep_token.clone(), dependencies.clone(), providers);
+                self.visit_node(dep_token.clone(), dependencies.clone(), providers)?;
             }
         }
 
         self.temp_mark.remove(&token);
         self.visited.insert(token.clone(), true);
         self.ordered.push(token);
+        Ok(())
     }
 }

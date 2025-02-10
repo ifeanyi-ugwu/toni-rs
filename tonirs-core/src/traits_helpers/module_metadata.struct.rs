@@ -1,5 +1,5 @@
 use super::{Controller, Provider};
-pub trait ModuleMetadata: Send + Sync {
+pub trait ModuleMetadata {
     fn get_id(&self) -> String;
     fn get_name(&self) -> String;
     fn imports(&self) -> Option<Vec<Box<dyn ModuleMetadata>>>;

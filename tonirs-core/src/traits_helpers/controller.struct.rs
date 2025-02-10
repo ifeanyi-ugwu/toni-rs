@@ -12,7 +12,7 @@ pub trait ControllerTrait: Send + Sync {
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 }
-pub trait Controller: Send + Sync {
+pub trait Controller {
     fn get_all_controllers(
         &self,
         dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,

@@ -1,13 +1,13 @@
+use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::{
-    traits_helpers::ControllerTrait,
-    http_helpers::HttpMethod,
-    http_adapter::HttpAdapter,
-};
+use crate::{http_adapter::HttpAdapter, http_helpers::HttpMethod, traits_helpers::ControllerTrait};
 use axum::{
-    body::Body, http::Request, routing::{delete, get, head, options, patch, post, put}, Router
+    Router,
+    body::Body,
+    http::Request,
+    routing::{delete, get, head, options, patch, post, put},
 };
 
 use super::{AxumRouteAdapter, RouteAdapter};
@@ -24,13 +24,18 @@ impl HttpAdapter for AxumAdapter {
         }
     }
 
-    fn add_route(&mut self, path: &String, method: HttpMethod, handler: Arc<Box<dyn ControllerTrait>>) {
+    fn add_route(
+        &mut self,
+        path: &String,
+        method: HttpMethod,
+        handler: Arc<Box<dyn ControllerTrait>>,
+    ) {
         let route_handler = move |req: Request<Body>| {
             let handler = handler.clone();
-            Box::pin(async move { AxumRouteAdapter::handle_request(req, handler).await })
+            Box::pin(async move { AxumRouteAdapter::handle_request(req, handler).await.unwrap() })
         };
         println!("Adding route: {} {:?}", path, method);
-        
+
         self.instance = match method {
             HttpMethod::GET => self.instance.clone().route(path, get(route_handler)),
             HttpMethod::POST => self.instance.clone().route(path, post(route_handler)),
@@ -46,7 +51,7 @@ impl HttpAdapter for AxumAdapter {
         self,
         port: u16,
         hostname: &str,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    ) -> impl std::future::Future<Output = Result<()>> + Send {
         async move {
             let addr = format!("{}:{}", hostname, port);
             let listener: TcpListener = TcpListener::bind(&addr)
@@ -55,7 +60,10 @@ impl HttpAdapter for AxumAdapter {
 
             println!("Listening on {}", addr);
 
-            axum::serve(listener, self.instance).await.unwrap();
+            axum::serve(listener, self.instance)
+                .await
+                .with_context(|| "Axum server encountered an error")?;
+            Ok(())
         }
     }
 }

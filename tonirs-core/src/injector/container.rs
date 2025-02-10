@@ -1,5 +1,6 @@
 use std::{collections::hash_map::Drain, sync::Arc};
 
+use anyhow::{Result, anyhow};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait};
@@ -24,19 +25,23 @@ impl ToniContainer {
         self.modules.insert(token, module);
     }
 
-    pub fn add_import(&mut self, module_ref_token: &String, imported_module_token: String) {
-        let module_ref = match self.modules.get_mut(module_ref_token) {
-            Some(module_ref) => module_ref,
-            None => panic!("Module not find"),
-        };
-
+    pub fn add_import(
+        &mut self,
+        module_ref_token: &String,
+        imported_module_token: String,
+    ) -> Result<()> {
+        let module_ref = self
+            .modules
+            .get_mut(module_ref_token)
+            .ok_or_else(|| anyhow!("Module not found"))?;
         module_ref.add_import(imported_module_token);
+        Ok(())
     }
 
     pub fn add_controller(&mut self, module_ref_token: &String, controller: Box<dyn Controller>) {
         let module_ref = match self.modules.get_mut(module_ref_token) {
             Some(module_ref) => module_ref,
-            None => panic!("Module not find"),
+            None => panic!("Module not found"),
         };
 
         module_ref.add_controller(controller);
@@ -45,13 +50,17 @@ impl ToniContainer {
     pub fn add_provider(&mut self, module_ref_token: &String, provider: Box<dyn Provider>) {
         let module_ref = match self.modules.get_mut(module_ref_token) {
             Some(module_ref) => module_ref,
-            None => panic!("Module not find"),
+            None => panic!("Module not found"),
         };
 
         module_ref.add_provider(provider)
     }
 
-    pub fn add_provider_instance(&mut self, module_ref_token: &String, provider_instance: Arc<Box<dyn ProviderTrait>>) {
+    pub fn add_provider_instance(
+        &mut self,
+        module_ref_token: &String,
+        provider_instance: Arc<Box<dyn ProviderTrait>>,
+    ) {
         let module_ref = match self.modules.get_mut(module_ref_token) {
             Some(module_ref) => module_ref,
             None => panic!("Module not found"),
@@ -59,8 +68,12 @@ impl ToniContainer {
 
         module_ref.add_provider_instance(provider_instance)
     }
-    
-    pub fn add_controller_instance(&mut self, module_ref_token: &String, controller_instance: Arc<Box<dyn ControllerTrait>>) {
+
+    pub fn add_controller_instance(
+        &mut self,
+        module_ref_token: &String,
+        controller_instance: Arc<Box<dyn ControllerTrait>>,
+    ) {
         let module_ref = match self.modules.get_mut(module_ref_token) {
             Some(module_ref) => module_ref,
             None => panic!("Module not found"),
@@ -87,56 +100,76 @@ impl ToniContainer {
         module_ref.add_export_instance(provider_token);
     }
 
-    pub fn get_providers_manager(&self, module_ref_token: &String) -> &FxHashMap<String, Box<dyn Provider>> {
+    pub fn get_providers_manager(
+        &self,
+        module_ref_token: &String,
+    ) -> &FxHashMap<String, Box<dyn Provider>> {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")            
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_providers_manager()
     }
 
-    pub fn get_controllers_manager(&self, module_ref_token: &String) -> &FxHashMap<String, Box<dyn Controller>> {
+    pub fn get_controllers_manager(
+        &self,
+        module_ref_token: &String,
+    ) -> &FxHashMap<String, Box<dyn Controller>> {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")            
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_controllers_manager()
     }
-    
-    pub fn get_providers_instance(&self, module_ref_token: &String) -> &FxHashMap<String, Arc<Box<dyn ProviderTrait>>> {
+
+    pub fn get_providers_instance(
+        &self,
+        module_ref_token: &String,
+    ) -> &FxHashMap<String, Arc<Box<dyn ProviderTrait>>> {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")            
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_providers_instances()
     }
 
-    pub fn get_provider_instance_by_token(&self, module_ref_token: &String, provider_token: &String) -> Option<&Arc<Box<dyn ProviderTrait>>> {
+    pub fn get_provider_instance_by_token(
+        &self,
+        module_ref_token: &String,
+        provider_token: &String,
+    ) -> Option<&Arc<Box<dyn ProviderTrait>>> {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_provider_instance_by_token(provider_token)
     }
 
-    pub fn get_provider_by_token(&self, module_ref_token: &String, provider_token: &String) -> Option<&Box<dyn Provider>> {
+    pub fn get_provider_by_token(
+        &self,
+        module_ref_token: &String,
+        provider_token: &String,
+    ) -> Option<&Box<dyn Provider>> {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")            
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_provider_by_token(provider_token)
     }
-    
-    pub fn get_controllers_instance(&mut self, module_ref_token: &String) -> Drain<'_, String, Arc<Box<dyn ControllerTrait>>> {
+
+    pub fn get_controllers_instance(
+        &mut self,
+        module_ref_token: &String,
+    ) -> Drain<'_, String, Arc<Box<dyn ControllerTrait>>> {
         let module_ref = self.modules.get_mut(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")            
+            None => panic!("Module not found"),
         };
         module_ref_resolved.drain_controllers_instances()
     }
@@ -145,7 +178,7 @@ impl ToniContainer {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found")
+            None => panic!("Module not found"),
         };
         module_ref_resolved.get_imported_modules()
     }
@@ -154,7 +187,7 @@ impl ToniContainer {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found: {:?}", module_ref_token)
+            None => panic!("Module not found: {:?}", module_ref_token),
         };
         module_ref_resolved.get_exports_instances_tokens()
     }
@@ -163,22 +196,26 @@ impl ToniContainer {
         let module_ref = self.modules.get(module_ref_token);
         let module_ref_resolved = match module_ref {
             Some(module_ref) => module_ref,
-            None => panic!("Module not found: {:?}", module_ref_token)
+            None => panic!("Module not found: {:?}", module_ref_token),
         };
-        module_ref_resolved.get_exports_tokens().iter().map(|token| token.clone()).collect()
+        module_ref_resolved
+            .get_exports_tokens()
+            .iter()
+            .map(|token| token.clone())
+            .collect()
     }
-    
+
     pub fn get_modules_token(&self) -> Vec<String> {
         self.modules
             .iter()
             .map(|(token, _module)| token.clone())
             .collect::<Vec<String>>()
     }
-    
+
     pub fn get_ordered_modules_token(&self) -> Vec<String> {
         let mut ordered_modules: Vec<String> = Vec::new();
         let mut visited: FxHashMap<String, bool> = FxHashMap::default();
-        
+
         for (token, module) in self.modules.iter() {
             if module.get_imported_modules().is_empty() {
                 ordered_modules.push(token.clone());

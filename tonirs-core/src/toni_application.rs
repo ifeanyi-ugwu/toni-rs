@@ -1,5 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
+use anyhow::Result;
+
 use crate::{
     http_adapter::HttpAdapter,
     injector::ToniContainer, router::RoutesResolver,
@@ -22,11 +24,8 @@ impl<H: HttpAdapter> ToniApplication<H> {
         self.routes_resolver.resolve(&mut self.http_adapter);
         
     }
-    pub async fn listen(self, port: u16, hostname: &str) {
-        self.http_adapter.listen(port, hostname).await;
-    }
-
-    pub fn get_http_adapter(&self) -> H {
-        self.http_adapter.clone()
+    pub async fn listen(self, port: u16, hostname: &str) -> Result<()> {
+        self.http_adapter.listen(port, hostname).await?;
+        Ok(())
     }
 }

@@ -8,7 +8,7 @@ pub trait ProviderTrait: Send + Sync {
     fn get_token_manager(&self) -> String;
 }
 
-pub trait Provider: Send + Sync {
+pub trait Provider {
     fn get_all_providers(
         &self,
         dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>

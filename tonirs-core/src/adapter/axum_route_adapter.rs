@@ -1,11 +1,11 @@
 use std::{collections::HashMap, str::FromStr};
 
+use anyhow::{Result, anyhow};
 use axum::{
     RequestPartsExt,
     body::to_bytes,
     extract::{Path, Query},
-    http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode}
 };
 use serde_json::Value;
 
@@ -19,11 +19,12 @@ impl RouteAdapter for AxumRouteAdapter {
     type Request = Request<axum::body::Body>;
     type Response = Response<axum::body::Body>;
 
-    async fn adapt_request(request: Self::Request) -> HttpRequest {
+    async fn adapt_request(request: Self::Request) -> Result<HttpRequest> {
         let (mut parts, body) = request.into_parts();
-        let body_bytes: Vec<u8> = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        let body_bytes = to_bytes(body, usize::MAX).await?;
+        let bytes = body_bytes.to_vec();
 
-        let body = if let Ok(body_str) = String::from_utf8(body_bytes.to_vec()) {
+        let body = if let Ok(body_str) = String::from_utf8(bytes) {
             if let Ok(json) = serde_json::from_str::<Value>(&body_str) {
                 Body::Json(json)
             } else {
@@ -33,19 +34,15 @@ impl RouteAdapter for AxumRouteAdapter {
             Body::Text(String::from_utf8_lossy(&body_bytes).to_string())
         };
 
-        let path_params = parts
+        let Path(path_params) = parts
             .extract::<Path<HashMap<String, String>>>()
             .await
-            .map(|Path(path_params)| path_params)
-            .map_err(|err| err.into_response())
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to extract path parameters: {:?}", e))?;
 
-        let query_params = parts
+        let Query(query_params) = parts
             .extract::<Query<HashMap<String, String>>>()
             .await
-            .map(|Query(params)| params)
-            .map_err(|err| err.into_response())
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to extract query parameters: {:?}", e))?;
 
         let headers = parts
             .headers
@@ -53,19 +50,19 @@ impl RouteAdapter for AxumRouteAdapter {
             .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
             .collect();
 
-        HttpRequest {
+        Ok(HttpRequest {
             body,
             headers,
             method: parts.method.to_string(),
             uri: parts.uri.to_string(),
             query_params,
             path_params,
-        }
+        })
     }
 
     fn adapt_response(
         response: Box<dyn http_helpers::IntoResponse<Response = HttpResponse>>,
-    ) -> Self::Response {
+    ) -> Result<Self::Response> {
         let response = response.into_response();
 
         let status =
@@ -77,7 +74,9 @@ impl RouteAdapter for AxumRouteAdapter {
             Some(Body::Text(text)) => axum::body::Body::from(text),
             Some(Body::Json(json)) => {
                 body_is_json = true;
-                axum::body::Body::from(serde_json::to_vec(&json).unwrap())
+                let vec = serde_json::to_vec(&json)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize JSON: {}", e))?;
+                axum::body::Body::from(vec)
             }
             _ => axum::body::Body::empty(),
         };
@@ -91,22 +90,24 @@ impl RouteAdapter for AxumRouteAdapter {
             }
         }
 
-        if !body_is_json {
-            headers.insert(
-                HeaderName::from_str("Content-Type").unwrap(),
-                HeaderValue::from_static("text/plain"),
-            );
+        let content_type = if body_is_json {
+            "application/json"
         } else {
-            headers.insert(
-                HeaderName::from_str("Content-Type").unwrap(),
-                HeaderValue::from_static("application/json"),
-            );
-        }
+            "text/plain"
+        };
+        headers.insert(
+            HeaderName::from_str("Content-Type")
+                .map_err(|e| anyhow::anyhow!("Failed to parse header name Content-Type: {}", e))?,
+            HeaderValue::from_static(content_type),
+        );
 
-        let mut res = Response::builder().status(status).body(body).unwrap();
+        let mut res = Response::builder()
+            .status(status)
+            .body(body)
+            .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))?;
 
         res.headers_mut().extend(headers);
 
-        res
+        Ok(res)
     }
 }
