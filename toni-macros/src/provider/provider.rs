@@ -5,7 +5,7 @@ use std::{
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, ImplItemFn};
+use syn::{Error, Ident, ImplItemFn};
 
 use crate::{
     shared::metadata_info::MetadataInfo,
@@ -37,7 +37,7 @@ pub fn generate_provider_and_metadata(
     original_struct_ident: &Ident,
     unique_dependencies: &mut HashSet<String>,
     trait_reference_name: &Ident,
-) -> Result<(TokenStream, MetadataInfo), ProviderGenerationError> {
+) -> Result<(TokenStream, MetadataInfo), Error> {
     let impl_fn_params: Vec<(Ident, syn::Type)> = extract_params_from_impl_fn(implementation_fn);
 
     let original_struct_name = original_struct_ident.to_string();
@@ -65,7 +65,10 @@ pub fn generate_provider_and_metadata(
 
         if !provider_name.contains(&original_struct_name) {
             if !unique_dependencies.insert(provider_name.clone()) {
-                return Err(ProviderGenerationError::DependencyConflict(provider_name));
+                return Err(Error::new(
+                    original_struct_ident.span(),
+                    format!("Conflict in dependency: {}", provider_name),
+                ));
             }
         }
 
