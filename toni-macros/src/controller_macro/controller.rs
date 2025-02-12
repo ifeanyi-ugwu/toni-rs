@@ -30,7 +30,7 @@ pub fn generate_controller_and_metadata(
         .value();
 
     let function_name = &implementation_fn.sig.ident;
-    let controller_name = create_struct_name("Controller", function_name);
+    let controller_name = create_struct_name("Controller", function_name)?;
     let controller_token = controller_name.to_string();
 
     let mut modified_block = implementation_fn.block.clone();
@@ -48,14 +48,18 @@ pub fn generate_controller_and_metadata(
         let (provider_manager, function_name, field_name) = injection;
 
         let provider_name =
-            create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager);
+            create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager)?;
 
-        if !dependency_info.unique_types.insert(provider_name.clone()) {
-            return Err(Error::new(
-                attribute.span(),
-                format!("Conflict in dependency: {}", provider_name),
-            ));
+        if !dependency_info.unique_types.contains(&provider_name) {
+            dependency_info.unique_types.insert(provider_name.clone());
         }
+
+        // if !dependency_info.unique_types.insert(provider_name.clone()) {
+        //     return Err(Error::new(
+        //         attribute.span(),
+        //         format!("Conflict in dependency: {}", provider_name),
+        //     ));
+        // }
 
         dependencies.push((field_name.clone(), provider_name));
 

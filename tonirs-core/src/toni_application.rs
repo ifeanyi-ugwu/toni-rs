@@ -24,8 +24,10 @@ impl<H: HttpAdapter> ToniApplication<H> {
         self.routes_resolver.resolve(&mut self.http_adapter)?;
         Ok(())
     }
-    pub async fn listen(self, port: u16, hostname: &str) -> Result<()> {
-        self.http_adapter.listen(port, hostname).await?;
-        Ok(())
+    pub async fn listen(self, port: u16, hostname: &str) {
+        if let Err(e) = self.http_adapter.listen(port, hostname).await {
+            eprintln!("🚨 Failed to start server: {}", e);
+            std::process::exit(1);
+        }
     }
 }

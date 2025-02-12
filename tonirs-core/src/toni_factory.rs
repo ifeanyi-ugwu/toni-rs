@@ -24,16 +24,28 @@ impl ToniFactory {
         &self,
         module: ModuleDefinition,
         http_adapter: impl HttpAdapter
-    ) -> Result<ToniApplication<impl HttpAdapter>> 
+    ) -> ToniApplication<impl HttpAdapter> 
     {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
         
-        self.initialize(module, container.clone())?;
+        match self.initialize(module, container.clone()) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("Falha crítica na inicialização do módulo: {}", e);
+                std::process::exit(1);
+            }
+        };
         
         let mut app = ToniApplication::new(http_adapter, container);
-        app.init()?;
+        match app.init() {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("Falha na inicialização da aplicação: {}", e);
+                std::process::exit(1);
+            }
+        }
         
-        Ok(app)
+        app
     }
 
     fn initialize(

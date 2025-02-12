@@ -24,7 +24,7 @@ pub fn generate_provider_and_metadata(
     let original_struct_name = original_struct_ident.to_string();
 
     let function_name = &implementation_fn.sig.ident;
-    let provider_name = create_struct_name(&original_struct_name, function_name);
+    let provider_name = create_struct_name(&original_struct_name, function_name)?;
     let provider_token = provider_name.to_string();
 
     let mut modified_block = implementation_fn.block.clone();
@@ -42,7 +42,7 @@ pub fn generate_provider_and_metadata(
         let (provider_manager, function_name, field_name) = injection;
 
         let provider_name =
-            create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager);
+            create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager)?;
 
         if !provider_name.contains(&original_struct_name) && !dependency_info.unique_types.insert(provider_name.clone()) {
                 return Err(Error::new(

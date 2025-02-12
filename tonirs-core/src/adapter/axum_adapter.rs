@@ -54,8 +54,7 @@ impl HttpAdapter for AxumAdapter {
     async fn listen(self, port: u16, hostname: &str) -> Result<()> {
         let addr = format!("{}:{}", hostname, port);
         let listener: TcpListener = TcpListener::bind(&addr)
-            .await
-            .unwrap_or_else(|_| panic!("Failed to bind to address {}", addr));
+            .await?;
 
         println!("Listening on {}", addr);
 
