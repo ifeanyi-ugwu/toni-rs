@@ -212,7 +212,7 @@ fn add_module_to_imports(content: &str, module_name: &str) -> String {
     output.to_string()
 }
 
-fn to_pascal_case(s: &str) -> String {
+fn _to_pascal_case(s: &str) -> String {
     let mut result = String::new();
     for part in s.split('_') {
         let mut chars = part.chars();

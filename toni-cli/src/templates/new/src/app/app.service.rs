@@ -1,9 +1,9 @@
 use toni_macros::provider_struct;
 
 #[provider_struct(
-	pub struct AppService;
+	pub struct _AppService;
 )]
-impl AppService {
+impl _AppService {
 	pub fn find_all(&self) -> String {
 		"find_all".to_string()
 	}

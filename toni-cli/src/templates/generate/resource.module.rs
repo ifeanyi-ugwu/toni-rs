@@ -5,8 +5,8 @@ use super::resource_name_service::*;
 
 #[module(
   imports: [],
-  controllers: [RESOURCE_NAME_CONTROLLER],
-  providers: [RESOURCE_NAME_SERVICE],
+  controllers: [_RESOURCE_NAME_CONTROLLER],
+  providers: [_RESOURCE_NAME_SERVICE],
   exports: []
 )]
 impl RESOURCE_NAME_MODULE {}

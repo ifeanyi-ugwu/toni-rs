@@ -5,8 +5,8 @@ use super::app_service::*;
 
 #[module(
   imports: [],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [_AppController],
+  providers: [_AppService],
   exports: []
 )]
 impl AppModule {}
