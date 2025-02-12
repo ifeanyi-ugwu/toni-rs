@@ -54,13 +54,6 @@ pub fn generate_controller_and_metadata(
             dependency_info.unique_types.insert(provider_name.clone());
         }
 
-        // if !dependency_info.unique_types.insert(provider_name.clone()) {
-        //     return Err(Error::new(
-        //         attribute.span(),
-        //         format!("Conflict in dependency: {}", provider_name),
-        //     ));
-        // }
-
         dependencies.push((field_name.clone(), provider_name));
 
         let provider_trait = create_type_reference("ProviderTrait", true, true, true);
