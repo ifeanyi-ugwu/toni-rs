@@ -95,7 +95,7 @@ fn generate_provider_code(
             #(#field_defs),*
         }
 
-        impl ::tonirs_core::traits_helpers::#trait_name for #provider_name {
+        impl ::toni_core::traits_helpers::#trait_name for #provider_name {
             #[inline]
             fn execute(&self, params: Vec<Box<dyn ::std::any::Any>>) -> Box<dyn ::std::any::Any> {
                 let mut iter = params.into_iter();

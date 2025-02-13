@@ -25,7 +25,7 @@ fn create_base_type(name: &str) -> Type {
       path: Path {
           leading_colon: Some(Default::default()),
           segments: Punctuated::from_iter(vec![
-              PathSegment::from(Ident::new("tonirs_core", Span::mixed_site())),
+              PathSegment::from(Ident::new("toni_core", Span::mixed_site())),
               PathSegment::from(Ident::new("traits_helpers", Span::mixed_site())),
               PathSegment::from(Ident::new(name, Span::mixed_site())),
           ]),

@@ -1,5 +1,5 @@
 use app::app_module::AppModule;
-use tonirs_core::{adapter::AxumAdapter, http_adapter::HttpAdapter, toni_factory::ToniFactory};
+use toni_core::{adapter::AxumAdapter, http_adapter::HttpAdapter, toni_factory::ToniFactory};
 
 mod app;
 

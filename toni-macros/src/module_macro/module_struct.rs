@@ -113,11 +113,11 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #input_ident {
-            pub fn module_definition() -> ::tonirs_core::module_helpers::module_enum::ModuleDefinition {
+            pub fn module_definition() -> ::toni_core::module_helpers::module_enum::ModuleDefinition {
                 let app_module = Self {
                     id: ::uuid::Uuid::new_v4()
                 };
-                ::tonirs_core::module_helpers::module_enum::ModuleDefinition::DefaultModule(Box::new(app_module))
+                ::toni_core::module_helpers::module_enum::ModuleDefinition::DefaultModule(Box::new(app_module))
             }
             pub fn new() -> Self {
                 Self {
@@ -126,20 +126,20 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        impl ::tonirs_core::traits_helpers::ModuleMetadata for #input_ident {
+        impl ::toni_core::traits_helpers::ModuleMetadata for #input_ident {
             fn get_id(&self) -> String {
                 #input_name.to_string()
             }
             fn get_name(&self) -> String {
                 #input_name.to_string()
             }
-            fn imports(&self) -> Option<Vec<Box<dyn ::tonirs_core::traits_helpers::ModuleMetadata>>> {
+            fn imports(&self) -> Option<Vec<Box<dyn ::toni_core::traits_helpers::ModuleMetadata>>> {
                 Some(vec![#(Box::new(#imports::new())),*])
             }
-            fn controllers(&self) -> Option<Vec<Box<dyn ::tonirs_core::traits_helpers::Controller>>> {
+            fn controllers(&self) -> Option<Vec<Box<dyn ::toni_core::traits_helpers::Controller>>> {
                 Some(vec![#(Box::new(#controllers)),*])
             }
-            fn providers(&self) -> Option<Vec<Box<dyn ::tonirs_core::traits_helpers::Provider>>> {
+            fn providers(&self) -> Option<Vec<Box<dyn ::toni_core::traits_helpers::Provider>>> {
                 Some(vec![#(Box::new(#providers)),*])
             }
             fn exports(&self) -> Option<Vec<String>> {

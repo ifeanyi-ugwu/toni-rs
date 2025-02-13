@@ -1,5 +1,5 @@
 use toni_macros::{controller, controller_struct, get, post, put, delete};
-use tonirs_core::http_helpers::{HttpRequest, Body};
+use toni_core::http_helpers::{HttpRequest, Body};
 use super::resource_name_service::_RESOURCE_NAME_SERVICE;
 
 #[controller_struct(
@@ -21,7 +21,7 @@ impl _RESOURCE_NAME_CONTROLLER {
 		Body::Text(find_all)
 	}
 
-	#[get("/:id")]
+	#[get("/{id}")]
 	fn _find_by_id(&self, req: HttpRequest) -> Body {
 		let id = req.path_params.get("id").unwrap().parse::<i32>().unwrap();
 		let find_by_id: String = self.resource_name_service.find_by_id(id);
