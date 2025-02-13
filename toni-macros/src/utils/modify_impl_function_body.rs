@@ -9,6 +9,7 @@ struct ExprModifier {
     modified_exprs: Vec<(Ident, Ident, Ident)>,
     ty: Option<Type>,
     self_name: Ident,
+    whitout_type: bool,
 }
 
 impl ExprModifier {
@@ -18,6 +19,7 @@ impl ExprModifier {
             modified_exprs: Vec::new(),
             ty: None,
             self_name,
+            whitout_type: true,
         }
     }
 
@@ -52,21 +54,29 @@ impl VisitMut for ExprModifier {
                         if ident_clone == provide_name.0 {
                             let method_name = method_call_name;
                             let new_field_name =
-                                create_field_struct_name(&provide_name.1.to_string(), method_name).unwrap();
+                                create_field_struct_name(&provide_name.1.to_string(), method_name)
+                                    .unwrap();
                             let args = self.put_box_in_expr(method_args_clone.iter());
                             self.modified_exprs.push((
                                 provide_name.1.clone(),
                                 method_name.clone(),
                                 new_field_name.clone(),
                             ));
+                            let new_call_fn_expr: Expr = parse_quote! {
+                                self.#new_field_name.execute(vec![#(#args),*])
+                            };
+                            if self.whitout_type {
+                                *expr = new_call_fn_expr;
+                                return;
+                            }
                             let type_inject = match &self.ty {
                                 Some(ty) => ty,
-                                None => panic!("Precisa de tipo"),
+                                None => panic!("Need type"),
                             };
-                            let new_expr: Expr = parse_quote! {
-                                *self.#new_field_name.execute(vec![#(#args),*]).downcast::<#type_inject>().unwrap()
+                            let downcast_token: Expr = parse_quote! {
+                                downcast::<#type_inject>().unwrap()
                             };
-                            *expr = new_expr;
+                            *expr = parse_quote! {*#new_call_fn_expr.#downcast_token};
                         }
                     }
                 }
@@ -76,21 +86,29 @@ impl VisitMut for ExprModifier {
                         let method_args_clone = method_call.args.clone();
                         let method_name = method_call.method.clone();
                         let new_method_name =
-                            create_field_struct_name(&self.self_name.to_string(), &method_name).unwrap();
+                            create_field_struct_name(&self.self_name.to_string(), &method_name)
+                                .unwrap();
                         let args = self.put_box_in_expr(method_args_clone.iter());
                         self.modified_exprs.push((
                             self.self_name.clone(),
                             method_name.clone(),
                             new_method_name.clone(),
                         ));
+                        let new_call_fn_expr: Expr = parse_quote! {
+                            self.#new_method_name.execute(vec![#(#args),*])
+                        };
+                        if self.whitout_type {
+                            *expr = new_call_fn_expr;
+                            return;
+                        }
                         let type_inject = match &self.ty {
                             Some(ty) => ty,
-                            None => panic!("Precisa de tipo"),
+                            None => panic!("Need type"),
                         };
-                        let new_expr: Expr = parse_quote! {
-                            *self.#new_method_name.execute(vec![#(#args),*]).downcast::<#type_inject>().unwrap()
+                        let downcast_token: Expr = parse_quote! {
+                            downcast::<#type_inject>().unwrap()
                         };
-                        *expr = new_expr;
+                        *expr = parse_quote! {*#new_call_fn_expr.#downcast_token};
                     }
                 }
             }
@@ -117,6 +135,7 @@ pub fn modify_method_body(
         }) = stmt
         {
             if let Pat::Type(PatType { ty, .. }) = pat.clone() {
+                modifier.whitout_type = false;
                 let type_inject = Some(*ty);
                 modifier.put_inject_type(type_inject);
             }
