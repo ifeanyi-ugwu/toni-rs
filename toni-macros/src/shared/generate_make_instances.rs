@@ -8,21 +8,29 @@ pub fn generate_make_instances(
     manager_name: &String,
     self_dependency: bool,
 ) -> Vec<TokenStream> {
-    let (without_dependency, with_dependency): (Vec<_>, Vec<_>) =
-        structs_metadata.iter().partition(|instance_metadata| {
-            !instance_metadata
+    let (independent_structs, dependent_structs): (Vec<_>, Vec<_>) = {
+        let has_manager_dependency = |instance: &&MetadataInfo| {
+            instance
                 .dependencies
                 .iter()
-                .any(|d| d.1.contains(manager_name))
-        });
+                .any(|(_, dep_key)| dep_key.contains(manager_name))
+        };
 
-    let ordered_structs = without_dependency.iter().chain(with_dependency.iter());
+        structs_metadata
+            .iter()
+            .partition(|instance| !has_manager_dependency(instance))
+    };
+
+    let ordered_structs = independent_structs
+        .into_iter()
+        .chain(dependent_structs.into_iter());
 
     ordered_structs
         .map(|instance_metadata| {
-            let struct_name = &instance_metadata.struct_name;
-            let struct_name_string = struct_name.to_string();
+            let struct_ident  = &instance_metadata.struct_name;
+            let struct_name_string = struct_ident.to_string();
             let dependencies = &instance_metadata.dependencies;
+            
             let field_injections = dependencies
                 .iter()
                 .map(|(field_name, dependency_key)| {
@@ -30,22 +38,19 @@ pub fn generate_make_instances(
                         "Missing dependency '{}' for field '{}' in '{}'",
                         dependency_key, field_name, &struct_name_string
                     );
-                    let mut handle_error = quote! {
-                        expect(#error_message)
-                    };
-                    if self_dependency {
-                        handle_error = quote! {
-                            unwrap_or_else( || {
-                                providers.get(#dependency_key).expect(
-                                    #error_message
-                                )
+                    let error_handling = if self_dependency {
+                        quote! {
+                            unwrap_or_else(|| {
+                                providers.get(#dependency_key).expect(#error_message)
                             })
-                        };
-                    }
+                        }
+                    } else {
+                        quote! { expect(#error_message) }
+                    };
                     quote! {
                         #field_name: dependencies
                             .get(#dependency_key)
-                            .#handle_error
+                            .#error_handling
                             .clone()
                     }
                 })
@@ -53,9 +58,9 @@ pub fn generate_make_instances(
 
             quote! {
                 (
-                    String::from(#struct_name_string),
+                    #struct_name_string.to_string(),
                     ::std::sync::Arc::new(
-                        Box::new(#struct_name {
+                        Box::new(#struct_ident {
                             #(#field_injections),*
                         })
                     )
