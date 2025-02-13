@@ -1,7 +1,7 @@
 cargo-features = ["test-dummy-unstable"]
 
 [workspace]
-members = ["tonirs-core", "toni-macros", "toni-cli"]
+members = ["toni-core", "toni-macros", "toni-cli"]
 
 [package]
 name = "my_frame"
@@ -11,10 +11,9 @@ im-a-teapot = true
 
 [dependencies]
 toni-macros = { path = "./toni-macros" }
-tonirs-core = { path = "./tonirs-core" }
+toni-core = { path = "./toni-core" }
 uuid = {version = "1.11.0", features = ["v4"]}
 rustc-hash = "2.1"
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.134"
 tokio = { version = "1.42.0", features = ["full"] }
-linkme = "0.3.31"

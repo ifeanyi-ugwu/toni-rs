@@ -15,4 +15,4 @@ quote = "1.0.38"
 syn = { version = "2.0.94", features = ["visit-mut", "default"] }
 rustc-hash = "2.1"
 linkme = "0.3.31"
-tonirs-core = { path = "../tonirs-core" }
+toni-core = { path = "../toni-core" }
