@@ -43,7 +43,6 @@ pub fn generate_controller_and_metadata(
 
     let mut dependencies = Vec::with_capacity(injections.len());
     let mut field_definitions = Vec::with_capacity(injections.len());
-
     for injection in injections {
         let (provider_manager, function_name, field_name) = injection;
 
@@ -52,12 +51,11 @@ pub fn generate_controller_and_metadata(
 
         if !dependency_info.unique_types.contains(&provider_name) {
             dependency_info.unique_types.insert(provider_name.clone());
+            dependencies.push((field_name.clone(), provider_name));
+            let provider_trait = create_type_reference("ProviderTrait", true, true, true);
+            field_definitions.push(quote! { #field_name: #provider_trait });
         }
 
-        dependencies.push((field_name.clone(), provider_name));
-
-        let provider_trait = create_type_reference("ProviderTrait", true, true, true);
-        field_definitions.push(quote! { #field_name: #provider_trait });
     }
 
     let full_route_path = format!("{}{}", route_prefix, route_path);
@@ -86,7 +84,6 @@ fn generate_controller_code(
     http_method: &str,
     trait_name: &Ident,
 ) -> TokenStream {
-
     quote! {
         struct #controller_name {
             #(#field_defs),*
