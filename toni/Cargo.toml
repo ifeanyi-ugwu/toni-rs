@@ -1,5 +1,5 @@
 [package]
-name = "toni-core"
+name = "toni"
 version = "0.1.0"
 edition = "2024"
 keywords = ["http", "web", "framework"]
@@ -8,6 +8,7 @@ description = "Dependency injection, route resolver and traits for Toni"
 license = "MIT"
 repository = "https://github.com/monterxto/toni-rs"
 homepage = "https://github.com/monterxto/toni-rs"
+readme = "README.md"
 
 [dependencies]
 axum = "0.8.1"
