@@ -108,21 +108,15 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let exports_string: Vec<String> = exports.iter().map(|e| e.to_string()).collect();
 
     let generated = quote! {
-        pub struct #input_ident {
-            id: ::uuid::Uuid
-        }
+        pub struct #input_ident;
 
         impl #input_ident {
             pub fn module_definition() -> ::toni::module_helpers::module_enum::ModuleDefinition {
-                let app_module = Self {
-                    id: ::uuid::Uuid::new_v4()
-                };
+                let app_module = Self;
                 ::toni::module_helpers::module_enum::ModuleDefinition::DefaultModule(Box::new(app_module))
             }
             pub fn new() -> Self {
-                Self {
-                    id: ::uuid::Uuid::new_v4()
-                }
+                Self
             }
         }
 
