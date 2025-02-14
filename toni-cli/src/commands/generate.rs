@@ -141,12 +141,7 @@ async fn update_app_module(resource_name: &str) -> Result<()> {
     let mut content = fs::read_to_string(&app_module_path)
         .await
         .context("Failed to read app.module.rs")?;
-
-    // if !content.contains(&format!("mod {};", resource_name)) {
-    //     let import = format!("\nmod {};", resource_name);
-    //     content = content.replacen("use toni_core::{Module, Controller};", &format!("use toni_core::{{Module, Controller}};{}", import), 1);
-    // }
-
+    
     let module_import = format!("use super::{}::{}_module::*;", resource_name, snake_case);
     if !content.contains(&module_import) {
         content = content.replacen(
