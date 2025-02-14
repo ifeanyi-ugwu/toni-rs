@@ -1,5 +1,5 @@
 use toni_macros::{controller, controller_struct, get, post, put, delete};
-use toni_core::http_helpers::{HttpRequest, Body};
+use toni::http_helpers::{HttpRequest, Body};
 use super::resource_name_service::_RESOURCE_NAME_SERVICE;
 
 #[controller_struct(

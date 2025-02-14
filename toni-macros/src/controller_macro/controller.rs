@@ -89,12 +89,12 @@ fn generate_controller_code(
             #(#field_defs),*
         }
 
-        impl ::toni_core::traits_helpers::#trait_name for #controller_name {
+        impl ::toni::traits_helpers::#trait_name for #controller_name {
             #[inline]
             fn execute(
                 &self,
-                req: ::toni_core::http_helpers::HttpRequest
-            ) -> Box<dyn ::toni_core::http_helpers::IntoResponse<Response = ::toni_core::http_helpers::HttpResponse>> {
+                req: ::toni::http_helpers::HttpRequest
+            ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse>> {
                 #method_body
             }
 
@@ -109,8 +109,8 @@ fn generate_controller_code(
             }
 
             #[inline]
-            fn get_method(&self) -> ::toni_core::http_helpers::HttpMethod {
-                ::toni_core::http_helpers::HttpMethod::from_string(#http_method).unwrap()
+            fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
+                ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
             }
         }
     }
