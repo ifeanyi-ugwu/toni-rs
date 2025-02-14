@@ -29,7 +29,6 @@ pub async fn execute(args: NewArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-// Validação do nome do projeto
 fn validate_project_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(anyhow!("Project name cannot be empty"));
@@ -46,7 +45,6 @@ fn validate_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-// Cria estrutura básica de pastas
 async fn create_project_structure(root: &PathBuf) -> Result<()> {
     let dirs = [
         "src",
@@ -63,9 +61,7 @@ async fn create_project_structure(root: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-// Copia os arquivos template
 async fn copy_template_files(root: &PathBuf) -> Result<()> {
-    // Cargo.toml
     let cargo_toml = root.join("Cargo.toml");
     let mut file = File::create(&cargo_toml)
         .await
@@ -75,7 +71,6 @@ async fn copy_template_files(root: &PathBuf) -> Result<()> {
         .await
         .context("Failed to write Cargo.toml")?;
 
-    // Arquivos da aplicação
     write_template_file(
         root,
         "src/main.rs",
@@ -109,7 +104,6 @@ async fn copy_template_files(root: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-// Helper para escrever arquivos
 async fn write_template_file(root: &PathBuf, path: &str, content: &str) -> Result<()> {
     let full_path = root.join(path);
     let mut file = File::create(&full_path)
@@ -123,7 +117,6 @@ async fn write_template_file(root: &PathBuf, path: &str, content: &str) -> Resul
     Ok(())
 }
 
-// Processamento pós-cópia (substituições de variáveis)
 async fn post_process_files(root: &PathBuf, project_name: &str) -> Result<()> {
     let files_to_process = [
         "Cargo.toml",
