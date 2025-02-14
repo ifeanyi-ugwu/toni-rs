@@ -1,4 +1,3 @@
 /target
-flamegraph.svg
-perf.data
 src/app
+Cargo.lock
