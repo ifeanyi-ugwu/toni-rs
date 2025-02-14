@@ -67,7 +67,7 @@ async fn copy_template_files(root: &PathBuf) -> Result<()> {
         .await
         .context("Failed to create Cargo.toml")?;
     
-    file.write_all(include_str!("../templates/new/Cargo.toml").as_bytes())
+    file.write_all(include_str!("../templates/new/Cargo.txt").as_bytes())
         .await
         .context("Failed to write Cargo.toml")?;
 
