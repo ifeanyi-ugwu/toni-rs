@@ -52,7 +52,6 @@ impl VisitMut for ExprModifier {
                         let method_args_clone = &method_call.args.clone();
                         let method_call_name = &method_call.method.clone();
                         for provide_name in &self.provider_names {
-                            println!("sou o init: {:?}", &expr_await);
                             if ident_clone == provide_name.0 {
                                 let method_name = method_call_name;
                                 let new_field_name = create_field_struct_name(
@@ -85,39 +84,38 @@ impl VisitMut for ExprModifier {
                             }
                         }
                     }
-                } 
-                // else if let Expr::Path(expr_path) = &*method_call.receiver {
-                //     if let Some(segment) = expr_path.path.segments.last() {
-                //         if segment.ident == "self" {
-                //             let method_args_clone = method_call.args.clone();
-                //             let method_name = method_call.method.clone();
-                //             let new_method_name =
-                //                 create_field_struct_name(&self.self_name.to_string(), &method_name)
-                //                     .unwrap();
-                //             let args = self.put_box_in_expr(method_args_clone.iter());
-                //             self.modified_exprs.push((
-                //                 self.self_name.clone(),
-                //                 method_name.clone(),
-                //                 new_method_name.clone(),
-                //             ));
-                //             let new_call_fn_expr: Expr = parse_quote! {
-                //                 self.#new_method_name.execute(vec![#(#args),*])
-                //             };
-                //             if self.whitout_type {
-                //                 *expr = new_call_fn_expr;
-                //                 return;
-                //             }
-                //             let type_inject = match &self.ty {
-                //                 Some(ty) => ty,
-                //                 None => panic!("Need type"),
-                //             };
-                //             let downcast_token: Expr = parse_quote! {
-                //                 downcast::<#type_inject>().unwrap()
-                //             };
-                //             *expr = parse_quote! {*#new_call_fn_expr.await.#downcast_token};
-                //         }
-                //     }
-                // }
+                } else if let Expr::Path(expr_path) = &*method_call.receiver {
+                    if let Some(segment) = expr_path.path.segments.last() {
+                        if segment.ident == "self" {
+                            let method_args_clone = method_call.args.clone();
+                            let method_name = method_call.method.clone();
+                            let new_method_name =
+                                create_field_struct_name(&self.self_name.to_string(), &method_name)
+                                    .unwrap();
+                            let args = self.put_box_in_expr(method_args_clone.iter());
+                            self.modified_exprs.push((
+                                self.self_name.clone(),
+                                method_name.clone(),
+                                new_method_name.clone(),
+                            ));
+                            let new_call_fn_expr: Expr = parse_quote! {
+                                self.#new_method_name.execute(vec![#(#args),*])
+                            };
+                            if self.whitout_type {
+                                *expr = new_call_fn_expr;
+                                return;
+                            }
+                            let type_inject = match &self.ty {
+                                Some(ty) => ty,
+                                None => panic!("Need type"),
+                            };
+                            let downcast_token: Expr = parse_quote! {
+                                downcast::<#type_inject>().unwrap()
+                            };
+                            *expr = parse_quote! {*#new_call_fn_expr.await.#downcast_token};
+                        }
+                    }
+                }
             }
         }
 
