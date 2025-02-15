@@ -94,7 +94,11 @@ pub struct AppModule;
 
 **`app/app.controller.rs`** (HTTP Routes)
 ```rust
-#[controller_struct(pub struct _AppController { app_service: _AppService })]
+#[controller_struct(
+    pub struct _AppController {
+        app_service: _AppService 
+    }
+)]
 #[controller("/app")]
 impl _AppController {
     #[post("")]
@@ -111,7 +115,9 @@ impl _AppController {
 
 **`app/app.service.rs`** (Business Logic)
 ```rust
-#[provider_struct(pub struct _AppService;)]
+#[provider_struct(
+    pub struct _AppService;
+)]
 impl _AppService {
     pub fn create(&self) -> String {
         "Item created!".into()
