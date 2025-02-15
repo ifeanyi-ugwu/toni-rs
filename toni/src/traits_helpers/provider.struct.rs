@@ -1,10 +1,12 @@
 use std::{any::Any, sync::Arc};
 
+use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
+#[async_trait]
 pub trait ProviderTrait: Send + Sync {
     fn get_token(&self) -> String;
-    fn execute(&self, params: Vec<Box<dyn Any>>) -> Box<dyn Any>;
+    async fn execute(&self, params: Vec<Box<dyn Any + Send>>) -> Box<dyn Any + Send>;
     fn get_token_manager(&self) -> String;
 }
 

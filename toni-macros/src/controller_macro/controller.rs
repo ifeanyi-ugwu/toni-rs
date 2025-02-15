@@ -51,6 +51,8 @@ pub fn generate_controller_and_metadata(
 
         if !dependency_info.unique_types.contains(&provider_name) {
             dependency_info.unique_types.insert(provider_name.clone());
+        }
+        if !dependencies.contains(&(field_name.clone(), provider_name.clone())){
             dependencies.push((field_name.clone(), provider_name));
             let provider_trait = create_type_reference("ProviderTrait", true, true, true);
             field_definitions.push(quote! { #field_name: #provider_trait });
@@ -88,15 +90,14 @@ fn generate_controller_code(
         struct #controller_name {
             #(#field_defs),*
         }
-
+        #[::async_trait::async_trait]
         impl ::toni::traits_helpers::#trait_name for #controller_name {
             #[inline]
-            fn execute(
+            async fn execute(
                 &self,
                 req: ::toni::http_helpers::HttpRequest
-            ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse>> {
+            ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse>> 
                 #method_body
-            }
 
             #[inline]
             fn get_token(&self) -> String {

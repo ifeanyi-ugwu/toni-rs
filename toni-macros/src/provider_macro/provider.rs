@@ -95,9 +95,10 @@ fn generate_provider_code(
             #(#field_defs),*
         }
 
+        #[::async_trait::async_trait]
         impl ::toni::traits_helpers::#trait_name for #provider_name {
             #[inline]
-            fn execute(&self, params: Vec<Box<dyn ::std::any::Any>>) -> Box<dyn ::std::any::Any> {
+            async fn execute(&self, params: Vec<Box<dyn ::std::any::Any + Send>>) -> Box<dyn ::std::any::Any + Send> {
                 let mut iter = params.into_iter();
                 #(#params_token_stream)*
                 #method_body
