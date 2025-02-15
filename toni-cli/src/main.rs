@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 mod commands;
-// use Commands::;
 
 #[derive(Parser)]
 #[command(name = "toni")]
@@ -15,7 +14,6 @@ struct Cli {
 enum Commands {
     New(commands::new::NewArgs),
     Generate(commands::generate::GenerateArgs),
-    // Outros comandos
 }
 
 #[tokio::main]
