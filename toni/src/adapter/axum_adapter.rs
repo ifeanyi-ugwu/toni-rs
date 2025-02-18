@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::{http_adapter::HttpAdapter, http_helpers::HttpMethod, traits_helpers::ControllerTrait};
+use crate::{http_adapter::HttpAdapter, http_helpers::HttpMethod, injector::InstanceWrapper};
 use axum::{
     Router,
     body::Body,
@@ -28,10 +28,10 @@ impl HttpAdapter for AxumAdapter {
         &mut self,
         path: &str,
         method: HttpMethod,
-        handler: Arc<Box<dyn ControllerTrait>>,
+        handler: Arc<InstanceWrapper>,
     ) {
         let route_handler = move |req: Request<Body>| {
-            let handler = handler.clone();
+            let handler: Arc<InstanceWrapper> = handler.clone();
             Box::pin(async move {
                 AxumRouteAdapter::handle_request(req, handler)
                     .await

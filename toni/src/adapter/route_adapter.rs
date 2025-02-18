@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::http_helpers::{HttpRequest, HttpResponse, IntoResponse};
-use crate::traits_helpers::ControllerTrait;
+use crate::injector::InstanceWrapper;
 
 pub trait RouteAdapter {
     type Request;
@@ -17,11 +17,11 @@ pub trait RouteAdapter {
 
     fn handle_request(
         request: Self::Request,
-        controller: Arc<Box<dyn ControllerTrait>>,
+        controller: Arc<InstanceWrapper>,
     ) -> impl Future<Output = Result<Self::Response>> {
         async move {
             let http_request = Self::adapt_request(request).await?;
-            let http_response = controller.execute(http_request).await;
+            let http_response = controller.handle_request(http_request).await;
             Self::adapt_response(http_response)
         }
     }
