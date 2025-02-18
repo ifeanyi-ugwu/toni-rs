@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::Body;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HttpRequest {
     pub body: Body,
     pub headers: Vec<(String, String)>,
