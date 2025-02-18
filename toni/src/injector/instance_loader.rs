@@ -7,7 +7,10 @@ use std::{
 };
 
 use super::{DependencyGraph, ToniContainer};
-use crate::traits_helpers::{ControllerTrait, ProviderTrait};
+use crate::{
+    structs_helpers::EnhancerMetadata,
+    traits_helpers::{ControllerTrait, ProviderTrait},
+};
 
 pub struct ToniInstanceLoader {
     container: Rc<RefCell<ToniContainer>>,
@@ -128,7 +131,16 @@ impl ToniInstanceLoader {
     ) -> Result<()> {
         let mut container_mut = self.container.borrow_mut();
         for (_controller_instance_token, controller_instance) in controllers_instances {
-            container_mut.add_controller_instance(&module_token, controller_instance)?;
+            let enhancer_metadata = EnhancerMetadata {
+                guards: controller_instance.get_guards(),
+                pipes: controller_instance.get_pipes(),
+                interceptors: controller_instance.get_interceptors(),
+            };
+            container_mut.add_controller_instance(
+                &module_token,
+                controller_instance,
+                enhancer_metadata,
+            )?;
         }
         Ok(())
     }
@@ -176,7 +188,7 @@ impl ToniInstanceLoader {
             let exported_instances_tokens =
                 container.get_exports_instances_tokens(imported_module)?;
             if exported_instances_tokens.contains(dependency) {
-                if let Ok(Some(exported_instance) )=
+                if let Ok(Some(exported_instance)) =
                     container.get_provider_instance_by_token(imported_module, dependency)
                 {
                     return Ok(Some(exported_instance.clone()));
