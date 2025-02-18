@@ -3,9 +3,9 @@ use std::{collections::hash_map::Drain, sync::Arc};
 use anyhow::{Result, anyhow};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait};
+use crate::{structs_helpers::EnhancerMetadata, traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait}};
 
-use super::module::Module;
+use super::{module::Module, InstanceWrapper};
 
 pub struct ToniContainer {
     modules: FxHashMap<String, Module>,
@@ -87,12 +87,13 @@ impl ToniContainer {
         &mut self,
         module_ref_token: &String,
         controller_instance: Arc<Box<dyn ControllerTrait>>,
+        enhancer_metadata: EnhancerMetadata,
     ) -> Result<()> {
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_controller_instance(controller_instance);
+        module_ref.add_controller_instance(controller_instance, enhancer_metadata);
         Ok(())
     }
 
@@ -179,7 +180,7 @@ impl ToniContainer {
     pub fn get_controllers_instance(
         &mut self,
         module_ref_token: &String,
-    ) -> Result<Drain<'_, String, Arc<Box<dyn ControllerTrait>>>> {
+    ) -> Result<Drain<'_, String, Arc<InstanceWrapper>>> {
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
@@ -252,4 +253,18 @@ impl ToniContainer {
     pub fn get_module_by_token(&self, module_ref_token: &String) -> Option<&Module> {
         self.modules.get(module_ref_token)
     }
+    
+    // pub fn register_controller_enhancers(
+    //     &mut self,
+    //     module_ref_token: &String,
+    //     controller_token: &String,
+    //     controller_enhancers: &Vec<Box<dyn ControllerEnhancer>>,
+    // ) -> Result<()> {
+    //     let module_ref = self
+    //         .modules
+    //         .get_mut(module_ref_token)
+    //         .ok_or_else(|| anyhow!("Module not found"))?;
+    //     module_ref.register_controller_enhancers(controller_enhancers);
+    //     Ok(())
+    // }
 }
