@@ -1,8 +1,10 @@
+use std::fmt::Debug;
+
 use serde_json::Value;
 
 use super::{Body, HttpResponse};
 
-pub trait IntoResponse {
+pub trait IntoResponse: Debug {
     type Response;
 
     fn to_response(&self) -> Self::Response;
