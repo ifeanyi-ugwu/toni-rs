@@ -1,0 +1,46 @@
+use crate::http_helpers::{HttpRequest, HttpResponse, IntoResponse};
+
+#[derive(Debug)]
+pub struct Context {
+    original_request: HttpRequest,
+    response: Option<Box<dyn IntoResponse<Response = HttpResponse> + Send>>,
+    should_abort: bool,
+}
+
+impl Context {
+    pub fn from_request(req: HttpRequest) -> Self {
+        Self {
+            original_request: req,
+            response: None,
+            should_abort: false,
+        }
+    }
+
+    pub fn take_request(&self) -> &HttpRequest {
+        &self.original_request
+    }
+
+    pub fn set_response(&mut self, response: Box<dyn IntoResponse<Response = HttpResponse> + Send>) {
+        self.response = Some(response);
+    }
+
+    pub fn get_response(self) -> Box<dyn IntoResponse<Response = HttpResponse> + Send> {
+        if let Some(response) = self.response {
+            return response
+        }
+
+        panic!("Response not set in context");
+
+        //  else {
+        //     HttpResponse::InternalServerError().body("Internal Server Error")
+        // }
+    }
+
+    pub fn abort(&mut self) {
+        self.should_abort = true;
+    }
+
+    pub fn should_abort(&self) -> bool {
+        self.should_abort
+    }
+}
