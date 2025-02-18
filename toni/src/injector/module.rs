@@ -2,7 +2,12 @@ use std::{collections::hash_map::Drain, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait};
+use super::InstanceWrapper;
+
+use crate::{
+    structs_helpers::EnhancerMetadata,
+    traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait},
+};
 pub struct Module {
     _token: String,
     _name: String,
@@ -10,7 +15,7 @@ pub struct Module {
     providers: FxHashMap<String, Box<dyn Provider>>,
     imports: FxHashSet<String>,
     exports: FxHashSet<String>,
-    controllers_instances: FxHashMap<String, Arc<Box<dyn ControllerTrait>>>,
+    controllers_instances: FxHashMap<String, Arc<InstanceWrapper>>,
     providers_instances: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     exports_instances: FxHashSet<String>,
     metadata: Box<dyn ModuleMetadata>,
@@ -49,10 +54,17 @@ impl Module {
         self.exports.insert(provider_token);
     }
 
-    pub fn add_controller_instance(&mut self, controller: Arc<Box<dyn ControllerTrait>>) {
+    pub fn add_controller_instance(
+        &mut self,
+        controller: Arc<Box<dyn ControllerTrait>>,
+        enhancer_metadata: EnhancerMetadata,
+    ) {
+        let token = controller.get_token();
+        let instance_wrapper = InstanceWrapper::new(controller, enhancer_metadata);
         self.controllers_instances
-            .insert(controller.get_token(), controller);
+            .insert(token, Arc::new(instance_wrapper));
     }
+
     pub fn add_provider_instance(&mut self, provider: Arc<Box<dyn ProviderTrait>>) {
         self.providers_instances
             .insert(provider.get_token(), provider);
@@ -70,7 +82,9 @@ impl Module {
     }
 
     pub fn get_provider_by_token(&self, provider_token: &String) -> Option<&dyn Provider> {
-        self.providers.get(provider_token).map(|provider| provider.as_ref())
+        self.providers
+            .get(provider_token)
+            .map(|provider| provider.as_ref())
     }
 
     pub fn get_provider_instance_by_token(
@@ -84,7 +98,9 @@ impl Module {
         &self.controllers
     }
 
-    pub fn drain_controllers_instances(&mut self) -> Drain<'_, String, Arc<Box<dyn ControllerTrait>>> {
+    pub fn drain_controllers_instances(
+        &mut self,
+    ) -> Drain<'_, String, Arc<InstanceWrapper>> {
         self.controllers_instances.drain()
     }
 
@@ -112,18 +128,19 @@ impl Module {
         &self._token
     }
 
-    pub fn _get_controller_by_token(
-        &self,
-        controller_token: &String,
-    ) -> Option<&dyn Controller> {
-        self.controllers.get(controller_token).map(|controller| controller.as_ref())
+    pub fn _get_controller_by_token(&self, controller_token: &String) -> Option<&dyn Controller> {
+        self.controllers
+            .get(controller_token)
+            .map(|controller| controller.as_ref())
     }
 
-    pub fn _get_controllers_instances(&self) -> &FxHashMap<String, Arc<Box<dyn ControllerTrait>>> {
+    pub fn _get_controllers_instances(&self) -> &FxHashMap<String, Arc<InstanceWrapper>> {
         &self.controllers_instances
     }
 
-    pub fn _take_controllers_instances(&mut self) -> FxHashMap<String, Arc<Box<dyn ControllerTrait>>> {
+    pub fn _take_controllers_instances(
+        &mut self,
+    ) -> FxHashMap<String, Arc<InstanceWrapper>> {
         std::mem::take(&mut self.controllers_instances)
     }
 }
