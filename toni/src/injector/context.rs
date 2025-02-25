@@ -1,10 +1,11 @@
-use crate::http_helpers::{HttpRequest, HttpResponse, IntoResponse};
+use crate::{http_helpers::{HttpRequest, HttpResponse, IntoResponse}, traits_helpers::validate::Validatable};
 
 #[derive(Debug)]
 pub struct Context {
     original_request: HttpRequest,
     response: Option<Box<dyn IntoResponse<Response = HttpResponse> + Send>>,
     should_abort: bool,
+    dto: Option<Box<dyn Validatable>>,
 }
 
 impl Context {
@@ -13,6 +14,7 @@ impl Context {
             original_request: req,
             response: None,
             should_abort: false,
+            dto: None,
         }
     }
 
@@ -42,5 +44,13 @@ impl Context {
 
     pub fn should_abort(&self) -> bool {
         self.should_abort
+    }
+    
+    pub fn set_dto(&mut self, dto: Box<dyn Validatable>) {
+        self.dto = Some(dto);
+    }
+
+    pub fn get_dto(&self) -> Option<&dyn Validatable> {
+        self.dto.as_deref()
     }
 }
