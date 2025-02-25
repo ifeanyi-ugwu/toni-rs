@@ -9,7 +9,9 @@ pub fn generate_output(
     manager: TokenStream,
 ) -> TokenStream {
     quote! {
+        #[allow(dead_code)]
         #struct_attrs
+        #[allow(dead_code)]
         #impl_block
         #(#controllers)*
         #manager

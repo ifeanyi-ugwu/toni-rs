@@ -1,50 +1,56 @@
 use std::collections::HashSet;
 
-use syn::{spanned::Spanned, Error, FnArg, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Pat, Result, Type, TypePath, TypeReference};
+use syn::{
+    Error, FnArg, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Pat, Result, Type, TypePath,
+    TypeReference, spanned::Spanned,
+};
 
 use crate::shared::dependency_info::DependencyInfo;
 
 pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
-  impl_block.attrs
-      .iter()
-      .find(|attr| attr.path().is_ident("controller"))
-      .map(|attr| {
-          attr.parse_args::<LitStr>()
-              .map(|lit| lit.value())
-      })
-      .transpose()
-      .map(|opt| opt.unwrap_or_default())
+    impl_block
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("controller"))
+        .map(|attr| attr.parse_args::<LitStr>().map(|lit| lit.value()))
+        .transpose()
+        .map(|opt| opt.unwrap_or_default())
 }
 
 pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<DependencyInfo> {
-  let unique_types = HashSet::new();
-  let mut fields = Vec::new();
+    let unique_types = HashSet::new();
+    let mut fields = Vec::new();
 
-  for field in &struct_attrs.fields {
-      let field_ident = field.ident.as_ref()
-          .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
-      
-      let type_ident = extract_ident_from_type(&field.ty)?;
-      fields.push((field_ident.clone(), type_ident.clone()));
-  }
+    for field in &struct_attrs.fields {
+        let field_ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
 
-  Ok(DependencyInfo { fields, unique_types })
+        let type_ident = extract_ident_from_type(&field.ty)?;
+        fields.push((field_ident.clone(), type_ident.clone()));
+    }
+
+    Ok(DependencyInfo {
+        fields,
+        unique_types,
+    })
 }
 
 pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
-  if let Type::Reference(TypeReference { elem, .. }) = ty {
-      if let Type::Path(TypePath { path, .. }) = &**elem {
-          if let Some(segment) = path.segments.last() {
-              return Ok(&segment.ident);
-          }
-      }
-  }
-  if let Type::Path(TypePath { path, .. }) = ty {
-      if let Some(segment) = path.segments.last() {
-          return Ok(&segment.ident);
-      }
-  }
-  Err(Error::new(ty.span(), "Invalid type"))
+    if let Type::Reference(TypeReference { elem, .. }) = ty {
+        if let Type::Path(TypePath { path, .. }) = &**elem {
+            if let Some(segment) = path.segments.last() {
+                return Ok(&segment.ident);
+            }
+        }
+    }
+    if let Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.last() {
+            return Ok(&segment.ident);
+        }
+    }
+    Err(Error::new(ty.span(), "Invalid type"))
 }
 
 pub fn extract_params_from_impl_fn(func: &ImplItemFn) -> Vec<(Ident, Type)> {

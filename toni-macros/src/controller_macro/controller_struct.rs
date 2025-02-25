@@ -13,13 +13,13 @@ pub fn handle_controller_struct(
     trait_name: Ident,
 ) -> Result<TokenStream> {
     let struct_attrs = parse2::<ItemStruct>(attr)?;
-    let impl_block = parse2::<ItemImpl>(item)?;
+    let mut impl_block = parse2::<ItemImpl>(item)?;
 
     let prefix_path = extract_controller_prefix(&impl_block)?;
     let mut dependencies = extract_struct_dependencies(&struct_attrs)?;
 
     let (controllers, metadata) = process_impl_functions(
-        &impl_block,
+        &mut impl_block,
         &mut dependencies,
         &struct_attrs.ident,
         &trait_name,

@@ -11,6 +11,8 @@ mod module_macro;
 mod shared;
 mod provider_macro;
 mod controller_macro;
+mod enhancer;
+mod markers_params;
 
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -40,7 +42,6 @@ pub fn controller(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-
 #[proc_macro_attribute]
 pub fn get(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -55,5 +56,20 @@ pub fn put(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 #[proc_macro_attribute]
 pub fn delete(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn use_guard(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn interceptor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }

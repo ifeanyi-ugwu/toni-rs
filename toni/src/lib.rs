@@ -5,12 +5,16 @@ pub mod adapter;
 
 pub mod http_helpers;
 pub mod traits_helpers;
-mod injector;
-mod scanner;
+pub mod types_helpers;
 pub mod module_helpers;
-mod toni_application;
 pub mod toni_factory;
+pub mod pipes;
+pub mod injector;
+mod toni_application;
+mod scanner;
 mod router;
+mod structs_helpers;
+mod adapters;
 
 #[cfg(test)]
 mod tests {
