@@ -15,3 +15,6 @@ pub use self::guard::Guard;
 
 mod pipe;
 pub use self::pipe::Pipe;
+
+mod validator;
+pub use self::validator::validate;
