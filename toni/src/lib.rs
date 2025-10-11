@@ -1,20 +1,16 @@
-#[path = "adapter/http_adapter.rs"]
-pub mod http_adapter;
 #[path = "adapter/mod.rs"]
 pub mod adapter;
-
+#[path = "adapter/http_adapter.rs"]
+pub mod http_adapter;
 pub mod http_helpers;
-pub mod traits_helpers;
-pub mod types_helpers;
-pub mod module_helpers;
-pub mod toni_factory;
-pub mod pipes;
 pub mod injector;
-mod toni_application;
-mod scanner;
+pub mod module_helpers;
 mod router;
+mod scanner;
 mod structs_helpers;
-mod adapters;
+mod toni_application;
+pub mod toni_factory;
+pub mod traits_helpers;
 
 #[cfg(test)]
 mod tests {
@@ -46,17 +42,15 @@ mod tests {
         let client = reqwest::Client::new();
         let response = client.get("http://localhost:3000/names").send().await;
         let res = match response {
-            Ok(res) => {
-                res
-            }
+            Ok(res) => res,
             Err(e) => panic!("{}", e),
         };
-        
+
         let body = match res.json::<serde_json::Value>().await {
             Ok(json) => json,
             Err(e) => panic!("{}", e),
         };
-        
+
         assert_eq!(body["message"].as_str().unwrap(), "John Doe");
         server_handle.abort();
     }
