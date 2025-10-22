@@ -133,4 +133,40 @@ impl ToniDependenciesScanner {
 
         Ok(())
     }
+
+    pub fn scan_middleware(&mut self) -> Result<()> {
+        let modules_token = self.container.borrow().get_modules_token();
+        for module_token in modules_token {
+            self.register_module_middleware(&module_token)?;
+        }
+        Ok(())
+    }
+
+    fn register_module_middleware(&mut self, module_token: &str) -> Result<()> {
+        let metadata_configs = {
+            let container = self.container.borrow();
+
+            let module_ref = container
+                .get_module_by_token(&module_token.to_string())
+                .ok_or_else(|| anyhow!("Module not found: {}", module_token))?;
+
+            let metadata = module_ref.get_metadata();
+
+            metadata.configure_middleware()
+        };
+
+        if let Some(middleware_configs) = metadata_configs {
+            let mut container_mut = self.container.borrow_mut();
+
+            let middleware_manager = container_mut
+                .get_middleware_manager_mut()
+                .ok_or_else(|| anyhow!("Middleware manager not initialized"))?;
+
+            for config in middleware_configs {
+                middleware_manager.add_for_module(module_token.to_string(), config);
+            }
+        }
+
+        Ok(())
+    }
 }

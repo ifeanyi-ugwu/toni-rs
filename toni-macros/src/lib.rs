@@ -9,6 +9,7 @@ use syn::Ident;
 mod controller_macro;
 mod enhancer;
 mod markers_params;
+mod middleware_macro;
 mod module_macro;
 mod provider_macro;
 mod shared;

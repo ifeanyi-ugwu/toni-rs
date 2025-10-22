@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod http_adapter;
 pub mod http_helpers;
 pub mod injector;
+mod middleware;
 pub mod module_helpers;
 mod router;
 mod scanner;

@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::middleware::Middleware;
 use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::toni_application::ToniApplication;
 use crate::{
@@ -12,12 +14,21 @@ use crate::{
 };
 
 #[derive(Default)]
-pub struct ToniFactory;
+pub struct ToniFactory {
+    global_middleware: Vec<Arc<dyn Middleware>>,
+}
 
 impl ToniFactory {
     #[inline]
     pub fn new() -> Self {
-        Self
+        Self {
+            global_middleware: Vec::new(),
+        }
+    }
+
+    pub fn use_global_middleware(&mut self, middleware: Arc<dyn Middleware>) -> &mut Self {
+        self.global_middleware.push(middleware);
+        self
     }
 
     pub fn create(
@@ -54,6 +65,18 @@ impl ToniFactory {
     ) -> Result<()> {
         let mut scanner = ToniDependenciesScanner::new(container.clone());
         scanner.scan(module)?;
+
+        // Register global middleware
+        {
+            let mut container_mut = container.borrow_mut();
+            if let Some(middleware_manager) = container_mut.get_middleware_manager_mut() {
+                for middleware in &self.global_middleware {
+                    middleware_manager.add_global(middleware.clone());
+                }
+            }
+        }
+
+        scanner.scan_middleware()?;
 
         ToniInstanceLoader::new(container.clone()).create_instances_of_dependencies()?;
 

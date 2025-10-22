@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
+    middleware::MiddlewareManager,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait},
 };
@@ -12,6 +13,7 @@ use super::{InstanceWrapper, module::Module};
 
 pub struct ToniContainer {
     modules: FxHashMap<String, Module>,
+    middleware_manager: Option<MiddlewareManager>,
 }
 
 impl Default for ToniContainer {
@@ -24,6 +26,7 @@ impl ToniContainer {
     pub fn new() -> Self {
         Self {
             modules: FxHashMap::default(),
+            middleware_manager: Some(MiddlewareManager::new()),
         }
     }
 
@@ -269,4 +272,12 @@ impl ToniContainer {
     //     module_ref.register_controller_enhancers(controller_enhancers);
     //     Ok(())
     // }
+
+    pub fn get_middleware_manager(&self) -> Option<&MiddlewareManager> {
+        self.middleware_manager.as_ref()
+    }
+
+    pub fn get_middleware_manager_mut(&mut self) -> Option<&mut MiddlewareManager> {
+        self.middleware_manager.as_mut()
+    }
 }

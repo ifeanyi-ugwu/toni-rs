@@ -1,3 +1,4 @@
+pub mod middleware;
 mod module_metadata;
 pub use self::module_metadata::ModuleMetadata;
 
