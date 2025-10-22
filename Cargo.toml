@@ -1,2 +1,2 @@
 [workspace]
-members = ["toni", "toni-macros", "toni-cli", "toni-axum"]
+members = ["toni", "toni-macros", "toni-cli", "toni-axum", "toni-actix"]

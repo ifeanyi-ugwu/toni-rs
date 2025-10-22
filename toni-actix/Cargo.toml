@@ -1,0 +1,18 @@
+[package]
+name = "toni-actix"
+version = "0.1.0"
+edition = "2021"
+description = "Actix-web adapter for the Toni framework"
+license = "MIT"
+keywords = ["toni", "actix", "actix-web", "web", "framework", "adapter"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+toni = { path = "../toni" }
+actix-web = "4"
+anyhow = "1.0"
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+actix-rt = "2"
