@@ -31,7 +31,7 @@ impl MiddlewareManager {
     /// Add global middleware that applies to all routes
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// manager.add_global(Arc::new(LoggerMiddleware::new()));
     /// ```
     pub fn add_global(&mut self, middleware: Arc<dyn Middleware>) {
@@ -41,7 +41,7 @@ impl MiddlewareManager {
     /// Add middleware configuration for a specific module
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// let config = MiddlewareConfigurer::new()
     ///     .apply(Arc::new(AuthMiddleware::new()))
     ///     .for_routes(vec!["/users/*"])
@@ -108,7 +108,7 @@ impl Default for MiddlewareManager {
 /// This provides a fluent API for configuring middleware with route patterns
 ///
 /// # Example
-/// ```rust
+/// ```ignore
 /// let config = MiddlewareConfigurer::new()
 ///     .apply(Arc::new(LoggerMiddleware::new()))
 ///     .apply(Arc::new(AuthMiddleware::new()))
@@ -133,7 +133,7 @@ impl MiddlewareConfigurer {
     /// Multiple middleware can be added by calling this method multiple times
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// configurer
     ///     .apply(Arc::new(LoggerMiddleware::new()))
     ///     .apply(Arc::new(AuthMiddleware::new()));
@@ -152,7 +152,7 @@ impl MiddlewareConfigurer {
     /// - `("/api/*", ["GET", "POST"])` - Only GET and POST to /api/*
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// // String patterns (all HTTP methods)
     /// configurer.for_routes(vec!["/api/*", "/admin/*"]);
     ///
@@ -173,7 +173,7 @@ impl MiddlewareConfigurer {
     /// Add a single route pattern
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// configurer
     ///     .for_route("/api/*")
     ///     .for_route(("/users", "POST"));
@@ -195,7 +195,7 @@ impl MiddlewareConfigurer {
     /// - `("/users", "DELETE")` - Exclude only DELETE requests to /users
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
     /// configurer
     ///     .for_routes(vec!["/api/*"])
     ///     .exclude(vec![

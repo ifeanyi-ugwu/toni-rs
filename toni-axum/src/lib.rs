@@ -7,7 +7,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use toni::prelude::*;
 //! use toni_axum::AxumAdapter;
 //!

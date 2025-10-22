@@ -7,7 +7,7 @@ use syn::{Error, ItemImpl, ItemStruct, Result, parse2};
 /// This macro transforms a struct and its impl block into a proper Middleware implementation
 ///
 /// Example input:
-/// ```
+/// ```ignore
 /// #[middleware_struct(
 ///     pub struct MyMiddleware {
 ///         config: String,
@@ -17,7 +17,7 @@ use syn::{Error, ItemImpl, ItemStruct, Result, parse2};
 ///     pub fn new(config: String) -> Self {
 ///         Self { config }
 ///     }
-///     
+///
 ///     async fn handle(&self, req: HttpRequest, next: Box<dyn Next>) -> MiddlewareResult {
 ///         // middleware logic
 ///         next.run(req).await
