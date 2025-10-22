@@ -12,10 +12,10 @@ toni = { path = "../toni" }
 actix-web = "4"
 anyhow = "1.0"
 serde_json = "1.0"
-tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 actix-rt = "2"
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1.86"
 rustc-hash = "2.1"
+tokio = "1"
