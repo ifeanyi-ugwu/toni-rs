@@ -19,8 +19,10 @@ pub fn create_field_struct_name(ref_name: &str, field_name: &Ident) -> Result<Id
     Ok(Ident::new(&struct_name_created, Span::call_site()))
 }
 
-
-pub fn create_provider_name_by_fn_and_struct_ident(function_name: &Ident, struct_ident: &Ident) -> Result<String> {
+pub fn create_provider_name_by_fn_and_struct_ident(
+    function_name: &Ident,
+    struct_ident: &Ident,
+) -> Result<String> {
     let function_name_upper = snake_to_upper(function_name)?;
     let provider_name = format!("{}{}", function_name_upper, struct_ident);
     let clean_name = match provider_name.strip_prefix("_") {

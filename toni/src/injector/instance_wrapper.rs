@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     http_helpers::{HttpMethod, HttpRequest, HttpResponse, IntoResponse},
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{ControllerTrait, Guard, Interceptor, Pipe}
+    traits_helpers::{ControllerTrait, Guard, Interceptor, Pipe},
 };
 
 use super::Context;
@@ -42,22 +42,21 @@ impl InstanceWrapper {
     ) -> Box<dyn IntoResponse<Response = HttpResponse> + Send> {
         let mut context = Context::from_request(req);
 
-        
         for guard in &self.guards {
             if !guard.can_activate(&context) {
                 return context.get_response();
             }
         }
-        
+
         for interceptor in &self.interceptors {
             interceptor.before_execute(&mut context);
         }
-        
+
         let dto = self.instance.get_body_dto(context.take_request());
         if let Some(dto) = dto {
             context.set_dto(dto);
         }
-        
+
         for pipe in &self.pipes {
             pipe.process(&mut context);
             if context.should_abort() {

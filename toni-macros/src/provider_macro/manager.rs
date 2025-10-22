@@ -18,8 +18,7 @@ pub fn generate_manager(
     let dependencies_name = unique_dependencies.iter().map(|dependency| {
         quote! { #dependency.to_string() }
     });
-    let providers_instances =
-        generate_make_instances(controllers_metadata, &manager_name, true);
+    let providers_instances = generate_make_instances(controllers_metadata, &manager_name, true);
     quote! {
         pub struct #manager_struct_name;
 

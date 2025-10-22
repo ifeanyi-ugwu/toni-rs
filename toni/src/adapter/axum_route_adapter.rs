@@ -5,7 +5,7 @@ use axum::{
     RequestPartsExt,
     body::to_bytes,
     extract::{Path, Query},
-    http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode}
+    http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
 };
 use serde_json::Value;
 

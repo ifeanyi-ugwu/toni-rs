@@ -1,4 +1,7 @@
-use crate::{http_helpers::{HttpRequest, HttpResponse, IntoResponse}, traits_helpers::validate::Validatable};
+use crate::{
+    http_helpers::{HttpRequest, HttpResponse, IntoResponse},
+    traits_helpers::validate::Validatable,
+};
 
 #[derive(Debug)]
 pub struct Context {
@@ -22,13 +25,16 @@ impl Context {
         &self.original_request
     }
 
-    pub fn set_response(&mut self, response: Box<dyn IntoResponse<Response = HttpResponse> + Send>) {
+    pub fn set_response(
+        &mut self,
+        response: Box<dyn IntoResponse<Response = HttpResponse> + Send>,
+    ) {
         self.response = Some(response);
     }
 
     pub fn get_response(self) -> Box<dyn IntoResponse<Response = HttpResponse> + Send> {
         if let Some(response) = self.response {
-            return response
+            return response;
         }
 
         panic!("Response not set in context");
@@ -45,7 +51,7 @@ impl Context {
     pub fn should_abort(&self) -> bool {
         self.should_abort
     }
-    
+
     pub fn set_dto(&mut self, dto: Box<dyn Validatable>) {
         self.dto = Some(dto);
     }

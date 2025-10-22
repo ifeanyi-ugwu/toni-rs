@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
+use colored::*;
 use std::path::PathBuf;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use colored::*;
 
 #[derive(clap::Args)]
 pub struct NewArgs {
@@ -11,7 +11,7 @@ pub struct NewArgs {
 
 pub async fn execute(args: NewArgs) -> anyhow::Result<()> {
     validate_project_name(&args.project_name)?;
-    
+
     let root_path = PathBuf::from(&args.project_name);
     create_project_structure(&root_path).await?;
     copy_template_files(&root_path).await?;
@@ -33,11 +33,16 @@ fn validate_project_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(anyhow!("Project name cannot be empty"));
     }
-    
-    if name.chars().any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_') {
-        return Err(anyhow!("Project name contains invalid characters. Use only alphanumerics, '-' or '_'"));
+
+    if name
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+    {
+        return Err(anyhow!(
+            "Project name contains invalid characters. Use only alphanumerics, '-' or '_'"
+        ));
     }
-    
+
     if PathBuf::from(name).exists() {
         return Err(anyhow!("Directory '{}' already exists", name));
     }
@@ -46,10 +51,7 @@ fn validate_project_name(name: &str) -> Result<()> {
 }
 
 async fn create_project_structure(root: &PathBuf) -> Result<()> {
-    let dirs = [
-        "src",
-        "src/app"
-    ];
+    let dirs = ["src", "src/app"];
 
     for dir in dirs {
         let path = root.join(dir);
@@ -66,7 +68,7 @@ async fn copy_template_files(root: &PathBuf) -> Result<()> {
     let mut file = File::create(&cargo_toml)
         .await
         .context("Failed to create Cargo.toml")?;
-    
+
     file.write_all(include_str!("../templates/new/Cargo.txt").as_bytes())
         .await
         .context("Failed to write Cargo.toml")?;
@@ -75,31 +77,36 @@ async fn copy_template_files(root: &PathBuf) -> Result<()> {
         root,
         "src/main.rs",
         include_str!("../templates/new/src/main.rs"),
-    ).await?;
+    )
+    .await?;
 
     write_template_file(
         root,
         "src/app/app.module.rs",
         include_str!("../templates/new/src/app/app.module.rs"),
-    ).await?;
+    )
+    .await?;
 
     write_template_file(
         root,
         "src/app/app.controller.rs",
         include_str!("../templates/new/src/app/app.controller.rs"),
-    ).await?;
+    )
+    .await?;
 
     write_template_file(
         root,
         "src/app/app.service.rs",
         include_str!("../templates/new/src/app/app.service.rs"),
-    ).await?;
-    
+    )
+    .await?;
+
     write_template_file(
         root,
         "src/app/mod.rs",
         include_str!("../templates/new/src/app/mod.rs"),
-    ).await?;
+    )
+    .await?;
 
     Ok(())
 }
@@ -109,27 +116,23 @@ async fn write_template_file(root: &PathBuf, path: &str, content: &str) -> Resul
     let mut file = File::create(&full_path)
         .await
         .with_context(|| format!("Failed to create {}", full_path.display()))?;
-    
+
     file.write_all(content.as_bytes())
         .await
         .with_context(|| format!("Failed to write to {}", full_path.display()))?;
-    
+
     Ok(())
 }
 
 async fn post_process_files(root: &PathBuf, project_name: &str) -> Result<()> {
-    let files_to_process = [
-        "Cargo.toml",
-        "src/main.rs",
-        "src/app/app.module.rs",
-    ];
+    let files_to_process = ["Cargo.toml", "src/main.rs", "src/app/app.module.rs"];
 
     for file in files_to_process {
         let path = root.join(file);
         let content = fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        
+
         let processed = content
             .replace("{{project_name}}", project_name)
             .replace("{{version}}", env!("CARGO_PKG_VERSION"));

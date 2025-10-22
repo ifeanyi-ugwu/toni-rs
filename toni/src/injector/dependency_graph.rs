@@ -1,5 +1,5 @@
 use super::ToniContainer;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, rc::Rc};
 
@@ -40,9 +40,17 @@ impl DependencyGraph {
         Ok(self.ordered)
     }
 
-    fn visit_node(&mut self, token: String, dependencies: Vec<String>, providers: &Vec<(String, Vec<String>)>) -> Result<()> {
+    fn visit_node(
+        &mut self,
+        token: String,
+        dependencies: Vec<String>,
+        providers: &Vec<(String, Vec<String>)>,
+    ) -> Result<()> {
         if self.temp_mark.contains_key(&token) {
-            return Err(anyhow!("Circular dependency detected for provider: {}", token));
+            return Err(anyhow!(
+                "Circular dependency detected for provider: {}",
+                token
+            ));
         }
 
         if self.visited.contains_key(&token) {

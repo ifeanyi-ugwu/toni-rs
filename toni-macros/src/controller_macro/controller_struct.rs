@@ -25,7 +25,7 @@ pub fn handle_controller_struct(
         &trait_name,
         &prefix_path,
     )?;
-    
+
     let manager = generate_manager(&struct_attrs.ident, metadata, dependencies.unique_types);
     let expanded = generate_output(struct_attrs, impl_block, controllers, manager);
 

@@ -24,12 +24,7 @@ impl HttpAdapter for AxumAdapter {
         }
     }
 
-    fn add_route(
-        &mut self,
-        path: &str,
-        method: HttpMethod,
-        handler: Arc<InstanceWrapper>,
-    ) {
+    fn add_route(&mut self, path: &str, method: HttpMethod, handler: Arc<InstanceWrapper>) {
         let route_handler = move |req: Request<Body>| {
             let handler: Arc<InstanceWrapper> = handler.clone();
             Box::pin(async move {
@@ -53,8 +48,7 @@ impl HttpAdapter for AxumAdapter {
 
     async fn listen(self, port: u16, hostname: &str) -> Result<()> {
         let addr = format!("{}:{}", hostname, port);
-        let listener: TcpListener = TcpListener::bind(&addr)
-            .await?;
+        let listener: TcpListener = TcpListener::bind(&addr).await?;
 
         println!("Listening on {}", addr);
 

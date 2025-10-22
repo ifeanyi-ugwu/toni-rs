@@ -2,10 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
 
-use crate::{
-    http_adapter::HttpAdapter,
-    injector::ToniContainer, router::RoutesResolver,
-};
+use crate::{http_adapter::HttpAdapter, injector::ToniContainer, router::RoutesResolver};
 
 pub struct ToniApplication<H: HttpAdapter> {
     http_adapter: H,

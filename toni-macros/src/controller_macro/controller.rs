@@ -2,12 +2,15 @@ use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{spanned::Spanned, Attribute, Error, Ident, ImplItemFn, LitStr, Result};
+use syn::{Attribute, Error, Ident, ImplItemFn, LitStr, Result, spanned::Spanned};
 
 use crate::{
     enhancer::enhancer::create_enchancers_token_stream,
     markers_params::{
-        extracts_marker_params::{extract_body_from_param, extract_path_param_from_param, extract_query_from_param}, get_marker_params::MarkerParam,
+        extracts_marker_params::{
+            extract_body_from_param, extract_path_param_from_param, extract_query_from_param,
+        },
+        get_marker_params::MarkerParam,
     },
     shared::{dependency_info::DependencyInfo, metadata_info::MetadataInfo},
     utils::{
@@ -78,7 +81,8 @@ pub fn generate_controller_and_metadata(
             .map(|marker_param| {
                 if marker_param.marker_name == "body" {
                     let dto_type_ident = marker_param.type_ident.clone();
-                    body_dto_token_stream = Some(create_extract_body_dto_token_stream(&dto_type_ident)?);
+                    body_dto_token_stream =
+                        Some(create_extract_body_dto_token_stream(&dto_type_ident)?);
                     return extract_body_from_param(marker_param);
                 }
                 if marker_param.marker_name == "query" {
@@ -87,7 +91,7 @@ pub fn generate_controller_and_metadata(
                 if marker_param.marker_name == "param" {
                     return extract_path_param_from_param(marker_param);
                 }
-                Ok(quote! { })
+                Ok(quote! {})
             })
             .collect::<Result<Vec<_>>>()?;
     }
@@ -102,12 +106,15 @@ pub fn generate_controller_and_metadata(
         trait_reference_name,
         enhancers,
         marker_params_token_stream,
-        body_dto_token_stream
+        body_dto_token_stream,
     );
-    Ok((generated_code, MetadataInfo {
-        struct_name: controller_name,
-        dependencies,
-    }))
+    Ok((
+        generated_code,
+        MetadataInfo {
+            struct_name: controller_name,
+            dependencies,
+        },
+    ))
 }
 
 fn generate_controller_code(
@@ -120,7 +127,7 @@ fn generate_controller_code(
     trait_name: &Ident,
     enhancers: HashMap<String, Vec<TokenStream>>,
     marker_params_token_stream: Vec<TokenStream>,
-    body_dto_token_stream: Option<TokenStream>
+    body_dto_token_stream: Option<TokenStream>,
 ) -> TokenStream {
     let binding = Vec::new();
     let use_guards = enhancers.get("use_guard").unwrap_or(&binding);

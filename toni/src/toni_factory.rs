@@ -23,11 +23,10 @@ impl ToniFactory {
     pub fn create(
         &self,
         module: ModuleDefinition,
-        http_adapter: impl HttpAdapter
-    ) -> ToniApplication<impl HttpAdapter> 
-    {
+        http_adapter: impl HttpAdapter,
+    ) -> ToniApplication<impl HttpAdapter> {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
-        
+
         match self.initialize(module, container.clone()) {
             Ok(_) => (),
             Err(e) => {
@@ -35,7 +34,7 @@ impl ToniFactory {
                 std::process::exit(1);
             }
         };
-        
+
         let mut app = ToniApplication::new(http_adapter, container);
         match app.init() {
             Ok(_) => (),
@@ -44,20 +43,19 @@ impl ToniFactory {
                 std::process::exit(1);
             }
         }
-        
+
         app
     }
 
     fn initialize(
         &self,
         module: ModuleDefinition,
-        container: Rc<RefCell<ToniContainer>>
+        container: Rc<RefCell<ToniContainer>>,
     ) -> Result<()> {
         let mut scanner = ToniDependenciesScanner::new(container.clone());
         scanner.scan(module)?;
 
-        ToniInstanceLoader::new(container.clone())
-            .create_instances_of_dependencies()?;
+        ToniInstanceLoader::new(container.clone()).create_instances_of_dependencies()?;
 
         Ok(())
     }

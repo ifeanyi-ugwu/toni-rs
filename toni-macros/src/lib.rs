@@ -6,13 +6,13 @@ use proc_macro2::Span;
 use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
-mod utils;
-mod module_macro;
-mod shared;
-mod provider_macro;
 mod controller_macro;
 mod enhancer;
 mod markers_params;
+mod module_macro;
+mod provider_macro;
+mod shared;
+mod utils;
 
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {

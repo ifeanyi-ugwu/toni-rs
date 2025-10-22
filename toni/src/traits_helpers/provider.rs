@@ -13,7 +13,7 @@ pub trait ProviderTrait: Send + Sync {
 pub trait Provider {
     fn get_all_providers(
         &self,
-        dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>
+        dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     ) -> FxHashMap<String, Arc<Box<dyn ProviderTrait>>>;
     fn get_name(&self) -> String;
     fn get_token(&self) -> String;

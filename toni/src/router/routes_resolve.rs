@@ -2,20 +2,15 @@ use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
 
-use crate::{
-    http_adapter::HttpAdapter,
-    injector::ToniContainer,
-};
+use crate::{http_adapter::HttpAdapter, injector::ToniContainer};
 
 pub struct RoutesResolver {
-    container: Rc<RefCell<ToniContainer>>
+    container: Rc<RefCell<ToniContainer>>,
 }
 
 impl RoutesResolver {
     pub fn new(container: Rc<RefCell<ToniContainer>>) -> Self {
-        Self {
-            container
-        }
+        Self { container }
     }
 
     pub fn resolve(&mut self, http_adapter: &mut impl HttpAdapter) -> Result<()> {
@@ -27,12 +22,15 @@ impl RoutesResolver {
         Ok(())
     }
 
-    fn register_routes(&mut self, module_token: String, http_adapter: &mut impl HttpAdapter) -> Result<()> {
+    fn register_routes(
+        &mut self,
+        module_token: String,
+        http_adapter: &mut impl HttpAdapter,
+    ) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let controllers = container.get_controllers_instance(&module_token)?;
         for (_, controller) in controllers {
-            http_adapter
-                .add_route(&controller.get_path(), controller.get_method(), controller);
+            http_adapter.add_route(&controller.get_path(), controller.get_method(), controller);
         }
         Ok(())
     }

@@ -27,10 +27,10 @@ pub fn generate_make_instances(
 
     ordered_structs
         .map(|instance_metadata| {
-            let struct_ident  = &instance_metadata.struct_name;
+            let struct_ident = &instance_metadata.struct_name;
             let struct_name_string = struct_ident.to_string();
             let dependencies = &instance_metadata.dependencies;
-            
+
             let field_injections = dependencies
                 .iter()
                 .map(|(field_name, dependency_key)| {

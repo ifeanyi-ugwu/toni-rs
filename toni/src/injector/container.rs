@@ -3,9 +3,12 @@ use std::{collections::hash_map::Drain, sync::Arc};
 use anyhow::{Result, anyhow};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{structs_helpers::EnhancerMetadata, traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait}};
+use crate::{
+    structs_helpers::EnhancerMetadata,
+    traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait},
+};
 
-use super::{module::Module, InstanceWrapper};
+use super::{InstanceWrapper, module::Module};
 
 pub struct ToniContainer {
     modules: FxHashMap<String, Module>,
@@ -173,8 +176,7 @@ impl ToniContainer {
             .modules
             .get(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        Ok(module_ref
-            .get_provider_by_token(provider_token))
+        Ok(module_ref.get_provider_by_token(provider_token))
     }
 
     pub fn get_controllers_instance(
@@ -253,7 +255,7 @@ impl ToniContainer {
     pub fn get_module_by_token(&self, module_ref_token: &String) -> Option<&Module> {
         self.modules.get(module_ref_token)
     }
-    
+
     // pub fn register_controller_enhancers(
     //     &mut self,
     //     module_ref_token: &String,

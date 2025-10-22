@@ -44,11 +44,13 @@ pub fn generate_provider_and_metadata(
         let provider_name =
             create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager)?;
 
-        if !provider_name.contains(&original_struct_name) && !dependency_info.unique_types.insert(provider_name.clone()) {
-                return Err(Error::new(
-                    original_struct_ident.span(),
-                    format!("Conflict in dependency: {}", provider_name),
-                ));
+        if !provider_name.contains(&original_struct_name)
+            && !dependency_info.unique_types.insert(provider_name.clone())
+        {
+            return Err(Error::new(
+                original_struct_ident.span(),
+                format!("Conflict in dependency: {}", provider_name),
+            ));
         }
 
         dependencies.push((field_name.clone(), provider_name));
@@ -66,10 +68,13 @@ pub fn generate_provider_and_metadata(
         impl_fn_params,
         original_struct_name,
     );
-    Ok((generated_code, MetadataInfo {
-        struct_name: provider_name,
-        dependencies,
-    }))
+    Ok((
+        generated_code,
+        MetadataInfo {
+            struct_name: provider_name,
+            dependencies,
+        },
+    ))
 }
 
 fn generate_provider_code(

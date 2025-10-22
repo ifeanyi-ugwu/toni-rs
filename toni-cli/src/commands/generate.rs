@@ -141,7 +141,7 @@ async fn update_app_module(resource_name: &str) -> Result<()> {
     let mut content = fs::read_to_string(&app_module_path)
         .await
         .context("Failed to read app.module.rs")?;
-    
+
     let module_import = format!("use super::{}::{}_module::*;", resource_name, snake_case);
     if !content.contains(&module_import) {
         content = content.replacen(

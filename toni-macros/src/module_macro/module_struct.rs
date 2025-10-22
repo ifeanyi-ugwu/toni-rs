@@ -45,17 +45,13 @@ impl Parse for ConfigParser {
                 "controllers" => {
                     config.controllers = fields
                         .into_iter()
-                        .map(|field| {
-                            Ident::new(&format!("{}Manager", field), field.span())
-                        })
+                        .map(|field| Ident::new(&format!("{}Manager", field), field.span()))
                         .collect()
                 }
                 "providers" => {
                     config.providers = fields
                         .into_iter()
-                        .map(|field| {
-                            Ident::new(&format!("{}Manager", field), field.span())
-                        })
+                        .map(|field| Ident::new(&format!("{}Manager", field), field.span()))
                         .collect()
                 }
                 "exports" => config.exports = fields.into_iter().collect(),

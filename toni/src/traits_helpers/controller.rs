@@ -5,12 +5,15 @@ use rustc_hash::FxHashMap;
 
 use crate::http_helpers::{HttpMethod, HttpRequest, HttpResponse, IntoResponse};
 
-use super::{provider::ProviderTrait, validate::Validatable, Guard, Interceptor, Pipe};
+use super::{Guard, Interceptor, Pipe, provider::ProviderTrait, validate::Validatable};
 
 #[async_trait]
-pub trait ControllerTrait: Send + Sync{
+pub trait ControllerTrait: Send + Sync {
     fn get_token(&self) -> String;
-    async fn execute(&self, req: HttpRequest) -> Box<dyn IntoResponse<Response = HttpResponse> + Send>;
+    async fn execute(
+        &self,
+        req: HttpRequest,
+    ) -> Box<dyn IntoResponse<Response = HttpResponse> + Send>;
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
     fn get_guards(&self) -> Vec<Arc<dyn Guard>>;

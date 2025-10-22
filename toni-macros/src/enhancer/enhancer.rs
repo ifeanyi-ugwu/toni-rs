@@ -34,9 +34,10 @@ pub fn create_enchancers_token_stream(
                 enhancer_mut.push(quote! {::std::sync::Arc::new(#arg_ident)});
             }
             None => {
-                enhancers.insert(ident.to_string(), vec![
-                    quote! {::std::sync::Arc::new(#arg_ident)},
-                ]);
+                enhancers.insert(
+                    ident.to_string(),
+                    vec![quote! {::std::sync::Arc::new(#arg_ident)}],
+                );
             }
         };
     }
