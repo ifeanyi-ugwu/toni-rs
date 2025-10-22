@@ -5,12 +5,12 @@
 
 Toni is a framework for building efficient and scalable server-side Rust applications. It was inspired by NestJS architecture, offering a clean architecture and a developer-friendly experience.
 
-Under the hood, Toni uses Axum, but it is built to be easily integrated with other HTTP servers.
+Toni is framework-agnostic and is built to be easily integrated with other HTTP servers.
 
 ## Features
 
 - **Modular Architecture**: Organize your application into reusable modules.
-- **HTTP Server Flexibility**: Use Axum or integrate your preferred server.
+- **HTTP Server Flexibility**: Choose Axum (`toni-axum`), Actix-web (`toni-actix`), or bring your own by implementing the `HttpAdapter` trait.
 - **Dependency Injection**: Manage dependencies cleanly with module providers.
 - **Macro-Driven Syntax**: Reduce boilerplate with intuitive procedural macros.
 
@@ -31,11 +31,13 @@ Under the hood, Toni uses Axum, but it is built to be easily integrated with oth
 ## Quickstart: Build a CRUD App
 
 Use the Toni CLI to create a new project:
+
 ```bash
 toni new my_app
 ```
 
 ## Project Structure
+
 ```
 src/
 ├── app/
@@ -47,9 +49,11 @@ src/
 ```
 
 ## Run the Server
+
 ```bash
 cargo run
 ```
+
 Test your endpoints at `http://localhost:3000/app`.
 
 ---
@@ -57,31 +61,55 @@ Test your endpoints at `http://localhost:3000/app`.
 ## Key Concepts
 
 ### Project Structure
-| File                | Role                                      |
-|---------------------|-------------------------------------------|
+
+| File                    | Role                                      |
+| ----------------------- | ----------------------------------------- |
 | **`app.controller.rs`** | Defines routes and handles HTTP requests. |
 | **`app.module.rs`**     | Configures dependencies and module setup. |
 | **`app.service.rs`**    | Implements core business logic.           |
 
-### Decoupled HTTP Server
-Toni decouples your application from the HTTP server, and by default we use Axum. In the future we plan to integrate other HTTP adapters.
+### HTTP Server Adapters
+
+Toni is decoupled from HTTP servers. Choose your adapter:
+
+- **toni-axum**: Axum + Tokio (I/O-bound workloads)
+- **toni-actix**: Actix-web (CPU-bound workloads)
+- **Bring your own**: Implement the `HttpAdapter` trait to integrate any HTTP server
 
 ## Code Example
 
-**`main.rs`**
+**`main.rs`** (with Axum)
+
 ```rust
-use toni::{ToniFactory, AxumAdapter};
+use toni::ToniFactory;
+use toni_axum::AxumAdapter;
 
 #[tokio::main]
 async fn main() {
-    let axum_adapter = AxumAdapter::new();
+    let adapter = AxumAdapter::new();
     let factory = ToniFactory::new();
-    let app = factory.create(AppModule::module_definition(), axum_adapter);
+    let app = factory.create(AppModule::module_definition(), adapter);
+    app.listen(3000, "127.0.0.1").await;
+}
+```
+
+**Or with Actix:**
+
+```rust
+use toni::ToniFactory;
+use toni_actix::ActixAdapter;
+
+#[actix_web::main]
+async fn main() {
+    let adapter = ActixAdapter::new();
+    let factory = ToniFactory::new();
+    let app = factory.create(AppModule::module_definition(), adapter);
     app.listen(3000, "127.0.0.1").await;
 }
 ```
 
 **`app/app.module.rs`** (Root Module)
+
 ```rust
 #[module(
     imports: [],
@@ -93,10 +121,11 @@ pub struct AppModule;
 ```
 
 **`app/app.controller.rs`** (HTTP Routes)
+
 ```rust
 #[controller_struct(
     pub struct _AppController {
-        app_service: _AppService 
+        app_service: _AppService
     }
 )]
 #[controller("/app")]
@@ -114,6 +143,7 @@ impl _AppController {
 ```
 
 **`app/app.service.rs`** (Business Logic)
+
 ```rust
 #[provider_struct(
     pub struct _AppService;
