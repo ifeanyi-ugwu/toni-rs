@@ -1,7 +1,10 @@
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
+use crate::{
+    middleware::route_pattern::IntoRoutePattern,
+    traits_helpers::middleware::{Middleware, MiddlewareConfiguration},
+};
 
 /// Middleware manager for organizing middleware by module
 ///
@@ -53,11 +56,12 @@ impl MiddlewareManager {
     /// Get all middleware that should apply to a specific route
     ///
     /// This combines global middleware with module-specific middleware
-    /// that matches the route pattern
+    /// that matches the route pattern and HTTP method
     ///
     /// # Arguments
     /// * `module_token` - The token of the module the route belongs to
     /// * `route_path` - The path of the route (e.g., "/api/users")
+    /// * `method` - The HTTP method (e.g., "GET", "POST")
     ///
     /// # Returns
     /// A vector of middleware that should be applied to this route
@@ -65,6 +69,7 @@ impl MiddlewareManager {
         &self,
         module_token: &str,
         route_path: &str,
+        method: &str,
     ) -> Vec<Arc<dyn Middleware>> {
         let mut middleware = Vec::new();
 
@@ -73,7 +78,7 @@ impl MiddlewareManager {
 
         // Add module-specific middleware if applicable
         if let Some(config) = self.module_middleware.get(module_token) {
-            if config.should_apply(route_path) {
+            if config.should_apply(route_path, method) {
                 middleware.extend(config.middleware.iter().cloned());
             }
         }
@@ -140,29 +145,69 @@ impl MiddlewareConfigurer {
 
     /// Specify which routes this middleware should apply to
     ///
-    /// Supports glob-like patterns:
-    /// - `/users` - Exact match
-    /// - `/api/*` - All routes starting with /api/
+    /// Supports glob-like patterns and HTTP method filtering:
+    /// - `/users` - Exact match, all HTTP methods
+    /// - `/api/*` - All routes starting with /api/, all HTTP methods
+    /// - `("/users", "POST")` - Only POST requests to /users
+    /// - `("/api/*", ["GET", "POST"])` - Only GET and POST to /api/*
     ///
     /// # Example
     /// ```rust
+    /// // String patterns (all HTTP methods)
     /// configurer.for_routes(vec!["/api/*", "/admin/*"]);
+    ///
+    /// // With HTTP method filtering
+    /// configurer.for_routes(vec![
+    ///     ("/api/users", "POST"),
+    ///     ("/api/products/*", ["GET", "PUT"]),
+    /// ]);
     /// ```
-    pub fn for_routes(mut self, patterns: Vec<&str>) -> Self {
-        self.config.include_patterns = patterns.iter().map(|s| s.to_string()).collect();
+    pub fn for_routes<T: IntoRoutePattern>(mut self, patterns: Vec<T>) -> Self {
+        self.config.include_patterns = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
+        self
+    }
+
+    /// Add a single route pattern
+    ///
+    /// # Example
+    /// ```rust
+    /// configurer
+    ///     .for_route("/api/*")
+    ///     .for_route(("/users", "POST"));
+    /// ```
+    pub fn for_route<T>(mut self, route: T) -> Self
+    where
+        T: IntoRoutePattern,
+    {
+        self.config
+            .include_patterns
+            .push(route.into_route_pattern());
         self
     }
 
     /// Specify which routes to exclude from this middleware
     ///
+    /// Supports glob-like patterns and HTTP method filtering:
+    /// - `/api/public/*` - Exclude all public API routes
+    /// - `("/users", "DELETE")` - Exclude only DELETE requests to /users
+    ///
     /// # Example
     /// ```rust
     /// configurer
     ///     .for_routes(vec!["/api/*"])
-    ///     .exclude(vec!["/api/public/*", "/api/health"]);
+    ///     .exclude(vec![
+    ///         "/api/public/*",
+    ///         ("/api/users", "DELETE"),
+    ///     ]);
     /// ```
-    pub fn exclude(mut self, patterns: Vec<&str>) -> Self {
-        self.config.exclude_patterns = patterns.iter().map(|s| s.to_string()).collect();
+    pub fn exclude<T: IntoRoutePattern>(mut self, patterns: Vec<T>) -> Self {
+        self.config.exclude_patterns = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
         self
     }
 
@@ -227,7 +272,7 @@ mod tests {
         let mut manager = MiddlewareManager::new();
         manager.add_global(Arc::new(DummyMiddleware::new("global")));
 
-        let middleware = manager.get_middleware_for_route("TestModule", "/api/test");
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/test", "GET");
         assert_eq!(middleware.len(), 1);
     }
 
@@ -240,7 +285,8 @@ mod tests {
 
         assert_eq!(config.middleware.len(), 1);
         assert_eq!(config.include_patterns.len(), 1);
-        assert_eq!(config.include_patterns[0], "/api/*");
+        assert_eq!(config.include_patterns[0].path, "/api/*");
+        assert!(config.include_patterns[0].methods.is_none());
     }
 
     #[test]
@@ -252,7 +298,8 @@ mod tests {
 
         assert_eq!(config.middleware.len(), 1);
         assert_eq!(config.exclude_patterns.len(), 1);
-        assert_eq!(config.exclude_patterns[0], "/api/public/*");
+        assert_eq!(config.exclude_patterns[0].path, "/api/public/*");
+        assert!(config.exclude_patterns[0].methods.is_none());
     }
 
     #[test]
@@ -267,11 +314,11 @@ mod tests {
         manager.add_for_module("TestModule".to_string(), config);
 
         // Should apply to /api/users
-        let middleware = manager.get_middleware_for_route("TestModule", "/api/users");
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "GET");
         assert_eq!(middleware.len(), 1);
 
         // Should not apply to /other/route
-        let middleware = manager.get_middleware_for_route("TestModule", "/other/route");
+        let middleware = manager.get_middleware_for_route("TestModule", "/other/route", "GET");
         assert_eq!(middleware.len(), 0);
     }
 
@@ -287,11 +334,11 @@ mod tests {
         manager.add_for_module("TestModule".to_string(), config);
 
         // Should apply to /api/users (not excluded)
-        let middleware = manager.get_middleware_for_route("TestModule", "/api/users");
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "GET");
         assert_eq!(middleware.len(), 1);
 
         // Should not apply to /api/public/data (excluded)
-        let middleware = manager.get_middleware_for_route("TestModule", "/api/public/data");
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/public/data", "GET");
         assert_eq!(middleware.len(), 0);
     }
 
@@ -312,7 +359,7 @@ mod tests {
         manager.add_for_module("TestModule".to_string(), config);
 
         // Get middleware for matching route
-        let middleware = manager.get_middleware_for_route("TestModule", "/api/users");
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "GET");
 
         // Should have 3 middleware: 2 global + 1 module
         assert_eq!(middleware.len(), 3);
@@ -352,9 +399,9 @@ mod tests {
             .apply(Arc::new(DummyMiddleware::new("test")))
             .build();
 
-        // With no patterns, should apply to any route
-        assert!(config.should_apply("/any/route"));
-        assert!(config.should_apply("/another/path"));
+        // With no patterns, should apply to any route and method
+        assert!(config.should_apply("/any/route", "GET"));
+        assert!(config.should_apply("/another/path", "POST"));
     }
 
     #[test]
@@ -364,9 +411,9 @@ mod tests {
             .for_routes(vec!["/api/users"])
             .build();
 
-        assert!(config.should_apply("/api/users"));
-        assert!(!config.should_apply("/api/users/123"));
-        assert!(!config.should_apply("/api/posts"));
+        assert!(config.should_apply("/api/users", "GET"));
+        assert!(!config.should_apply("/api/users/123", "GET"));
+        assert!(!config.should_apply("/api/posts", "GET"));
     }
 
     #[test]
@@ -376,10 +423,10 @@ mod tests {
             .for_routes(vec!["/api/*"])
             .build();
 
-        assert!(config.should_apply("/api/users"));
-        assert!(config.should_apply("/api/users/123"));
-        assert!(config.should_apply("/api/posts"));
-        assert!(!config.should_apply("/admin/users"));
+        assert!(config.should_apply("/api/users", "GET"));
+        assert!(config.should_apply("/api/users/123", "POST"));
+        assert!(config.should_apply("/api/posts", "PUT"));
+        assert!(!config.should_apply("/admin/users", "GET"));
     }
 
     #[test]
@@ -390,8 +437,160 @@ mod tests {
             .exclude(vec!["/api/public/*"])
             .build();
 
-        assert!(config.should_apply("/api/users"));
-        assert!(!config.should_apply("/api/public/data"));
-        assert!(!config.should_apply("/api/public/info"));
+        assert!(config.should_apply("/api/users", "GET"));
+        assert!(!config.should_apply("/api/public/data", "GET"));
+        assert!(!config.should_apply("/api/public/info", "POST"));
+    }
+
+    // ===== HTTP Method Filtering Tests =====
+
+    #[test]
+    fn test_method_filtering_single_method() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_routes(vec![("/api/users", "POST")])
+            .build();
+
+        // Should apply to POST
+        assert!(config.should_apply("/api/users", "POST"));
+
+        // Should NOT apply to other methods
+        assert!(!config.should_apply("/api/users", "GET"));
+        assert!(!config.should_apply("/api/users", "PUT"));
+        assert!(!config.should_apply("/api/users", "DELETE"));
+    }
+
+    #[test]
+    fn test_method_filtering_multiple_methods() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_routes(vec![("/api/users", ["GET", "POST"])])
+            .build();
+
+        // Should apply to GET and POST
+        assert!(config.should_apply("/api/users", "GET"));
+        assert!(config.should_apply("/api/users", "POST"));
+
+        // Should NOT apply to other methods
+        assert!(!config.should_apply("/api/users", "PUT"));
+        assert!(!config.should_apply("/api/users", "DELETE"));
+        assert!(!config.should_apply("/api/users", "PATCH"));
+    }
+
+    #[test]
+    fn test_method_filtering_with_wildcard() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_routes(vec![("/api/*", "POST")])
+            .build();
+
+        // Should apply to POST on any /api/* route
+        assert!(config.should_apply("/api/users", "POST"));
+        assert!(config.should_apply("/api/products", "POST"));
+        assert!(config.should_apply("/api/orders/123", "POST"));
+
+        // Should NOT apply to other methods
+        assert!(!config.should_apply("/api/users", "GET"));
+        assert!(!config.should_apply("/api/products", "PUT"));
+    }
+
+    #[test]
+    fn test_mixed_patterns_with_and_without_methods() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_route("/api/public/*") // All methods
+            .for_route(("/api/users", "POST")) // Only POST
+            .build();
+
+        // /api/public/* should match all methods
+        assert!(config.should_apply("/api/public/data", "GET"));
+        assert!(config.should_apply("/api/public/info", "POST"));
+        assert!(config.should_apply("/api/public/status", "DELETE"));
+
+        // /api/users should only match POST
+        assert!(config.should_apply("/api/users", "POST"));
+        assert!(!config.should_apply("/api/users", "GET"));
+    }
+
+    #[test]
+    fn test_exclude_with_method_filtering() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_routes(vec!["/api/*"])
+            .exclude(vec![("/api/users", "DELETE")])
+            .build();
+
+        // Should apply to all methods on /api/products
+        assert!(config.should_apply("/api/products", "GET"));
+        assert!(config.should_apply("/api/products", "POST"));
+        assert!(config.should_apply("/api/products", "DELETE"));
+
+        // Should apply to non-DELETE methods on /api/users
+        assert!(config.should_apply("/api/users", "GET"));
+        assert!(config.should_apply("/api/users", "POST"));
+        assert!(config.should_apply("/api/users", "PUT"));
+
+        // Should NOT apply to DELETE on /api/users
+        assert!(!config.should_apply("/api/users", "DELETE"));
+    }
+
+    #[test]
+    fn test_case_insensitive_method_matching() {
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("test")))
+            .for_routes(vec![("/api/users", "POST")])
+            .build();
+
+        // Should match regardless of case
+        assert!(config.should_apply("/api/users", "POST"));
+        assert!(config.should_apply("/api/users", "post"));
+        assert!(config.should_apply("/api/users", "Post"));
+        assert!(config.should_apply("/api/users", "pOsT"));
+    }
+
+    #[test]
+    fn test_method_filtering_with_manager() {
+        let mut manager = MiddlewareManager::new();
+
+        let config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("post-only")))
+            .for_routes(vec![("/api/users", "POST")])
+            .build();
+
+        manager.add_for_module("TestModule".to_string(), config);
+
+        // Should return middleware for POST
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "POST");
+        assert_eq!(middleware.len(), 1);
+
+        // Should NOT return middleware for GET
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "GET");
+        assert_eq!(middleware.len(), 0);
+    }
+
+    #[test]
+    fn test_complex_method_filtering_scenario() {
+        let mut manager = MiddlewareManager::new();
+
+        // Auth middleware: all methods on /api/*, except GET on /api/public/*
+        let auth_config = MiddlewareConfigurer::new()
+            .apply(Arc::new(DummyMiddleware::new("auth")))
+            .for_routes(vec!["/api/*"])
+            .exclude(vec![("/api/public/*", "GET")])
+            .build();
+
+        manager.add_for_module("TestModule".to_string(), auth_config);
+
+        // Auth required for POST to /api/public/data
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/public/data", "POST");
+        assert_eq!(middleware.len(), 1);
+
+        // Auth NOT required for GET to /api/public/data
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/public/data", "GET");
+        assert_eq!(middleware.len(), 0);
+
+        // Auth required for GET to /api/users (not in public)
+        let middleware = manager.get_middleware_for_route("TestModule", "/api/users", "GET");
+        assert_eq!(middleware.len(), 1);
     }
 }

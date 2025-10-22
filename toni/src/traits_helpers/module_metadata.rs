@@ -1,4 +1,5 @@
 use super::{Controller, Provider};
+use crate::middleware::{IntoRoutePattern, RoutePattern};
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
 use std::sync::Arc;
 
@@ -25,8 +26,8 @@ pub trait ConfigureMiddleware {
 pub struct MiddlewareConsumer {
     configurations: Vec<MiddlewareConfiguration>,
     current_middleware: Vec<Arc<dyn Middleware>>,
-    current_includes: Vec<String>,
-    current_excludes: Vec<String>,
+    current_includes: Vec<RoutePattern>,
+    current_excludes: Vec<RoutePattern>,
 }
 
 impl MiddlewareConsumer {
@@ -46,15 +47,23 @@ impl MiddlewareConsumer {
     }
 
     /// Specify routes to apply middleware to
-    pub fn for_routes(&mut self, patterns: Vec<&str>) -> &mut Self {
-        self.current_includes = patterns.iter().map(|s| s.to_string()).collect();
+    /// Accepts strings like "/users/*" or tuples like ("/users/*", "POST")
+    pub fn for_routes<T: IntoRoutePattern>(&mut self, patterns: Vec<T>) -> &mut Self {
+        self.current_includes = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
         self.finalize_current();
         self
     }
 
     /// Exclude specific routes from middleware
-    pub fn exclude(&mut self, patterns: Vec<&str>) -> &mut Self {
-        self.current_excludes = patterns.iter().map(|s| s.to_string()).collect();
+    /// Accepts strings like "/users/*" or tuples like ("/users/*", "POST")
+    pub fn exclude<T: IntoRoutePattern>(&mut self, patterns: Vec<T>) -> &mut Self {
+        self.current_excludes = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
         self.finalize_current();
         self
     }

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::http_helpers::{HttpRequest, HttpResponse, IntoResponse};
+use crate::middleware::RoutePattern;
 
 /// Result type for middleware chain execution
 pub type MiddlewareResult = Result<
@@ -66,8 +67,8 @@ impl Middleware for FunctionalMiddleware {
 #[derive(Default)]
 pub struct MiddlewareConfiguration {
     pub middleware: Vec<Arc<dyn Middleware>>,
-    pub include_patterns: Vec<String>,
-    pub exclude_patterns: Vec<String>,
+    pub include_patterns: Vec<RoutePattern>,
+    pub exclude_patterns: Vec<RoutePattern>,
 }
 
 impl MiddlewareConfiguration {
@@ -75,15 +76,16 @@ impl MiddlewareConfiguration {
         Self::default()
     }
 
-    pub fn should_apply(&self, path: &str) -> bool {
+    /// Check if this middleware should apply to the given path and HTTP method
+    pub fn should_apply(&self, path: &str, method: &str) -> bool {
         // If no patterns specified, apply to all
         if self.include_patterns.is_empty() && self.exclude_patterns.is_empty() {
             return true;
         }
 
-        // Check exclusions first
+        // Check exclusions first - if excluded, don't apply
         for pattern in &self.exclude_patterns {
-            if Self::matches_pattern(path, pattern) {
+            if pattern.matches(path, method) {
                 return false;
             }
         }
@@ -93,19 +95,9 @@ impl MiddlewareConfiguration {
             return self
                 .include_patterns
                 .iter()
-                .any(|pattern| Self::matches_pattern(path, pattern));
+                .any(|pattern| pattern.matches(path, method));
         }
 
         true
-    }
-
-    fn matches_pattern(path: &str, pattern: &str) -> bool {
-        // Simple glob-like matching
-        if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
-            path.starts_with(prefix)
-        } else {
-            path == pattern
-        }
     }
 }

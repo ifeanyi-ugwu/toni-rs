@@ -7,7 +7,7 @@ use axum::{
     Router,
     body::Body,
     http::Request,
-    routing::{delete, get, head, options, patch, post, put},
+    routing::{connect, delete, get, head, options, patch, post, put, trace},
 };
 
 use super::{AxumRouteAdapter, RouteAdapter};
@@ -43,6 +43,8 @@ impl HttpAdapter for AxumAdapter {
             HttpMethod::HEAD => self.instance.clone().route(path, head(route_handler)),
             HttpMethod::PATCH => self.instance.clone().route(path, patch(route_handler)),
             HttpMethod::OPTIONS => self.instance.clone().route(path, options(route_handler)),
+            HttpMethod::TRACE => self.instance.clone().route(path, trace(route_handler)),
+            HttpMethod::CONNECT => self.instance.clone().route(path, connect(route_handler)),
         };
     }
 

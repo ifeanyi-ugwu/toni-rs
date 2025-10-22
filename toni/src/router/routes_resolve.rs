@@ -35,11 +35,16 @@ impl RoutesResolver {
         // Process each controller
         for (_, mut controller) in controllers_vec {
             let route_path = controller.get_path();
+            let route_method = controller.get_method();
 
             let route_middleware = {
                 let container = self.container.borrow(); // Immutable borrow
                 if let Some(middleware_manager) = container.get_middleware_manager() {
-                    middleware_manager.get_middleware_for_route(&module_token, &route_path)
+                    middleware_manager.get_middleware_for_route(
+                        &module_token,
+                        &route_path,
+                        &route_method.as_str(),
+                    )
                 } else {
                     Vec::new()
                 }
