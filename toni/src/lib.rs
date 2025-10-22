@@ -19,6 +19,9 @@ pub use http_adapter::HttpAdapter;
 pub use http_helpers::{Body, HttpMethod, HttpRequest, HttpResponse, IntoResponse};
 pub use injector::InstanceWrapper;
 
+// Re-export macros
+pub use toni_macros::*;
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
