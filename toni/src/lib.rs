@@ -28,6 +28,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     #[tokio::test]
+    #[ignore = "Requires server to be running"]
     async fn test_server() {
         let server_handle: JoinHandle<()> = tokio::spawn(async {
             // let factory = ToniFactory::new();
