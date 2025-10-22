@@ -2,15 +2,16 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::{http_adapter::HttpAdapter, http_helpers::HttpMethod, injector::InstanceWrapper};
 use axum::{
-    Router,
     body::Body,
     http::Request,
     routing::{connect, delete, get, head, options, patch, post, put, trace},
+    Router,
 };
+use toni::{HttpAdapter, HttpMethod, InstanceWrapper};
 
-use super::{AxumRouteAdapter, RouteAdapter};
+use super::AxumRouteAdapter;
+use toni::RouteAdapter;
 
 #[derive(Clone)]
 pub struct AxumAdapter {

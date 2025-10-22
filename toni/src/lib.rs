@@ -13,6 +13,12 @@ mod toni_application;
 pub mod toni_factory;
 pub mod traits_helpers;
 
+// Re-exports for adapter crates
+pub use adapter::RouteAdapter;
+pub use http_adapter::HttpAdapter;
+pub use http_helpers::{Body, HttpMethod, HttpRequest, HttpResponse, IntoResponse};
+pub use injector::InstanceWrapper;
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

@@ -1,0 +1,18 @@
+[package]
+name = "toni-axum"
+version = "0.1.0"
+edition = "2021"
+description = "Axum adapter for the Toni framework"
+license = "MIT"
+keywords = ["toni", "axum", "web", "framework", "adapter"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+toni = { path = "../toni" }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+serde_json = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"

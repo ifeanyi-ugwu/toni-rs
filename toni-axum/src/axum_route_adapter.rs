@@ -1,17 +1,16 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use axum::{
-    RequestPartsExt,
     body::to_bytes,
     extract::{Path, Query},
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
+    RequestPartsExt,
 };
 use serde_json::Value;
+use std::str::FromStr;
 
-use crate::http_helpers::{self, Body, HttpRequest, HttpResponse};
-
-use super::RouteAdapter;
+use toni::{Body, HttpRequest, HttpResponse, IntoResponse, RouteAdapter};
 
 pub struct AxumRouteAdapter;
 
@@ -61,7 +60,7 @@ impl RouteAdapter for AxumRouteAdapter {
     }
 
     fn adapt_response(
-        response: Box<dyn http_helpers::IntoResponse<Response = HttpResponse>>,
+        response: Box<dyn IntoResponse<Response = HttpResponse>>,
     ) -> Result<Self::Response> {
         let response = response.to_response();
 
