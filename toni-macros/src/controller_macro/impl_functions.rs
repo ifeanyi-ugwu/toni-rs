@@ -25,7 +25,7 @@ pub fn process_impl_functions(
         if let ImplItem::Fn(method) = item {
             if let Some(attr) = find_macro_attribute(&method.attrs, "http_method".to_owned()) {
                 let enhancers_attr = get_enhancers_attr(&method.attrs)?;
-                println!("enhancers_attr: {:?}", enhancers_attr);
+                //println!("enhancers_attr: {:?}", enhancers_attr);
 
                 let marker_params = get_marker_params(method)?;
 

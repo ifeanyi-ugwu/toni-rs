@@ -1,0 +1,19 @@
+[package]
+name = "toni-config"
+version = "0.1.0"
+edition = "2021"
+description = "Configuration management for Toni framework"
+license = "MIT"
+
+[dependencies]
+thiserror = "2.0.17"
+dotenv = "0.15.0"
+toni-macros = { path = "../toni-macros" }
+validator = { version = "0.20.0", optional = true }
+
+[features]
+default = []
+validation = ["validator"]
+
+[dev-dependencies]
+serial_test = "3.2.0"

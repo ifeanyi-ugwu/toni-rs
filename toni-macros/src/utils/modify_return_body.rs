@@ -41,14 +41,14 @@ pub fn modify_return_method_body(method_body: &mut Block) {
     //if find return statement, replace it with Box::new(returned_expr)
     method_body.stmts.iter_mut().for_each(|stmt| {
         if let Stmt::Expr(Expr::Return(_), None) = stmt {
-            println!("ReturnReturnReturn: {:?}", stmt);
+            //println!("ReturnReturnReturn: {:?}", stmt);
             if let Stmt::Expr(Expr::Return(expr_return), None) = stmt {
                 let returned_expr = &expr_return.expr;
                 let new_return_expr: Expr = syn::parse2(quote! {
                     Box::new(#returned_expr)
                 })
                 .unwrap();
-                println!("new_return_expr: {:?}", &expr_return);
+                //println!("new_return_expr: {:?}", &expr_return);
                 *expr_return = syn::ExprReturn {
                     attrs: expr_return.attrs.clone(),
                     return_token: expr_return.return_token,

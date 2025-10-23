@@ -6,6 +6,7 @@ use proc_macro2::Span;
 use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
+mod config_macro;
 mod controller_macro;
 mod enhancer;
 mod markers_params;
@@ -73,4 +74,9 @@ pub fn interceptor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
+}
+
+#[proc_macro_derive(Config, attributes(env, default, nested))]
+pub fn derive_config(input: TokenStream) -> TokenStream {
+    config_macro::derive_config(input)
 }
