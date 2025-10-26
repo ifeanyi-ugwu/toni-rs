@@ -1,7 +1,7 @@
 //! Simple test to verify instance injection for providers only (no controllers)
 
-use toni_config::{Config, ConfigModule, ConfigService};
 use toni::{module, provider_struct};
+use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
 struct SimpleConfig {

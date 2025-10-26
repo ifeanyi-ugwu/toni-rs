@@ -118,7 +118,7 @@ impl<T: Config + Clone + Send + Sync + 'static> Provider for ConfigServiceManage
 
         providers.insert(
             "ConfigService".to_string(),
-            Arc::new(Box::new(instance) as Box<dyn ProviderTrait>)
+            Arc::new(Box::new(instance) as Box<dyn ProviderTrait>),
         );
 
         providers

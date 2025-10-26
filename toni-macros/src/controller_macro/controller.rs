@@ -50,9 +50,14 @@ pub fn generate_controller_and_metadata(
     modify_return_method_body(&mut modified_block);
 
     // Convert new tuple format (field_name, Type, token) to old format (field_name, token_ident)
-    let provider_names: Vec<(Ident, Ident)> = dependency_info.fields.iter()
+    let provider_names: Vec<(Ident, Ident)> = dependency_info
+        .fields
+        .iter()
         .map(|(field_name, _full_type, lookup_token)| {
-            (field_name.clone(), Ident::new(lookup_token, field_name.span()))
+            (
+                field_name.clone(),
+                Ident::new(lookup_token, field_name.span()),
+            )
         })
         .collect();
 
