@@ -1,0 +1,487 @@
+//! Controller Instance Injection Implementation
+//!
+//! Architecture:
+//! 1. User struct with REAL fields (unchanged)
+//! 2. Controller wrapper per handler method that lazily creates instances with dependency resolution
+//! 3. Manager that returns controller wrappers
+//!
+//! Example transformation:
+//! ```rust,ignore
+//! // User code:
+//! #[controller_struct(pub struct AppController { service: AppService })]
+//! #[controller("/api")]
+//! impl AppController {
+//!     #[get("/info")]
+//!     fn get_info(&self, req: HttpRequest) -> ToniBody {
+//!         self.service.get_app_info()
+//!     }
+//! }
+//!
+//! // Generated:
+//! #[derive(Clone)]
+//! pub struct AppController {
+//!     service: AppService
+//! }
+//!
+//! impl AppController {
+//!     fn get_info(&self, req: HttpRequest) -> ToniBody {
+//!         self.service.get_app_info()
+//!     }
+//! }
+//!
+//! struct GetInfoController {
+//!     dependencies: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>
+//! }
+//!
+//! impl ControllerTrait for GetInfoController {
+//!     async fn handle(&self, req: HttpRequest) -> HttpResponse {
+//!         // Resolve dependencies
+//!         let service: AppService = *self.dependencies.get("AppService")
+//!             .unwrap().execute(vec![]).await.downcast().unwrap();
+//!
+//!         // Create controller instance with real fields
+//!         let controller = AppController { service };
+//!
+//!         // Call user's method on real struct
+//!         controller.get_info(req)
+//!     }
+//! }
+//! ```
+
+use proc_macro2::TokenStream;
+use quote::quote;
+use std::collections::HashMap;
+use syn::{
+    Attribute, Error, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Result, spanned::Spanned,
+};
+
+use crate::{
+    enhancer::enhancer::create_enchancers_token_stream,
+    markers_params::{
+        extracts_marker_params::{
+            extract_body_from_param, extract_path_param_from_param, extract_query_from_param,
+        },
+        get_marker_params::MarkerParam,
+    },
+    shared::{dependency_info::DependencyInfo, metadata_info::MetadataInfo},
+    utils::controller_utils::{attr_to_string, create_extract_body_dto_token_stream},
+};
+
+pub fn generate_instance_controller_system(
+    struct_attrs: &ItemStruct,
+    impl_block: &ItemImpl,
+    dependencies: &DependencyInfo,
+    route_prefix: &str,
+) -> Result<TokenStream> {
+    let struct_name = &struct_attrs.ident;
+
+    // Add Clone derive to struct (required for creating instances)
+    let struct_with_clone = add_clone_derive(struct_attrs);
+    let impl_def = impl_block.clone();
+
+    // Generate controller wrappers for each handler method
+    let (controller_wrappers, metadata) =
+        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix)?;
+
+    let manager = generate_manager(struct_name, metadata, dependencies);
+
+    Ok(quote! {
+        #[allow(dead_code)]
+        #struct_with_clone
+
+        #[allow(dead_code)]
+        #impl_def
+
+        #(#controller_wrappers)*
+        #manager
+    })
+}
+
+fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
+    let mut struct_def = struct_attrs.clone();
+
+    let has_clone = struct_def.attrs.iter().any(|attr| {
+        if attr.path().is_ident("derive") {
+            // Would need to parse derive contents properly
+            false
+        } else {
+            false
+        }
+    });
+
+    if !has_clone {
+        let clone_derive: syn::Attribute = syn::parse_quote! {
+            #[derive(Clone)]
+        };
+        struct_def.attrs.push(clone_derive);
+    }
+
+    struct_def
+}
+
+fn generate_controller_wrappers(
+    impl_block: &ItemImpl,
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    route_prefix: &str,
+) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
+    let mut wrappers = Vec::new();
+    let mut metadata_list = Vec::new();
+
+    for item in &impl_block.items {
+        if let syn::ImplItem::Fn(method) = item {
+            if let Some(http_method_attr) = find_http_method_attr(&method.attrs) {
+                let enhancers_attr = get_enhancers_attr(&method.attrs)?;
+                let marker_params = get_marker_params(method)?;
+
+                let (wrapper, metadata) = generate_controller_wrapper(
+                    method,
+                    struct_name,
+                    dependencies,
+                    route_prefix,
+                    http_method_attr,
+                    enhancers_attr,
+                    marker_params,
+                )?;
+
+                wrappers.push(wrapper);
+                metadata_list.push(metadata);
+            }
+        }
+    }
+
+    Ok((wrappers, metadata_list))
+}
+
+fn find_http_method_attr(attrs: &[Attribute]) -> Option<&Attribute> {
+    attrs.iter().find(|attr| {
+        attr.path().is_ident("get")
+            || attr.path().is_ident("post")
+            || attr.path().is_ident("put")
+            || attr.path().is_ident("delete")
+            || attr.path().is_ident("patch")
+            || attr.path().is_ident("head")
+            || attr.path().is_ident("options")
+    })
+}
+
+fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<HashMap<&Ident, &Attribute>> {
+    use crate::enhancer::enhancer::get_enhancers_attr as get_enhancers;
+    get_enhancers(attrs)
+}
+
+fn get_marker_params(method: &ImplItemFn) -> Result<Vec<MarkerParam>> {
+    use crate::markers_params::get_marker_params::get_marker_params as get_params;
+    get_params(method)
+}
+
+fn generate_controller_wrapper(
+    method: &ImplItemFn,
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    route_prefix: &str,
+    http_method_attr: &Attribute,
+    enhancers_attr: HashMap<&Ident, &Attribute>,
+    marker_params: Vec<MarkerParam>,
+) -> Result<(TokenStream, MetadataInfo)> {
+    let http_method = attr_to_string(http_method_attr)
+        .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
+
+    let route_path = http_method_attr
+        .parse_args::<LitStr>()
+        .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?
+        .value();
+
+    let full_route_path = format!("{}{}", route_prefix, route_path);
+
+    let method_name = &method.sig.ident;
+    let controller_name = Ident::new(
+        &format!("{}Controller", capitalize_first(method_name.to_string())),
+        method_name.span(),
+    );
+    let controller_token = controller_name.to_string();
+
+    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+
+    let struct_instantiation = quote! {
+        let controller = #struct_name {
+            #(#field_names),*
+        };
+    };
+
+    let method_call = generate_method_call(method, &marker_params)?;
+    let enhancers = create_enchancers_token_stream(enhancers_attr)?;
+
+    let (marker_params_extraction, body_dto_token_stream) =
+        generate_marker_params_extraction(&marker_params)?;
+
+    let wrapper = generate_controller_wrapper_code(
+        &controller_name,
+        &controller_token,
+        &full_route_path,
+        &http_method,
+        &field_resolutions,
+        &struct_instantiation,
+        &method_call,
+        &enhancers,
+        &marker_params_extraction,
+        &body_dto_token_stream,
+    );
+
+    let controller_dependencies: Vec<(Ident, String)> = dependencies
+        .fields
+        .iter()
+        .map(|(field_name, _full_type, lookup_token)| {
+            let dep_field_name = Ident::new(&format!("{}_dep", field_name), field_name.span());
+            (dep_field_name, lookup_token.clone())
+        })
+        .collect();
+
+    Ok((
+        wrapper,
+        MetadataInfo {
+            struct_name: controller_name,
+            dependencies: controller_dependencies,
+        },
+    ))
+}
+
+fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
+    let mut resolutions = Vec::new();
+    let mut field_names = Vec::new();
+
+    for (field_name, full_type, lookup_token) in &dependencies.fields {
+        let error_msg = format!(
+            "Missing dependency '{}' for field '{}'",
+            lookup_token, field_name
+        );
+
+        let resolution = quote! {
+            let #field_name: #full_type = {
+                let provider = self.dependencies
+                    .get(#lookup_token)
+                    .expect(#error_msg);
+
+                let any_box = provider.execute(vec![]).await;
+
+                *any_box.downcast::<#full_type>()
+                    .unwrap_or_else(|_| panic!(
+                        "Failed to downcast '{}' to {}",
+                        #lookup_token,
+                        stringify!(#full_type)
+                    ))
+            };
+        };
+
+        resolutions.push(resolution);
+        field_names.push(field_name.clone());
+    }
+
+    (resolutions, field_names)
+}
+
+fn generate_method_call(method: &ImplItemFn, marker_params: &[MarkerParam]) -> Result<TokenStream> {
+    let method_name = &method.sig.ident;
+
+    let mut call_args = vec![quote! { req }];
+
+    for marker_param in marker_params {
+        let param_name = &marker_param.param_name;
+        call_args.push(quote! { #param_name });
+    }
+
+    Ok(quote! {
+        controller.#method_name(#(#call_args),*)
+    })
+}
+
+fn generate_marker_params_extraction(
+    marker_params: &[MarkerParam],
+) -> Result<(Vec<TokenStream>, Option<TokenStream>)> {
+    let mut extractions = Vec::new();
+    let mut body_dto_token_stream = None;
+
+    for marker_param in marker_params {
+        match marker_param.marker_name.as_str() {
+            "body" => {
+                let dto_type_ident = &marker_param.type_ident;
+                body_dto_token_stream = Some(create_extract_body_dto_token_stream(dto_type_ident)?);
+                extractions.push(extract_body_from_param(marker_param)?);
+            }
+            "query" => {
+                extractions.push(extract_query_from_param(marker_param)?);
+            }
+            "param" => {
+                extractions.push(extract_path_param_from_param(marker_param)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok((extractions, body_dto_token_stream))
+}
+
+fn generate_controller_wrapper_code(
+    controller_name: &Ident,
+    controller_token: &str,
+    full_route_path: &str,
+    http_method: &str,
+    field_resolutions: &[TokenStream],
+    struct_instantiation: &TokenStream,
+    method_call: &TokenStream,
+    enhancers: &HashMap<String, Vec<TokenStream>>,
+    marker_params_extraction: &[TokenStream],
+    body_dto_token_stream: &Option<TokenStream>,
+) -> TokenStream {
+    let binding = Vec::new();
+    let use_guards = enhancers.get("use_guard").unwrap_or(&binding);
+    let interceptors = enhancers.get("interceptor").unwrap_or(&binding);
+    let pipes = enhancers.get("pipe").unwrap_or(&binding);
+
+    let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
+        token_stream.clone()
+    } else {
+        quote! { None }
+    };
+
+    quote! {
+        struct #controller_name {
+            dependencies: ::rustc_hash::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+            >,
+        }
+
+        #[::async_trait::async_trait]
+        impl ::toni::traits_helpers::ControllerTrait for #controller_name {
+            async fn execute(
+                &self,
+                req: ::toni::http_helpers::HttpRequest,
+            ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse> + Send> {
+                #(#field_resolutions)*
+                #(#marker_params_extraction)*
+                #struct_instantiation
+
+                let result = #method_call;
+                Box::new(result)
+            }
+
+            fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
+                ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
+            }
+
+            fn get_path(&self) -> String {
+                #full_route_path.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #controller_token.to_string()
+            }
+
+            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard>> {
+                vec![#(#use_guards),*]
+            }
+
+            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>> {
+                vec![#(#interceptors),*]
+            }
+
+            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>> {
+                vec![#(#pipes),*]
+            }
+
+            fn get_body_dto(&self, _req: &::toni::http_helpers::HttpRequest) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
+                #body_dto_stream
+            }
+        }
+    }
+}
+
+fn generate_manager(
+    struct_name: &Ident,
+    metadata_list: Vec<MetadataInfo>,
+    dependencies: &DependencyInfo,
+) -> TokenStream {
+    let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let dependency_tokens: Vec<String> = dependencies
+        .fields
+        .iter()
+        .map(|(_, _full_type, lookup_token)| lookup_token.clone())
+        .collect();
+
+    let unique_tokens: Vec<_> = dependency_tokens
+        .iter()
+        .map(|token| quote! { #token.to_string() })
+        .collect();
+
+    let controller_instances: Vec<_> = metadata_list
+        .iter()
+        .map(|metadata| {
+            let controller_name = &metadata.struct_name;
+            let controller_token = controller_name.to_string();
+
+            quote! {
+                (
+                    #controller_token.to_string(),
+                    ::std::sync::Arc::new(
+                        Box::new(#controller_name {
+                            dependencies: dependencies.clone(),
+                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                    )
+                )
+            }
+        })
+        .collect();
+
+    quote! {
+        pub struct #manager_name;
+
+        impl ::toni::traits_helpers::Controller for #manager_name {
+            fn get_all_controllers(
+                &self,
+                dependencies: &::rustc_hash::FxHashMap<
+                    String,
+                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+                >,
+            ) -> ::rustc_hash::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>
+            > {
+                let mut controllers = ::rustc_hash::FxHashMap::default();
+
+                #(
+                    let (key, value): (String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>) = #controller_instances;
+                    controllers.insert(key, value);
+                )*
+
+                controllers
+            }
+
+            fn get_name(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_dependencies(&self) -> Vec<String> {
+                vec![#(#unique_tokens),*]
+            }
+        }
+    }
+}
+
+fn capitalize_first(s: String) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect()
+}

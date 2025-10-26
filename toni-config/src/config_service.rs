@@ -25,6 +25,7 @@ use toni::traits_helpers::{Provider, ProviderTrait};
 ///     }
 /// }
 /// ```
+#[derive(Clone)]
 pub struct ConfigService<T: Config> {
     config: Arc<T>,
 }
@@ -67,6 +68,27 @@ impl<T: Config + Clone + 'static> ConfigService<T> {
 }
 
 // ============================================================================
+// ProviderTrait Implementation - Enables ConfigService as Injectable Dependency
+// ============================================================================
+
+/// Implement ProviderTrait so ConfigService can be injected as a dependency
+#[async_trait]
+impl<T: Config> ProviderTrait for ConfigService<T> {
+    async fn execute(&self, _params: Vec<Box<dyn Any + Send>>) -> Box<dyn Any + Send> {
+        // Return a clone of self for injection
+        Box::new(self.clone())
+    }
+
+    fn get_token(&self) -> String {
+        "ConfigService".to_string()
+    }
+
+    fn get_token_manager(&self) -> String {
+        format!("ConfigService<{}>", std::any::type_name::<T>())
+    }
+}
+
+// ============================================================================
 // Provider Implementation for DI System
 // ============================================================================
 
@@ -88,13 +110,16 @@ impl<T: Config + Clone + Send + Sync + 'static> Provider for ConfigServiceManage
     ) -> FxHashMap<String, Arc<Box<dyn ProviderTrait>>> {
         let mut providers = FxHashMap::default();
 
-        // Register the `get` method provider
-        // Token format: {METHOD_NAME_UPPER}{STRUCT_NAME} = "GetConfigService"
-        let get_token = "GetConfigService".to_string();
-        let get_provider: Arc<Box<dyn ProviderTrait>> = Arc::new(Box::new(ConfigServiceGet::<T> {
+        // Register struct provider (instance injection pattern)
+        // Token: "ConfigService" (matches get_token() and provider lookup)
+        let instance = ConfigService {
             config: self.config.clone(),
-        }));
-        providers.insert(get_token, get_provider);
+        };
+
+        providers.insert(
+            "ConfigService".to_string(),
+            Arc::new(Box::new(instance) as Box<dyn ProviderTrait>)
+        );
 
         providers
     }
@@ -109,25 +134,5 @@ impl<T: Config + Clone + Send + Sync + 'static> Provider for ConfigServiceManage
 
     fn get_dependencies(&self) -> Vec<String> {
         vec![] // No dependencies - config is stored in Arc
-    }
-}
-
-/// Provider wrapper for ConfigService::get method
-struct ConfigServiceGet<T: Config> {
-    config: Arc<T>,
-}
-
-#[async_trait]
-impl<T: Config + Clone + Send + Sync + 'static> ProviderTrait for ConfigServiceGet<T> {
-    async fn execute(&self, _params: Vec<Box<dyn Any + Send>>) -> Box<dyn Any + Send> {
-        Box::new((*self.config).clone())
-    }
-
-    fn get_token(&self) -> String {
-        "GetConfigService".to_string()
-    }
-
-    fn get_token_manager(&self) -> String {
-        format!("ConfigService<{}>", std::any::type_name::<T>())
     }
 }

@@ -27,8 +27,14 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
 
+        // Extract the full type (preserves generics like ConfigService<AppConfig>)
+        let full_type = field.ty.clone();
+
+        // Extract just the type identifier for provider lookup token
         let type_ident = extract_ident_from_type(&field.ty)?;
-        fields.push((field_ident.clone(), type_ident.clone()));
+        let lookup_token = type_ident.to_string();
+
+        fields.push((field_ident.clone(), full_type, lookup_token));
     }
 
     Ok(DependencyInfo {

@@ -48,9 +48,17 @@ pub fn generate_controller_and_metadata(
 
     let mut modified_block = implementation_fn.block.clone();
     modify_return_method_body(&mut modified_block);
+
+    // Convert new tuple format (field_name, Type, token) to old format (field_name, token_ident)
+    let provider_names: Vec<(Ident, Ident)> = dependency_info.fields.iter()
+        .map(|(field_name, _full_type, lookup_token)| {
+            (field_name.clone(), Ident::new(lookup_token, field_name.span()))
+        })
+        .collect();
+
     let injections = modify_method_body(
         &mut modified_block,
-        dependency_info.fields.clone(),
+        provider_names,
         original_struct_name.clone(),
     );
 
