@@ -10,14 +10,14 @@ use syn::{
 
 #[derive(Debug, Default)]
 struct ModuleConfig {
-    imports: Vec<Ident>,
+    imports: Vec<syn::Expr>,
     controllers: Vec<Ident>,
     providers: Vec<Ident>,
     exports: Vec<Ident>,
 }
 
 struct ConfigParser {
-    imports: Vec<Ident>,
+    imports: Vec<syn::Expr>,
     controllers: Vec<Ident>,
     providers: Vec<Ident>,
     exports: Vec<Ident>,
@@ -38,23 +38,30 @@ impl Parse for ConfigParser {
             let content;
             bracketed!(content in input);
 
-            let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
-
             match key.to_string().as_str() {
-                "imports" => config.imports = fields.into_iter().collect(),
+                "imports" => {
+                    // Parse imports as expressions (allows method calls, etc.)
+                    let fields = Punctuated::<syn::Expr, Token![,]>::parse_terminated(&content)?;
+                    config.imports = fields.into_iter().collect();
+                }
                 "controllers" => {
+                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
                     config.controllers = fields
                         .into_iter()
                         .map(|field| Ident::new(&format!("{}Manager", field), field.span()))
                         .collect()
                 }
                 "providers" => {
+                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
                     config.providers = fields
                         .into_iter()
                         .map(|field| Ident::new(&format!("{}Manager", field), field.span()))
                         .collect()
                 }
-                "exports" => config.exports = fields.into_iter().collect(),
+                "exports" => {
+                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
+                    config.exports = fields.into_iter().collect()
+                }
                 _ => return Err(syn::Error::new(key.span(), "Unknown field")),
             }
 
@@ -97,7 +104,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
     let input_name = input_ident.to_string();
-    let imports: &Vec<Ident> = &config.imports;
+    let imports = &config.imports;
     let controllers = config.controllers;
     let providers = &config.providers;
     let exports = &config.exports;
@@ -124,7 +131,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #input_name.to_string()
             }
             fn imports(&self) -> Option<Vec<Box<dyn ::toni::traits_helpers::ModuleMetadata>>> {
-                Some(vec![#(Box::new(#imports::new())),*])
+                Some(vec![#(Box::new(#imports)),*])
             }
             fn controllers(&self) -> Option<Vec<Box<dyn ::toni::traits_helpers::Controller>>> {
                 Some(vec![#(Box::new(#controllers)),*])

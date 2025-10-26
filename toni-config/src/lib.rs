@@ -145,6 +145,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 // Re-export the derive macro
 pub use toni_macros::Config;
@@ -152,17 +153,46 @@ pub use toni_macros::Config;
 #[cfg(feature = "validation")]
 pub use validator;
 
+mod config_service;
+pub use config_service::{ConfigService, ConfigServiceManager};
+
 /// Configuration module that handles loading and validation
-pub struct ConfigModule<T> {
-    config: T,
+pub struct ConfigModule<T: Config> {
+    config: Arc<T>,
 }
 
-impl<T: FromEnv + Validate> ConfigModule<T> {
+impl<T: Config> ConfigModule<T> {
+    /// Create a new ConfigModule and load configuration immediately
+    ///
+    /// This is called automatically when the module is imported in a Toni module.
+    /// The configuration is loaded eagerly and stored in the module instance.
+    ///
+    /// Panics if configuration loading or validation fails (fail-fast behavior).
+    pub fn new() -> Self {
+        // Load config eagerly
+        let config = T::load_from_env().unwrap_or_else(|e| {
+            eprintln!("Failed to load config: {}", e);
+            std::process::exit(1);
+        });
+
+        // Validate config
+        config.validate().unwrap_or_else(|e| {
+            eprintln!("Config validation failed: {}", e);
+            std::process::exit(1);
+        });
+
+        Self {
+            config: Arc::new(config),
+        }
+    }
+
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ConfigError> {
         let config = T::load_from_env()?;
         config.validate()?;
-        Ok(Self { config })
+        Ok(Self {
+            config: Arc::new(config),
+        })
     }
 
     /// Load from .env file(s)
@@ -185,8 +215,45 @@ impl<T: FromEnv + Validate> ConfigModule<T> {
     }
 
     /// Get the configuration instance
-    pub fn get(&self) -> &T {
+    pub fn get(&self) -> T {
+        (*self.config).clone()
+    }
+
+    /// Get a reference to the configuration
+    pub fn get_ref(&self) -> &T {
         &self.config
+    }
+}
+
+// Implement ModuleMetadata for DI system integration
+impl<T: Config> toni::traits_helpers::ModuleMetadata for ConfigModule<T> {
+    fn get_id(&self) -> String {
+        format!("ConfigModule<{}>", std::any::type_name::<T>())
+    }
+
+    fn get_name(&self) -> String {
+        format!("ConfigModule<{}>", std::any::type_name::<T>())
+    }
+
+    fn imports(&self) -> Option<Vec<Box<dyn toni::traits_helpers::ModuleMetadata>>> {
+        None
+    }
+
+    fn controllers(&self) -> Option<Vec<Box<dyn toni::traits_helpers::Controller>>> {
+        None
+    }
+
+    fn providers(&self) -> Option<Vec<Box<dyn toni::traits_helpers::Provider>>> {
+        Some(vec![Box::new(ConfigServiceManager::<T>::with_config(
+            self.config.clone(),
+        ))])
+    }
+
+    fn exports(&self) -> Option<Vec<String>> {
+        Some(vec![format!(
+            "ConfigService<{}>",
+            std::any::type_name::<T>()
+        )])
     }
 }
 
@@ -220,6 +287,15 @@ impl Environment {
 pub trait Validate {
     fn validate(&self) -> Result<(), ConfigError>;
 }
+
+/// Combined trait for configuration types
+///
+/// This trait is automatically implemented for any type that implements
+/// both `FromEnv` and `Validate`. You don't need to implement this manually.
+pub trait Config: FromEnv + Validate + Clone + Send + Sync + 'static {}
+
+// Blanket implementation for any type that satisfies the bounds
+impl<T> Config for T where T: FromEnv + Validate + Clone + Send + Sync + 'static {}
 
 /// Configuration errors
 #[derive(Debug, thiserror::Error)]

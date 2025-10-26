@@ -44,13 +44,10 @@ pub fn generate_provider_and_metadata(
         let provider_name =
             create_provider_name_by_fn_and_struct_ident(&function_name, &provider_manager)?;
 
-        if !provider_name.contains(&original_struct_name)
-            && !dependency_info.unique_types.insert(provider_name.clone())
-        {
-            return Err(Error::new(
-                original_struct_ident.span(),
-                format!("Conflict in dependency: {}", provider_name),
-            ));
+        // Allow duplicate dependencies (same as controller behavior)
+        // This enables calling the same method on a dependency from multiple methods
+        if !dependency_info.unique_types.contains(&provider_name) {
+            dependency_info.unique_types.insert(provider_name.clone());
         }
 
         dependencies.push((field_name.clone(), provider_name));
