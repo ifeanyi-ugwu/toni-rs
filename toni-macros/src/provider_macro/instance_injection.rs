@@ -100,13 +100,13 @@ fn generate_provider_wrapper(struct_name: &Ident, dependencies: &DependencyInfo)
 
     quote! {
         struct #provider_name {
-            dependencies: ::rustc_hash::FxHashMap<
+            dependencies: ::toni::FxHashMap<
                 String,
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
             >,
         }
 
-        #[::async_trait::async_trait]
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::ProviderTrait for #provider_name {
             async fn execute(
                 &self,
@@ -185,15 +185,15 @@ fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> Token
         impl ::toni::traits_helpers::Provider for #manager_name {
             fn get_all_providers(
                 &self,
-                dependencies: &::rustc_hash::FxHashMap<
+                dependencies: &::toni::FxHashMap<
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
                 >,
-            ) -> ::rustc_hash::FxHashMap<
+            ) -> ::toni::FxHashMap<
                 String,
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
             > {
-                let mut providers = ::rustc_hash::FxHashMap::default();
+                let mut providers = ::toni::FxHashMap::default();
 
                 // Create provider wrapper (not the final instance!)
                 // The wrapper will create the instance lazily when execute() is called

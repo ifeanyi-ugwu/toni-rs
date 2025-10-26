@@ -19,6 +19,11 @@ pub use http_adapter::HttpAdapter;
 pub use http_helpers::{Body, HttpMethod, HttpRequest, HttpResponse, IntoResponse};
 pub use injector::InstanceWrapper;
 
+// Re-export dependencies used in macro-generated code
+// This allows users to only depend on `toni` without needing to add these explicitly
+pub use async_trait::async_trait;
+pub use rustc_hash::FxHashMap;
+
 // Re-export macros
 pub use toni_macros::*;
 

@@ -23,9 +23,9 @@ pub fn generate_manager(
         pub struct #manager_struct_name;
 
         impl ::toni::traits_helpers::Provider for #manager_struct_name {
-            fn get_all_providers(&self, dependencies: &::rustc_hash::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>>) -> ::rustc_hash::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>> {
+            fn get_all_providers(&self, dependencies: &::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>>) -> ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>> {
 
-                let mut providers = ::rustc_hash::FxHashMap::default();
+                let mut providers = ::toni::FxHashMap::default();
                 #(
                     let (key, value): (String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>) = #providers_instances;
                     providers.insert(key, value);

@@ -10,8 +10,6 @@ thiserror = "2.0.17"
 dotenv = "0.15.0"
 toni-macros = { path = "../toni-macros" }
 toni = { path = "../toni" }
-async-trait = "0.1"
-rustc-hash = "2.0"
 validator = { version = "0.20.0", optional = true }
 
 [features]

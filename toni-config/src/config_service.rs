@@ -1,11 +1,11 @@
 //! ConfigService - Injectable service for accessing configuration in providers
 
 use crate::Config;
-use async_trait::async_trait;
-use rustc_hash::FxHashMap;
 use std::any::Any;
 use std::sync::Arc;
+use toni::async_trait;
 use toni::traits_helpers::{Provider, ProviderTrait};
+use toni::FxHashMap;
 
 /// Service that provides access to configuration
 ///

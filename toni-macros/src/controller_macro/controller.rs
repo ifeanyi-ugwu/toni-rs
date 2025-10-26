@@ -155,7 +155,7 @@ fn generate_controller_code(
         struct #controller_name {
             #(#field_defs),*
         }
-        #[::async_trait::async_trait]
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::#trait_name for #controller_name {
             #[inline]
             async fn execute(

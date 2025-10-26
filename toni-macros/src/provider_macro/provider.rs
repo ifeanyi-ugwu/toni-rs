@@ -110,7 +110,7 @@ fn generate_provider_code(
             #(#field_defs),*
         }
 
-        #[::async_trait::async_trait]
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::#trait_name for #provider_name {
             #[inline]
             async fn execute(&self, params: Vec<Box<dyn ::std::any::Any + Send>>) -> Box<dyn ::std::any::Any + Send> {

@@ -77,7 +77,7 @@ pub fn handle_middleware_struct(attr: TokenStream, item: TokenStream) -> Result<
         #impl_block
 
         // Generate the Middleware trait implementation
-        #[::async_trait::async_trait]
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::middleware::Middleware for #struct_name {
             async fn handle(
                 &self,

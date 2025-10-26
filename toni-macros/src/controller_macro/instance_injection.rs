@@ -346,13 +346,13 @@ fn generate_controller_wrapper_code(
 
     quote! {
         struct #controller_name {
-            dependencies: ::rustc_hash::FxHashMap<
+            dependencies: ::toni::FxHashMap<
                 String,
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
             >,
         }
 
-        #[::async_trait::async_trait]
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::ControllerTrait for #controller_name {
             async fn execute(
                 &self,
@@ -441,15 +441,15 @@ fn generate_manager(
         impl ::toni::traits_helpers::Controller for #manager_name {
             fn get_all_controllers(
                 &self,
-                dependencies: &::rustc_hash::FxHashMap<
+                dependencies: &::toni::FxHashMap<
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
                 >,
-            ) -> ::rustc_hash::FxHashMap<
+            ) -> ::toni::FxHashMap<
                 String,
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>
             > {
-                let mut controllers = ::rustc_hash::FxHashMap::default();
+                let mut controllers = ::toni::FxHashMap::default();
 
                 #(
                     let (key, value): (String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>) = #controller_instances;
