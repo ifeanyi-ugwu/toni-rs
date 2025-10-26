@@ -1,11 +1,11 @@
-//! Instance Injection Implementation (New Pattern)
+//! Singleton Instance Injection Implementation
 //!
 //! Architecture:
 //! 1. User struct with REAL fields (unchanged)
-//! 2. Provider wrapper that lazily creates instances with dependency resolution
-//! 3. Manager that returns the wrapper (not the final instance)
+//! 2. Provider wrapper that stores Arc<Instance> (created once at startup)
+//! 3. Manager that creates the instance eagerly with dependency resolution
 //!
-//! Example transformation:
+//! Example transformation (Singleton):
 //! ```rust,ignore
 //! // User code:
 //! #[provider_struct(pub struct AppService { config: ConfigService<AppConfig> })]
@@ -22,17 +22,32 @@
 //! }
 //!
 //! struct AppServiceProvider {
-//!     dependencies: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>
+//!     instance: Arc<AppService>  // Created once at startup!
 //! }
 //!
 //! impl ProviderTrait for AppServiceProvider {
 //!     async fn execute(&self, _: Vec<...>) -> Box<dyn Any> {
-//!         // Resolve dependencies (can await here!)
-//!         let config = *self.dependencies.get("ConfigService")
-//!             .unwrap().execute(vec![]).await.downcast().unwrap();
+//!         // Just clone the Arc - zero allocation!
+//!         Box::new(self.instance.clone())
+//!     }
 //!
-//!         // Create instance with real fields
-//!         Box::new(AppService { config })
+//!     fn get_scope(&self) -> ProviderScope {
+//!         ProviderScope::Singleton
+//!     }
+//! }
+//!
+//! // Manager creates instance at startup:
+//! impl Provider for AppServiceManager {
+//!     async fn get_all_providers(&self, dependencies: &FxHashMap<...>) -> FxHashMap<...> {
+//!         // Resolve dependencies (await naturally)
+//!         let config = dependencies.get("ConfigService").execute(vec![]).await...;
+//!
+//!         // Create instance ONCE
+//!         let instance = Arc::new(AppService { config });
+//!
+//!         // Wrap in provider
+//!         let provider = AppServiceProvider { instance };
+//!         providers.insert("AppService", Arc::new(Box::new(provider)));
 //!     }
 //! }
 //! ```
@@ -92,18 +107,13 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     struct_def
 }
 
-fn generate_provider_wrapper(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+fn generate_provider_wrapper(struct_name: &Ident, _dependencies: &DependencyInfo) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
     let struct_token = struct_name.to_string();
 
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
-
     quote! {
         struct #provider_name {
-            dependencies: ::toni::FxHashMap<
-                String,
-                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
-            >,
+            instance: ::std::sync::Arc<#struct_name>,
         }
 
         #[::toni::async_trait]
@@ -112,13 +122,7 @@ fn generate_provider_wrapper(struct_name: &Ident, dependencies: &DependencyInfo)
                 &self,
                 _params: Vec<Box<dyn ::std::any::Any + Send>>
             ) -> Box<dyn ::std::any::Any + Send> {
-                #(#field_resolutions)*
-
-                let instance = #struct_name {
-                    #(#field_names),*
-                };
-
-                Box::new(instance)
+                Box::new((*self.instance).clone())
             }
 
             fn get_token(&self) -> String {
@@ -127,6 +131,10 @@ fn generate_provider_wrapper(struct_name: &Ident, dependencies: &DependencyInfo)
 
             fn get_token_manager(&self) -> String {
                 #struct_token.to_string()
+            }
+
+            fn get_scope(&self) -> ::toni::ProviderScope {
+                ::toni::ProviderScope::Singleton
             }
         }
     }
@@ -144,7 +152,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
 
         let resolution = quote! {
             let #field_name: #full_type = {
-                let provider = self.dependencies
+                let provider = dependencies
                     .get(#lookup_token)
                     .expect(#error_msg);
 
@@ -171,6 +179,8 @@ fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> Token
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
     let struct_token = struct_name.to_string();
 
+    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+
     let dependency_tokens: Vec<_> = dependencies
         .fields
         .iter()
@@ -196,11 +206,16 @@ fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> Token
             > {
                 let mut providers = ::toni::FxHashMap::default();
 
-                // Create provider wrapper (not the final instance!)
-                // The wrapper will create the instance lazily when execute() is called
-                let provider_wrapper = #provider_name {
-                    dependencies: dependencies.clone(),
-                };
+                // Resolve all dependencies at startup
+                #(#field_resolutions)*
+
+                // Create the instance ONCE at startup
+                let instance = ::std::sync::Arc::new(#struct_name {
+                    #(#field_names),*
+                });
+
+                // Wrap in singleton provider
+                let provider_wrapper = #provider_name { instance };
 
                 providers.insert(
                     #struct_token.to_string(),

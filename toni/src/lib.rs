@@ -6,6 +6,7 @@ pub mod http_helpers;
 pub mod injector;
 mod middleware;
 pub mod module_helpers;
+pub mod provider_scope;
 mod router;
 mod scanner;
 mod structs_helpers;
@@ -23,6 +24,9 @@ pub use injector::InstanceWrapper;
 // This allows users to only depend on `toni` without needing to add these explicitly
 pub use async_trait::async_trait;
 pub use rustc_hash::FxHashMap;
+
+// Re-export provider scope
+pub use provider_scope::ProviderScope;
 
 // Re-export macros
 pub use toni_macros::*;
