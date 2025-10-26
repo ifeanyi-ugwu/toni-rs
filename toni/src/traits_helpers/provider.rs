@@ -10,8 +10,9 @@ pub trait ProviderTrait: Send + Sync {
     fn get_token_manager(&self) -> String;
 }
 
+#[async_trait]
 pub trait Provider {
-    fn get_all_providers(
+    async fn get_all_providers(
         &self,
         dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     ) -> FxHashMap<String, Arc<Box<dyn ProviderTrait>>>;

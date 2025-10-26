@@ -182,8 +182,9 @@ fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> Token
     quote! {
         pub struct #manager_name;
 
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::Provider for #manager_name {
-            fn get_all_providers(
+            async fn get_all_providers(
                 &self,
                 dependencies: &::toni::FxHashMap<
                     String,

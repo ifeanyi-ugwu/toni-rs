@@ -438,8 +438,9 @@ fn generate_manager(
     quote! {
         pub struct #manager_name;
 
+        #[::toni::async_trait]
         impl ::toni::traits_helpers::Controller for #manager_name {
-            fn get_all_controllers(
+            async fn get_all_controllers(
                 &self,
                 dependencies: &::toni::FxHashMap<
                     String,

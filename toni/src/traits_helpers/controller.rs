@@ -21,8 +21,9 @@ pub trait ControllerTrait: Send + Sync {
     fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor>>;
     fn get_body_dto(&self, req: &HttpRequest) -> Option<Box<dyn Validatable>>;
 }
+#[async_trait]
 pub trait Controller {
-    fn get_all_controllers(
+    async fn get_all_controllers(
         &self,
         dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     ) -> FxHashMap<String, Arc<Box<dyn ControllerTrait>>>;

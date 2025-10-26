@@ -31,14 +31,14 @@ impl ToniFactory {
         self
     }
 
-    pub fn create(
+    pub async fn create(
         &self,
         module: ModuleDefinition,
         http_adapter: impl HttpAdapter,
     ) -> ToniApplication<impl HttpAdapter> {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
-        match self.initialize(module, container.clone()) {
+        match self.initialize(module, container.clone()).await {
             Ok(_) => (),
             Err(e) => {
                 eprintln!("Falha crítica na inicialização do módulo: {}", e);
@@ -58,7 +58,7 @@ impl ToniFactory {
         app
     }
 
-    fn initialize(
+    async fn initialize(
         &self,
         module: ModuleDefinition,
         container: Rc<RefCell<ToniContainer>>,
@@ -78,7 +78,7 @@ impl ToniFactory {
 
         scanner.scan_middleware()?;
 
-        ToniInstanceLoader::new(container.clone()).create_instances_of_dependencies()?;
+        ToniInstanceLoader::new(container.clone()).create_instances_of_dependencies().await?;
 
         Ok(())
     }

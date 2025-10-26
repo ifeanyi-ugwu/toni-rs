@@ -21,22 +21,22 @@ impl ToniInstanceLoader {
         Self { container }
     }
 
-    pub fn create_instances_of_dependencies(&self) -> Result<()> {
+    pub async fn create_instances_of_dependencies(&self) -> Result<()> {
         let modules_token = self.container.borrow().get_ordered_modules_token();
 
         for module_token in modules_token {
-            self.create_module_instances(module_token)?;
+            self.create_module_instances(module_token).await?;
         }
         Ok(())
     }
 
-    fn create_module_instances(&self, module_token: String) -> Result<()> {
-        self.create_instances_of_providers(module_token.clone())?;
-        self.create_instances_of_controllers(module_token.clone())?;
+    async fn create_module_instances(&self, module_token: String) -> Result<()> {
+        self.create_instances_of_providers(module_token.clone()).await?;
+        self.create_instances_of_controllers(module_token.clone()).await?;
         Ok(())
     }
 
-    fn create_instances_of_providers(&self, module_token: String) -> Result<()> {
+    async fn create_instances_of_providers(&self, module_token: String) -> Result<()> {
         let dependency_graph = DependencyGraph::new(self.container.clone(), module_token.clone());
         let ordered_providers_token = dependency_graph.get_ordered_providers_token()?;
         let provider_instances = {
@@ -52,7 +52,7 @@ impl ToniInstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let provider_instances = provider_manager.get_all_providers(&resolved_dependencies);
+                let provider_instances = provider_manager.get_all_providers(&resolved_dependencies).await;
                 instances.extend(provider_instances);
             }
             instances
@@ -104,7 +104,7 @@ impl ToniInstanceLoader {
         Ok(())
     }
 
-    fn create_instances_of_controllers(&self, module_token: String) -> Result<()> {
+    async fn create_instances_of_controllers(&self, module_token: String) -> Result<()> {
         let controllers_instances = {
             let container = self.container.borrow();
             let mut instances = FxHashMap::default();
@@ -115,7 +115,7 @@ impl ToniInstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, None)?;
                 let controllers_instances =
-                    controller_manager.get_all_controllers(&resolved_dependencies);
+                    controller_manager.get_all_controllers(&resolved_dependencies).await;
                 instances.extend(controllers_instances);
             }
             instances

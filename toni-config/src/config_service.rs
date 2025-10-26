@@ -103,8 +103,9 @@ impl<T: Config> ConfigServiceManager<T> {
     }
 }
 
+#[async_trait]
 impl<T: Config + Clone + Send + Sync + 'static> Provider for ConfigServiceManager<T> {
-    fn get_all_providers(
+    async fn get_all_providers(
         &self,
         _dependencies: &FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     ) -> FxHashMap<String, Arc<Box<dyn ProviderTrait>>> {
