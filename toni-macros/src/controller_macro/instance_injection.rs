@@ -743,6 +743,34 @@ fn generate_singleton_manager(
         })
         .collect();
 
+    // Generate scope validation checks
+    let scope_validations = dependencies
+        .fields
+        .iter()
+        .map(|(_field_name, _full_type, lookup_token)| {
+            quote! {
+                // Check if dependency is Request-scoped
+                if let Some(provider) = dependencies.get(#lookup_token) {
+                    let dep_scope = provider.get_scope();
+                    if matches!(dep_scope, ::toni::ProviderScope::Request) {
+                        // Warn: Singleton controller has Request-scoped dependency
+                        eprintln!(
+                            "⚠️  WARNING: Controller '{}' is Singleton-scoped but depends on Request-scoped provider '{}'.",
+                            #struct_token,
+                            #lookup_token
+                        );
+                        eprintln!(
+                            "    This may cause runtime issues. Consider making the controller Request-scoped:");
+                        eprintln!(
+                            "    #[controller_struct(scope = \"request\", pub struct {} {{ ... }})]",
+                            #struct_token
+                        );
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
     quote! {
         pub struct #manager_name;
 
@@ -759,6 +787,9 @@ fn generate_singleton_manager(
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>
             > {
                 let mut controllers = ::toni::FxHashMap::default();
+
+                // SCOPE VALIDATION: Check for Request-scoped dependencies
+                #(#scope_validations)*
 
                 // RESOLVE DEPENDENCIES AT STARTUP
                 #(#field_resolutions)*
