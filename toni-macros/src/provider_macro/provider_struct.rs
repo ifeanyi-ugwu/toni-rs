@@ -2,8 +2,7 @@ use proc_macro2::TokenStream;
 use syn::{Ident, ItemImpl, Result, parse2};
 
 use crate::{
-    shared::scope_parser::ProviderStructArgs,
-    utils::extracts::extract_struct_dependencies,
+    shared::scope_parser::ProviderStructArgs, utils::extracts::extract_struct_dependencies,
 };
 
 use super::instance_injection::generate_instance_provider_system;
@@ -22,7 +21,8 @@ pub fn handle_provider_struct(
 
     let dependencies = extract_struct_dependencies(&struct_attrs)?;
 
-    let expanded = generate_instance_provider_system(&struct_attrs, &impl_block, &dependencies, scope)?;
+    let expanded =
+        generate_instance_provider_system(&struct_attrs, &impl_block, &dependencies, scope)?;
 
     Ok(expanded)
 }

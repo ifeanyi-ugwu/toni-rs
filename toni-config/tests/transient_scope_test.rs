@@ -133,7 +133,10 @@ async fn test_transient_scope_creates_separate_instances() {
             assert_eq!(parts.len(), 2, "Expected two IDs separated by |");
 
             // The IDs should be different (each injection point gets fresh instance)
-            assert_ne!(parts[0], parts[1], "Transient instances should be different");
+            assert_ne!(
+                parts[0], parts[1],
+                "Transient instances should be different"
+            );
 
             // Verify counter shows at least 2 creations
             let counter = CREATION_COUNTER.lock().unwrap();
@@ -277,7 +280,10 @@ async fn test_controller_with_multiple_transient_fields() {
             assert_eq!(parts.len(), 2, "Expected two IDs separated by |");
 
             // Each field should get a fresh instance (no deduplication)
-            assert_ne!(parts[0], parts[1], "Controller fields should get different Transient instances");
+            assert_ne!(
+                parts[0], parts[1],
+                "Controller fields should get different Transient instances"
+            );
         })
         .await;
 }

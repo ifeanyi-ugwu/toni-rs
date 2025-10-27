@@ -1,4 +1,7 @@
-use syn::{Attribute, ItemStruct, LitStr, Result, Token, parse::{Parse, ParseStream}};
+use syn::{
+    Attribute, ItemStruct, LitStr, Result, Token,
+    parse::{Parse, ParseStream},
+};
 
 /// Provider scope types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +26,7 @@ pub enum ControllerScope {
 
 impl Default for ControllerScope {
     fn default() -> Self {
-        Self::Singleton  // Controllers are Singleton by default (like NestJS)
+        Self::Singleton // Controllers are Singleton by default (like NestJS)
     }
 }
 
@@ -64,7 +67,7 @@ impl Parse for ProviderStructArgs {
                             format!(
                                 "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
                                 other
-                            )
+                            ),
                         ));
                     }
                 };
@@ -107,7 +110,7 @@ impl Parse for ControllerStructArgs {
                             format!(
                                 "Invalid controller scope: '{}'. Must be 'singleton' or 'request'. Note: Controllers cannot be 'transient'",
                                 other
-                            )
+                            ),
                         ));
                     }
                 };
@@ -143,7 +146,7 @@ pub fn parse_scope_from_attrs(attrs: &[Attribute]) -> Result<ProviderScope> {
                         format!(
                             "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
                             other
-                        )
+                        ),
                     ));
                 }
             };

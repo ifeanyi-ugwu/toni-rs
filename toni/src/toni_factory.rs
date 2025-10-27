@@ -78,7 +78,9 @@ impl ToniFactory {
 
         scanner.scan_middleware()?;
 
-        ToniInstanceLoader::new(container.clone()).create_instances_of_dependencies().await?;
+        ToniInstanceLoader::new(container.clone())
+            .create_instances_of_dependencies()
+            .await?;
 
         Ok(())
     }

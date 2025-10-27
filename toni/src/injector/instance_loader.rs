@@ -31,8 +31,10 @@ impl ToniInstanceLoader {
     }
 
     async fn create_module_instances(&self, module_token: String) -> Result<()> {
-        self.create_instances_of_providers(module_token.clone()).await?;
-        self.create_instances_of_controllers(module_token.clone()).await?;
+        self.create_instances_of_providers(module_token.clone())
+            .await?;
+        self.create_instances_of_controllers(module_token.clone())
+            .await?;
         Ok(())
     }
 
@@ -52,7 +54,9 @@ impl ToniInstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let provider_instances = provider_manager.get_all_providers(&resolved_dependencies).await;
+                let provider_instances = provider_manager
+                    .get_all_providers(&resolved_dependencies)
+                    .await;
                 instances.extend(provider_instances);
             }
             instances
@@ -114,8 +118,9 @@ impl ToniInstanceLoader {
                 let dependencies = controller_manager.get_dependencies();
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, None)?;
-                let controllers_instances =
-                    controller_manager.get_all_controllers(&resolved_dependencies).await;
+                let controllers_instances = controller_manager
+                    .get_all_controllers(&resolved_dependencies)
+                    .await;
                 instances.extend(controllers_instances);
             }
             instances

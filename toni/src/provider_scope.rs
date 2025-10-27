@@ -99,13 +99,28 @@ mod tests {
 
     #[test]
     fn test_from_str() {
-        assert_eq!("singleton".parse::<ProviderScope>().unwrap(), ProviderScope::Singleton);
-        assert_eq!("request".parse::<ProviderScope>().unwrap(), ProviderScope::Request);
-        assert_eq!("transient".parse::<ProviderScope>().unwrap(), ProviderScope::Transient);
+        assert_eq!(
+            "singleton".parse::<ProviderScope>().unwrap(),
+            ProviderScope::Singleton
+        );
+        assert_eq!(
+            "request".parse::<ProviderScope>().unwrap(),
+            ProviderScope::Request
+        );
+        assert_eq!(
+            "transient".parse::<ProviderScope>().unwrap(),
+            ProviderScope::Transient
+        );
 
         // Case insensitive
-        assert_eq!("SINGLETON".parse::<ProviderScope>().unwrap(), ProviderScope::Singleton);
-        assert_eq!("Request".parse::<ProviderScope>().unwrap(), ProviderScope::Request);
+        assert_eq!(
+            "SINGLETON".parse::<ProviderScope>().unwrap(),
+            ProviderScope::Singleton
+        );
+        assert_eq!(
+            "Request".parse::<ProviderScope>().unwrap(),
+            ProviderScope::Request
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub trait ProviderTrait: Send + Sync {
     async fn execute(&self, params: Vec<Box<dyn Any + Send>>) -> Box<dyn Any + Send>;
     fn get_token_manager(&self) -> String;
     fn get_scope(&self) -> ProviderScope {
-        ProviderScope::Singleton  // Default to singleton
+        ProviderScope::Singleton // Default to singleton
     }
 }
 
