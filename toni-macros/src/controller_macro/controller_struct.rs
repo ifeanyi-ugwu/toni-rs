@@ -16,6 +16,7 @@ pub fn handle_controller_struct(
     // Parse: #[controller_struct(scope = "request", pub struct Foo { ... })]
     let args = parse2::<ControllerStructArgs>(attr)?;
     let scope = args.scope;
+    let was_explicit = args.was_explicit;
     let struct_attrs = args.struct_def;
 
     let impl_block = parse2::<ItemImpl>(item)?;
@@ -23,13 +24,14 @@ pub fn handle_controller_struct(
     let prefix_path = extract_controller_prefix(&impl_block)?;
     let dependencies = extract_struct_dependencies(&struct_attrs)?;
 
-    // Use new instance injection pattern with scope
+    // Use new instance injection pattern with scope and explicitness
     let expanded = generate_instance_controller_system(
         &struct_attrs,
         &impl_block,
         &dependencies,
         &prefix_path,
         scope,
+        was_explicit,
     )?;
 
     Ok(expanded)

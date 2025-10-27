@@ -73,6 +73,7 @@ pub fn generate_instance_controller_system(
     dependencies: &DependencyInfo,
     route_prefix: &str,
     scope: crate::shared::scope_parser::ControllerScope,
+    was_explicit: bool,
 ) -> Result<TokenStream> {
     let struct_name = &struct_attrs.ident;
 
@@ -80,11 +81,22 @@ pub fn generate_instance_controller_system(
     let struct_with_clone = add_clone_derive(struct_attrs);
     let impl_def = impl_block.clone();
 
-    // Generate controller wrappers for each handler method
-    let (controller_wrappers, metadata) =
-        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, scope)?;
+    // Generate controller wrappers for BOTH Singleton and Request scopes
+    // This allows runtime elevation
+    let (singleton_wrappers, singleton_metadata) =
+        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, crate::shared::scope_parser::ControllerScope::Singleton)?;
 
-    let manager = generate_manager(struct_name, metadata, dependencies, scope);
+    let (request_wrappers, request_metadata) =
+        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, crate::shared::scope_parser::ControllerScope::Request)?;
+
+    let manager = generate_manager(
+        struct_name,
+        singleton_metadata,
+        request_metadata,
+        dependencies,
+        scope,
+        was_explicit,
+    );
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -93,7 +105,9 @@ pub fn generate_instance_controller_system(
         #[allow(dead_code)]
         #impl_def
 
-        #(#controller_wrappers)*
+        // Generate BOTH wrapper types to support runtime elevation
+        #(#singleton_wrappers)*
+        #(#request_wrappers)*
         #manager
     })
 }
@@ -200,11 +214,17 @@ fn generate_controller_wrapper(
 
     let method_name = &method.sig.ident;
     // Include struct name to avoid collisions between controllers with same method names
+    // Also include scope suffix to allow both Singleton and Request wrappers
+    let scope_suffix = match scope {
+        crate::shared::scope_parser::ControllerScope::Singleton => "",
+        crate::shared::scope_parser::ControllerScope::Request => "Request",
+    };
     let controller_name = Ident::new(
         &format!(
-            "{}{}Controller",
+            "{}{}Controller{}",
             struct_name,
-            capitalize_first(method_name.to_string())
+            capitalize_first(method_name.to_string()),
+            scope_suffix
         ),
         method_name.span(),
     );
@@ -656,27 +676,39 @@ fn generate_request_controller_wrapper(
 
 fn generate_manager(
     struct_name: &Ident,
-    metadata_list: Vec<MetadataInfo>,
+    singleton_metadata: Vec<MetadataInfo>,
+    request_metadata: Vec<MetadataInfo>,
     dependencies: &DependencyInfo,
     scope: crate::shared::scope_parser::ControllerScope,
+    was_explicit: bool,
 ) -> TokenStream {
     use crate::shared::scope_parser::ControllerScope;
 
     match scope {
         ControllerScope::Singleton => {
-            generate_singleton_manager(struct_name, metadata_list, dependencies)
+            generate_singleton_manager(
+                struct_name,
+                singleton_metadata,
+                request_metadata,
+                dependencies,
+                was_explicit,
+            )
         }
         ControllerScope::Request => {
-            generate_request_manager(struct_name, metadata_list, dependencies)
+            // Request-scoped controllers don't need elevation logic
+            generate_request_manager(struct_name, request_metadata, dependencies)
         }
     }
 }
 
 // Singleton manager - creates controller instance AT STARTUP
+// OR elevates to Request scope if dependencies require it
 fn generate_singleton_manager(
     struct_name: &Ident,
-    metadata_list: Vec<MetadataInfo>,
+    singleton_metadata: Vec<MetadataInfo>,
+    request_metadata: Vec<MetadataInfo>,
     dependencies: &DependencyInfo,
+    was_explicit: bool,
 ) -> TokenStream {
     let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
     let struct_token = struct_name.to_string();
@@ -723,8 +755,8 @@ fn generate_singleton_manager(
         .map(|(field_name, _, _)| field_name.clone())
         .collect();
 
-    // Create controller wrappers with the shared Arc'd instance
-    let controller_wrapper_creations: Vec<_> = metadata_list
+    // Create controller wrappers with the shared Arc'd instance (for Singleton mode)
+    let controller_wrapper_creations: Vec<_> = singleton_metadata
         .iter()
         .map(|metadata| {
             let controller_name = &metadata.struct_name;
@@ -743,33 +775,75 @@ fn generate_singleton_manager(
         })
         .collect();
 
-    // Generate scope validation checks
-    let scope_validations = dependencies
-        .fields
-        .iter()
-        .map(|(_field_name, _full_type, lookup_token)| {
-            quote! {
-                // Check if dependency is Request-scoped
-                if let Some(provider) = dependencies.get(#lookup_token) {
-                    let dep_scope = provider.get_scope();
-                    if matches!(dep_scope, ::toni::ProviderScope::Request) {
-                        // Warn: Singleton controller has Request-scoped dependency
-                        eprintln!(
-                            "⚠️  WARNING: Controller '{}' is Singleton-scoped but depends on Request-scoped provider '{}'.",
-                            #struct_token,
-                            #lookup_token
-                        );
-                        eprintln!(
-                            "    This may cause runtime issues. Consider making the controller Request-scoped:");
-                        eprintln!(
-                            "    #[controller_struct(scope = \"request\", pub struct {} {{ ... }})]",
-                            #struct_token
-                        );
+    // Generate scope checking code to determine if we need to elevate to Request scope
+    let scope_check_code = if dependencies.fields.is_empty() {
+        // No dependencies - definitely Singleton
+        quote! { let needs_elevation = false; }
+    } else {
+        let dep_checks: Vec<_> = dependencies
+            .fields
+            .iter()
+            .map(|(_, _, lookup_token)| {
+                quote! {
+                    if let Some(provider) = dependencies.get(#lookup_token) {
+                        if matches!(provider.get_scope(), ::toni::ProviderScope::Request) {
+                            request_deps.push(#lookup_token);
+                        }
                     }
                 }
+            })
+            .collect();
+
+        quote! {
+            // Check if any dependency is Request-scoped
+            let mut request_deps: Vec<&str> = Vec::new();
+            #(#dep_checks)*
+            let needs_elevation = !request_deps.is_empty();
+        }
+    };
+
+    // Generate warning messages based on strategy
+    let warning_code = if was_explicit {
+        // Case 3: User explicitly set singleton, but we need to elevate
+        quote! {
+            if needs_elevation {
+                eprintln!("⚠️  WARNING: Controller '{}' explicitly declared as 'singleton'", #struct_token);
+                eprintln!("    but depends on Request-scoped provider(s): {:?}", request_deps);
+                eprintln!("    The controller will be Request-scoped. Change to:");
+                eprintln!("    #[controller_struct(scope = \"request\", pub struct {} {{ ... }})]", #struct_token);
+            }
+        }
+    } else {
+        // Case 1: Default scope (implicit singleton), elevating to request
+        quote! {
+            if needs_elevation {
+                eprintln!("⚠️  INFO: Controller '{}' automatically elevated to Request scope", #struct_token);
+                eprintln!("    due to Request-scoped provider(s): {:?}", request_deps);
+                eprintln!("    To silence this message, explicitly set:");
+                eprintln!("    #[controller_struct(scope = \"request\", pub struct {} {{ ... }})]", #struct_token);
+            }
+        }
+    };
+
+    // Generate controller instances for Request-scoped (used if elevation happens)
+    let request_controller_instances: Vec<_> = request_metadata
+        .iter()
+        .map(|metadata| {
+            let controller_name = &metadata.struct_name;
+            let controller_token = controller_name.to_string();
+
+            quote! {
+                (
+                    #controller_token.to_string(),
+                    ::std::sync::Arc::new(
+                        Box::new(#controller_name {
+                            dependencies: dependencies.clone(),
+                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                    )
+                )
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
 
     quote! {
         pub struct #manager_name;
@@ -788,19 +862,32 @@ fn generate_singleton_manager(
             > {
                 let mut controllers = ::toni::FxHashMap::default();
 
-                // SCOPE VALIDATION: Check for Request-scoped dependencies
-                #(#scope_validations)*
+                // CHECK IF ELEVATION TO REQUEST SCOPE IS NEEDED
+                #scope_check_code
 
-                // RESOLVE DEPENDENCIES AT STARTUP
-                #(#field_resolutions)*
+                // EMIT WARNINGS BASED ON STRATEGY
+                #warning_code
 
-                // CREATE CONTROLLER INSTANCE AT STARTUP
-                let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_name {
-                    #(#field_names),*
-                });
+                // BRANCH: Use Request-scoped logic if elevation needed, otherwise Singleton
+                if needs_elevation {
+                    // ELEVATED TO REQUEST SCOPE - use Request-scoped wrappers
+                    #(
+                        let (key, value): (String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>) = #request_controller_instances;
+                        controllers.insert(key, value);
+                    )*
+                } else {
+                    // TRUE SINGLETON - create instance once at startup
+                    // RESOLVE DEPENDENCIES AT STARTUP
+                    #(#field_resolutions)*
 
-                // CREATE ALL HANDLER WRAPPERS THAT SHARE THE SAME ARC
-                #(#controller_wrapper_creations)*
+                    // CREATE CONTROLLER INSTANCE AT STARTUP
+                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_name {
+                        #(#field_names),*
+                    });
+
+                    // CREATE ALL HANDLER WRAPPERS THAT SHARE THE SAME ARC
+                    #(#controller_wrapper_creations)*
+                }
 
                 controllers
             }

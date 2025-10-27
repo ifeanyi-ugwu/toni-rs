@@ -106,6 +106,27 @@ impl MixedController {
 }
 
 // ======================
+// Test 5: Explicit Singleton + Request Provider (CONTRADICTION - Force Elevation with WARNING!)
+// ======================
+
+#[provider_struct(scope = "request", pub struct ContradictoryRequestProvider {})]
+impl ContradictoryRequestProvider {
+    fn get_id(&self) -> String {
+        "contradictory".to_string()
+    }
+}
+
+// User explicitly says "singleton" but has Request deps - should WARN and elevate anyway
+#[controller_struct(scope = "singleton", pub struct ExplicitSingletonController { provider: ContradictoryRequestProvider })]
+#[controller("/explicit")]
+impl ExplicitSingletonController {
+    #[get("/test")]
+    fn test(&self, _req: HttpRequest) -> ToniBody {
+        ToniBody::Text(self.provider.get_id())
+    }
+}
+
+// ======================
 // Modules
 // ======================
 
@@ -132,6 +153,12 @@ impl CorrectModule {}
     controllers: [MixedController],
 )]
 impl MixedModule {}
+
+#[module(
+    providers: [ContradictoryRequestProvider],
+    controllers: [ExplicitSingletonController],
+)]
+impl ExplicitSingletonModule {}
 
 // ======================
 // Tests
@@ -273,8 +300,51 @@ mod tests {
             .run_until(async move {
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                println!("⚠️  Check console output above - you should see a warning about MixedController");
+                println!("ℹ️  Check console output above - you should see INFO about MixedController");
                 println!("    having a Request-scoped dependency (SessionProvider)\n");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_explicit_singleton_forced_elevation() {
+        println!("\n=== Test 5: Explicit Singleton + Request Provider (CONTRADICTION!) ===");
+        println!("Expected: ⚠️  WARNING - user explicitly set singleton but has Request deps");
+
+        let port = 38094;
+        let local = tokio::task::LocalSet::new();
+
+        // Spawn server in background - THIS SHOULD PRINT A STRONG WARNING
+        local.spawn_local(async move {
+            let adapter = AxumAdapter::new();
+            let factory = ToniFactory::new();
+            let app = factory
+                .create(ExplicitSingletonModule::module_definition(), adapter)
+                .await;
+            let _ = app.listen(port, "127.0.0.1").await;
+        });
+
+        // Run tests within the LocalSet
+        local
+            .run_until(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                let client = reqwest::Client::new();
+                let response = client
+                    .get(format!("http://127.0.0.1:{}/explicit/test", port))
+                    .send()
+                    .await
+                    .unwrap();
+
+                assert_eq!(response.status(), 200);
+                let body = response.text().await.unwrap();
+                assert_eq!(body, "contradictory");
+
+                println!("⚠️  Check console output above - you should see a WARNING (not INFO)");
+                println!("    about ExplicitSingletonController being explicitly set to singleton");
+                println!("    but having Request-scoped dependencies. It was elevated anyway.");
+                println!("✅ Test passed - explicit contradiction detected and warned\n");
             })
             .await;
     }
