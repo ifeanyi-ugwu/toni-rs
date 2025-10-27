@@ -247,17 +247,33 @@ fn generate_controller_wrapper(
 }
 
 fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
+    use std::collections::HashMap;
+
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
+    // Group fields by their lookup token (type)
+    let mut type_to_fields: HashMap<String, Vec<(Ident, syn::Type)>> = HashMap::new();
     for (field_name, full_type, lookup_token) in &dependencies.fields {
-        let error_msg = format!(
-            "Missing dependency '{}' for field '{}'",
-            lookup_token, field_name
-        );
+        type_to_fields
+            .entry(lookup_token.clone())
+            .or_insert_with(Vec::new)
+            .push((field_name.clone(), full_type.clone()));
+    }
 
-        let resolution = quote! {
-            let #field_name: #full_type = {
+    // For each unique type, generate ONE resolution
+    for (lookup_token, fields) in type_to_fields.iter() {
+        // Use the first field's type (all fields of same token have same type)
+        let (_, full_type) = &fields[0];
+        // Convert to snake_case for temp variable
+        let temp_var_name = format!("resolved_{}", lookup_token.to_lowercase().replace("::", "_"));
+        let temp_var = Ident::new(&temp_var_name, fields[0].0.span());
+
+        let error_msg = format!("Missing dependency '{}'", lookup_token);
+
+        // Generate resolution for unique type
+        let unique_resolution = quote! {
+            let #temp_var: #full_type = {
                 let provider = self.dependencies
                     .get(#lookup_token)
                     .expect(#error_msg);
@@ -273,8 +289,16 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
             };
         };
 
-        resolutions.push(resolution);
-        field_names.push(field_name.clone());
+        resolutions.push(unique_resolution);
+
+        // For each field of this type, assign from the resolved instance
+        for (field_name, _) in fields {
+            let field_assignment = quote! {
+                let #field_name = #temp_var.clone();
+            };
+            resolutions.push(field_assignment);
+            field_names.push(field_name.clone());
+        }
     }
 
     (resolutions, field_names)
