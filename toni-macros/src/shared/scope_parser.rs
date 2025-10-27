@@ -14,9 +14,28 @@ impl Default for ProviderScope {
     }
 }
 
+/// Controller scope types (only Singleton and Request)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerScope {
+    Singleton,
+    Request,
+}
+
+impl Default for ControllerScope {
+    fn default() -> Self {
+        Self::Singleton  // Controllers are Singleton by default (like NestJS)
+    }
+}
+
 /// Parse provider_struct attribute: #[provider_struct(scope = "request", pub struct Foo { ... })]
 pub struct ProviderStructArgs {
     pub scope: ProviderScope,
+    pub struct_def: ItemStruct,
+}
+
+/// Parse controller_struct attribute: #[controller_struct(scope = "request", pub struct Foo { ... })]
+pub struct ControllerStructArgs {
+    pub scope: ControllerScope,
     pub struct_def: ItemStruct,
 }
 
@@ -61,6 +80,49 @@ impl Parse for ProviderStructArgs {
         let struct_def: ItemStruct = input.parse()?;
 
         Ok(ProviderStructArgs { scope, struct_def })
+    }
+}
+
+impl Parse for ControllerStructArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut scope = ControllerScope::default();
+
+        // Check if first token is "scope"
+        let lookahead = input.lookahead1();
+        if lookahead.peek(syn::Ident) {
+            let ident: syn::Ident = input.fork().parse()?;
+
+            if ident == "scope" {
+                // Parse: scope = "request"
+                let _ident: syn::Ident = input.parse()?;
+                let _eq: Token![=] = input.parse()?;
+                let value: LitStr = input.parse()?;
+
+                scope = match value.value().as_str() {
+                    "singleton" => ControllerScope::Singleton,
+                    "request" => ControllerScope::Request,
+                    other => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            format!(
+                                "Invalid controller scope: '{}'. Must be 'singleton' or 'request'. Note: Controllers cannot be 'transient'",
+                                other
+                            )
+                        ));
+                    }
+                };
+
+                // Consume the comma after scope
+                if input.peek(Token![,]) {
+                    let _: Token![,] = input.parse()?;
+                }
+            }
+        }
+
+        // Parse the struct definition
+        let struct_def: ItemStruct = input.parse()?;
+
+        Ok(ControllerStructArgs { scope, struct_def })
     }
 }
 

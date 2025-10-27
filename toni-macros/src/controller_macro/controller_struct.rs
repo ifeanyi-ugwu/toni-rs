@@ -1,7 +1,10 @@
 use proc_macro2::TokenStream;
-use syn::{Ident, ItemImpl, ItemStruct, Result, parse2};
+use syn::{Ident, ItemImpl, Result, parse2};
 
-use crate::utils::extracts::{extract_controller_prefix, extract_struct_dependencies};
+use crate::{
+    shared::scope_parser::ControllerStructArgs,
+    utils::extracts::{extract_controller_prefix, extract_struct_dependencies},
+};
 
 use super::instance_injection::generate_instance_controller_system;
 
@@ -10,18 +13,23 @@ pub fn handle_controller_struct(
     item: TokenStream,
     _trait_name: Ident,
 ) -> Result<TokenStream> {
-    let struct_attrs = parse2::<ItemStruct>(attr)?;
+    // Parse: #[controller_struct(scope = "request", pub struct Foo { ... })]
+    let args = parse2::<ControllerStructArgs>(attr)?;
+    let scope = args.scope;
+    let struct_attrs = args.struct_def;
+
     let impl_block = parse2::<ItemImpl>(item)?;
 
     let prefix_path = extract_controller_prefix(&impl_block)?;
     let dependencies = extract_struct_dependencies(&struct_attrs)?;
 
-    // Use new instance injection pattern
+    // Use new instance injection pattern with scope
     let expanded = generate_instance_controller_system(
         &struct_attrs,
         &impl_block,
         &dependencies,
         &prefix_path,
+        scope,
     )?;
 
     Ok(expanded)

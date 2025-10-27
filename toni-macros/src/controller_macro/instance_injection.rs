@@ -72,6 +72,7 @@ pub fn generate_instance_controller_system(
     impl_block: &ItemImpl,
     dependencies: &DependencyInfo,
     route_prefix: &str,
+    scope: crate::shared::scope_parser::ControllerScope,
 ) -> Result<TokenStream> {
     let struct_name = &struct_attrs.ident;
 
@@ -81,9 +82,9 @@ pub fn generate_instance_controller_system(
 
     // Generate controller wrappers for each handler method
     let (controller_wrappers, metadata) =
-        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix)?;
+        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, scope)?;
 
-    let manager = generate_manager(struct_name, metadata, dependencies);
+    let manager = generate_manager(struct_name, metadata, dependencies, scope);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -124,6 +125,7 @@ fn generate_controller_wrappers(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
     route_prefix: &str,
+    scope: crate::shared::scope_parser::ControllerScope,
 ) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
     let mut wrappers = Vec::new();
     let mut metadata_list = Vec::new();
@@ -142,6 +144,7 @@ fn generate_controller_wrappers(
                     http_method_attr,
                     enhancers_attr,
                     marker_params,
+                    scope,
                 )?;
 
                 wrappers.push(wrapper);
@@ -183,6 +186,7 @@ fn generate_controller_wrapper(
     http_method_attr: &Attribute,
     enhancers_attr: HashMap<&Ident, &Attribute>,
     marker_params: Vec<MarkerParam>,
+    scope: crate::shared::scope_parser::ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
     let http_method = attr_to_string(http_method_attr)
         .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
@@ -195,8 +199,13 @@ fn generate_controller_wrapper(
     let full_route_path = format!("{}{}", route_prefix, route_path);
 
     let method_name = &method.sig.ident;
+    // Include struct name to avoid collisions between controllers with same method names
     let controller_name = Ident::new(
-        &format!("{}Controller", capitalize_first(method_name.to_string())),
+        &format!(
+            "{}{}Controller",
+            struct_name,
+            capitalize_first(method_name.to_string())
+        ),
         method_name.span(),
     );
     let controller_token = controller_name.to_string();
@@ -226,6 +235,8 @@ fn generate_controller_wrapper(
         &enhancers,
         &marker_params_extraction,
         &body_dto_token_stream,
+        scope,
+        struct_name, // Pass struct_name for downcast in singleton wrapper
     );
 
     let controller_dependencies: Vec<(Ident, String)> = dependencies
@@ -292,7 +303,10 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
             // Multiple fields of same type - need runtime scope check
             // If Transient: resolve separately for each field (no deduplication)
             // If Request/Singleton: resolve once and clone for multiple fields (deduplication)
-            let scope_check_var_name = format!("is_transient_{}", lookup_token.to_lowercase().replace("::", "_"));
+            let scope_check_var_name = format!(
+                "is_transient_{}",
+                lookup_token.to_lowercase().replace("::", "_")
+            );
             let scope_check_var = Ident::new(&scope_check_var_name, fields[0].0.span());
 
             // Generate scope check
@@ -306,35 +320,44 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
             };
             resolutions.push(scope_check);
 
-            let temp_var_name = format!("resolved_{}", lookup_token.to_lowercase().replace("::", "_"));
+            let temp_var_name = format!(
+                "resolved_{}",
+                lookup_token.to_lowercase().replace("::", "_")
+            );
             let temp_var = Ident::new(&temp_var_name, fields[0].0.span());
 
             // Declare all field variables outside the if/else for proper scoping
-            let field_declarations: Vec<_> = fields.iter().map(|(field_name, _)| {
-                quote! {
-                    let #field_name: #full_type;
-                }
-            }).collect();
+            let field_declarations: Vec<_> = fields
+                .iter()
+                .map(|(field_name, _)| {
+                    quote! {
+                        let #field_name: #full_type;
+                    }
+                })
+                .collect();
 
             // Generate runtime branch based on scope
-            let transient_assignments: Vec<_> = fields.iter().map(|(field_name, _)| {
-                quote! {
-                    #field_name = {
-                        let provider = self.dependencies
-                            .get(#lookup_token)
-                            .expect(#error_msg);
+            let transient_assignments: Vec<_> = fields
+                .iter()
+                .map(|(field_name, _)| {
+                    quote! {
+                        #field_name = {
+                            let provider = self.dependencies
+                                .get(#lookup_token)
+                                .expect(#error_msg);
 
-                        let any_box = provider.execute(vec![]).await;
+                            let any_box = provider.execute(vec![]).await;
 
-                        *any_box.downcast::<#full_type>()
-                            .unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}",
-                                #lookup_token,
-                                stringify!(#full_type)
-                            ))
-                    };
-                }
-            }).collect();
+                            *any_box.downcast::<#full_type>()
+                                .unwrap_or_else(|_| panic!(
+                                    "Failed to downcast '{}' to {}",
+                                    #lookup_token,
+                                    stringify!(#full_type)
+                                ))
+                        };
+                    }
+                })
+                .collect();
 
             let request_resolution = quote! {
                 let #temp_var: #full_type = {
@@ -353,11 +376,14 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                 };
             };
 
-            let request_assignments: Vec<_> = fields.iter().map(|(field_name, _)| {
-                quote! {
-                    #field_name = #temp_var.clone();
-                }
-            }).collect();
+            let request_assignments: Vec<_> = fields
+                .iter()
+                .map(|(field_name, _)| {
+                    quote! {
+                        #field_name = #temp_var.clone();
+                    }
+                })
+                .collect();
 
             // Declare fields first, then assign based on scope
             resolutions.extend(field_declarations);
@@ -438,6 +464,131 @@ fn generate_controller_wrapper_code(
     enhancers: &HashMap<String, Vec<TokenStream>>,
     marker_params_extraction: &[TokenStream],
     body_dto_token_stream: &Option<TokenStream>,
+    scope: crate::shared::scope_parser::ControllerScope,
+    struct_name: &Ident,
+) -> TokenStream {
+    use crate::shared::scope_parser::ControllerScope;
+
+    match scope {
+        ControllerScope::Singleton => generate_singleton_controller_wrapper(
+            controller_name,
+            controller_token,
+            full_route_path,
+            http_method,
+            method_call,
+            enhancers,
+            marker_params_extraction,
+            body_dto_token_stream,
+            struct_name, // Pass struct name for downcast
+        ),
+        ControllerScope::Request => generate_request_controller_wrapper(
+            controller_name,
+            controller_token,
+            full_route_path,
+            http_method,
+            field_resolutions,
+            struct_instantiation,
+            method_call,
+            enhancers,
+            marker_params_extraction,
+            body_dto_token_stream,
+        ),
+    }
+}
+
+// Singleton controller (stores Arc<ControllerInstance> created at startup)
+fn generate_singleton_controller_wrapper(
+    controller_name: &Ident,
+    controller_token: &str,
+    full_route_path: &str,
+    http_method: &str,
+    method_call: &TokenStream,
+    enhancers: &HashMap<String, Vec<TokenStream>>,
+    marker_params_extraction: &[TokenStream],
+    body_dto_token_stream: &Option<TokenStream>,
+    struct_name: &Ident, // Need this for downcast type
+) -> TokenStream {
+    let binding = Vec::new();
+    let use_guards = enhancers.get("use_guard").unwrap_or(&binding);
+    let interceptors = enhancers.get("interceptor").unwrap_or(&binding);
+    let pipes = enhancers.get("pipe").unwrap_or(&binding);
+
+    let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
+        token_stream.clone()
+    } else {
+        quote! { None }
+    };
+
+    quote! {
+        struct #controller_name {
+            // Singleton: Store the pre-created controller instance!
+            instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync>,
+        }
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::ControllerTrait for #controller_name {
+            async fn execute(
+                &self,
+                req: ::toni::http_helpers::HttpRequest,
+            ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse> + Send> {
+                // NO dependency resolution here!
+                // NO controller instantiation here!
+                // Just extract parameters and call the handler on the pre-existing instance
+
+                #(#marker_params_extraction)*
+
+                // Downcast the Arc<dyn Any> to the actual controller type
+                let controller = self.instance
+                    .downcast_ref::<#struct_name>()
+                    .expect("Failed to downcast controller instance");
+
+                let result = #method_call;
+                Box::new(result)
+            }
+
+            fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
+                ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
+            }
+
+            fn get_path(&self) -> String {
+                #full_route_path.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #controller_token.to_string()
+            }
+
+            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard>> {
+                vec![#(#use_guards),*]
+            }
+
+            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>> {
+                vec![#(#interceptors),*]
+            }
+
+            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>> {
+                vec![#(#pipes),*]
+            }
+
+            fn get_body_dto(&self, _req: &::toni::http_helpers::HttpRequest) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
+                #body_dto_stream
+            }
+        }
+    }
+}
+
+// Request-scoped controller (creates instance per request)
+fn generate_request_controller_wrapper(
+    controller_name: &Ident,
+    controller_token: &str,
+    full_route_path: &str,
+    http_method: &str,
+    field_resolutions: &[TokenStream],
+    struct_instantiation: &TokenStream,
+    method_call: &TokenStream,
+    enhancers: &HashMap<String, Vec<TokenStream>>,
+    marker_params_extraction: &[TokenStream],
+    body_dto_token_stream: &Option<TokenStream>,
 ) -> TokenStream {
     let binding = Vec::new();
     let use_guards = enhancers.get("use_guard").unwrap_or(&binding);
@@ -504,6 +655,142 @@ fn generate_controller_wrapper_code(
 }
 
 fn generate_manager(
+    struct_name: &Ident,
+    metadata_list: Vec<MetadataInfo>,
+    dependencies: &DependencyInfo,
+    scope: crate::shared::scope_parser::ControllerScope,
+) -> TokenStream {
+    use crate::shared::scope_parser::ControllerScope;
+
+    match scope {
+        ControllerScope::Singleton => {
+            generate_singleton_manager(struct_name, metadata_list, dependencies)
+        }
+        ControllerScope::Request => {
+            generate_request_manager(struct_name, metadata_list, dependencies)
+        }
+    }
+}
+
+// Singleton manager - creates controller instance AT STARTUP
+fn generate_singleton_manager(
+    struct_name: &Ident,
+    metadata_list: Vec<MetadataInfo>,
+    dependencies: &DependencyInfo,
+) -> TokenStream {
+    let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let dependency_tokens: Vec<String> = dependencies
+        .fields
+        .iter()
+        .map(|(_, _full_type, lookup_token)| lookup_token.clone())
+        .collect();
+
+    let unique_tokens: Vec<_> = dependency_tokens
+        .iter()
+        .map(|token| quote! { #token.to_string() })
+        .collect();
+
+    // Generate field resolutions AT STARTUP
+    let field_resolutions = dependencies
+        .fields
+        .iter()
+        .map(|(field_name, full_type, lookup_token)| {
+            let error_msg = format!("Missing dependency '{}'", lookup_token);
+            quote! {
+                let #field_name: #full_type = {
+                    let provider = dependencies
+                        .get(#lookup_token)
+                        .expect(#error_msg);
+
+                    let any_box = provider.execute(vec![]).await;
+
+                    *any_box.downcast::<#full_type>()
+                        .unwrap_or_else(|_| panic!(
+                            "Failed to downcast '{}' to {}",
+                            #lookup_token,
+                            stringify!(#full_type)
+                        ))
+                };
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let field_names: Vec<_> = dependencies
+        .fields
+        .iter()
+        .map(|(field_name, _, _)| field_name.clone())
+        .collect();
+
+    // Create controller wrappers with the shared Arc'd instance
+    let controller_wrapper_creations: Vec<_> = metadata_list
+        .iter()
+        .map(|metadata| {
+            let controller_name = &metadata.struct_name;
+            let controller_token = controller_name.to_string();
+
+            quote! {
+                controllers.insert(
+                    #controller_token.to_string(),
+                    ::std::sync::Arc::new(
+                        Box::new(#controller_name {
+                            instance: controller_instance.clone(),
+                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                    )
+                );
+            }
+        })
+        .collect();
+
+    quote! {
+        pub struct #manager_name;
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::Controller for #manager_name {
+            async fn get_all_controllers(
+                &self,
+                dependencies: &::toni::FxHashMap<
+                    String,
+                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+                >,
+            ) -> ::toni::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ControllerTrait>>
+            > {
+                let mut controllers = ::toni::FxHashMap::default();
+
+                // RESOLVE DEPENDENCIES AT STARTUP
+                #(#field_resolutions)*
+
+                // CREATE CONTROLLER INSTANCE AT STARTUP
+                let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_name {
+                    #(#field_names),*
+                });
+
+                // CREATE ALL HANDLER WRAPPERS THAT SHARE THE SAME ARC
+                #(#controller_wrapper_creations)*
+
+                controllers
+            }
+
+            fn get_name(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_dependencies(&self) -> Vec<String> {
+                vec![#(#unique_tokens),*]
+            }
+        }
+    }
+}
+
+// Request manager - stores dependencies, creates instance per request
+fn generate_request_manager(
     struct_name: &Ident,
     metadata_list: Vec<MetadataInfo>,
     dependencies: &DependencyInfo,
