@@ -81,19 +81,41 @@ pub fn generate_instance_controller_system(
     let struct_with_clone = add_clone_derive(struct_attrs);
     let impl_def = impl_block.clone();
 
-    // Generate controller wrappers
-    let (singleton_wrappers, singleton_metadata) =
-        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, crate::shared::scope_parser::ControllerScope::Singleton)?;
+    // OPTIMIZATION: Conditionally generate wrappers based on scope and dependencies
+    // Goal: Only generate wrappers that could actually be used
 
-    // OPTIMIZATION: Only generate Request wrappers if controller has dependencies
-    // No dependencies = no possibility of elevation, so Request wrappers would be wasted
-    let (request_wrappers, request_metadata) = if dependencies.fields.is_empty() {
-        // No dependencies - elevation is impossible, don't generate Request wrappers
-        (vec![], vec![])
-    } else {
-        // Has dependencies - generate Request wrappers for potential elevation
-        generate_controller_wrappers(impl_block, struct_name, dependencies, route_prefix, crate::shared::scope_parser::ControllerScope::Request)?
-    };
+    let (singleton_wrappers, singleton_metadata, request_wrappers, request_metadata) =
+        match (scope, was_explicit) {
+            // Case 1: Explicit Request scope - only generate Request wrappers
+            // No auto-elevation possible (already Request), so Singleton wrappers are dead code
+            (crate::shared::scope_parser::ControllerScope::Request, true) => {
+                let (req_wrappers, req_meta) = generate_controller_wrappers(
+                    impl_block, struct_name, dependencies, route_prefix,
+                    crate::shared::scope_parser::ControllerScope::Request
+                )?;
+                (vec![], vec![], req_wrappers, req_meta)  // Skip Singleton wrappers!
+            }
+
+            // Case 2: Explicit or default Singleton - might need elevation
+            _ => {
+                let (sing_wrappers, sing_meta) = generate_controller_wrappers(
+                    impl_block, struct_name, dependencies, route_prefix,
+                    crate::shared::scope_parser::ControllerScope::Singleton
+                )?;
+
+                // Sub-optimization: Skip Request wrappers if no dependencies
+                let (req_wrappers, req_meta) = if dependencies.fields.is_empty() {
+                    (vec![], vec![])  // No deps = no elevation possible
+                } else {
+                    generate_controller_wrappers(
+                        impl_block, struct_name, dependencies, route_prefix,
+                        crate::shared::scope_parser::ControllerScope::Request
+                    )?
+                };
+
+                (sing_wrappers, sing_meta, req_wrappers, req_meta)
+            }
+        };
 
     let manager = generate_manager(
         struct_name,
