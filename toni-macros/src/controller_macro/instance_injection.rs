@@ -261,43 +261,125 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
             .push((field_name.clone(), full_type.clone()));
     }
 
-    // For each unique type, generate ONE resolution
+    // For each unique type, check scope and generate appropriate resolution
     for (lookup_token, fields) in type_to_fields.iter() {
         // Use the first field's type (all fields of same token have same type)
         let (_, full_type) = &fields[0];
-        // Convert to snake_case for temp variable
-        let temp_var_name = format!("resolved_{}", lookup_token.to_lowercase().replace("::", "_"));
-        let temp_var = Ident::new(&temp_var_name, fields[0].0.span());
-
         let error_msg = format!("Missing dependency '{}'", lookup_token);
 
-        // Generate resolution for unique type
-        let unique_resolution = quote! {
-            let #temp_var: #full_type = {
-                let provider = self.dependencies
-                    .get(#lookup_token)
-                    .expect(#error_msg);
+        if fields.len() == 1 {
+            // Only one field - no need for runtime check, just resolve directly
+            let field_name = &fields[0].0;
+            let resolution = quote! {
+                let #field_name: #full_type = {
+                    let provider = self.dependencies
+                        .get(#lookup_token)
+                        .expect(#error_msg);
 
-                let any_box = provider.execute(vec![]).await;
+                    let any_box = provider.execute(vec![]).await;
 
-                *any_box.downcast::<#full_type>()
-                    .unwrap_or_else(|_| panic!(
-                        "Failed to downcast '{}' to {}",
-                        #lookup_token,
-                        stringify!(#full_type)
-                    ))
+                    *any_box.downcast::<#full_type>()
+                        .unwrap_or_else(|_| panic!(
+                            "Failed to downcast '{}' to {}",
+                            #lookup_token,
+                            stringify!(#full_type)
+                        ))
+                };
             };
-        };
-
-        resolutions.push(unique_resolution);
-
-        // For each field of this type, assign from the resolved instance
-        for (field_name, _) in fields {
-            let field_assignment = quote! {
-                let #field_name = #temp_var.clone();
-            };
-            resolutions.push(field_assignment);
+            resolutions.push(resolution);
             field_names.push(field_name.clone());
+        } else {
+            // Multiple fields of same type - need runtime scope check
+            // If Transient: resolve separately for each field (no deduplication)
+            // If Request/Singleton: resolve once and clone for multiple fields (deduplication)
+            let scope_check_var_name = format!("is_transient_{}", lookup_token.to_lowercase().replace("::", "_"));
+            let scope_check_var = Ident::new(&scope_check_var_name, fields[0].0.span());
+
+            // Generate scope check
+            let scope_check = quote! {
+                let #scope_check_var = {
+                    let provider = self.dependencies
+                        .get(#lookup_token)
+                        .expect(#error_msg);
+                    provider.get_scope() == ::toni::ProviderScope::Transient
+                };
+            };
+            resolutions.push(scope_check);
+
+            let temp_var_name = format!("resolved_{}", lookup_token.to_lowercase().replace("::", "_"));
+            let temp_var = Ident::new(&temp_var_name, fields[0].0.span());
+
+            // Declare all field variables outside the if/else for proper scoping
+            let field_declarations: Vec<_> = fields.iter().map(|(field_name, _)| {
+                quote! {
+                    let #field_name: #full_type;
+                }
+            }).collect();
+
+            // Generate runtime branch based on scope
+            let transient_assignments: Vec<_> = fields.iter().map(|(field_name, _)| {
+                quote! {
+                    #field_name = {
+                        let provider = self.dependencies
+                            .get(#lookup_token)
+                            .expect(#error_msg);
+
+                        let any_box = provider.execute(vec![]).await;
+
+                        *any_box.downcast::<#full_type>()
+                            .unwrap_or_else(|_| panic!(
+                                "Failed to downcast '{}' to {}",
+                                #lookup_token,
+                                stringify!(#full_type)
+                            ))
+                    };
+                }
+            }).collect();
+
+            let request_resolution = quote! {
+                let #temp_var: #full_type = {
+                    let provider = self.dependencies
+                        .get(#lookup_token)
+                        .expect(#error_msg);
+
+                    let any_box = provider.execute(vec![]).await;
+
+                    *any_box.downcast::<#full_type>()
+                        .unwrap_or_else(|_| panic!(
+                            "Failed to downcast '{}' to {}",
+                            #lookup_token,
+                            stringify!(#full_type)
+                        ))
+                };
+            };
+
+            let request_assignments: Vec<_> = fields.iter().map(|(field_name, _)| {
+                quote! {
+                    #field_name = #temp_var.clone();
+                }
+            }).collect();
+
+            // Declare fields first, then assign based on scope
+            resolutions.extend(field_declarations);
+
+            // Generate if/else based on scope
+            let scope_branch = quote! {
+                if #scope_check_var {
+                    // Transient: resolve each field separately
+                    #(#transient_assignments)*
+                } else {
+                    // Request/Singleton: resolve once and clone
+                    #request_resolution
+                    #(#request_assignments)*
+                }
+            };
+
+            resolutions.push(scope_branch);
+
+            // Add field names
+            for (field_name, _) in fields {
+                field_names.push(field_name.clone());
+            }
         }
     }
 
