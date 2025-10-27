@@ -1,4 +1,4 @@
-use syn::{Attribute, Ident, LitStr, Result, Token, parse::{Parse, ParseStream}};
+use syn::{Attribute, ItemStruct, LitStr, Result, Token, parse::{Parse, ParseStream}};
 
 /// Provider scope types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,41 +14,79 @@ impl Default for ProviderScope {
     }
 }
 
-/// Parse scope attribute from: #[scope("singleton")]
-pub struct ScopeAttribute {
+/// Parse provider_struct attribute: #[provider_struct(scope = "request", pub struct Foo { ... })]
+pub struct ProviderStructArgs {
     pub scope: ProviderScope,
+    pub struct_def: ItemStruct,
 }
 
-impl Parse for ScopeAttribute {
+impl Parse for ProviderStructArgs {
     fn parse(input: ParseStream) -> Result<Self> {
-        // Parse just the string literal
-        let value: LitStr = input.parse()?;
+        let mut scope = ProviderScope::default();
 
-        let scope = match value.value().as_str() {
-            "singleton" => ProviderScope::Singleton,
-            "request" => ProviderScope::Request,
-            "transient" => ProviderScope::Transient,
-            other => {
-                return Err(syn::Error::new(
-                    value.span(),
-                    format!(
-                        "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
-                        other
-                    )
-                ));
+        // Check if first token is "scope"
+        let lookahead = input.lookahead1();
+        if lookahead.peek(syn::Ident) {
+            let ident: syn::Ident = input.fork().parse()?;
+
+            if ident == "scope" {
+                // Parse: scope = "request"
+                let _ident: syn::Ident = input.parse()?;
+                let _eq: Token![=] = input.parse()?;
+                let value: LitStr = input.parse()?;
+
+                scope = match value.value().as_str() {
+                    "singleton" => ProviderScope::Singleton,
+                    "request" => ProviderScope::Request,
+                    "transient" => ProviderScope::Transient,
+                    other => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            format!(
+                                "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
+                                other
+                            )
+                        ));
+                    }
+                };
+
+                // Consume the comma after scope
+                if input.peek(Token![,]) {
+                    let _: Token![,] = input.parse()?;
+                }
             }
-        };
+        }
 
-        Ok(ScopeAttribute { scope })
+        // Parse the struct definition
+        let struct_def: ItemStruct = input.parse()?;
+
+        Ok(ProviderStructArgs { scope, struct_def })
     }
 }
 
 /// Extract scope from attributes like #[scope("singleton")]
+/// DEPRECATED: Use ProviderStructArgs instead
 pub fn parse_scope_from_attrs(attrs: &[Attribute]) -> Result<ProviderScope> {
     for attr in attrs {
         if attr.path().is_ident("scope") {
-            let scope_attr: ScopeAttribute = attr.parse_args()?;
-            return Ok(scope_attr.scope);
+            let value: LitStr = attr.parse_args()?;
+
+            let scope = match value.value().as_str() {
+                "singleton" => ProviderScope::Singleton,
+                "request" => ProviderScope::Request,
+                "transient" => ProviderScope::Transient,
+                other => {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        format!(
+                            "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
+                            other
+                        )
+                    ));
+                }
+            };
+
+            return Ok(scope);
         }
     }
 

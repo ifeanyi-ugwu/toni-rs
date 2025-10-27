@@ -56,12 +56,13 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, ItemImpl, ItemStruct, Result};
 
-use crate::shared::dependency_info::DependencyInfo;
+use crate::shared::{dependency_info::DependencyInfo, scope_parser::ProviderScope};
 
 pub fn generate_instance_provider_system(
     struct_attrs: &ItemStruct,
     impl_block: &ItemImpl,
     dependencies: &DependencyInfo,
+    scope: ProviderScope,
 ) -> Result<TokenStream> {
     let struct_name = &struct_attrs.ident;
 
@@ -69,9 +70,9 @@ pub fn generate_instance_provider_system(
 
     let impl_def = impl_block.clone();
 
-    let provider_wrapper = generate_provider_wrapper(struct_name, dependencies);
+    let provider_wrapper = generate_provider_wrapper(struct_name, dependencies, scope);
 
-    let manager = generate_manager(struct_name, dependencies);
+    let manager = generate_manager(struct_name, dependencies, scope);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -107,7 +108,19 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     struct_def
 }
 
-fn generate_provider_wrapper(struct_name: &Ident, _dependencies: &DependencyInfo) -> TokenStream {
+fn generate_provider_wrapper(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    scope: ProviderScope,
+) -> TokenStream {
+    match scope {
+        ProviderScope::Singleton => generate_singleton_provider(struct_name),
+        ProviderScope::Request => generate_request_provider(struct_name, dependencies),
+        ProviderScope::Transient => generate_transient_provider(struct_name, dependencies),
+    }
+}
+
+fn generate_singleton_provider(struct_name: &Ident) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
     let struct_token = struct_name.to_string();
 
@@ -140,7 +153,137 @@ fn generate_provider_wrapper(struct_name: &Ident, _dependencies: &DependencyInfo
     }
 }
 
+fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+
+    quote! {
+        struct #provider_name {
+            dependencies: ::toni::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+            >,
+        }
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::ProviderTrait for #provider_name {
+            async fn execute(
+                &self,
+                _params: Vec<Box<dyn ::std::any::Any + Send>>
+            ) -> Box<dyn ::std::any::Any + Send> {
+                // Resolve dependencies per request
+                #(#field_resolutions)*
+
+                // Create new instance per request
+                let instance = #struct_name {
+                    #(#field_names),*
+                };
+
+                Box::new(instance)
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token_manager(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_scope(&self) -> ::toni::ProviderScope {
+                ::toni::ProviderScope::Request
+            }
+        }
+    }
+}
+
+fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+
+    quote! {
+        struct #provider_name {
+            dependencies: ::toni::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+            >,
+        }
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::ProviderTrait for #provider_name {
+            async fn execute(
+                &self,
+                _params: Vec<Box<dyn ::std::any::Any + Send>>
+            ) -> Box<dyn ::std::any::Any + Send> {
+                // Resolve dependencies every time
+                #(#field_resolutions)*
+
+                // Create new instance every time
+                let instance = #struct_name {
+                    #(#field_names),*
+                };
+
+                Box::new(instance)
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token_manager(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_scope(&self) -> ::toni::ProviderScope {
+                ::toni::ProviderScope::Transient
+            }
+        }
+    }
+}
+
+/// Generate field resolutions for Request/Transient providers (uses self.dependencies)
 fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
+    let mut resolutions = Vec::new();
+    let mut field_names = Vec::new();
+
+    for (field_name, full_type, lookup_token) in &dependencies.fields {
+        let error_msg = format!(
+            "Missing dependency '{}' for field '{}'",
+            lookup_token, field_name
+        );
+
+        let resolution = quote! {
+            let #field_name: #full_type = {
+                let provider = self.dependencies
+                    .get(#lookup_token)
+                    .expect(#error_msg);
+
+                let any_box = provider.execute(vec![]).await;
+
+                *any_box.downcast::<#full_type>()
+                    .unwrap_or_else(|_| panic!(
+                        "Failed to downcast '{}' to {}",
+                        #lookup_token,
+                        stringify!(#full_type)
+                    ))
+            };
+        };
+
+        resolutions.push(resolution);
+        field_names.push(field_name.clone());
+    }
+
+    (resolutions, field_names)
+}
+
+/// Generate field resolutions for Singleton manager (uses dependencies parameter)
+fn generate_manager_field_resolutions(
+    dependencies: &DependencyInfo,
+) -> (Vec<TokenStream>, Vec<Ident>) {
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
@@ -174,12 +317,24 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     (resolutions, field_names)
 }
 
-fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+fn generate_manager(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    scope: ProviderScope,
+) -> TokenStream {
+    match scope {
+        ProviderScope::Singleton => generate_singleton_manager(struct_name, dependencies),
+        ProviderScope::Request => generate_request_manager(struct_name, dependencies),
+        ProviderScope::Transient => generate_transient_manager(struct_name, dependencies),
+    }
+}
+
+fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
     let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
     let struct_token = struct_name.to_string();
 
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+    let (field_resolutions, field_names) = generate_manager_field_resolutions(dependencies);
 
     let dependency_tokens: Vec<_> = dependencies
         .fields
@@ -216,6 +371,122 @@ fn generate_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> Token
 
                 // Wrap in singleton provider
                 let provider_wrapper = #provider_name { instance };
+
+                providers.insert(
+                    #struct_token.to_string(),
+                    ::std::sync::Arc::new(Box::new(provider_wrapper) as Box<dyn ::toni::traits_helpers::ProviderTrait>)
+                );
+
+                providers
+            }
+
+            fn get_name(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_dependencies(&self) -> Vec<String> {
+                vec![#(#dependency_tokens),*]
+            }
+        }
+    }
+}
+
+fn generate_request_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+    let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
+    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let dependency_tokens: Vec<_> = dependencies
+        .fields
+        .iter()
+        .map(|(_, _full_type, lookup_token)| {
+            quote! { #lookup_token.to_string() }
+        })
+        .collect();
+
+    quote! {
+        pub struct #manager_name;
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::Provider for #manager_name {
+            async fn get_all_providers(
+                &self,
+                dependencies: &::toni::FxHashMap<
+                    String,
+                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+                >,
+            ) -> ::toni::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+            > {
+                let mut providers = ::toni::FxHashMap::default();
+
+                // Request scope: just store dependencies, instance created per request
+                let provider_wrapper = #provider_name {
+                    dependencies: dependencies.clone(),
+                };
+
+                providers.insert(
+                    #struct_token.to_string(),
+                    ::std::sync::Arc::new(Box::new(provider_wrapper) as Box<dyn ::toni::traits_helpers::ProviderTrait>)
+                );
+
+                providers
+            }
+
+            fn get_name(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_dependencies(&self) -> Vec<String> {
+                vec![#(#dependency_tokens),*]
+            }
+        }
+    }
+}
+
+fn generate_transient_manager(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+    let manager_name = Ident::new(&format!("{}Manager", struct_name), struct_name.span());
+    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
+    let struct_token = struct_name.to_string();
+
+    let dependency_tokens: Vec<_> = dependencies
+        .fields
+        .iter()
+        .map(|(_, _full_type, lookup_token)| {
+            quote! { #lookup_token.to_string() }
+        })
+        .collect();
+
+    quote! {
+        pub struct #manager_name;
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::Provider for #manager_name {
+            async fn get_all_providers(
+                &self,
+                dependencies: &::toni::FxHashMap<
+                    String,
+                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+                >,
+            ) -> ::toni::FxHashMap<
+                String,
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
+            > {
+                let mut providers = ::toni::FxHashMap::default();
+
+                // Transient scope: just store dependencies, instance created every time
+                let provider_wrapper = #provider_name {
+                    dependencies: dependencies.clone(),
+                };
 
                 providers.insert(
                     #struct_token.to_string(),
