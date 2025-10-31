@@ -156,10 +156,18 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     });
 
     if !has_clone {
-        let clone_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone)]
+        // Add both Clone and Injectable derives
+        // Injectable registers #[inject] and #[default] as valid attributes
+        let derives: syn::Attribute = syn::parse_quote! {
+            #[derive(Clone, ::toni::Injectable)]
         };
-        struct_def.attrs.push(clone_derive);
+        struct_def.attrs.push(derives);
+    } else {
+        // Just add Injectable
+        let injectable_derive: syn::Attribute = syn::parse_quote! {
+            #[derive(::toni::Injectable)]
+        };
+        struct_def.attrs.push(injectable_derive);
     }
 
     struct_def
@@ -263,9 +271,23 @@ fn generate_controller_wrapper(
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
+    // Generate initializers for owned fields
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: <#field_type>::default() }
+            }
+        })
+        .collect();
+
     let struct_instantiation = quote! {
         let controller = #struct_name {
-            #(#field_names),*
+            #(#field_names,)*  // Injected dependencies
+            #(#owned_field_inits),*  // Owned fields with defaults
         };
     };
 
@@ -786,6 +808,19 @@ fn generate_singleton_manager(
         .map(|(field_name, _, _)| field_name.clone())
         .collect();
 
+    // Generate initializers for owned fields
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: <#field_type>::default() }
+            }
+        })
+        .collect();
+
     // Create controller wrappers with the shared Arc'd instance (for Singleton mode)
     let controller_wrapper_creations: Vec<_> = singleton_metadata
         .iter()
@@ -913,7 +948,8 @@ fn generate_singleton_manager(
 
                     // CREATE CONTROLLER INSTANCE AT STARTUP
                     let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_name {
-                        #(#field_names),*
+                        #(#field_names,)*  // Injected dependencies
+                        #(#owned_field_inits),*  // Owned fields with defaults
                     });
 
                     // CREATE ALL HANDLER WRAPPERS THAT SHARE THE SAME ARC

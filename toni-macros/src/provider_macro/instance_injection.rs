@@ -99,10 +99,18 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     });
 
     if !has_clone {
-        let clone_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone)]
+        // Add both Clone and Injectable derives
+        // Injectable registers #[inject] and #[default] as valid attributes
+        let derives: syn::Attribute = syn::parse_quote! {
+            #[derive(Clone, ::toni::Injectable)]
         };
-        struct_def.attrs.push(clone_derive);
+        struct_def.attrs.push(derives);
+    } else {
+        // Just add Injectable
+        let injectable_derive: syn::Attribute = syn::parse_quote! {
+            #[derive(::toni::Injectable)]
+        };
+        struct_def.attrs.push(injectable_derive);
     }
 
     struct_def
@@ -159,6 +167,19 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
+    // Generate initializers for owned fields
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: <#field_type>::default() }
+            }
+        })
+        .collect();
+
     quote! {
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
@@ -178,7 +199,8 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
 
                 // Create new instance per request
                 let instance = #struct_name {
-                    #(#field_names),*
+                    #(#field_names,)*  // Injected dependencies
+                    #(#owned_field_inits),*  // Owned fields with defaults
                 };
 
                 Box::new(instance)
@@ -205,6 +227,19 @@ fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInf
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
+    // Generate initializers for owned fields
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: <#field_type>::default() }
+            }
+        })
+        .collect();
+
     quote! {
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
@@ -224,7 +259,8 @@ fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInf
 
                 // Create new instance every time
                 let instance = #struct_name {
-                    #(#field_names),*
+                    #(#field_names,)*  // Injected dependencies
+                    #(#owned_field_inits),*  // Owned fields with defaults
                 };
 
                 Box::new(instance)
@@ -336,6 +372,21 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
 
     let (field_resolutions, field_names) = generate_manager_field_resolutions(dependencies);
 
+    // Generate initializers for owned fields
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                // User provided #[default(...)]
+                quote! { #field_name: #expr }
+            } else {
+                // Fall back to Default trait
+                quote! { #field_name: <#field_type>::default() }
+            }
+        })
+        .collect();
+
     let dependency_tokens: Vec<_> = dependencies
         .fields
         .iter()
@@ -414,7 +465,8 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
 
                 // Create the instance ONCE at startup
                 let instance = ::std::sync::Arc::new(#struct_name {
-                    #(#field_names),*
+                    #(#field_names,)*  // Injected dependencies
+                    #(#owned_field_inits),*  // Owned fields with defaults
                 });
 
                 // Wrap in singleton provider

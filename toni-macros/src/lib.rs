@@ -76,6 +76,14 @@ pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
+// Helper derive to register #[inject] and #[default] as valid attributes
+// This allows them to be used on struct fields in provider_struct/controller_struct
+#[proc_macro_derive(Injectable, attributes(inject, default))]
+pub fn derive_injectable(_input: TokenStream) -> TokenStream {
+    // This derive does nothing - it just registers the attributes
+    TokenStream::new()
+}
+
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
