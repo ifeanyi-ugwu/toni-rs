@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use syn::{Ident, ItemImpl, Result, parse2};
+use syn::{Ident, ItemImpl, ItemStruct, Result, parse2};
 
 use crate::{
     shared::scope_parser::ProviderStructArgs, utils::extracts::extract_struct_dependencies,
@@ -12,13 +12,28 @@ pub fn handle_provider_struct(
     item: TokenStream,
     _trait_name: Ident,
 ) -> Result<TokenStream> {
-    // Parse: #[provider_struct(scope = "request", init = "new", pub struct Foo { ... })]
+    // Parse attributes: scope = "request", init = "new", etc.
     let args = parse2::<ProviderStructArgs>(attr)?;
-    let impl_block = parse2::<ItemImpl>(item)?;
 
     let scope = args.scope;
     let init_method = args.init;
-    let struct_attrs = args.struct_def;
+
+    // Get struct definition from either args (old syntax) or item (new syntax)
+    let (struct_attrs, impl_block) = if let Some(struct_def) = args.struct_def {
+        // Old syntax: #[provider_struct(pub struct Foo { ... })]
+        // In this case, item should be impl block
+        let impl_block = parse2::<ItemImpl>(item)?;
+        (struct_def, impl_block)
+    } else {
+        // New syntax: #[provider_struct] pub struct Foo { ... }
+        // Parse struct from item, create empty impl block
+        let struct_attrs = parse2::<ItemStruct>(item)?;
+        let struct_name = &struct_attrs.ident;
+        let empty_impl: ItemImpl = syn::parse_quote! {
+            impl #struct_name {}
+        };
+        (struct_attrs, empty_impl)
+    };
 
     let mut dependencies = extract_struct_dependencies(&struct_attrs)?;
 

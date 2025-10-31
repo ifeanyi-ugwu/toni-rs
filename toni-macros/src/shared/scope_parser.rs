@@ -30,11 +30,14 @@ impl Default for ControllerScope {
     }
 }
 
-/// Parse provider_struct attribute: #[provider_struct(scope = "request", init = "new", pub struct Foo { ... })]
+/// Parse provider_struct attribute
+/// Supports two syntaxes:
+/// 1. Attribute: #[provider_struct(scope = "request", init = "new")] pub struct Foo { ... }
+/// 2. Nested (legacy): #[provider_struct(scope = "request", pub struct Foo { ... })]
 pub struct ProviderStructArgs {
     pub scope: ProviderScope,
     pub init: Option<String>, // Optional custom constructor method name
-    pub struct_def: ItemStruct,
+    pub struct_def: Option<ItemStruct>, // None if using new syntax (struct in item)
 }
 
 /// Parse controller_struct attribute: #[controller_struct(scope = "request", pub struct Foo { ... })]
@@ -90,8 +93,13 @@ impl Parse for ProviderStructArgs {
             }
         }
 
-        // Parse the struct definition
-        let struct_def: ItemStruct = input.parse()?;
+        // Try to parse struct definition (old syntax)
+        // If input is empty, struct_def will be None (new syntax)
+        let struct_def = if !input.is_empty() {
+            Some(input.parse::<ItemStruct>()?)
+        } else {
+            None
+        };
 
         Ok(ProviderStructArgs {
             scope,

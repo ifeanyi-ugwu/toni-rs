@@ -40,6 +40,11 @@ pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
+    provider_struct(attr, item)
+}
+
+#[proc_macro_attribute]
 pub fn controller(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
