@@ -39,7 +39,7 @@ pub struct ProviderStructArgs {
 /// Parse controller_struct attribute: #[controller_struct(scope = "request", pub struct Foo { ... })]
 pub struct ControllerStructArgs {
     pub scope: ControllerScope,
-    pub was_explicit: bool,  // Did user explicitly write scope = "..."?
+    pub was_explicit: bool, // Did user explicitly write scope = "..."?
     pub struct_def: ItemStruct,
 }
 
@@ -103,7 +103,7 @@ impl Parse for ControllerStructArgs {
                 let _eq: Token![=] = input.parse()?;
                 let value: LitStr = input.parse()?;
 
-                was_explicit = true;  // User explicitly set the scope
+                was_explicit = true; // User explicitly set the scope
                 scope = match value.value().as_str() {
                     "singleton" => ControllerScope::Singleton,
                     "request" => ControllerScope::Request,

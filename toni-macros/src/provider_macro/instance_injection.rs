@@ -344,6 +344,52 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
         })
         .collect();
 
+    // Generate scope validation code (Singleton cannot inject Request)
+    let scope_validation = if !dependencies.fields.is_empty() {
+        let dep_checks: Vec<_> = dependencies
+            .fields
+            .iter()
+            .map(|(field_name, _full_type, lookup_token)| {
+                let field_str = field_name.to_string();
+                quote! {
+                    if let Some(provider) = dependencies.get(#lookup_token) {
+                        let dep_scope = provider.get_scope();
+                        if matches!(dep_scope, ::toni::ProviderScope::Request) {
+                            panic!(
+                                "\n❌ Scope validation error in provider '{}':\n\
+                                 \n\
+                                 Singleton-scoped providers cannot inject Request-scoped providers.\n\
+                                 Field '{}' depends on '{}' which has Request scope.\n\
+                                 \n\
+                                 This restriction prevents data leakage across requests. Singleton providers\n\
+                                 live for the entire application lifetime and would capture stale request data.\n\
+                                 \n\
+                                 Solutions:\n\
+                                 1. Change '{}' to Request scope: #[provider_struct(scope = \"request\")]\n\
+                                 2. Change '{}' to Singleton scope (if appropriate for your use case)\n\
+                                 3. Pass request-specific data as method parameters instead of injecting\n\
+                                 4. Extract data in controller (which has HttpRequest access) and pass it down\n\
+                                 \n",
+                                #struct_token,
+                                #field_str,
+                                #lookup_token,
+                                #struct_token,
+                                #lookup_token
+                            );
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        quote! {
+            // Validate scope compatibility (runtime check at startup)
+            #(#dep_checks)*
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         pub struct #manager_name;
 
@@ -360,6 +406,8 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
             > {
                 let mut providers = ::toni::FxHashMap::default();
+
+                #scope_validation
 
                 // Resolve all dependencies at startup
                 #(#field_resolutions)*
@@ -407,6 +455,9 @@ fn generate_request_manager(struct_name: &Ident, dependencies: &DependencyInfo) 
             quote! { #lookup_token.to_string() }
         })
         .collect();
+
+    // No scope validation for Request providers - they can inject anything
+    // (Singleton, Request, or Transient - all are valid)
 
     quote! {
         pub struct #manager_name;
