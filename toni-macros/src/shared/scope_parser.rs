@@ -30,9 +30,10 @@ impl Default for ControllerScope {
     }
 }
 
-/// Parse provider_struct attribute: #[provider_struct(scope = "request", pub struct Foo { ... })]
+/// Parse provider_struct attribute: #[provider_struct(scope = "request", init = "new", pub struct Foo { ... })]
 pub struct ProviderStructArgs {
     pub scope: ProviderScope,
+    pub init: Option<String>, // Optional custom constructor method name
     pub struct_def: ItemStruct,
 }
 
@@ -46,15 +47,14 @@ pub struct ControllerStructArgs {
 impl Parse for ProviderStructArgs {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut scope = ProviderScope::default();
+        let mut init: Option<String> = None;
 
-        // Check if first token is "scope"
-        let lookahead = input.lookahead1();
-        if lookahead.peek(syn::Ident) {
-            let ident: syn::Ident = input.fork().parse()?;
+        // Parse optional attributes: scope = "...", init = "..."
+        while input.peek(syn::Ident) && !input.peek(Token![pub]) && !input.peek(Token![struct]) {
+            let ident: syn::Ident = input.parse()?;
 
             if ident == "scope" {
                 // Parse: scope = "request"
-                let _ident: syn::Ident = input.parse()?;
                 let _eq: Token![=] = input.parse()?;
                 let value: LitStr = input.parse()?;
 
@@ -72,18 +72,32 @@ impl Parse for ProviderStructArgs {
                         ));
                     }
                 };
+            } else if ident == "init" {
+                // Parse: init = "new"
+                let _eq: Token![=] = input.parse()?;
+                let value: LitStr = input.parse()?;
+                init = Some(value.value());
+            } else {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("Unknown attribute: '{}'. Expected 'scope' or 'init'", ident),
+                ));
+            }
 
-                // Consume the comma after scope
-                if input.peek(Token![,]) {
-                    let _: Token![,] = input.parse()?;
-                }
+            // Consume the comma after attribute
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
             }
         }
 
         // Parse the struct definition
         let struct_def: ItemStruct = input.parse()?;
 
-        Ok(ProviderStructArgs { scope, struct_def })
+        Ok(ProviderStructArgs {
+            scope,
+            init,
+            struct_def,
+        })
     }
 }
 

@@ -167,18 +167,32 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
-    // Generate initializers for owned fields
-    let owned_field_inits: Vec<_> = dependencies
-        .owned_fields
-        .iter()
-        .map(|(field_name, field_type, default_expr)| {
-            if let Some(expr) = default_expr {
-                quote! { #field_name: #expr }
-            } else {
-                quote! { #field_name: <#field_type>::default() }
+    // Generate struct instantiation code (either custom init or struct literal)
+    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
+        let init_ident = syn::Ident::new(init_fn, struct_name.span());
+        quote! {
+            #struct_name::#init_ident(#(#field_names),*)
+        }
+    } else {
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    quote! { #field_name: #expr }
+                } else {
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
+
+        quote! {
+            #struct_name {
+                #(#field_names,)*
+                #(#owned_field_inits),*
             }
-        })
-        .collect();
+        }
+    };
 
     quote! {
         struct #provider_name {
@@ -198,10 +212,7 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
                 #(#field_resolutions)*
 
                 // Create new instance per request
-                let instance = #struct_name {
-                    #(#field_names,)*  // Injected dependencies
-                    #(#owned_field_inits),*  // Owned fields with defaults
-                };
+                let instance = #struct_instantiation;
 
                 Box::new(instance)
             }
@@ -227,18 +238,32 @@ fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInf
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
-    // Generate initializers for owned fields
-    let owned_field_inits: Vec<_> = dependencies
-        .owned_fields
-        .iter()
-        .map(|(field_name, field_type, default_expr)| {
-            if let Some(expr) = default_expr {
-                quote! { #field_name: #expr }
-            } else {
-                quote! { #field_name: <#field_type>::default() }
+    // Generate struct instantiation code (either custom init or struct literal)
+    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
+        let init_ident = syn::Ident::new(init_fn, struct_name.span());
+        quote! {
+            #struct_name::#init_ident(#(#field_names),*)
+        }
+    } else {
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    quote! { #field_name: #expr }
+                } else {
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
+
+        quote! {
+            #struct_name {
+                #(#field_names,)*
+                #(#owned_field_inits),*
             }
-        })
-        .collect();
+        }
+    };
 
     quote! {
         struct #provider_name {
@@ -258,10 +283,7 @@ fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInf
                 #(#field_resolutions)*
 
                 // Create new instance every time
-                let instance = #struct_name {
-                    #(#field_names,)*  // Injected dependencies
-                    #(#owned_field_inits),*  // Owned fields with defaults
-                };
+                let instance = #struct_instantiation;
 
                 Box::new(instance)
             }
@@ -372,20 +394,36 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
 
     let (field_resolutions, field_names) = generate_manager_field_resolutions(dependencies);
 
-    // Generate initializers for owned fields
-    let owned_field_inits: Vec<_> = dependencies
-        .owned_fields
-        .iter()
-        .map(|(field_name, field_type, default_expr)| {
-            if let Some(expr) = default_expr {
-                // User provided #[default(...)]
-                quote! { #field_name: #expr }
-            } else {
-                // Fall back to Default trait
-                quote! { #field_name: <#field_type>::default() }
+    // Generate struct instantiation code (either custom init or struct literal)
+    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
+        // Custom init method: MyService::new(dep1, dep2, ...)
+        let init_ident = syn::Ident::new(init_fn, struct_name.span());
+        quote! {
+            #struct_name::#init_ident(#(#field_names),*)
+        }
+    } else {
+        // Standard struct literal: MyService { dep1, dep2, field3: default, ... }
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    // User provided #[default(...)]
+                    quote! { #field_name: #expr }
+                } else {
+                    // Fall back to Default trait
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
+
+        quote! {
+            #struct_name {
+                #(#field_names,)*
+                #(#owned_field_inits),*
             }
-        })
-        .collect();
+        }
+    };
 
     let dependency_tokens: Vec<_> = dependencies
         .fields
@@ -464,9 +502,8 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
                 #(#field_resolutions)*
 
                 // Create the instance ONCE at startup
-                let instance = ::std::sync::Arc::new(#struct_name {
-                    #(#field_names,)*  // Injected dependencies
-                    #(#owned_field_inits),*  // Owned fields with defaults
+                let instance = ::std::sync::Arc::new({
+                    #struct_instantiation
                 });
 
                 // Wrap in singleton provider

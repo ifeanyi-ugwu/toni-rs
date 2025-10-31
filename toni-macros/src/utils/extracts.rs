@@ -77,6 +77,7 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
     Ok(DependencyInfo {
         fields,
         owned_fields,
+        init_method: None, // Will be set by caller if provided in attributes
         unique_types,
     })
 }
