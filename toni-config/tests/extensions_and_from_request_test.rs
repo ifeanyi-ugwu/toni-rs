@@ -108,9 +108,7 @@ impl UserController {
     fn protected_route(&self, _req: HttpRequest) -> ToniBody {
         // Easy auth check
         match self.context.require_auth() {
-            Ok(user_id) => {
-                ToniBody::Text(format!("Protected data for user: {}", user_id))
-            }
+            Ok(user_id) => ToniBody::Text(format!("Protected data for user: {}", user_id)),
             Err(msg) => ToniBody::Text(msg.to_string()),
         }
     }
@@ -145,8 +143,7 @@ mod tests {
 
         // Add data to extensions
         req.extensions.insert(UserId("alice".to_string()));
-        req.extensions
-            .insert(RequestId("req-123".to_string()));
+        req.extensions.insert(RequestId("req-123".to_string()));
 
         // Call from_request
         let context = RequestContext::from_request(&req);
@@ -192,7 +189,9 @@ mod tests {
         let factory = ToniFactory::new();
 
         // This tests that all the generated code compiles and types match
-        let _app = factory.create(TestModule::module_definition(), adapter).await;
+        let _app = factory
+            .create(TestModule::module_definition(), adapter)
+            .await;
 
         println!("✅ Module with from_request pattern compiles successfully!");
     }

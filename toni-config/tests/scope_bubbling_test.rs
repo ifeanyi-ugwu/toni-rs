@@ -300,7 +300,9 @@ mod tests {
             .run_until(async move {
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                println!("ℹ️  Check console output above - you should see INFO about MixedController");
+                println!(
+                    "ℹ️  Check console output above - you should see INFO about MixedController"
+                );
                 println!("    having a Request-scoped dependency (SessionProvider)\n");
             })
             .await;

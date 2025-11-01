@@ -23,10 +23,12 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
     let mut owned_fields = Vec::new();
 
     // BACKWARD COMPATIBILITY: Check if ANY field has #[inject] attribute
-    let has_any_inject = struct_attrs
-        .fields
-        .iter()
-        .any(|field| field.attrs.iter().any(|attr| attr.path().is_ident("inject")));
+    let has_any_inject = struct_attrs.fields.iter().any(|field| {
+        field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("inject"))
+    });
 
     for field in &struct_attrs.fields {
         let field_ident = field

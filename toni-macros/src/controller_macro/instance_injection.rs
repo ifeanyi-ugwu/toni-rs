@@ -90,26 +90,35 @@ pub fn generate_instance_controller_system(
             // No auto-elevation possible (already Request), so Singleton wrappers are dead code
             (crate::shared::scope_parser::ControllerScope::Request, true) => {
                 let (req_wrappers, req_meta) = generate_controller_wrappers(
-                    impl_block, struct_name, dependencies, route_prefix,
-                    crate::shared::scope_parser::ControllerScope::Request
+                    impl_block,
+                    struct_name,
+                    dependencies,
+                    route_prefix,
+                    crate::shared::scope_parser::ControllerScope::Request,
                 )?;
-                (vec![], vec![], req_wrappers, req_meta)  // Skip Singleton wrappers!
+                (vec![], vec![], req_wrappers, req_meta) // Skip Singleton wrappers!
             }
 
             // Case 2: Explicit or default Singleton - might need elevation
             _ => {
                 let (sing_wrappers, sing_meta) = generate_controller_wrappers(
-                    impl_block, struct_name, dependencies, route_prefix,
-                    crate::shared::scope_parser::ControllerScope::Singleton
+                    impl_block,
+                    struct_name,
+                    dependencies,
+                    route_prefix,
+                    crate::shared::scope_parser::ControllerScope::Singleton,
                 )?;
 
                 // Sub-optimization: Skip Request wrappers if no dependencies
                 let (req_wrappers, req_meta) = if dependencies.fields.is_empty() {
-                    (vec![], vec![])  // No deps = no elevation possible
+                    (vec![], vec![]) // No deps = no elevation possible
                 } else {
                     generate_controller_wrappers(
-                        impl_block, struct_name, dependencies, route_prefix,
-                        crate::shared::scope_parser::ControllerScope::Request
+                        impl_block,
+                        struct_name,
+                        dependencies,
+                        route_prefix,
+                        crate::shared::scope_parser::ControllerScope::Request,
                     )?
                 };
 
@@ -738,15 +747,13 @@ fn generate_manager(
     use crate::shared::scope_parser::ControllerScope;
 
     match scope {
-        ControllerScope::Singleton => {
-            generate_singleton_manager(
-                struct_name,
-                singleton_metadata,
-                request_metadata,
-                dependencies,
-                was_explicit,
-            )
-        }
+        ControllerScope::Singleton => generate_singleton_manager(
+            struct_name,
+            singleton_metadata,
+            request_metadata,
+            dependencies,
+            was_explicit,
+        ),
         ControllerScope::Request => {
             // Request-scoped controllers don't need elevation logic
             generate_request_manager(struct_name, request_metadata, dependencies)

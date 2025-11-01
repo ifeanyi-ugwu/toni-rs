@@ -118,11 +118,11 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::FxHashMap;
 use crate::async_trait;
 use crate::http_helpers::{Body, Extensions, HttpRequest};
 use crate::provider_scope::ProviderScope;
 use crate::traits_helpers::{Provider, ProviderTrait};
-use crate::FxHashMap;
 
 /// Built-in request-scoped provider for accessing HTTP request data.
 ///
@@ -562,18 +562,9 @@ mod tests {
         let request = Request::from_request(&http_req);
 
         // Case insensitive
-        assert_eq!(
-            request.header("content-type"),
-            Some("application/json")
-        );
-        assert_eq!(
-            request.header("CONTENT-TYPE"),
-            Some("application/json")
-        );
-        assert_eq!(
-            request.header("Content-Type"),
-            Some("application/json")
-        );
+        assert_eq!(request.header("content-type"), Some("application/json"));
+        assert_eq!(request.header("CONTENT-TYPE"), Some("application/json"));
+        assert_eq!(request.header("Content-Type"), Some("application/json"));
 
         assert_eq!(request.header("authorization"), Some("Bearer token123"));
         assert_eq!(request.header("X-Custom"), None);
@@ -593,10 +584,7 @@ mod tests {
         let http_req = create_test_request();
         let request = Request::from_request(&http_req);
 
-        assert_eq!(
-            request.query_params().get("page"),
-            Some(&"1".to_string())
-        );
+        assert_eq!(request.query_params().get("page"), Some(&"1".to_string()));
     }
 
     #[test]
@@ -604,10 +592,7 @@ mod tests {
         let http_req = create_test_request();
         let request = Request::from_request(&http_req);
 
-        assert_eq!(
-            request.path_params().get("id"),
-            Some(&"123".to_string())
-        );
+        assert_eq!(request.path_params().get("id"), Some(&"123".to_string()));
     }
 
     #[test]

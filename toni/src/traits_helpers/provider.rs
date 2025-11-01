@@ -3,7 +3,7 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
-use crate::{http_helpers::HttpRequest, ProviderScope};
+use crate::{ProviderScope, http_helpers::HttpRequest};
 
 #[async_trait]
 pub trait ProviderTrait: Send + Sync {

@@ -1,6 +1,5 @@
 /// Test that the built-in Request provider is automatically available
 /// in all modules without needing to explicitly add it to providers list.
-
 use toni::{
     controller, controller_struct, get, module, Body as ToniBody, HttpAdapter, HttpRequest, Request,
 };
@@ -22,8 +21,7 @@ impl TestController {
     #[get("/headers")]
     fn get_headers(&self, _req: HttpRequest) -> ToniBody {
         // Access headers through the Request provider
-        let content_type = self.request.header("content-type")
-            .unwrap_or("not found");
+        let content_type = self.request.header("content-type").unwrap_or("not found");
         ToniBody::Text(format!("Content-Type: {}", content_type))
     }
 }
