@@ -137,7 +137,11 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Some(vec![#(Box::new(#controllers)),*])
             }
             fn providers(&self) -> Option<Vec<Box<dyn ::toni::traits_helpers::Provider>>> {
-                Some(vec![#(Box::new(#providers)),*])
+                // Auto-inject built-in RequestManager + user providers
+                Some(vec![
+                    Box::new(::toni::RequestManager),
+                    #(Box::new(#providers)),*
+                ])
             }
             fn exports(&self) -> Option<Vec<String>> {
                 Some(vec![#(#exports_string.to_string()),*])

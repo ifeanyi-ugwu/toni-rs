@@ -7,6 +7,7 @@ pub mod injector;
 mod middleware;
 pub mod module_helpers;
 pub mod provider_scope;
+mod request;
 mod router;
 mod scanner;
 mod structs_helpers;
@@ -19,6 +20,9 @@ pub use adapter::RouteAdapter;
 pub use http_adapter::HttpAdapter;
 pub use http_helpers::{Body, HttpMethod, HttpRequest, HttpResponse, IntoResponse};
 pub use injector::InstanceWrapper;
+
+// Re-export built-in providers
+pub use request::{Request, RequestManager};
 
 // Re-export dependencies used in macro-generated code
 // This allows users to only depend on `toni` without needing to add these explicitly
