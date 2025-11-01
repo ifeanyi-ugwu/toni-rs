@@ -60,6 +60,20 @@ impl ToniDependenciesScanner {
             self.insert_controllers(module_token.clone())?;
             self.insert_exports(module_token.clone())?;
         }
+
+        // Register global providers after all modules are scanned
+        self.register_global_modules()?;
+
+        Ok(())
+    }
+
+    fn register_global_modules(&mut self) -> Result<()> {
+        let modules_token = self.container.borrow().get_modules_token();
+        for module_token in modules_token {
+            self.container
+                .borrow_mut()
+                .register_global_providers(&module_token)?;
+        }
         Ok(())
     }
 

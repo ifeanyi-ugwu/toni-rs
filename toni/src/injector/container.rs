@@ -14,6 +14,8 @@ use super::{InstanceWrapper, module::Module};
 pub struct ToniContainer {
     modules: FxHashMap<String, Module>,
     middleware_manager: Option<MiddlewareManager>,
+    /// Global provider registry - providers from modules marked as global
+    global_providers: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
 }
 
 impl Default for ToniContainer {
@@ -27,6 +29,7 @@ impl ToniContainer {
         Self {
             modules: FxHashMap::default(),
             middleware_manager: Some(MiddlewareManager::new()),
+            global_providers: FxHashMap::default(),
         }
     }
 
@@ -257,6 +260,37 @@ impl ToniContainer {
 
     pub fn get_module_by_token(&self, module_ref_token: &String) -> Option<&Module> {
         self.modules.get(module_ref_token)
+    }
+
+    /// Register all exported providers from a global module into the global registry
+    pub fn register_global_providers(&mut self, module_token: &String) -> Result<()> {
+        let module = self
+            .modules
+            .get(module_token)
+            .ok_or_else(|| anyhow!("Module not found: {}", module_token))?;
+
+        // Only register if module is marked as global
+        if !module.get_metadata().is_global() {
+            return Ok(());
+        }
+
+        // Register all exported providers as globally accessible
+        let exports_tokens = module.get_exports_instances_tokens().clone();
+        for export_token in exports_tokens.iter() {
+            if let Ok(Some(instance)) =
+                self.get_provider_instance_by_token(module_token, export_token)
+            {
+                self.global_providers
+                    .insert(export_token.clone(), instance.clone());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get a provider from the global registry
+    pub fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn ProviderTrait>>> {
+        self.global_providers.get(token).cloned()
     }
 
     // pub fn register_controller_enhancers(

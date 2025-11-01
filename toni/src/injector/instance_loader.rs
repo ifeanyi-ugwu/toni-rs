@@ -164,12 +164,19 @@ impl ToniInstanceLoader {
                 Some(providers_instances) => providers_instances,
                 None => container.get_providers_instance(module_token)?,
             };
+            // Check local providers
             if let Some(instance) = instances.get(&dependency) {
                 resolved_dependencies.insert(dependency, instance.clone());
-            } else if let Some(exported_instance) =
+            }
+            // Check imported modules
+            else if let Some(exported_instance) =
                 self.resolve_from_imported_modules(module_token, &dependency)?
             {
                 resolved_dependencies.insert(dependency, exported_instance.clone());
+            }
+            // Check global provider registry
+            else if let Some(global_instance) = container.get_global_provider(&dependency) {
+                resolved_dependencies.insert(dependency, global_instance.clone());
             } else {
                 return Err(anyhow!(
                     "Dependency not found: {} in module {}",

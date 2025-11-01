@@ -14,6 +14,7 @@ struct ModuleConfig {
     controllers: Vec<Ident>,
     providers: Vec<Ident>,
     exports: Vec<Ident>,
+    global: bool,
 }
 
 struct ConfigParser {
@@ -21,6 +22,7 @@ struct ConfigParser {
     controllers: Vec<Ident>,
     providers: Vec<Ident>,
     exports: Vec<Ident>,
+    global: bool,
 }
 
 impl Parse for ConfigParser {
@@ -30,10 +32,24 @@ impl Parse for ConfigParser {
             controllers: Vec::new(),
             providers: Vec::new(),
             exports: Vec::new(),
+            global: false,
         };
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
+
+            // Handle global as a boolean (not an array)
+            if key.to_string().as_str() == "global" {
+                input.parse::<Token![:]>()?;
+                let value: syn::LitBool = input.parse()?;
+                config.global = value.value;
+
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
+
             input.parse::<Token![:]>()?;
             let content;
             bracketed!(content in input);
@@ -83,6 +99,7 @@ impl TryFrom<TokenStream> for ModuleConfig {
             controllers: parser.controllers,
             providers: parser.providers,
             exports: parser.exports,
+            global: parser.global,
         })
     }
 }
@@ -109,6 +126,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let providers = &config.providers;
     let exports = &config.exports;
     let exports_string: Vec<String> = exports.iter().map(|e| e.to_string()).collect();
+    let is_global = config.global;
 
     let generated = quote! {
         pub struct #input_ident;
@@ -129,6 +147,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             fn get_name(&self) -> String {
                 #input_name.to_string()
+            }
+            fn is_global(&self) -> bool {
+                #is_global
             }
             fn imports(&self) -> Option<Vec<Box<dyn ::toni::traits_helpers::ModuleMetadata>>> {
                 Some(vec![#(Box::new(#imports)),*])
