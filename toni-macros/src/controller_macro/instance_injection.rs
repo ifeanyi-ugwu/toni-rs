@@ -360,7 +360,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                         .get(#lookup_token)
                         .expect(#error_msg);
 
-                    let any_box = provider.execute(vec![]).await;
+                    let any_box = provider.execute(vec![], Some(&req)).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(
@@ -419,7 +419,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                                 .get(#lookup_token)
                                 .expect(#error_msg);
 
-                            let any_box = provider.execute(vec![]).await;
+                            let any_box = provider.execute(vec![], Some(&req)).await;
 
                             *any_box.downcast::<#full_type>()
                                 .unwrap_or_else(|_| panic!(
@@ -438,7 +438,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                         .get(#lookup_token)
                         .expect(#error_msg);
 
-                    let any_box = provider.execute(vec![]).await;
+                    let any_box = provider.execute(vec![], Some(&req)).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(
@@ -777,7 +777,7 @@ fn generate_singleton_manager(
         .map(|token| quote! { #token.to_string() })
         .collect();
 
-    // Generate field resolutions AT STARTUP
+    // Generate field resolutions AT STARTUP (no HttpRequest available)
     let field_resolutions = dependencies
         .fields
         .iter()
@@ -789,7 +789,7 @@ fn generate_singleton_manager(
                         .get(#lookup_token)
                         .expect(#error_msg);
 
-                    let any_box = provider.execute(vec![]).await;
+                    let any_box = provider.execute(vec![], None).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(

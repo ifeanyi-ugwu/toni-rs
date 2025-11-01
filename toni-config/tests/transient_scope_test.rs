@@ -174,9 +174,9 @@ async fn test_transient_provider_execute_creates_new_instance() {
         .expect("TransientHelper provider not found");
 
     // Call execute() multiple times
-    let _instance1 = helper_provider.execute(vec![]).await;
-    let _instance2 = helper_provider.execute(vec![]).await;
-    let _instance3 = helper_provider.execute(vec![]).await;
+    let _instance1 = helper_provider.execute(vec![], None).await;
+    let _instance2 = helper_provider.execute(vec![], None).await;
+    let _instance3 = helper_provider.execute(vec![], None).await;
 
     // Since each execute() call creates a new instance, counter should be 3
     // (Actually, the counter increments when get_id() is called, not on construction)

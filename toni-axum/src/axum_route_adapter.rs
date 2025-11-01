@@ -10,7 +10,7 @@ use axum::{
 use serde_json::Value;
 use std::str::FromStr;
 
-use toni::{Body, HttpRequest, HttpResponse, IntoResponse, RouteAdapter};
+use toni::{http_helpers::Extensions, Body, HttpRequest, HttpResponse, IntoResponse, RouteAdapter};
 
 pub struct AxumRouteAdapter;
 
@@ -56,6 +56,7 @@ impl RouteAdapter for AxumRouteAdapter {
             uri: parts.uri.to_string(),
             query_params,
             path_params,
+            extensions: Extensions::new(),
         })
     }
 

@@ -141,7 +141,8 @@ fn generate_singleton_provider(struct_name: &Ident) -> TokenStream {
         impl ::toni::traits_helpers::ProviderTrait for #provider_name {
             async fn execute(
                 &self,
-                _params: Vec<Box<dyn ::std::any::Any + Send>>
+                _params: Vec<Box<dyn ::std::any::Any + Send>>,
+                _req: Option<&::toni::http_helpers::HttpRequest>,
             ) -> Box<dyn ::std::any::Any + Send> {
                 Box::new((*self.instance).clone())
             }
@@ -167,11 +168,40 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
+    // Check if this uses from_request pattern
+    let is_from_request = dependencies
+        .init_method
+        .as_ref()
+        .map(|m| m == "from_request")
+        .unwrap_or(false);
+
     // Generate struct instantiation code (either custom init or struct literal)
     let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
         let init_ident = syn::Ident::new(init_fn, struct_name.span());
-        quote! {
-            #struct_name::#init_ident(#(#field_names),*)
+
+        if is_from_request {
+            // Special case: from_request gets HttpRequest as first parameter
+            if field_names.is_empty() {
+                // No dependencies, just HttpRequest
+                quote! {
+                    #struct_name::#init_ident(
+                        _req.expect("from_request requires HttpRequest")
+                    )
+                }
+            } else {
+                // Has dependencies + HttpRequest
+                quote! {
+                    #struct_name::#init_ident(
+                        _req.expect("from_request requires HttpRequest"),
+                        #(#field_names),*
+                    )
+                }
+            }
+        } else {
+            // Normal custom init
+            quote! {
+                #struct_name::#init_ident(#(#field_names),*)
+            }
         }
     } else {
         let owned_field_inits: Vec<_> = dependencies
@@ -206,7 +236,8 @@ fn generate_request_provider(struct_name: &Ident, dependencies: &DependencyInfo)
         impl ::toni::traits_helpers::ProviderTrait for #provider_name {
             async fn execute(
                 &self,
-                _params: Vec<Box<dyn ::std::any::Any + Send>>
+                _params: Vec<Box<dyn ::std::any::Any + Send>>,
+                _req: Option<&::toni::http_helpers::HttpRequest>,
             ) -> Box<dyn ::std::any::Any + Send> {
                 // Resolve dependencies per request
                 #(#field_resolutions)*
@@ -277,7 +308,8 @@ fn generate_transient_provider(struct_name: &Ident, dependencies: &DependencyInf
         impl ::toni::traits_helpers::ProviderTrait for #provider_name {
             async fn execute(
                 &self,
-                _params: Vec<Box<dyn ::std::any::Any + Send>>
+                _params: Vec<Box<dyn ::std::any::Any + Send>>,
+                _req: Option<&::toni::http_helpers::HttpRequest>,
             ) -> Box<dyn ::std::any::Any + Send> {
                 // Resolve dependencies every time
                 #(#field_resolutions)*
@@ -320,7 +352,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                     .get(#lookup_token)
                     .expect(#error_msg);
 
-                let any_box = provider.execute(vec![]).await;
+                let any_box = provider.execute(vec![], _req).await;
 
                 *any_box.downcast::<#full_type>()
                     .unwrap_or_else(|_| panic!(
@@ -357,7 +389,7 @@ fn generate_manager_field_resolutions(
                     .get(#lookup_token)
                     .expect(#error_msg);
 
-                let any_box = provider.execute(vec![]).await;
+                let any_box = provider.execute(vec![], None).await;
 
                 *any_box.downcast::<#full_type>()
                     .unwrap_or_else(|_| panic!(

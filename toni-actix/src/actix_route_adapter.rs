@@ -4,7 +4,7 @@ use actix_web::{web::Bytes, HttpRequest as ActixHttpRequest, HttpResponse as Act
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-use toni::{Body, HttpRequest, HttpResponse, IntoResponse, RouteAdapter};
+use toni::{http_helpers::Extensions, Body, HttpRequest, HttpResponse, IntoResponse, RouteAdapter};
 
 pub struct ActixRouteAdapter;
 
@@ -54,6 +54,7 @@ impl ActixRouteAdapter {
             uri: req.uri().to_string(),
             query_params,
             path_params,
+            extensions: Extensions::new(),
         })
     }
 

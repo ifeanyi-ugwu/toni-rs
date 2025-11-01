@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::Body;
+use super::{Body, Extensions};
 
 #[derive(Clone, Debug)]
 pub struct HttpRequest {
@@ -10,4 +10,5 @@ pub struct HttpRequest {
     pub uri: String,
     pub query_params: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
+    pub extensions: Extensions,
 }
