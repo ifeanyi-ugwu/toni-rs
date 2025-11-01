@@ -134,13 +134,10 @@ use crate::traits_helpers::{Provider, ProviderTrait};
 /// `Request` is request-scoped and cannot be injected into singleton providers.
 /// Attempting to do so will result in a panic at application startup.
 ///
-/// # Note on Extensions
+/// # Efficiency
 ///
-/// Due to the current implementation of `Extensions::clone()`, extensions
-/// may not be preserved when cloning HttpRequest. This will be fixed in a
-/// future release. For now, if you need to access extensions, you can use
-/// the `req: HttpRequest` parameter in controller methods or create a
-/// custom request-scoped provider.
+/// `Request` uses `Arc<HttpRequest>` internally for efficient sharing.
+/// Cloning a `Request` instance is cheap as it only increments a reference count.
 #[derive(Clone)]
 pub struct Request {
     inner: Arc<HttpRequest>,
@@ -394,13 +391,6 @@ impl Request {
     /// Extensions allow middleware to pass typed data to controllers
     /// and request-scoped providers.
     ///
-    /// # Note
-    ///
-    /// Due to current limitations with `Extensions::clone()`, extensions
-    /// may be empty when accessed through this method. For reliable extension
-    /// access, use the `req: HttpRequest` parameter in controller methods.
-    /// This will be fixed in a future release.
-    ///
     /// # Examples
     ///
     /// ```rust
@@ -419,11 +409,10 @@ impl Request {
     ///     extensions: Extensions::new(),
     /// };
     ///
-    /// // Note: This currently won't work as expected due to Extensions clone behavior
     /// http_req.extensions.insert(UserId("alice".to_string()));
     ///
     /// let request = Request::from_request(&http_req);
-    /// // extensions() may return empty extensions currently
+    /// assert_eq!(request.extensions().get::<UserId>().unwrap().0, "alice");
     /// ```
     pub fn extensions(&self) -> &Extensions {
         &self.inner.extensions
