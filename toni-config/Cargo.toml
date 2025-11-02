@@ -18,7 +18,3 @@ validation = ["validator"]
 
 [dev-dependencies]
 serial_test = "3.2.0"
-toni-axum = { path = "../toni-axum" }
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
-serde_json = "1.0"

@@ -6,4 +6,5 @@ members = [
     "toni-axum",
     "toni-actix",
     "toni-config",
+    "integration-tests",
 ]

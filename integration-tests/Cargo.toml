@@ -1,0 +1,20 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This crate exists purely for integration testing across the Toni framework.
+# It depends on all components to test their interactions.
+
+[dependencies]
+toni = { path = "../toni" }
+toni-config = { path = "../toni-config" }
+toni-macros = { path = "../toni-macros" }
+toni-axum = { path = "../toni-axum" }
+
+# Testing dependencies
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"
+serial_test = "3.2.0"
