@@ -160,7 +160,7 @@ impl ProviderTrait for Request {
     }
 
     fn get_token_manager(&self) -> String {
-        "RequestManager".to_string()
+        "Request".to_string()
     }
 
     fn get_scope(&self) -> ProviderScope {

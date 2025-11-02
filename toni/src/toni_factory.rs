@@ -64,6 +64,11 @@ impl ToniFactory {
         container: Rc<RefCell<ToniContainer>>,
     ) -> Result<()> {
         let mut scanner = ToniDependenciesScanner::new(container.clone());
+
+        // Register built-in global module
+        scanner.scan(crate::builtin_module::BuiltinModule.into())?;
+
+        // Scan user's root module
         scanner.scan(module)?;
 
         // Register global middleware
