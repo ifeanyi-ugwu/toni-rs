@@ -1,8 +1,8 @@
 #[path = "adapter/mod.rs"]
 pub mod adapter;
+pub mod builtin_module;
 #[path = "adapter/http_adapter.rs"]
 pub mod http_adapter;
-pub mod builtin_module;
 pub mod http_helpers;
 pub mod injector;
 mod middleware;

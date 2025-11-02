@@ -3,9 +3,9 @@
 //! This module provides built-in providers that should be globally available
 //! to all modules without requiring explicit imports.
 
+use crate::RequestManager;
 use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::traits_helpers::{Controller, ModuleMetadata, Provider};
-use crate::RequestManager;
 
 /// Built-in global module that provides core framework functionality
 ///
