@@ -85,10 +85,12 @@ impl<T: Config> ProviderTrait for ConfigService<T> {
     }
 
     fn get_token(&self) -> String {
-        "ConfigService".to_string()
+        // Return full generic type to support multiple configs of same service
+        format!("ConfigService<{}>", std::any::type_name::<T>())
     }
 
     fn get_token_manager(&self) -> String {
+        // Manager token is the same as instance token for generics
         format!("ConfigService<{}>", std::any::type_name::<T>())
     }
 }
@@ -123,7 +125,7 @@ impl<T: Config + Clone + Send + Sync + 'static> Provider for ConfigServiceManage
         };
 
         providers.insert(
-            "ConfigService".to_string(),
+            format!("ConfigService<{}>", std::any::type_name::<T>()),
             Arc::new(Box::new(instance) as Box<dyn ProviderTrait>),
         );
 

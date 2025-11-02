@@ -61,19 +61,6 @@ impl ToniDependenciesScanner {
             self.insert_exports(module_token.clone())?;
         }
 
-        // Register global providers after all modules are scanned
-        self.register_global_modules()?;
-
-        Ok(())
-    }
-
-    fn register_global_modules(&mut self) -> Result<()> {
-        let modules_token = self.container.borrow().get_modules_token();
-        for module_token in modules_token {
-            self.container
-                .borrow_mut()
-                .register_global_providers(&module_token)?;
-        }
         Ok(())
     }
 
@@ -138,10 +125,17 @@ impl ToniDependenciesScanner {
             None => return Err(anyhow!("Module not found")),
         };
 
+        let is_global = resolved_module_ref.get_metadata().is_global();
         let exports = resolved_module_ref.get_metadata().exports();
+
         if let Some(exports) = exports {
             for export in exports {
-                container.add_export(&module_token, export)?;
+                container.add_export(&module_token, export.clone())?;
+
+                // If module is global, register export token as globally available
+                if is_global {
+                    container.register_global_provider_token(export);
+                }
             }
         };
 

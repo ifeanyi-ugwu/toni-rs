@@ -16,6 +16,8 @@ pub struct ToniContainer {
     middleware_manager: Option<MiddlewareManager>,
     /// Global provider registry - providers from modules marked as global
     global_providers: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
+    /// Global provider tokens - registered during scan phase (before instance creation)
+    global_provider_tokens: FxHashSet<String>,
 }
 
 impl Default for ToniContainer {
@@ -30,6 +32,7 @@ impl ToniContainer {
             modules: FxHashMap::default(),
             middleware_manager: Some(MiddlewareManager::new()),
             global_providers: FxHashMap::default(),
+            global_provider_tokens: FxHashSet::default(),
         }
     }
 
@@ -231,13 +234,10 @@ impl ToniContainer {
         let mut ordered_modules: Vec<String> = Vec::new();
         let mut visited: FxHashMap<String, bool> = FxHashMap::default();
 
-        for (token, module) in self.modules.iter() {
-            if module.get_imported_modules().is_empty() {
-                ordered_modules.push(token.clone());
-                visited.insert(token.clone(), true);
-            }
-        }
+        // Standard topological sort based on explicit imports
         while ordered_modules.len() < self.modules.len() {
+            let mut ready_modules: Vec<String> = Vec::new();
+
             for (token, module) in self.modules.iter() {
                 if visited.contains_key(token) {
                     continue;
@@ -249,9 +249,18 @@ impl ToniContainer {
                     .all(|import_token| visited.contains_key(import_token));
 
                 if all_imports_processed {
-                    ordered_modules.push(token.clone());
-                    visited.insert(token.clone(), true);
+                    ready_modules.push(token.clone());
                 }
+            }
+
+            if ready_modules.is_empty() {
+                // No modules are ready - circular dependency
+                break;
+            }
+
+            for token in ready_modules {
+                ordered_modules.push(token.clone());
+                visited.insert(token.clone(), true);
             }
         }
 
@@ -291,6 +300,16 @@ impl ToniContainer {
     /// Get a provider from the global registry
     pub fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn ProviderTrait>>> {
         self.global_providers.get(token).cloned()
+    }
+
+    /// Register a provider token as globally available (during scan phase)
+    pub fn register_global_provider_token(&mut self, token: String) {
+        self.global_provider_tokens.insert(token);
+    }
+
+    /// Check if a provider token is registered as globally available
+    pub fn is_global_provider_token(&self, token: &String) -> bool {
+        self.global_provider_tokens.contains(token)
     }
 
     // pub fn register_controller_enhancers(

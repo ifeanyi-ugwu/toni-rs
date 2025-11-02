@@ -22,11 +22,59 @@ impl ToniInstanceLoader {
     }
 
     pub async fn create_instances_of_dependencies(&self) -> Result<()> {
-        let modules_token = self.container.borrow().get_ordered_modules_token();
+        let modules_order = self.container.borrow().get_ordered_modules_token();
 
-        for module_token in modules_token {
-            self.create_module_instances(module_token).await?;
+        // Track which modules are pending (deferred due to unready global providers)
+        let mut pending_modules: Vec<String> = modules_order;
+        let total_modules = pending_modules.len();
+        let mut max_iterations = total_modules * 2; // Prevent infinite loops
+
+        while !pending_modules.is_empty() && max_iterations > 0 {
+            max_iterations -= 1;
+            let mut successfully_created = Vec::new();
+            let mut deferred_modules = Vec::new();
+
+            for module_token in &pending_modules {
+                match self.create_module_instances(module_token.clone()).await {
+                    Ok(_) => {
+                        // Module created successfully - register its global providers
+                        self.container
+                            .borrow_mut()
+                            .register_global_providers(module_token)?;
+                        successfully_created.push(module_token.clone());
+                    }
+                    Err(e) if e.to_string().contains("DEFERRED:") => {
+                        // Dependency not ready - defer to next iteration
+                        deferred_modules.push(module_token.clone());
+                        continue;
+                    }
+                    Err(e) => {
+                        // Real error - propagate
+                        return Err(e);
+                    }
+                }
+            }
+
+            if successfully_created.is_empty() && !pending_modules.is_empty() {
+                // No progress made - circular dependency or missing provider
+                return Err(anyhow!(
+                    "Cannot resolve dependencies for modules: {:?}. \
+                     Possible circular dependency or missing global provider.",
+                    pending_modules
+                ));
+            }
+
+            // Update pending list to only deferred modules
+            pending_modules = deferred_modules;
         }
+
+        if !pending_modules.is_empty() {
+            return Err(anyhow!(
+                "Module instantiation timed out. Remaining modules: {:?}",
+                pending_modules
+            ));
+        }
+
         Ok(())
     }
 
@@ -164,20 +212,33 @@ impl ToniInstanceLoader {
                 Some(providers_instances) => providers_instances,
                 None => container.get_providers_instance(module_token)?,
             };
-            // Check local providers
+            // Step 1: Check local providers
             if let Some(instance) = instances.get(&dependency) {
                 resolved_dependencies.insert(dependency, instance.clone());
             }
-            // Check imported modules
+            // Step 2: Check imported modules
             else if let Some(exported_instance) =
                 self.resolve_from_imported_modules(module_token, &dependency)?
             {
                 resolved_dependencies.insert(dependency, exported_instance.clone());
             }
-            // Check global provider registry
-            else if let Some(global_instance) = container.get_global_provider(&dependency) {
-                resolved_dependencies.insert(dependency, global_instance.clone());
-            } else {
+            // Step 3: Check if it's a registered global provider token
+            else if container.is_global_provider_token(&dependency) {
+                // Token is registered as global, try to get the instance
+                if let Some(global_instance) = container.get_global_provider(&dependency) {
+                    // Instance exists - use it
+                    resolved_dependencies.insert(dependency, global_instance.clone());
+                } else {
+                    // Token registered but instance not created yet - DEFER
+                    return Err(anyhow!(
+                        "DEFERRED: Global provider '{}' not yet instantiated for module '{}'",
+                        dependency,
+                        module_token
+                    ));
+                }
+            }
+            // Step 4: Not found anywhere
+            else {
                 return Err(anyhow!(
                     "Dependency not found: {} in module {}",
                     dependency,
@@ -196,14 +257,31 @@ impl ToniInstanceLoader {
     ) -> Result<Option<Arc<Box<dyn ProviderTrait>>>> {
         let container = self.container.borrow();
         let imported_modules = container.get_imported_modules(module_token)?;
+
         for imported_module in imported_modules {
-            let exported_instances_tokens =
-                container.get_exports_instances_tokens(imported_module)?;
-            if exported_instances_tokens.contains(dependency) {
-                if let Ok(Some(exported_instance)) =
-                    container.get_provider_instance_by_token(imported_module, dependency)
-                {
-                    return Ok(Some(exported_instance.clone()));
+            // Check if the imported module exports this dependency (from scan phase)
+            let exports_tokens = container.get_exports_tokens_vec(imported_module)?;
+
+            if exports_tokens.contains(dependency) {
+                // Dependency is exported by this module - try to get the instance
+                let exported_instances_tokens =
+                    container.get_exports_instances_tokens(imported_module)?;
+
+                if exported_instances_tokens.contains(dependency) {
+                    // Instance exists - return it
+                    if let Ok(Some(exported_instance)) =
+                        container.get_provider_instance_by_token(imported_module, dependency)
+                    {
+                        return Ok(Some(exported_instance.clone()));
+                    }
+                } else {
+                    // Module exports this dependency but instance not created yet - DEFER
+                    return Err(anyhow!(
+                        "DEFERRED: Imported module '{}' exports '{}' but instance not yet created for module '{}'",
+                        imported_module,
+                        dependency,
+                        module_token
+                    ));
                 }
             }
         }

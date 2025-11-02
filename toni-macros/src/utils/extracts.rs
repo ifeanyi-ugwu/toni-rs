@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use proc_macro2::TokenStream;
+use quote::quote;
 use syn::{
     Error, Expr, FnArg, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Pat, Result, Type,
     TypePath, TypeReference, spanned::Spanned,
@@ -58,17 +60,15 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
         if !has_any_inject {
             // Old behavior: all fields are DI dependencies
             let full_type = field.ty.clone();
-            let type_ident = extract_ident_from_type(&field.ty)?;
-            let lookup_token = type_ident.to_string();
-            fields.push((field_ident.clone(), full_type, lookup_token));
+            let lookup_token_expr = extract_type_token(&field.ty)?;
+            fields.push((field_ident.clone(), full_type, lookup_token_expr));
         } else {
             // New behavior: explicit #[inject] required
             if has_inject {
                 // This is a DI dependency
                 let full_type = field.ty.clone();
-                let type_ident = extract_ident_from_type(&field.ty)?;
-                let lookup_token = type_ident.to_string();
-                fields.push((field_ident.clone(), full_type, lookup_token));
+                let lookup_token_expr = extract_type_token(&field.ty)?;
+                fields.push((field_ident.clone(), full_type, lookup_token_expr));
             } else {
                 // This is an owned field
                 owned_fields.push((field_ident.clone(), field.ty.clone(), default_expr));
@@ -109,6 +109,76 @@ pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
         }
     }
     Err(Error::new(ty.span(), "Invalid type"))
+}
+
+/// Extracts a type token expression that preserves generic parameters at runtime.
+/// For non-generic types, returns a simple string literal.
+/// For generic types, generates a runtime type_name call.
+///
+/// Examples:
+/// - `MyService` → `"MyService".to_string()`
+/// - `ConfigService<T>` → `format!("ConfigService<{}>", std::any::type_name::<T>())`
+/// - `HashMap<K, V>` → `format!("HashMap<{}, {}>", std::any::type_name::<K>(), std::any::type_name::<V>())`
+pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
+    // Handle references by unwrapping to inner type
+    let actual_type = if let Type::Reference(TypeReference { elem, .. }) = ty {
+        &**elem
+    } else {
+        ty
+    };
+
+    if let Type::Path(type_path) = actual_type {
+        if let Some(segment) = type_path.path.segments.last() {
+            let base_ident = &segment.ident;
+            let base_name = base_ident.to_string();
+
+            // Check if this type has generic arguments
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if !args.args.is_empty() {
+                    // Has generics - generate runtime type_name call
+                    let generic_params: Vec<_> = args
+                        .args
+                        .iter()
+                        .filter_map(|arg| {
+                            if let syn::GenericArgument::Type(inner_ty) = arg {
+                                Some(inner_ty)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    if generic_params.len() == 1 {
+                        // Single generic parameter
+                        let param_ty = generic_params[0];
+                        return Ok(quote! {
+                            format!("{}<{}>", #base_name, std::any::type_name::<#param_ty>())
+                        });
+                    } else {
+                        // Multiple generic parameters - build comma-separated list
+                        let type_name_calls: Vec<TokenStream> = generic_params
+                            .iter()
+                            .map(|param_ty| {
+                                quote! { std::any::type_name::<#param_ty>() }
+                            })
+                            .collect();
+
+                        return Ok(quote! {
+                            format!("{}<{}>", #base_name, [#(#type_name_calls),*].join(", "))
+                        });
+                    }
+                }
+            }
+
+            // No generics - return simple string literal
+            return Ok(quote! { #base_name.to_string() });
+        }
+    }
+
+    Err(syn::Error::new_spanned(
+        ty,
+        "Expected a type path (e.g., MyType or MyType<T>)",
+    ))
 }
 
 pub fn extract_params_from_impl_fn(func: &ImplItemFn) -> Vec<(Ident, Type)> {

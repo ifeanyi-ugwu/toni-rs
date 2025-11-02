@@ -340,24 +340,25 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    for (field_name, full_type, lookup_token) in &dependencies.fields {
-        let error_msg = format!(
-            "Missing dependency '{}' for field '{}'",
-            lookup_token, field_name
-        );
+    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
+        let field_name_str = field_name.to_string();
 
         let resolution = quote! {
             let #field_name: #full_type = {
+                let __lookup_token = #lookup_token_expr;
                 let provider = self.dependencies
-                    .get(#lookup_token)
-                    .expect(#error_msg);
+                    .get(&__lookup_token)
+                    .unwrap_or_else(|| panic!(
+                        "Missing dependency '{}' for field '{}'",
+                        __lookup_token, #field_name_str
+                    ));
 
                 let any_box = provider.execute(vec![], _req).await;
 
                 *any_box.downcast::<#full_type>()
                     .unwrap_or_else(|_| panic!(
                         "Failed to downcast '{}' to {}",
-                        #lookup_token,
+                        __lookup_token,
                         stringify!(#full_type)
                     ))
             };
@@ -377,24 +378,25 @@ fn generate_manager_field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    for (field_name, full_type, lookup_token) in &dependencies.fields {
-        let error_msg = format!(
-            "Missing dependency '{}' for field '{}'",
-            lookup_token, field_name
-        );
+    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
+        let field_name_str = field_name.to_string();
 
         let resolution = quote! {
             let #field_name: #full_type = {
+                let __lookup_token = #lookup_token_expr;
                 let provider = dependencies
-                    .get(#lookup_token)
-                    .expect(#error_msg);
+                    .get(&__lookup_token)
+                    .unwrap_or_else(|| panic!(
+                        "Missing dependency '{}' for field '{}'",
+                        __lookup_token, #field_name_str
+                    ));
 
                 let any_box = provider.execute(vec![], None).await;
 
                 *any_box.downcast::<#full_type>()
                     .unwrap_or_else(|_| panic!(
                         "Failed to downcast '{}' to {}",
-                        #lookup_token,
+                        __lookup_token,
                         stringify!(#full_type)
                     ))
             };
@@ -460,9 +462,7 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
     let dependency_tokens: Vec<_> = dependencies
         .fields
         .iter()
-        .map(|(_, _full_type, lookup_token)| {
-            quote! { #lookup_token.to_string() }
-        })
+        .map(|(_, _full_type, lookup_token_expr)| lookup_token_expr)
         .collect();
 
     // Generate scope validation code (Singleton cannot inject Request)
@@ -470,33 +470,36 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
         let dep_checks: Vec<_> = dependencies
             .fields
             .iter()
-            .map(|(field_name, _full_type, lookup_token)| {
+            .map(|(field_name, _full_type, lookup_token_expr)| {
                 let field_str = field_name.to_string();
                 quote! {
-                    if let Some(provider) = dependencies.get(#lookup_token) {
-                        let dep_scope = provider.get_scope();
-                        if matches!(dep_scope, ::toni::ProviderScope::Request) {
-                            panic!(
-                                "\n❌ Scope validation error in provider '{}':\n\
-                                 \n\
-                                 Singleton-scoped providers cannot inject Request-scoped providers.\n\
-                                 Field '{}' depends on '{}' which has Request scope.\n\
-                                 \n\
-                                 This restriction prevents data leakage across requests. Singleton providers\n\
-                                 live for the entire application lifetime and would capture stale request data.\n\
-                                 \n\
-                                 Solutions:\n\
-                                 1. Change '{}' to Request scope: #[provider_struct(scope = \"request\")]\n\
-                                 2. Change '{}' to Singleton scope (if appropriate for your use case)\n\
-                                 3. Pass request-specific data as method parameters instead of injecting\n\
-                                 4. Extract data in controller (which has HttpRequest access) and pass it down\n\
-                                 \n",
-                                #struct_token,
-                                #field_str,
-                                #lookup_token,
-                                #struct_token,
-                                #lookup_token
-                            );
+                    {
+                        let __lookup_token = #lookup_token_expr;
+                        if let Some(provider) = dependencies.get(&__lookup_token) {
+                            let dep_scope = provider.get_scope();
+                            if matches!(dep_scope, ::toni::ProviderScope::Request) {
+                                panic!(
+                                    "\n❌ Scope validation error in provider '{}':\n\
+                                     \n\
+                                     Singleton-scoped providers cannot inject Request-scoped providers.\n\
+                                     Field '{}' depends on '{}' which has Request scope.\n\
+                                     \n\
+                                     This restriction prevents data leakage across requests. Singleton providers\n\
+                                     live for the entire application lifetime and would capture stale request data.\n\
+                                     \n\
+                                     Solutions:\n\
+                                     1. Change '{}' to Request scope: #[provider_struct(scope = \"request\")]\n\
+                                     2. Change '{}' to Singleton scope (if appropriate for your use case)\n\
+                                     3. Pass request-specific data as method parameters instead of injecting\n\
+                                     4. Extract data in controller (which has HttpRequest access) and pass it down\n\
+                                     \n",
+                                    #struct_token,
+                                    #field_str,
+                                    __lookup_token,
+                                    #struct_token,
+                                    __lookup_token
+                                );
+                            }
                         }
                     }
                 }
@@ -572,9 +575,7 @@ fn generate_request_manager(struct_name: &Ident, dependencies: &DependencyInfo) 
     let dependency_tokens: Vec<_> = dependencies
         .fields
         .iter()
-        .map(|(_, _full_type, lookup_token)| {
-            quote! { #lookup_token.to_string() }
-        })
+        .map(|(_, _full_type, lookup_token_expr)| lookup_token_expr)
         .collect();
 
     // No scope validation for Request providers - they can inject anything
@@ -633,9 +634,7 @@ fn generate_transient_manager(struct_name: &Ident, dependencies: &DependencyInfo
     let dependency_tokens: Vec<_> = dependencies
         .fields
         .iter()
-        .map(|(_, _full_type, lookup_token)| {
-            quote! { #lookup_token.to_string() }
-        })
+        .map(|(_, _full_type, lookup_token_expr)| lookup_token_expr)
         .collect();
 
     quote! {

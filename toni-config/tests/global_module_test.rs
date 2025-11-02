@@ -98,7 +98,7 @@ impl UserService {
 )]
 #[controller("/users")]
 impl UserController {
-    #[get("/:id")]
+    #[get("/{id}")]
     fn get_user(&self, _req: HttpRequest) -> ToniBody {
         let result = self.user_service.get_user(123);
         ToniBody::Text(result)
@@ -258,21 +258,17 @@ async fn test_global_module_with_real_http_requests() {
 
 // Infrastructure for builder method test
 #[provider_struct]
-pub struct CacheService {
-    cache_name: String,
-}
+pub struct CacheService {}
 
 impl CacheService {
     pub fn get(&self, key: &str) -> String {
-        format!("{}::{}", self.cache_name, key)
+        format!("redis::{}", key)
     }
 }
 
 impl Default for CacheService {
     fn default() -> Self {
-        Self {
-            cache_name: "redis".to_string(),
-        }
+        Self {}
     }
 }
 
@@ -302,7 +298,7 @@ impl ProductService {
 )]
 #[controller("/products")]
 impl ProductController {
-    #[get("/:id")]
+    #[get("/{id}")]
     fn get_product(&self, _req: HttpRequest) -> ToniBody {
         let result = self.product_service.get_product(789);
         ToniBody::Text(result)
@@ -362,12 +358,4 @@ async fn test_global_via_builder_method() {
             assert!(body.contains("redis::product:789"));
         })
         .await;
-}
-
-#[test]
-fn test_global_module_compiles() {
-    // This test verifies that all the global module code compiles correctly
-    println!("✅ Global module with attribute syntax (global: true) compiles!");
-    println!("✅ Builder method syntax (.global()) compiles!");
-    println!("✅ Feature modules can inject global providers without importing!");
 }
