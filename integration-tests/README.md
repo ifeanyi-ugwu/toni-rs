@@ -5,6 +5,7 @@ This crate contains integration tests for the Toni framework. It tests the inter
 ## Purpose
 
 This crate exists to:
+
 - Keep core crates lean by avoiding heavy dev-dependencies in production crates
 - Test cross-crate interactions in a realistic environment
 - Provide end-to-end tests with actual HTTP servers
@@ -15,6 +16,7 @@ This crate exists to:
 Tests are organized by functionality:
 
 ### DI System Tests (`tests/*`)
+
 - **attribute_syntax.rs** - Tests for `#[injectable]` attribute syntax
 - **custom_init.rs** - Custom initialization methods (`init = "method_name"`)
 - **instance_injection.rs** - Basic instance injection
@@ -26,9 +28,11 @@ Tests are organized by functionality:
 - **transient_scope.rs** - Transient scope behavior
 
 ### Module System Tests (`tests/*`)
+
 - **global_modules.rs** - Global module functionality (`global: true`)
 
 ### E2E HTTP Tests (`tests/*`)
+
 - **async_controllers.rs** - Async controller methods
 - **config_injection.rs** - ConfigService injection with real HTTP server
 - **controller_scopes.rs** - Controller scope behavior (Singleton vs Request)
