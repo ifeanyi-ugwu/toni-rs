@@ -380,6 +380,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
 
 fn generate_method_call(method: &ImplItemFn, marker_params: &[MarkerParam]) -> Result<TokenStream> {
     let method_name = &method.sig.ident;
+    let is_async = method.sig.asyncness.is_some();
 
     let mut call_args = vec![quote! { req }];
 
@@ -388,8 +389,12 @@ fn generate_method_call(method: &ImplItemFn, marker_params: &[MarkerParam]) -> R
         call_args.push(quote! { #param_name });
     }
 
-    Ok(quote! {
-        controller.#method_name(#(#call_args),*)
+    let call = quote! { controller.#method_name(#(#call_args),*) };
+
+    Ok(if is_async {
+        quote! { #call.await }
+    } else {
+        call
     })
 }
 
