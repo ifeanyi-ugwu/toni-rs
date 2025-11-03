@@ -68,11 +68,6 @@ impl ActixRouteAdapter {
 
         let mut actix_response = ActixHttpResponse::build(status);
 
-        // Set headers
-        for (key, value) in response.headers {
-            actix_response.insert_header((key.as_str(), value.as_str()));
-        }
-
         // Set body
         let actix_response = match response.body {
             Some(Body::Text(text)) => actix_response.content_type("text/plain").body(text),
@@ -85,6 +80,17 @@ impl ActixRouteAdapter {
             }
             None => actix_response.finish(),
         };
+
+        // Set headers
+        let mut actix_response = actix_response;
+        for (key, value) in response.headers {
+            actix_response.headers_mut().insert(
+                actix_web::http::header::HeaderName::from_bytes(key.as_bytes())
+                    .map_err(|e| anyhow!("Failed to parse header name: {}", e))?,
+                actix_web::http::header::HeaderValue::from_str(&value)
+                    .map_err(|e| anyhow!("Failed to parse header value: {}", e))?,
+            );
+        }
 
         Ok(actix_response)
     }

@@ -82,13 +82,6 @@ impl RouteAdapter for AxumRouteAdapter {
         };
 
         let mut headers = HeaderMap::new();
-        for (k, v) in &response.headers {
-            if let Ok(header_name) = HeaderName::from_bytes(k.as_bytes()) {
-                if let Ok(header_value) = HeaderValue::from_str(v) {
-                    headers.insert(header_name, header_value);
-                }
-            }
-        }
 
         let content_type = if body_is_json {
             "application/json"
@@ -100,6 +93,14 @@ impl RouteAdapter for AxumRouteAdapter {
                 .map_err(|e| anyhow::anyhow!("Failed to parse header name Content-Type: {}", e))?,
             HeaderValue::from_static(content_type),
         );
+
+        for (k, v) in &response.headers {
+            if let Ok(header_name) = HeaderName::from_bytes(k.as_bytes()) {
+                if let Ok(header_value) = HeaderValue::from_str(v) {
+                    headers.insert(header_name, header_value);
+                }
+            }
+        }
 
         let mut res = Response::builder()
             .status(status)
