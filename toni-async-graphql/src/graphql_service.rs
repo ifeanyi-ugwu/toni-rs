@@ -77,8 +77,10 @@ where
             request = request.variables(variables);
         }
 
-        // Add context data to request
-        request = request.data(context_data);
+        // Set context data directly on the request
+        // Note: We assign directly to request.data instead of using .data() method
+        // because .data() expects individual items, not a Data container
+        request.data = context_data;
 
         // Execute query
         self.schema.execute(request).await
