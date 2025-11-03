@@ -1,0 +1,22 @@
+[package]
+name = "toni-async-graphql"
+version = "0.1.0"
+edition = "2021"
+description = "async-graphql integration for Toni framework"
+license = "MIT"
+keywords = ["graphql", "async-graphql", "toni", "web", "framework"]
+categories = ["web-programming", "asynchronous"]
+
+[dependencies]
+toni = { path = "../toni", version = "0.1.1" }
+toni-macros = { path = "../toni-macros", version = "0.1.3" }
+async-graphql = "7.0"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.47", features = ["full"] }
+
+[dev-dependencies]
+toni-axum = { path = "../toni-axum" }
+reqwest = "0.12"

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="GraphQL Playground" />
+    <title>GraphQL Playground</title>
+    <style>
+      body {
+        height: 100%;
+        margin: 0;
+        width: 100%;
+        overflow: hidden;
+      }
+
+      #root {
+        height: 100vh;
+      }
+    </style>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/css/index.css"
+    />
+    <link
+      rel="shortcut icon"
+      href="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/favicon.png"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/graphql-playground-react/build/static/js/middleware.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("load", function (event) {
+        GraphQLPlayground.init(document.getElementById("root"), {
+          endpoint: window.location.pathname,
+          settings: {
+            "request.credentials": "same-origin",
+          },
+        });
+      });
+    </script>
+  </body>
+</html>

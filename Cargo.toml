@@ -6,5 +6,6 @@ members = [
     "toni-axum",
     "toni-actix",
     "toni-config",
+    "toni-async-graphql",
     "integration-tests",
 ]
