@@ -15,8 +15,8 @@ async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-tokio = { version = "1.47", features = ["full"] }
 
 [dev-dependencies]
 toni-axum = { path = "../toni-axum" }
 reqwest = "0.12"
+tokio = { version = "1.47", features = ["full"] }
