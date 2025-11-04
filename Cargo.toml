@@ -7,5 +7,6 @@ members = [
     "toni-actix",
     "toni-config",
     "toni-async-graphql",
+    "toni-juniper",
     "integration-tests",
 ]
