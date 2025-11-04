@@ -36,6 +36,8 @@ pub use provider_scope::ProviderScope;
 // Re-export macros
 pub use toni_macros::*;
 
+pub use toni_factory::ToniFactory;
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
