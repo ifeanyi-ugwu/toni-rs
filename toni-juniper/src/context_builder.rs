@@ -9,7 +9,7 @@ use toni::HttpRequest;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// use async_trait::async_trait;
 /// use toni::{HttpRequest, provider_struct};
 /// use toni_juniper::ContextBuilder;

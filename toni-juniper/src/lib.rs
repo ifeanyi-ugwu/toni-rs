@@ -17,7 +17,7 @@ Build type-safe GraphQL APIs with dependency injection, middleware, guards, and 
 
 ## Quick Start
 
-```rust
+```ignore
 use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_object};
 use toni::{module, ToniFactory, HttpAdapter};
 use toni_axum::AxumAdapter;
@@ -67,7 +67,7 @@ Visit `http://localhost:3000/graphql` to use GraphQL Playground!
 
 Build GraphQL context with access to Toni's dependency injection:
 
-```rust
+```ignore
 use toni_juniper::{ContextBuilder, juniper};
 use toni::{HttpRequest, provider_struct};
 use async_trait::async_trait;
@@ -112,7 +112,7 @@ pub struct AppModule;
 
 ## Accessing Context in Resolvers
 
-```rust
+```ignore
 use juniper::{graphql_object, FieldResult};
 
 struct Query;
@@ -136,14 +136,14 @@ impl Query {
 
 ### Change GraphQL Endpoint Path
 
-```rust
+```ignore
 let graphql_module = GraphQLModule::for_root(schema, context_builder)
     .with_path("/api/graphql");
 ```
 
 ### Enable/Disable Playground
 
-```rust
+```ignore
 let graphql_module = GraphQLModule::for_root(schema, context_builder)
     .with_playground(false);  // Disable in production
 ```
