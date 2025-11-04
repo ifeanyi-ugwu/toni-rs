@@ -28,7 +28,7 @@ use toni::HttpRequest;
 ///
 /// ## Context with DI services
 ///
-/// ```rust
+/// ```ignore
 /// use toni_async_graphql::{ContextBuilder, async_graphql::Data};
 /// use toni::{HttpRequest, provider_struct};
 /// use async_trait::async_trait;

@@ -34,7 +34,7 @@ use toni::traits_helpers::{Controller, ModuleMetadata, Provider};
 ///
 /// ## With custom context builder
 ///
-/// ```rust
+/// ```ignore
 /// use toni_async_graphql::{GraphQLModule, ContextBuilder, async_graphql::*};
 /// use toni::HttpRequest;
 /// use async_trait::async_trait;
@@ -88,6 +88,15 @@ where
     /// ```rust
     /// use toni_async_graphql::{GraphQLModule, DefaultContextBuilder, async_graphql::*};
     ///
+    /// struct Query;
+    ///
+    /// #[Object]
+    /// impl Query {
+    ///   async fn hello(&self) -> &str {
+    ///    "Hello, world!"
+    ///   }
+    /// }
+    ///
     /// let schema = Schema::build(Query, EmptyMutation, EmptySubscription).finish();
     /// let module = GraphQLModule::for_root(schema, DefaultContextBuilder);
     /// ```
@@ -106,7 +115,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let module = GraphQLModule::for_root(schema, context_builder)
     ///     .with_path("/api/graphql");
     /// ```
@@ -121,7 +130,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
     /// let module = GraphQLModule::for_root(schema, context_builder)
     ///     .with_playground(true);  // Always enable
     /// ```

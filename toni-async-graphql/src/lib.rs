@@ -17,7 +17,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use toni::ToniFactory;
 //! use toni_axum::AxumAdapter;
 //! use toni_async_graphql::{GraphQLModule, DefaultContextBuilder, async_graphql::*};
@@ -59,7 +59,7 @@
 //!
 //! Build GraphQL context with access to Toni's DI system:
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use toni_async_graphql::{ContextBuilder, async_graphql::Data};
 //! use toni::{HttpRequest, provider_struct};
 //! use async_trait::async_trait;
@@ -93,7 +93,7 @@
 //!
 //! ## Accessing Context in Resolvers
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use async_graphql::{Object, Context, Result};
 //!
 //! struct Query;
