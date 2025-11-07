@@ -17,8 +17,8 @@ pub trait ModuleMetadata {
     }
 
     /// Configure middleware for this module
-    fn configure_middleware(&self) -> Option<Vec<MiddlewareConfiguration>> {
-        None
+    fn configure_middleware(&self, _consumer: &mut MiddlewareConsumer) {
+        // Default: do nothing
     }
 
     /// Mark this module as global, making its exports available everywhere
@@ -64,14 +64,9 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         self.inner.exports()
     }
 
-    fn configure_middleware(&self) -> Option<Vec<MiddlewareConfiguration>> {
-        self.inner.configure_middleware()
+    fn configure_middleware(&self, consumer: &mut MiddlewareConsumer) {
+        self.inner.configure_middleware(consumer)
     }
-}
-
-/// Trait that modules can implement to configure middleware
-pub trait ConfigureMiddleware {
-    fn configure(consumer: &mut MiddlewareConsumer);
 }
 
 /// Builder for configuring middleware in modules

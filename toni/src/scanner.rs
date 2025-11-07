@@ -3,8 +3,9 @@ use std::{cell::RefCell, rc::Rc};
 use anyhow::{Result, anyhow};
 
 use crate::{
-    injector::ToniContainer, module_helpers::module_enum::ModuleDefinition,
-    traits_helpers::ModuleMetadata,
+    injector::ToniContainer,
+    module_helpers::module_enum::ModuleDefinition,
+    traits_helpers::{MiddlewareConsumer, ModuleMetadata},
 };
 
 pub struct ToniDependenciesScanner {
@@ -151,7 +152,7 @@ impl ToniDependenciesScanner {
     }
 
     fn register_module_middleware(&mut self, module_token: &str) -> Result<()> {
-        let metadata_configs = {
+        let middleware_configs = {
             let container = self.container.borrow();
 
             let module_ref = container
@@ -160,19 +161,19 @@ impl ToniDependenciesScanner {
 
             let metadata = module_ref.get_metadata();
 
-            metadata.configure_middleware()
+            let mut consumer = MiddlewareConsumer::new();
+            metadata.configure_middleware(&mut consumer);
+            consumer.build()
         };
 
-        if let Some(middleware_configs) = metadata_configs {
-            let mut container_mut = self.container.borrow_mut();
+        let mut container_mut = self.container.borrow_mut();
 
-            let middleware_manager = container_mut
-                .get_middleware_manager_mut()
-                .ok_or_else(|| anyhow!("Middleware manager not initialized"))?;
+        let middleware_manager = container_mut
+            .get_middleware_manager_mut()
+            .ok_or_else(|| anyhow!("Middleware manager not initialized"))?;
 
-            for config in middleware_configs {
-                middleware_manager.add_for_module(module_token.to_string(), config);
-            }
+        for config in middleware_configs {
+            middleware_manager.add_for_module(module_token.to_string(), config);
         }
 
         Ok(())

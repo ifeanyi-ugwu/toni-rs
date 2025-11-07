@@ -75,7 +75,7 @@ impl InstanceWrapper {
 
         // Handle the result from middleware chain
         match middleware_result {
-            Ok(response) => response,
+            Ok(response) => Box::new(response),
             Err(e) => {
                 // Convert error to HTTP response
                 eprintln!("❌ Middleware error: {}", e);
@@ -97,13 +97,13 @@ impl InstanceWrapper {
         guards: Vec<Arc<dyn Guard>>,
         interceptors: Vec<Arc<dyn Interceptor>>,
         pipes: Vec<Arc<dyn Pipe>>,
-    ) -> Box<dyn IntoResponse<Response = HttpResponse> + Send> {
+    ) -> HttpResponse {
         let mut context = Context::from_request(req);
 
         // Execute guards
         for guard in &guards {
             if !guard.can_activate(&context) {
-                return context.get_response();
+                return context.get_response().to_response();
             }
         }
 
@@ -122,7 +122,7 @@ impl InstanceWrapper {
         for pipe in &pipes {
             pipe.process(&mut context);
             if context.should_abort() {
-                return context.get_response();
+                return context.get_response().to_response();
             }
         }
 
@@ -136,6 +136,6 @@ impl InstanceWrapper {
             interceptor.after_execute(&mut context);
         }
 
-        context.get_response()
+        context.get_response().to_response()
     }
 }

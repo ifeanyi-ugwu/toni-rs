@@ -15,8 +15,8 @@ pub struct MiddlewareManager {
     global_middleware: Vec<Arc<dyn Middleware>>,
 
     /// Module-specific middleware configurations
-    /// Key: module token, Value: middleware configuration for that module
-    module_middleware: FxHashMap<String, MiddlewareConfiguration>,
+    /// Key: module token, Value: list of middleware configurations for that module
+    module_middleware: FxHashMap<String, Vec<MiddlewareConfiguration>>,
 }
 
 impl MiddlewareManager {
@@ -50,7 +50,10 @@ impl MiddlewareManager {
     /// manager.add_for_module("UserModule".to_string(), config);
     /// ```
     pub fn add_for_module(&mut self, module_token: String, config: MiddlewareConfiguration) {
-        self.module_middleware.insert(module_token, config);
+        self.module_middleware
+            .entry(module_token)
+            .or_insert_with(Vec::new)
+            .push(config);
     }
 
     /// Get all middleware that should apply to a specific route
@@ -77,9 +80,11 @@ impl MiddlewareManager {
         middleware.extend(self.global_middleware.iter().cloned());
 
         // Add module-specific middleware if applicable
-        if let Some(config) = self.module_middleware.get(module_token) {
-            if config.should_apply(route_path, method) {
-                middleware.extend(config.middleware.iter().cloned());
+        if let Some(configs) = self.module_middleware.get(module_token) {
+            for config in configs {
+                if config.should_apply(route_path, method) {
+                    middleware.extend(config.middleware.iter().cloned());
+                }
             }
         }
 
@@ -92,7 +97,7 @@ impl MiddlewareManager {
     }
 
     /// Get reference to module middleware map
-    pub fn get_module_middleware(&self) -> &FxHashMap<String, MiddlewareConfiguration> {
+    pub fn get_module_middleware(&self) -> &FxHashMap<String, Vec<MiddlewareConfiguration>> {
         &self.module_middleware
     }
 }

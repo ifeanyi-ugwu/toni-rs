@@ -1,14 +1,11 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use crate::http_helpers::{HttpRequest, HttpResponse, IntoResponse};
+use crate::http_helpers::{HttpRequest, HttpResponse};
 use crate::middleware::RoutePattern;
 
 /// Result type for middleware chain execution
-pub type MiddlewareResult = Result<
-    Box<dyn IntoResponse<Response = HttpResponse> + Send>,
-    Box<dyn std::error::Error + Send + Sync>,
->;
+pub type MiddlewareResult = Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Next function in the middleware chain
 #[async_trait]
@@ -21,18 +18,6 @@ pub trait Next: Send + Sync {
 pub trait Middleware: Send + Sync {
     /// Process the request and optionally call next
     async fn handle(&self, req: HttpRequest, next: Box<dyn Next>) -> MiddlewareResult;
-}
-
-/// Middleware consumer trait for applying middleware to routes
-pub trait MiddlewareConsumer {
-    /// Apply middleware to specific routes
-    fn apply(&mut self, middleware: Arc<dyn Middleware>) -> &mut Self;
-
-    /// Exclude specific routes from middleware
-    fn exclude(&mut self, paths: Vec<String>) -> &mut Self;
-
-    /// Apply to routes matching pattern
-    fn for_routes(&mut self, patterns: Vec<String>) -> &mut Self;
 }
 
 /// Functional middleware - simpler alternative using closures

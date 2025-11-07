@@ -16,4 +16,4 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0.92"
 quote = "1.0.38"
-syn = { version = "2.0.94", features = ["visit-mut", "default"] }
+syn = { version = "2.0.94", features = ["visit-mut", "default", "full"] }

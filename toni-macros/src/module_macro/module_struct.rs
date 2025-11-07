@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    Ident, ItemImpl, Token, Type, TypePath, bracketed,
+    Ident, ImplItem, ItemImpl, Token, Type, TypePath, bracketed,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
@@ -104,6 +104,36 @@ impl TryFrom<TokenStream> for ModuleConfig {
     }
 }
 
+/// Extract configure_middleware method from impl block if present
+fn extract_configure_middleware_method(input: &ItemImpl) -> TokenStream2 {
+    // Look for a method named "configure_middleware" in the impl block
+    for item in &input.items {
+        if let ImplItem::Fn(method) = item {
+            if method.sig.ident == "configure_middleware" {
+                // Found it! Extract the method body and signature
+                let block = &method.block;
+                let sig = &method.sig;
+
+                // Validate signature matches expected pattern
+                // Expected: fn configure_middleware(&self, consumer: &mut MiddlewareConsumer)
+                if sig.inputs.len() != 2 {
+                    return quote! {
+                        compile_error!("configure_middleware must have signature: fn configure_middleware(&self, consumer: &mut MiddlewareConsumer)");
+                    };
+                }
+
+                // Return the method implementation
+                return quote! {
+                    #sig #block
+                };
+            }
+        }
+    }
+
+    // No configure_middleware method found, return empty (use default trait impl)
+    quote! {}
+}
+
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let config = match ModuleConfig::try_from(attr) {
         Ok(c) => c,
@@ -127,6 +157,12 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let exports = &config.exports;
     let exports_string: Vec<String> = exports.iter().map(|e| e.to_string()).collect();
     let is_global = config.global;
+
+    // Extract configure_middleware method from impl block if present
+    let configure_middleware_impl = extract_configure_middleware_method(&input);
+
+    // Debug: uncomment to see what was extracted
+    // eprintln!("configure_middleware_impl (len={}): {}", configure_middleware_impl.to_string().len(), configure_middleware_impl);
 
     let generated = quote! {
         pub struct #input_ident;
@@ -165,6 +201,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn exports(&self) -> Option<Vec<String>> {
                 Some(vec![#(#exports_string.to_string()),*])
             }
+
+            // Include user-defined configure_middleware if present
+            #configure_middleware_impl
         }
     };
 

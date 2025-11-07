@@ -155,7 +155,7 @@ impl Middleware for CorsMiddleware {
                     .push(("Access-Control-Max-Age".to_string(), max_age.to_string()));
             }
 
-            return Ok(Box::new(response));
+            return Ok(response);
         }
 
         // Process normal request and add CORS headers to response
@@ -180,7 +180,7 @@ impl Middleware for CorsMiddleware {
             ));
         }
 
-        Ok(Box::new(response))
+        Ok(response)
     }
 }
 
@@ -237,7 +237,7 @@ impl Middleware for AuthMiddleware {
             "message": "Missing or invalid authentication token"
         })));
 
-        Ok(Box::new(response))
+        Ok(response)
     }
 }
 
@@ -268,7 +268,7 @@ impl Middleware for TimeoutMiddleware {
                     "error": "Request Timeout",
                     "message": format!("Request exceeded timeout of {}ms", self.timeout_ms)
                 })));
-                Ok(Box::new(response))
+                Ok(response)
             }
         }
     }
@@ -375,7 +375,7 @@ impl Middleware for RateLimitMiddleware {
                 "error": "Too Many Requests",
                 "message": "Rate limit exceeded"
             })));
-            Ok(Box::new(response))
+            Ok(response)
         }
     }
 }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::{
-    http_helpers::{HttpRequest, HttpResponse, IntoResponse},
+    http_helpers::{HttpRequest, HttpResponse},
     traits_helpers::middleware::{Middleware, MiddlewareResult, Next},
 };
 
@@ -10,13 +10,9 @@ pub struct FinalHandler {
     handler: Arc<
         dyn Fn(
                 HttpRequest,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Box<dyn IntoResponse<Response = HttpResponse> + Send>,
-                        > + Send,
-                >,
-            > + Send
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
+            + Send
             + Sync,
     >,
 }
@@ -26,13 +22,9 @@ impl FinalHandler {
     where
         F: Fn(
                 HttpRequest,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Box<dyn IntoResponse<Response = HttpResponse> + Send>,
-                        > + Send,
-                >,
-            > + Send
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
+            + Send
             + Sync
             + 'static,
     {
@@ -87,13 +79,9 @@ impl MiddlewareChain {
     where
         F: Fn(
                 HttpRequest,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Box<dyn IntoResponse<Response = HttpResponse> + Send>,
-                        > + Send,
-                >,
-            > + Send
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
+            + Send
             + Sync
             + 'static,
     {
