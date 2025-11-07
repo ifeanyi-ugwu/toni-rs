@@ -359,21 +359,13 @@ impl EnhancerModule {
         let tracker = get_global_tracker();
 
         // Config 1: Order tracker middleware for all /api/* routes
-
         consumer
-            .apply(Arc::new(OrderTrackerMiddleware::new(
-                "first",
-                tracker.clone(),
-            )))
+            .apply(OrderTrackerMiddleware::new("first", tracker.clone()))
             .for_routes(vec!["/api/*"]);
 
         // Config 2: Header check middleware for specific routes
-
         consumer
-            .apply(Arc::new(HeaderCheckMiddleware::new(
-                "X-Request-ID",
-                tracker,
-            )))
+            .apply(HeaderCheckMiddleware::new("X-Request-ID", tracker))
             .for_routes(vec!["/api/validate"]);
     }
 }

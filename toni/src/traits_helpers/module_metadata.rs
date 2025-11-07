@@ -70,6 +70,41 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
 }
 
 /// Builder for configuring middleware in modules
+///
+/// This provides a fluent API for configuring middleware with route patterns.
+/// Used within the `configure_middleware` method of your modules.
+///
+/// # Example
+/// ```ignore
+/// #[module(controllers: [UserController])]
+/// impl UserModule {
+///     fn configure_middleware(&self, consumer: &mut MiddlewareConsumer) {
+///         // Apply logger to all routes
+///         consumer
+///             .apply(LoggerMiddleware::new())
+///             .for_routes(vec!["/users/*"]);
+///
+///         // Apply auth to specific routes, excluding public endpoints
+///         consumer
+///             .apply(AuthMiddleware::new())
+///             .for_routes(vec!["/users/*"])
+///             .exclude(vec!["/users/public/*"]);
+///
+///         // Multiple middleware can be applied to the same routes
+///         consumer
+///             .apply(RateLimitMiddleware::new(100, 60000))
+///             .for_routes(vec![("/users/create", "POST")]);
+///     }
+/// }
+/// ```
+///
+/// # Route Patterns
+///
+/// Supports glob-like patterns and HTTP method filtering:
+/// - `/users` - Exact match, all HTTP methods
+/// - `/api/*` - All routes starting with /api/, all HTTP methods
+/// - `("/users", "POST")` - Only POST requests to /users
+/// - `("/api/*", ["GET", "POST"])` - Only GET and POST to /api/*
 pub struct MiddlewareConsumer {
     configurations: Vec<MiddlewareConfiguration>,
     current_middleware: Vec<Arc<dyn Middleware>>,
@@ -88,31 +123,28 @@ impl MiddlewareConsumer {
     }
 
     /// Apply middleware to routes
-    pub fn apply(&mut self, middleware: Arc<dyn Middleware>) -> &mut Self {
-        self.current_middleware.push(middleware);
-        self
-    }
-
-    /// Specify routes to apply middleware to
-    /// Accepts strings like "/users/*" or tuples like ("/users/*", "POST")
-    pub fn for_routes<T: IntoRoutePattern>(&mut self, patterns: Vec<T>) -> &mut Self {
-        self.current_includes = patterns
-            .into_iter()
-            .map(|p| p.into_route_pattern())
-            .collect();
-        self.finalize_current();
-        self
-    }
-
-    /// Exclude specific routes from middleware
-    /// Accepts strings like "/users/*" or tuples like ("/users/*", "POST")
-    pub fn exclude<T: IntoRoutePattern>(&mut self, patterns: Vec<T>) -> &mut Self {
-        self.current_excludes = patterns
-            .into_iter()
-            .map(|p| p.into_route_pattern())
-            .collect();
-        self.finalize_current();
-        self
+    ///
+    /// Returns a proxy that requires you to specify routes via `.for_routes()` or `.for_route()`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Single middleware
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .for_routes(vec!["/api/*"]);
+    ///
+    /// // Multiple middleware on same routes
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .apply_also(AuthMiddleware::new())
+    ///     .for_routes(vec!["/api/*"]);
+    /// ```
+    pub fn apply<M>(&mut self, middleware: M) -> MiddlewareConfigProxy<'_>
+    where
+        M: Middleware + 'static,
+    {
+        self.current_middleware.push(Arc::new(middleware));
+        MiddlewareConfigProxy { consumer: self }
     }
 
     /// Finalize current middleware configuration
@@ -137,5 +169,128 @@ impl MiddlewareConsumer {
 impl Default for MiddlewareConsumer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Proxy type returned by `.apply()` that enforces route specification
+///
+/// This type-state pattern ensures you cannot forget to call `.for_routes()` or `.for_route()`
+/// after applying middleware.
+///
+/// # Methods
+/// - `.apply_also()` - Add another middleware to the same configuration
+/// - `.for_routes()` / `.for_route()` - Specify routes (required, returns consumer)
+/// - `.exclude()` / `.exclude_route()` - Exclude routes (optional, returns proxy)
+#[must_use = "Middleware proxy must call .for_routes() or .for_route() to complete configuration"]
+pub struct MiddlewareConfigProxy<'a> {
+    consumer: &'a mut MiddlewareConsumer,
+}
+
+impl<'a> MiddlewareConfigProxy<'a> {
+    /// Add another middleware to the same configuration
+    ///
+    /// This allows you to group multiple middleware that should apply to the same routes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .apply_also(AuthMiddleware::new())
+    ///     .apply_also(CorsMiddleware::new())
+    ///     .for_routes(vec!["/api/*"]);
+    /// ```
+    pub fn apply_also<M>(self, middleware: M) -> Self
+    where
+        M: Middleware + 'static,
+    {
+        self.consumer.current_middleware.push(Arc::new(middleware));
+        self
+    }
+
+    /// Specify a single route to apply middleware to
+    ///
+    /// Finalizes the middleware configuration and returns the consumer,
+    /// allowing you to chain another `.apply()` call.
+    ///
+    /// # Example
+    /// ```ignore
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .for_route("/api/*")              // Returns consumer
+    ///     .apply(AuthMiddleware::new())      // Can chain another config
+    ///     .for_route("/admin/*");
+    /// ```
+    pub fn for_route<T: IntoRoutePattern>(self, pattern: T) -> &'a mut MiddlewareConsumer {
+        self.consumer
+            .current_includes
+            .push(pattern.into_route_pattern());
+
+        // Finalize the configuration now that routes are specified
+        self.consumer.finalize_current();
+        self.consumer
+    }
+
+    /// Specify multiple routes to apply middleware to
+    ///
+    /// Finalizes the middleware configuration and returns the consumer,
+    /// allowing you to chain another `.apply()` call.
+    ///
+    /// # Example
+    /// ```ignore
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .for_routes(vec!["/api/*", "/admin/*"]);
+    /// ```
+    pub fn for_routes<T: IntoRoutePattern>(self, patterns: Vec<T>) -> &'a mut MiddlewareConsumer {
+        let mut new_patterns: Vec<RoutePattern> = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
+
+        self.consumer.current_includes.append(&mut new_patterns);
+
+        // Finalize the configuration now that routes are specified
+        self.consumer.finalize_current();
+        self.consumer
+    }
+
+    /// Exclude a single route from middleware
+    ///
+    /// Returns the proxy, so you can continue chaining exclusions or call `.for_routes()`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// consumer
+    ///     .apply(AuthMiddleware::new())
+    ///     .exclude_route("/api/public/*")
+    ///     .exclude_route("/api/health")
+    ///     .for_routes(vec!["/api/*"]);
+    /// ```
+    pub fn exclude_route<T: IntoRoutePattern>(self, pattern: T) -> Self {
+        self.consumer
+            .current_excludes
+            .push(pattern.into_route_pattern());
+        self
+    }
+
+    /// Exclude multiple routes from middleware
+    ///
+    /// Returns the proxy, so you can continue chaining exclusions or call `.for_routes()`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// consumer
+    ///     .apply(AuthMiddleware::new())
+    ///     .exclude(vec!["/api/public/*", "/api/health"])
+    ///     .for_routes(vec!["/api/*"]);
+    /// ```
+    pub fn exclude<T: IntoRoutePattern>(self, patterns: Vec<T>) -> Self {
+        let mut new_patterns: Vec<RoutePattern> = patterns
+            .into_iter()
+            .map(|p| p.into_route_pattern())
+            .collect();
+
+        self.consumer.current_excludes.append(&mut new_patterns);
+        self
     }
 }
