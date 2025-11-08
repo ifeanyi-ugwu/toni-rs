@@ -174,14 +174,17 @@ impl Default for MiddlewareConsumer {
 
 /// Proxy type returned by `.apply()` that enforces route specification
 ///
-/// This type-state pattern ensures you cannot forget to call `.for_routes()` or `.for_route()`
-/// after applying middleware.
+/// This type-state pattern ensures you cannot forget to call `.for_routes()`, `.for_route()`,
+/// or `.done()` after applying middleware.
 ///
 /// # Methods
 /// - `.apply_also()` - Add another middleware to the same configuration
-/// - `.for_routes()` / `.for_route()` - Specify routes (required, returns consumer)
-/// - `.exclude()` / `.exclude_route()` - Exclude routes (optional, returns proxy)
-#[must_use = "Middleware proxy must call .for_routes() or .for_route() to complete configuration"]
+/// - `.for_route()` - Add a single route (chainable, returns proxy)
+/// - `.for_routes()` - Add multiple routes and finalize (returns consumer)
+/// - `.exclude_route()` - Exclude a single route (chainable, returns proxy)
+/// - `.exclude()` - Exclude multiple routes (chainable, returns proxy)
+/// - `.done()` - Finalize configuration (returns consumer)
+#[must_use = "Middleware proxy must call .for_routes(), .for_route(), or .done() to complete configuration"]
 pub struct MiddlewareConfigProxy<'a> {
     consumer: &'a mut MiddlewareConsumer,
 }
@@ -209,8 +212,8 @@ impl<'a> MiddlewareConfigProxy<'a> {
 
     /// Specify a single route to apply middleware to
     ///
-    /// Finalizes the middleware configuration and returns the consumer,
-    /// allowing you to chain another `.apply()` call.
+    /// Returns the proxy so you can chain more routes or exclusions before finalizing.
+    /// Call `.done()` when finished to finalize and return the consumer.
     ///
     /// # Accepted Types
     /// - `&str` - Path pattern, all HTTP methods: `"/api/*"`
@@ -221,35 +224,34 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// # Examples
     /// ```ignore
-    /// // Simple path (all methods)
+    /// // Chain multiple routes
     /// consumer
     ///     .apply(LoggerMiddleware::new())
-    ///     .for_route("/api/*");
+    ///     .for_route("/api/*")
+    ///     .for_route("/admin/*")
+    ///     .done();
     ///
-    /// // Path with specific HTTP method
+    /// // Mix with exclusions
     /// consumer
     ///     .apply(AuthMiddleware::new())
-    ///     .for_route(("/users/create", "POST"));
-    ///
-    /// // Path with multiple HTTP methods
-    /// consumer
-    ///     .apply(CorsMiddleware::new())
-    ///     .for_route(("/api/*", ["GET", "POST", "PUT"]));
+    ///     .for_route("/api/*")
+    ///     .exclude_route("/api/public/*")
+    ///     .done();
     /// ```
-    pub fn for_route<T: IntoRoutePattern>(self, pattern: T) -> &'a mut MiddlewareConsumer {
+    pub fn for_route<T: IntoRoutePattern>(self, pattern: T) -> Self {
         self.consumer
             .current_includes
             .push(pattern.into_route_pattern());
-
-        // Finalize the configuration now that routes are specified
-        self.consumer.finalize_current();
-        self.consumer
+        self
     }
 
     /// Specify multiple routes to apply middleware to
     ///
-    /// Finalizes the middleware configuration and returns the consumer,
+    /// **This method finalizes the middleware configuration** and returns the consumer,
     /// allowing you to chain another `.apply()` call.
+    ///
+    /// You can also call this with an empty `vec![]` to finalize a configuration
+    /// that was built using `.for_route()` chains.
     ///
     /// # Accepted Types
     /// Each element in the `Vec` can be:
@@ -280,6 +282,21 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///     .for_routes(vec![
     ///         ("/api/users/*", vec!["GET", "POST"]),
     ///         ("/api/admin/*", vec!["GET", "POST", "DELETE"]),
+    ///     ]);
+    ///
+    /// // Finalize a .for_route() chain (empty vec is fine)
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .for_route("/api/*")
+    ///     .for_route("/admin/*")
+    ///     .for_routes(vec![]);
+    ///
+    /// // Mix types in same vec (use vec![] for "all methods")
+    /// consumer
+    ///     .apply(CorsMiddleware::new())
+    ///     .for_routes(vec![
+    ///         ("/api/public/*", vec![]),  // All methods
+    ///         ("/api/admin/*", vec!["GET", "POST", "DELETE"]),  // Specific methods
     ///     ]);
     /// ```
     pub fn for_routes<T: IntoRoutePattern>(self, patterns: Vec<T>) -> &'a mut MiddlewareConsumer {
@@ -374,5 +391,32 @@ impl<'a> MiddlewareConfigProxy<'a> {
 
         self.consumer.current_excludes.append(&mut new_patterns);
         self
+    }
+
+    /// Finalize the middleware configuration
+    ///
+    /// This method finalizes the current middleware configuration and returns the consumer,
+    /// allowing you to chain another `.apply()` call. Use this when you've built up routes
+    /// using `.for_route()` and `.exclude_route()` chains.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Chain routes then finalize
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .for_route("/api/*")
+    ///     .for_route("/admin/*")
+    ///     .exclude_route("/api/health")
+    ///     .done();
+    ///
+    /// // Then continue with another middleware
+    /// consumer
+    ///     .apply(AuthMiddleware::new())
+    ///     .for_route("/admin/*")
+    ///     .done();
+    /// ```
+    pub fn done(self) -> &'a mut MiddlewareConsumer {
+        self.consumer.finalize_current();
+        self.consumer
     }
 }

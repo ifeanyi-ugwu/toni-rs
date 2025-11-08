@@ -23,7 +23,12 @@ impl RoutePattern {
     pub fn methods(path: &str, methods: Vec<&str>) -> Self {
         Self {
             path: path.to_string(),
-            methods: Some(methods.iter().map(|s| s.to_string()).collect()),
+            // Empty vec means all methods (allows mixing with specific methods in same Vec)
+            methods: if methods.is_empty() {
+                None
+            } else {
+                Some(methods.iter().map(|s| s.to_string()).collect())
+            },
         }
     }
 
