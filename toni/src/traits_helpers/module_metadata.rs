@@ -212,13 +212,29 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// Finalizes the middleware configuration and returns the consumer,
     /// allowing you to chain another `.apply()` call.
     ///
-    /// # Example
+    /// # Accepted Types
+    /// - `&str` - Path pattern, all HTTP methods: `"/api/*"`
+    /// - `(&str, &str)` - Path with single method: `("/users", "POST")`
+    /// - `(&str, [&str; N])` - Path with multiple methods: `("/api/*", ["GET", "POST"])`
+    /// - `(&str, &[&str; N])` - Path with ref to array: `("/api/*", &["GET", "POST"])`
+    /// - `(&str, Vec<&str>)` - Path with methods vec: `("/api/*", vec!["GET", "POST"])`
+    ///
+    /// # Examples
     /// ```ignore
+    /// // Simple path (all methods)
     /// consumer
     ///     .apply(LoggerMiddleware::new())
-    ///     .for_route("/api/*")              // Returns consumer
-    ///     .apply(AuthMiddleware::new())      // Can chain another config
-    ///     .for_route("/admin/*");
+    ///     .for_route("/api/*");
+    ///
+    /// // Path with specific HTTP method
+    /// consumer
+    ///     .apply(AuthMiddleware::new())
+    ///     .for_route(("/users/create", "POST"));
+    ///
+    /// // Path with multiple HTTP methods
+    /// consumer
+    ///     .apply(CorsMiddleware::new())
+    ///     .for_route(("/api/*", ["GET", "POST", "PUT"]));
     /// ```
     pub fn for_route<T: IntoRoutePattern>(self, pattern: T) -> &'a mut MiddlewareConsumer {
         self.consumer
@@ -235,11 +251,36 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// Finalizes the middleware configuration and returns the consumer,
     /// allowing you to chain another `.apply()` call.
     ///
-    /// # Example
+    /// # Accepted Types
+    /// Each element in the `Vec` can be:
+    /// - `&str` - Path pattern, all HTTP methods: `"/api/*"`
+    /// - `(&str, &str)` - Path with single method: `("/users", "POST")`
+    /// - `(&str, [&str; N])` - Path with multiple methods: `("/api/*", ["GET", "POST"])`
+    /// - `(&str, &[&str; N])` - Path with ref to array: `("/api/*", &["GET", "POST"])`
+    /// - `(&str, Vec<&str>)` - Path with methods vec: `("/api/*", vec!["GET", "POST"])`
+    ///
+    /// # Examples
     /// ```ignore
+    /// // Multiple simple paths (all methods)
     /// consumer
     ///     .apply(LoggerMiddleware::new())
-    ///     .for_routes(vec!["/api/*", "/admin/*"]);
+    ///     .for_routes(vec!["/api/*", "/admin/*", "/users/*"]);
+    ///
+    /// // Multiple routes with HTTP method arrays (same size)
+    /// consumer
+    ///     .apply(AuthMiddleware::new())
+    ///     .for_routes(vec![
+    ///         ("/api/users/*", ["GET", "POST"]),
+    ///         ("/api/posts/*", ["GET", "POST"]),
+    ///     ]);
+    ///
+    /// // Different-sized arrays? Use Vec instead
+    /// consumer
+    ///     .apply(CorsMiddleware::new())
+    ///     .for_routes(vec![
+    ///         ("/api/users/*", vec!["GET", "POST"]),
+    ///         ("/api/admin/*", vec!["GET", "POST", "DELETE"]),
+    ///     ]);
     /// ```
     pub fn for_routes<T: IntoRoutePattern>(self, patterns: Vec<T>) -> &'a mut MiddlewareConsumer {
         let mut new_patterns: Vec<RoutePattern> = patterns
@@ -258,12 +299,26 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// Returns the proxy, so you can continue chaining exclusions or call `.for_routes()`.
     ///
-    /// # Example
+    /// # Accepted Types
+    /// - `&str` - Path pattern, all HTTP methods: `"/api/public/*"`
+    /// - `(&str, &str)` - Path with single method: `("/users/login", "POST")`
+    /// - `(&str, [&str; N])` - Path with multiple methods: `("/api/public/*", ["GET", "POST"])`
+    /// - `(&str, &[&str; N])` - Path with ref to array: `("/api/public/*", &["GET", "POST"])`
+    /// - `(&str, Vec<&str>)` - Path with methods vec: `("/health", vec!["GET"])`
+    ///
+    /// # Examples
     /// ```ignore
+    /// // Exclude public routes from auth
     /// consumer
     ///     .apply(AuthMiddleware::new())
     ///     .exclude_route("/api/public/*")
     ///     .exclude_route("/api/health")
+    ///     .for_routes(vec!["/api/*"]);
+    ///
+    /// // Exclude specific method on a route
+    /// consumer
+    ///     .apply(RateLimitMiddleware::new(100, 60000))
+    ///     .exclude_route(("/api/health", "GET"))
     ///     .for_routes(vec!["/api/*"]);
     /// ```
     pub fn exclude_route<T: IntoRoutePattern>(self, pattern: T) -> Self {
@@ -277,11 +332,38 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// Returns the proxy, so you can continue chaining exclusions or call `.for_routes()`.
     ///
-    /// # Example
+    /// # Accepted Types
+    /// Each element in the `Vec` can be:
+    /// - `&str` - Path pattern, all HTTP methods: `"/api/public/*"`
+    /// - `(&str, &str)` - Path with single method: `("/users/login", "POST")`
+    /// - `(&str, [&str; N])` - Path with multiple methods: `("/api/public/*", ["GET", "POST"])`
+    /// - `(&str, &[&str; N])` - Path with ref to array: `("/api/public/*", &["GET", "POST"])`
+    /// - `(&str, Vec<&str>)` - Path with methods vec: `("/health", vec!["GET"])`
+    ///
+    /// # Examples
     /// ```ignore
+    /// // Exclude multiple public routes from auth
     /// consumer
     ///     .apply(AuthMiddleware::new())
-    ///     .exclude(vec!["/api/public/*", "/api/health"])
+    ///     .exclude(vec!["/api/public/*", "/api/health", "/api/status"])
+    ///     .for_routes(vec!["/api/*"]);
+    ///
+    /// // Exclude routes with method arrays (same size)
+    /// consumer
+    ///     .apply(LoggerMiddleware::new())
+    ///     .exclude(vec![
+    ///         ("/api/health", ["GET", "HEAD"]),
+    ///         ("/api/status", ["GET", "HEAD"]),
+    ///     ])
+    ///     .for_routes(vec!["/api/*"]);
+    ///
+    /// // Different-sized arrays? Use Vec instead
+    /// consumer
+    ///     .apply(RateLimitMiddleware::new(100, 60000))
+    ///     .exclude(vec![
+    ///         ("/api/health", vec!["GET", "HEAD"]),
+    ///         ("/api/metrics", vec!["GET"]),
+    ///     ])
     ///     .for_routes(vec!["/api/*"]);
     /// ```
     pub fn exclude<T: IntoRoutePattern>(self, patterns: Vec<T>) -> Self {

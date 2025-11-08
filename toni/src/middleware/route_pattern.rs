@@ -86,6 +86,13 @@ impl<const N: usize> IntoRoutePattern for (&str, [&str; N]) {
     }
 }
 
+// Tuple (path, reference to array) - allows &["GET", "POST"] syntax
+impl<const N: usize> IntoRoutePattern for (&str, &[&str; N]) {
+    fn into_route_pattern(self) -> RoutePattern {
+        RoutePattern::methods(self.0, self.1.to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
