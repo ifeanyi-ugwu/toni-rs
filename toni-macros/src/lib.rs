@@ -67,18 +67,18 @@ pub fn delete(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn use_guard(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+pub fn use_guards(attr: TokenStream, item: TokenStream) -> TokenStream {
+    enhancer::use_guards::use_guards_impl(attr, item)
 }
 
 #[proc_macro_attribute]
-pub fn interceptor(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+pub fn use_interceptors(attr: TokenStream, item: TokenStream) -> TokenStream {
+    enhancer::use_interceptors::use_interceptors_impl(attr, item)
 }
 
 #[proc_macro_attribute]
-pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+pub fn use_pipes(attr: TokenStream, item: TokenStream) -> TokenStream {
+    enhancer::use_pipes::use_pipes_impl(attr, item)
 }
 
 // Helper derive to register #[inject] and #[default] as valid attributes
@@ -87,6 +87,22 @@ pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn derive_injectable(_input: TokenStream) -> TokenStream {
     // This derive does nothing - it just registers the attributes
     TokenStream::new()
+}
+
+// Register marker attributes used internally by enhancer macros
+#[proc_macro_attribute]
+pub fn toni_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn toni_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+#[proc_macro_attribute]
+pub fn toni_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
 }
 
 #[proc_macro_derive(Config, attributes(env, default, nested))]

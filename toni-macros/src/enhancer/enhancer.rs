@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Attribute, Error, Ident, Result, spanned::Spanned};
+use syn::{Attribute, Error, Ident, Result, spanned::Spanned, punctuated::Punctuated, Token};
 
 fn is_enhancer(segment: &Ident) -> bool {
     matches!(
         segment.to_string().as_str(),
-        "use_guard" | "interceptor" | "pipe"
+        "toni_guards" | "toni_interceptors" | "toni_pipes"
     )
 }
 
@@ -26,20 +26,28 @@ pub fn create_enchancers_token_stream(
     }
     let mut enhancers: HashMap<String, Vec<TokenStream>> = HashMap::new();
     for (ident, attr) in enhancers_attr {
-        let arg_ident = attr
-            .parse_args::<Ident>()
+        // Parse comma-separated list of identifiers
+        let arg_idents = attr
+            .parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
             .map_err(|_| Error::new(attr.span(), "Invalid attribute format"))?;
-        match enhancers.get_mut(ident.to_string().as_str()) {
-            Some(enhancer_mut) => {
-                enhancer_mut.push(quote! {::std::sync::Arc::new(#arg_ident)});
-            }
-            None => {
-                enhancers.insert(
-                    ident.to_string(),
-                    vec![quote! {::std::sync::Arc::new(#arg_ident)}],
-                );
-            }
-        };
+
+        // Normalize the attribute name (remove toni_ prefix)
+        let key = ident.to_string().replace("toni_", "");
+
+        // Add each identifier to the enhancers map
+        for arg_ident in arg_idents {
+            match enhancers.get_mut(key.as_str()) {
+                Some(enhancer_mut) => {
+                    enhancer_mut.push(quote! {::std::sync::Arc::new(#arg_ident)});
+                }
+                None => {
+                    enhancers.insert(
+                        key.clone(),
+                        vec![quote! {::std::sync::Arc::new(#arg_ident)}],
+                    );
+                }
+            };
+        }
     }
     Ok(enhancers)
 }

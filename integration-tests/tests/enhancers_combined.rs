@@ -14,14 +14,14 @@ use serial_test::serial;
 use std::sync::{Arc, Mutex};
 use toni::async_trait;
 use toni::{
-    controller, controller_struct, get, module, post, provider_struct, Body as ToniBody,
-    HttpAdapter, HttpRequest, HttpResponse,
+    controller, controller_struct, get, module, post, provider_struct, use_guards,
+    use_interceptors, use_pipes, Body as ToniBody, HttpAdapter, HttpRequest, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 
 use toni::injector::Context;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, Next};
-use toni::traits_helpers::{Guard, Interceptor, MiddlewareConsumer, Pipe};
+use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
 
 // ============================================================================
 // EXECUTION ORDER TRACKER
@@ -208,12 +208,16 @@ impl LoggingInterceptor {
     }
 }
 
+#[async_trait]
 impl Interceptor for LoggingInterceptor {
-    fn before_execute(&self, _context: &mut Context) {
+    async fn intercept(&self, _context: &mut Context, next: Box<dyn InterceptorNext>) {
+        // BEFORE handler execution
         track(&self.tracker, &format!("interceptor:{}:before", self.name));
-    }
 
-    fn after_execute(&self, _context: &mut Context) {
+        // Execute handler
+        next.run(_context).await;
+
+        // AFTER handler execution
         track(&self.tracker, &format!("interceptor:{}:after", self.name));
     }
 }
@@ -299,6 +303,9 @@ impl TestService {
 #[controller("/api")]
 impl EnhancerController {
     /// Endpoint with all enhancers: guard + interceptor + pipe
+    #[use_guards(AdminGuard)]
+    #[use_interceptors(LoggingInterceptor)]
+    #[use_pipes(ValidationPipe)]
     #[get("/protected")]
     fn protected_endpoint(&self, _req: HttpRequest) -> ToniBody {
         let tracker = get_global_tracker();
@@ -307,6 +314,7 @@ impl EnhancerController {
     }
 
     /// Endpoint with only guards
+    #[use_guards(AuthGuard)]
     #[get("/auth-only")]
     fn auth_only_endpoint(&self, _req: HttpRequest) -> ToniBody {
         let tracker = get_global_tracker();
@@ -315,6 +323,8 @@ impl EnhancerController {
     }
 
     /// Endpoint with interceptors and pipes but no guards
+    #[use_interceptors(LoggingInterceptor)]
+    #[use_pipes(ValidationPipe, TransformPipe)]
     #[post("/validate")]
     fn validate_endpoint(&self, _req: HttpRequest) -> ToniBody {
         let tracker = get_global_tracker();
@@ -441,8 +451,10 @@ async fn test_enhancers_execution_order() {
                 .await
                 .expect("Failed to call validate endpoint");
 
-            assert_eq!(response.status(), 200);
+            let status = response.status();
             let body = response.text().await.unwrap();
+            eprintln!("Test 2 response: status={}, body={}", status, body);
+            assert_eq!(status, 200);
             assert!(body.contains("Processed: data"));
 
             let order = tracker.get_events();

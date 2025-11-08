@@ -1,13 +1,34 @@
 use std::sync::Arc;
 
 use crate::{
+    async_trait,
     http_helpers::{HttpMethod, HttpRequest, HttpResponse, IntoResponse},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{ControllerTrait, Guard, Interceptor, Pipe},
+    traits_helpers::{ControllerTrait, Guard, Interceptor, InterceptorNext, Pipe},
 };
 
 use super::Context;
+
+/// Represents the next step in the interceptor chain
+struct ChainNext {
+    interceptors: Vec<Arc<dyn Interceptor>>,
+    instance: Arc<Box<dyn ControllerTrait>>,
+    pipes: Vec<Arc<dyn Pipe>>,
+}
+
+#[async_trait]
+impl InterceptorNext for ChainNext {
+    async fn run(self: Box<Self>, context: &mut Context) {
+        InstanceWrapper::execute_with_interceptors(
+            context,
+            &self.interceptors,
+            &self.instance,
+            &self.pipes,
+        )
+        .await;
+    }
+}
 
 pub struct InstanceWrapper {
     instance: Arc<Box<dyn ControllerTrait>>,
@@ -107,11 +128,45 @@ impl InstanceWrapper {
             }
         }
 
-        // Execute before interceptors
-        for interceptor in &interceptors {
-            interceptor.before_execute(&mut context);
+        // Execute interceptors wrapping the handler
+        Self::execute_with_interceptors(&mut context, &interceptors, &instance, &pipes).await;
+
+        context.get_response().to_response()
+    }
+
+    /// Execute handler wrapped by interceptors (onion/Russian doll pattern)
+    async fn execute_with_interceptors(
+        context: &mut Context,
+        interceptors: &[Arc<dyn Interceptor>],
+        instance: &Arc<Box<dyn ControllerTrait>>,
+        pipes: &[Arc<dyn Pipe>],
+    ) {
+        // If no interceptors, execute handler directly
+        if interceptors.is_empty() {
+            Self::execute_handler(context, instance, pipes).await;
+            return;
         }
 
+        // Get first interceptor and remaining
+        let (first, rest) = interceptors.split_first().unwrap();
+
+        // Create the "next" handler that wraps the rest of the chain
+        let next = ChainNext {
+            interceptors: rest.to_vec(),
+            instance: instance.clone(),
+            pipes: pipes.to_vec(),
+        };
+
+        // Execute this interceptor with the next chain
+        first.intercept(context, Box::new(next)).await;
+    }
+
+    /// Execute the actual handler (pipes + controller)
+    async fn execute_handler(
+        context: &mut Context,
+        instance: &Arc<Box<dyn ControllerTrait>>,
+        pipes: &[Arc<dyn Pipe>],
+    ) {
         // Get and validate DTO
         let dto = instance.get_body_dto(context.take_request());
         if let Some(dto) = dto {
@@ -119,10 +174,10 @@ impl InstanceWrapper {
         }
 
         // Execute pipes
-        for pipe in &pipes {
-            pipe.process(&mut context);
+        for pipe in pipes {
+            pipe.process(context);
             if context.should_abort() {
-                return context.get_response().to_response();
+                return;
             }
         }
 
@@ -130,12 +185,5 @@ impl InstanceWrapper {
         let req = context.take_request().clone();
         let controller_response = instance.execute(req).await;
         context.set_response(controller_response);
-
-        // Execute after interceptors
-        for interceptor in &interceptors {
-            interceptor.after_execute(&mut context);
-        }
-
-        context.get_response().to_response()
     }
 }
