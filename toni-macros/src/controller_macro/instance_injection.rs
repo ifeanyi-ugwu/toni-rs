@@ -56,7 +56,7 @@ use syn::{
 };
 
 use crate::{
-    enhancer::enhancer::create_enchancers_token_stream,
+    enhancer::enhancer::create_enhancers_token_stream,
     markers_params::{
         extracts_marker_params::{
             extract_body_from_param, extract_path_param_from_param, extract_query_from_param,
@@ -192,10 +192,14 @@ fn generate_controller_wrappers(
     let mut wrappers = Vec::new();
     let mut metadata_list = Vec::new();
 
+    // Extract controller-level enhancers from impl block attributes
+    let controller_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
+
     for item in &impl_block.items {
         if let syn::ImplItem::Fn(method) = item {
             if let Some(http_method_attr) = find_http_method_attr(&method.attrs) {
-                let enhancers_attr = get_enhancers_attr(&method.attrs)?;
+                let method_enhancers_attr = get_enhancers_attr(&method.attrs)?;
+
                 let marker_params = get_marker_params(method)?;
 
                 let (wrapper, metadata) = generate_controller_wrapper(
@@ -204,7 +208,8 @@ fn generate_controller_wrappers(
                     dependencies,
                     route_prefix,
                     http_method_attr,
-                    enhancers_attr,
+                    controller_enhancers_attr.clone(),
+                    method_enhancers_attr,
                     marker_params,
                     scope,
                 )?;
@@ -246,7 +251,8 @@ fn generate_controller_wrapper(
     dependencies: &DependencyInfo,
     route_prefix: &str,
     http_method_attr: &Attribute,
-    enhancers_attr: HashMap<&Ident, &Attribute>,
+    controller_enhancers_attr: HashMap<&Ident, &Attribute>,
+    method_enhancers_attr: HashMap<&Ident, &Attribute>,
     marker_params: Vec<MarkerParam>,
     scope: crate::shared::scope_parser::ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
@@ -301,7 +307,8 @@ fn generate_controller_wrapper(
     };
 
     let method_call = generate_method_call(method, &marker_params)?;
-    let enhancers = create_enchancers_token_stream(enhancers_attr)?;
+    let enhancers =
+        create_enhancers_token_stream(controller_enhancers_attr, method_enhancers_attr)?;
 
     let (marker_params_extraction, body_dto_token_stream) =
         generate_marker_params_extraction(&marker_params)?;
@@ -480,9 +487,9 @@ fn generate_singleton_controller_wrapper(
     struct_name: &Ident, // Need this for downcast type
 ) -> TokenStream {
     let binding = Vec::new();
-    let use_guards = enhancers.get("use_guard").unwrap_or(&binding);
-    let interceptors = enhancers.get("interceptor").unwrap_or(&binding);
-    let pipes = enhancers.get("pipe").unwrap_or(&binding);
+    let use_guards = enhancers.get("guards").unwrap_or(&binding);
+    let interceptors = enhancers.get("interceptors").unwrap_or(&binding);
+    let pipes = enhancers.get("pipes").unwrap_or(&binding);
 
     let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
         token_stream.clone()
@@ -562,9 +569,9 @@ fn generate_request_controller_wrapper(
     body_dto_token_stream: &Option<TokenStream>,
 ) -> TokenStream {
     let binding = Vec::new();
-    let use_guards = enhancers.get("use_guard").unwrap_or(&binding);
-    let interceptors = enhancers.get("interceptor").unwrap_or(&binding);
-    let pipes = enhancers.get("pipe").unwrap_or(&binding);
+    let use_guards = enhancers.get("guards").unwrap_or(&binding);
+    let interceptors = enhancers.get("interceptors").unwrap_or(&binding);
+    let pipes = enhancers.get("pipes").unwrap_or(&binding);
 
     let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
         token_stream.clone()

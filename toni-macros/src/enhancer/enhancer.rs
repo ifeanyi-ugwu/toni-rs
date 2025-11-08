@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Attribute, Error, Ident, Result, spanned::Spanned, punctuated::Punctuated, Token};
+use syn::{Attribute, Error, Ident, Result, Token, punctuated::Punctuated, spanned::Spanned};
 
 fn is_enhancer(segment: &Ident) -> bool {
     matches!(
@@ -49,6 +49,64 @@ pub fn create_enchancers_token_stream(
             };
         }
     }
+    Ok(enhancers)
+}
+
+/// Create enhancers token stream from TWO hashmaps (controller-level and method-level)
+/// This properly accumulates enhancers: controller-level first, then method-level
+pub fn create_enhancers_token_stream(
+    controller_enhancers_attr: HashMap<&Ident, &Attribute>,
+    method_enhancers_attr: HashMap<&Ident, &Attribute>,
+) -> Result<HashMap<String, Vec<TokenStream>>> {
+    let mut enhancers: HashMap<String, Vec<TokenStream>> = HashMap::new();
+
+    // Process controller-level enhancers FIRST
+    for (ident, attr) in controller_enhancers_attr {
+        let arg_idents = attr
+            .parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
+            .map_err(|_| Error::new(attr.span(), "Invalid attribute format"))?;
+
+        let key = ident.to_string().replace("toni_", "");
+
+        for arg_ident in arg_idents {
+            match enhancers.get_mut(key.as_str()) {
+                Some(enhancer_mut) => {
+                    enhancer_mut.push(quote! {::std::sync::Arc::new(#arg_ident)});
+                }
+                None => {
+                    enhancers.insert(
+                        key.clone(),
+                        vec![quote! {::std::sync::Arc::new(#arg_ident)}],
+                    );
+                }
+            };
+        }
+    }
+
+    // Then process method-level enhancers (ADDS to controller-level, doesn't replace)
+    for (ident, attr) in method_enhancers_attr {
+        let arg_idents = attr
+            .parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
+            .map_err(|_| Error::new(attr.span(), "Invalid attribute format"))?;
+
+        let key = ident.to_string().replace("toni_", "");
+
+        for arg_ident in arg_idents {
+            match enhancers.get_mut(key.as_str()) {
+                Some(enhancer_mut) => {
+                    // This APPENDS instead of replacing!
+                    enhancer_mut.push(quote! {::std::sync::Arc::new(#arg_ident)});
+                }
+                None => {
+                    enhancers.insert(
+                        key.clone(),
+                        vec![quote! {::std::sync::Arc::new(#arg_ident)}],
+                    );
+                }
+            };
+        }
+    }
+
     Ok(enhancers)
 }
 

@@ -1,10 +1,10 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token};
+use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token, Item};
 
-/// Attribute macro for applying guards to a route handler method
+/// Attribute macro for applying guards to a route handler method or controller impl block
 ///
-/// # Example
+/// # Example - Method level
 /// ```rust
 /// #[use_guards(AuthGuard, RoleGuard)]
 /// #[get("/admin")]
@@ -12,19 +12,42 @@ use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token};
 ///     // ...
 /// }
 /// ```
+///
+/// # Example - Controller level
+/// ```rust
+/// #[use_guards(AuthGuard)]  // Applies to ALL methods
+/// #[controller("/api")]
+/// impl MyController {
+///     // All methods get AuthGuard
+/// }
+/// ```
 pub fn use_guards_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the list of guard types
     let guards = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
-
-    // Parse the method
-    let method = parse_macro_input!(item as syn::ImplItemFn);
-
-    // Create a marker attribute that the controller macro will read
     let guard_list: Vec<_> = guards.iter().collect();
 
-    let output = quote! {
-        #[toni::toni_guards(#(#guard_list),*)]
-        #method
+    // Try to parse as either a method or an impl block
+    let item_parsed: Item = parse_macro_input!(item as Item);
+
+    let output = match item_parsed {
+        Item::Fn(method) => {
+            quote! {
+                #[toni::toni_guards(#(#guard_list),*)]
+                #method
+            }
+        }
+        Item::Impl(impl_block) => {
+            quote! {
+                #[toni::toni_guards(#(#guard_list),*)]
+                #impl_block
+            }
+        }
+        _ => {
+            quote! {
+                #[toni::toni_guards(#(#guard_list),*)]
+                #item_parsed
+            }
+        }
     };
 
     output.into()

@@ -300,6 +300,7 @@ impl TestService {
         service: TestService,
     }
 )]
+#[use_interceptors(LoggingInterceptor)] // Controller-level: applies to ALL methods
 #[controller("/api")]
 impl EnhancerController {
     /// Endpoint with all enhancers: guard + interceptor + pipe
