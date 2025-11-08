@@ -6,7 +6,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     middleware::MiddlewareManager,
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, ControllerTrait, Guard, Interceptor, ModuleMetadata, Pipe, Provider, ProviderTrait},
+    traits_helpers::{
+        Controller, ControllerTrait, Guard, Interceptor, ModuleMetadata, Pipe, Provider,
+        ProviderTrait,
+    },
 };
 
 use super::{InstanceWrapper, module::Module};
@@ -133,7 +136,11 @@ impl ToniContainer {
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_controller_instance(controller_instance, enhancer_metadata, global_enhancers);
+        module_ref.add_controller_instance(
+            controller_instance,
+            enhancer_metadata,
+            global_enhancers,
+        );
         Ok(())
     }
 

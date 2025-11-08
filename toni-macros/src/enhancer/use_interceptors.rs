@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token, Item};
+use syn::{Ident, Item, Token, parse_macro_input, punctuated::Punctuated};
 
 /// Attribute macro for applying interceptors to a route handler method or controller impl block
 ///
@@ -23,7 +23,8 @@ use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token, Item};
 /// ```
 pub fn use_interceptors_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the list of interceptor types
-    let interceptors = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
+    let interceptors =
+        parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
     let interceptor_list: Vec<_> = interceptors.iter().collect();
 
     // Try to parse as either a method or an impl block

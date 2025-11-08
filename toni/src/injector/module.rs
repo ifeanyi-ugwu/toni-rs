@@ -61,7 +61,8 @@ impl Module {
         global_enhancers: EnhancerMetadata,
     ) {
         let token = controller.get_token();
-        let instance_wrapper = InstanceWrapper::new(controller, enhancer_metadata, global_enhancers);
+        let instance_wrapper =
+            InstanceWrapper::new(controller, enhancer_metadata, global_enhancers);
         self.controllers_instances
             .insert(token, Arc::new(instance_wrapper));
     }

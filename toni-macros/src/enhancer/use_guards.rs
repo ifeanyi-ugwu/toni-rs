@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, Ident, Token, Item};
+use syn::{Ident, Item, Token, parse_macro_input, punctuated::Punctuated};
 
 /// Attribute macro for applying guards to a route handler method or controller impl block
 ///
