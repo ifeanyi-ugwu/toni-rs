@@ -42,12 +42,24 @@ impl InstanceWrapper {
     pub fn new(
         instance: Arc<Box<dyn ControllerTrait>>,
         enhancer_metadata: EnhancerMetadata,
+        global_enhancers: EnhancerMetadata,
     ) -> Self {
+        // Merge enhancers: global first, then controller/method
+        // Execution order: global < controller < method
+        let mut guards = global_enhancers.guards;
+        guards.extend(enhancer_metadata.guards);
+
+        let mut interceptors = global_enhancers.interceptors;
+        interceptors.extend(enhancer_metadata.interceptors);
+
+        let mut pipes = global_enhancers.pipes;
+        pipes.extend(enhancer_metadata.pipes);
+
         Self {
             instance,
-            guards: enhancer_metadata.guards,
-            interceptors: enhancer_metadata.interceptors,
-            pipes: enhancer_metadata.pipes,
+            guards,
+            interceptors,
+            pipes,
             middleware_chain: MiddlewareChain::new(),
         }
     }

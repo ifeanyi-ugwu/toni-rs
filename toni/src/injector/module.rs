@@ -58,9 +58,10 @@ impl Module {
         &mut self,
         controller: Arc<Box<dyn ControllerTrait>>,
         enhancer_metadata: EnhancerMetadata,
+        global_enhancers: EnhancerMetadata,
     ) {
         let token = controller.get_token();
-        let instance_wrapper = InstanceWrapper::new(controller, enhancer_metadata);
+        let instance_wrapper = InstanceWrapper::new(controller, enhancer_metadata, global_enhancers);
         self.controllers_instances
             .insert(token, Arc::new(instance_wrapper));
     }

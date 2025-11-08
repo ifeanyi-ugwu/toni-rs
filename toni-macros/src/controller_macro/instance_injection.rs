@@ -748,7 +748,10 @@ fn generate_singleton_manager(
     // Generate scope checking code to determine if we need to elevate to Request scope
     let scope_check_code = if dependencies.fields.is_empty() {
         // No dependencies - definitely Singleton
-        quote! { let needs_elevation = false; }
+        quote! {
+            let request_deps: Vec<String> = Vec::new();
+            let needs_elevation = false;
+        }
     } else {
         let dep_checks: Vec<_> = dependencies
             .fields

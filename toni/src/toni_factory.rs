@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::middleware::Middleware;
 use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::toni_application::ToniApplication;
+use crate::traits_helpers::{Guard, Interceptor, Pipe};
 use crate::{
     http_adapter::HttpAdapter,
     injector::{ToniContainer, ToniInstanceLoader},
@@ -16,6 +17,9 @@ use crate::{
 #[derive(Default)]
 pub struct ToniFactory {
     global_middleware: Vec<Arc<dyn Middleware>>,
+    global_guards: Vec<Arc<dyn Guard>>,
+    global_interceptors: Vec<Arc<dyn Interceptor>>,
+    global_pipes: Vec<Arc<dyn Pipe>>,
 }
 
 impl ToniFactory {
@@ -23,11 +27,29 @@ impl ToniFactory {
     pub fn new() -> Self {
         Self {
             global_middleware: Vec::new(),
+            global_guards: Vec::new(),
+            global_interceptors: Vec::new(),
+            global_pipes: Vec::new(),
         }
     }
 
     pub fn use_global_middleware(&mut self, middleware: Arc<dyn Middleware>) -> &mut Self {
         self.global_middleware.push(middleware);
+        self
+    }
+
+    pub fn use_global_guards(&mut self, guard: Arc<dyn Guard>) -> &mut Self {
+        self.global_guards.push(guard);
+        self
+    }
+
+    pub fn use_global_interceptors(&mut self, interceptor: Arc<dyn Interceptor>) -> &mut Self {
+        self.global_interceptors.push(interceptor);
+        self
+    }
+
+    pub fn use_global_pipes(&mut self, pipe: Arc<dyn Pipe>) -> &mut Self {
+        self.global_pipes.push(pipe);
         self
     }
 
@@ -78,6 +100,20 @@ impl ToniFactory {
                 for middleware in &self.global_middleware {
                     middleware_manager.add_global(middleware.clone());
                 }
+            }
+        }
+
+        // Register global enhancers
+        {
+            let mut container_mut = container.borrow_mut();
+            for guard in &self.global_guards {
+                container_mut.add_global_guard(guard.clone());
+            }
+            for interceptor in &self.global_interceptors {
+                container_mut.add_global_interceptor(interceptor.clone());
+            }
+            for pipe in &self.global_pipes {
+                container_mut.add_global_pipe(pipe.clone());
             }
         }
 

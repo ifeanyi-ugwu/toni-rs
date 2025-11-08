@@ -6,7 +6,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     middleware::MiddlewareManager,
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, ControllerTrait, ModuleMetadata, Provider, ProviderTrait},
+    traits_helpers::{Controller, ControllerTrait, Guard, Interceptor, ModuleMetadata, Pipe, Provider, ProviderTrait},
 };
 
 use super::{InstanceWrapper, module::Module};
@@ -18,6 +18,10 @@ pub struct ToniContainer {
     global_providers: FxHashMap<String, Arc<Box<dyn ProviderTrait>>>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
+    /// Global enhancers - applied to all controllers
+    global_guards: Vec<Arc<dyn Guard>>,
+    global_interceptors: Vec<Arc<dyn Interceptor>>,
+    global_pipes: Vec<Arc<dyn Pipe>>,
 }
 
 impl Default for ToniContainer {
@@ -33,6 +37,29 @@ impl ToniContainer {
             middleware_manager: Some(MiddlewareManager::new()),
             global_providers: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
+            global_guards: Vec::new(),
+            global_interceptors: Vec::new(),
+            global_pipes: Vec::new(),
+        }
+    }
+
+    pub fn add_global_guard(&mut self, guard: Arc<dyn Guard>) {
+        self.global_guards.push(guard);
+    }
+
+    pub fn add_global_interceptor(&mut self, interceptor: Arc<dyn Interceptor>) {
+        self.global_interceptors.push(interceptor);
+    }
+
+    pub fn add_global_pipe(&mut self, pipe: Arc<dyn Pipe>) {
+        self.global_pipes.push(pipe);
+    }
+
+    pub fn get_global_enhancers(&self) -> EnhancerMetadata {
+        EnhancerMetadata {
+            guards: self.global_guards.clone(),
+            interceptors: self.global_interceptors.clone(),
+            pipes: self.global_pipes.clone(),
         }
     }
 
@@ -101,11 +128,12 @@ impl ToniContainer {
         controller_instance: Arc<Box<dyn ControllerTrait>>,
         enhancer_metadata: EnhancerMetadata,
     ) -> Result<()> {
+        let global_enhancers = self.get_global_enhancers();
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_controller_instance(controller_instance, enhancer_metadata);
+        module_ref.add_controller_instance(controller_instance, enhancer_metadata, global_enhancers);
         Ok(())
     }
 
