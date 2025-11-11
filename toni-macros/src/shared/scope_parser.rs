@@ -40,10 +40,11 @@ pub struct ProviderStructArgs {
     pub struct_def: Option<ItemStruct>, // None if using new syntax (struct in item)
 }
 
-/// Parse controller_struct attribute: #[controller_struct(scope = "request", pub struct Foo { ... })]
+/// Parse controller_struct attribute: #[controller_struct(scope = "request", init = "new", pub struct Foo { ... })]
 pub struct ControllerStructArgs {
     pub scope: ControllerScope,
     pub was_explicit: bool, // Did user explicitly write scope = "..."?
+    pub init: Option<String>, // Optional custom constructor method name
     pub struct_def: ItemStruct,
 }
 
@@ -113,15 +114,14 @@ impl Parse for ControllerStructArgs {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut scope = ControllerScope::default();
         let mut was_explicit = false;
+        let mut init: Option<String> = None;
 
-        // Check if first token is "scope"
-        let lookahead = input.lookahead1();
-        if lookahead.peek(syn::Ident) {
-            let ident: syn::Ident = input.fork().parse()?;
+        // Parse optional attributes: scope = "...", init = "..."
+        while input.peek(syn::Ident) && !input.peek(Token![pub]) && !input.peek(Token![struct]) {
+            let ident: syn::Ident = input.parse()?;
 
             if ident == "scope" {
                 // Parse: scope = "request"
-                let _ident: syn::Ident = input.parse()?;
                 let _eq: Token![=] = input.parse()?;
                 let value: LitStr = input.parse()?;
 
@@ -139,11 +139,21 @@ impl Parse for ControllerStructArgs {
                         ));
                     }
                 };
+            } else if ident == "init" {
+                // Parse: init = "new"
+                let _eq: Token![=] = input.parse()?;
+                let value: LitStr = input.parse()?;
+                init = Some(value.value());
+            } else {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("Unknown attribute: '{}'. Expected 'scope' or 'init'", ident),
+                ));
+            }
 
-                // Consume the comma after scope
-                if input.peek(Token![,]) {
-                    let _: Token![,] = input.parse()?;
-                }
+            // Consume the comma after attribute
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
             }
         }
 
@@ -153,6 +163,7 @@ impl Parse for ControllerStructArgs {
         Ok(ControllerStructArgs {
             scope,
             was_explicit,
+            init,
             struct_def,
         })
     }

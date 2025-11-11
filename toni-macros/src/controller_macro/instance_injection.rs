@@ -286,24 +286,34 @@ fn generate_controller_wrapper(
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
-    // Generate initializers for owned fields
-    let owned_field_inits: Vec<_> = dependencies
-        .owned_fields
-        .iter()
-        .map(|(field_name, field_type, default_expr)| {
-            if let Some(expr) = default_expr {
-                quote! { #field_name: #expr }
-            } else {
-                quote! { #field_name: <#field_type>::default() }
-            }
-        })
-        .collect();
+    // Generate struct instantiation based on DI source
+    let struct_instantiation = if let Some(init_method_name) = &dependencies.init_method {
+        // Constructor-based DI: call the constructor with resolved parameters
+        let init_method = Ident::new(init_method_name, struct_name.span());
+        quote! {
+            let controller = #struct_name::#init_method(#(#field_names),*);
+        }
+    } else {
+        // Field-based DI: use struct literal
+        // Generate initializers for owned fields
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    quote! { #field_name: #expr }
+                } else {
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
 
-    let struct_instantiation = quote! {
-        let controller = #struct_name {
-            #(#field_names,)*  // Injected dependencies
-            #(#owned_field_inits),*  // Owned fields with defaults
-        };
+        quote! {
+            let controller = #struct_name {
+                #(#field_names,)*  // Injected dependencies
+                #(#owned_field_inits),*  // Owned fields with defaults
+            };
+        }
     };
 
     let method_call = generate_method_call(method, &marker_params)?;
@@ -350,10 +360,15 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    // Process each field individually (since lookup_token is now TokenStream, we can't group easily)
-    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
-        let field_name_str = field_name.to_string();
+    // When a constructor is specified, resolve its parameters instead of struct fields
+    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
+        &dependencies.constructor_params
+    } else {
+        &dependencies.fields
+    };
 
+    // Process each dependency individually
+    for (field_name, full_type, lookup_token_expr) in deps_to_resolve {
         let resolution = quote! {
             let #field_name: #full_type = {
                 let __lookup_token = #lookup_token_expr;
@@ -680,12 +695,17 @@ fn generate_singleton_manager(
         .map(|token_expr| token_expr)
         .collect();
 
+    // When a constructor is specified, resolve its parameters instead of struct fields
+    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
+        &dependencies.constructor_params
+    } else {
+        &dependencies.fields
+    };
+
     // Generate field resolutions AT STARTUP (no HttpRequest available)
-    let field_resolutions = dependencies
-        .fields
+    let field_resolutions = deps_to_resolve
         .iter()
         .map(|(field_name, full_type, lookup_token_expr)| {
-            let field_name_str = field_name.to_string();
             quote! {
                 let #field_name: #full_type = {
                     let __lookup_token = #lookup_token_expr;
@@ -706,24 +726,38 @@ fn generate_singleton_manager(
         })
         .collect::<Vec<_>>();
 
-    let field_names: Vec<_> = dependencies
-        .fields
+    let field_names: Vec<_> = deps_to_resolve
         .iter()
         .map(|(field_name, _, _)| field_name.clone())
         .collect();
 
-    // Generate initializers for owned fields
-    let owned_field_inits: Vec<_> = dependencies
-        .owned_fields
-        .iter()
-        .map(|(field_name, field_type, default_expr)| {
-            if let Some(expr) = default_expr {
-                quote! { #field_name: #expr }
-            } else {
-                quote! { #field_name: <#field_type>::default() }
+    // Generate struct instantiation based on DI source
+    let struct_instantiation = if let Some(init_method_name) = &dependencies.init_method {
+        // Constructor-based DI: call the constructor with resolved parameters
+        let init_method = Ident::new(init_method_name, struct_name.span());
+        quote! { #struct_name::#init_method(#(#field_names),*) }
+    } else {
+        // Field-based DI: use struct literal
+        // Generate initializers for owned fields
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    quote! { #field_name: #expr }
+                } else {
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
+
+        quote! {
+            #struct_name {
+                #(#field_names,)*  // Injected dependencies
+                #(#owned_field_inits),*  // Owned fields with defaults
             }
-        })
-        .collect();
+        }
+    };
 
     // Create controller wrappers with the shared Arc'd instance (for Singleton mode)
     let controller_wrapper_creations: Vec<_> = singleton_metadata
@@ -857,10 +891,7 @@ fn generate_singleton_manager(
                     #(#field_resolutions)*
 
                     // CREATE CONTROLLER INSTANCE AT STARTUP
-                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_name {
-                        #(#field_names,)*  // Injected dependencies
-                        #(#owned_field_inits),*  // Owned fields with defaults
-                    });
+                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_instantiation);
 
                     // CREATE ALL HANDLER WRAPPERS THAT SHARE THE SAME ARC
                     #(#controller_wrapper_creations)*
