@@ -340,7 +340,14 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
+    // When a constructor is specified, resolve its parameters instead of struct fields
+    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
+        &dependencies.constructor_params
+    } else {
+        &dependencies.fields
+    };
+
+    for (field_name, full_type, lookup_token_expr) in deps_to_resolve {
         let field_name_str = field_name.to_string();
 
         let resolution = quote! {
@@ -378,7 +385,14 @@ fn generate_manager_field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
+    // When a constructor is specified, resolve its parameters instead of struct fields
+    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
+        &dependencies.constructor_params
+    } else {
+        &dependencies.fields
+    };
+
+    for (field_name, full_type, lookup_token_expr) in deps_to_resolve {
         let field_name_str = field_name.to_string();
 
         let resolution = quote! {
