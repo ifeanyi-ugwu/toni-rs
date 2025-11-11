@@ -13,6 +13,7 @@ mod markers_params;
 mod middleware_macro;
 mod module_macro;
 mod provider_macro;
+mod provider_variants;
 mod shared;
 mod utils;
 
@@ -109,4 +110,11 @@ pub fn toni_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
+}
+
+#[proc_macro]
+pub fn provider_value(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    let output = provider_variants::handle_provider_value(input);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }

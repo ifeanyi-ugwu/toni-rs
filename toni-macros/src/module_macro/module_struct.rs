@@ -12,7 +12,7 @@ use syn::{
 struct ModuleConfig {
     imports: Vec<syn::Expr>,
     controllers: Vec<Ident>,
-    providers: Vec<Ident>,
+    providers: Vec<syn::Expr>,
     exports: Vec<Ident>,
     global: bool,
 }
@@ -20,7 +20,7 @@ struct ModuleConfig {
 struct ConfigParser {
     imports: Vec<syn::Expr>,
     controllers: Vec<Ident>,
-    providers: Vec<Ident>,
+    providers: Vec<syn::Expr>,
     exports: Vec<Ident>,
     global: bool,
 }
@@ -68,11 +68,43 @@ impl Parse for ConfigParser {
                         .collect()
                 }
                 "providers" => {
-                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
+                    // Parse providers as expressions (allows macro calls like provider_value!(...))
+                    let fields = Punctuated::<syn::Expr, Token![,]>::parse_terminated(&content)?;
                     config.providers = fields
                         .into_iter()
-                        .map(|field| Ident::new(&format!("{}Manager", field), field.span()))
-                        .collect()
+                        .map(|expr| {
+                            // Smart detection: if it's a simple identifier/path, append "Manager"
+                            // This keeps backward compatibility with: providers: [ConfigService]
+                            if let syn::Expr::Path(ref expr_path) = expr {
+                                // Check if it's a simple path (not a macro call or complex expression)
+                                if expr_path.attrs.is_empty() && expr_path.qself.is_none() {
+                                    let path = &expr_path.path;
+                                    // Get the last segment (the actual type name)
+                                    if let Some(last_segment) = path.segments.last() {
+                                        let type_name = &last_segment.ident;
+                                        // Create the Manager variant
+                                        let manager_ident =
+                                            Ident::new(&format!("{}Manager", type_name), type_name.span());
+
+                                        // Reconstruct the path with Manager suffix
+                                        let mut manager_path = path.clone();
+                                        if let Some(last) = manager_path.segments.last_mut() {
+                                            last.ident = manager_ident;
+                                        }
+
+                                        // Return new expression with the Manager path
+                                        return syn::Expr::Path(syn::ExprPath {
+                                            attrs: vec![],
+                                            qself: None,
+                                            path: manager_path,
+                                        });
+                                    }
+                                }
+                            }
+                            // Otherwise use the expression as-is (for macro calls like provider_value!(...))
+                            expr
+                        })
+                        .collect();
                 }
                 "exports" => {
                     let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
