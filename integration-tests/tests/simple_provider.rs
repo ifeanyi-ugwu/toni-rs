@@ -11,6 +11,7 @@ struct SimpleConfig {
 
 #[injectable(
     pub struct SimpleService {
+        #[inject]
         config: ConfigService<SimpleConfig>
     }
 )]

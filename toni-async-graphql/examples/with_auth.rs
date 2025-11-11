@@ -77,7 +77,9 @@ impl _DatabaseService {
 /// Context builder that injects Toni services!
 #[injectable(
     pub struct _GraphQLContextBuilder {
+        #[inject]
         auth_service: _AuthService,
+        #[inject]
         database_service: _DatabaseService,
     }
 )]

@@ -32,7 +32,7 @@ impl AppService {
 // TEST 1: Singleton Controller (Default)
 // ============================================================================
 
-#[controller_struct(pub struct SingletonController { service: AppService })]
+#[controller_struct(pub struct SingletonController { #[inject]service: AppService })]
 #[controller("/singleton")]
 impl SingletonController {
     #[get("/test")]
@@ -98,7 +98,7 @@ async fn test_singleton_controller_default() {
 // TEST 2: Explicit Request-scoped Controller
 // ============================================================================
 
-#[controller_struct(scope = "request", pub struct RequestController { service: AppService })]
+#[controller_struct(scope = "request", pub struct RequestController { #[inject]service: AppService })]
 #[controller("/request")]
 impl RequestController {
     #[get("/test")]
@@ -164,7 +164,7 @@ async fn test_request_scoped_controller_explicit() {
 // TEST 3: Mixed Scopes - Both Controllers in Same Module
 // ============================================================================
 
-#[controller_struct(pub struct BothSingletonController { service: AppService })]
+#[controller_struct(pub struct BothSingletonController { #[inject]service: AppService })]
 #[controller("/both/singleton")]
 impl BothSingletonController {
     #[get("/test")]
@@ -173,7 +173,7 @@ impl BothSingletonController {
     }
 }
 
-#[controller_struct(scope = "request", pub struct BothRequestController { service: AppService })]
+#[controller_struct(scope = "request", pub struct BothRequestController { #[inject]service: AppService })]
 #[controller("/both/request")]
 impl BothRequestController {
     #[get("/test")]

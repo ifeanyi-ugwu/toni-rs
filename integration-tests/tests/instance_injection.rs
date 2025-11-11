@@ -9,6 +9,7 @@ pub struct AppConfig {
 
 #[injectable(
     pub struct AppService {
+        #[inject]
         config: ConfigService<AppConfig>
     }
 )]

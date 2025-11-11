@@ -85,7 +85,9 @@ impl UserService {
 // ===== 4. Controller using request context =====
 
 #[controller_struct(pub struct UserController {
+    #[inject]
     context: RequestContext,  // Request-scoped context
+    #[inject]
     user_service: UserService, // Singleton service
 })]
 #[controller("/users")]

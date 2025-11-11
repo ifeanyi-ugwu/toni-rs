@@ -18,7 +18,7 @@ impl SingletonProvider {
     }
 }
 
-#[controller_struct(pub struct OkController { provider: SingletonProvider })]
+#[controller_struct(pub struct OkController { #[inject]provider: SingletonProvider })]
 #[controller("/ok")]
 impl OkController {
     #[get("/test")]
@@ -41,7 +41,7 @@ impl RequestScopedProvider {
 }
 
 // This should trigger a warning! Singleton controller with Request-scoped dependency
-#[controller_struct(pub struct ProblematicController { provider: RequestScopedProvider })]
+#[controller_struct(pub struct ProblematicController { #[inject]provider: RequestScopedProvider })]
 #[controller("/problematic")]
 impl ProblematicController {
     #[get("/test")]
@@ -61,7 +61,7 @@ impl AnotherRequestProvider {
     }
 }
 
-#[controller_struct(scope = "request", pub struct CorrectController { provider: AnotherRequestProvider })]
+#[controller_struct(scope = "request", pub struct CorrectController { #[inject]provider: AnotherRequestProvider })]
 #[controller("/correct")]
 impl CorrectController {
     #[get("/test")]
@@ -90,7 +90,9 @@ impl SessionProvider {
 
 // This should trigger a warning for SessionProvider being Request-scoped
 #[controller_struct(pub struct MixedController {
+    #[inject]
     cache: CacheProvider,
+    #[inject]
     session: SessionProvider,
 })]
 #[controller("/mixed")]
@@ -117,7 +119,7 @@ impl ContradictoryRequestProvider {
 }
 
 // User explicitly says "singleton" but has Request deps - should WARN and elevate anyway
-#[controller_struct(scope = "singleton", pub struct ExplicitSingletonController { provider: ContradictoryRequestProvider })]
+#[controller_struct(scope = "singleton", pub struct ExplicitSingletonController { #[inject]provider: ContradictoryRequestProvider })]
 #[controller("/explicit")]
 impl ExplicitSingletonController {
     #[get("/test")]

@@ -34,6 +34,7 @@ struct AppConfig {
 // Service that accesses config via ConfigService
 #[injectable(
      pub struct AppService {
+        #[inject]
         config: ConfigService<AppConfig>
     }
 )]
@@ -60,6 +61,7 @@ impl AppService {
 // Controller that uses the service
 #[controller_struct(
     pub struct AppController {
+        #[inject]
         service: AppService,
     }
 )]

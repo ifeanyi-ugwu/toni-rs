@@ -93,6 +93,7 @@ impl UserService {
 
 #[controller_struct(
     pub struct UserController {
+        #[inject]
         user_service: UserService,
     }
 )]
@@ -146,6 +147,7 @@ impl OrderService {
 
 #[controller_struct(
     pub struct OrderController {
+        #[inject]
         order_service: OrderService,
     }
 )]
@@ -293,6 +295,7 @@ impl ProductService {
 
 #[controller_struct(
     pub struct ProductController {
+        #[inject]
         product_service: ProductService,
     }
 )]

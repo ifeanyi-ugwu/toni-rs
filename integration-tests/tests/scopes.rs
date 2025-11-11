@@ -17,6 +17,7 @@ impl TestConfig {
 // Test Singleton Scope (Default)
 #[injectable(
     pub struct SingletonService {
+        #[inject]
         config: ConfigService<TestConfig>
     }
 )]
@@ -30,6 +31,7 @@ impl SingletonService {
 #[injectable(
     scope = "request",
     pub struct RequestService {
+        #[inject]
         config: ConfigService<TestConfig>
     }
 )]
@@ -43,6 +45,7 @@ impl RequestService {
 #[injectable(
     scope = "transient",
     pub struct TransientService {
+        #[inject]
         config: ConfigService<TestConfig>
     }
 )]

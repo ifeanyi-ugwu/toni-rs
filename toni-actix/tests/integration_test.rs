@@ -21,6 +21,7 @@ impl TestService {
 // Simple controller for testing
 #[controller_struct(
     pub struct TestController {
+        #[inject]
         test_service: TestService,
     }
 )]

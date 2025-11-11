@@ -297,6 +297,7 @@ impl TestService {
 // Controller with various endpoint configurations
 #[controller_struct(
     pub struct EnhancerController {
+        #[inject]
         service: TestService,
     }
 )]

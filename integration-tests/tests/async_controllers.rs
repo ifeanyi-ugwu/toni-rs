@@ -30,6 +30,7 @@ impl AsyncService {
 // Controller with async methods
 #[controller_struct(
     pub struct AsyncController {
+        #[inject]
         service: AsyncService,
     }
 )]
@@ -167,6 +168,7 @@ async fn test_async_with_real_async_operation() {
 
     #[controller_struct(
         pub struct HttpController {
+            #[inject]
             http_service: HttpService,
         }
     )]

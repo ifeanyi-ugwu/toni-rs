@@ -8,7 +8,7 @@ use syn::{
     punctuated::Punctuated,
 };
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ModuleConfig {
     imports: Vec<syn::Expr>,
     controllers: Vec<Ident>,

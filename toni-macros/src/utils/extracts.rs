@@ -7,7 +7,7 @@ use syn::{
     TypePath, TypeReference, spanned::Spanned,
 };
 
-use crate::shared::dependency_info::DependencyInfo;
+use crate::shared::dependency_info::{DependencyInfo, DependencySource};
 
 pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
     impl_block
@@ -24,12 +24,22 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
     let mut fields = Vec::new();
     let mut owned_fields = Vec::new();
 
-    // BACKWARD COMPATIBILITY: Check if ANY field has #[inject] attribute
-    let has_any_inject = struct_attrs.fields.iter().any(|field| {
-        field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("inject"))
+    // Check if struct is empty
+    if struct_attrs.fields.is_empty() {
+        return Ok(DependencyInfo {
+            fields,
+            owned_fields,
+            init_method: None,
+            unique_types,
+            source: DependencySource::None,
+        });
+    }
+
+    // Check if ANY field has DI annotations (#[inject] or #[default])
+    let has_di_annotations = struct_attrs.fields.iter().any(|field| {
+        field.attrs.iter().any(|attr| {
+            attr.path().is_ident("inject") || attr.path().is_ident("default")
+        })
     });
 
     for field in &struct_attrs.fields {
@@ -56,31 +66,36 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
             ));
         }
 
-        // BACKWARD COMPATIBILITY: If NO field has #[inject], treat all fields as DI dependencies (old behavior)
-        if !has_any_inject {
-            // Old behavior: all fields are DI dependencies
-            let full_type = field.ty.clone();
-            let lookup_token_expr = extract_type_token(&field.ty)?;
-            fields.push((field_ident.clone(), full_type, lookup_token_expr));
-        } else {
-            // New behavior: explicit #[inject] required
+        if has_di_annotations {
+            // Explicit annotation mode: #[inject] means DI, no annotation or #[default] means owned
             if has_inject {
                 // This is a DI dependency
                 let full_type = field.ty.clone();
                 let lookup_token_expr = extract_type_token(&field.ty)?;
                 fields.push((field_ident.clone(), full_type, lookup_token_expr));
             } else {
-                // This is an owned field
+                // This is an owned field - will use Default::default() if no #[default(...)]
                 owned_fields.push((field_ident.clone(), field.ty.clone(), default_expr));
             }
+        } else {
+            // No annotations - DefaultFallback mode: all fields are owned and use Default trait
+            owned_fields.push((field_ident.clone(), field.ty.clone(), None));
         }
     }
+
+    // Determine source
+    let source = if has_di_annotations {
+        DependencySource::Annotations
+    } else {
+        DependencySource::DefaultFallback
+    };
 
     Ok(DependencyInfo {
         fields,
         owned_fields,
         init_method: None, // Will be set by caller if provided in attributes
         unique_types,
+        source,
     })
 }
 

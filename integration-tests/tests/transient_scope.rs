@@ -41,7 +41,9 @@ impl TransientHelper {
 // Service with TWO fields of the same Transient type
 #[injectable(
     pub struct TransientTestService {
+        #[inject]
         helper1: TransientHelper,
+        #[inject]
         helper2: TransientHelper,
     }
 )]
@@ -54,6 +56,7 @@ impl TransientTestService {
 // Controller that uses the service
 #[controller_struct(
     pub struct TransientTestController {
+        #[inject]
         service: TransientTestService,
     }
 )]
@@ -208,7 +211,9 @@ async fn test_controller_with_multiple_transient_fields() {
     // Singleton provider with two Transient fields
     #[injectable(
         pub struct MultiTransientService {
+            #[inject]
             helper_a: TransientHelper,
+            #[inject]
             helper_b: TransientHelper,
         }
     )]
@@ -221,7 +226,9 @@ async fn test_controller_with_multiple_transient_fields() {
     // Controller with two Transient fields directly
     #[controller_struct(
         pub struct MultiTransientController {
+            #[inject]
             helper_x: TransientHelper,
+            #[inject]
             helper_y: TransientHelper,
         }
     )]

@@ -24,6 +24,7 @@ impl ValidSingletonProvider {
 }
 
 #[injectable(pub struct AnotherSingletonProvider {
+    #[inject]
     dep: ValidSingletonProvider
 })]
 impl AnotherSingletonProvider {
@@ -40,6 +41,7 @@ impl ValidRequestProvider {
 }
 
 #[injectable(scope = "request", pub struct RequestWithSingletonDep {
+    #[inject]
     dep: ValidSingletonProvider
 })]
 impl RequestWithSingletonDep {
@@ -56,7 +58,9 @@ impl TransientProvider {
 }
 
 #[injectable(scope = "transient", pub struct TransientWithAnyDeps {
+    #[inject]
     singleton: ValidSingletonProvider,
+    #[inject]
     request: ValidRequestProvider,
 })]
 impl TransientWithAnyDeps {
@@ -109,6 +113,7 @@ mod invalid_singleton_with_request {
 
     // This should panic during module initialization
     #[injectable(pub struct InvalidSingletonProvider {
+        #[inject]
         request_dep: RequestScopedService
     })]
     impl InvalidSingletonProvider {
@@ -150,6 +155,7 @@ impl TransientService {
 
 // Singleton CAN inject Transient - this is valid per NestJS
 #[injectable(pub struct ValidSingletonWithTransient {
+    #[inject]
     transient_dep: TransientService
 })]
 impl ValidSingletonWithTransient {
@@ -191,6 +197,7 @@ impl TransientService2 {
 
 // Request CAN inject Transient - this is valid per NestJS
 #[injectable(scope = "request", pub struct ValidRequestWithTransient {
+    #[inject]
     transient_dep: TransientService2
 })]
 impl ValidRequestWithTransient {
@@ -231,6 +238,7 @@ impl BaseService {
 }
 
 #[injectable(pub struct MiddleService {
+    #[inject]
     base: BaseService
 })]
 impl MiddleService {
@@ -240,7 +248,9 @@ impl MiddleService {
 }
 
 #[injectable(scope = "request", pub struct TopService {
+    #[inject]
     middle: MiddleService,
+    #[inject]
     base: BaseService
 })]
 impl TopService {
@@ -286,6 +296,7 @@ mod explicit_singleton_violation {
 
     // User EXPLICITLY set scope = "singleton", but it has Request dependency
     #[injectable(scope = "singleton", pub struct ExplicitSingletonWithRequest {
+        #[inject]
         request_dep: ExplicitRequestService
     })]
     impl ExplicitSingletonWithRequest {
