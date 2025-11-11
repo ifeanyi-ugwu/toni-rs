@@ -4,13 +4,13 @@
 
 use serial_test::serial;
 use toni::{
-    controller, controller_struct, get, module, provider_struct, Body as ToniBody, HttpAdapter,
+    controller, controller_struct, get, injectable, module, Body as ToniBody, HttpAdapter,
     HttpRequest,
 };
 use toni_axum::AxumAdapter;
 
 // Simple async service
-#[provider_struct(
+#[injectable(
     pub struct AsyncService;
 )]
 impl AsyncService {
@@ -152,7 +152,7 @@ async fn test_async_with_real_async_operation() {
     use toni::toni_factory::ToniFactory;
 
     // Service with actual async HTTP call
-    #[provider_struct(
+    #[injectable(
         pub struct HttpService;
     )]
     impl HttpService {

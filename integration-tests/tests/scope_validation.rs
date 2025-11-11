@@ -9,21 +9,21 @@
 
 #![allow(dead_code, unused_variables)]
 
-use toni::{provider_struct, HttpAdapter};
+use toni::{injectable, HttpAdapter};
 use toni_macros::module;
 
 // ============================================================================
 // Test 1: Valid scope hierarchies (should work)
 // ============================================================================
 
-#[provider_struct(pub struct ValidSingletonProvider {})]
+#[injectable(pub struct ValidSingletonProvider {})]
 impl ValidSingletonProvider {
     pub fn get_id(&self) -> String {
         "singleton".to_string()
     }
 }
 
-#[provider_struct(pub struct AnotherSingletonProvider {
+#[injectable(pub struct AnotherSingletonProvider {
     dep: ValidSingletonProvider
 })]
 impl AnotherSingletonProvider {
@@ -32,14 +32,14 @@ impl AnotherSingletonProvider {
     }
 }
 
-#[provider_struct(scope = "request", pub struct ValidRequestProvider {})]
+#[injectable(scope = "request", pub struct ValidRequestProvider {})]
 impl ValidRequestProvider {
     pub fn get_id(&self) -> String {
         "request".to_string()
     }
 }
 
-#[provider_struct(scope = "request", pub struct RequestWithSingletonDep {
+#[injectable(scope = "request", pub struct RequestWithSingletonDep {
     dep: ValidSingletonProvider
 })]
 impl RequestWithSingletonDep {
@@ -48,14 +48,14 @@ impl RequestWithSingletonDep {
     }
 }
 
-#[provider_struct(scope = "transient", pub struct TransientProvider {})]
+#[injectable(scope = "transient", pub struct TransientProvider {})]
 impl TransientProvider {
     pub fn get_id(&self) -> String {
         "transient".to_string()
     }
 }
 
-#[provider_struct(scope = "transient", pub struct TransientWithAnyDeps {
+#[injectable(scope = "transient", pub struct TransientWithAnyDeps {
     singleton: ValidSingletonProvider,
     request: ValidRequestProvider,
 })]
@@ -100,7 +100,7 @@ async fn test_valid_scope_hierarchies() {
 mod invalid_singleton_with_request {
     use super::*;
 
-    #[provider_struct(scope = "request", pub struct RequestScopedService {})]
+    #[injectable(scope = "request", pub struct RequestScopedService {})]
     impl RequestScopedService {
         pub fn get_id(&self) -> String {
             "request-service".to_string()
@@ -108,7 +108,7 @@ mod invalid_singleton_with_request {
     }
 
     // This should panic during module initialization
-    #[provider_struct(pub struct InvalidSingletonProvider {
+    #[injectable(pub struct InvalidSingletonProvider {
         request_dep: RequestScopedService
     })]
     impl InvalidSingletonProvider {
@@ -141,7 +141,7 @@ mod invalid_singleton_with_request {
 // Test 3: Valid - Singleton injecting Transient (allowed per NestJS behavior)
 // ============================================================================
 
-#[provider_struct(scope = "transient", pub struct TransientService {})]
+#[injectable(scope = "transient", pub struct TransientService {})]
 impl TransientService {
     pub fn get_id(&self) -> String {
         "transient-service".to_string()
@@ -149,7 +149,7 @@ impl TransientService {
 }
 
 // Singleton CAN inject Transient - this is valid per NestJS
-#[provider_struct(pub struct ValidSingletonWithTransient {
+#[injectable(pub struct ValidSingletonWithTransient {
     transient_dep: TransientService
 })]
 impl ValidSingletonWithTransient {
@@ -182,7 +182,7 @@ async fn test_singleton_can_inject_transient() {
 // Test 4: Valid - Request injecting Transient (allowed per NestJS behavior)
 // ============================================================================
 
-#[provider_struct(scope = "transient", pub struct TransientService2 {})]
+#[injectable(scope = "transient", pub struct TransientService2 {})]
 impl TransientService2 {
     pub fn get_id(&self) -> String {
         "transient-service-2".to_string()
@@ -190,7 +190,7 @@ impl TransientService2 {
 }
 
 // Request CAN inject Transient - this is valid per NestJS
-#[provider_struct(scope = "request", pub struct ValidRequestWithTransient {
+#[injectable(scope = "request", pub struct ValidRequestWithTransient {
     transient_dep: TransientService2
 })]
 impl ValidRequestWithTransient {
@@ -223,14 +223,14 @@ async fn test_request_can_inject_transient() {
 // Test 5: Complex valid hierarchy (multiple levels)
 // ============================================================================
 
-#[provider_struct(pub struct BaseService {})]
+#[injectable(pub struct BaseService {})]
 impl BaseService {
     pub fn get_value(&self) -> i32 {
         42
     }
 }
 
-#[provider_struct(pub struct MiddleService {
+#[injectable(pub struct MiddleService {
     base: BaseService
 })]
 impl MiddleService {
@@ -239,7 +239,7 @@ impl MiddleService {
     }
 }
 
-#[provider_struct(scope = "request", pub struct TopService {
+#[injectable(scope = "request", pub struct TopService {
     middle: MiddleService,
     base: BaseService
 })]
@@ -277,7 +277,7 @@ async fn test_complex_valid_hierarchy() {
 mod explicit_singleton_violation {
     use super::*;
 
-    #[provider_struct(scope = "request", pub struct ExplicitRequestService {})]
+    #[injectable(scope = "request", pub struct ExplicitRequestService {})]
     impl ExplicitRequestService {
         pub fn get_id(&self) -> String {
             "explicit-request".to_string()
@@ -285,7 +285,7 @@ mod explicit_singleton_violation {
     }
 
     // User EXPLICITLY set scope = "singleton", but it has Request dependency
-    #[provider_struct(scope = "singleton", pub struct ExplicitSingletonWithRequest {
+    #[injectable(scope = "singleton", pub struct ExplicitSingletonWithRequest {
         request_dep: ExplicitRequestService
     })]
     impl ExplicitSingletonWithRequest {

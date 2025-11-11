@@ -145,7 +145,7 @@ impl _AppController {
 **`app/app.service.rs`** (Business Logic)
 
 ```rust
-#[provider_struct(
+#[injectable(
     pub struct _AppService;
 )]
 impl _AppService {

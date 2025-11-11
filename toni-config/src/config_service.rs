@@ -14,7 +14,7 @@ use toni::FxHashMap;
 /// Inject it into your providers to access configuration:
 ///
 /// ```rust,ignore
-/// #[provider_struct(
+/// #[injectable(
 ///     pub struct DatabaseService {
 ///         config: ConfigService<AppConfig>
 ///     }

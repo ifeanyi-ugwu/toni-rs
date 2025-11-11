@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use toni::{module, provider_struct, toni_factory::ToniFactory, HttpAdapter, HttpRequest};
+use toni::{injectable, module, toni_factory::ToniFactory, HttpAdapter, HttpRequest};
 use toni_async_graphql::{async_graphql::*, prelude::*, ContextBuilder};
 use toni_axum::AxumAdapter;
 
@@ -20,7 +20,7 @@ struct User {
 // ============================================================================
 
 /// Authentication service (injectable via Toni DI)
-#[provider_struct(pub struct _AuthService;)]
+#[injectable(pub struct _AuthService;)]
 impl _AuthService {
     fn verify_token(&self, req: &HttpRequest) -> Option<User> {
         // In a real app, verify JWT token from headers
@@ -42,7 +42,7 @@ impl _AuthService {
 }
 
 /// Database service (injectable via Toni DI)
-#[provider_struct(pub struct _DatabaseService;)]
+#[injectable(pub struct _DatabaseService;)]
 impl _DatabaseService {
     async fn find_user(&self, id: i32) -> Option<User> {
         // In a real app, query the database
@@ -75,7 +75,7 @@ impl _DatabaseService {
 // ============================================================================
 
 /// Context builder that injects Toni services!
-#[provider_struct(
+#[injectable(
     pub struct _GraphQLContextBuilder {
         auth_service: _AuthService,
         database_service: _DatabaseService,

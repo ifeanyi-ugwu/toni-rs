@@ -93,9 +93,9 @@
 //! create custom request contexts for domain-specific needs:
 //!
 //! ```rust
-//! use toni::{provider_struct, HttpRequest};
+//! use toni::{injectable, HttpRequest};
 //!
-//! #[provider_struct(scope = "request", init = "from_request")]
+//! #[injectable(scope = "request", init = "from_request")]
 //! pub struct AuthContext {
 //!     user_id: String,
 //!     roles: Vec<String>,

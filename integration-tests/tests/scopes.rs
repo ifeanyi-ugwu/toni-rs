@@ -1,4 +1,4 @@
-use toni::provider_struct;
+use toni::injectable;
 use toni_config::{Config, ConfigService};
 
 #[derive(Clone, Debug, Config)]
@@ -15,7 +15,7 @@ impl TestConfig {
 }
 
 // Test Singleton Scope (Default)
-#[provider_struct(
+#[injectable(
     pub struct SingletonService {
         config: ConfigService<TestConfig>
     }
@@ -27,7 +27,7 @@ impl SingletonService {
 }
 
 // Test Request Scope
-#[provider_struct(
+#[injectable(
     scope = "request",
     pub struct RequestService {
         config: ConfigService<TestConfig>
@@ -40,7 +40,7 @@ impl RequestService {
 }
 
 // Test Transient Scope
-#[provider_struct(
+#[injectable(
     scope = "transient",
     pub struct TransientService {
         config: ConfigService<TestConfig>

@@ -30,10 +30,10 @@ impl Default for ControllerScope {
     }
 }
 
-/// Parse provider_struct attribute
+/// Parse injectable attribute
 /// Supports two syntaxes:
-/// 1. Attribute: #[provider_struct(scope = "request", init = "new")] pub struct Foo { ... }
-/// 2. Nested (legacy): #[provider_struct(scope = "request", pub struct Foo { ... })]
+/// 1. Attribute: #[injectable(scope = "request", init = "new")] pub struct Foo { ... }
+/// 2. Nested (legacy): #[injectable(scope = "request", pub struct Foo { ... })]
 pub struct ProviderStructArgs {
     pub scope: ProviderScope,
     pub init: Option<String>, // Optional custom constructor method name

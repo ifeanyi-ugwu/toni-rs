@@ -5,7 +5,7 @@
 
 use serial_test::serial;
 use toni::{
-    controller, controller_struct, get, module, provider_struct, Body as ToniBody, HttpAdapter,
+    controller, controller_struct, get, injectable, module, Body as ToniBody, HttpAdapter,
     HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -32,7 +32,7 @@ struct AppConfig {
 }
 
 // Service that accesses config via ConfigService
-#[provider_struct(
+#[injectable(
      pub struct AppService {
         config: ConfigService<AppConfig>
     }

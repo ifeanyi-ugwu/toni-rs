@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use toni::{module, provider_struct, HttpAdapter};
+use toni::{injectable, module, HttpAdapter};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -17,7 +17,7 @@ struct TestConfig {
 }
 
 // Test 1: Provider with only owned fields (no DI)
-#[provider_struct(
+#[injectable(
     pub struct StandaloneService {
         #[default(Duration::from_secs(300))]
         cache_ttl: Duration,
@@ -44,7 +44,7 @@ impl StandaloneService {
 }
 
 // Test 2: Provider with mixed DI and owned fields
-#[provider_struct(
+#[injectable(
     pub struct MixedService {
         #[inject]
         config: ConfigService<TestConfig>,
@@ -77,7 +77,7 @@ pub struct CacheStats {
     pub misses: u64,
 }
 
-#[provider_struct(
+#[injectable(
     pub struct CacheService {
         #[inject]
         config: ConfigService<TestConfig>,
@@ -123,7 +123,7 @@ impl Counter {
     }
 }
 
-#[provider_struct(
+#[injectable(
     pub struct MetricsService {
         #[inject]
         config: ConfigService<TestConfig>,
@@ -154,7 +154,7 @@ impl MetricsService {
 }
 
 // Test 5: Complex default expressions
-#[provider_struct(
+#[injectable(
     pub struct ComplexService {
         #[default({
             let mut v = Vec::new();

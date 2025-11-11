@@ -6,7 +6,7 @@
 //! 3. Controllers using request context without manual extraction
 
 use toni::{
-    controller, controller_struct, get, module, provider_struct, toni_factory::ToniFactory,
+    controller, controller_struct, get, injectable, module, toni_factory::ToniFactory,
     Body as ToniBody, HttpAdapter, HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -21,7 +21,7 @@ pub struct RequestId(String);
 
 // ===== 2. Request-scoped provider using from_request =====
 
-#[provider_struct(scope = "request", init = "from_request")]
+#[injectable(scope = "request", init = "from_request")]
 pub struct RequestContext {
     user_id: String,
     request_id: String,
@@ -72,7 +72,7 @@ impl RequestContext {
 
 // ===== 3. Singleton service (business logic) =====
 
-#[provider_struct]
+#[injectable]
 pub struct UserService {}
 
 impl UserService {

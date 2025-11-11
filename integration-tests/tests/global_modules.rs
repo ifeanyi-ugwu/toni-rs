@@ -9,7 +9,7 @@
 use serial_test::serial;
 use std::time::Duration;
 use toni::{
-    controller, controller_struct, get, module, provider_struct, Body as ToniBody, HttpAdapter,
+    controller, controller_struct, get, injectable, module, Body as ToniBody, HttpAdapter,
     HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -29,7 +29,7 @@ struct GlobalTestConfig {
 
 // ============= Infrastructure Services (Will be Global) =============
 
-#[provider_struct]
+#[injectable]
 pub struct LoggerService {
     #[inject]
     config: ConfigService<GlobalTestConfig>,
@@ -45,7 +45,7 @@ impl LoggerService {
     }
 }
 
-#[provider_struct]
+#[injectable]
 pub struct DatabaseService {
     #[inject]
     config: ConfigService<GlobalTestConfig>,
@@ -69,7 +69,7 @@ impl GlobalInfraModule {}
 // ============= Feature Module 1: User Module =============
 // This module does NOT import GlobalInfraModule but can use its providers
 
-#[provider_struct]
+#[injectable]
 pub struct UserService {
     #[inject]
     logger: LoggerService, // ✅ Resolves from global registry
@@ -122,7 +122,7 @@ impl UserModule {}
 // ============= Feature Module 2: Order Module =============
 // This module ALSO doesn't import GlobalInfraModule
 
-#[provider_struct]
+#[injectable]
 pub struct OrderService {
     #[inject]
     logger: LoggerService, // ✅ Resolves from global
@@ -257,7 +257,7 @@ async fn test_global_module_with_real_http_requests() {
 // ============= TEST BUILDER METHOD SYNTAX =============
 
 // Infrastructure for builder method test
-#[provider_struct]
+#[injectable]
 pub struct CacheService {}
 
 impl CacheService {
@@ -279,7 +279,7 @@ impl Default for CacheService {
 impl CacheModule {}
 
 // Feature using cache
-#[provider_struct]
+#[injectable]
 pub struct ProductService {
     #[inject]
     cache: CacheService,

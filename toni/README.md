@@ -108,7 +108,7 @@ impl _AppController {
 
 **`app/app.service.rs`** (Business Logic)
 ```rust
-#[provider_struct(pub struct _AppService;)]
+#[injectable(pub struct _AppService;)]
 impl _AppService {
     pub fn create(&self) -> String {
         "Item created!".into()

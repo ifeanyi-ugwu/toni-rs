@@ -20,12 +20,12 @@ pub fn handle_provider_struct(
 
     // Get struct definition from either args (old syntax) or item (new syntax)
     let (struct_attrs, impl_block) = if let Some(struct_def) = args.struct_def {
-        // Old syntax: #[provider_struct(pub struct Foo { ... })]
+        // Old syntax: #[injectable(pub struct Foo { ... })]
         // In this case, item should be impl block
         let impl_block = parse2::<ItemImpl>(item)?;
         (struct_def, impl_block)
     } else {
-        // New syntax: #[provider_struct] pub struct Foo { ... }
+        // New syntax: #[injectable] pub struct Foo { ... }
         // Parse struct from item, create empty impl block
         let struct_attrs = parse2::<ItemStruct>(item)?;
         let struct_name = &struct_attrs.ident;

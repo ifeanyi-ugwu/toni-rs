@@ -1,5 +1,5 @@
 use toni_config::{Config, ConfigService};
-use toni_macros::provider_struct;
+use toni_macros::injectable;
 
 #[derive(Clone, Config)]
 pub struct AppConfig {
@@ -7,7 +7,7 @@ pub struct AppConfig {
     pub port: u16,
 }
 
-#[provider_struct(
+#[injectable(
     pub struct AppService {
         config: ConfigService<AppConfig>
     }

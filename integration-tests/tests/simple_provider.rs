@@ -1,6 +1,6 @@
 //! Simple test to verify instance injection for providers only (no controllers)
 
-use toni::{module, provider_struct};
+use toni::{injectable, module};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -9,7 +9,7 @@ struct SimpleConfig {
     pub value: String,
 }
 
-#[provider_struct(
+#[injectable(
     pub struct SimpleService {
         config: ConfigService<SimpleConfig>
     }

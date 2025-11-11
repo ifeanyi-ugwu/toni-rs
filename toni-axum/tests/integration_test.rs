@@ -1,11 +1,11 @@
 use toni::{
-    controller, controller_struct, get, module, post, provider_struct, Body as ToniBody,
-    HttpAdapter, HttpRequest,
+    controller, controller_struct, get, injectable, module, post, Body as ToniBody, HttpAdapter,
+    HttpRequest,
 };
 use toni_axum::AxumAdapter;
 
 // Simple service for testing
-#[provider_struct(
+#[injectable(
     pub struct TestService;
 )]
 impl TestService {

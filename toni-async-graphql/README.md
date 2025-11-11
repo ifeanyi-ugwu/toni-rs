@@ -74,11 +74,11 @@ Build GraphQL context with access to Toni's dependency injection:
 
 ```rust
 use toni_async_graphql::{ContextBuilder, async_graphql::Data};
-use toni::{HttpRequest, provider_struct};
+use toni::{HttpRequest, injectable};
 use async_trait::async_trait;
 
 // Define your context builder as a Toni provider
-#[provider_struct(
+#[injectable(
     pub struct _GraphQLContextBuilder {
         auth_service: _AuthService,      // Injected by Toni!
         database_service: _DatabaseService, // Injected by Toni!

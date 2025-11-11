@@ -8,7 +8,7 @@
 use serial_test::serial;
 use std::sync::{Arc, Mutex};
 use toni::{
-    controller, controller_struct, get, module, provider_struct, Body as ToniBody, HttpAdapter,
+    controller, controller_struct, get, injectable, module, Body as ToniBody, HttpAdapter,
     HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -27,7 +27,7 @@ struct TransientTestConfig {
 }
 
 // Transient provider - each injection point should get a fresh instance
-#[provider_struct(scope = "transient", pub struct TransientHelper {})]
+#[injectable(scope = "transient", pub struct TransientHelper {})]
 impl TransientHelper {
     pub fn get_id(&self) -> String {
         // Increment counter on creation
@@ -39,7 +39,7 @@ impl TransientHelper {
 }
 
 // Service with TWO fields of the same Transient type
-#[provider_struct(
+#[injectable(
     pub struct TransientTestService {
         helper1: TransientHelper,
         helper2: TransientHelper,
@@ -206,7 +206,7 @@ async fn test_controller_with_multiple_transient_fields() {
     }
 
     // Singleton provider with two Transient fields
-    #[provider_struct(
+    #[injectable(
         pub struct MultiTransientService {
             helper_a: TransientHelper,
             helper_b: TransientHelper,

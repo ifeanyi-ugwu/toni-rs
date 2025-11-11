@@ -8,7 +8,7 @@
 //! Example transformation (Singleton):
 //! ```rust,ignore
 //! // User code:
-//! #[provider_struct(pub struct AppService { config: ConfigService<AppConfig> })]
+//! #[injectable(pub struct AppService { config: ConfigService<AppConfig> })]
 //! impl AppService {
 //!     pub fn method(&self) -> String {
 //!         self.config.get().app_name
@@ -488,7 +488,7 @@ fn generate_singleton_manager(struct_name: &Ident, dependencies: &DependencyInfo
                                      live for the entire application lifetime and would capture stale request data.\n\
                                      \n\
                                      Solutions:\n\
-                                     1. Change '{}' to Request scope: #[provider_struct(scope = \"request\")]\n\
+                                     1. Change '{}' to Request scope: #[injectable(scope = \"request\")]\n\
                                      2. Change '{}' to Singleton scope (if appropriate for your use case)\n\
                                      3. Pass request-specific data as method parameters instead of injecting\n\
                                      4. Extract data in controller (which has HttpRequest access) and pass it down\n\

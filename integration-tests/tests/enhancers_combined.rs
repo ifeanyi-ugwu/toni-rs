@@ -14,8 +14,8 @@ use serial_test::serial;
 use std::sync::{Arc, Mutex};
 use toni::async_trait;
 use toni::{
-    controller, controller_struct, get, module, post, provider_struct, use_guards,
-    use_interceptors, use_pipes, Body as ToniBody, HttpAdapter, HttpRequest, HttpResponse,
+    controller, controller_struct, get, injectable, module, post, use_guards, use_interceptors,
+    use_pipes, Body as ToniBody, HttpAdapter, HttpRequest, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 
@@ -283,7 +283,7 @@ impl Pipe for TransformPipe {
 // TEST SERVICE AND CONTROLLER
 // ============================================================================
 
-#[provider_struct(
+#[injectable(
     pub struct TestService {}
 )]
 impl TestService {

@@ -7,7 +7,7 @@
 
 use serial_test::serial;
 use toni::{
-    controller, controller_struct, get, module, provider_struct, Body as ToniBody, HttpAdapter,
+    controller, controller_struct, get, injectable, module, Body as ToniBody, HttpAdapter,
     HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -21,7 +21,7 @@ struct ScopeTestConfig {
 }
 
 // Singleton service
-#[provider_struct(pub struct AppService {})]
+#[injectable(pub struct AppService {})]
 impl AppService {
     pub fn get_message(&self) -> String {
         "Hello from AppService".to_string()

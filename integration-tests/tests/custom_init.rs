@@ -3,7 +3,7 @@
 //! This demonstrates using a custom constructor method instead of struct literals
 
 use std::time::Duration;
-use toni::{module, provider_struct, HttpAdapter};
+use toni::{injectable, module, HttpAdapter};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -13,7 +13,7 @@ struct AppConfig {
 }
 
 // Test 1: Custom init with injected dependency
-#[provider_struct(
+#[injectable(
     init = "new",
     pub struct CacheService {
         #[inject]
@@ -43,7 +43,7 @@ impl CacheService {
 }
 
 // Test 2: Custom init with no dependencies - ALL fields owned
-#[provider_struct(
+#[injectable(
     init = "create",
     pub struct StandaloneService {
         value: String,
@@ -68,7 +68,7 @@ impl StandaloneService {
 }
 
 // Test 3: Custom init with complex initialization logic
-#[provider_struct(
+#[injectable(
     init = "build",
     pub struct ComplexService {
         #[inject]

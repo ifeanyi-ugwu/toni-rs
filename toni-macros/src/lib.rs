@@ -31,7 +31,7 @@ pub fn controller_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
     let trait_name = Ident::new("ProviderTrait", Span::call_site());
@@ -40,8 +40,9 @@ pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    provider_struct(attr, item)
+#[deprecated(since = "0.2.0", note = "Use #[injectable] instead")]
+pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
+    injectable(attr, item)
 }
 
 #[proc_macro_attribute]
@@ -82,7 +83,7 @@ pub fn use_pipes(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // Helper derive to register #[inject] and #[default] as valid attributes
-// This allows them to be used on struct fields in provider_struct/controller_struct
+// This allows them to be used on struct fields in injectable/controller_struct
 #[proc_macro_derive(Injectable, attributes(inject, default))]
 pub fn derive_injectable(_input: TokenStream) -> TokenStream {
     // This derive does nothing - it just registers the attributes

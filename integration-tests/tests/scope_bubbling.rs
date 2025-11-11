@@ -2,7 +2,7 @@ use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use toni::{
-    controller, controller_struct, get, module, provider_struct, toni_factory::ToniFactory,
+    controller, controller_struct, get, injectable, module, toni_factory::ToniFactory,
     Body as ToniBody, HttpAdapter, HttpRequest,
 };
 use toni_axum::AxumAdapter;
@@ -11,7 +11,7 @@ use toni_axum::AxumAdapter;
 // Test 1: Singleton Controller with Singleton Provider (OK - No Warning)
 // ======================
 
-#[provider_struct(pub struct SingletonProvider {})]
+#[injectable(pub struct SingletonProvider {})]
 impl SingletonProvider {
     fn get_data(&self) -> String {
         "Singleton data".to_string()
@@ -33,7 +33,7 @@ impl OkController {
 
 static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[provider_struct(scope = "request", pub struct RequestScopedProvider {})]
+#[injectable(scope = "request", pub struct RequestScopedProvider {})]
 impl RequestScopedProvider {
     fn get_request_id(&self) -> u32 {
         REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst)
@@ -54,7 +54,7 @@ impl ProblematicController {
 // Test 3: Request Controller with Request Provider (OK - No Warning)
 // ======================
 
-#[provider_struct(scope = "request", pub struct AnotherRequestProvider {})]
+#[injectable(scope = "request", pub struct AnotherRequestProvider {})]
 impl AnotherRequestProvider {
     fn get_data(&self) -> String {
         "Request data".to_string()
@@ -74,14 +74,14 @@ impl CorrectController {
 // Test 4: Mixed Dependencies (Singleton + Request) - WARNING
 // ======================
 
-#[provider_struct(pub struct CacheProvider {})]
+#[injectable(pub struct CacheProvider {})]
 impl CacheProvider {
     fn get_cached(&self) -> String {
         "Cached".to_string()
     }
 }
 
-#[provider_struct(scope = "request", pub struct SessionProvider {})]
+#[injectable(scope = "request", pub struct SessionProvider {})]
 impl SessionProvider {
     fn get_session(&self) -> String {
         "Session".to_string()
@@ -109,7 +109,7 @@ impl MixedController {
 // Test 5: Explicit Singleton + Request Provider (CONTRADICTION - Force Elevation with WARNING!)
 // ======================
 
-#[provider_struct(scope = "request", pub struct ContradictoryRequestProvider {})]
+#[injectable(scope = "request", pub struct ContradictoryRequestProvider {})]
 impl ContradictoryRequestProvider {
     fn get_id(&self) -> String {
         "contradictory".to_string()

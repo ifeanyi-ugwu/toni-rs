@@ -11,7 +11,7 @@ use toni::HttpRequest;
 ///
 /// ```ignore
 /// use async_trait::async_trait;
-/// use toni::{HttpRequest, provider_struct};
+/// use toni::{HttpRequest, injectable};
 /// use toni_juniper::ContextBuilder;
 /// use juniper::Context as JuniperContext;
 ///
@@ -25,7 +25,7 @@ use toni::HttpRequest;
 /// impl JuniperContext for MyContext {}
 ///
 /// // Implement context builder (can inject Toni services!)
-/// #[provider_struct(
+/// #[injectable(
 ///     pub struct _MyContextBuilder {
 ///         auth_service: _AuthService,
 ///         db_service: _DatabaseService,

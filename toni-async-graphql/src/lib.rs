@@ -61,10 +61,10 @@
 //!
 //! ```ignore
 //! use toni_async_graphql::{ContextBuilder, async_graphql::Data};
-//! use toni::{HttpRequest, provider_struct};
+//! use toni::{HttpRequest, injectable};
 //! use async_trait::async_trait;
 //!
-//! #[provider_struct(
+//! #[injectable(
 //!     pub struct MyContextBuilder {
 //!         auth_service: AuthService,
 //!         db_pool: DatabasePool,
