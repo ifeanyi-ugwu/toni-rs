@@ -43,7 +43,7 @@ pub struct ProviderStructArgs {
 /// Parse controller_struct attribute: #[controller_struct(scope = "request", init = "new", pub struct Foo { ... })]
 pub struct ControllerStructArgs {
     pub scope: ControllerScope,
-    pub was_explicit: bool, // Did user explicitly write scope = "..."?
+    pub was_explicit: bool,   // Did user explicitly write scope = "..."?
     pub init: Option<String>, // Optional custom constructor method name
     pub struct_def: ItemStruct,
 }

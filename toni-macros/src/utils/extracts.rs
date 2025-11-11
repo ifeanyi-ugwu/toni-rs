@@ -38,9 +38,10 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
 
     // Check if ANY field has DI annotations (#[inject] or #[default])
     let has_di_annotations = struct_attrs.fields.iter().any(|field| {
-        field.attrs.iter().any(|attr| {
-            attr.path().is_ident("inject") || attr.path().is_ident("default")
-        })
+        field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("inject") || attr.path().is_ident("default"))
     });
 
     for field in &struct_attrs.fields {
