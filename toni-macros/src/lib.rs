@@ -132,3 +132,10 @@ pub fn provider_alias(input: TokenStream) -> TokenStream {
     let output = provider_variants::handle_provider_alias(input);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
+
+#[proc_macro]
+pub fn provider_token(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    let output = provider_variants::handle_provider_token(input);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
