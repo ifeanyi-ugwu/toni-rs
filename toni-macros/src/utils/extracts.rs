@@ -50,11 +50,9 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
 
-        // Check for #[inject] attribute
-        let has_inject = field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("inject"));
+        // Check for #[inject] or #[inject("TOKEN")] attribute
+        let inject_attr = extract_inject_attr(field)?;
+        let has_inject = inject_attr.is_some();
 
         // Check for #[default] attribute
         let default_expr = extract_default_attr(field)?;
@@ -73,7 +71,16 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
             if has_inject {
                 // This is a DI dependency
                 let full_type = field.ty.clone();
-                let lookup_token_expr = extract_type_token(&field.ty)?;
+
+                // Determine the lookup token
+                let lookup_token_expr = if let Some(custom_token) = inject_attr.unwrap() {
+                    // #[inject("TOKEN")] - use custom token
+                    quote! { #custom_token.to_string() }
+                } else {
+                    // #[inject] - use type-based token
+                    extract_type_token(&field.ty)?
+                };
+
                 fields.push((field_ident.clone(), full_type, lookup_token_expr));
             } else {
                 // This is an owned field - will use Default::default() if no #[default(...)]
@@ -108,6 +115,28 @@ fn extract_default_attr(field: &syn::Field) -> Result<Option<Expr>> {
         if attr.path().is_ident("default") {
             let expr: Expr = attr.parse_args()?;
             return Ok(Some(expr));
+        }
+    }
+    Ok(None)
+}
+
+/// Extract the #[inject] or #[inject("TOKEN")] attribute from a field
+/// Returns:
+/// - None: no #[inject] attribute
+/// - Some(None): #[inject] without token (use type-based token)
+/// - Some(Some(token)): #[inject("TOKEN")] with custom token
+fn extract_inject_attr(field: &syn::Field) -> Result<Option<Option<String>>> {
+    for attr in &field.attrs {
+        if attr.path().is_ident("inject") {
+            // Check if there's an argument
+            if attr.meta.require_path_only().is_ok() {
+                // #[inject] without arguments - use type-based token
+                return Ok(Some(None));
+            } else {
+                // #[inject("TOKEN")] with custom token
+                let token: LitStr = attr.parse_args()?;
+                return Ok(Some(Some(token.value())));
+            }
         }
     }
     Ok(None)
