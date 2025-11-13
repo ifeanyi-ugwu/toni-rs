@@ -8,6 +8,7 @@ use syn::{
 };
 
 use crate::shared::dependency_info::{DependencyInfo, DependencySource};
+use crate::shared::TokenType;
 
 pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
     impl_block
@@ -73,9 +74,9 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
                 let full_type = field.ty.clone();
 
                 // Determine the lookup token
-                let lookup_token_expr = if let Some(custom_token) = inject_attr.unwrap() {
-                    // #[inject("TOKEN")] - use custom token
-                    quote! { #custom_token.to_string() }
+                let lookup_token_expr = if let Some(custom_token_expr) = inject_attr.unwrap() {
+                    // #[inject("TOKEN")] or #[inject(Type)] - use custom token
+                    custom_token_expr
                 } else {
                     // #[inject] - use type-based token
                     extract_type_token(&field.ty)?
@@ -120,12 +121,12 @@ fn extract_default_attr(field: &syn::Field) -> Result<Option<Expr>> {
     Ok(None)
 }
 
-/// Extract the #[inject] or #[inject("TOKEN")] attribute from a field
+/// Extract the #[inject] or #[inject(token)] attribute from a field
 /// Returns:
 /// - None: no #[inject] attribute
 /// - Some(None): #[inject] without token (use type-based token)
-/// - Some(Some(token)): #[inject("TOKEN")] with custom token
-fn extract_inject_attr(field: &syn::Field) -> Result<Option<Option<String>>> {
+/// - Some(Some(token_expr)): #[inject("TOKEN")] or #[inject(Type)] with custom token
+fn extract_inject_attr(field: &syn::Field) -> Result<Option<Option<TokenStream>>> {
     for attr in &field.attrs {
         if attr.path().is_ident("inject") {
             // Check if there's an argument
@@ -133,9 +134,11 @@ fn extract_inject_attr(field: &syn::Field) -> Result<Option<Option<String>>> {
                 // #[inject] without arguments - use type-based token
                 return Ok(Some(None));
             } else {
-                // #[inject("TOKEN")] with custom token
-                let token: LitStr = attr.parse_args()?;
-                return Ok(Some(Some(token.value())));
+                // #[inject("TOKEN")] or #[inject(Type)] or #[inject(CONST)]
+                // Parse as TokenType to support all token formats
+                let token_type: TokenType = attr.parse_args()?;
+                let token_expr = token_type.to_token_expr();
+                return Ok(Some(Some(token_expr)));
             }
         }
     }
