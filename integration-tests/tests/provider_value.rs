@@ -24,8 +24,6 @@ use toni::di::APP_GUARD;
         provider_value!(APP_GUARD, "global_guard".to_string()),
         // Type token (uses type name as token)
         provider_value!(Duration, Duration::from_secs(60)),
-        // Type token - the token will be "std::time::Duration"
-        provider_value!(std::time::Duration, Duration::from_secs(60)),
     ],
     exports: [],
 )]
