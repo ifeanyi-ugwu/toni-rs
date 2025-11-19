@@ -182,7 +182,25 @@ impl InstanceWrapper {
         // Get and validate DTO
         let dto = instance.get_body_dto(context.take_request());
         if let Some(dto) = dto {
-            context.set_dto(dto);
+            match dto.validate_dto() {
+                Ok(()) => {
+                    context.set_dto(dto);
+                }
+                Err(validation_errors) => {
+                    let error_body = serde_json::json!({
+                        "error": "Validation failed",
+                        "details": validation_errors.to_string()
+                    });
+                    let response = crate::http_helpers::HttpResponse {
+                        body: Some(crate::http_helpers::Body::Json(error_body)),
+                        status: 400,
+                        headers: vec![],
+                    };
+                    context.set_response(Box::new(response));
+                    context.abort();
+                    return;
+                }
+            }
         }
 
         // Execute pipes
