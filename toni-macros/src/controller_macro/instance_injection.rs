@@ -56,6 +56,10 @@ use syn::{
 };
 
 use crate::{
+    controller_macro::extractor_params::{
+        ExtractorKind, generate_extractor_extractions, generate_extractor_method_call,
+        get_extractor_params,
+    },
     enhancer::enhancer::create_enhancers_token_stream,
     markers_params::{
         extracts_marker_params::{
@@ -316,12 +320,26 @@ fn generate_controller_wrapper(
         }
     };
 
-    let method_call = generate_method_call(method, &marker_params)?;
     let enhancers =
         create_enhancers_token_stream(controller_enhancers_attr, method_enhancers_attr)?;
 
-    let (marker_params_extraction, body_dto_token_stream) =
-        generate_marker_params_extraction(&marker_params)?;
+    // Check if we're using extractors or marker params
+    let extractor_params = get_extractor_params(method)?;
+    let has_extractors = extractor_params
+        .iter()
+        .any(|p| p.kind != ExtractorKind::HttpRequest && p.kind != ExtractorKind::Unknown);
+
+    let (method_call, marker_params_extraction, body_dto_token_stream) = if has_extractors {
+        // Use extractor-based approach
+        let (extractions, call_args) = generate_extractor_extractions(&extractor_params)?;
+        let method_call = generate_extractor_method_call(method, &call_args)?;
+        (method_call, extractions, None)
+    } else {
+        // Use legacy marker-based approach
+        let method_call = generate_method_call(method, &marker_params)?;
+        let (extractions, body_dto) = generate_marker_params_extraction(&marker_params)?;
+        (method_call, extractions, body_dto)
+    };
 
     let wrapper = generate_controller_wrapper_code(
         &controller_name,

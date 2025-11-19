@@ -2,6 +2,7 @@
 pub mod adapter;
 pub mod builtin_module;
 pub mod di;
+pub mod extractors;
 #[path = "adapter/http_adapter.rs"]
 pub mod http_adapter;
 pub mod http_helpers;
@@ -33,6 +34,9 @@ pub use rustc_hash::FxHashMap;
 
 // Re-export provider scope
 pub use provider_scope::ProviderScope;
+
+// Re-export trait so users wont have to import manually
+pub use extractors::FromRequest;
 
 // Re-export macros
 pub use toni_macros::*;
