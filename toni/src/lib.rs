@@ -7,7 +7,7 @@ pub mod extractors;
 pub mod http_adapter;
 pub mod http_helpers;
 pub mod injector;
-mod middleware;
+pub mod middleware;
 pub mod module_helpers;
 pub mod provider_scope;
 mod request;

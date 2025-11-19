@@ -1,9 +1,7 @@
 mod chain;
 mod route_pattern;
-pub use chain::{ChainLink, FinalHandler, MiddlewareChain};
+pub use chain::MiddlewareChain;
 pub use route_pattern::{IntoRoutePattern, RoutePattern};
-
-pub use crate::http_helpers::HttpMethod;
 
 mod module_middleware;
 pub use module_middleware::MiddlewareManager;

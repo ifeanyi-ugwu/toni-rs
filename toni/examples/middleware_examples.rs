@@ -17,7 +17,7 @@ use std::time::Instant;
 use toni::{
     async_trait,
     http_helpers::{Body, HttpRequest, HttpResponse, IntoResponse},
-    traits_helpers::middleware::{Middleware, MiddlewareResult, Next},
+    middleware::{Middleware, MiddlewareResult, Next},
 };
 
 // LOGGER MIDDLEWARE
