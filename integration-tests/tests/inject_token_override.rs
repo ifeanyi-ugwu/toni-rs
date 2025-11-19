@@ -6,7 +6,7 @@
 //! 3. Mixed injection (some type-based, some token-based) works
 
 use std::time::Duration;
-use toni::{injectable, module, provider_value, provider_token};
+use toni::{injectable, module, provider_token, provider_value};
 
 // ============= Services =============
 

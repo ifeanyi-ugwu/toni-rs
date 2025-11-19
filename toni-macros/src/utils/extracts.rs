@@ -7,8 +7,8 @@ use syn::{
     TypePath, TypeReference, spanned::Spanned,
 };
 
-use crate::shared::dependency_info::{DependencyInfo, DependencySource};
 use crate::shared::TokenType;
+use crate::shared::dependency_info::{DependencyInfo, DependencySource};
 
 pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
     impl_block

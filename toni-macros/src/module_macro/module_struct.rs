@@ -83,8 +83,10 @@ impl Parse for ConfigParser {
                                     if let Some(last_segment) = path.segments.last() {
                                         let type_name = &last_segment.ident;
                                         // Create the Manager variant
-                                        let manager_ident =
-                                            Ident::new(&format!("{}Manager", type_name), type_name.span());
+                                        let manager_ident = Ident::new(
+                                            &format!("{}Manager", type_name),
+                                            type_name.span(),
+                                        );
 
                                         // Reconstruct the path with Manager suffix
                                         let mut manager_path = path.clone();
