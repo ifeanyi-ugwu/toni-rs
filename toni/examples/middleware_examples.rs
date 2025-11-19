@@ -1,9 +1,21 @@
-use async_trait::async_trait;
+//! Example middleware implementations
+//!
+//! These middleware implementations demonstrate how to implement the Middleware trait.
+//! They are provided as educational examples and starting points for your own implementations.
+//!
+//! ## Usage
+//!
+//! These are not production-ready implementations. Use them as reference for:
+//! - Understanding the Middleware trait pattern
+//! - Building your own custom middleware
+//! - Contributing to third-party middleware crates
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::{
+use toni::{
+    async_trait,
     http_helpers::{Body, HttpRequest, HttpResponse, IntoResponse},
     traits_helpers::middleware::{Middleware, MiddlewareResult, Next},
 };
@@ -276,7 +288,7 @@ impl Middleware for TimeoutMiddleware {
 
 // COMPRESSION MIDDLEWARE
 
-/// Compression middleware
+/// Compression middleware (placeholder - not implemented)
 pub struct CompressionMiddleware {
     pub level: u32,
 }
@@ -378,4 +390,11 @@ impl Middleware for RateLimitMiddleware {
             Ok(response)
         }
     }
+}
+
+fn main() {
+    // This file is for reference only
+    println!(
+        "See the middleware implementations above for examples of how to implement the Middleware trait."
+    );
 }

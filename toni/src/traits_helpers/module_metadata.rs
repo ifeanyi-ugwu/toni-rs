@@ -81,18 +81,18 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
 ///     fn configure_middleware(&self, consumer: &mut MiddlewareConsumer) {
 ///         // Apply logger to all routes
 ///         consumer
-///             .apply(LoggerMiddleware::new())
+///             .apply(MyLoggerMiddleware::new())
 ///             .for_routes(vec!["/users/*"]);
 ///
 ///         // Apply auth to specific routes, excluding public endpoints
 ///         consumer
-///             .apply(AuthMiddleware::new())
+///             .apply(MyAuthMiddleware::new())
 ///             .for_routes(vec!["/users/*"])
 ///             .exclude(vec!["/users/public/*"]);
 ///
 ///         // Multiple middleware can be applied to the same routes
 ///         consumer
-///             .apply(RateLimitMiddleware::new(100, 60000))
+///             .apply(MyRateLimitMiddleware::new(100, 60000))
 ///             .for_routes(vec![("/users/create", "POST")]);
 ///     }
 /// }
@@ -130,13 +130,13 @@ impl MiddlewareConsumer {
     /// ```ignore
     /// // Single middleware
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .for_routes(vec!["/api/*"]);
     ///
     /// // Multiple middleware on same routes
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
-    ///     .apply_also(AuthMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
+    ///     .apply_also(MyAuthMiddleware::new())
     ///     .for_routes(vec!["/api/*"]);
     /// ```
     pub fn apply<M>(&mut self, middleware: M) -> MiddlewareConfigProxy<'_>
@@ -197,9 +197,9 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// # Example
     /// ```ignore
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
-    ///     .apply_also(AuthMiddleware::new())
-    ///     .apply_also(CorsMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
+    ///     .apply_also(MyAuthMiddleware::new())
+    ///     .apply_also(MyCorsMiddleware::new())
     ///     .for_routes(vec!["/api/*"]);
     /// ```
     pub fn apply_also<M>(self, middleware: M) -> Self
@@ -226,14 +226,14 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// ```ignore
     /// // Chain multiple routes
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .for_route("/api/*")
     ///     .for_route("/admin/*")
     ///     .done();
     ///
     /// // Mix with exclusions
     /// consumer
-    ///     .apply(AuthMiddleware::new())
+    ///     .apply(MyAuthMiddleware::new())
     ///     .for_route("/api/*")
     ///     .exclude_route("/api/public/*")
     ///     .done();
@@ -265,12 +265,12 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// ```ignore
     /// // Multiple simple paths (all methods)
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .for_routes(vec!["/api/*", "/admin/*", "/users/*"]);
     ///
     /// // Multiple routes with HTTP method arrays (same size)
     /// consumer
-    ///     .apply(AuthMiddleware::new())
+    ///     .apply(MyAuthMiddleware::new())
     ///     .for_routes(vec![
     ///         ("/api/users/*", ["GET", "POST"]),
     ///         ("/api/posts/*", ["GET", "POST"]),
@@ -278,7 +278,7 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// // Different-sized arrays? Use Vec instead
     /// consumer
-    ///     .apply(CorsMiddleware::new())
+    ///     .apply(MyCorsMiddleware::new())
     ///     .for_routes(vec![
     ///         ("/api/users/*", vec!["GET", "POST"]),
     ///         ("/api/admin/*", vec!["GET", "POST", "DELETE"]),
@@ -286,14 +286,14 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// // Finalize a .for_route() chain (empty vec is fine)
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .for_route("/api/*")
     ///     .for_route("/admin/*")
     ///     .for_routes(vec![]);
     ///
     /// // Mix types in same vec (use vec![] for "all methods")
     /// consumer
-    ///     .apply(CorsMiddleware::new())
+    ///     .apply(MyCorsMiddleware::new())
     ///     .for_routes(vec![
     ///         ("/api/public/*", vec![]),  // All methods
     ///         ("/api/admin/*", vec!["GET", "POST", "DELETE"]),  // Specific methods
@@ -327,14 +327,14 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// ```ignore
     /// // Exclude public routes from auth
     /// consumer
-    ///     .apply(AuthMiddleware::new())
+    ///     .apply(MyAuthMiddleware::new())
     ///     .exclude_route("/api/public/*")
     ///     .exclude_route("/api/health")
     ///     .for_routes(vec!["/api/*"]);
     ///
     /// // Exclude specific method on a route
     /// consumer
-    ///     .apply(RateLimitMiddleware::new(100, 60000))
+    ///     .apply(MyRateLimitMiddleware::new(100, 60000))
     ///     .exclude_route(("/api/health", "GET"))
     ///     .for_routes(vec!["/api/*"]);
     /// ```
@@ -361,13 +361,13 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// ```ignore
     /// // Exclude multiple public routes from auth
     /// consumer
-    ///     .apply(AuthMiddleware::new())
+    ///     .apply(MyAuthMiddleware::new())
     ///     .exclude(vec!["/api/public/*", "/api/health", "/api/status"])
     ///     .for_routes(vec!["/api/*"]);
     ///
     /// // Exclude routes with method arrays (same size)
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .exclude(vec![
     ///         ("/api/health", ["GET", "HEAD"]),
     ///         ("/api/status", ["GET", "HEAD"]),
@@ -376,7 +376,7 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// // Different-sized arrays? Use Vec instead
     /// consumer
-    ///     .apply(RateLimitMiddleware::new(100, 60000))
+    ///     .apply(MyRateLimitMiddleware::new(100, 60000))
     ///     .exclude(vec![
     ///         ("/api/health", vec!["GET", "HEAD"]),
     ///         ("/api/metrics", vec!["GET"]),
@@ -403,7 +403,7 @@ impl<'a> MiddlewareConfigProxy<'a> {
     /// ```ignore
     /// // Chain routes then finalize
     /// consumer
-    ///     .apply(LoggerMiddleware::new())
+    ///     .apply(MyLoggerMiddleware::new())
     ///     .for_route("/api/*")
     ///     .for_route("/admin/*")
     ///     .exclude_route("/api/health")
@@ -411,7 +411,7 @@ impl<'a> MiddlewareConfigProxy<'a> {
     ///
     /// // Then continue with another middleware
     /// consumer
-    ///     .apply(AuthMiddleware::new())
+    ///     .apply(MyAuthMiddleware::new())
     ///     .for_route("/admin/*")
     ///     .done();
     /// ```

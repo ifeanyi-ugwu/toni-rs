@@ -29,7 +29,7 @@ impl MiddlewareManager {
     ///
     /// # Example
     /// ```ignore
-    /// manager.add_global(Arc::new(LoggerMiddleware::new()));
+    /// manager.add_global(Arc::new(MyLoggerMiddleware::new()));
     /// ```
     pub fn add_global(&mut self, middleware: Arc<dyn Middleware>) {
         self.global_middleware.push(middleware);
