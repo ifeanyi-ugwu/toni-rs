@@ -57,8 +57,9 @@ use syn::{
 
 use crate::{
     controller_macro::extractor_params::{
-        ExtractorKind, generate_extractor_extractions, generate_extractor_method_call,
-        get_extractor_params,
+        generate_extractor_extractions, generate_extractor_method_call,
+        generate_extractor_static_method_call, get_extractor_params, has_self_receiver,
+        ExtractorKind,
     },
     enhancer::enhancer::create_enhancers_token_stream,
     markers_params::{
@@ -288,36 +289,47 @@ fn generate_controller_wrapper(
     );
     let controller_token = controller_name.to_string();
 
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+    // Check if this is a static method (no self receiver)
+    let is_static_method = !has_self_receiver(method);
 
-    // Generate struct instantiation based on DI source
-    let struct_instantiation = if let Some(init_method_name) = &dependencies.init_method {
-        // Constructor-based DI: call the constructor with resolved parameters
-        let init_method = Ident::new(init_method_name, struct_name.span());
-        quote! {
-            let controller = #struct_name::#init_method(#(#field_names),*);
-        }
+    // Only generate field resolutions and struct instantiation for instance methods
+    let (field_resolutions, _field_names, struct_instantiation) = if is_static_method {
+        // Static method - no need for instance creation
+        (vec![], vec![], quote! {})
     } else {
-        // Field-based DI: use struct literal
-        // Generate initializers for owned fields
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    quote! { #field_name: #expr }
-                } else {
-                    quote! { #field_name: <#field_type>::default() }
-                }
-            })
-            .collect();
+        let (resolutions, names) = generate_field_resolutions(dependencies);
 
-        quote! {
-            let controller = #struct_name {
-                #(#field_names,)*  // Injected dependencies
-                #(#owned_field_inits),*  // Owned fields with defaults
-            };
-        }
+        // Generate struct instantiation based on DI source
+        let instantiation = if let Some(init_method_name) = &dependencies.init_method {
+            // Constructor-based DI: call the constructor with resolved parameters
+            let init_method = Ident::new(init_method_name, struct_name.span());
+            quote! {
+                let controller = #struct_name::#init_method(#(#names),*);
+            }
+        } else {
+            // Field-based DI: use struct literal
+            // Generate initializers for owned fields
+            let owned_field_inits: Vec<_> = dependencies
+                .owned_fields
+                .iter()
+                .map(|(field_name, field_type, default_expr)| {
+                    if let Some(expr) = default_expr {
+                        quote! { #field_name: #expr }
+                    } else {
+                        quote! { #field_name: <#field_type>::default() }
+                    }
+                })
+                .collect();
+
+            quote! {
+                let controller = #struct_name {
+                    #(#names,)*  // Injected dependencies
+                    #(#owned_field_inits),*  // Owned fields with defaults
+                };
+            }
+        };
+
+        (resolutions, names, instantiation)
     };
 
     let enhancers =
@@ -332,11 +344,15 @@ fn generate_controller_wrapper(
     let (method_call, marker_params_extraction, body_dto_token_stream) = if has_extractors {
         // Use extractor-based approach
         let (extractions, call_args) = generate_extractor_extractions(&extractor_params)?;
-        let method_call = generate_extractor_method_call(method, &call_args)?;
+        let method_call = if is_static_method {
+            generate_extractor_static_method_call(method, struct_name, &call_args)?
+        } else {
+            generate_extractor_method_call(method, &call_args)?
+        };
         (method_call, extractions, None)
     } else {
         // Use legacy marker-based approach
-        let method_call = generate_method_call(method, &marker_params)?;
+        let method_call = generate_method_call(method, &marker_params, struct_name, is_static_method)?;
         let (extractions, body_dto) = generate_marker_params_extraction(&marker_params)?;
         (method_call, extractions, body_dto)
     };
@@ -354,6 +370,7 @@ fn generate_controller_wrapper(
         &body_dto_token_stream,
         scope,
         struct_name, // Pass struct_name for downcast in singleton wrapper
+        is_static_method,
     );
 
     let controller_dependencies: Vec<(Ident, TokenStream)> = dependencies
@@ -370,6 +387,7 @@ fn generate_controller_wrapper(
         MetadataInfo {
             struct_name: controller_name,
             dependencies: controller_dependencies,
+            is_static: is_static_method,
         },
     ))
 }
@@ -418,7 +436,12 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
 // 2. Group by static type information at compile time
 // 3. Generate runtime token expressions for each grouped field
 
-fn generate_method_call(method: &ImplItemFn, marker_params: &[MarkerParam]) -> Result<TokenStream> {
+fn generate_method_call(
+    method: &ImplItemFn,
+    marker_params: &[MarkerParam],
+    struct_name: &Ident,
+    is_static: bool,
+) -> Result<TokenStream> {
     let method_name = &method.sig.ident;
     let is_async = method.sig.asyncness.is_some();
 
@@ -429,7 +452,11 @@ fn generate_method_call(method: &ImplItemFn, marker_params: &[MarkerParam]) -> R
         call_args.push(quote! { #param_name });
     }
 
-    let call = quote! { controller.#method_name(#(#call_args),*) };
+    let call = if is_static {
+        quote! { #struct_name::#method_name(#(#call_args),*) }
+    } else {
+        quote! { controller.#method_name(#(#call_args),*) }
+    };
 
     Ok(if is_async {
         quote! { #call.await }
@@ -477,6 +504,7 @@ fn generate_controller_wrapper_code(
     body_dto_token_stream: &Option<TokenStream>,
     scope: crate::shared::scope_parser::ControllerScope,
     struct_name: &Ident,
+    is_static_method: bool,
 ) -> TokenStream {
     use crate::shared::scope_parser::ControllerScope;
 
@@ -491,6 +519,7 @@ fn generate_controller_wrapper_code(
             marker_params_extraction,
             body_dto_token_stream,
             struct_name, // Pass struct name for downcast
+            is_static_method,
         ),
         ControllerScope::Request => generate_request_controller_wrapper(
             controller_name,
@@ -503,6 +532,7 @@ fn generate_controller_wrapper_code(
             enhancers,
             marker_params_extraction,
             body_dto_token_stream,
+            is_static_method,
         ),
     }
 }
@@ -518,6 +548,7 @@ fn generate_singleton_controller_wrapper(
     marker_params_extraction: &[TokenStream],
     body_dto_token_stream: &Option<TokenStream>,
     struct_name: &Ident, // Need this for downcast type
+    is_static_method: bool,
 ) -> TokenStream {
     let binding = Vec::new();
     let use_guards = enhancers.get("guards").unwrap_or(&binding);
@@ -530,10 +561,34 @@ fn generate_singleton_controller_wrapper(
         quote! { None }
     };
 
+    // For static methods, we don't need to store or downcast the instance
+    let (struct_fields, instance_downcast) = if is_static_method {
+        (
+            quote! {
+                // Static method: no instance needed
+            },
+            quote! {
+                // Static method: call directly on struct type, no instance needed
+            },
+        )
+    } else {
+        (
+            quote! {
+                // Singleton: Store the pre-created controller instance!
+                instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync>,
+            },
+            quote! {
+                // Downcast the Arc<dyn Any> to the actual controller type
+                let controller = self.instance
+                    .downcast_ref::<#struct_name>()
+                    .expect("Failed to downcast controller instance");
+            },
+        )
+    };
+
     quote! {
         struct #controller_name {
-            // Singleton: Store the pre-created controller instance!
-            instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync>,
+            #struct_fields
         }
 
         #[::toni::async_trait]
@@ -544,14 +599,11 @@ fn generate_singleton_controller_wrapper(
             ) -> Box<dyn ::toni::http_helpers::IntoResponse<Response = ::toni::http_helpers::HttpResponse> + Send> {
                 // NO dependency resolution here!
                 // NO controller instantiation here!
-                // Just extract parameters and call the handler on the pre-existing instance
+                // Just extract parameters and call the handler
 
                 #(#marker_params_extraction)*
 
-                // Downcast the Arc<dyn Any> to the actual controller type
-                let controller = self.instance
-                    .downcast_ref::<#struct_name>()
-                    .expect("Failed to downcast controller instance");
+                #instance_downcast
 
                 let result = #method_call;
                 Box::new(result)
@@ -600,6 +652,7 @@ fn generate_request_controller_wrapper(
     enhancers: &HashMap<String, Vec<TokenStream>>,
     marker_params_extraction: &[TokenStream],
     body_dto_token_stream: &Option<TokenStream>,
+    is_static_method: bool,
 ) -> TokenStream {
     let binding = Vec::new();
     let use_guards = enhancers.get("guards").unwrap_or(&binding);
@@ -612,12 +665,23 @@ fn generate_request_controller_wrapper(
         quote! { None }
     };
 
-    quote! {
-        struct #controller_name {
+    // For static methods, we don't need dependencies field
+    let struct_fields = if is_static_method {
+        quote! {
+            // Static method: no dependencies needed
+        }
+    } else {
+        quote! {
             dependencies: ::toni::FxHashMap<
                 String,
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::ProviderTrait>>
             >,
+        }
+    };
+
+    quote! {
+        struct #controller_name {
+            #struct_fields
         }
 
         #[::toni::async_trait]
@@ -784,15 +848,29 @@ fn generate_singleton_manager(
             let controller_name = &metadata.struct_name;
             let controller_token = controller_name.to_string();
 
-            quote! {
-                controllers.insert(
-                    #controller_token.to_string(),
-                    ::std::sync::Arc::new(
-                        Box::new(#controller_name {
-                            instance: controller_instance.clone(),
-                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
-                    )
-                );
+            if metadata.is_static {
+                // Static method: no instance field needed
+                quote! {
+                    controllers.insert(
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
+                    );
+                }
+            } else {
+                // Instance method: pass the shared instance
+                quote! {
+                    controllers.insert(
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                                instance: controller_instance.clone(),
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
+                    );
+                }
             }
         })
         .collect();
@@ -860,15 +938,29 @@ fn generate_singleton_manager(
             let controller_name = &metadata.struct_name;
             let controller_token = controller_name.to_string();
 
-            quote! {
-                (
-                    #controller_token.to_string(),
-                    ::std::sync::Arc::new(
-                        Box::new(#controller_name {
-                            dependencies: dependencies.clone(),
-                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+            if metadata.is_static {
+                // Static method: no dependencies field needed
+                quote! {
+                    (
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
                     )
-                )
+                }
+            } else {
+                // Instance method: pass dependencies
+                quote! {
+                    (
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                                dependencies: dependencies.clone(),
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
+                    )
+                }
             }
         })
         .collect();
@@ -959,15 +1051,29 @@ fn generate_request_manager(
             let controller_name = &metadata.struct_name;
             let controller_token = controller_name.to_string();
 
-            quote! {
-                (
-                    #controller_token.to_string(),
-                    ::std::sync::Arc::new(
-                        Box::new(#controller_name {
-                            dependencies: dependencies.clone(),
-                        }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+            if metadata.is_static {
+                // Static method: no dependencies field needed
+                quote! {
+                    (
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
                     )
-                )
+                }
+            } else {
+                // Instance method: pass dependencies
+                quote! {
+                    (
+                        #controller_token.to_string(),
+                        ::std::sync::Arc::new(
+                            Box::new(#controller_name {
+                                dependencies: dependencies.clone(),
+                            }) as Box<dyn ::toni::traits_helpers::ControllerTrait>
+                        )
+                    )
+                }
             }
         })
         .collect();

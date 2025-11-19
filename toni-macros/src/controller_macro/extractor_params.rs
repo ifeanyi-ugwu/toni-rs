@@ -7,6 +7,15 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{FnArg, Ident, ImplItemFn, Result, Type};
 
+/// Check if a method has a `self` receiver (i.e., is an instance method)
+pub fn has_self_receiver(method: &ImplItemFn) -> bool {
+    method
+        .sig
+        .inputs
+        .iter()
+        .any(|arg| matches!(arg, FnArg::Receiver(_)))
+}
+
 /// Information about an extractor parameter
 #[derive(Clone)]
 pub struct ExtractorParam {
@@ -182,6 +191,24 @@ pub fn generate_extractor_method_call(
     let is_async = method.sig.asyncness.is_some();
 
     let call = quote! { controller.#method_name(#(#call_args),*) };
+
+    Ok(if is_async {
+        quote! { #call.await }
+    } else {
+        call
+    })
+}
+
+/// Generate the method call for static methods (no self receiver)
+pub fn generate_extractor_static_method_call(
+    method: &ImplItemFn,
+    struct_name: &Ident,
+    call_args: &[TokenStream],
+) -> Result<TokenStream> {
+    let method_name = &method.sig.ident;
+    let is_async = method.sig.asyncness.is_some();
+
+    let call = quote! { #struct_name::#method_name(#(#call_args),*) };
 
     Ok(if is_async {
         quote! { #call.await }
