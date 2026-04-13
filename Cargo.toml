@@ -12,6 +12,7 @@ members = [
     "toni-config",
     "toni-seaorm",
     "toni-sqlx",
+    "toni-mongodb",
     "toni-async-graphql",
     "toni-juniper",
     "integration-tests",
