@@ -24,7 +24,9 @@ impl ProviderFactory for SeaOrmConnectionFactory {
     ) -> Arc<Box<dyn Provider>> {
         let db = Database::connect(&self.database_url)
             .await
-            .unwrap_or_else(|e| panic!("SeaORM: failed to connect to '{}': {e}", self.database_url));
+            .unwrap_or_else(|e| {
+                panic!("SeaORM: failed to connect to '{}': {e}", self.database_url)
+            });
 
         Arc::new(Box::new(SeaOrmConnectionProvider {
             db: Mutex::new(Some(db)),
@@ -53,7 +55,12 @@ impl Provider for SeaOrmConnectionProvider {
         _ctx: ProviderContext<'_>,
     ) -> Box<dyn Any + Send> {
         // DatabaseConnection is Clone — it wraps a connection pool internally.
-        let db = self.db.lock().as_ref().expect("database already closed").clone();
+        let db = self
+            .db
+            .lock()
+            .as_ref()
+            .expect("database already closed")
+            .clone();
         Box::new(db)
     }
 

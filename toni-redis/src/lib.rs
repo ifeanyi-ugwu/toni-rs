@@ -3,7 +3,4 @@ mod module;
 
 pub use module::RedisModule;
 
-pub use redis::{
-    AsyncCommands, RedisError, RedisResult,
-    aio::ConnectionManager,
-};
+pub use redis::{AsyncCommands, RedisError, RedisResult, aio::ConnectionManager};
