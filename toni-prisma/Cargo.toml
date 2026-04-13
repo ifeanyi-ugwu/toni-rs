@@ -1,0 +1,12 @@
+[package]
+name = "toni-prisma"
+version = "0.1.0"
+edition = "2024"
+description = "Prisma integration for the Toni framework"
+license = "MIT"
+repository = "https://github.com/monterxto/toni-rs"
+homepage = "https://github.com/monterxto/toni-rs"
+
+[dependencies]
+toni = { path = "../toni" }
+async-trait = "0.1"
