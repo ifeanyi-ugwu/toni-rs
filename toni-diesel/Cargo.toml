@@ -1,0 +1,20 @@
+[package]
+name = "toni-diesel"
+version = "0.1.0"
+edition = "2024"
+description = "Diesel async integration for the Toni framework"
+license = "MIT"
+repository = "https://github.com/monterxto/toni-rs"
+homepage = "https://github.com/monterxto/toni-rs"
+
+[features]
+default = []
+postgres = ["diesel-async/postgres", "diesel/postgres"]
+mysql = ["diesel-async/mysql"]
+
+[dependencies]
+toni = { path = "../toni" }
+diesel-async = { version = "0.8", features = ["deadpool"], default-features = false }
+diesel = { version = "2", default-features = false }
+async-trait = "0.1"
+tracing = "0.1"
