@@ -1,3 +1,4 @@
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 use toni::DynamicModule;
 
 pub struct DieselModule;

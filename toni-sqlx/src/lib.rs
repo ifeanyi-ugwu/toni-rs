@@ -1,4 +1,5 @@
 mod module;
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 mod pool;
 
 pub use module::SqlxModule;

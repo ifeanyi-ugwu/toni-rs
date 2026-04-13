@@ -1,11 +1,15 @@
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 use std::{any::Any, sync::Arc};
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 use async_trait::async_trait;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 use toni::{
     FxHashMap,
     traits_helpers::{Provider, ProviderContext, ProviderFactory},
 };
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 macro_rules! impl_diesel_pool {
     ($factory:ident, $provider:ident, $conn:ty, $pool:ty) => {
         pub(crate) struct $factory {

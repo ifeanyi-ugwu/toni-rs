@@ -1,7 +1,10 @@
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use std::marker::PhantomData;
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use toni::DynamicModule;
 
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use crate::pool::SqlxPoolFactory;
 
 pub struct SqlxModule;
