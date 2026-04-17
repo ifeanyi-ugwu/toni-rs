@@ -3,7 +3,9 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
-use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
+use super::{
+    ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware,
+};
 use crate::ProviderScope;
 
 #[async_trait]
@@ -19,30 +21,9 @@ pub trait Provider: Send + Sync {
         ProviderScope::Singleton
     }
 
-    // Enhancer detection — overridden by the macro for guards, interceptors, etc.
-    fn as_guard(&self) -> Option<Arc<dyn Guard>> {
-        None
-    }
-    fn as_interceptor(&self) -> Option<Arc<dyn Interceptor>> {
-        None
-    }
-    fn as_pipe(&self) -> Option<Arc<dyn Pipe>> {
-        None
-    }
-    fn as_middleware(&self) -> Option<Arc<dyn Middleware>> {
-        None
-    }
-    fn as_error_handler(&self) -> Option<Arc<dyn ErrorHandler>> {
-        None
-    }
-
-    // Multi-provider support — overridden by generated multi-contribution providers.
-    // Returns the base token this contribution belongs to (e.g. "PLUGINS").
     fn get_multi_base_token(&self) -> Option<String> {
         None
     }
-    // Returns the type-erased contribution item (double-Arc: Arc<Arc<dyn Trait+Send+Sync>>
-    // stored as Arc<dyn Any+Send+Sync>) so the instance loader can collect them.
     fn as_multi_item(&self) -> Option<Arc<dyn Any + Send + Sync>> {
         None
     }
@@ -54,14 +35,23 @@ pub trait Provider: Send + Sync {
     async fn on_module_destroy(&self) {}
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
+}
 
-    fn as_gateway(&self) -> Option<Arc<Box<dyn crate::websocket::GatewayTrait>>> {
-        None
-    }
-
-    fn as_rpc_controller(&self) -> Option<Arc<Box<dyn crate::rpc::RpcControllerTrait>>> {
-        None
-    }
+/// Role trait-objects a provider may contribute to the registry.
+///
+/// Returned as the second element of `ProviderFactory::build`. The container
+/// inserts each variant into the matching slot of `RoleRegistry` keyed by the
+/// provider token (or, for gateways, by WS path; for RPC controllers, by
+/// controller token).
+#[derive(Clone)]
+pub enum ProviderRole {
+    Guard(Arc<dyn Guard>),
+    Interceptor(Arc<dyn Interceptor>),
+    Pipe(Arc<dyn Pipe>),
+    Middleware(Arc<dyn Middleware>),
+    ErrorHandler(Arc<dyn ErrorHandler>),
+    Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
+    RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
 }
 
 #[async_trait]
@@ -76,8 +66,14 @@ pub trait ProviderFactory {
     fn get_multi_base_token(&self) -> Option<String> {
         None
     }
+
+    /// Build the provider instance and return any roles it contributes.
+    ///
+    /// Roles are extracted here — before the concrete type is erased — so no
+    /// downcast is ever needed. Wrapper factories (`provider_token!`,
+    /// `provider_alias!`) forward the inner factory's roles unchanged.
     async fn build(
         &self,
         deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<Box<dyn Provider>>;
+    ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>);
 }

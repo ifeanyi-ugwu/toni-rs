@@ -97,61 +97,47 @@ impl Parse for ProviderValueInput {
     }
 }
 
-/// Generate enhancer method implementations based on the enhancer flags
-fn generate_enhancer_methods(
+/// Validate that enhancers can be used with the given token type.
+fn validate_enhancers(
     token: &TokenType,
     type_hint: &Option<syn::Path>,
     enhancers: &[EnhancerType],
-) -> Result<TokenStream> {
-    // Check if we can generate enhancer methods
-    match token {
-        TokenType::Type(_) => {
-            // Type token - can generate enhancer methods
-        }
-        TokenType::String(_) | TokenType::Const(_) => {
-            if !enhancers.is_empty() && type_hint.is_none() {
-                return Err(syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "Enhancer support (guard/interceptor/pipe) for String or Const tokens requires a type hint. Use: provider_value!(\"TOKEN\", value, Type, guard)",
-                ));
-            }
-            if enhancers.is_empty() {
-                return Ok(quote! {});
-            }
-        }
-    };
-
-    let mut methods = Vec::new();
-
-    for enhancer in enhancers {
-        match enhancer {
-            EnhancerType::Guard => {
-                methods.push(quote! {
-                    fn as_guard(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Guard>> {
-                        Some(self.instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>)
-                    }
-                });
-            }
-            EnhancerType::Interceptor => {
-                methods.push(quote! {
-                    fn as_interceptor(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Interceptor>> {
-                        Some(self.instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>)
-                    }
-                });
-            }
-            EnhancerType::Pipe => {
-                methods.push(quote! {
-                    fn as_pipe(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Pipe>> {
-                        Some(self.instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>)
-                    }
-                });
-            }
+) -> Result<()> {
+    if let TokenType::String(_) | TokenType::Const(_) = token {
+        if !enhancers.is_empty() && type_hint.is_none() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Enhancer support (guard/interceptor/pipe) for String or Const tokens requires a type hint. Use: provider_value!(\"TOKEN\", value, Type, guard)",
+            ));
         }
     }
+    Ok(())
+}
 
-    Ok(quote! {
-        #(#methods)*
-    })
+/// Generate role-push statements to embed inside `build()` for value providers,
+/// before the concrete `instance: Arc<T>` is boxed.
+fn generate_value_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
+    let mut pushes = Vec::new();
+    for enhancer in enhancers {
+        match enhancer {
+            EnhancerType::Guard => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Guard(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
+                ));
+            }),
+            EnhancerType::Interceptor => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Interceptor(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
+                ));
+            }),
+            EnhancerType::Pipe => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Pipe(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
+                ));
+            }),
+        }
+    }
+    quote! { #(#pushes)* }
 }
 
 pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
@@ -243,12 +229,18 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                             String,
                             std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                         >,
-                    ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
+                    ) -> (
+                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                        std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                    ) {
                         let instance = std::sync::Arc::new(
                             Box::new(#value_expr) as Box<dyn toni::traits_helpers::Provider>
                         );
-                        std::sync::Arc::new(
-                            Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
+                        (
+                            std::sync::Arc::new(
+                                Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
+                            ),
+                            std::vec::Vec::new(),
                         )
                     }
                 }
@@ -259,36 +251,26 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
         return Ok(expanded);
     }
 
-    // Generate enhancer method implementations
-    let enhancer_methods = generate_enhancer_methods(&token, &type_hint, &enhancers)?;
+    validate_enhancers(&token, &type_hint, &enhancers)?;
 
-    // Generate different implementations based on token type
-    let expanded = match &token {
-        // For Type tokens: Store concrete type, no type erasure!
-        TokenType::Type(path) => quote! {
+    // Helper: emit a provider struct + factory that stores `instance: Arc<$instance_type>`.
+    // Roles are built inside `build()` before boxing, so no downcast is needed.
+    let make_concrete_provider = |instance_type: &TokenStream| {
+        let role_pushes = generate_value_role_pushes(&enhancers);
+        quote! {
             {
-                // Value provider struct that stores the concrete type
                 #[derive(Clone)]
                 struct #provider_name {
-                    instance: std::sync::Arc<#path>,
+                    instance: std::sync::Arc<#instance_type>,
                 }
 
                 struct #factory_name;
 
-                // Implement Provider for the provider wrapper
                 #[toni::async_trait]
                 impl toni::traits_helpers::Provider for #provider_name {
-                    fn get_token(&self) -> String {
-                        #token_expr
-                    }
-
-                    fn get_token_factory(&self) -> String {
-                        #token_expr
-                    }
-
-                    fn get_scope(&self) -> toni::ProviderScope {
-                        toni::ProviderScope::Singleton
-                    }
+                    fn get_token(&self) -> String { #token_expr }
+                    fn get_token_factory(&self) -> String { #token_expr }
+                    fn get_scope(&self) -> toni::ProviderScope { toni::ProviderScope::Singleton }
 
                     async fn execute(
                         &self,
@@ -297,15 +279,11 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                     ) -> Box<dyn std::any::Any + Send> {
                         Box::new((*self.instance).clone())
                     }
-
-                    #enhancer_methods
                 }
 
                 #[toni::async_trait]
                 impl toni::traits_helpers::ProviderFactory for #factory_name {
-                    fn get_token(&self) -> String {
-                        #token_expr
-                    }
+                    fn get_token(&self) -> String { #token_expr }
 
                     async fn build(
                         &self,
@@ -313,79 +291,38 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                             String,
                             std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                         >,
-                    ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
+                    ) -> (
+                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                        std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                    ) {
                         let instance = std::sync::Arc::new(#value_expr);
-                        std::sync::Arc::new(
-                            Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
+                        let mut __roles = std::vec::Vec::new();
+                        #role_pushes
+                        (
+                            std::sync::Arc::new(
+                                Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
+                            ),
+                            __roles,
                         )
                     }
                 }
 
                 #factory_name
             }
-        },
+        }
+    };
+
+    let expanded = match &token {
+        TokenType::Type(path) => {
+            let instance_type = quote! { #path };
+            make_concrete_provider(&instance_type)
+        }
 
         TokenType::String(_) | TokenType::Const(_) => {
             if !enhancers.is_empty() {
                 let type_path = type_hint.as_ref().unwrap();
-
-                quote! {
-                    {
-                        #[derive(Clone)]
-                        struct #provider_name {
-                            instance: std::sync::Arc<#type_path>,
-                        }
-
-                        struct #factory_name;
-
-                        #[toni::async_trait]
-                        impl toni::traits_helpers::Provider for #provider_name {
-                            fn get_token(&self) -> String {
-                                #token_expr
-                            }
-
-                            fn get_token_factory(&self) -> String {
-                                #token_expr
-                            }
-
-                            fn get_scope(&self) -> toni::ProviderScope {
-                                toni::ProviderScope::Singleton
-                            }
-
-                            async fn execute(
-                                &self,
-                                _params: Vec<Box<dyn std::any::Any + Send>>,
-                                _ctx: toni::ProviderContext<'_>,
-                            ) -> Box<dyn std::any::Any + Send> {
-                                Box::new((*self.instance).clone())
-                            }
-
-                            #enhancer_methods
-                        }
-
-                        #[toni::async_trait]
-                        impl toni::traits_helpers::ProviderFactory for #factory_name {
-                            fn get_token(&self) -> String {
-                                #token_expr
-                            }
-
-                            async fn build(
-                                &self,
-                                _deps: toni::FxHashMap<
-                                    String,
-                                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                                >,
-                            ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
-                                let instance = std::sync::Arc::new(#value_expr);
-                                std::sync::Arc::new(
-                                    Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
-                                )
-                            }
-                        }
-
-                        #factory_name
-                    }
-                }
+                let instance_type = quote! { #type_path };
+                make_concrete_provider(&instance_type)
             } else {
                 quote! {
                     {
@@ -397,17 +334,9 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
                         #[toni::async_trait]
                         impl toni::traits_helpers::Provider for #provider_name {
-                            fn get_token(&self) -> String {
-                                #token_expr
-                            }
-
-                            fn get_token_factory(&self) -> String {
-                                #token_expr
-                            }
-
-                            fn get_scope(&self) -> toni::ProviderScope {
-                                toni::ProviderScope::Singleton
-                            }
+                            fn get_token(&self) -> String { #token_expr }
+                            fn get_token_factory(&self) -> String { #token_expr }
+                            fn get_scope(&self) -> toni::ProviderScope { toni::ProviderScope::Singleton }
 
                             async fn execute(
                                 &self,
@@ -420,9 +349,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
                         #[toni::async_trait]
                         impl toni::traits_helpers::ProviderFactory for #factory_name {
-                            fn get_token(&self) -> String {
-                                #token_expr
-                            }
+                            fn get_token(&self) -> String { #token_expr }
 
                             async fn build(
                                 &self,
@@ -430,13 +357,19 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                                     String,
                                     std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                                 >,
-                            ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
+                            ) -> (
+                                std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                                std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                            ) {
                                 let value = std::sync::Arc::new(#value_expr);
                                 let get_value = std::sync::Arc::new(move || {
                                     Box::new((*value).clone()) as Box<dyn std::any::Any + Send>
                                 });
-                                std::sync::Arc::new(
-                                    Box::new(#provider_name { get_value }) as Box<dyn toni::traits_helpers::Provider>
+                                (
+                                    std::sync::Arc::new(
+                                        Box::new(#provider_name { get_value }) as Box<dyn toni::traits_helpers::Provider>
+                                    ),
+                                    std::vec::Vec::new(),
                                 )
                             }
                         }
@@ -450,3 +383,4 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
     Ok(expanded)
 }
+

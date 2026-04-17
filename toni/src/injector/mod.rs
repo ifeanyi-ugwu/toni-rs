@@ -32,6 +32,9 @@ pub use self::module_ref::{ModuleRef, ProviderStore};
 mod module_ref_provider;
 pub use self::module_ref_provider::ModuleRefProvider;
 
+mod role_registry;
+pub(crate) use self::role_registry::RoleRegistry;
+
 mod gateway_resolver;
 pub use self::gateway_resolver::GatewayResolver;
 

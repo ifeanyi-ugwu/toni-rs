@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use crate::traits_helpers::{ErrorHandler, Guard, Interceptor, Pipe};
 use crate::websocket::{GatewayTrait, GatewayWrapper};
@@ -51,9 +51,7 @@ impl GatewayResolver {
         let global_guards = self.container.borrow().get_global_enhancers().guards;
         guards.extend(global_guards);
         for token in tokens {
-            if let Some(guard) = self.resolve_guard_by_token(&token)? {
-                guards.push(guard);
-            }
+            guards.push(self.resolve_guard_by_token(&token)?);
         }
         Ok(guards)
     }
@@ -63,9 +61,7 @@ impl GatewayResolver {
         let global_interceptors = self.container.borrow().get_global_enhancers().interceptors;
         interceptors.extend(global_interceptors);
         for token in tokens {
-            if let Some(i) = self.resolve_interceptor_by_token(&token)? {
-                interceptors.push(i);
-            }
+            interceptors.push(self.resolve_interceptor_by_token(&token)?);
         }
         Ok(interceptors)
     }
@@ -75,9 +71,7 @@ impl GatewayResolver {
         let global_pipes = self.container.borrow().get_global_enhancers().pipes;
         pipes.extend(global_pipes);
         for token in tokens {
-            if let Some(pipe) = self.resolve_pipe_by_token(&token)? {
-                pipes.push(pipe);
-            }
+            pipes.push(self.resolve_pipe_by_token(&token)?);
         }
         Ok(pipes)
     }
@@ -91,62 +85,48 @@ impl GatewayResolver {
             .error_handlers;
         error_handlers.extend(global_error_handlers);
         for token in tokens {
-            if let Some(eh) = self.resolve_error_handler_by_token(&token)? {
-                error_handlers.push(eh);
-            }
+            error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }
         Ok(error_handlers)
     }
 
-    fn resolve_guard_by_token(&self, token: &str) -> Result<Option<Arc<dyn Guard>>> {
-        let container = self.container.borrow();
-        for module_token in container.get_modules_token() {
-            let providers = container.get_providers_instance(&module_token)?;
-            if let Some(p) = providers.get(token) {
-                if let Some(g) = p.as_guard() {
-                    return Ok(Some(g));
-                }
-            }
-        }
-        Ok(None)
+    fn resolve_guard_by_token(&self, token: &str) -> Result<Arc<dyn Guard>> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .guards
+            .get(token)
+            .cloned()
+            .ok_or_else(|| anyhow!("Guard '{}' not found in role registry", token))
     }
 
-    fn resolve_interceptor_by_token(&self, token: &str) -> Result<Option<Arc<dyn Interceptor>>> {
-        let container = self.container.borrow();
-        for module_token in container.get_modules_token() {
-            let providers = container.get_providers_instance(&module_token)?;
-            if let Some(p) = providers.get(token) {
-                if let Some(i) = p.as_interceptor() {
-                    return Ok(Some(i));
-                }
-            }
-        }
-        Ok(None)
+    fn resolve_interceptor_by_token(&self, token: &str) -> Result<Arc<dyn Interceptor>> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .interceptors
+            .get(token)
+            .cloned()
+            .ok_or_else(|| anyhow!("Interceptor '{}' not found in role registry", token))
     }
 
-    fn resolve_pipe_by_token(&self, token: &str) -> Result<Option<Arc<dyn Pipe>>> {
-        let container = self.container.borrow();
-        for module_token in container.get_modules_token() {
-            let providers = container.get_providers_instance(&module_token)?;
-            if let Some(p) = providers.get(token) {
-                if let Some(pipe) = p.as_pipe() {
-                    return Ok(Some(pipe));
-                }
-            }
-        }
-        Ok(None)
+    fn resolve_pipe_by_token(&self, token: &str) -> Result<Arc<dyn Pipe>> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .pipes
+            .get(token)
+            .cloned()
+            .ok_or_else(|| anyhow!("Pipe '{}' not found in role registry", token))
     }
 
-    fn resolve_error_handler_by_token(&self, token: &str) -> Result<Option<Arc<dyn ErrorHandler>>> {
-        let container = self.container.borrow();
-        for module_token in container.get_modules_token() {
-            let providers = container.get_providers_instance(&module_token)?;
-            if let Some(p) = providers.get(token) {
-                if let Some(eh) = p.as_error_handler() {
-                    return Ok(Some(eh));
-                }
-            }
-        }
-        Ok(None)
+    fn resolve_error_handler_by_token(&self, token: &str) -> Result<Arc<dyn ErrorHandler>> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .error_handlers
+            .get(token)
+            .cloned()
+            .ok_or_else(|| anyhow!("ErrorHandler '{}' not found in role registry", token))
     }
 }

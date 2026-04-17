@@ -128,7 +128,7 @@ pub fn generate_instance_provider_system(
         &lifecycle_hooks,
     );
 
-    let factory = generate_factory(&struct_name, dependencies, scope);
+    let factory = generate_factory(&struct_name, dependencies, scope, &enhancer_traits);
     let factory_accessor = generate_provider_factory_accessor(&struct_name);
 
     Ok(quote! {
@@ -240,9 +240,7 @@ fn generate_provider_wrapper(
     lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     match scope {
-        ProviderScope::Singleton => {
-            generate_singleton_provider(struct_name, enhancer_traits, lifecycle_hooks)
-        }
+        ProviderScope::Singleton => generate_singleton_provider(struct_name, lifecycle_hooks),
         ProviderScope::Request => {
             generate_request_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
         }
@@ -252,62 +250,67 @@ fn generate_provider_wrapper(
     }
 }
 
-fn generate_enhancer_methods(traits: &EnhancerTraits) -> TokenStream {
-    let mut methods = Vec::new();
+/// Generate role-push statements to embed inside `build()`, before the concrete
+/// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
+/// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
+fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
+    let mut pushes = Vec::new();
 
     if traits.is_guard {
-        methods.push(quote! {
-            fn as_guard(&self) -> Option<::std::sync::Arc<dyn ::toni::traits_helpers::Guard>> {
-                Some(::std::sync::Arc::new((*self.instance).clone()))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard>
+            ));
         });
     }
     if traits.is_interceptor {
-        methods.push(quote! {
-            fn as_interceptor(&self) -> Option<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>> {
-                Some(::std::sync::Arc::new((*self.instance).clone()))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>
+            ));
         });
     }
     if traits.is_pipe {
-        methods.push(quote! {
-            fn as_pipe(&self) -> Option<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>> {
-                Some(::std::sync::Arc::new((*self.instance).clone()))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>
+            ));
         });
     }
     if traits.is_middleware {
-        methods.push(quote! {
-            fn as_middleware(&self) -> Option<::std::sync::Arc<dyn ::toni::traits_helpers::middleware::Middleware>> {
-                Some(::std::sync::Arc::new((*self.instance).clone()))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::middleware::Middleware>
+            ));
         });
     }
     if traits.is_error_handler {
-        methods.push(quote! {
-            fn as_error_handler(&self) -> Option<::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>> {
-                Some(::std::sync::Arc::new((*self.instance).clone()))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::ErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>
+            ));
         });
     }
-
     if traits.is_gateway {
-        methods.push(quote! {
-            fn as_gateway(&self) -> Option<::std::sync::Arc<Box<dyn ::toni::websocket::GatewayTrait>>> {
-                Some(::std::sync::Arc::new(Box::new((*self.instance).clone()) as Box<dyn ::toni::websocket::GatewayTrait>))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Gateway(
+                ::std::sync::Arc::new(
+                    Box::new((*instance).clone()) as Box<dyn ::toni::websocket::GatewayTrait>
+                )
+            ));
         });
     }
-
     if traits.is_rpc_controller {
-        methods.push(quote! {
-            fn as_rpc_controller(&self) -> Option<::std::sync::Arc<Box<dyn ::toni::rpc::RpcControllerTrait>>> {
-                Some(::std::sync::Arc::new(Box::new((*self.instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>))
-            }
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
+                ::std::sync::Arc::new(
+                    Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
+                )
+            ));
         });
     }
 
-    quote! { #(#methods)* }
+    quote! { #(#pushes)* }
 }
 
 /// Generate direct lifecycle method overrides on `Provider` for singleton providers.
@@ -358,11 +361,9 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
 
 fn generate_singleton_provider(
     struct_name: &Ident,
-    enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-    let enhancer_methods = generate_enhancer_methods(enhancer_traits);
     let lifecycle_methods = generate_lifecycle_direct_methods(lifecycle_hooks);
 
     quote! {
@@ -392,7 +393,6 @@ fn generate_singleton_provider(
                 ::toni::ProviderScope::Singleton
             }
 
-            #enhancer_methods
             #lifecycle_methods
         }
     }
@@ -401,11 +401,10 @@ fn generate_singleton_provider(
 fn generate_request_provider(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
-    enhancer_traits: &EnhancerTraits,
+    _enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-    let enhancer_methods = generate_enhancer_methods(enhancer_traits);
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
@@ -521,8 +520,6 @@ fn generate_request_provider(
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Request
             }
-
-            #enhancer_methods
         }
     }
 }
@@ -530,11 +527,10 @@ fn generate_request_provider(
 fn generate_transient_provider(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
-    enhancer_traits: &EnhancerTraits,
+    _enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-    let enhancer_methods = generate_enhancer_methods(enhancer_traits);
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
@@ -610,8 +606,6 @@ fn generate_transient_provider(
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Transient
             }
-
-            #enhancer_methods
         }
     }
 }
@@ -950,15 +944,22 @@ fn generate_factory(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
     scope: ProviderScope,
+    enhancer_traits: &EnhancerTraits,
 ) -> TokenStream {
     match scope {
-        ProviderScope::Singleton => generate_singleton_factory(struct_name, dependencies),
+        ProviderScope::Singleton => {
+            generate_singleton_factory(struct_name, dependencies, enhancer_traits)
+        }
         ProviderScope::Request => generate_request_factory(struct_name, dependencies),
         ProviderScope::Transient => generate_transient_factory(struct_name, dependencies),
     }
 }
 
-fn generate_singleton_factory(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+fn generate_singleton_factory(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    enhancer_traits: &EnhancerTraits,
+) -> TokenStream {
     let factory_name = Ident::new(
         &format!("{}ProviderFactory", struct_name),
         struct_name.span(),
@@ -1083,6 +1084,8 @@ fn generate_singleton_factory(struct_name: &Ident, dependencies: &DependencyInfo
         quote! {}
     };
 
+    let role_pushes = generate_role_pushes(enhancer_traits);
+
     quote! {
         pub struct #factory_name;
 
@@ -1102,18 +1105,26 @@ fn generate_singleton_factory(struct_name: &Ident, dependencies: &DependencyInfo
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
                 >,
-            ) -> ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> {
+            ) -> (
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
+                ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
+            ) {
                 #scope_validation
 
                 // Resolve all dependencies at startup
                 #(#field_resolutions)*
 
-                // Create the instance ONCE at startup
+                // Create the instance ONCE at startup; roles are extracted here while
+                // the concrete type is still in scope — no downcast needed.
                 let instance = ::std::sync::Arc::new({
                     #struct_instantiation
                 });
 
-                ::std::sync::Arc::new(Box::new(#provider_name { instance }) as Box<dyn ::toni::traits_helpers::Provider>)
+                let mut __roles = ::std::vec::Vec::new();
+                #role_pushes
+
+                let provider = ::std::sync::Arc::new(Box::new(#provider_name { instance }) as Box<dyn ::toni::traits_helpers::Provider>);
+                (provider, __roles)
             }
         }
     }
@@ -1158,10 +1169,16 @@ fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) 
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
                 >,
-            ) -> ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> {
-                ::std::sync::Arc::new(Box::new(#provider_name {
-                    dependencies,
-                }) as Box<dyn ::toni::traits_helpers::Provider>)
+            ) -> (
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
+                ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
+            ) {
+                (
+                    ::std::sync::Arc::new(Box::new(#provider_name {
+                        dependencies,
+                    }) as Box<dyn ::toni::traits_helpers::Provider>),
+                    ::std::vec::Vec::new(),
+                )
             }
         }
     }
@@ -1206,10 +1223,16 @@ fn generate_transient_factory(struct_name: &Ident, dependencies: &DependencyInfo
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
                 >,
-            ) -> ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> {
-                ::std::sync::Arc::new(Box::new(#provider_name {
-                    dependencies,
-                }) as Box<dyn ::toni::traits_helpers::Provider>)
+            ) -> (
+                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
+                ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
+            ) {
+                (
+                    ::std::sync::Arc::new(Box::new(#provider_name {
+                        dependencies,
+                    }) as Box<dyn ::toni::traits_helpers::Provider>),
+                    ::std::vec::Vec::new(),
+                )
             }
         }
     }

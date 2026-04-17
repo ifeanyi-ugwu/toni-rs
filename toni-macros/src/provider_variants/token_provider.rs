@@ -84,10 +84,14 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
                         String,
                         std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                     >,
-                ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
-                    let inner_provider = #type_path::__toni_provider_factory().build(deps).await;
+                ) -> (
+                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                ) {
+                    // Build inner and receive its roles — no downcast needed.
+                    let (inner_provider, roles) = #type_path::__toni_provider_factory().build(deps).await;
 
-                    // Wrap it under the custom token
+                    // Wrap under the custom token; forward roles unchanged.
                     #[derive(Clone)]
                     struct CustomTokenProvider {
                         custom_token: String,
@@ -115,28 +119,14 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
                         ) -> Box<dyn std::any::Any + Send> {
                             self.inner_provider.execute(params, ctx).await
                         }
-
-                        fn as_guard(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Guard>> {
-                            self.inner_provider.as_guard()
-                        }
-
-                        fn as_interceptor(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Interceptor>> {
-                            self.inner_provider.as_interceptor()
-                        }
-
-                        fn as_pipe(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Pipe>> {
-                            self.inner_provider.as_pipe()
-                        }
-
-                        fn as_middleware(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::middleware::Middleware>> {
-                            self.inner_provider.as_middleware()
-                        }
                     }
 
-                    std::sync::Arc::new(Box::new(CustomTokenProvider {
+                    let provider = std::sync::Arc::new(Box::new(CustomTokenProvider {
                         custom_token: #token_expr,
                         inner_provider,
-                    }) as Box<dyn toni::traits_helpers::Provider>)
+                    }) as Box<dyn toni::traits_helpers::Provider>);
+
+                    (provider, roles)
                 }
             }
 

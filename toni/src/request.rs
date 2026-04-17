@@ -145,9 +145,9 @@ impl ProviderFactory for RequestFactory {
     async fn build(
         &self,
         _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<Box<dyn Provider>> {
+    ) -> (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>) {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         let provider = Request::from_request_parts(&parts).expect("infallible");
-        Arc::new(Box::new(provider) as Box<dyn Provider>)
+        (Arc::new(Box::new(provider) as Box<dyn Provider>), vec![])
     }
 }

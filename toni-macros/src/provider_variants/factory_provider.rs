@@ -20,6 +20,7 @@ pub struct ProviderFactoryInput {
     pub scope: Option<String>,
     pub enhancers: Vec<EnhancerType>,
     pub lifecycle: bool,
+    pub type_hint: Option<syn::Path>,
 }
 
 impl Parse for ProviderFactoryInput {
@@ -31,6 +32,7 @@ impl Parse for ProviderFactoryInput {
         let mut scope = None;
         let mut enhancers = Vec::new();
         let mut lifecycle = false;
+        let mut type_hint = None;
 
         while input.peek(Token![,]) {
             let _: Token![,] = input.parse()?;
@@ -54,7 +56,6 @@ impl Parse for ProviderFactoryInput {
                         scope = Some(scope_lit.value());
                     }
                     _ => {
-                        // Type hint — parsed and discarded; no longer needed for type inference
                         let mut path_segments: syn::punctuated::Punctuated<
                             syn::PathSegment,
                             syn::token::PathSep,
@@ -65,9 +66,14 @@ impl Parse for ProviderFactoryInput {
                             let segment: Ident = input.parse()?;
                             path_segments.push(syn::PathSegment::from(segment));
                         }
-                        // Consume generic args if present (e.g. MyType<Foo>)
                         if input.peek(Token![<]) {
                             let _: syn::AngleBracketedGenericArguments = input.parse()?;
+                        }
+                        if type_hint.is_none() {
+                            type_hint = Some(syn::Path {
+                                leading_colon: None,
+                                segments: path_segments,
+                            });
                         }
                     }
                 }
@@ -82,6 +88,7 @@ impl Parse for ProviderFactoryInput {
             scope,
             enhancers,
             lifecycle,
+            type_hint,
         })
     }
 }
@@ -106,6 +113,146 @@ fn is_async_expr(expr: &Expr) -> bool {
     }
 }
 
+fn generate_factory_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
+    let mut pushes = Vec::new();
+    for enhancer in enhancers {
+        match enhancer {
+            EnhancerType::Guard => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Guard(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
+                ));
+            }),
+            EnhancerType::Interceptor => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Interceptor(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
+                ));
+            }),
+            EnhancerType::Pipe => pushes.push(quote! {
+                __roles.push(toni::traits_helpers::ProviderRole::Pipe(
+                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
+                ));
+            }),
+        }
+    }
+    quote! { #(#pushes)* }
+}
+
+/// Generates the caching provider struct definition and the build() body.
+/// Roles are built inside build() before boxing, so no downcast is ever needed.
+fn generate_caching_provider(
+    provider_name: &Ident,
+    token_expr: &TokenStream,
+    scope_expr: &TokenStream,
+    factory_expr: &Expr,
+    dep_resolutions: &[TokenStream],
+    param_names: &[&syn::Ident],
+    lifecycle: bool,
+    enhancers: &[EnhancerType],
+) -> (TokenStream, TokenStream) {
+    let is_async = is_async_expr(factory_expr);
+    let has_deps = !dep_resolutions.is_empty();
+
+    let type_bounds = if lifecycle {
+        quote! { toni::traits_helpers::Provider + 'static }
+    } else {
+        quote! { Clone + Send + Sync + 'static }
+    };
+
+    let factory_call = if is_async {
+        quote! { factory(#(#param_names),*).await }
+    } else {
+        quote! { factory(#(#param_names),*) }
+    };
+
+    let struct_init_code = if is_async || has_deps {
+        quote! {
+            let factory = #factory_expr;
+            let instance_raw = async {
+                #(#dep_resolutions)*
+                #factory_call
+            }.await;
+            let instance = std::sync::Arc::new(instance_raw);
+        }
+    } else {
+        quote! {
+            let factory = #factory_expr;
+            let instance = std::sync::Arc::new(factory());
+        }
+    };
+
+    let execute_body = if lifecycle {
+        quote! { self.instance.execute(_params, _ctx).await }
+    } else {
+        quote! { Box::new((*self.instance).clone()) }
+    };
+
+    let extra_methods = if lifecycle {
+        quote! {
+            async fn on_module_init(&self) {
+                self.instance.on_module_init().await;
+            }
+            async fn on_application_bootstrap(&self) {
+                self.instance.on_application_bootstrap().await;
+            }
+            async fn on_module_destroy(&self) {
+                self.instance.on_module_destroy().await;
+            }
+            async fn before_application_shutdown(&self, signal: Option<String>) {
+                self.instance.before_application_shutdown(signal).await;
+            }
+            async fn on_application_shutdown(&self, signal: Option<String>) {
+                self.instance.on_application_shutdown(signal).await;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let struct_def = quote! {
+        struct #provider_name<__T> {
+            deps: std::sync::Arc<toni::FxHashMap<
+                String,
+                std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+            >>,
+            instance: std::sync::Arc<__T>,
+        }
+
+        #[toni::async_trait]
+        impl<__T: #type_bounds> toni::traits_helpers::Provider for #provider_name<__T> {
+            fn get_token(&self) -> String { #token_expr }
+            fn get_token_factory(&self) -> String { #token_expr }
+            fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
+
+            async fn execute(
+                &self,
+                _params: Vec<Box<dyn std::any::Any + Send>>,
+                _ctx: toni::ProviderContext<'_>,
+            ) -> Box<dyn std::any::Any + Send> {
+                #execute_body
+            }
+
+            #extra_methods
+        }
+    };
+
+    let role_pushes = generate_factory_role_pushes(enhancers);
+
+    let build_body = quote! {
+        #struct_init_code
+
+        let mut __roles = std::vec::Vec::new();
+        #role_pushes
+
+        let __provider = std::sync::Arc::new(Box::new(#provider_name {
+            deps: std::sync::Arc::new(_dependencies),
+            instance,
+        }) as Box<dyn toni::traits_helpers::Provider>);
+        (__provider, __roles)
+    };
+
+    (struct_def, build_body)
+}
+
 pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     let ProviderFactoryInput {
         token,
@@ -113,6 +260,7 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
         scope,
         enhancers,
         lifecycle,
+        type_hint,
     } = syn::parse2(input)?;
 
     let scope_expr = match scope.as_deref() {
@@ -142,6 +290,26 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
             proc_macro2::Span::call_site(),
             "lifecycle is only compatible with singleton scope",
         ));
+    }
+
+    // For Type tokens the type is already known; for String/Const the caller must pass it.
+    let effective_type_hint = type_hint.or_else(|| {
+        if let TokenType::Type(path) = &token {
+            Some(path.clone())
+        } else {
+            None
+        }
+    });
+
+    if !enhancers.is_empty() {
+        if let TokenType::String(_) | TokenType::Const(_) = &token {
+            if effective_type_hint.is_none() {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "Enhancer support (guard/interceptor/pipe) for String or Const tokens requires a type hint. Use: provider_factory!(\"TOKEN\", factory, Type, guard)",
+                ));
+            }
+        }
     }
 
     let token_expr = token.to_token_expr();
@@ -193,11 +361,12 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     let token_display = token.display_name();
     let sanitized_name = token_display.replace(['\"', ' ', '-', '.', ':', '/'], "_");
     let factory_name = format_ident!("__ToniFactoryProviderFactory_{}", sanitized_name);
+    let provider_name = format_ident!("__ToniFactoryProvider_{}", sanitized_name);
 
     let needs_caching = !matches!(scope.as_deref(), Some("request") | Some("transient"));
 
-    let build_body = if !needs_caching {
-        quote! {
+    let (provider_struct_def, build_body) = if !needs_caching {
+        let non_caching_body = quote! {
             struct FactoryProviderWithDeps {
                 deps: std::sync::Arc<toni::FxHashMap<
                     String,
@@ -222,56 +391,31 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                 }
             }
 
-            std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
-                deps: std::sync::Arc::new(_dependencies),
-            }) as Box<dyn toni::traits_helpers::Provider>)
-        }
+            (
+                std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
+                    deps: std::sync::Arc::new(_dependencies),
+                }) as Box<dyn toni::traits_helpers::Provider>),
+                std::vec::Vec::new(),
+            )
+        };
+        (quote! {}, non_caching_body)
     } else {
-        let (type_bounds, struct_init, extra_methods, execute_body) = generate_caching_support(
-            &enhancers,
+        generate_caching_provider(
+            &provider_name,
+            &token_expr,
+            &scope_expr,
             &factory_expr,
             &dep_resolutions,
             &param_names,
             lifecycle,
-        )?;
-
-        quote! {
-            struct FactoryProviderWithDeps<__T> {
-                deps: std::sync::Arc<toni::FxHashMap<
-                    String,
-                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                >>,
-                instance: std::sync::Arc<__T>,
-            }
-
-            #[toni::async_trait]
-            impl<__T: #type_bounds> toni::traits_helpers::Provider for FactoryProviderWithDeps<__T> {
-                fn get_token(&self) -> String { #token_expr }
-                fn get_token_factory(&self) -> String { #token_expr }
-                fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
-
-                async fn execute(
-                    &self,
-                    _params: Vec<Box<dyn std::any::Any + Send>>,
-                    _ctx: toni::ProviderContext<'_>,
-                ) -> Box<dyn std::any::Any + Send> {
-                    #execute_body
-                }
-
-                #extra_methods
-            }
-
-            #struct_init
-
-            std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
-                deps: std::sync::Arc::new(_dependencies),
-                instance,
-            }) as Box<dyn toni::traits_helpers::Provider>)
-        }
+            &enhancers,
+        )
     };
 
     let expanded = quote! {
         {
+            #provider_struct_def
+
             struct #factory_name;
 
             #[toni::async_trait]
@@ -290,7 +434,10 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                         String,
                         std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                     >,
-                ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
+                ) -> (
+                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                ) {
                     #build_body
                 }
             }
@@ -300,106 +447,4 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     };
 
     Ok(expanded)
-}
-
-fn generate_caching_support(
-    enhancers: &[EnhancerType],
-    factory_expr: &Expr,
-    dep_resolutions: &[TokenStream],
-    param_names: &[&syn::Ident],
-    lifecycle: bool,
-) -> Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
-    let is_async = is_async_expr(factory_expr);
-    let has_deps = !dep_resolutions.is_empty();
-
-    let type_bounds = if lifecycle {
-        quote! { toni::traits_helpers::Provider + 'static }
-    } else {
-        let mut enhancer_bounds: Vec<TokenStream> = Vec::new();
-        for enhancer in enhancers {
-            let bound = match enhancer {
-                EnhancerType::Guard => quote! { toni::traits_helpers::Guard },
-                EnhancerType::Interceptor => quote! { toni::traits_helpers::Interceptor },
-                EnhancerType::Pipe => quote! { toni::traits_helpers::Pipe },
-            };
-            enhancer_bounds.push(bound);
-        }
-        if enhancer_bounds.is_empty() {
-            quote! { Clone + Send + Sync + 'static }
-        } else {
-            quote! { Clone + Send + Sync + 'static + #(#enhancer_bounds)+* }
-        }
-    };
-
-    let factory_call = if is_async {
-        quote! { factory(#(#param_names),*).await }
-    } else {
-        quote! { factory(#(#param_names),*) }
-    };
-
-    let struct_init = if is_async || has_deps {
-        quote! {
-            let factory = #factory_expr;
-            let instance_raw = async {
-                #(#dep_resolutions)*
-                #factory_call
-            }.await;
-            let instance = std::sync::Arc::new(instance_raw);
-        }
-    } else {
-        quote! {
-            let factory = #factory_expr;
-            let instance = std::sync::Arc::new(factory());
-        }
-    };
-
-    let execute_body = if lifecycle {
-        quote! { self.instance.execute(_params, _ctx).await }
-    } else {
-        quote! { Box::new((*self.instance).clone()) }
-    };
-
-    let extra_methods = if lifecycle {
-        quote! {
-            async fn on_module_init(&self) {
-                self.instance.on_module_init().await;
-            }
-            async fn on_application_bootstrap(&self) {
-                self.instance.on_application_bootstrap().await;
-            }
-            async fn on_module_destroy(&self) {
-                self.instance.on_module_destroy().await;
-            }
-            async fn before_application_shutdown(&self, signal: Option<String>) {
-                self.instance.before_application_shutdown(signal).await;
-            }
-            async fn on_application_shutdown(&self, signal: Option<String>) {
-                self.instance.on_application_shutdown(signal).await;
-            }
-        }
-    } else {
-        let mut methods = Vec::new();
-        for enhancer in enhancers {
-            match enhancer {
-                EnhancerType::Guard => methods.push(quote! {
-                    fn as_guard(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Guard>> {
-                        Some(self.instance.clone())
-                    }
-                }),
-                EnhancerType::Interceptor => methods.push(quote! {
-                    fn as_interceptor(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Interceptor>> {
-                        Some(self.instance.clone())
-                    }
-                }),
-                EnhancerType::Pipe => methods.push(quote! {
-                    fn as_pipe(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Pipe>> {
-                        Some(self.instance.clone())
-                    }
-                }),
-            }
-        }
-        quote! { #(#methods)* }
-    };
-
-    Ok((type_bounds, struct_init, extra_methods, execute_body))
 }

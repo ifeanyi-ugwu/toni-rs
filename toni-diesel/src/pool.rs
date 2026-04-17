@@ -6,7 +6,7 @@ use async_trait::async_trait;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use toni::{
     FxHashMap,
-    traits_helpers::{Provider, ProviderContext, ProviderFactory},
+    traits_helpers::{Provider, ProviderContext, ProviderFactory, ProviderRole},
 };
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -25,13 +25,13 @@ macro_rules! impl_diesel_pool {
             async fn build(
                 &self,
                 _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-            ) -> Arc<Box<dyn Provider>> {
+            ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
                 let pool = <$pool>::builder(manager).build().unwrap_or_else(|e| {
                     panic!("toni-diesel: failed to build pool for '{}': {e}", self.url)
                 });
-                Arc::new(Box::new($provider { pool }))
+                (Arc::new(Box::new($provider { pool })), vec![])
             }
         }
 

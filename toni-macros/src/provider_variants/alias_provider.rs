@@ -83,23 +83,6 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                 ) -> Box<dyn std::any::Any + Send> {
                     self.target_provider.execute(params, ctx).await
                 }
-
-                // Delegate enhancer methods to target provider
-                fn as_guard(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Guard>> {
-                    self.target_provider.as_guard()
-                }
-
-                fn as_interceptor(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Interceptor>> {
-                    self.target_provider.as_interceptor()
-                }
-
-                fn as_pipe(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::Pipe>> {
-                    self.target_provider.as_pipe()
-                }
-
-                fn as_middleware(&self) -> Option<std::sync::Arc<dyn toni::traits_helpers::middleware::Middleware>> {
-                    self.target_provider.as_middleware()
-                }
             }
 
             #[toni::async_trait]
@@ -118,7 +101,10 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                         String,
                         std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                     >,
-                ) -> std::sync::Arc<Box<dyn toni::traits_helpers::Provider>> {
+                ) -> (
+                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
+                ) {
                     let existing_token = #existing_token_expr;
                     let target_provider = deps
                         .get(&existing_token)
@@ -128,8 +114,13 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                         ))
                         .clone();
 
-                    std::sync::Arc::new(
-                        Box::new(#provider_name { target_provider }) as Box<dyn toni::traits_helpers::Provider>
+                    // Roles were already registered under the target's own token when it was built.
+                    // The alias is just a name redirect; it contributes no new roles.
+                    (
+                        std::sync::Arc::new(
+                            Box::new(#provider_name { target_provider }) as Box<dyn toni::traits_helpers::Provider>
+                        ),
+                        std::vec::Vec::new(),
                     )
                 }
             }
