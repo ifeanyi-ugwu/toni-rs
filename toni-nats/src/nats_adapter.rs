@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 use crate::IntoNatsServers;
@@ -134,36 +134,58 @@ impl RpcAdapter for NatsAdapter {
                             };
 
                             let ctx = RpcContext::new(subject);
-                            let outcome = callbacks.message(data, ctx).await;
+                            let outcome =
+                                std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
+                                    .catch_unwind()
+                                    .await;
 
                             let Some(inbox) = reply_to else {
-                                // No reply-to inbox — caller never expects a response.
+                                if outcome.is_err() {
+                                    tracing::error!(
+                                        "RPC handler panicked on fire-and-forget message"
+                                    );
+                                }
                                 return;
                             };
 
                             let response_bytes = match outcome {
-                                Ok(Some(reply_data)) => match reply_data {
-                                    RpcData::Binary(b) => Bytes::from(b),
-                                    RpcData::Json(v) => Bytes::from(
-                                        serde_json::json!({ "response": v }).to_string(),
-                                    ),
-                                    RpcData::Text(s) => Bytes::from(
-                                        serde_json::json!({ "response": s }).to_string(),
-                                    ),
-                                },
-                                Ok(None) => {
-                                    // #[event_pattern] handler but caller set a reply-to — send ack.
-                                    Bytes::from(serde_json::json!({ "response": null }).to_string())
-                                }
-                                Err(e) => {
-                                    let status = error_status(&e);
+                                Err(_) => {
+                                    tracing::error!(
+                                        "RPC handler panicked; returning error to caller"
+                                    );
                                     Bytes::from(
                                         serde_json::json!({
-                                            "err": { "message": e.to_string(), "status": status }
+                                            "err": { "message": "internal server error", "status": "error" }
                                         })
                                         .to_string(),
                                     )
                                 }
+                                Ok(outcome) => match outcome {
+                                    Ok(Some(reply_data)) => match reply_data {
+                                        RpcData::Binary(b) => Bytes::from(b),
+                                        RpcData::Json(v) => Bytes::from(
+                                            serde_json::json!({ "response": v }).to_string(),
+                                        ),
+                                        RpcData::Text(s) => Bytes::from(
+                                            serde_json::json!({ "response": s }).to_string(),
+                                        ),
+                                    },
+                                    Ok(None) => {
+                                        // #[event_pattern] handler but caller set a reply-to — send ack.
+                                        Bytes::from(
+                                            serde_json::json!({ "response": null }).to_string(),
+                                        )
+                                    }
+                                    Err(e) => {
+                                        let status = error_status(&e);
+                                        Bytes::from(
+                                            serde_json::json!({
+                                                "err": { "message": e.to_string(), "status": status }
+                                            })
+                                            .to_string(),
+                                        )
+                                    }
+                                },
                             };
 
                             if let Err(e) = client.publish(inbox, response_bytes).await {
