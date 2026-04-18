@@ -6,7 +6,10 @@ use async_trait::async_trait;
 
 use crate::http_helpers::RouteMetadata;
 use crate::injector::Context;
-use crate::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
+use crate::traits_helpers::{
+    ErrorHandler, Guard, GuardEntry, Interceptor, InterceptorEntry, InterceptorNext, Pipe,
+    PipeEntry,
+};
 
 use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsMessage};
 
@@ -37,9 +40,9 @@ impl InterceptorNext for WsChainNext {
 /// guard/interceptor/pipe pipeline and tracks its own connected clients.
 pub struct GatewayWrapper {
     gateway: Arc<Box<dyn GatewayTrait>>,
-    guards: Vec<Arc<dyn Guard>>,
-    interceptors: Vec<Arc<dyn Interceptor>>,
-    pipes: Vec<Arc<dyn Pipe>>,
+    guards: Vec<GuardEntry>,
+    interceptors: Vec<InterceptorEntry>,
+    pipes: Vec<PipeEntry>,
     error_handlers: Vec<Arc<dyn ErrorHandler>>,
     route_metadata: Arc<RouteMetadata>,
     /// Active client connections (client_id => WsClient)
@@ -49,9 +52,9 @@ pub struct GatewayWrapper {
 impl GatewayWrapper {
     pub fn new(
         gateway: Arc<Box<dyn GatewayTrait>>,
-        guards: Vec<Arc<dyn Guard>>,
-        interceptors: Vec<Arc<dyn Interceptor>>,
-        pipes: Vec<Arc<dyn Pipe>>,
+        guards: Vec<GuardEntry>,
+        interceptors: Vec<InterceptorEntry>,
+        pipes: Vec<PipeEntry>,
         error_handlers: Vec<Arc<dyn ErrorHandler>>,
         route_metadata: Arc<RouteMetadata>,
     ) -> Self {
@@ -79,7 +82,8 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        for (i, guard) in self.guards.iter().enumerate() {
+        let guards = Self::resolve_guards(&self.guards).await;
+        for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context) {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
                 return Err(WsError::AuthFailed("Guard rejected connection".into()));
@@ -152,7 +156,8 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        for guard in &self.guards {
+        let guards = Self::resolve_guards(&self.guards).await;
+        for guard in &guards {
             if !guard.can_activate(&context) {
                 return Err(WsError::AuthFailed("Guard rejected message".into()));
             }
@@ -165,17 +170,58 @@ impl GatewayWrapper {
         self.execute_with_interceptors(&mut context, event).await
     }
 
+    /// Resolve entry vecs to concrete trait objects. WS has no HTTP request parts,
+    /// so factory entries are called with `None`. Factory guards with
+    /// `requires_http_parts() == true` should have been rejected at startup.
+    async fn resolve_guards(entries: &[GuardEntry]) -> Vec<Arc<dyn Guard>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let g = match entry {
+                GuardEntry::Ready(g) => g.clone(),
+                GuardEntry::Factory(f) => f.create(None).await,
+            };
+            out.push(g);
+        }
+        out
+    }
+
+    async fn resolve_interceptors(entries: &[InterceptorEntry]) -> Vec<Arc<dyn Interceptor>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let i = match entry {
+                InterceptorEntry::Ready(i) => i.clone(),
+                InterceptorEntry::Factory(f) => f.create(None).await,
+            };
+            out.push(i);
+        }
+        out
+    }
+
+    async fn resolve_pipes(entries: &[PipeEntry]) -> Vec<Arc<dyn Pipe>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let p = match entry {
+                PipeEntry::Ready(p) => p.clone(),
+                PipeEntry::Factory(f) => f.create(None).await,
+            };
+            out.push(p);
+        }
+        out
+    }
+
     async fn execute_with_interceptors(
         &self,
         context: &mut Context,
         event: String,
     ) -> Result<Option<WsMessage>, WsError> {
+        let interceptors = Self::resolve_interceptors(&self.interceptors).await;
+        let pipes = Self::resolve_pipes(&self.pipes).await;
         Self::execute_with_interceptors_impl(
             context,
-            &self.interceptors,
+            &interceptors,
             &self.gateway,
             &event,
-            &self.pipes,
+            &pipes,
             &self.error_handlers,
         )
         .await;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use crate::rpc::{RpcControllerTrait, RpcControllerWrapper};
-use crate::traits_helpers::{ErrorHandler, Guard, Interceptor, Pipe};
+use crate::traits_helpers::{ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry};
 
 use super::ToniContainer;
 
@@ -48,51 +48,71 @@ impl RpcControllerResolver {
         ))
     }
 
-    fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn Guard>>> {
-        let mut guards = Vec::new();
-        let global_guards = self.container.borrow().get_global_enhancers().guards;
-        guards.extend(global_guards);
+    fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
+        let mut guards = self.container.borrow().get_global_enhancers().guards;
         for token in tokens {
-            guards.push(self.resolve_guard_by_token(&token)?);
+            let entry = self.resolve_guard_by_token(&token)?;
+            // Factory guards with request-scoped deps cannot be used on RPC controllers
+            // because RPC has no HTTP request context. Fail at startup, not at invocation.
+            if let GuardEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Guard '{}' has request-scoped dependencies and cannot be used on an \
+                         RPC controller — RPC has no HTTP request context",
+                        token
+                    );
+                }
+            }
+            guards.push(entry);
         }
         Ok(guards)
     }
 
-    fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn Interceptor>>> {
-        let mut interceptors = Vec::new();
-        let global_interceptors = self.container.borrow().get_global_enhancers().interceptors;
-        interceptors.extend(global_interceptors);
+    fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<InterceptorEntry>> {
+        let mut interceptors = self.container.borrow().get_global_enhancers().interceptors;
         for token in tokens {
-            interceptors.push(self.resolve_interceptor_by_token(&token)?);
+            let entry = self.resolve_interceptor_by_token(&token)?;
+            if let InterceptorEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Interceptor '{}' has request-scoped dependencies and cannot be used on \
+                         an RPC controller — RPC has no HTTP request context",
+                        token
+                    );
+                }
+            }
+            interceptors.push(entry);
         }
         Ok(interceptors)
     }
 
-    fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn Pipe>>> {
-        let mut pipes = Vec::new();
-        let global_pipes = self.container.borrow().get_global_enhancers().pipes;
-        pipes.extend(global_pipes);
+    fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
+        let mut pipes = self.container.borrow().get_global_enhancers().pipes;
         for token in tokens {
-            pipes.push(self.resolve_pipe_by_token(&token)?);
+            let entry = self.resolve_pipe_by_token(&token)?;
+            if let PipeEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Pipe '{}' has request-scoped dependencies and cannot be used on an \
+                         RPC controller — RPC has no HTTP request context",
+                        token
+                    );
+                }
+            }
+            pipes.push(entry);
         }
         Ok(pipes)
     }
 
     fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn ErrorHandler>>> {
-        let mut error_handlers = Vec::new();
-        let global_error_handlers = self
-            .container
-            .borrow()
-            .get_global_enhancers()
-            .error_handlers;
-        error_handlers.extend(global_error_handlers);
+        let mut error_handlers = self.container.borrow().get_global_enhancers().error_handlers;
         for token in tokens {
             error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }
         Ok(error_handlers)
     }
 
-    fn resolve_guard_by_token(&self, token: &str) -> Result<Arc<dyn Guard>> {
+    fn resolve_guard_by_token(&self, token: &str) -> Result<GuardEntry> {
         self.container
             .borrow()
             .get_role_registry()
@@ -102,7 +122,7 @@ impl RpcControllerResolver {
             .ok_or_else(|| anyhow!("Guard '{}' not found in role registry", token))
     }
 
-    fn resolve_interceptor_by_token(&self, token: &str) -> Result<Arc<dyn Interceptor>> {
+    fn resolve_interceptor_by_token(&self, token: &str) -> Result<InterceptorEntry> {
         self.container
             .borrow()
             .get_role_registry()
@@ -112,7 +132,7 @@ impl RpcControllerResolver {
             .ok_or_else(|| anyhow!("Interceptor '{}' not found in role registry", token))
     }
 
-    fn resolve_pipe_by_token(&self, token: &str) -> Result<Arc<dyn Pipe>> {
+    fn resolve_pipe_by_token(&self, token: &str) -> Result<PipeEntry> {
         self.container
             .borrow()
             .get_role_registry()
