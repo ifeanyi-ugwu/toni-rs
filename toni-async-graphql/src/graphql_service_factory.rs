@@ -51,7 +51,7 @@ where
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
     ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
         (
             Arc::new(Box::new(GraphQLService::new(

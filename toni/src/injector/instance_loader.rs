@@ -333,8 +333,12 @@ impl ToniInstanceLoader {
 
             for controller_factory in controllers_factory.values() {
                 let dependencies = controller_factory.get_dependencies();
-                let resolved_dependencies =
+                let resolved_with_roles =
                     self.resolve_dependencies(&module_token, dependencies, None)?;
+                let resolved_dependencies = resolved_with_roles
+                    .into_iter()
+                    .map(|(k, (p, _))| (k, p))
+                    .collect();
                 let mut built = controller_factory.build(resolved_dependencies).await;
                 instances.append(&mut built);
             }
@@ -458,35 +462,38 @@ impl ToniInstanceLoader {
         module_token: &String,
         dependencies: Vec<String>,
         providers_instances: Option<&FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>>,
-    ) -> Result<FxHashMap<String, Arc<Box<dyn Provider>>>> {
+    ) -> Result<FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>> {
         let container = self.container.borrow();
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
             // Step 1: Check local providers (in-progress build map)
-            if let Some((instance, _)) = providers_instances.and_then(|m| m.get(&dependency)) {
-                resolved_dependencies.insert(dependency, instance.clone());
+            if let Some((instance, roles)) = providers_instances.and_then(|m| m.get(&dependency)) {
+                resolved_dependencies.insert(dependency, (instance.clone(), roles.clone()));
             }
             // Step 1b: Check pre-registered container instances not yet in the build map
             // (e.g. ModuleRefProvider registered before Phase 1)
             else if let Ok(Some(instance)) =
                 container.get_provider_instance_by_token(module_token, &dependency)
             {
-                resolved_dependencies.insert(dependency, instance.clone());
+                let roles = container.get_provider_roles(&dependency);
+                resolved_dependencies.insert(dependency, (instance.clone(), roles));
             }
             // Step 2: Check imported modules
             else if let Some(exported_instance) =
                 self.resolve_from_imported_modules(module_token, &dependency)?
             {
                 tracing::debug!(module = %module_token, dependency = %dependency, source = "imported_module", "dependency resolved");
-                resolved_dependencies.insert(dependency, exported_instance.clone());
+                let roles = container.get_provider_roles(&dependency);
+                resolved_dependencies.insert(dependency, (exported_instance.clone(), roles));
             }
             // Step 3: Check if it's a registered global provider token
             else if container.is_global_provider_token(&dependency) {
                 // Token is registered as global, try to get the instance
                 if let Some(global_instance) = container.get_global_provider(&dependency) {
                     tracing::debug!(module = %module_token, dependency = %dependency, source = "global", "dependency resolved");
-                    resolved_dependencies.insert(dependency, global_instance.clone());
+                    let roles = container.get_provider_roles(&dependency);
+                    resolved_dependencies.insert(dependency, (global_instance.clone(), roles));
                 } else {
                     // Token registered but instance not created yet - DEFER
                     return Err(anyhow!(
@@ -500,7 +507,7 @@ impl ToniInstanceLoader {
             else if let Some(multi_instance) =
                 container.get_multi_collection_provider(&dependency)
             {
-                resolved_dependencies.insert(dependency, multi_instance);
+                resolved_dependencies.insert(dependency, (multi_instance, vec![]));
             }
             // Step 3.6: Assemble multi-collection on-demand when contributor and consumer
             // share the same module — contributors are in the in-progress instances map
@@ -530,7 +537,7 @@ impl ToniInstanceLoader {
                         token: dependency.clone(),
                         items,
                     }));
-                resolved_dependencies.insert(dependency, collection);
+                resolved_dependencies.insert(dependency, (collection, vec![]));
             }
             // Step 4: Not found anywhere
             else {

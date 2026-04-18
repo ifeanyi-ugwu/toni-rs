@@ -69,11 +69,12 @@ pub trait ProviderFactory {
 
     /// Build the provider instance and return any roles it contributes.
     ///
-    /// Roles are extracted here — before the concrete type is erased — so no
-    /// downcast is ever needed. Wrapper factories (`provider_token!`,
-    /// `provider_alias!`) forward the inner factory's roles unchanged.
+    /// `deps` carries both the provider instance and its roles for each
+    /// resolved dependency, so wrapper factories (e.g. `provider_alias!`) can
+    /// forward a dependency's roles without a downcast. Factories that don't
+    /// need dep roles strip to `Arc<Box<dyn Provider>>` at the top of `build`.
     async fn build(
         &self,
-        deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<ProviderRole>)>,
     ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>);
 }

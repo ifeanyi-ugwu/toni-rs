@@ -24,7 +24,7 @@ macro_rules! impl_diesel_pool {
 
             async fn build(
                 &self,
-                _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+                _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<ProviderRole>)>,
             ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);

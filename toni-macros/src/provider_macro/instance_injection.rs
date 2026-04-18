@@ -1101,21 +1101,22 @@ fn generate_singleton_factory(
 
             async fn build(
                 &self,
-                dependencies: ::toni::FxHashMap<
+                __deps: ::toni::FxHashMap<
                     String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
+                    (::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>)
                 >,
             ) -> (
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
                 ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
             ) {
+                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                    __deps.into_iter().map(|(k, (p, _))| (k, p)).collect();
+
                 #scope_validation
 
                 // Resolve all dependencies at startup
                 #(#field_resolutions)*
 
-                // Create the instance ONCE at startup; roles are extracted here while
-                // the concrete type is still in scope — no downcast needed.
                 let instance = ::std::sync::Arc::new({
                     #struct_instantiation
                 });
@@ -1165,14 +1166,16 @@ fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) 
 
             async fn build(
                 &self,
-                dependencies: ::toni::FxHashMap<
+                __deps: ::toni::FxHashMap<
                     String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
+                    (::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>)
                 >,
             ) -> (
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
                 ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
             ) {
+                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                    __deps.into_iter().map(|(k, (p, _))| (k, p)).collect();
                 (
                     ::std::sync::Arc::new(Box::new(#provider_name {
                         dependencies,
@@ -1219,14 +1222,16 @@ fn generate_transient_factory(struct_name: &Ident, dependencies: &DependencyInfo
 
             async fn build(
                 &self,
-                dependencies: ::toni::FxHashMap<
+                __deps: ::toni::FxHashMap<
                     String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
+                    (::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>)
                 >,
             ) -> (
                 ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
                 ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
             ) {
+                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                    __deps.into_iter().map(|(k, (p, _))| (k, p)).collect();
                 (
                     ::std::sync::Arc::new(Box::new(#provider_name {
                         dependencies,

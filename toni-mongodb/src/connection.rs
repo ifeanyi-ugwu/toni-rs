@@ -20,7 +20,7 @@ impl ProviderFactory for MongoConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
     ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
         let options = ClientOptions::parse(&self.uri)
             .await

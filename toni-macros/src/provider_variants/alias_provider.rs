@@ -99,28 +99,26 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                     &self,
                     deps: toni::FxHashMap<
                         String,
-                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                        (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                     std::vec::Vec<toni::traits_helpers::ProviderRole>,
                 ) {
                     let existing_token = #existing_token_expr;
-                    let target_provider = deps
+                    let (target_provider, roles) = deps
                         .get(&existing_token)
-                        .expect(&format!(
+                        .cloned()
+                        .unwrap_or_else(|| panic!(
                             "Provider alias target not found: {}. Make sure the target provider is registered before the alias.",
                             existing_token
-                        ))
-                        .clone();
+                        ));
 
-                    // Roles were already registered under the target's own token when it was built.
-                    // The alias is just a name redirect; it contributes no new roles.
                     (
                         std::sync::Arc::new(
                             Box::new(#provider_name { target_provider }) as Box<dyn toni::traits_helpers::Provider>
                         ),
-                        std::vec::Vec::new(),
+                        roles,
                     )
                 }
             }
