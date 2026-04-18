@@ -67,8 +67,9 @@ impl GlobalGuard {
     }
 }
 
+#[async_trait]
 impl Guard for GlobalGuard {
-    fn can_activate(&self, _context: &Context) -> bool {
+    async fn can_activate(&self, _context: &Context) -> bool {
         get_tracker().track("guard:global");
         true
     }
@@ -82,8 +83,9 @@ impl ControllerGuard {
     }
 }
 
+#[async_trait]
 impl Guard for ControllerGuard {
-    fn can_activate(&self, _context: &Context) -> bool {
+    async fn can_activate(&self, _context: &Context) -> bool {
         get_tracker().track("guard:controller");
         true
     }
@@ -97,8 +99,9 @@ impl MethodGuard {
     }
 }
 
+#[async_trait]
 impl Guard for MethodGuard {
-    fn can_activate(&self, _context: &Context) -> bool {
+    async fn can_activate(&self, _context: &Context) -> bool {
         get_tracker().track("guard:method");
         true
     }

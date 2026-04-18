@@ -227,8 +227,9 @@ impl ErrorHandler for NotFoundErrorHandler {
 
 pub struct AuthGuard;
 
+#[async_trait]
 impl Guard for AuthGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         context
             .switch_to_http()
             .expect("Expected HTTP context")
