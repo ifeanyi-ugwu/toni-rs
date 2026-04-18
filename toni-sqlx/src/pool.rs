@@ -30,7 +30,7 @@ where
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
     ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
         let pool = Pool::<DB>::connect(&self.url)
             .await

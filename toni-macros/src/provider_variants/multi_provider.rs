@@ -221,7 +221,7 @@ fn generate_type_multi(
                     &self,
                     deps: ::toni::FxHashMap<
                         ::std::string::String,
-                        ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
+                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
@@ -299,7 +299,7 @@ fn generate_value_multi(
                     &self,
                     _deps: ::toni::FxHashMap<
                         ::std::string::String,
-                        ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
+                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
@@ -368,7 +368,7 @@ fn generate_factory_multi(
                     &self,
                     _deps: ::toni::FxHashMap<
                         ::std::string::String,
-                        ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
+                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
@@ -443,7 +443,7 @@ fn generate_alias_multi(
                     &self,
                     deps: ::toni::FxHashMap<
                         ::std::string::String,
-                        ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
+                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
@@ -451,11 +451,11 @@ fn generate_alias_multi(
                 ) {
                     let existing_provider = deps
                         .get(&#existing_token_expr)
+                        .map(|(p, _)| p.clone())
                         .unwrap_or_else(|| panic!(
                             "existing provider '{}' not found for multi contribution",
                             #existing_token_expr
-                        ))
-                        .clone();
+                        ));
                     let any_box = existing_provider
                         .execute(vec![], ::toni::ProviderContext::None)
                         .await;
@@ -530,7 +530,7 @@ fn generate_token_provider_multi(
                     &self,
                     deps: ::toni::FxHashMap<
                         ::std::string::String,
-                        ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
+                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,

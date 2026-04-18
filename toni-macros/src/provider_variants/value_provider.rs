@@ -227,7 +227,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                         &self,
                         _deps: toni::FxHashMap<
                             String,
-                            std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                            (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
                         >,
                     ) -> (
                         std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
@@ -289,7 +289,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                         &self,
                         _deps: toni::FxHashMap<
                             String,
-                            std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                            (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
                         >,
                     ) -> (
                         std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
@@ -355,7 +355,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                                 &self,
                                 _deps: toni::FxHashMap<
                                     String,
-                                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                                    (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
                                 >,
                             ) -> (
                                 std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,

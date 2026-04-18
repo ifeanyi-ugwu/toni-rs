@@ -430,14 +430,16 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
 
                 async fn build(
                     &self,
-                    _dependencies: toni::FxHashMap<
+                    __deps: toni::FxHashMap<
                         String,
-                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                        (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
                     >,
                 ) -> (
                     std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
                     std::vec::Vec<toni::traits_helpers::ProviderRole>,
                 ) {
+                    let _dependencies: toni::FxHashMap<String, std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>> =
+                        __deps.into_iter().map(|(k, (p, _))| (k, p)).collect();
                     #build_body
                 }
             }
