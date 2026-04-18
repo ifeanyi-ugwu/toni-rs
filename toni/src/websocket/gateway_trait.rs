@@ -84,4 +84,27 @@ pub trait GatewayTrait: Send + Sync {
     fn get_route_metadata(&self) -> Arc<RouteMetadata> {
         Arc::new(RouteMetadata::new())
     }
+
+    /// All event names that have handler-level enhancers.
+    ///
+    /// Used by the resolver to pre-resolve per-handler enhancers at startup.
+    fn get_handler_events(&self) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_guard_tokens(&self, _event: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_interceptor_tokens(&self, _event: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_pipe_tokens(&self, _event: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_error_handler_tokens(&self, _event: &str) -> Vec<String> {
+        vec![]
+    }
 }

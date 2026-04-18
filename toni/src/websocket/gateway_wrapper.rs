@@ -45,6 +45,12 @@ pub struct GatewayWrapper {
     pipes: Vec<PipeEntry>,
     error_handlers: Vec<Arc<dyn ErrorHandler>>,
     route_metadata: Arc<RouteMetadata>,
+    /// Per-handler enhancers keyed by event name, pre-resolved at startup.
+    /// Appended after gateway-level enhancers when dispatching a message.
+    handler_guards: HashMap<String, Vec<GuardEntry>>,
+    handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
+    handler_pipes: HashMap<String, Vec<PipeEntry>>,
+    handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
     /// Active client connections (client_id => WsClient)
     clients: Arc<RwLock<HashMap<String, WsClient>>>,
 }
@@ -57,6 +63,10 @@ impl GatewayWrapper {
         pipes: Vec<PipeEntry>,
         error_handlers: Vec<Arc<dyn ErrorHandler>>,
         route_metadata: Arc<RouteMetadata>,
+        handler_guards: HashMap<String, Vec<GuardEntry>>,
+        handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
+        handler_pipes: HashMap<String, Vec<PipeEntry>>,
+        handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
     ) -> Self {
         Self {
             gateway,
@@ -65,6 +75,10 @@ impl GatewayWrapper {
             pipes,
             error_handlers,
             route_metadata,
+            handler_guards,
+            handler_interceptors,
+            handler_pipes,
+            handler_error_handlers,
             clients: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -156,7 +170,25 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        let guards = Self::resolve_guards(&self.guards, None).await;
+        // Merge gateway-level + handler-level entries (handler appended after gateway).
+        let mut all_guards = self.guards.clone();
+        if let Some(h) = self.handler_guards.get(&event) {
+            all_guards.extend_from_slice(h);
+        }
+        let mut all_interceptors = self.interceptors.clone();
+        if let Some(h) = self.handler_interceptors.get(&event) {
+            all_interceptors.extend_from_slice(h);
+        }
+        let mut all_pipes = self.pipes.clone();
+        if let Some(h) = self.handler_pipes.get(&event) {
+            all_pipes.extend_from_slice(h);
+        }
+        let mut all_error_handlers = self.error_handlers.clone();
+        if let Some(h) = self.handler_error_handlers.get(&event) {
+            all_error_handlers.extend_from_slice(h);
+        }
+
+        let guards = Self::resolve_guards(&all_guards, None).await;
         for guard in &guards {
             if !guard.can_activate(&context) {
                 return Err(WsError::AuthFailed("Guard rejected message".into()));
@@ -167,7 +199,17 @@ impl GatewayWrapper {
             }
         }
 
-        self.execute_with_interceptors(&mut context, event).await
+        let interceptors = Self::resolve_interceptors(&all_interceptors, None).await;
+        let pipes = Self::resolve_pipes(&all_pipes, None).await;
+        Self::execute_with_interceptors(
+            &mut context,
+            event,
+            &self.gateway,
+            &interceptors,
+            &pipes,
+            &all_error_handlers,
+        )
+        .await
     }
 
     async fn resolve_guards(entries: &[GuardEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Guard>> {
@@ -207,19 +249,20 @@ impl GatewayWrapper {
     }
 
     async fn execute_with_interceptors(
-        &self,
         context: &mut Context,
         event: String,
+        gateway: &Arc<Box<dyn GatewayTrait>>,
+        interceptors: &[Arc<dyn Interceptor>],
+        pipes: &[Arc<dyn Pipe>],
+        error_handlers: &[Arc<dyn ErrorHandler>],
     ) -> Result<Option<WsMessage>, WsError> {
-        let interceptors = Self::resolve_interceptors(&self.interceptors, None).await;
-        let pipes = Self::resolve_pipes(&self.pipes, None).await;
         Self::execute_with_interceptors_impl(
             context,
-            &interceptors,
-            &self.gateway,
+            interceptors,
+            gateway,
             &event,
-            &pipes,
-            &self.error_handlers,
+            pipes,
+            error_handlers,
         )
         .await;
 
@@ -443,6 +486,10 @@ mod tests {
             vec![],
             vec![],
             Arc::new(RouteMetadata::new()),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
         )
     }
 }
