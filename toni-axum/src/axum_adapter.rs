@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::collections::HashMap; // still needed for ws_ports, path_params
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -20,11 +20,11 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     async_trait,
     http_adapter::HttpRequestCallbacks,
-    http_helpers::{PathParams, RequestBody},
+    http_helpers::{PathParams, RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, WebSocketAdapter, WsConnectionCallbacks,
 };
 
-use crate::axum_websocket_adapter::{axum_to_ws_message, extract_headers, ws_message_to_axum};
+use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
 use crate::tokio_sender::TokioSender;
 
 #[derive(Clone)]
@@ -58,7 +58,7 @@ impl Default for AxumAdapter {
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
     callbacks: Arc<WsConnectionCallbacks>,
-    headers_map: HashMap<String, String>,
+    parts: RequestPart,
 ) {
     let (write, read) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<WsMessage>(32);
@@ -76,7 +76,7 @@ async fn run_ws_connection(
 
     let sender: Arc<dyn WsSink> = Arc::new(TokioSender::new(tx));
 
-    let client_id = match callbacks.connect(headers_map, sender).await {
+    let client_id = match callbacks.connect(parts, sender).await {
         Ok(id) => id,
         Err(_) => return,
     };
@@ -103,11 +103,11 @@ async fn run_ws_connection(
 }
 
 fn ws_route(callbacks: Arc<WsConnectionCallbacks>) -> axum::routing::MethodRouter {
-    get(move |headers: HeaderMap, ws: WebSocketUpgrade| {
+    get(move |ws: WebSocketUpgrade, req: Request<Body>| {
         let callbacks = callbacks.clone();
         async move {
-            let headers_map = extract_headers(&headers);
-            ws.on_upgrade(move |socket| run_ws_connection(socket, callbacks, headers_map))
+            let (parts, _body) = req.into_parts();
+            ws.on_upgrade(move |socket| run_ws_connection(socket, callbacks, parts))
         }
     })
 }

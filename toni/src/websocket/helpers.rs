@@ -1,34 +1,45 @@
-//! Framework-agnostic WebSocket helpers
-//!
-//! Provides utility functions that can be reused across different WebSocket implementations.
-
 use std::collections::HashMap;
+
+use crate::http_helpers::RequestPart;
 
 use super::{WsClient, WsHandshake};
 
-/// Create a WsClient from HTTP headers (framework-agnostic)
+/// Create a WsClient from HTTP upgrade request parts.
 ///
-/// Generates a unique client ID and extracts handshake information from headers.
-///
-/// # Arguments
-/// * `headers` - Map of header names to values from the HTTP upgrade request
-///
-/// # Returns
-/// A `WsClient` instance with unique ID and handshake information
-///
-/// # Example
-/// ```ignore
-/// let headers = extract_headers_from_request(&http_request);
-/// let client = create_client_from_headers(headers);
-/// gateway.handle_connect(client).await?;
-/// ```
-pub fn create_client_from_headers(headers: HashMap<String, String>) -> WsClient {
+/// Extracts handshake headers from `parts.headers` and query params from `parts.uri`.
+pub fn create_client_from_parts(parts: &RequestPart) -> WsClient {
+    let headers: HashMap<String, String> = parts
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_lowercase(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+
+    let query: HashMap<String, String> = parts
+        .uri
+        .query()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|pair| {
+                    let mut iter = pair.splitn(2, '=');
+                    let key = iter.next()?.to_string();
+                    let val = iter.next().unwrap_or("").to_string();
+                    Some((key, val))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     WsClient {
         id: uuid::Uuid::new_v4().to_string(),
         handshake: WsHandshake {
             headers,
-            query: HashMap::new(), // TODO: Extract from URL if needed
-            remote_addr: None,     // TODO: Extract from connection if available
+            query,
+            remote_addr: None,
         },
         extensions: Default::default(),
     }

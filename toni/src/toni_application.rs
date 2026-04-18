@@ -21,7 +21,7 @@ use crate::{
     rpc::{RpcContext, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
         BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError, WsMessage,
-        helpers::create_client_from_headers,
+        helpers::create_client_from_parts,
     },
 };
 
@@ -440,14 +440,14 @@ fn make_ws_callbacks(
     let bs_disconnect = broadcast_service;
 
     WsConnectionCallbacks::new(
-        move |headers, sink| {
+        move |parts, sink| {
             let gateway = g_connect.clone();
             let bs = bs_connect.clone();
             let map = client_map.clone();
             Box::pin(async move {
-                let client = create_client_from_headers(headers);
+                let client = create_client_from_parts(&parts);
                 let client_id = client.id.clone();
-                gateway.begin_connect(client).await?;
+                gateway.begin_connect(client, &parts).await?;
                 if let Some(bs) = &bs {
                     bs.connect(client_id.clone(), sink, gateway.get_namespace());
                 } else {

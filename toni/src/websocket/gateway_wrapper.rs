@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_lock::RwLock;
 use async_trait::async_trait;
 
-use crate::http_helpers::RouteMetadata;
+use crate::http_helpers::{RequestPart, RouteMetadata};
 use crate::injector::Context;
 use crate::traits_helpers::{
     ErrorHandler, Guard, GuardEntry, Interceptor, InterceptorEntry, InterceptorNext, Pipe,
@@ -74,7 +74,7 @@ impl GatewayWrapper {
     /// Does NOT fire `on_connect` — call `complete_connect` after any external
     /// registration (e.g. `ConnectionManager`) so the hook fires when the client
     /// is fully live everywhere.
-    pub async fn begin_connect(&self, client: WsClient) -> Result<(), WsError> {
+    pub async fn begin_connect(&self, client: WsClient, parts: &RequestPart) -> Result<(), WsError> {
         let context = Context::from_websocket(
             client.clone(),
             WsMessage::text(""),
@@ -82,7 +82,7 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        let guards = Self::resolve_guards(&self.guards).await;
+        let guards = Self::resolve_guards(&self.guards, Some(parts)).await;
         for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context) {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
@@ -126,9 +126,9 @@ impl GatewayWrapper {
     ///
     /// Composes `begin_connect` + `complete_connect` in sequence. Used by
     /// `handle_connection()` where there is no broadcast infrastructure.
-    pub async fn handle_connect(&self, client: WsClient) -> Result<(), WsError> {
+    pub async fn handle_connect(&self, client: WsClient, parts: &RequestPart) -> Result<(), WsError> {
         let client_id = client.id.clone();
-        self.begin_connect(client).await?;
+        self.begin_connect(client, parts).await?;
         self.complete_connect(&client_id).await
     }
 
@@ -156,7 +156,7 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        let guards = Self::resolve_guards(&self.guards).await;
+        let guards = Self::resolve_guards(&self.guards, None).await;
         for guard in &guards {
             if !guard.can_activate(&context) {
                 return Err(WsError::AuthFailed("Guard rejected message".into()));
@@ -170,39 +170,36 @@ impl GatewayWrapper {
         self.execute_with_interceptors(&mut context, event).await
     }
 
-    /// Resolve entry vecs to concrete trait objects. WS has no HTTP request parts,
-    /// so factory entries are called with `None`. Factory guards with
-    /// `requires_http_parts() == true` should have been rejected at startup.
-    async fn resolve_guards(entries: &[GuardEntry]) -> Vec<Arc<dyn Guard>> {
+    async fn resolve_guards(entries: &[GuardEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Guard>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
                 GuardEntry::Ready(g) => g.clone(),
-                GuardEntry::Factory(f) => f.create(None).await,
+                GuardEntry::Factory(f) => f.create(parts).await,
             };
             out.push(g);
         }
         out
     }
 
-    async fn resolve_interceptors(entries: &[InterceptorEntry]) -> Vec<Arc<dyn Interceptor>> {
+    async fn resolve_interceptors(entries: &[InterceptorEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Interceptor>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
                 InterceptorEntry::Ready(i) => i.clone(),
-                InterceptorEntry::Factory(f) => f.create(None).await,
+                InterceptorEntry::Factory(f) => f.create(parts).await,
             };
             out.push(i);
         }
         out
     }
 
-    async fn resolve_pipes(entries: &[PipeEntry]) -> Vec<Arc<dyn Pipe>> {
+    async fn resolve_pipes(entries: &[PipeEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Pipe>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
                 PipeEntry::Ready(p) => p.clone(),
-                PipeEntry::Factory(f) => f.create(None).await,
+                PipeEntry::Factory(f) => f.create(parts).await,
             };
             out.push(p);
         }
@@ -214,8 +211,8 @@ impl GatewayWrapper {
         context: &mut Context,
         event: String,
     ) -> Result<Option<WsMessage>, WsError> {
-        let interceptors = Self::resolve_interceptors(&self.interceptors).await;
-        let pipes = Self::resolve_pipes(&self.pipes).await;
+        let interceptors = Self::resolve_interceptors(&self.interceptors, None).await;
+        let pipes = Self::resolve_pipes(&self.pipes, None).await;
         Self::execute_with_interceptors_impl(
             context,
             &interceptors,

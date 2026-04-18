@@ -3,6 +3,7 @@ use quote::quote;
 use syn::{Attribute, Error, Ident, ItemImpl, ItemStruct, LitInt, LitStr, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
+use crate::enhancer::enhancer::{create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute};
 use crate::provider_macro::instance_injection::generate_instance_provider_system;
 use crate::shared::attr_is;
 use crate::shared::dependency_info::DependencySource;
@@ -229,8 +230,64 @@ fn generate_gateway_impl(
         }
     });
 
-    // Clean impl block (remove marker attributes)
+    // Extract enhancer attrs from the impl block before cleaning (gateway-level only)
+    let gateway_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
+    let enhancer_infos = create_enhancer_infos(gateway_enhancers_attr, std::collections::HashMap::new())?;
+
+    let binding = Vec::new();
+    let guard_tokens: Vec<_> = enhancer_infos
+        .get("guards")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|info| !info.token_expr.is_empty())
+        .map(|info| &info.token_expr)
+        .collect();
+    let interceptor_tokens: Vec<_> = enhancer_infos
+        .get("interceptors")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|info| !info.token_expr.is_empty())
+        .map(|info| &info.token_expr)
+        .collect();
+    let pipe_tokens: Vec<_> = enhancer_infos
+        .get("pipes")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|info| !info.token_expr.is_empty())
+        .map(|info| &info.token_expr)
+        .collect();
+
+    let guard_tokens_impl = if !guard_tokens.is_empty() {
+        quote! {
+            fn get_guard_tokens(&self) -> Vec<String> {
+                vec![#(#guard_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let interceptor_tokens_impl = if !interceptor_tokens.is_empty() {
+        quote! {
+            fn get_interceptor_tokens(&self) -> Vec<String> {
+                vec![#(#interceptor_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let pipe_tokens_impl = if !pipe_tokens.is_empty() {
+        quote! {
+            fn get_pipe_tokens(&self) -> Vec<String> {
+                vec![#(#pipe_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // Clean impl block: strip gateway marker attrs and enhancer attrs from methods and block
     let mut impl_def = impl_block.clone();
+    impl_def.attrs.retain(|attr| !has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
             method.attrs.retain(|attr| {
@@ -271,6 +328,12 @@ fn generate_gateway_impl(
             #on_connect_impl
 
             #on_disconnect_impl
+
+            #guard_tokens_impl
+
+            #interceptor_tokens_impl
+
+            #pipe_tokens_impl
 
             async fn handle_event(
                 &self,
