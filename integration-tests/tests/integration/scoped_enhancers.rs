@@ -22,8 +22,9 @@ use crate::common::TestServer;
 #[guard]
 impl RequestGuard {}
 
+#[async_trait]
 impl Guard for RequestGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         context
             .switch_to_http()
             .expect("HTTP context required")
@@ -42,8 +43,9 @@ impl Guard for RequestGuard {
 #[guard]
 impl HeaderGuard {}
 
+#[async_trait]
 impl Guard for HeaderGuard {
-    fn can_activate(&self, _context: &Context) -> bool {
+    async fn can_activate(&self, _context: &Context) -> bool {
         self.request
             .header("x-secret")
             .map_or(false, |v| v == "open-sesame")
@@ -130,8 +132,9 @@ impl TransientInterceptorModule {}
 #[guard]
 impl WsHandshakeGuard {}
 
+#[async_trait]
 impl Guard for WsHandshakeGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         context
             .switch_to_ws()
             .and_then(|ws| ws.client().handshake.headers.get("x-auth-token").cloned())

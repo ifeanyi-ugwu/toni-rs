@@ -320,8 +320,9 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// fn admin_panel(&self) -> ToniBody { ... }
 ///
 /// // Read in guard
+/// #[async_trait]
 /// impl Guard for RolesGuard {
-///     fn can_activate(&self, context: &Context) -> bool {
+///     async fn can_activate(&self, context: &Context) -> bool {
 ///         if let Some(Roles(required)) = context.metadata().unwrap().get::<Roles>() {
 ///             // Check user has required roles
 ///         }

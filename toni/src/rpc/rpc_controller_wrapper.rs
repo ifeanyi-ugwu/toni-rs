@@ -113,7 +113,7 @@ impl RpcControllerWrapper {
 
         let guards = Self::resolve_guards(&all_guards).await;
         for guard in &guards {
-            if !guard.can_activate(&ctx) {
+            if !guard.can_activate(&ctx).await {
                 return Err(RpcError::Forbidden("Guard rejected message".into()));
             }
             if ctx.should_abort() {

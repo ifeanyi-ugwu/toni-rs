@@ -16,8 +16,9 @@ use toni_macros::{injectable, module, websocket_gateway};
 #[guard]
 pub struct WsAuthGuard;
 
+#[async_trait]
 impl Guard for WsAuthGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         println!("[WsAuthGuard] Checking authentication...");
 
         if let Some(ws) = context.switch_to_ws() {

@@ -98,7 +98,7 @@ impl GatewayWrapper {
 
         let guards = Self::resolve_guards(&self.guards, Some(parts)).await;
         for (i, guard) in guards.iter().enumerate() {
-            if !guard.can_activate(&context) {
+            if !guard.can_activate(&context).await {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
                 return Err(WsError::AuthFailed("Guard rejected connection".into()));
             }
@@ -190,7 +190,7 @@ impl GatewayWrapper {
 
         let guards = Self::resolve_guards(&all_guards, None).await;
         for guard in &guards {
-            if !guard.can_activate(&context) {
+            if !guard.can_activate(&context).await {
                 return Err(WsError::AuthFailed("Guard rejected message".into()));
             }
 

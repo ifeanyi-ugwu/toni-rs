@@ -86,8 +86,9 @@ impl AdminGuard {
     }
 }
 
+#[async_trait]
 impl Guard for AdminGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         self.tracker.track("guard:admin");
         let req = context
             .switch_to_http()
@@ -112,8 +113,9 @@ impl AuthGuard {
     }
 }
 
+#[async_trait]
 impl Guard for AuthGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         self.tracker.track("guard:auth");
         let req = context
             .switch_to_http()
@@ -420,8 +422,9 @@ async fn di_in_enhancers() {
         }
     }
 
+    #[async_trait]
     impl Guard for DIGuard {
-        fn can_activate(&self, context: &Context) -> bool {
+        async fn can_activate(&self, context: &Context) -> bool {
             let req = context
                 .switch_to_http()
                 .expect("Expected HTTP context")
@@ -477,8 +480,9 @@ async fn app_token_global_enhancers() {
         #[inject]
         tracker: ExecutionOrder,
     })]
+    #[async_trait]
     impl Guard for GlobalGuard {
-        fn can_activate(&self, _context: &Context) -> bool {
+        async fn can_activate(&self, _context: &Context) -> bool {
             self.tracker.track("global_guard");
             true
         }

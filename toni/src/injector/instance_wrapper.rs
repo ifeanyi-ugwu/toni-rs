@@ -250,7 +250,7 @@ impl InstanceWrapper {
 
         // Execute guards
         for (i, guard) in guards.iter().enumerate() {
-            if !guard.can_activate(&context) {
+            if !guard.can_activate(&context).await {
                 tracing::debug!(guard_index = i, "guard rejected request");
                 // Get the guard's response (or create default 403 if not set)
                 let guard_response = context

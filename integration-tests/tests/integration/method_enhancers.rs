@@ -61,8 +61,9 @@ impl ErrorHandler for RecoveryErrorHandler {
 #[guard]
 impl WsAllowGuard {}
 
+#[async_trait]
 impl Guard for WsAllowGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         context
             .switch_to_ws()
             .and_then(|ws| ws.client().handshake.headers.get("x-allow").cloned())
@@ -157,8 +158,9 @@ impl WsMethodEnhancersModule {}
 #[guard]
 impl RpcAllowGuard {}
 
+#[async_trait]
 impl Guard for RpcAllowGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         context
             .switch_to_rpc()
             .and_then(|rpc| {

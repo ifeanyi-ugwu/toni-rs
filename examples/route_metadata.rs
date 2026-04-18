@@ -13,8 +13,8 @@
 //! 3. Guards/interceptors read via `context.metadata().unwrap().get::<YourType>()`
 
 use toni::{
-    controller, get, http_helpers::Body as ToniBody, module, set_metadata, traits_helpers::Guard,
-    use_guards, Context,
+    async_trait, controller, get, http_helpers::Body as ToniBody, module, set_metadata,
+    traits_helpers::Guard, use_guards, Context,
 };
 
 // ============================================================================
@@ -42,8 +42,9 @@ pub struct Public;
 
 pub struct RolesGuard;
 
+#[async_trait]
 impl Guard for RolesGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         let metadata = context.metadata().expect("Route metadata not available");
 
         // Public routes bypass role checks
@@ -73,8 +74,9 @@ impl Guard for RolesGuard {
 
 pub struct RateLimitGuard;
 
+#[async_trait]
 impl Guard for RateLimitGuard {
-    fn can_activate(&self, context: &Context) -> bool {
+    async fn can_activate(&self, context: &Context) -> bool {
         let metadata = context.metadata().expect("Route metadata not available");
 
         let Some(RateLimit {
