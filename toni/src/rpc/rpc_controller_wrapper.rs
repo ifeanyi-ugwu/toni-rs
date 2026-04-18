@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -45,6 +46,12 @@ pub struct RpcControllerWrapper {
     pipes: Vec<PipeEntry>,
     error_handlers: Vec<Arc<dyn ErrorHandler>>,
     route_metadata: Arc<RouteMetadata>,
+    /// Per-handler enhancers keyed by pattern, pre-resolved at startup.
+    /// Appended after controller-level enhancers when dispatching a message.
+    handler_guards: HashMap<String, Vec<GuardEntry>>,
+    handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
+    handler_pipes: HashMap<String, Vec<PipeEntry>>,
+    handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
 }
 
 impl RpcControllerWrapper {
@@ -55,6 +62,10 @@ impl RpcControllerWrapper {
         pipes: Vec<PipeEntry>,
         error_handlers: Vec<Arc<dyn ErrorHandler>>,
         route_metadata: Arc<RouteMetadata>,
+        handler_guards: HashMap<String, Vec<GuardEntry>>,
+        handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
+        handler_pipes: HashMap<String, Vec<PipeEntry>>,
+        handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
     ) -> Self {
         Self {
             controller,
@@ -63,6 +74,10 @@ impl RpcControllerWrapper {
             pipes,
             error_handlers,
             route_metadata,
+            handler_guards,
+            handler_interceptors,
+            handler_pipes,
+            handler_error_handlers,
         }
     }
 
@@ -75,9 +90,28 @@ impl RpcControllerWrapper {
         data: RpcData,
         context: RpcContext,
     ) -> Result<Option<RpcData>, RpcError> {
+        let pattern = context.pattern.clone();
         let mut ctx = Context::from_rpc(data, context, Some(self.route_metadata.clone()));
 
-        let guards = Self::resolve_guards(&self.guards).await;
+        // Merge controller-level + handler-level entries (handler appended after controller).
+        let mut all_guards = self.guards.clone();
+        if let Some(h) = self.handler_guards.get(&pattern) {
+            all_guards.extend_from_slice(h);
+        }
+        let mut all_interceptors = self.interceptors.clone();
+        if let Some(h) = self.handler_interceptors.get(&pattern) {
+            all_interceptors.extend_from_slice(h);
+        }
+        let mut all_pipes = self.pipes.clone();
+        if let Some(h) = self.handler_pipes.get(&pattern) {
+            all_pipes.extend_from_slice(h);
+        }
+        let mut all_error_handlers = self.error_handlers.clone();
+        if let Some(h) = self.handler_error_handlers.get(&pattern) {
+            all_error_handlers.extend_from_slice(h);
+        }
+
+        let guards = Self::resolve_guards(&all_guards).await;
         for guard in &guards {
             if !guard.can_activate(&ctx) {
                 return Err(RpcError::Forbidden("Guard rejected message".into()));
@@ -87,7 +121,16 @@ impl RpcControllerWrapper {
             }
         }
 
-        self.execute_with_interceptors(&mut ctx).await
+        let interceptors = Self::resolve_interceptors(&all_interceptors).await;
+        let pipes = Self::resolve_pipes(&all_pipes).await;
+        Self::execute_with_interceptors(
+            &mut ctx,
+            &self.controller,
+            &interceptors,
+            &pipes,
+            &all_error_handlers,
+        )
+        .await
     }
 
     /// RPC has no HTTP request; factory entries are called with `None`.
@@ -130,17 +173,18 @@ impl RpcControllerWrapper {
     }
 
     async fn execute_with_interceptors(
-        &self,
         context: &mut Context,
+        controller: &Arc<Box<dyn RpcControllerTrait>>,
+        interceptors: &[Arc<dyn Interceptor>],
+        pipes: &[Arc<dyn Pipe>],
+        error_handlers: &[Arc<dyn ErrorHandler>],
     ) -> Result<Option<RpcData>, RpcError> {
-        let interceptors = Self::resolve_interceptors(&self.interceptors).await;
-        let pipes = Self::resolve_pipes(&self.pipes).await;
         Self::execute_with_interceptors_impl(
             context,
-            &interceptors,
-            &self.controller,
-            &pipes,
-            &self.error_handlers,
+            interceptors,
+            controller,
+            pipes,
+            error_handlers,
         )
         .await;
 

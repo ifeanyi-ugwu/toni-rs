@@ -36,6 +36,37 @@ impl GatewayResolver {
         let error_handlers = self.resolve_error_handlers(gateway.get_error_handler_tokens())?;
         let route_metadata = gateway.get_route_metadata();
 
+        // Pre-resolve handler-level enhancers at startup (globals are already in gateway-level
+        // vecs above, so handler entries are token-only — no globals prepended).
+        let mut handler_guards: HashMap<String, Vec<GuardEntry>> = HashMap::new();
+        let mut handler_interceptors: HashMap<String, Vec<InterceptorEntry>> = HashMap::new();
+        let mut handler_pipes: HashMap<String, Vec<PipeEntry>> = HashMap::new();
+        let mut handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>> =
+            HashMap::new();
+
+        for event in gateway.get_handler_events() {
+            handler_guards.insert(
+                event.clone(),
+                self.resolve_tokens_only(gateway.get_handler_guard_tokens(&event))?,
+            );
+            handler_interceptors.insert(
+                event.clone(),
+                self.resolve_interceptor_tokens_only(
+                    gateway.get_handler_interceptor_tokens(&event),
+                )?,
+            );
+            handler_pipes.insert(
+                event.clone(),
+                self.resolve_pipe_tokens_only(gateway.get_handler_pipe_tokens(&event))?,
+            );
+            handler_error_handlers.insert(
+                event.clone(),
+                self.resolve_error_handler_tokens_only(
+                    gateway.get_handler_error_handler_tokens(&event),
+                )?,
+            );
+        }
+
         Ok(GatewayWrapper::new(
             gateway,
             guards,
@@ -43,6 +74,10 @@ impl GatewayResolver {
             pipes,
             error_handlers,
             route_metadata,
+            handler_guards,
+            handler_interceptors,
+            handler_pipes,
+            handler_error_handlers,
         ))
     }
 
@@ -76,6 +111,41 @@ impl GatewayResolver {
             error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }
         Ok(error_handlers)
+    }
+
+    /// Resolve tokens without prepending globals — for handler-level enhancers.
+    fn resolve_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
+        tokens
+            .into_iter()
+            .map(|t| self.resolve_guard_by_token(&t))
+            .collect()
+    }
+
+    fn resolve_interceptor_tokens_only(
+        &self,
+        tokens: Vec<String>,
+    ) -> Result<Vec<InterceptorEntry>> {
+        tokens
+            .into_iter()
+            .map(|t| self.resolve_interceptor_by_token(&t))
+            .collect()
+    }
+
+    fn resolve_pipe_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
+        tokens
+            .into_iter()
+            .map(|t| self.resolve_pipe_by_token(&t))
+            .collect()
+    }
+
+    fn resolve_error_handler_tokens_only(
+        &self,
+        tokens: Vec<String>,
+    ) -> Result<Vec<Arc<dyn ErrorHandler>>> {
+        tokens
+            .into_iter()
+            .map(|t| self.resolve_error_handler_by_token(&t))
+            .collect()
     }
 
     fn resolve_guard_by_token(&self, token: &str) -> Result<GuardEntry> {

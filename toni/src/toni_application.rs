@@ -468,12 +468,16 @@ fn make_ws_callbacks(
                     }
                     Ok(None) => true,
                     Err(e) => {
-                        let error_msg = WsMessage::text(
-                            serde_json::json!({ "error": e.to_string() }).to_string(),
-                        );
                         match &e {
-                            WsError::ConnectionClosed(_) | WsError::AuthFailed(_) => false,
+                            // Connection is already gone — stop the read loop.
+                            WsError::ConnectionClosed(_) => false,
+                            // Guard rejected this message; drop it silently and keep
+                            // the connection alive so other handlers can still run.
+                            WsError::AuthFailed(_) => true,
                             _ => {
+                                let error_msg = WsMessage::text(
+                                    serde_json::json!({ "error": e.to_string() }).to_string(),
+                                );
                                 handle.send_to(&client_id, error_msg).await;
                                 true
                             }

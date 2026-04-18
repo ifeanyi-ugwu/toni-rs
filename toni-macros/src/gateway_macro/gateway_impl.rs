@@ -230,7 +230,7 @@ fn generate_gateway_impl(
         }
     });
 
-    // Extract enhancer attrs from the impl block before cleaning (gateway-level only)
+    // Extract gateway-level enhancer attrs from the impl block
     let gateway_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
     let enhancer_infos = create_enhancer_infos(gateway_enhancers_attr, std::collections::HashMap::new())?;
 
@@ -251,6 +251,13 @@ fn generate_gateway_impl(
         .collect();
     let pipe_tokens: Vec<_> = enhancer_infos
         .get("pipes")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|info| !info.token_expr.is_empty())
+        .map(|info| &info.token_expr)
+        .collect();
+    let error_handler_tokens: Vec<_> = enhancer_infos
+        .get("error_handlers")
         .unwrap_or(&binding)
         .iter()
         .filter(|info| !info.token_expr.is_empty())
@@ -284,8 +291,166 @@ fn generate_gateway_impl(
     } else {
         quote! {}
     };
+    let error_handler_tokens_impl = if !error_handler_tokens.is_empty() {
+        quote! {
+            fn get_error_handler_tokens(&self) -> Vec<String> {
+                vec![#(#error_handler_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
 
-    // Clean impl block: strip gateway marker attrs and enhancer attrs from methods and block
+    // Extract per-handler enhancer tokens from each #[subscribe_message] method.
+    // Stored as (event, guard_tokens, interceptor_tokens, pipe_tokens, error_handler_tokens).
+    let mut handler_enhancer_entries: Vec<(
+        String,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+    )> = Vec::new();
+
+    for (event, method) in &message_handlers {
+        let method_enhancers_attr = get_enhancers_attr(&method.attrs)?;
+        if method_enhancers_attr.is_empty() {
+            continue;
+        }
+        let handler_infos =
+            create_enhancer_infos(method_enhancers_attr, std::collections::HashMap::new())?;
+        let binding = Vec::new();
+        let hg: Vec<TokenStream> = handler_infos
+            .get("guards")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let hi: Vec<TokenStream> = handler_infos
+            .get("interceptors")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let hp: Vec<TokenStream> = handler_infos
+            .get("pipes")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let he: Vec<TokenStream> = handler_infos
+            .get("error_handlers")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        if !hg.is_empty() || !hi.is_empty() || !hp.is_empty() || !he.is_empty() {
+            handler_enhancer_entries.push((event.clone(), hg, hi, hp, he));
+        }
+    }
+
+    let handler_events_impl = if !handler_enhancer_entries.is_empty() {
+        let events: Vec<&str> = handler_enhancer_entries
+            .iter()
+            .map(|(e, _, _, _, _)| e.as_str())
+            .collect();
+        quote! {
+            fn get_handler_events(&self) -> Vec<String> {
+                vec![#(#events.to_string()),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let handler_guard_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, g, _, _, _)| !g.is_empty())
+            .map(|(event, guards, _, _, _)| quote! { #event => vec![#(#guards),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_guard_tokens(&self, event: &str) -> Vec<String> {
+                    match event {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_interceptor_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, i, _, _)| !i.is_empty())
+            .map(|(event, _, interceptors, _, _)| {
+                quote! { #event => vec![#(#interceptors),*], }
+            })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_interceptor_tokens(&self, event: &str) -> Vec<String> {
+                    match event {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_pipe_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, _, p, _)| !p.is_empty())
+            .map(|(event, _, _, pipes, _)| quote! { #event => vec![#(#pipes),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_pipe_tokens(&self, event: &str) -> Vec<String> {
+                    match event {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_error_handler_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, _, _, e)| !e.is_empty())
+            .map(|(event, _, _, _, handlers)| {
+                quote! { #event => vec![#(#handlers),*], }
+            })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_error_handler_tokens(&self, event: &str) -> Vec<String> {
+                    match event {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    // Clean impl block: strip gateway marker attrs and all enhancer attrs from methods and block
     let mut impl_def = impl_block.clone();
     impl_def.attrs.retain(|attr| !has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {
@@ -295,6 +460,7 @@ fn generate_gateway_impl(
                     && !attr_is(attr, "on_connect")
                     && !attr_is(attr, "on_disconnect")
                     && !attr_is(attr, "after_init")
+                    && !has_enhancer_attribute(attr)
             });
         }
     }
@@ -334,6 +500,18 @@ fn generate_gateway_impl(
             #interceptor_tokens_impl
 
             #pipe_tokens_impl
+
+            #error_handler_tokens_impl
+
+            #handler_events_impl
+
+            #handler_guard_tokens_impl
+
+            #handler_interceptor_tokens_impl
+
+            #handler_pipe_tokens_impl
+
+            #handler_error_handler_tokens_impl
 
             async fn handle_event(
                 &self,

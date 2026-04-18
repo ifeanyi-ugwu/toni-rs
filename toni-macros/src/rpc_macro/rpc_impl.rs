@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use syn::{Attribute, ItemImpl, ItemStruct, LitStr, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
+use crate::enhancer::enhancer::{create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute};
 use crate::provider_macro::instance_injection::generate_instance_provider_system;
 use crate::shared::attr_is;
 use crate::shared::dependency_info::DependencySource;
@@ -129,12 +130,216 @@ fn generate_rpc_controller_impl(
         })
         .collect();
 
-    // Strip marker attributes from the impl block before emitting it
+    // Extract controller-level enhancer tokens from the impl block attrs
+    let ctrl_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
+    let ctrl_enhancer_infos =
+        create_enhancer_infos(ctrl_enhancers_attr, std::collections::HashMap::new())?;
+
+    let binding = Vec::new();
+    let ctrl_guard_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("guards")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
+    let ctrl_interceptor_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("interceptors")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
+    let ctrl_pipe_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("pipes")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
+    let ctrl_error_handler_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("error_handlers")
+        .unwrap_or(&binding)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
+
+    let ctrl_guard_tokens_impl = if !ctrl_guard_tokens.is_empty() {
+        quote! { fn get_guard_tokens(&self) -> Vec<String> { vec![#(#ctrl_guard_tokens),*] } }
+    } else {
+        quote! {}
+    };
+    let ctrl_interceptor_tokens_impl = if !ctrl_interceptor_tokens.is_empty() {
+        quote! { fn get_interceptor_tokens(&self) -> Vec<String> { vec![#(#ctrl_interceptor_tokens),*] } }
+    } else {
+        quote! {}
+    };
+    let ctrl_pipe_tokens_impl = if !ctrl_pipe_tokens.is_empty() {
+        quote! { fn get_pipe_tokens(&self) -> Vec<String> { vec![#(#ctrl_pipe_tokens),*] } }
+    } else {
+        quote! {}
+    };
+    let ctrl_error_handler_tokens_impl = if !ctrl_error_handler_tokens.is_empty() {
+        quote! { fn get_error_handler_tokens(&self) -> Vec<String> { vec![#(#ctrl_error_handler_tokens),*] } }
+    } else {
+        quote! {}
+    };
+
+    // Extract per-handler enhancer tokens from each #[message_pattern]/#[event_pattern] method
+    let all_handlers = message_handlers.iter().chain(event_handlers.iter());
+    let mut handler_enhancer_entries: Vec<(
+        String,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+    )> = Vec::new();
+
+    for (pattern, method) in all_handlers {
+        let method_enhancers_attr = get_enhancers_attr(&method.attrs)?;
+        if method_enhancers_attr.is_empty() {
+            continue;
+        }
+        let handler_infos =
+            create_enhancer_infos(method_enhancers_attr, std::collections::HashMap::new())?;
+        let binding = Vec::new();
+        let hg: Vec<TokenStream> = handler_infos
+            .get("guards")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let hi: Vec<TokenStream> = handler_infos
+            .get("interceptors")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let hp: Vec<TokenStream> = handler_infos
+            .get("pipes")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        let he: Vec<TokenStream> = handler_infos
+            .get("error_handlers")
+            .unwrap_or(&binding)
+            .iter()
+            .filter(|i| !i.token_expr.is_empty())
+            .map(|i| i.token_expr.clone())
+            .collect();
+        if !hg.is_empty() || !hi.is_empty() || !hp.is_empty() || !he.is_empty() {
+            handler_enhancer_entries.push((pattern.clone(), hg, hi, hp, he));
+        }
+    }
+
+    let handler_patterns_impl = if !handler_enhancer_entries.is_empty() {
+        let patterns: Vec<&str> = handler_enhancer_entries
+            .iter()
+            .map(|(p, _, _, _, _)| p.as_str())
+            .collect();
+        quote! {
+            fn get_handler_patterns(&self) -> Vec<String> {
+                vec![#(#patterns.to_string()),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let handler_guard_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, g, _, _, _)| !g.is_empty())
+            .map(|(pat, guards, _, _, _)| quote! { #pat => vec![#(#guards),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_guard_tokens(&self, pattern: &str) -> Vec<String> {
+                    match pattern {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_interceptor_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, i, _, _)| !i.is_empty())
+            .map(|(pat, _, interceptors, _, _)| quote! { #pat => vec![#(#interceptors),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_interceptor_tokens(&self, pattern: &str) -> Vec<String> {
+                    match pattern {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_pipe_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, _, p, _)| !p.is_empty())
+            .map(|(pat, _, _, pipes, _)| quote! { #pat => vec![#(#pipes),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_pipe_tokens(&self, pattern: &str) -> Vec<String> {
+                    match pattern {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_error_handler_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, _, _, e)| !e.is_empty())
+            .map(|(pat, _, _, _, handlers)| quote! { #pat => vec![#(#handlers),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_error_handler_tokens(&self, pattern: &str) -> Vec<String> {
+                    match pattern {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    // Strip marker and enhancer attributes from the impl block before emitting it
     let mut impl_def = impl_block.clone();
+    impl_def.attrs.retain(|attr| !has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
             method.attrs.retain(|attr| {
-                !attr_is(attr, "message_pattern") && !attr_is(attr, "event_pattern")
+                !attr_is(attr, "message_pattern")
+                    && !attr_is(attr, "event_pattern")
+                    && !has_enhancer_attribute(attr)
             });
         }
     }
@@ -158,6 +363,17 @@ fn generate_rpc_controller_impl(
             fn get_patterns(&self) -> Vec<String> {
                 vec![#(#all_patterns.to_string()),*]
             }
+
+            #ctrl_guard_tokens_impl
+            #ctrl_interceptor_tokens_impl
+            #ctrl_pipe_tokens_impl
+            #ctrl_error_handler_tokens_impl
+
+            #handler_patterns_impl
+            #handler_guard_tokens_impl
+            #handler_interceptor_tokens_impl
+            #handler_pipe_tokens_impl
+            #handler_error_handler_tokens_impl
 
             async fn handle_message(
                 &self,

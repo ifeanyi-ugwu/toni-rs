@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,6 +39,37 @@ impl RpcControllerResolver {
         let error_handlers = self.resolve_error_handlers(controller.get_error_handler_tokens())?;
         let route_metadata = controller.get_route_metadata();
 
+        // Pre-resolve handler-level enhancers. RPC has no HTTP context, so the same
+        // requires_http_parts() startup guard applies to handler-level entries too.
+        let mut handler_guards: HashMap<String, Vec<GuardEntry>> = HashMap::new();
+        let mut handler_interceptors: HashMap<String, Vec<InterceptorEntry>> = HashMap::new();
+        let mut handler_pipes: HashMap<String, Vec<PipeEntry>> = HashMap::new();
+        let mut handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>> =
+            HashMap::new();
+
+        for pattern in controller.get_handler_patterns() {
+            handler_guards.insert(
+                pattern.clone(),
+                self.resolve_handler_guards(controller.get_handler_guard_tokens(&pattern))?,
+            );
+            handler_interceptors.insert(
+                pattern.clone(),
+                self.resolve_handler_interceptors(
+                    controller.get_handler_interceptor_tokens(&pattern),
+                )?,
+            );
+            handler_pipes.insert(
+                pattern.clone(),
+                self.resolve_handler_pipes(controller.get_handler_pipe_tokens(&pattern))?,
+            );
+            handler_error_handlers.insert(
+                pattern.clone(),
+                self.resolve_handler_error_handlers(
+                    controller.get_handler_error_handler_tokens(&pattern),
+                )?,
+            );
+        }
+
         Ok(RpcControllerWrapper::new(
             controller,
             guards,
@@ -45,6 +77,10 @@ impl RpcControllerResolver {
             pipes,
             error_handlers,
             route_metadata,
+            handler_guards,
+            handler_interceptors,
+            handler_pipes,
+            handler_error_handlers,
         ))
     }
 
@@ -150,5 +186,73 @@ impl RpcControllerResolver {
             .get(token)
             .cloned()
             .ok_or_else(|| anyhow!("ErrorHandler '{}' not found in role registry", token))
+    }
+
+    /// Resolve handler-level guard tokens without prepending globals, with HTTP-parts check.
+    fn resolve_handler_guards(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
+        tokens
+            .into_iter()
+            .map(|token| {
+                let entry = self.resolve_guard_by_token(&token)?;
+                if let GuardEntry::Factory(ref f) = entry {
+                    if f.requires_http_parts() {
+                        anyhow::bail!(
+                            "Guard '{}' has request-scoped dependencies and cannot be used on an \
+                             RPC controller — RPC has no HTTP request context",
+                            token
+                        );
+                    }
+                }
+                Ok(entry)
+            })
+            .collect()
+    }
+
+    fn resolve_handler_interceptors(&self, tokens: Vec<String>) -> Result<Vec<InterceptorEntry>> {
+        tokens
+            .into_iter()
+            .map(|token| {
+                let entry = self.resolve_interceptor_by_token(&token)?;
+                if let InterceptorEntry::Factory(ref f) = entry {
+                    if f.requires_http_parts() {
+                        anyhow::bail!(
+                            "Interceptor '{}' has request-scoped dependencies and cannot be used \
+                             on an RPC controller — RPC has no HTTP request context",
+                            token
+                        );
+                    }
+                }
+                Ok(entry)
+            })
+            .collect()
+    }
+
+    fn resolve_handler_pipes(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
+        tokens
+            .into_iter()
+            .map(|token| {
+                let entry = self.resolve_pipe_by_token(&token)?;
+                if let PipeEntry::Factory(ref f) = entry {
+                    if f.requires_http_parts() {
+                        anyhow::bail!(
+                            "Pipe '{}' has request-scoped dependencies and cannot be used on an \
+                             RPC controller — RPC has no HTTP request context",
+                            token
+                        );
+                    }
+                }
+                Ok(entry)
+            })
+            .collect()
+    }
+
+    fn resolve_handler_error_handlers(
+        &self,
+        tokens: Vec<String>,
+    ) -> Result<Vec<Arc<dyn ErrorHandler>>> {
+        tokens
+            .into_iter()
+            .map(|t| self.resolve_error_handler_by_token(&t))
+            .collect()
     }
 }

@@ -20,6 +20,7 @@ mod global_modules;
 mod graceful_shutdown;
 mod http_e2e;
 mod lifecycle_hooks;
+mod method_enhancers;
 mod middleware_error;
 mod module_ref;
 mod modules;

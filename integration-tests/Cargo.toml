@@ -16,6 +16,7 @@ toni-config = { path = "../toni-config" }
 toni-macros = { path = "../toni-macros" }
 toni-axum = { path = "../toni-axum" }
 toni-tungstenite = { path = "../toni-tungstenite" }
+toni-tcp = { path = "../toni-tcp" }
 
 # Testing dependencies
 tokio = { version = "1", features = ["full"] }
