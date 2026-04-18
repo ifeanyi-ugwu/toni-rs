@@ -8,8 +8,8 @@ use crate::{
     rpc::RpcControllerTrait,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, Guard, Interceptor, ModuleMetadata, Pipe, Provider,
-        ProviderFactory, ProviderRole,
+        Controller, ControllerFactory, GuardEntry, InterceptorEntry, ModuleMetadata, PipeEntry,
+        Provider, ProviderFactory, ProviderRole,
     },
     websocket::GatewayTrait,
 };
@@ -25,9 +25,9 @@ pub struct ToniContainer {
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
     /// Global enhancers - applied to all controllers
-    global_guards: Vec<Arc<dyn Guard>>,
-    global_interceptors: Vec<Arc<dyn Interceptor>>,
-    global_pipes: Vec<Arc<dyn Pipe>>,
+    global_guards: Vec<GuardEntry>,
+    global_interceptors: Vec<InterceptorEntry>,
+    global_pipes: Vec<PipeEntry>,
     global_error_handlers: Vec<Arc<dyn crate::traits_helpers::ErrorHandler>>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
@@ -71,15 +71,15 @@ impl ToniContainer {
         }
     }
 
-    pub fn add_global_guard(&mut self, guard: Arc<dyn Guard>) {
+    pub fn add_global_guard(&mut self, guard: GuardEntry) {
         self.global_guards.push(guard);
     }
 
-    pub fn add_global_interceptor(&mut self, interceptor: Arc<dyn Interceptor>) {
+    pub fn add_global_interceptor(&mut self, interceptor: InterceptorEntry) {
         self.global_interceptors.push(interceptor);
     }
 
-    pub fn add_global_pipe(&mut self, pipe: Arc<dyn Pipe>) {
+    pub fn add_global_pipe(&mut self, pipe: PipeEntry) {
         self.global_pipes.push(pipe);
     }
 

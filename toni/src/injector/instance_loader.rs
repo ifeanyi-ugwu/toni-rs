@@ -10,7 +10,7 @@ use std::{
 use super::{DependencyGraph, ToniContainer, multi_collection_provider::MultiCollectionProvider};
 use crate::{
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, Injectable, Provider},
+    traits_helpers::{Controller, GuardEntry, Injectable, InterceptorEntry, PipeEntry, Provider},
 };
 
 pub struct ToniInstanceLoader {
@@ -396,7 +396,7 @@ impl ToniInstanceLoader {
         let registry = self.container.borrow();
         let registry = registry.get_role_registry();
 
-        let mut guards = Vec::new();
+        let mut guards: Vec<GuardEntry> = Vec::new();
         for token in controller.get_guard_tokens() {
             let guard = registry.guards.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
@@ -407,9 +407,9 @@ impl ToniInstanceLoader {
             })?;
             guards.push(guard);
         }
-        guards.extend(controller.get_guards());
+        guards.extend(controller.get_guards().into_iter().map(GuardEntry::Ready));
 
-        let mut interceptors = Vec::new();
+        let mut interceptors: Vec<InterceptorEntry> = Vec::new();
         for token in controller.get_interceptor_tokens() {
             let interceptor = registry.interceptors.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
@@ -420,9 +420,9 @@ impl ToniInstanceLoader {
             })?;
             interceptors.push(interceptor);
         }
-        interceptors.extend(controller.get_interceptors());
+        interceptors.extend(controller.get_interceptors().into_iter().map(InterceptorEntry::Ready));
 
-        let mut pipes = Vec::new();
+        let mut pipes: Vec<PipeEntry> = Vec::new();
         for token in controller.get_pipe_tokens() {
             let pipe = registry.pipes.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
@@ -433,7 +433,7 @@ impl ToniInstanceLoader {
             })?;
             pipes.push(pipe);
         }
-        pipes.extend(controller.get_pipes());
+        pipes.extend(controller.get_pipes().into_iter().map(PipeEntry::Ready));
 
         let mut error_handlers = Vec::new();
         for token in controller.get_error_handler_tokens() {

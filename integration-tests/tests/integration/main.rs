@@ -29,6 +29,7 @@ mod provide_macro;
 mod provider_scope;
 mod request_extractor;
 mod request_provider;
+mod scoped_enhancers;
 mod scope_bubbling;
 mod static_methods;
 mod streaming;

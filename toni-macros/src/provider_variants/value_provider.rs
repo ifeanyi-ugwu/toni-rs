@@ -122,17 +122,23 @@ fn generate_value_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
         match enhancer {
             EnhancerType::Guard => pushes.push(quote! {
                 __roles.push(toni::traits_helpers::ProviderRole::Guard(
-                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
+                    toni::traits_helpers::GuardEntry::Ready(
+                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
+                    )
                 ));
             }),
             EnhancerType::Interceptor => pushes.push(quote! {
                 __roles.push(toni::traits_helpers::ProviderRole::Interceptor(
-                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
+                    toni::traits_helpers::InterceptorEntry::Ready(
+                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
+                    )
                 ));
             }),
             EnhancerType::Pipe => pushes.push(quote! {
                 __roles.push(toni::traits_helpers::ProviderRole::Pipe(
-                    instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
+                    toni::traits_helpers::PipeEntry::Ready(
+                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
+                    )
                 ));
             }),
         }

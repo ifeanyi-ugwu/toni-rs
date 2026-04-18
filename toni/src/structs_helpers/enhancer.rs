@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::traits_helpers::{ErrorHandler, Guard, Interceptor, Pipe};
+use crate::traits_helpers::{ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry};
 
 pub struct EnhancerMetadata {
-    pub guards: Vec<Arc<dyn Guard>>,
-    pub pipes: Vec<Arc<dyn Pipe>>,
-    pub interceptors: Vec<Arc<dyn Interceptor>>,
+    pub guards: Vec<GuardEntry>,
+    pub interceptors: Vec<InterceptorEntry>,
+    pub pipes: Vec<PipeEntry>,
     pub error_handlers: Vec<Arc<dyn ErrorHandler>>,
 }

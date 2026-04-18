@@ -6,13 +6,14 @@ use crate::{
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe,
+        Controller, ErrorHandler, ErrorResponse, Guard, GuardEntry, Interceptor, InterceptorEntry,
+        InterceptorNext, Pipe, PipeEntry,
     },
 };
 
 use super::Context;
 
-/// Represents the next step in the interceptor chain
+/// Represents the next step in the interceptor chain (after factory entries are resolved)
 struct ChainNext {
     interceptors: Vec<Arc<dyn Interceptor>>,
     instance: Arc<Box<dyn Controller>>,
@@ -38,9 +39,9 @@ impl InterceptorNext for ChainNext {
 
 pub struct InstanceWrapper {
     instance: Arc<Box<dyn Controller>>,
-    guards: Vec<Arc<dyn Guard>>,
-    interceptors: Vec<Arc<dyn Interceptor>>,
-    pipes: Vec<Arc<dyn Pipe>>,
+    guards: Vec<GuardEntry>,
+    interceptors: Vec<InterceptorEntry>,
+    pipes: Vec<PipeEntry>,
     middleware_chain: MiddlewareChain,
     error_handlers: Vec<Arc<dyn ErrorHandler>>,
     route_metadata: Arc<RouteMetadata>,
@@ -181,16 +182,70 @@ impl InstanceWrapper {
         }
     }
 
+    /// Resolve `GuardEntry` list to concrete `Arc<dyn Guard>` instances.
+    /// Factory entries are called with the request parts for per-request dep construction.
+    async fn resolve_guards(
+        entries: &[GuardEntry],
+        parts: &crate::http_helpers::RequestPart,
+    ) -> Vec<Arc<dyn Guard>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let g = match entry {
+                GuardEntry::Ready(g) => g.clone(),
+                GuardEntry::Factory(f) => f.create(Some(parts)).await,
+            };
+            out.push(g);
+        }
+        out
+    }
+
+    async fn resolve_interceptors(
+        entries: &[InterceptorEntry],
+        parts: &crate::http_helpers::RequestPart,
+    ) -> Vec<Arc<dyn Interceptor>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let i = match entry {
+                InterceptorEntry::Ready(i) => i.clone(),
+                InterceptorEntry::Factory(f) => f.create(Some(parts)).await,
+            };
+            out.push(i);
+        }
+        out
+    }
+
+    async fn resolve_pipes(
+        entries: &[PipeEntry],
+        parts: &crate::http_helpers::RequestPart,
+    ) -> Vec<Arc<dyn Pipe>> {
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let p = match entry {
+                PipeEntry::Ready(p) => p.clone(),
+                PipeEntry::Factory(f) => f.create(Some(parts)).await,
+            };
+            out.push(p);
+        }
+        out
+    }
+
     /// Execute the controller logic with guards, interceptors, and pipes
     async fn execute_controller_logic(
         req: HttpRequest,
         instance: Arc<Box<dyn Controller>>,
-        guards: Vec<Arc<dyn Guard>>,
-        interceptors: Vec<Arc<dyn Interceptor>>,
-        pipes: Vec<Arc<dyn Pipe>>,
+        guards: Vec<GuardEntry>,
+        interceptors: Vec<InterceptorEntry>,
+        pipes: Vec<PipeEntry>,
         error_handlers: Vec<Arc<dyn ErrorHandler>>,
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
+        // Split req so we can pass parts to factory entries before Context takes ownership.
+        let (parts, body) = req.into_parts();
+        let guards = Self::resolve_guards(&guards, &parts).await;
+        let interceptors = Self::resolve_interceptors(&interceptors, &parts).await;
+        let pipes = Self::resolve_pipes(&pipes, &parts).await;
+        let req = HttpRequest::from_parts(parts, body);
+
         let mut context = Context::new(req, route_metadata.clone());
 
         // Execute guards

@@ -10,7 +10,7 @@ use crate::middleware::Middleware;
 use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
-use crate::traits_helpers::{Guard, Interceptor, Pipe};
+use crate::traits_helpers::{Guard, GuardEntry, Interceptor, InterceptorEntry, Pipe, PipeEntry};
 
 #[derive(Default)]
 pub struct ToniFactory {
@@ -141,13 +141,13 @@ impl ToniFactory {
         {
             let mut container_mut = container.borrow_mut();
             for guard in &self.global_guards {
-                container_mut.add_global_guard(guard.clone());
+                container_mut.add_global_guard(GuardEntry::Ready(guard.clone()));
             }
             for interceptor in &self.global_interceptors {
-                container_mut.add_global_interceptor(interceptor.clone());
+                container_mut.add_global_interceptor(InterceptorEntry::Ready(interceptor.clone()));
             }
             for pipe in &self.global_pipes {
-                container_mut.add_global_pipe(pipe.clone());
+                container_mut.add_global_pipe(PipeEntry::Ready(pipe.clone()));
             }
             if let Some(error_handler) = &self.global_error_handler {
                 container_mut.add_global_error_handler(error_handler.clone());

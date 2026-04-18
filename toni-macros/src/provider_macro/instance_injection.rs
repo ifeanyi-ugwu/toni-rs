@@ -259,21 +259,27 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     if traits.is_guard {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Guard(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard>
+                ::toni::traits_helpers::GuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard>
+                )
             ));
         });
     }
     if traits.is_interceptor {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>
+                ::toni::traits_helpers::InterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>
+                )
             ));
         });
     }
     if traits.is_pipe {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>
+                ::toni::traits_helpers::PipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>
+                )
             ));
         });
     }
@@ -950,8 +956,12 @@ fn generate_factory(
         ProviderScope::Singleton => {
             generate_singleton_factory(struct_name, dependencies, enhancer_traits)
         }
-        ProviderScope::Request => generate_request_factory(struct_name, dependencies),
-        ProviderScope::Transient => generate_transient_factory(struct_name, dependencies),
+        ProviderScope::Request => {
+            generate_request_factory(struct_name, dependencies, enhancer_traits)
+        }
+        ProviderScope::Transient => {
+            generate_transient_factory(struct_name, dependencies, enhancer_traits)
+        }
     }
 }
 
@@ -1125,14 +1135,17 @@ fn generate_singleton_factory(
     }
 }
 
-fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+fn generate_request_factory(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    enhancer_traits: &EnhancerTraits,
+) -> TokenStream {
     let factory_name = Ident::new(
         &format!("{}ProviderFactory", struct_name),
         struct_name.span(),
     );
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
-    // Collect dependency tokens from both constructor params and #[inject] fields
     let dependency_tokens: Vec<_> = dependencies
         .constructor_params
         .iter()
@@ -1145,7 +1158,44 @@ fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) 
         )
         .collect();
 
+    let (dyn_factory_structs, factory_role_pushes) =
+        generate_dyn_factories(struct_name, dependencies, enhancer_traits);
+
+    let has_enhancer_roles = !factory_role_pushes.is_empty();
+
+    let build_body = if has_enhancer_roles {
+        quote! {
+            let __has_request_deps = __deps.values().any(|inj|
+                matches!(inj.instance.get_scope(), ::toni::ProviderScope::Request)
+            );
+            let __all_deps = ::std::sync::Arc::new(
+                __deps.iter()
+                    .map(|(k, inj)| (k.clone(), inj.instance.clone()))
+                    .collect::<::toni::FxHashMap<_, _>>()
+            );
+            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+            let mut __roles = ::std::vec::Vec::new();
+            #factory_role_pushes
+            ::toni::traits_helpers::Injectable::new(
+                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
+                __roles,
+            )
+        }
+    } else {
+        quote! {
+            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+            ::toni::traits_helpers::Injectable::new(
+                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
+                ::std::vec::Vec::new(),
+            )
+        }
+    };
+
     quote! {
+        #dyn_factory_structs
+
         pub struct #factory_name;
 
         #[::toni::async_trait]
@@ -1162,27 +1212,23 @@ fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) 
                 &self,
                 __deps: ::toni::FxHashMap<String, ::toni::traits_helpers::Injectable>,
             ) -> ::toni::traits_helpers::Injectable {
-                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                    __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-                ::toni::traits_helpers::Injectable::new(
-                    ::std::sync::Arc::new(Box::new(#provider_name {
-                        dependencies,
-                    }) as Box<dyn ::toni::traits_helpers::Provider>),
-                    ::std::vec::Vec::new(),
-                )
+                #build_body
             }
         }
     }
 }
 
-fn generate_transient_factory(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
+fn generate_transient_factory(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    enhancer_traits: &EnhancerTraits,
+) -> TokenStream {
     let factory_name = Ident::new(
         &format!("{}ProviderFactory", struct_name),
         struct_name.span(),
     );
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
-    // Collect dependency tokens from both constructor params and #[inject] fields
     let dependency_tokens: Vec<_> = dependencies
         .constructor_params
         .iter()
@@ -1195,7 +1241,44 @@ fn generate_transient_factory(struct_name: &Ident, dependencies: &DependencyInfo
         )
         .collect();
 
+    let (dyn_factory_structs, factory_role_pushes) =
+        generate_dyn_factories(struct_name, dependencies, enhancer_traits);
+
+    let has_enhancer_roles = !factory_role_pushes.is_empty();
+
+    let build_body = if has_enhancer_roles {
+        quote! {
+            let __has_request_deps = __deps.values().any(|inj|
+                matches!(inj.instance.get_scope(), ::toni::ProviderScope::Request)
+            );
+            let __all_deps = ::std::sync::Arc::new(
+                __deps.iter()
+                    .map(|(k, inj)| (k.clone(), inj.instance.clone()))
+                    .collect::<::toni::FxHashMap<_, _>>()
+            );
+            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+            let mut __roles = ::std::vec::Vec::new();
+            #factory_role_pushes
+            ::toni::traits_helpers::Injectable::new(
+                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
+                __roles,
+            )
+        }
+    } else {
+        quote! {
+            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+            ::toni::traits_helpers::Injectable::new(
+                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
+                ::std::vec::Vec::new(),
+            )
+        }
+    };
+
     quote! {
+        #dyn_factory_structs
+
         pub struct #factory_name;
 
         #[::toni::async_trait]
@@ -1212,15 +1295,306 @@ fn generate_transient_factory(struct_name: &Ident, dependencies: &DependencyInfo
                 &self,
                 __deps: ::toni::FxHashMap<String, ::toni::traits_helpers::Injectable>,
             ) -> ::toni::traits_helpers::Injectable {
-                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                    __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-                ::toni::traits_helpers::Injectable::new(
-                    ::std::sync::Arc::new(Box::new(#provider_name {
-                        dependencies,
-                    }) as Box<dyn ::toni::traits_helpers::Provider>),
-                    ::std::vec::Vec::new(),
-                )
+                #build_body
             }
         }
     }
+}
+
+/// Generates the dep resolution code for use inside a `DynXxxFactory::create()` body.
+///
+/// Unlike `generate_field_resolutions` (which uses `self.dependencies` and `_ctx`),
+/// this version uses a captured `all_deps: Arc<FxHashMap<...>>` and selects the
+/// `ProviderContext` at runtime based on each provider's declared scope.
+fn generate_create_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
+    let mut resolutions = Vec::new();
+    let mut field_names = Vec::new();
+
+    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
+        &dependencies.constructor_params
+    } else {
+        &dependencies.fields
+    };
+
+    let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
+        .iter()
+        .partition(|(_, full_type, _)| extract_vec_arc_dyn_inner(full_type).is_some());
+
+    for (field_name, full_type, lookup_token_expr) in &multi_deps {
+        let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
+        let downcast_inner = normalize_trait_send_sync(inner_trait.clone());
+        let field_name_str = field_name.to_string();
+        resolutions.push(quote! {
+            let #field_name: #full_type = {
+                let __lookup_token = #lookup_token_expr;
+                let __provider = all_deps.get(&__lookup_token)
+                    .unwrap_or_else(|| panic!(
+                        "Missing multi-provider '{}' for field '{}'",
+                        __lookup_token, #field_name_str
+                    ));
+                let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                        parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
+                        cache: &__request_cache,
+                    })
+                } else {
+                    ::toni::ProviderContext::None
+                };
+                let __any_box = __provider.execute(::std::vec::Vec::new(), __ctx).await;
+                let erased_items = *__any_box
+                    .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
+                    .unwrap_or_else(|_| panic!(
+                        "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
+                        __lookup_token
+                    ));
+                erased_items
+                    .into_iter()
+                    .map(|item| -> ::std::sync::Arc<#inner_trait> {
+                        let wrapped = ::std::sync::Arc::downcast::<::std::sync::Arc<#downcast_inner>>(item)
+                            .unwrap_or_else(|_| panic!(
+                                "Multi-provider '{}': item downcast to Arc<{}> failed",
+                                __lookup_token,
+                                stringify!(#downcast_inner)
+                            ));
+                        (*wrapped).clone()
+                    })
+                    .collect()
+            };
+        });
+        field_names.push(field_name.clone());
+    }
+
+    for (field_name, full_type, lookup_token_expr) in &regular_deps {
+        let field_name_str = field_name.to_string();
+        resolutions.push(quote! {
+            let #field_name: #full_type = {
+                let __lookup_token = #lookup_token_expr;
+                let __provider = all_deps.get(&__lookup_token)
+                    .unwrap_or_else(|| panic!(
+                        "Missing dependency '{}' for field '{}'",
+                        __lookup_token, #field_name_str
+                    ));
+                let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                        parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
+                        cache: &__request_cache,
+                    })
+                } else {
+                    ::toni::ProviderContext::None
+                };
+                let __any_box = __provider.execute(::std::vec::Vec::new(), __ctx).await;
+                *__any_box.downcast::<#full_type>()
+                    .unwrap_or_else(|_| panic!(
+                        "Failed to downcast '{}' to {}",
+                        __lookup_token,
+                        stringify!(#full_type)
+                    ))
+            };
+        });
+        field_names.push(field_name.clone());
+    }
+
+    (resolutions, field_names)
+}
+
+/// Generates the `DynGuardFactory`, `DynInterceptorFactory`, and/or `DynPipeFactory`
+/// implementor structs for request/transient-scoped providers that are also enhancers.
+///
+/// Returns `(struct_defs, role_pushes)`:
+/// - `struct_defs`: emitted before the provider factory struct
+/// - `role_pushes`: emitted inside `build()`, assumes `__all_deps` and `__has_request_deps` are in scope
+fn generate_dyn_factories(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    enhancer_traits: &EnhancerTraits,
+) -> (TokenStream, TokenStream) {
+    let needs_guard = enhancer_traits.is_guard;
+    let needs_interceptor = enhancer_traits.is_interceptor;
+    let needs_pipe = enhancer_traits.is_pipe;
+
+    if !needs_guard && !needs_interceptor && !needs_pipe {
+        return (quote! {}, quote! {});
+    }
+
+    let (field_resolutions, field_names) = generate_create_field_resolutions(dependencies);
+
+    // Struct construction — same shape as request/transient provider execute()
+    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
+        let init_ident = syn::Ident::new(init_fn, struct_name.span());
+        let is_from_request = init_fn == "from_request";
+        if is_from_request {
+            if field_names.is_empty() {
+                quote! { #struct_name::#init_ident(request_parts.expect("HTTP request context required")) }
+            } else {
+                quote! { #struct_name::#init_ident(request_parts.expect("HTTP request context required"), #(#field_names),*) }
+            }
+        } else {
+            quote! { #struct_name::#init_ident(#(#field_names),*) }
+        }
+    } else {
+        let owned_field_inits: Vec<_> = dependencies
+            .owned_fields
+            .iter()
+            .map(|(field_name, field_type, default_expr)| {
+                if let Some(expr) = default_expr {
+                    quote! { #field_name: #expr }
+                } else {
+                    quote! { #field_name: <#field_type>::default() }
+                }
+            })
+            .collect();
+        quote! {
+            #struct_name {
+                #(#field_names,)*
+                #(#owned_field_inits),*
+            }
+        }
+    };
+
+    let deps_arc_ty = quote! {
+        ::std::sync::Arc<::toni::FxHashMap<
+            String,
+            ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
+        >>
+    };
+
+    let mut struct_defs = Vec::new();
+    let mut role_push_stmts = Vec::new();
+
+    if needs_guard {
+        let factory_struct_name = Ident::new(
+            &format!("__Toni{}GuardDynFactory", struct_name),
+            struct_name.span(),
+        );
+        struct_defs.push(quote! {
+            struct #factory_struct_name {
+                all_deps: #deps_arc_ty,
+                has_request_deps: bool,
+            }
+
+            impl ::toni::traits_helpers::DynGuardFactory for #factory_struct_name {
+                fn requires_http_parts(&self) -> bool {
+                    self.has_request_deps
+                }
+
+                fn create<'a>(
+                    &'a self,
+                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
+                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                > + Send + 'a>> {
+                    let all_deps = self.all_deps.clone();
+                    ::std::boxed::Box::pin(async move {
+                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                        #(#field_resolutions)*
+                        let instance = #struct_instantiation;
+                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                    })
+                }
+            }
+        });
+        role_push_stmts.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
+                ::toni::traits_helpers::GuardEntry::Factory(
+                    ::std::sync::Arc::new(#factory_struct_name {
+                        all_deps: __all_deps.clone(),
+                        has_request_deps: __has_request_deps,
+                    })
+                )
+            ));
+        });
+    }
+
+    if needs_interceptor {
+        let factory_struct_name = Ident::new(
+            &format!("__Toni{}InterceptorDynFactory", struct_name),
+            struct_name.span(),
+        );
+        struct_defs.push(quote! {
+            struct #factory_struct_name {
+                all_deps: #deps_arc_ty,
+                has_request_deps: bool,
+            }
+
+            impl ::toni::traits_helpers::DynInterceptorFactory for #factory_struct_name {
+                fn requires_http_parts(&self) -> bool {
+                    self.has_request_deps
+                }
+
+                fn create<'a>(
+                    &'a self,
+                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
+                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
+                > + Send + 'a>> {
+                    let all_deps = self.all_deps.clone();
+                    ::std::boxed::Box::pin(async move {
+                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                        #(#field_resolutions)*
+                        let instance = #struct_instantiation;
+                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
+                    })
+                }
+            }
+        });
+        role_push_stmts.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
+                ::toni::traits_helpers::InterceptorEntry::Factory(
+                    ::std::sync::Arc::new(#factory_struct_name {
+                        all_deps: __all_deps.clone(),
+                        has_request_deps: __has_request_deps,
+                    })
+                )
+            ));
+        });
+    }
+
+    if needs_pipe {
+        let factory_struct_name = Ident::new(
+            &format!("__Toni{}PipeDynFactory", struct_name),
+            struct_name.span(),
+        );
+        struct_defs.push(quote! {
+            struct #factory_struct_name {
+                all_deps: #deps_arc_ty,
+                has_request_deps: bool,
+            }
+
+            impl ::toni::traits_helpers::DynPipeFactory for #factory_struct_name {
+                fn requires_http_parts(&self) -> bool {
+                    self.has_request_deps
+                }
+
+                fn create<'a>(
+                    &'a self,
+                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
+                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
+                > + Send + 'a>> {
+                    let all_deps = self.all_deps.clone();
+                    ::std::boxed::Box::pin(async move {
+                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                        #(#field_resolutions)*
+                        let instance = #struct_instantiation;
+                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
+                    })
+                }
+            }
+        });
+        role_push_stmts.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
+                ::toni::traits_helpers::PipeEntry::Factory(
+                    ::std::sync::Arc::new(#factory_struct_name {
+                        all_deps: __all_deps.clone(),
+                        has_request_deps: __has_request_deps,
+                    })
+                )
+            ));
+        });
+    }
+
+    (
+        quote! { #(#struct_defs)* },
+        quote! { #(#role_push_stmts)* },
+    )
 }
