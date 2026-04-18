@@ -38,7 +38,7 @@ impl ToniInstanceLoader {
             ));
             self.container
                 .borrow_mut()
-                .add_provider_instance(module_token, provider)?;
+                .add_provider_instance(module_token, provider, vec![])?;
         }
 
         // PHASE 1: Create provider instances for all modules (with deferred retry logic)
@@ -186,110 +186,71 @@ impl ToniInstanceLoader {
     /// Resolve APP_* token providers to global enhancers
     fn resolve_app_token_enhancers(&self) -> Result<()> {
         let container = self.container.borrow();
-
-        // Get APP_GUARD providers
         let app_guard_providers = container.get_app_guard_providers().to_vec();
+        let app_interceptor_providers = container.get_app_interceptor_providers().to_vec();
+        let app_pipe_providers = container.get_app_pipe_providers().to_vec();
         drop(container);
 
-        for (module_token, provider_token) in app_guard_providers {
-            let guard = {
-                let container_ref = self.container.borrow();
-                let provider = container_ref
-                    .get_provider_instance_by_token(&module_token, &provider_token)?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "APP_GUARD provider '{}' not found in module '{}'",
-                            provider_token,
-                            module_token
-                        )
-                    })?;
-
-                provider.as_guard().ok_or_else(|| {
+        for (_, provider_token) in app_guard_providers {
+            let guard = self
+                .container
+                .borrow()
+                .get_role_registry()
+                .guards
+                .get(&provider_token)
+                .cloned()
+                .ok_or_else(|| {
                     anyhow!(
                         "Provider '{}' with APP_GUARD token does not implement Guard trait",
                         provider_token
                     )
-                })?
-            };
+                })?;
             self.container.borrow_mut().add_global_guard(guard);
         }
 
-        // Get APP_INTERCEPTOR providers
-        let container = self.container.borrow();
-        let app_interceptor_providers = container.get_app_interceptor_providers().to_vec();
-        drop(container);
-
-        for (module_token, provider_token) in app_interceptor_providers {
-            let interceptor = {
-                let container_ref = self.container.borrow();
-                let provider = container_ref
-                    .get_provider_instance_by_token(&module_token, &provider_token)?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "APP_INTERCEPTOR provider '{}' not found in module '{}'",
-                            provider_token,
-                            module_token
-                        )
-                    })?;
-
-                provider.as_interceptor().ok_or_else(|| {
+        for (_, provider_token) in app_interceptor_providers {
+            let interceptor = self
+                .container
+                .borrow()
+                .get_role_registry()
+                .interceptors
+                .get(&provider_token)
+                .cloned()
+                .ok_or_else(|| {
                     anyhow!(
                         "Provider '{}' with APP_INTERCEPTOR token does not implement Interceptor trait",
                         provider_token
                     )
-                })?
-            };
-            self.container
-                .borrow_mut()
-                .add_global_interceptor(interceptor);
+                })?;
+            self.container.borrow_mut().add_global_interceptor(interceptor);
         }
 
-        // Get APP_PIPE providers
-        let container = self.container.borrow();
-        let app_pipe_providers = container.get_app_pipe_providers().to_vec();
-        drop(container);
-
-        for (module_token, provider_token) in app_pipe_providers {
-            let pipe = {
-                let container_ref = self.container.borrow();
-                let provider = container_ref
-                    .get_provider_instance_by_token(&module_token, &provider_token)?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "APP_PIPE provider '{}' not found in module '{}'",
-                            provider_token,
-                            module_token
-                        )
-                    })?;
-
-                provider.as_pipe().ok_or_else(|| {
+        for (_, provider_token) in app_pipe_providers {
+            let pipe = self
+                .container
+                .borrow()
+                .get_role_registry()
+                .pipes
+                .get(&provider_token)
+                .cloned()
+                .ok_or_else(|| {
                     anyhow!(
                         "Provider '{}' with APP_PIPE token does not implement Pipe trait",
                         provider_token
                     )
-                })?
-            };
+                })?;
             self.container.borrow_mut().add_global_pipe(pipe);
         }
 
         Ok(())
     }
 
-    /// Resolve middleware tokens from DI container
+    /// Resolve middleware tokens from the role registry
     fn resolve_middleware_tokens(&self, modules_order: &[String]) -> Result<()> {
         for module_token in modules_order {
-            // Get providers for this module
-            let providers = self
-                .container
-                .borrow()
-                .get_providers_instance(module_token)?
-                .clone();
-
-            // Resolve middleware tokens to instances
-            let mut container_mut = self.container.borrow_mut();
-            if let Some(middleware_manager) = container_mut.get_middleware_manager_mut() {
-                middleware_manager.resolve_middleware_tokens(module_token, &providers)?;
-            }
+            self.container
+                .borrow_mut()
+                .resolve_module_middleware(module_token)?;
         }
         Ok(())
     }
@@ -299,7 +260,7 @@ impl ToniInstanceLoader {
         let ordered_providers_token = dependency_graph.get_ordered_providers_token()?;
         let provider_instances = {
             let container = self.container.borrow();
-            let mut instances = FxHashMap::default();
+            let mut instances: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)> = FxHashMap::default();
 
             for provider_token in ordered_providers_token {
                 let provider_factory = container
@@ -310,9 +271,10 @@ impl ToniInstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let provider = provider_factory.build(resolved_dependencies).await;
+                let (provider, roles) = provider_factory.build(resolved_dependencies).await;
                 tracing::debug!(module = %module_token, provider = %provider.get_token(), "provider instantiated");
-                instances.insert(provider.get_token(), provider);
+                let token = provider.get_token();
+                instances.insert(token, (provider, roles));
             }
             instances
         };
@@ -323,13 +285,13 @@ impl ToniInstanceLoader {
     fn add_providers_instances(
         &self,
         module_token: &String,
-        providers_instances: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        providers_instances: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>,
     ) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let mut providers_tokens = Vec::new();
-        for (provider_instance_token, provider_instance) in providers_instances {
+        for (provider_instance_token, (provider_instance, roles)) in providers_instances {
             let token_factory = provider_instance.get_token_factory().clone();
-            container.add_provider_instance(module_token, provider_instance)?;
+            container.add_provider_instance(module_token, provider_instance, roles)?;
             providers_tokens.push((token_factory, provider_instance_token));
         }
 
@@ -387,14 +349,18 @@ impl ToniInstanceLoader {
         module_token: String,
         controllers_instances: Vec<Arc<Box<dyn Controller>>>,
     ) -> Result<()> {
+        // Phase A: resolve enhancers under an immutable borrow.
+        let resolved: Vec<(Arc<Box<dyn Controller>>, EnhancerMetadata)> = controllers_instances
+            .into_iter()
+            .map(|ctrl| {
+                let meta = self.resolve_enhancers_from_tokens(&ctrl)?;
+                Ok((ctrl, meta))
+            })
+            .collect::<Result<_>>()?;
+
+        // Phase B: add instances under a mutable borrow.
         let mut container_mut = self.container.borrow_mut();
-
-        let providers = container_mut.get_providers_instance(&module_token)?.clone();
-
-        for controller_instance in controllers_instances {
-            let enhancer_metadata =
-                self.resolve_enhancers_from_tokens(&controller_instance, &providers)?;
-
+        for (controller_instance, enhancer_metadata) in resolved {
             container_mut.add_controller_instance(
                 &module_token,
                 controller_instance,
@@ -423,102 +389,59 @@ impl ToniInstanceLoader {
     fn resolve_enhancers_from_tokens(
         &self,
         controller: &Arc<Box<dyn Controller>>,
-        providers: &FxHashMap<String, Arc<Box<dyn Provider>>>,
     ) -> Result<EnhancerMetadata> {
-        // Resolve guards from DI (type name syntax: AuthGuard)
+        let registry = self.container.borrow();
+        let registry = registry.get_role_registry();
+
         let mut guards = Vec::new();
         for token in controller.get_guard_tokens() {
-            if let Some(provider_box) = providers.get(&token) {
-                if let Some(guard) = provider_box.as_guard() {
-                    guards.push(guard);
-                } else {
-                    return Err(anyhow!(
-                        "Provider '{}' was expected to be a Guard but as_guard() returned None. \
-                         Ensure the provider implements the Guard trait.",
-                        token
-                    ));
-                }
-            } else {
-                return Err(anyhow!(
-                    "Guard provider '{}' not found in DI container. \
-                     Did you forget to add it to the module's providers? \
-                     Or use direct instantiation with '{{}}' or '::new()' instead.",
+            let guard = registry.guards.get(&token).cloned().ok_or_else(|| {
+                anyhow!(
+                    "Guard '{}' not found in role registry. \
+                     Ensure the provider implements the Guard trait and is registered in the module's providers.",
                     token
-                ));
-            }
+                )
+            })?;
+            guards.push(guard);
         }
-        // Add directly instantiated guards (struct literal or constructor syntax: MyGuard{} or MyGuard::new())
         guards.extend(controller.get_guards());
 
-        // Resolve interceptors from DI (type name syntax: LoggingInterceptor)
         let mut interceptors = Vec::new();
         for token in controller.get_interceptor_tokens() {
-            if let Some(provider_box) = providers.get(&token) {
-                if let Some(interceptor) = provider_box.as_interceptor() {
-                    interceptors.push(interceptor);
-                } else {
-                    return Err(anyhow!(
-                        "Provider '{}' was expected to be an Interceptor but as_interceptor() returned None. \
-                         Ensure the provider implements the Interceptor trait.",
-                        token
-                    ));
-                }
-            } else {
-                return Err(anyhow!(
-                    "Interceptor provider '{}' not found in DI container. \
-                     Did you forget to add it to the module's providers? \
-                     Or use direct instantiation with '{{}}' or '::new()' instead.",
+            let interceptor = registry.interceptors.get(&token).cloned().ok_or_else(|| {
+                anyhow!(
+                    "Interceptor '{}' not found in role registry. \
+                     Ensure the provider implements the Interceptor trait and is registered in the module's providers.",
                     token
-                ));
-            }
+                )
+            })?;
+            interceptors.push(interceptor);
         }
-        // Add directly instantiated interceptors (struct literal or constructor syntax)
         interceptors.extend(controller.get_interceptors());
 
-        // Resolve pipes from DI (type name syntax: ValidationPipe)
         let mut pipes = Vec::new();
         for token in controller.get_pipe_tokens() {
-            if let Some(provider_box) = providers.get(&token) {
-                if let Some(pipe) = provider_box.as_pipe() {
-                    pipes.push(pipe);
-                } else {
-                    return Err(anyhow!(
-                        "Provider '{}' was expected to be a Pipe but as_pipe() returned None. \
-                         Ensure the provider implements the Pipe trait.",
-                        token
-                    ));
-                }
-            } else {
-                return Err(anyhow!(
-                    "Pipe provider '{}' not found in DI container. \
-                     Did you forget to add it to the module's providers? \
-                     Or use direct instantiation with '{{}}' or '::new()' instead.",
+            let pipe = registry.pipes.get(&token).cloned().ok_or_else(|| {
+                anyhow!(
+                    "Pipe '{}' not found in role registry. \
+                     Ensure the provider implements the Pipe trait and is registered in the module's providers.",
                     token
-                ));
-            }
+                )
+            })?;
+            pipes.push(pipe);
         }
-        // Add directly instantiated pipes (struct literal or constructor syntax)
         pipes.extend(controller.get_pipes());
 
         let mut error_handlers = Vec::new();
         for token in controller.get_error_handler_tokens() {
-            if let Some(provider_box) = providers.get(&token) {
-                if let Some(error_handler) = provider_box.as_error_handler() {
-                    error_handlers.push(error_handler);
-                } else {
-                    return Err(anyhow!(
-                        "Provider '{}' was expected to be an ErrorHandler but as_error_handler() returned None. \
-                         Ensure the provider implements the ErrorHandler trait.",
-                        token
-                    ));
-                }
-            } else {
-                return Err(anyhow!(
-                    "ErrorHandler provider '{}' not found in DI container. \
-                     Did you forget to add it to the module's providers?",
+            let eh = registry.error_handlers.get(&token).cloned().ok_or_else(|| {
+                anyhow!(
+                    "ErrorHandler '{}' not found in role registry. \
+                     Ensure the provider implements the ErrorHandler trait and is registered in the module's providers.",
                     token
-                ));
-            }
+                )
+            })?;
+            error_handlers.push(eh);
         }
         error_handlers.extend(controller.get_error_handlers());
 
@@ -534,18 +457,14 @@ impl ToniInstanceLoader {
         &self,
         module_token: &String,
         dependencies: Vec<String>,
-        providers_instances: Option<&FxHashMap<String, Arc<Box<dyn Provider>>>>,
+        providers_instances: Option<&FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>>,
     ) -> Result<FxHashMap<String, Arc<Box<dyn Provider>>>> {
         let container = self.container.borrow();
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
-            let instances = match providers_instances {
-                Some(providers_instances) => providers_instances,
-                None => container.get_providers_instance(module_token)?,
-            };
             // Step 1: Check local providers (in-progress build map)
-            if let Some(instance) = instances.get(&dependency) {
+            if let Some((instance, _)) = providers_instances.and_then(|m| m.get(&dependency)) {
                 resolved_dependencies.insert(dependency, instance.clone());
             }
             // Step 1b: Check pre-registered container instances not yet in the build map
@@ -594,7 +513,7 @@ impl ToniInstanceLoader {
                     // already-saved container instances (cross-module contributions).
                     let item = providers_instances
                         .and_then(|m| m.get(provider_token))
-                        .and_then(|p| p.as_multi_item());
+                        .and_then(|(p, _)| p.as_multi_item());
                     if let Some(item) = item {
                         items.push(item);
                     } else if let Ok(saved) = container.get_providers_instance(contrib_module_token)

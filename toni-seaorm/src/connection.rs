@@ -21,16 +21,19 @@ impl ProviderFactory for SeaOrmConnectionFactory {
     async fn build(
         &self,
         _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<Box<dyn Provider>> {
+    ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
         let db = Database::connect(&self.database_url)
             .await
             .unwrap_or_else(|e| {
                 panic!("SeaORM: failed to connect to '{}': {e}", self.database_url)
             });
 
-        Arc::new(Box::new(SeaOrmConnectionProvider {
-            db: Mutex::new(Some(db)),
-        }))
+        (
+            Arc::new(Box::new(SeaOrmConnectionProvider {
+                db: Mutex::new(Some(db)),
+            })),
+            vec![],
+        )
     }
 }
 

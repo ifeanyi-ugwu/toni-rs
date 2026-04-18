@@ -9,12 +9,13 @@ use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, ControllerFactory, Guard, Interceptor, ModuleMetadata, Pipe, Provider,
-        ProviderFactory,
+        ProviderFactory, ProviderRole,
     },
     websocket::GatewayTrait,
 };
 
-use super::{InstanceWrapper, module::Module};
+
+use super::{InstanceWrapper, RoleRegistry, module::Module};
 
 pub struct ToniContainer {
     modules: FxHashMap<String, Module>,
@@ -40,12 +41,8 @@ pub struct ToniContainer {
     /// Fully-collected multi-provider instances, keyed by base token.
     /// Built by the instance loader after Phase 1 and resolved like regular providers.
     multi_collection_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    /// WebSocket gateways — populated automatically when provider instances are added.
-    /// Key is the WS path (e.g. "/chat"), value is the raw gateway ready for wrapping.
-    gateways: FxHashMap<String, Arc<Box<dyn GatewayTrait>>>,
-    /// RPC controllers — populated automatically when provider instances are added.
-    /// Key is the controller token, value is the raw controller ready for wrapping.
-    rpc_controllers: FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>>,
+    /// Per-role registries populated by `ProviderFactory::extract_roles` at instance creation.
+    role_registry: RoleRegistry,
 }
 
 impl Default for ToniContainer {
@@ -70,8 +67,7 @@ impl ToniContainer {
             app_pipe_providers: Vec::new(),
             multi_providers: FxHashMap::default(),
             multi_collection_providers: FxHashMap::default(),
-            gateways: FxHashMap::default(),
-            rpc_controllers: FxHashMap::default(),
+            role_registry: RoleRegistry::new(),
         }
     }
 
@@ -153,13 +149,36 @@ impl ToniContainer {
         &mut self,
         module_ref_token: &String,
         provider_instance: Arc<Box<dyn Provider>>,
+        roles: Vec<ProviderRole>,
     ) -> Result<()> {
-        if let Some(gateway) = provider_instance.as_gateway() {
-            self.gateways.insert(gateway.get_path(), gateway);
-        }
+        let token = provider_instance.get_token_factory();
 
-        if let Some(rpc_ctrl) = provider_instance.as_rpc_controller() {
-            self.rpc_controllers.insert(rpc_ctrl.get_token(), rpc_ctrl);
+        for role in roles {
+            match role {
+                ProviderRole::Guard(g) => {
+                    self.role_registry.guards.insert(token.clone(), g);
+                }
+                ProviderRole::Interceptor(i) => {
+                    self.role_registry.interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::Pipe(p) => {
+                    self.role_registry.pipes.insert(token.clone(), p);
+                }
+                ProviderRole::Middleware(m) => {
+                    self.role_registry.middleware.insert(token.clone(), m);
+                }
+                ProviderRole::ErrorHandler(eh) => {
+                    self.role_registry.error_handlers.insert(token.clone(), eh);
+                }
+                ProviderRole::Gateway(gw) => {
+                    let path = gw.get_path();
+                    self.role_registry.gateways.insert(path, gw);
+                }
+                ProviderRole::RpcController(rc) => {
+                    let rc_token = rc.get_token();
+                    self.role_registry.rpc_controllers.insert(rc_token, rc);
+                }
+            }
         }
 
         let module_ref = self
@@ -170,12 +189,27 @@ impl ToniContainer {
         Ok(())
     }
 
+    pub(crate) fn get_role_registry(&self) -> &RoleRegistry {
+        &self.role_registry
+    }
+
     pub fn get_gateways(&self) -> &FxHashMap<String, Arc<Box<dyn GatewayTrait>>> {
-        &self.gateways
+        &self.role_registry.gateways
     }
 
     pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>> {
-        &self.rpc_controllers
+        &self.role_registry.rpc_controllers
+    }
+
+    /// Resolve middleware tokens for one module against the role registry.
+    ///
+    /// Called from the instance loader after all providers are instantiated so
+    /// that the registry is fully populated before middleware is resolved.
+    pub fn resolve_module_middleware(&mut self, module_token: &str) -> Result<()> {
+        if let Some(manager) = self.middleware_manager.as_mut() {
+            manager.resolve_middleware_tokens(module_token, &self.role_registry.middleware)?;
+        }
+        Ok(())
     }
 
     pub fn add_controller_instance(

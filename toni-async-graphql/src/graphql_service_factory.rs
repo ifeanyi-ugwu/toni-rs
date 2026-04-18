@@ -3,7 +3,7 @@ use crate::graphql_service::GraphQLService;
 use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use std::sync::Arc;
-use toni::traits_helpers::{Provider, ProviderFactory};
+use toni::traits_helpers::{Provider, ProviderFactory, ProviderRole};
 use toni::FxHashMap;
 
 /// `ProviderFactory` for `GraphQLService` — registered during module scanning.
@@ -52,10 +52,13 @@ where
     async fn build(
         &self,
         _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<Box<dyn Provider>> {
-        Arc::new(Box::new(GraphQLService::new(
-            self.schema.clone(),
-            self.context_builder.clone(),
-        )) as Box<dyn Provider>)
+    ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
+        (
+            Arc::new(Box::new(GraphQLService::new(
+                self.schema.clone(),
+                self.context_builder.clone(),
+            )) as Box<dyn Provider>),
+            vec![],
+        )
     }
 }

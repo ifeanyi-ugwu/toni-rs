@@ -9,7 +9,7 @@ mod provider_context;
 pub use self::provider_context::{HttpContext, ProviderContext};
 
 mod provider;
-pub use self::provider::{Provider, ProviderFactory};
+pub use self::provider::{Provider, ProviderFactory, ProviderRole};
 
 mod controller;
 pub use self::controller::{Controller, ControllerFactory};

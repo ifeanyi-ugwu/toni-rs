@@ -30,9 +30,9 @@ where
     async fn build(
         &self,
         _deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<Box<dyn Provider>> {
+    ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
         let client = (self.connect)().await;
-        Arc::new(Box::new(PrismaClientProvider { client }))
+        (Arc::new(Box::new(PrismaClientProvider { client })), vec![])
     }
 }
 
