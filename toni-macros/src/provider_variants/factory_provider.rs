@@ -372,37 +372,92 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     let needs_caching = !matches!(scope.as_deref(), Some("request") | Some("transient"));
 
     let (provider_struct_def, build_body) = if !needs_caching {
-        let non_caching_body = quote! {
-            struct FactoryProviderWithDeps {
-                deps: std::sync::Arc<toni::FxHashMap<
-                    String,
-                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                >>,
-            }
-
-            #[toni::async_trait]
-            impl toni::traits_helpers::Provider for FactoryProviderWithDeps {
-                fn get_token(&self) -> String { #token_expr }
-                fn get_token_factory(&self) -> String { #token_expr }
-                fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
-
-                async fn execute(
-                    &self,
-                    _params: Vec<Box<dyn std::any::Any + Send>>,
-                    _ctx: toni::ProviderContext<'_>,
-                ) -> Box<dyn std::any::Any + Send> {
-                    let _dependencies = &self.deps;
-                    let factory = #factory_expr;
-                    #factory_invocation
-                }
-            }
-
-            toni::traits_helpers::Injectable::new(
-                std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
-                    deps: std::sync::Arc::new(_dependencies),
-                }) as Box<dyn toni::traits_helpers::Provider>),
-                std::vec::Vec::new(),
+        let (dyn_factory_structs, factory_role_pushes) = if enhancers.is_empty() {
+            (quote! {}, quote! {})
+        } else {
+            generate_noncaching_factory_structs(
+                &sanitized_name,
+                &factory_expr,
+                &dep_resolutions,
+                &param_names,
+                is_async,
+                &enhancers,
             )
+        };
+
+        let has_enhancer_roles = !factory_role_pushes.is_empty();
+
+        let non_caching_body = if has_enhancer_roles {
+            quote! {
+                #dyn_factory_structs
+
+                struct FactoryProviderWithDeps {
+                    deps: std::sync::Arc<toni::FxHashMap<
+                        String,
+                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                    >>,
+                }
+
+                #[toni::async_trait]
+                impl toni::traits_helpers::Provider for FactoryProviderWithDeps {
+                    fn get_token(&self) -> String { #token_expr }
+                    fn get_token_factory(&self) -> String { #token_expr }
+                    fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
+
+                    async fn execute(
+                        &self,
+                        _params: Vec<Box<dyn std::any::Any + Send>>,
+                        _ctx: toni::ProviderContext<'_>,
+                    ) -> Box<dyn std::any::Any + Send> {
+                        let _dependencies = &self.deps;
+                        let factory = #factory_expr;
+                        #factory_invocation
+                    }
+                }
+
+                let __all_deps = std::sync::Arc::new(_dependencies);
+                let mut __roles = std::vec::Vec::new();
+                #factory_role_pushes
+                toni::traits_helpers::Injectable::new(
+                    std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
+                        deps: __all_deps,
+                    }) as Box<dyn toni::traits_helpers::Provider>),
+                    __roles,
+                )
+            }
+        } else {
+            quote! {
+                struct FactoryProviderWithDeps {
+                    deps: std::sync::Arc<toni::FxHashMap<
+                        String,
+                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
+                    >>,
+                }
+
+                #[toni::async_trait]
+                impl toni::traits_helpers::Provider for FactoryProviderWithDeps {
+                    fn get_token(&self) -> String { #token_expr }
+                    fn get_token_factory(&self) -> String { #token_expr }
+                    fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
+
+                    async fn execute(
+                        &self,
+                        _params: Vec<Box<dyn std::any::Any + Send>>,
+                        _ctx: toni::ProviderContext<'_>,
+                    ) -> Box<dyn std::any::Any + Send> {
+                        let _dependencies = &self.deps;
+                        let factory = #factory_expr;
+                        #factory_invocation
+                    }
+                }
+
+                toni::traits_helpers::Injectable::new(
+                    std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
+                        deps: std::sync::Arc::new(_dependencies),
+                    }) as Box<dyn toni::traits_helpers::Provider>),
+                    std::vec::Vec::new(),
+                )
+            }
         };
         (quote! {}, non_caching_body)
     } else {
@@ -449,4 +504,107 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     };
 
     Ok(expanded)
+}
+
+/// Generates `DynGuardFactory` / `DynInterceptorFactory` / `DynPipeFactory` implementors
+/// for the non-caching (`request` / `transient`) path of `provider_factory!`.
+///
+/// The factory closure is re-invoked on every `create()` call. Dep resolution always
+/// uses `ProviderContext::None` (matching how the non-caching provider's `execute()` works),
+/// so `requires_http_parts()` is always `false`.
+///
+/// Returns `(struct_defs, role_push_stmts)`. Role pushes assume `__all_deps: Arc<FxHashMap<...>>`
+/// is in scope in `build()`.
+fn generate_noncaching_factory_structs(
+    sanitized_name: &str,
+    factory_expr: &Expr,
+    dep_resolutions: &[TokenStream],
+    param_names: &[&syn::Ident],
+    is_async: bool,
+    enhancers: &[EnhancerType],
+) -> (TokenStream, TokenStream) {
+    let deps_arc_ty = quote! {
+        std::sync::Arc<toni::FxHashMap<
+            String,
+            std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>
+        >>
+    };
+
+    // The create() body resolves deps (same as execute()) then wraps in Arc.
+    let create_call = if dep_resolutions.is_empty() {
+        if is_async {
+            quote! { factory().await }
+        } else {
+            quote! { factory() }
+        }
+    } else if is_async {
+        quote! { { #(#dep_resolutions)* factory(#(#param_names),*).await } }
+    } else {
+        quote! { { #(#dep_resolutions)* factory(#(#param_names),*) } }
+    };
+
+    let mut struct_defs = Vec::new();
+    let mut role_push_stmts = Vec::new();
+
+    for enhancer in enhancers {
+        let (struct_name, trait_path, entry_variant, role_variant) = match enhancer {
+            EnhancerType::Guard => (
+                format_ident!("__ToniFactoryGuardDynFactory_{}", sanitized_name),
+                quote! { toni::traits_helpers::Guard },
+                quote! { toni::traits_helpers::GuardEntry::Factory },
+                quote! { toni::traits_helpers::ProviderRole::Guard },
+            ),
+            EnhancerType::Interceptor => (
+                format_ident!("__ToniFactoryInterceptorDynFactory_{}", sanitized_name),
+                quote! { toni::traits_helpers::Interceptor },
+                quote! { toni::traits_helpers::InterceptorEntry::Factory },
+                quote! { toni::traits_helpers::ProviderRole::Interceptor },
+            ),
+            EnhancerType::Pipe => (
+                format_ident!("__ToniFactoryPipeDynFactory_{}", sanitized_name),
+                quote! { toni::traits_helpers::Pipe },
+                quote! { toni::traits_helpers::PipeEntry::Factory },
+                quote! { toni::traits_helpers::ProviderRole::Pipe },
+            ),
+        };
+
+        let dyn_factory_trait = match enhancer {
+            EnhancerType::Guard => quote! { toni::traits_helpers::DynGuardFactory },
+            EnhancerType::Interceptor => quote! { toni::traits_helpers::DynInterceptorFactory },
+            EnhancerType::Pipe => quote! { toni::traits_helpers::DynPipeFactory },
+        };
+
+        struct_defs.push(quote! {
+            struct #struct_name {
+                all_deps: #deps_arc_ty,
+            }
+
+            impl #dyn_factory_trait for #struct_name {
+                fn requires_http_parts(&self) -> bool { false }
+
+                fn create<'a>(
+                    &'a self,
+                    _request_parts: Option<&'a toni::http_helpers::RequestPart>,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<
+                    Output = std::sync::Arc<dyn #trait_path + Send + Sync>
+                > + Send + 'a>> {
+                    let all_deps = self.all_deps.clone();
+                    std::boxed::Box::pin(async move {
+                        let _dependencies = &all_deps;
+                        let factory = #factory_expr;
+                        let result = #create_call;
+                        std::sync::Arc::new(result) as std::sync::Arc<dyn #trait_path + Send + Sync>
+                    })
+                }
+            }
+        });
+
+        role_push_stmts.push(quote! {
+            __roles.push(#role_variant(
+                #entry_variant(std::sync::Arc::new(#struct_name { all_deps: __all_deps.clone() }))
+            ));
+        });
+    }
+
+    (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })
 }

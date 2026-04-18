@@ -49,7 +49,18 @@ impl GatewayResolver {
     fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
         let mut guards = self.container.borrow().get_global_enhancers().guards;
         for token in tokens {
-            guards.push(self.resolve_guard_by_token(&token)?);
+            let entry = self.resolve_guard_by_token(&token)?;
+            if let GuardEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Guard '{}' has request-scoped dependencies and cannot be used on a \
+                         WebSocket gateway — upgrade request parts are not yet forwarded through \
+                         the WS pipeline",
+                        token
+                    );
+                }
+            }
+            guards.push(entry);
         }
         Ok(guards)
     }
@@ -57,7 +68,18 @@ impl GatewayResolver {
     fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<InterceptorEntry>> {
         let mut interceptors = self.container.borrow().get_global_enhancers().interceptors;
         for token in tokens {
-            interceptors.push(self.resolve_interceptor_by_token(&token)?);
+            let entry = self.resolve_interceptor_by_token(&token)?;
+            if let InterceptorEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Interceptor '{}' has request-scoped dependencies and cannot be used on \
+                         a WebSocket gateway — upgrade request parts are not yet forwarded through \
+                         the WS pipeline",
+                        token
+                    );
+                }
+            }
+            interceptors.push(entry);
         }
         Ok(interceptors)
     }
@@ -65,7 +87,18 @@ impl GatewayResolver {
     fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
         let mut pipes = self.container.borrow().get_global_enhancers().pipes;
         for token in tokens {
-            pipes.push(self.resolve_pipe_by_token(&token)?);
+            let entry = self.resolve_pipe_by_token(&token)?;
+            if let PipeEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Pipe '{}' has request-scoped dependencies and cannot be used on a \
+                         WebSocket gateway — upgrade request parts are not yet forwarded through \
+                         the WS pipeline",
+                        token
+                    );
+                }
+            }
+            pipes.push(entry);
         }
         Ok(pipes)
     }
