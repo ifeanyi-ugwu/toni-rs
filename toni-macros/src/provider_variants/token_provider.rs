@@ -80,16 +80,10 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
 
                 async fn build(
                     &self,
-                    deps: toni::FxHashMap<
-                        String,
-                        (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                ) {
+                    deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                ) -> toni::traits_helpers::Injectable {
                     // Build inner and receive its roles — no downcast needed.
-                    let (inner_provider, roles) = #type_path::__toni_provider_factory().build(deps).await;
+                    let toni::traits_helpers::Injectable { instance: inner_provider, roles } = #type_path::__toni_provider_factory().build(deps).await;
 
                     // Wrap under the custom token; forward roles unchanged.
                     #[derive(Clone)]
@@ -126,7 +120,7 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
                         inner_provider,
                     }) as Box<dyn toni::traits_helpers::Provider>);
 
-                    (provider, roles)
+                    toni::traits_helpers::Injectable::new(provider, roles)
                 }
             }
 

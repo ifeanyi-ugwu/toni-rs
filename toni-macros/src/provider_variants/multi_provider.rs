@@ -219,15 +219,9 @@ fn generate_type_multi(
 
                 async fn build(
                     &self,
-                    deps: ::toni::FxHashMap<
-                        ::std::string::String,
-                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
-                    ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
-                ) {
-                    let (inner_provider, _) = #factory_ident.build(deps).await;
+                    deps: ::toni::FxHashMap<::std::string::String, ::toni::traits_helpers::Injectable>,
+                ) -> ::toni::traits_helpers::Injectable {
+                    let ::toni::traits_helpers::Injectable { instance: inner_provider, .. } = #factory_ident.build(deps).await;
                     let any_box = inner_provider
                         .execute(vec![], ::toni::ProviderContext::None)
                         .await;
@@ -246,7 +240,7 @@ fn generate_type_multi(
                         ::std::any::type_name::<#concrete_type>()
                     );
                     let base_token = #base_token_expr;
-                    (
+                    ::toni::traits_helpers::Injectable::new(
                         ::std::sync::Arc::new(
                             ::std::boxed::Box::new(#contrib_name { item: erased, synthetic_token, base_token })
                                 as ::std::boxed::Box<dyn ::toni::traits_helpers::Provider>,
@@ -297,14 +291,8 @@ fn generate_value_multi(
 
                 async fn build(
                     &self,
-                    _deps: ::toni::FxHashMap<
-                        ::std::string::String,
-                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
-                    ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
-                ) {
+                    _deps: ::toni::FxHashMap<::std::string::String, ::toni::traits_helpers::Injectable>,
+                ) -> ::toni::traits_helpers::Injectable {
                     let value = #value_expr;
                     let trait_arc: ::std::sync::Arc<#trait_ty> =
                         ::std::sync::Arc::new(value);
@@ -315,7 +303,7 @@ fn generate_value_multi(
                         concat!(file!(), ":", line!(), ":", column!())
                     );
                     let base_token = #base_token_expr;
-                    (
+                    ::toni::traits_helpers::Injectable::new(
                         ::std::sync::Arc::new(
                             ::std::boxed::Box::new(#contrib_name { item: erased, synthetic_token, base_token })
                                 as ::std::boxed::Box<dyn ::toni::traits_helpers::Provider>,
@@ -366,14 +354,8 @@ fn generate_factory_multi(
 
                 async fn build(
                     &self,
-                    _deps: ::toni::FxHashMap<
-                        ::std::string::String,
-                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
-                    ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
-                ) {
+                    _deps: ::toni::FxHashMap<::std::string::String, ::toni::traits_helpers::Injectable>,
+                ) -> ::toni::traits_helpers::Injectable {
                     let factory = #closure_expr;
                     let value = factory();
                     let trait_arc: ::std::sync::Arc<#trait_ty> =
@@ -385,7 +367,7 @@ fn generate_factory_multi(
                         concat!(file!(), ":", line!(), ":", column!())
                     );
                     let base_token = #base_token_expr;
-                    (
+                    ::toni::traits_helpers::Injectable::new(
                         ::std::sync::Arc::new(
                             ::std::boxed::Box::new(#contrib_name { item: erased, synthetic_token, base_token })
                                 as ::std::boxed::Box<dyn ::toni::traits_helpers::Provider>,
@@ -441,17 +423,11 @@ fn generate_alias_multi(
 
                 async fn build(
                     &self,
-                    deps: ::toni::FxHashMap<
-                        ::std::string::String,
-                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
-                    ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
-                ) {
+                    deps: ::toni::FxHashMap<::std::string::String, ::toni::traits_helpers::Injectable>,
+                ) -> ::toni::traits_helpers::Injectable {
                     let existing_provider = deps
                         .get(&#existing_token_expr)
-                        .map(|(p, _)| p.clone())
+                        .map(|inj| inj.instance.clone())
                         .unwrap_or_else(|| panic!(
                             "existing provider '{}' not found for multi contribution",
                             #existing_token_expr
@@ -474,7 +450,7 @@ fn generate_alias_multi(
                         #existing_token_expr
                     );
                     let base_token = #base_token_expr;
-                    (
+                    ::toni::traits_helpers::Injectable::new(
                         ::std::sync::Arc::new(
                             ::std::boxed::Box::new(#contrib_name { item: erased, synthetic_token, base_token })
                                 as ::std::boxed::Box<dyn ::toni::traits_helpers::Provider>,
@@ -528,15 +504,9 @@ fn generate_token_provider_multi(
 
                 async fn build(
                     &self,
-                    deps: ::toni::FxHashMap<
-                        ::std::string::String,
-                        (::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>, ::std::vec::Vec<::toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    ::std::sync::Arc<::std::boxed::Box<dyn ::toni::traits_helpers::Provider>>,
-                    ::std::vec::Vec<::toni::traits_helpers::ProviderRole>,
-                ) {
-                    let (inner_provider, _) = #concrete_type::__toni_provider_factory().build(deps).await;
+                    deps: ::toni::FxHashMap<::std::string::String, ::toni::traits_helpers::Injectable>,
+                ) -> ::toni::traits_helpers::Injectable {
+                    let ::toni::traits_helpers::Injectable { instance: inner_provider, .. } = #concrete_type::__toni_provider_factory().build(deps).await;
                     let any_box = inner_provider
                         .execute(vec![], ::toni::ProviderContext::None)
                         .await;
@@ -555,7 +525,7 @@ fn generate_token_provider_multi(
                         ::std::any::type_name::<#concrete_type>()
                     );
                     let base_token = #base_token_expr;
-                    (
+                    ::toni::traits_helpers::Injectable::new(
                         ::std::sync::Arc::new(
                             ::std::boxed::Box::new(#contrib_name { item: erased, synthetic_token, base_token })
                                 as ::std::boxed::Box<dyn ::toni::traits_helpers::Provider>,

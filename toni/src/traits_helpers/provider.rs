@@ -54,27 +54,32 @@ pub enum ProviderRole {
     RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
 }
 
+/// A fully-built, ready-to-inject provider with its role registrations.
+///
+/// Returned from `ProviderFactory::build` and passed as dep values so
+/// wrapper factories (e.g. `provider_alias!`) can forward roles without
+/// a downcast.
+#[derive(Clone)]
+pub struct Injectable {
+    pub instance: Arc<Box<dyn Provider>>,
+    pub roles: Vec<ProviderRole>,
+}
+
+impl Injectable {
+    pub fn new(instance: Arc<Box<dyn Provider>>, roles: Vec<ProviderRole>) -> Self {
+        Self { instance, roles }
+    }
+}
+
 #[async_trait]
 pub trait ProviderFactory {
     fn get_token(&self) -> String;
     fn get_dependencies(&self) -> Vec<String> {
         vec![]
     }
-    // For multi-contribution factories: returns the base token under which all contributions
-    // for the same logical multi-provider are grouped (e.g. "PLUGINS"). Returns None for
-    // regular (non-multi) factories.
     fn get_multi_base_token(&self) -> Option<String> {
         None
     }
 
-    /// Build the provider instance and return any roles it contributes.
-    ///
-    /// `deps` carries both the provider instance and its roles for each
-    /// resolved dependency, so wrapper factories (e.g. `provider_alias!`) can
-    /// forward a dependency's roles without a downcast. Factories that don't
-    /// need dep roles strip to `Arc<Box<dyn Provider>>` at the top of `build`.
-    async fn build(
-        &self,
-        deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>);
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable;
 }

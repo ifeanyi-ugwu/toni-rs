@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use sqlx::{Database, Pool};
 use toni::{
     FxHashMap,
-    traits_helpers::{Provider, ProviderContext, ProviderFactory, ProviderRole},
+    traits_helpers::{Injectable, Provider, ProviderContext, ProviderFactory},
 };
 
 pub(crate) struct SqlxPoolFactory<DB: Database> {
@@ -30,13 +30,13 @@ where
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<ProviderRole>) {
+        _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
+    ) -> Injectable {
         let pool = Pool::<DB>::connect(&self.url)
             .await
             .unwrap_or_else(|e| panic!("toni-sqlx: failed to connect to '{}': {e}", self.url));
 
-        (Arc::new(Box::new(SqlxPoolProvider { pool })), vec![])
+        Injectable::new(Arc::new(Box::new(SqlxPoolProvider { pool })), vec![])
     }
 }
 
