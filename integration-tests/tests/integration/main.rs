@@ -38,3 +38,4 @@ mod tower_compat;
 mod websocket_broadcast;
 mod websocket_e2e;
 mod ws_panic_recovery;
+mod rpc_panic_recovery;

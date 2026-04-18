@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -125,35 +126,48 @@ async fn handle_connection(
                 let writer = writer.clone();
 
                 tokio::spawn(async move {
-                    let outcome = callbacks.message(data, ctx).await;
+                    let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
+                        .catch_unwind()
+                        .await;
 
                     let Some(id) = id else {
-                        // Fire-and-forget: caller sent no id, never expects a reply.
+                        if outcome.is_err() {
+                            tracing::error!("RPC handler panicked on fire-and-forget message");
+                        }
                         return;
                     };
 
                     let payload_json = match outcome {
-                        Ok(Some(reply)) => {
-                            let v = match reply {
-                                RpcData::Json(v) => v,
-                                RpcData::Text(s) => serde_json::Value::String(s),
-                                RpcData::Binary(_) => serde_json::Value::Null,
-                            };
-                            serde_json::json!({ "id": id, "response": v })
-                        }
-                        Ok(None) => {
-                            // Handler is fire-and-forget (#[event_pattern]) but
-                            // caller sent an id — send an explicit ack so caller
-                            // can close the pending request rather than timing out.
-                            serde_json::json!({ "id": id, "response": null })
-                        }
-                        Err(e) => {
-                            let status = error_status(&e);
+                        Err(_) => {
+                            tracing::error!("RPC handler panicked; returning error to caller");
                             serde_json::json!({
                                 "id": id,
-                                "err": { "message": e.to_string(), "status": status }
+                                "err": { "message": "internal server error", "status": "error" }
                             })
                         }
+                        Ok(outcome) => match outcome {
+                            Ok(Some(reply)) => {
+                                let v = match reply {
+                                    RpcData::Json(v) => v,
+                                    RpcData::Text(s) => serde_json::Value::String(s),
+                                    RpcData::Binary(_) => serde_json::Value::Null,
+                                };
+                                serde_json::json!({ "id": id, "response": v })
+                            }
+                            Ok(None) => {
+                                // Handler is fire-and-forget (#[event_pattern]) but
+                                // caller sent an id — send an explicit ack so caller
+                                // can close the pending request rather than timing out.
+                                serde_json::json!({ "id": id, "response": null })
+                            }
+                            Err(e) => {
+                                let status = error_status(&e);
+                                serde_json::json!({
+                                    "id": id,
+                                    "err": { "message": e.to_string(), "status": status }
+                                })
+                            }
+                        },
                     };
 
                     let mut line = payload_json.to_string();
