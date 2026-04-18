@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
+use crate::http_helpers::RequestPart;
 use crate::websocket::{WsError, WsMessage, WsSink};
 
 /// Callbacks the framework supplies to an adapter for one gateway path.
@@ -15,7 +15,7 @@ use crate::websocket::{WsError, WsMessage, WsSink};
 pub struct WsConnectionCallbacks {
     on_connect: Arc<
         dyn Fn(
-                HashMap<String, String>,
+                RequestPart,
                 Arc<dyn WsSink>,
             ) -> Pin<Box<dyn Future<Output = Result<String, WsError>> + Send>>
             + Send
@@ -29,7 +29,7 @@ pub struct WsConnectionCallbacks {
 impl WsConnectionCallbacks {
     pub(crate) fn new(
         on_connect: impl Fn(
-            HashMap<String, String>,
+            RequestPart,
             Arc<dyn WsSink>,
         ) -> Pin<Box<dyn Future<Output = Result<String, WsError>> + Send>>
         + Send
@@ -53,14 +53,14 @@ impl WsConnectionCallbacks {
 
     /// Called by the adapter when a new client connects.
     ///
-    /// Pass the upgrade headers and an adapter-owned sender for this connection.
+    /// Pass the upgrade request parts and an adapter-owned sender for this connection.
     /// Returns the assigned client id, or an error if a guard rejects the connection.
     pub async fn connect(
         &self,
-        headers: HashMap<String, String>,
+        parts: RequestPart,
         sender: Arc<dyn WsSink>,
     ) -> Result<String, WsError> {
-        (self.on_connect)(headers, sender).await
+        (self.on_connect)(parts, sender).await
     }
 
     /// Called by the adapter for each decoded message from a connected client.

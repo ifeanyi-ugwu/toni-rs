@@ -9,6 +9,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
+use toni::http_helpers::RequestPart;
 use toni::websocket::{SendError, TrySendError, WsMessage, WsSink};
 use toni::{WebSocketAdapter, WsConnectionCallbacks};
 
@@ -162,7 +163,14 @@ async fn run_ws_connection(
 
     let sender: Arc<dyn WsSink> = Arc::new(TokioSender::new(tx));
 
-    let client_id = match callbacks.connect(HashMap::new(), sender).await {
+    // Raw TCP has no HTTP upgrade request; pass synthetic empty parts.
+    let parts: RequestPart = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri("/")
+        .body(())
+        .unwrap()
+        .into_parts()
+        .0;
+    let client_id = match callbacks.connect(parts, sender).await {
         Ok(id) => id,
         Err(_) => return,
     };

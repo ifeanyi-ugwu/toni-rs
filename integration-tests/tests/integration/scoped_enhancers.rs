@@ -11,6 +11,8 @@ use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::{
     controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
 };
+use toni::websocket::{WsClient, WsError, WsMessage};
+use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
 
@@ -117,6 +119,46 @@ impl HeaderGuardModule {}
 )]
 impl TransientInterceptorModule {}
 
+// ---- WS gateway with handshake guard -----------------------------------------
+//
+// WsHandshakeGuard reads `x-auth-token` from the WsClient handshake headers,
+// which are populated from the HTTP upgrade request by create_client_from_parts.
+// This is the correct multi-context guard pattern: it reads from WsClient so it
+// works identically at connect time and per-message, with no HTTP Request injection.
+
+#[injectable(pub struct WsHandshakeGuard {})]
+#[guard]
+impl WsHandshakeGuard {}
+
+impl Guard for WsHandshakeGuard {
+    fn can_activate(&self, context: &Context) -> bool {
+        context
+            .switch_to_ws()
+            .and_then(|ws| ws.client().handshake.headers.get("x-auth-token").cloned())
+            .map_or(false, |v| v == "secret")
+    }
+}
+
+#[websocket_gateway("/guarded-ws", pub struct GuardedGateway {})]
+#[use_guards(WsHandshakeGuard)]
+impl GuardedGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("ping")]
+    async fn on_ping(
+        &self,
+        _client: WsClient,
+        _msg: WsMessage,
+    ) -> Result<Option<WsMessage>, WsError> {
+        Ok(Some(WsMessage::text("pong")))
+    }
+}
+
+#[module(providers: [WsHandshakeGuard, GuardedGateway])]
+impl WsGuardModule {}
+
 // ---- tests -------------------------------------------------------------------
 
 #[serial]
@@ -186,4 +228,57 @@ async fn transient_scoped_interceptor() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers().get("x-transient").unwrap(), "hit");
     assert_eq!(resp.text().await.unwrap(), "pong");
+}
+
+/// A request-scoped guard on a WS gateway reads the HTTP upgrade handshake headers.
+///
+/// The guard injects `Request` (built from the upgrade `RequestPart`) and checks
+/// `x-auth-token`. This exercises the full path:
+/// Axum upgrade parts → WsConnectionCallbacks → begin_connect → DynGuardFactory::create(Some(parts))
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn ws_request_scoped_guard_uses_handshake_header() {
+    use futures_util::{SinkExt, StreamExt};
+
+    let server = TestServer::start(WsGuardModule::module_definition()).await;
+    let ws_url = format!("ws://127.0.0.1:{}/guarded-ws", server.port);
+
+    // Without the token — guard rejects, server closes connection immediately.
+    {
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+        let next = ws.next().await;
+        // Server closes the socket; stream yields None or a close frame.
+        let closed = match next {
+            None => true,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => true,
+            Some(Err(_)) => true,
+            _ => false,
+        };
+        assert!(closed, "expected server to close connection when guard rejects");
+    }
+
+    // With the correct token — guard passes, ping/pong works.
+    {
+        use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+        let req = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(&ws_url)
+            .header("Host", format!("127.0.0.1:{}", server.port))
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Key", generate_key())
+            .header("Sec-WebSocket-Version", "13")
+            .header("x-auth-token", "secret")
+            .body(())
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"event": "ping"}"#.to_string().into(),
+        ))
+        .await
+        .unwrap();
+
+        let reply = ws.next().await.unwrap().unwrap();
+        assert_eq!(reply.to_text().unwrap(), "pong");
+    }
 }
