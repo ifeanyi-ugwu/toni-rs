@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
@@ -176,29 +176,37 @@ async fn run_ws_connection(
     };
 
     let mut read = read;
-    while let Some(result) = read.next().await {
-        match result {
-            Ok(Message::Text(t)) => {
-                if !callbacks
-                    .message(client_id.clone(), WsMessage::Text(t.to_string()))
-                    .await
-                {
-                    break;
+    let panicked = std::panic::AssertUnwindSafe(async {
+        while let Some(result) = read.next().await {
+            match result {
+                Ok(Message::Text(t)) => {
+                    if !callbacks
+                        .message(client_id.clone(), WsMessage::Text(t.to_string()))
+                        .await
+                    {
+                        break;
+                    }
                 }
-            }
-            Ok(Message::Binary(b)) => {
-                if !callbacks
-                    .message(client_id.clone(), WsMessage::Binary(b.to_vec()))
-                    .await
-                {
-                    break;
+                Ok(Message::Binary(b)) => {
+                    if !callbacks
+                        .message(client_id.clone(), WsMessage::Binary(b.to_vec()))
+                        .await
+                    {
+                        break;
+                    }
                 }
+                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
             }
-            Ok(Message::Close(_)) | Err(_) => break,
-            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
         }
-    }
+    })
+    .catch_unwind()
+    .await
+    .is_err();
 
+    if panicked {
+        tracing::error!(client_id = %client_id, "WebSocket handler panicked; closing connection");
+    }
     callbacks.disconnect(client_id).await;
 }
 

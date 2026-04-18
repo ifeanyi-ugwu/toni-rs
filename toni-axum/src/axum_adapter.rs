@@ -13,7 +13,7 @@ use axum::{
     routing::{connect, delete, get, head, options, patch, post, put, trace},
     RequestPartsExt, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
@@ -84,20 +84,28 @@ async fn run_ws_connection(
     tracing::debug!(client_id = %client_id, "WebSocket connection established");
 
     let mut read = read;
-    while let Some(result) = read.next().await {
-        match result {
-            Ok(axum_msg) => match axum_to_ws_message(axum_msg) {
-                Ok(ws_msg) => {
-                    if !callbacks.message(client_id.clone(), ws_msg).await {
-                        break;
+    let panicked = std::panic::AssertUnwindSafe(async {
+        while let Some(result) = read.next().await {
+            match result {
+                Ok(axum_msg) => match axum_to_ws_message(axum_msg) {
+                    Ok(ws_msg) => {
+                        if !callbacks.message(client_id.clone(), ws_msg).await {
+                            break;
+                        }
                     }
-                }
-                Err(_) => {}
-            },
-            Err(_) => break,
+                    Err(_) => {}
+                },
+                Err(_) => break,
+            }
         }
-    }
+    })
+    .catch_unwind()
+    .await
+    .is_err();
 
+    if panicked {
+        tracing::error!(client_id = %client_id, "WebSocket handler panicked; closing connection");
+    }
     tracing::debug!(client_id = %client_id, "WebSocket connection closed");
     callbacks.disconnect(client_id).await;
 }
