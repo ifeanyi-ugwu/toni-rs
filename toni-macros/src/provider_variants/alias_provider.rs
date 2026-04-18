@@ -97,16 +97,10 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
 
                 async fn build(
                     &self,
-                    deps: toni::FxHashMap<
-                        String,
-                        (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                ) {
+                    deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                ) -> toni::traits_helpers::Injectable {
                     let existing_token = #existing_token_expr;
-                    let (target_provider, roles) = deps
+                    let toni::traits_helpers::Injectable { instance: target_provider, roles } = deps
                         .get(&existing_token)
                         .cloned()
                         .unwrap_or_else(|| panic!(
@@ -114,7 +108,7 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                             existing_token
                         ));
 
-                    (
+                    toni::traits_helpers::Injectable::new(
                         std::sync::Arc::new(
                             Box::new(#provider_name { target_provider }) as Box<dyn toni::traits_helpers::Provider>
                         ),

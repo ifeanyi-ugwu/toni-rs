@@ -116,9 +116,9 @@ impl<T: Config + Clone + Send + Sync + 'static> ProviderFactory for ConfigServic
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
-        (
+        _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
+    ) -> toni::traits_helpers::Injectable {
+        toni::traits_helpers::Injectable::new(
             Arc::new(Box::new(ConfigService {
                 config: self.config.clone(),
             }) as Box<dyn Provider>),

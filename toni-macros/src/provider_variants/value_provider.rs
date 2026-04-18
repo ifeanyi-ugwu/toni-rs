@@ -225,18 +225,12 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
                     async fn build(
                         &self,
-                        _deps: toni::FxHashMap<
-                            String,
-                            (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                        >,
-                    ) -> (
-                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                        std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                    ) {
+                        _deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                    ) -> toni::traits_helpers::Injectable {
                         let instance = std::sync::Arc::new(
                             Box::new(#value_expr) as Box<dyn toni::traits_helpers::Provider>
                         );
-                        (
+                        toni::traits_helpers::Injectable::new(
                             std::sync::Arc::new(
                                 Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
                             ),
@@ -287,18 +281,12 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
                     async fn build(
                         &self,
-                        _deps: toni::FxHashMap<
-                            String,
-                            (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                        >,
-                    ) -> (
-                        std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                        std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                    ) {
+                        _deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                    ) -> toni::traits_helpers::Injectable {
                         let instance = std::sync::Arc::new(#value_expr);
                         let mut __roles = std::vec::Vec::new();
                         #role_pushes
-                        (
+                        toni::traits_helpers::Injectable::new(
                             std::sync::Arc::new(
                                 Box::new(#provider_name { instance }) as Box<dyn toni::traits_helpers::Provider>
                             ),
@@ -353,19 +341,13 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
 
                             async fn build(
                                 &self,
-                                _deps: toni::FxHashMap<
-                                    String,
-                                    (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                                >,
-                            ) -> (
-                                std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                                std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                            ) {
+                                _deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                            ) -> toni::traits_helpers::Injectable {
                                 let value = std::sync::Arc::new(#value_expr);
                                 let get_value = std::sync::Arc::new(move || {
                                     Box::new((*value).clone()) as Box<dyn std::any::Any + Send>
                                 });
-                                (
+                                toni::traits_helpers::Injectable::new(
                                     std::sync::Arc::new(
                                         Box::new(#provider_name { get_value }) as Box<dyn toni::traits_helpers::Provider>
                                     ),

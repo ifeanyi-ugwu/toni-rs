@@ -10,7 +10,7 @@ use std::{
 use super::{DependencyGraph, ToniContainer, multi_collection_provider::MultiCollectionProvider};
 use crate::{
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, Provider},
+    traits_helpers::{Controller, Injectable, Provider},
 };
 
 pub struct ToniInstanceLoader {
@@ -260,7 +260,7 @@ impl ToniInstanceLoader {
         let ordered_providers_token = dependency_graph.get_ordered_providers_token()?;
         let provider_instances = {
             let container = self.container.borrow();
-            let mut instances: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)> = FxHashMap::default();
+            let mut instances: FxHashMap<String, Injectable> = FxHashMap::default();
 
             for provider_token in ordered_providers_token {
                 let provider_factory = container
@@ -271,10 +271,10 @@ impl ToniInstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let (provider, roles) = provider_factory.build(resolved_dependencies).await;
-                tracing::debug!(module = %module_token, provider = %provider.get_token(), "provider instantiated");
-                let token = provider.get_token();
-                instances.insert(token, (provider, roles));
+                let injectable = provider_factory.build(resolved_dependencies).await;
+                tracing::debug!(module = %module_token, provider = %injectable.instance.get_token(), "provider instantiated");
+                let token = injectable.instance.get_token();
+                instances.insert(token, injectable);
             }
             instances
         };
@@ -285,13 +285,13 @@ impl ToniInstanceLoader {
     fn add_providers_instances(
         &self,
         module_token: &String,
-        providers_instances: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>,
+        providers_instances: FxHashMap<String, Injectable>,
     ) -> Result<()> {
         let mut container = self.container.borrow_mut();
         let mut providers_tokens = Vec::new();
-        for (provider_instance_token, (provider_instance, roles)) in providers_instances {
-            let token_factory = provider_instance.get_token_factory().clone();
-            container.add_provider_instance(module_token, provider_instance, roles)?;
+        for (provider_instance_token, injectable) in providers_instances {
+            let token_factory = injectable.instance.get_token_factory().clone();
+            container.add_provider_instance(module_token, injectable.instance, injectable.roles)?;
             providers_tokens.push((token_factory, provider_instance_token));
         }
 
@@ -333,11 +333,10 @@ impl ToniInstanceLoader {
 
             for controller_factory in controllers_factory.values() {
                 let dependencies = controller_factory.get_dependencies();
-                let resolved_with_roles =
-                    self.resolve_dependencies(&module_token, dependencies, None)?;
-                let resolved_dependencies = resolved_with_roles
+                let resolved_dependencies = self
+                    .resolve_dependencies(&module_token, dependencies, None)?
                     .into_iter()
-                    .map(|(k, (p, _))| (k, p))
+                    .map(|(k, inj)| (k, inj.instance))
                     .collect();
                 let mut built = controller_factory.build(resolved_dependencies).await;
                 instances.append(&mut built);
@@ -461,15 +460,15 @@ impl ToniInstanceLoader {
         &self,
         module_token: &String,
         dependencies: Vec<String>,
-        providers_instances: Option<&FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>>,
-    ) -> Result<FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>> {
+        providers_instances: Option<&FxHashMap<String, Injectable>>,
+    ) -> Result<FxHashMap<String, Injectable>> {
         let container = self.container.borrow();
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
             // Step 1: Check local providers (in-progress build map)
-            if let Some((instance, roles)) = providers_instances.and_then(|m| m.get(&dependency)) {
-                resolved_dependencies.insert(dependency, (instance.clone(), roles.clone()));
+            if let Some(injectable) = providers_instances.and_then(|m| m.get(&dependency)) {
+                resolved_dependencies.insert(dependency, injectable.clone());
             }
             // Step 1b: Check pre-registered container instances not yet in the build map
             // (e.g. ModuleRefProvider registered before Phase 1)
@@ -477,7 +476,7 @@ impl ToniInstanceLoader {
                 container.get_provider_instance_by_token(module_token, &dependency)
             {
                 let roles = container.get_provider_roles(&dependency);
-                resolved_dependencies.insert(dependency, (instance.clone(), roles));
+                resolved_dependencies.insert(dependency, Injectable::new(instance.clone(), roles));
             }
             // Step 2: Check imported modules
             else if let Some(exported_instance) =
@@ -485,17 +484,15 @@ impl ToniInstanceLoader {
             {
                 tracing::debug!(module = %module_token, dependency = %dependency, source = "imported_module", "dependency resolved");
                 let roles = container.get_provider_roles(&dependency);
-                resolved_dependencies.insert(dependency, (exported_instance.clone(), roles));
+                resolved_dependencies.insert(dependency, Injectable::new(exported_instance.clone(), roles));
             }
             // Step 3: Check if it's a registered global provider token
             else if container.is_global_provider_token(&dependency) {
-                // Token is registered as global, try to get the instance
                 if let Some(global_instance) = container.get_global_provider(&dependency) {
                     tracing::debug!(module = %module_token, dependency = %dependency, source = "global", "dependency resolved");
                     let roles = container.get_provider_roles(&dependency);
-                    resolved_dependencies.insert(dependency, (global_instance.clone(), roles));
+                    resolved_dependencies.insert(dependency, Injectable::new(global_instance.clone(), roles));
                 } else {
-                    // Token registered but instance not created yet - DEFER
                     return Err(anyhow!(
                         "DEFERRED: Global provider '{}' not yet instantiated for module '{}'",
                         dependency,
@@ -507,7 +504,7 @@ impl ToniInstanceLoader {
             else if let Some(multi_instance) =
                 container.get_multi_collection_provider(&dependency)
             {
-                resolved_dependencies.insert(dependency, (multi_instance, vec![]));
+                resolved_dependencies.insert(dependency, Injectable::new(multi_instance, vec![]));
             }
             // Step 3.6: Assemble multi-collection on-demand when contributor and consumer
             // share the same module — contributors are in the in-progress instances map
@@ -516,11 +513,9 @@ impl ToniInstanceLoader {
             {
                 let mut items: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>> = Vec::new();
                 for (contrib_module_token, provider_token) in &contribs {
-                    // Prefer in-progress instances (same-module build), fall back to
-                    // already-saved container instances (cross-module contributions).
                     let item = providers_instances
                         .and_then(|m| m.get(provider_token))
-                        .and_then(|(p, _)| p.as_multi_item());
+                        .and_then(|inj| inj.instance.as_multi_item());
                     if let Some(item) = item {
                         items.push(item);
                     } else if let Ok(saved) = container.get_providers_instance(contrib_module_token)
@@ -537,7 +532,7 @@ impl ToniInstanceLoader {
                         token: dependency.clone(),
                         items,
                     }));
-                resolved_dependencies.insert(dependency, (collection, vec![]));
+                resolved_dependencies.insert(dependency, Injectable::new(collection, vec![]));
             }
             // Step 4: Not found anywhere
             else {

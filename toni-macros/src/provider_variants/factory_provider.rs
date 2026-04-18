@@ -247,7 +247,7 @@ fn generate_caching_provider(
             deps: std::sync::Arc::new(_dependencies),
             instance,
         }) as Box<dyn toni::traits_helpers::Provider>);
-        (__provider, __roles)
+        toni::traits_helpers::Injectable::new(__provider, __roles)
     };
 
     (struct_def, build_body)
@@ -391,7 +391,7 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                 }
             }
 
-            (
+            toni::traits_helpers::Injectable::new(
                 std::sync::Arc::new(Box::new(FactoryProviderWithDeps {
                     deps: std::sync::Arc::new(_dependencies),
                 }) as Box<dyn toni::traits_helpers::Provider>),
@@ -430,16 +430,10 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
 
                 async fn build(
                     &self,
-                    __deps: toni::FxHashMap<
-                        String,
-                        (std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>, std::vec::Vec<toni::traits_helpers::ProviderRole>),
-                    >,
-                ) -> (
-                    std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>,
-                    std::vec::Vec<toni::traits_helpers::ProviderRole>,
-                ) {
+                    __deps: toni::FxHashMap<String, toni::traits_helpers::Injectable>,
+                ) -> toni::traits_helpers::Injectable {
                     let _dependencies: toni::FxHashMap<String, std::sync::Arc<Box<dyn toni::traits_helpers::Provider>>> =
-                        __deps.into_iter().map(|(k, (p, _))| (k, p)).collect();
+                        __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
                     #build_body
                 }
             }

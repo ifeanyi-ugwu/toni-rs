@@ -20,8 +20,8 @@ impl ProviderFactory for MongoConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
+        _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
+    ) -> toni::traits_helpers::Injectable {
         let options = ClientOptions::parse(&self.uri)
             .await
             .unwrap_or_else(|e| panic!("toni-mongodb: failed to parse URI '{}': {e}", self.uri));
@@ -31,7 +31,7 @@ impl ProviderFactory for MongoConnectionFactory {
 
         let db = client.database(&self.db_name);
 
-        (Arc::new(Box::new(MongoConnectionProvider { client, db })), vec![])
+        toni::traits_helpers::Injectable::new(Arc::new(Box::new(MongoConnectionProvider { client, db })), vec![])
     }
 }
 

@@ -54,9 +54,9 @@ impl ProviderFactory for BroadcastServiceManager {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<crate::traits_helpers::ProviderRole>) {
-        (
+        _deps: FxHashMap<String, crate::traits_helpers::Injectable>,
+    ) -> crate::traits_helpers::Injectable {
+        crate::traits_helpers::Injectable::new(
             Arc::new(Box::new(BroadcastServiceProvider {
                 instance: BroadcastService::new(),
             }) as Box<dyn Provider>),

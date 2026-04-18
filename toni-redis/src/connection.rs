@@ -19,8 +19,8 @@ impl ProviderFactory for RedisConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>)>,
-    ) -> (Arc<Box<dyn Provider>>, Vec<toni::traits_helpers::ProviderRole>) {
+        _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
+    ) -> toni::traits_helpers::Injectable {
         let client = redis::Client::open(self.url.as_str())
             .unwrap_or_else(|e| panic!("toni-redis: invalid URL '{}': {e}", self.url));
 
@@ -28,7 +28,7 @@ impl ProviderFactory for RedisConnectionFactory {
             .await
             .unwrap_or_else(|e| panic!("toni-redis: failed to connect to '{}': {e}", self.url));
 
-        (Arc::new(Box::new(RedisConnectionProvider { manager })), vec![])
+        toni::traits_helpers::Injectable::new(Arc::new(Box::new(RedisConnectionProvider { manager })), vec![])
     }
 }
 
