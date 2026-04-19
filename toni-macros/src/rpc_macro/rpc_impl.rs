@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use syn::{Attribute, ItemImpl, ItemStruct, LitStr, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
-use crate::enhancer::enhancer::{create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute};
+use crate::enhancer::enhancer::{
+    create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
+};
 use crate::provider_macro::instance_injection::generate_instance_provider_system;
 use crate::shared::attr_is;
 use crate::shared::dependency_info::DependencySource;

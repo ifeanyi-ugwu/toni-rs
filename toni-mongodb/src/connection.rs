@@ -31,7 +31,10 @@ impl ProviderFactory for MongoConnectionFactory {
 
         let db = client.database(&self.db_name);
 
-        toni::traits_helpers::Injectable::new(Arc::new(Box::new(MongoConnectionProvider { client, db })), vec![])
+        toni::traits_helpers::Injectable::new(
+            Arc::new(Box::new(MongoConnectionProvider { client, db })),
+            vec![],
+        )
     }
 }
 

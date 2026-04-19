@@ -1306,7 +1306,9 @@ fn generate_transient_factory(
 /// Unlike `generate_field_resolutions` (which uses `self.dependencies` and `_ctx`),
 /// this version uses a captured `all_deps: Arc<FxHashMap<...>>` and selects the
 /// `ProviderContext` at runtime based on each provider's declared scope.
-fn generate_create_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
+fn generate_create_field_resolutions(
+    dependencies: &DependencyInfo,
+) -> (Vec<TokenStream>, Vec<Ident>) {
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
@@ -1593,8 +1595,5 @@ fn generate_dyn_factories(
         });
     }
 
-    (
-        quote! { #(#struct_defs)* },
-        quote! { #(#role_push_stmts)* },
-    )
+    (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })
 }

@@ -22,10 +22,7 @@ macro_rules! impl_diesel_pool {
                 std::any::type_name::<$pool>().to_string()
             }
 
-            async fn build(
-                &self,
-                _deps: FxHashMap<String, Injectable>,
-            ) -> Injectable {
+            async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
                 let pool = <$pool>::builder(manager).build().unwrap_or_else(|e| {

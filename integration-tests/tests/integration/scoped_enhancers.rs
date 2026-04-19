@@ -5,13 +5,13 @@
 
 use serial_test::serial;
 use toni::async_trait;
-use toni::{guard, interceptor};
 use toni::injector::Context;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
+use toni::websocket::{WsClient, WsError, WsMessage};
 use toni::{
     controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
 };
-use toni::websocket::{WsClient, WsError, WsMessage};
+use toni::{guard, interceptor};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -257,7 +257,10 @@ async fn ws_request_scoped_guard_uses_handshake_header() {
             Some(Err(_)) => true,
             _ => false,
         };
-        assert!(closed, "expected server to close connection when guard rejects");
+        assert!(
+            closed,
+            "expected server to close connection when guard rejects"
+        );
     }
 
     // With the correct token — guard passes, ping/pong works.

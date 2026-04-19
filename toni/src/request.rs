@@ -148,6 +148,9 @@ impl ProviderFactory for RequestFactory {
     ) -> crate::traits_helpers::Injectable {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         let provider = Request::from_request_parts(&parts).expect("infallible");
-        crate::traits_helpers::Injectable::new(Arc::new(Box::new(provider) as Box<dyn Provider>), vec![])
+        crate::traits_helpers::Injectable::new(
+            Arc::new(Box::new(provider) as Box<dyn Provider>),
+            vec![],
+        )
     }
 }

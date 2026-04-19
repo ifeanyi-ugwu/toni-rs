@@ -62,20 +62,12 @@ impl RpcPanicController {
     }
 
     #[message_pattern("rpc.panic")]
-    async fn panic_handler(
-        &self,
-        _d: RpcData,
-        _c: RpcContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn panic_handler(&self, _d: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
         panic!("intentional rpc panic");
     }
 
     #[message_pattern("rpc.safe")]
-    async fn safe_handler(
-        &self,
-        _d: RpcData,
-        _c: RpcContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn safe_handler(&self, _d: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("safe-ok")))
     }
 }
@@ -96,7 +88,13 @@ async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
 
     // Panicking handler must return an error response within 500 ms,
     // not leave the caller hanging.
-    let resp = tcp_rpc_timeout(port, "rpc.panic", serde_json::json!({}), Duration::from_millis(500)).await;
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.panic",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await;
     assert!(
         resp.is_some(),
         "panicking handler should return an error response, not hang"
@@ -108,6 +106,12 @@ async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     );
 
     // Connection must still be usable — safe handler works on a fresh connection.
-    let resp = tcp_rpc_timeout(port, "rpc.safe", serde_json::json!({}), Duration::from_millis(500)).await;
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.safe",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await;
     assert_eq!(resp.unwrap()["response"], "safe-ok");
 }

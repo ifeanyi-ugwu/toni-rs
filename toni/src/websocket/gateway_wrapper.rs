@@ -88,7 +88,11 @@ impl GatewayWrapper {
     /// Does NOT fire `on_connect` — call `complete_connect` after any external
     /// registration (e.g. `ConnectionManager`) so the hook fires when the client
     /// is fully live everywhere.
-    pub async fn begin_connect(&self, client: WsClient, parts: &RequestPart) -> Result<(), WsError> {
+    pub async fn begin_connect(
+        &self,
+        client: WsClient,
+        parts: &RequestPart,
+    ) -> Result<(), WsError> {
         let context = Context::from_websocket(
             client.clone(),
             WsMessage::text(""),
@@ -140,7 +144,11 @@ impl GatewayWrapper {
     ///
     /// Composes `begin_connect` + `complete_connect` in sequence. Used by
     /// `handle_connection()` where there is no broadcast infrastructure.
-    pub async fn handle_connect(&self, client: WsClient, parts: &RequestPart) -> Result<(), WsError> {
+    pub async fn handle_connect(
+        &self,
+        client: WsClient,
+        parts: &RequestPart,
+    ) -> Result<(), WsError> {
         let client_id = client.id.clone();
         self.begin_connect(client, parts).await?;
         self.complete_connect(&client_id).await
@@ -212,7 +220,10 @@ impl GatewayWrapper {
         .await
     }
 
-    async fn resolve_guards(entries: &[GuardEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Guard>> {
+    async fn resolve_guards(
+        entries: &[GuardEntry],
+        parts: Option<&RequestPart>,
+    ) -> Vec<Arc<dyn Guard>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
@@ -224,7 +235,10 @@ impl GatewayWrapper {
         out
     }
 
-    async fn resolve_interceptors(entries: &[InterceptorEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Interceptor>> {
+    async fn resolve_interceptors(
+        entries: &[InterceptorEntry],
+        parts: Option<&RequestPart>,
+    ) -> Vec<Arc<dyn Interceptor>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
@@ -236,7 +250,10 @@ impl GatewayWrapper {
         out
     }
 
-    async fn resolve_pipes(entries: &[PipeEntry], parts: Option<&RequestPart>) -> Vec<Arc<dyn Pipe>> {
+    async fn resolve_pipes(
+        entries: &[PipeEntry],
+        parts: Option<&RequestPart>,
+    ) -> Vec<Arc<dyn Pipe>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {

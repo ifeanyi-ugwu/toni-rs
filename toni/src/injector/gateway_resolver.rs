@@ -136,7 +136,11 @@ impl GatewayResolver {
     }
 
     fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn ErrorHandler>>> {
-        let mut error_handlers = self.container.borrow().get_global_enhancers().error_handlers;
+        let mut error_handlers = self
+            .container
+            .borrow()
+            .get_global_enhancers()
+            .error_handlers;
         for token in tokens {
             error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }

@@ -14,7 +14,9 @@ use serial_test::serial;
 use toni::async_trait;
 use toni::injector::Context;
 use toni::rpc::{RpcContext as RpcCallContext, RpcData, RpcError};
-use toni::traits_helpers::{ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe};
+use toni::traits_helpers::{
+    ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe,
+};
 use toni::websocket::{WsClient, WsError, WsMessage};
 use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni::{module, use_error_handlers, use_guards, use_interceptors, use_pipes};
@@ -80,9 +82,7 @@ impl WsPrefixInterceptor {}
 impl Interceptor for WsPrefixInterceptor {
     async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
         next.run(context).await;
-        let current = context
-            .switch_to_ws()
-            .and_then(|ws| ws.response().cloned());
+        let current = context.switch_to_ws().and_then(|ws| ws.response().cloned());
         if let Some(Ok(Some(msg))) = current {
             let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
             context
@@ -110,21 +110,13 @@ impl WsMethodEnhancersGateway {
     #[subscribe_message("all")]
     #[use_guards(WsAllowGuard)]
     #[use_interceptors(WsPrefixInterceptor)]
-    async fn on_all(
-        &self,
-        _c: WsClient,
-        _m: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    async fn on_all(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
         Ok(Some(WsMessage::text("all-ok")))
     }
 
     #[subscribe_message("piped")]
     #[use_pipes(AbortPipe)]
-    async fn on_piped(
-        &self,
-        _c: WsClient,
-        _m: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
         Ok(Some(WsMessage::text("should-not-reach")))
     }
 
@@ -139,11 +131,7 @@ impl WsMethodEnhancersGateway {
     }
 
     #[subscribe_message("plain")]
-    async fn on_plain(
-        &self,
-        _c: WsClient,
-        _m: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    async fn on_plain(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
         Ok(Some(WsMessage::text("plain-ok")))
     }
 }
@@ -212,40 +200,24 @@ impl RpcMethodEnhancersController {
     #[message_pattern("rpc.all")]
     #[use_guards(RpcAllowGuard)]
     #[use_interceptors(RpcPrefixInterceptor)]
-    async fn all(
-        &self,
-        _d: RpcData,
-        _c: RpcCallContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn all(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("all-ok")))
     }
 
     #[message_pattern("rpc.piped")]
     #[use_pipes(AbortPipe)]
-    async fn piped(
-        &self,
-        _d: RpcData,
-        _c: RpcCallContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn piped(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("should-not-reach")))
     }
 
     #[message_pattern("rpc.recovering")]
     #[use_error_handlers(RecoveryErrorHandler)]
-    async fn recovering(
-        &self,
-        _d: RpcData,
-        _c: RpcCallContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn recovering(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
         Err(RpcError::Internal("intentional".into()))
     }
 
     #[message_pattern("rpc.plain")]
-    async fn plain(
-        &self,
-        _d: RpcData,
-        _c: RpcCallContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn plain(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("plain-ok")))
     }
 }
@@ -284,8 +256,7 @@ async fn tcp_rpc(port: u16, pattern: &str, data: serde_json::Value) -> serde_jso
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    let mut frame =
-        serde_json::json!({"pattern": pattern, "data": data, "id": "1"}).to_string();
+    let mut frame = serde_json::json!({"pattern": pattern, "data": data, "id": "1"}).to_string();
     frame.push('\n');
     writer.write_all(frame.as_bytes()).await.unwrap();
 
@@ -344,8 +315,7 @@ async fn ws_method_level_enhancers_work() {
         .await
         .unwrap();
         let reply = ws.next().await.unwrap().unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(reply.to_text().unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
         assert!(json.get("error").is_some(), "pipe should have aborted");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
@@ -374,9 +344,11 @@ async fn ws_method_level_enhancers_work() {
         ))
         .await
         .unwrap();
-        let no_reply =
-            tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
-        assert!(no_reply.is_err(), "guard should have silently blocked \"all\"");
+        let no_reply = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
+        assert!(
+            no_reply.is_err(),
+            "guard should have silently blocked \"all\""
+        );
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             r#"{"event":"plain"}"#.to_string().into(),

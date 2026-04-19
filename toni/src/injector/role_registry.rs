@@ -5,8 +5,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     rpc::RpcControllerTrait,
     traits_helpers::{
-        ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry, ProviderRole,
-        middleware::Middleware,
+        ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry, ProviderRole, middleware::Middleware,
     },
     websocket::GatewayTrait,
 };

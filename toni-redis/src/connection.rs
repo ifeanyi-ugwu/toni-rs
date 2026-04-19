@@ -28,7 +28,10 @@ impl ProviderFactory for RedisConnectionFactory {
             .await
             .unwrap_or_else(|e| panic!("toni-redis: failed to connect to '{}': {e}", self.url));
 
-        toni::traits_helpers::Injectable::new(Arc::new(Box::new(RedisConnectionProvider { manager })), vec![])
+        toni::traits_helpers::Injectable::new(
+            Arc::new(Box::new(RedisConnectionProvider { manager })),
+            vec![],
+        )
     }
 }
 

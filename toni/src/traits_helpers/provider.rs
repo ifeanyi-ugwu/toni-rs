@@ -3,9 +3,7 @@ use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
-use super::{
-    ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware,
-};
+use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
 use crate::{ProviderScope, http_helpers::RequestPart};
 
 #[async_trait]

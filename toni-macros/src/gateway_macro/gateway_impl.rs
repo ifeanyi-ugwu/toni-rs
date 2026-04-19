@@ -3,7 +3,9 @@ use quote::quote;
 use syn::{Attribute, Error, Ident, ItemImpl, ItemStruct, LitInt, LitStr, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
-use crate::enhancer::enhancer::{create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute};
+use crate::enhancer::enhancer::{
+    create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
+};
 use crate::provider_macro::instance_injection::generate_instance_provider_system;
 use crate::shared::attr_is;
 use crate::shared::dependency_info::DependencySource;
@@ -232,7 +234,8 @@ fn generate_gateway_impl(
 
     // Extract gateway-level enhancer attrs from the impl block
     let gateway_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
-    let enhancer_infos = create_enhancer_infos(gateway_enhancers_attr, std::collections::HashMap::new())?;
+    let enhancer_infos =
+        create_enhancer_infos(gateway_enhancers_attr, std::collections::HashMap::new())?;
 
     let binding = Vec::new();
     let guard_tokens: Vec<_> = enhancer_infos

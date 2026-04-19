@@ -222,7 +222,9 @@ impl ToniInstanceLoader {
                         provider_token
                     )
                 })?;
-            self.container.borrow_mut().add_global_interceptor(interceptor);
+            self.container
+                .borrow_mut()
+                .add_global_interceptor(interceptor);
         }
 
         for (_, provider_token) in app_pipe_providers {
@@ -420,7 +422,12 @@ impl ToniInstanceLoader {
             })?;
             interceptors.push(interceptor);
         }
-        interceptors.extend(controller.get_interceptors().into_iter().map(InterceptorEntry::Ready));
+        interceptors.extend(
+            controller
+                .get_interceptors()
+                .into_iter()
+                .map(InterceptorEntry::Ready),
+        );
 
         let mut pipes: Vec<PipeEntry> = Vec::new();
         for token in controller.get_pipe_tokens() {
@@ -484,14 +491,18 @@ impl ToniInstanceLoader {
             {
                 tracing::debug!(module = %module_token, dependency = %dependency, source = "imported_module", "dependency resolved");
                 let roles = container.get_provider_roles(&dependency);
-                resolved_dependencies.insert(dependency, Injectable::new(exported_instance.clone(), roles));
+                resolved_dependencies.insert(
+                    dependency,
+                    Injectable::new(exported_instance.clone(), roles),
+                );
             }
             // Step 3: Check if it's a registered global provider token
             else if container.is_global_provider_token(&dependency) {
                 if let Some(global_instance) = container.get_global_provider(&dependency) {
                     tracing::debug!(module = %module_token, dependency = %dependency, source = "global", "dependency resolved");
                     let roles = container.get_provider_roles(&dependency);
-                    resolved_dependencies.insert(dependency, Injectable::new(global_instance.clone(), roles));
+                    resolved_dependencies
+                        .insert(dependency, Injectable::new(global_instance.clone(), roles));
                 } else {
                     return Err(anyhow!(
                         "DEFERRED: Global provider '{}' not yet instantiated for module '{}'",

@@ -14,7 +14,6 @@ use crate::{
     websocket::GatewayTrait,
 };
 
-
 use super::{InstanceWrapper, RoleRegistry, module::Module};
 
 pub struct ToniContainer {
@@ -193,7 +192,10 @@ impl ToniContainer {
         &self.role_registry
     }
 
-    pub(crate) fn get_provider_roles(&self, token: &str) -> Vec<crate::traits_helpers::ProviderRole> {
+    pub(crate) fn get_provider_roles(
+        &self,
+        token: &str,
+    ) -> Vec<crate::traits_helpers::ProviderRole> {
         self.role_registry.get_roles_for_token(token)
     }
 

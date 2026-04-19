@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use serial_test::serial;
-use toni::websocket::{WsClient, WsError, WsMessage};
 use toni::module;
+use toni::websocket::{WsClient, WsError, WsMessage};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -48,11 +48,9 @@ async fn ws_handler_panic_closes_connection_and_leaves_siblings_unaffected() {
 
     // Client A triggers the panic — its connection must close.
     let (mut ws_a, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
-    ws_a.send(Message::Text(
-        r#"{"event":"panic"}"#.to_string().into(),
-    ))
-    .await
-    .unwrap();
+    ws_a.send(Message::Text(r#"{"event":"panic"}"#.to_string().into()))
+        .await
+        .unwrap();
 
     let closed = tokio::time::timeout(Duration::from_millis(500), async {
         while let Some(msg) = ws_a.next().await {
@@ -71,11 +69,9 @@ async fn ws_handler_panic_closes_connection_and_leaves_siblings_unaffected() {
 
     // Client B connects after the panic — must reach the safe handler normally.
     let (mut ws_b, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
-    ws_b.send(Message::Text(
-        r#"{"event":"safe"}"#.to_string().into(),
-    ))
-    .await
-    .unwrap();
+    ws_b.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
+        .await
+        .unwrap();
     let reply = ws_b.next().await.unwrap().unwrap();
     assert_eq!(
         reply.to_text().unwrap(),
