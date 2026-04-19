@@ -19,7 +19,7 @@ use toni::traits_helpers::{
 };
 use toni::websocket::{WsClient, WsError, WsMessage};
 use toni::{error_handler, guard, injectable, interceptor, pipe};
-use toni::{module, use_error_handlers, use_guards, use_interceptors, use_pipes};
+use toni::module;
 use toni_macros::{rpc_controller, websocket_gateway};
 
 use crate::common::TestServer;

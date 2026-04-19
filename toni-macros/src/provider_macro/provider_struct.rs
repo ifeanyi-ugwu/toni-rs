@@ -1,5 +1,4 @@
 use proc_macro2::TokenStream;
-use std::collections::HashSet;
 use syn::{FnArg, Ident, ImplItem, ItemImpl, ItemStruct, Pat, Result, Type, parse2};
 
 use crate::{
