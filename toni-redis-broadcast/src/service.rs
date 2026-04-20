@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use redis::aio::MultiplexedConnection;
-use toni::{BroadcastError, BroadcastService, RoomId, SendError, WsMessage, WsSink};
+use toni::{BroadcastError, BroadcastService, ClientId, RoomId, SendError, WsMessage, WsSink};
 
 use crate::message::{BroadcastTargetKind, RedisBroadcastPayload};
 
@@ -12,8 +12,8 @@ use crate::message::{BroadcastTargetKind, RedisBroadcastPayload};
 /// the message and deliver it to their locally connected clients — the same topology
 /// Socket.io uses with `@socket.io/redis-adapter`.
 ///
-/// Room membership is tracked per-process via the wrapped [`BroadcastService`].
-/// Cross-process room queries (e.g. `get_room_clients`) only see local clients.
+/// Room membership is stored in Redis sets, so `join_room`/`leave_room` and the
+/// corresponding queries reflect the global state across all processes.
 #[derive(Clone)]
 pub struct RedisBroadcastService {
     local: BroadcastService,
@@ -58,40 +58,111 @@ impl RedisBroadcastService {
     }
 
     // -------------------------------------------------------------------------
-    // Room management — local-only (in-process view)
+    // Room management — global view via Redis sets
+    //
+    // Redis keys:
+    //   toni:rooms:{room_id}          → SET of client_ids in the room
+    //   toni:client:{client_id}:rooms → SET of room_ids the client belongs to
     // -------------------------------------------------------------------------
 
-    pub fn join_room(&self, client_id: &str, room_id: &str) -> Result<(), BroadcastError> {
-        self.local.join_room(client_id, room_id)
+    pub async fn join_room(&self, client_id: &str, room_id: &str) -> Result<(), BroadcastError> {
+        self.local.join_room(client_id, room_id)?;
+        let mut conn = self.publisher.clone();
+        if let Err(e) = redis::pipe()
+            .sadd(format!("toni:rooms:{room_id}"), client_id)
+            .ignore()
+            .sadd(format!("toni:client:{client_id}:rooms"), room_id)
+            .ignore()
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            tracing::warn!(error = %e, client_id, room_id, "Failed to sync join_room to Redis");
+        }
+        Ok(())
     }
 
-    pub fn leave_room(&self, client_id: &str, room_id: &str) -> Result<(), BroadcastError> {
-        self.local.leave_room(client_id, room_id)
+    pub async fn leave_room(&self, client_id: &str, room_id: &str) -> Result<(), BroadcastError> {
+        self.local.leave_room(client_id, room_id)?;
+        let mut conn = self.publisher.clone();
+        if let Err(e) = redis::pipe()
+            .srem(format!("toni:rooms:{room_id}"), client_id)
+            .ignore()
+            .srem(format!("toni:client:{client_id}:rooms"), room_id)
+            .ignore()
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            tracing::warn!(error = %e, client_id, room_id, "Failed to sync leave_room to Redis");
+        }
+        Ok(())
     }
 
-    pub fn get_client_rooms(&self, client_id: &str) -> Vec<RoomId> {
-        self.local.get_client_rooms(client_id)
+    /// Returns all clients in a room across all processes.
+    pub async fn get_room_clients(&self, room_id: &str) -> Vec<ClientId> {
+        let mut conn = self.publisher.clone();
+        match redis::cmd("SMEMBERS")
+            .arg(format!("toni:rooms:{room_id}"))
+            .query_async::<Vec<String>>(&mut conn)
+            .await
+        {
+            Ok(members) => members,
+            Err(e) => {
+                tracing::warn!(error = %e, room_id, "Failed to query room members from Redis, falling back to local");
+                self.local.get_room_clients(room_id)
+            }
+        }
     }
 
-    pub fn get_room_clients(&self, room_id: &str) -> Vec<toni::ClientId> {
-        self.local.get_room_clients(room_id)
+    /// Returns all rooms a client belongs to, as recorded in Redis.
+    pub async fn get_client_rooms(&self, client_id: &str) -> Vec<RoomId> {
+        let mut conn = self.publisher.clone();
+        match redis::cmd("SMEMBERS")
+            .arg(format!("toni:client:{client_id}:rooms"))
+            .query_async::<Vec<String>>(&mut conn)
+            .await
+        {
+            Ok(rooms) => rooms,
+            Err(e) => {
+                tracing::warn!(error = %e, client_id, "Failed to query client rooms from Redis, falling back to local");
+                self.local.get_client_rooms(client_id)
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
-    // Connection lifecycle — delegates to local BroadcastService
+    // Connection lifecycle
     // -------------------------------------------------------------------------
 
-    pub fn connect(
-        &self,
-        client_id: toni::ClientId,
-        sink: Arc<dyn WsSink>,
-        namespace: Option<String>,
-    ) {
-        self.local.connect(client_id, sink, namespace);
+    pub async fn connect(&self, client_id: ClientId, sink: Arc<dyn WsSink>, namespace: Option<String>) {
+        self.local.connect(client_id.clone(), sink, namespace);
+        // Mirror the auto-room that ConnectionManager::register() creates for every new client.
+        let mut conn = self.publisher.clone();
+        if let Err(e) = redis::pipe()
+            .sadd(format!("toni:rooms:{client_id}"), &client_id)
+            .ignore()
+            .sadd(format!("toni:client:{client_id}:rooms"), &client_id)
+            .ignore()
+            .query_async::<()>(&mut conn)
+            .await
+        {
+            tracing::warn!(error = %e, %client_id, "Failed to sync client auto-room to Redis");
+        }
     }
 
-    pub fn disconnect(&self, client_id: &str) {
+    pub async fn disconnect(&self, client_id: &str) {
+        // Read local rooms before disconnecting — local state is still in sync at this point.
+        let rooms = self.local.get_client_rooms(client_id);
         self.local.disconnect(client_id);
+
+        let mut conn = self.publisher.clone();
+        let mut pipe = redis::pipe();
+        for room in &rooms {
+            pipe.srem(format!("toni:rooms:{room}"), client_id).ignore();
+        }
+        pipe.del(format!("toni:client:{client_id}:rooms")).ignore();
+        if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+            tracing::warn!(error = %e, client_id, "Failed to sync disconnect to Redis");
+        }
     }
 }
 

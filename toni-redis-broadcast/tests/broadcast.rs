@@ -68,8 +68,8 @@ async fn to_all_round_trips_through_redis() {
 
     let (sink1, mut rx1) = make_client();
     let (sink2, mut rx2) = make_client();
-    rbs.connect("c1".to_string(), sink1, None);
-    rbs.connect("c2".to_string(), sink2, None);
+    rbs.connect("c1".to_string(), sink1, None).await;
+    rbs.connect("c2".to_string(), sink2, None).await;
 
     rbs.to_all()
         .send(WsMessage::text("hello everyone"))
@@ -89,10 +89,10 @@ async fn to_room_delivers_only_to_members() {
 
     let (member_sink, mut member_rx) = make_client();
     let (outsider_sink, mut outsider_rx) = make_client();
-    rbs.connect("member".to_string(), member_sink, None);
-    rbs.connect("outsider".to_string(), outsider_sink, None);
+    rbs.connect("member".to_string(), member_sink, None).await;
+    rbs.connect("outsider".to_string(), outsider_sink, None).await;
 
-    rbs.join_room("member", "vip").unwrap();
+    rbs.join_room("member", "vip").await.unwrap();
 
     rbs.to_room("vip")
         .send(WsMessage::text("vip only"))
@@ -115,8 +115,8 @@ async fn to_client_delivers_only_to_target() {
 
     let (target_sink, mut target_rx) = make_client();
     let (bystander_sink, mut bystander_rx) = make_client();
-    rbs.connect("target".to_string(), target_sink, None);
-    rbs.connect("bystander".to_string(), bystander_sink, None);
+    rbs.connect("target".to_string(), target_sink, None).await;
+    rbs.connect("bystander".to_string(), bystander_sink, None).await;
 
     rbs.to_client("target")
         .send(WsMessage::text("private"))
@@ -143,7 +143,7 @@ async fn cross_process_delivery() {
 
     // Client lives on instance 1.
     let (sink, mut rx) = make_client();
-    rbs1.connect("client-on-1".to_string(), sink, None);
+    rbs1.connect("client-on-1".to_string(), sink, None).await;
 
     // Instance 2 publishes — it has no idea about client-on-1.
     rbs2.to_all()
@@ -162,7 +162,7 @@ async fn send_event_formats_payload_correctly() {
     let (_app, rbs) = boot(&url).await;
 
     let (sink, mut rx) = make_client();
-    rbs.connect("c".to_string(), sink, None);
+    rbs.connect("c".to_string(), sink, None).await;
 
     rbs.to_all()
         .send_event("user.joined", r#"{"name":"Alice"}"#)
@@ -174,4 +174,28 @@ async fn send_event_formats_payload_correctly() {
     let v: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(v["event"], "user.joined");
     assert_eq!(v["data"], r#"{"name":"Alice"}"#);
+}
+
+/// `get_room_clients` reflects joins from all instances — the cross-process
+/// membership guarantee that the Redis sets provide.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn get_room_clients_reflects_cross_process_joins() {
+    let (_container, url) = start_redis().await;
+
+    let (_app1, rbs1) = boot(&url).await;
+    let (_app2, rbs2) = boot(&url).await;
+
+    let (sink1, _rx1) = make_client();
+    let (sink2, _rx2) = make_client();
+    rbs1.connect("alice".to_string(), sink1, None).await;
+    rbs2.connect("bob".to_string(), sink2, None).await;
+
+    rbs1.join_room("alice", "lobby").await.unwrap();
+    rbs2.join_room("bob", "lobby").await.unwrap();
+
+    let mut members = rbs1.get_room_clients("lobby").await;
+    members.sort();
+
+    assert_eq!(members, vec!["alice", "bob"]);
 }

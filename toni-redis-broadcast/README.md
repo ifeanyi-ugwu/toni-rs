@@ -144,14 +144,14 @@ impl ChatGateway {
 
 All four return a `RedisBroadcastTarget`.
 
-**Room management** (in-process view)
+**Room management**
 
-| Method                           | Description                               |
-| -------------------------------- | ----------------------------------------- |
-| `join_room(client_id, room_id)`  | Add a client to a room                    |
-| `leave_room(client_id, room_id)` | Remove a client from a room               |
-| `get_client_rooms(client_id)`    | List rooms this client is in (local only) |
-| `get_room_clients(room_id)`      | List clients in a room (local only)       |
+| Method                           | Description                                    |
+| -------------------------------- | ---------------------------------------------- |
+| `join_room(client_id, room_id)`  | Add a client to a room (synced to Redis)        |
+| `leave_room(client_id, room_id)` | Remove a client from a room (synced to Redis)   |
+| `get_client_rooms(client_id)`    | List rooms this client is in (global, via Redis) |
+| `get_room_clients(room_id)`      | List clients in a room (global, via Redis)      |
 
 ### `RedisBroadcastTarget`
 
@@ -165,12 +165,7 @@ All four return a `RedisBroadcastTarget`.
 
 ## Limitations
 
-**Room membership is per-process.** `join_room` / `leave_room` only update the local process's state. `to_room("lobby")` broadcasts to all processes, but each process only delivers to its own clients that joined the room locally. This means:
-
-- A client joining "lobby" on process A is invisible to process B's `get_room_clients("lobby")`.
-- A broadcast `to_room("lobby")` from process B reaches clients in "lobby" on process A correctly — the delivery works, the query doesn't.
-
-Cross-process room membership sync (via Redis hashes) is not implemented in v1.
+**Targeted fan-out is not optimized.** `to_client("alice")` and `except("alice")` publish to the global `toni:broadcast` channel and every process receives the message, even if only one process holds that client. Most processes will discard it silently after failing to find the client locally. This is functionally correct but wastes Redis bandwidth at high client counts.
 
 ## Running the tests
 
