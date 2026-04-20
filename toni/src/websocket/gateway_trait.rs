@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::http_helpers::RouteMetadata;
 use crate::injector::Context;
 
-use super::{DisconnectReason, WsClient, WsError, WsMessage};
+use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput, WsMessage};
 
 /// Core gateway trait for WebSocket handlers
 ///
@@ -50,15 +50,17 @@ pub trait GatewayTrait: Send + Sync {
         let _ = (client, reason);
     }
 
-    /// Route message to appropriate handler based on event name
+    /// Route message to appropriate handler based on event name.
     ///
-    /// Returns Some(WsMessage) to send a response, or None for no response
+    /// Return `WsHandlerOutput::Empty` for no response, `::Single` for one
+    /// message, or `::Stream` to push an unbounded sequence — the framework
+    /// drives the stream and cancels it on disconnect.
     async fn handle_event(
         &self,
         client: WsClient,
         message: WsMessage,
         event: &str,
-    ) -> Result<Option<WsMessage>, WsError>;
+    ) -> Result<WsHandlerOutput, WsError>;
 
     /// Get guard tokens for DI resolution
     fn get_guard_tokens(&self) -> Vec<String> {

@@ -11,7 +11,7 @@
 //! Connect with: websocat ws://localhost:3000/chat
 
 use serde::{Deserialize, Serialize};
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
+use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsMessage};
 use toni::*;
 use toni_macros::{module, websocket_gateway};
 
@@ -125,7 +125,7 @@ impl ChatGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -156,7 +156,7 @@ impl ChatGateway {
         let sent = self.broadcast.to_room(room).send(msg).await?;
         println!("📢 Notified {} clients in room '{}'", sent, room);
 
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("leave")]
@@ -164,7 +164,7 @@ impl ChatGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -189,7 +189,7 @@ impl ChatGateway {
 
         self.broadcast.to_room(room).send(msg).await?;
 
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("message")]
@@ -197,7 +197,7 @@ impl ChatGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -225,7 +225,7 @@ impl ChatGateway {
         let sent = self.broadcast.to_room(room).send(msg).await?;
         println!("📨 Delivered to {} clients", sent);
 
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("dm")]
@@ -233,7 +233,7 @@ impl ChatGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -261,7 +261,7 @@ impl ChatGateway {
 
         self.broadcast.to_client(to).send(msg).await?;
 
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("typing")]
@@ -269,7 +269,7 @@ impl ChatGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -302,7 +302,7 @@ impl ChatGateway {
             }
         }
 
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 }
 

@@ -18,6 +18,7 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
+    MessageCallbackResult,
     async_trait,
     http_adapter::HttpRequestCallbacks,
     http_helpers::{PathParams, RequestBody, RequestPart},
@@ -54,7 +55,8 @@ impl Default for AxumAdapter {
 /// Runs the full WebSocket connection lifecycle for one connected client.
 ///
 /// Splits the socket, spawns a writer task, then pumps the read half through
-/// the framework callbacks until the connection closes.
+/// the framework callbacks until the connection closes. When a handler returns
+/// a stream, a task is spawned to drive it; the task is aborted on disconnect.
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
     callbacks: Arc<WsConnectionCallbacks>,
@@ -76,12 +78,16 @@ async fn run_ws_connection(
 
     let sender: Arc<dyn WsSink> = Arc::new(TokioSender::new(tx));
 
-    let client_id = match callbacks.connect(parts, sender).await {
+    let client_id = match callbacks.connect(parts, sender.clone()).await {
         Ok(id) => id,
         Err(_) => return,
     };
 
     tracing::debug!(client_id = %client_id, "WebSocket connection established");
+
+    let stream_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stream_tasks_inner = stream_tasks.clone();
 
     let mut read = read;
     let panicked = std::panic::AssertUnwindSafe(async {
@@ -89,8 +95,20 @@ async fn run_ws_connection(
             match result {
                 Ok(axum_msg) => match axum_to_ws_message(axum_msg) {
                     Ok(ws_msg) => {
-                        if !callbacks.message(client_id.clone(), ws_msg).await {
-                            break;
+                        match callbacks.message(client_id.clone(), ws_msg).await {
+                            MessageCallbackResult::Continue => {}
+                            MessageCallbackResult::Stop => break,
+                            MessageCallbackResult::Stream(stream) => {
+                                let sink = sender.clone();
+                                let handle = tokio::spawn(async move {
+                                    use futures_util::StreamExt;
+                                    tokio::pin!(stream);
+                                    while let Some(msg) = stream.next().await {
+                                        let _ = sink.send(msg).await;
+                                    }
+                                });
+                                stream_tasks_inner.lock().unwrap().push(handle);
+                            }
                         }
                     }
                     Err(_) => {}
@@ -102,6 +120,10 @@ async fn run_ws_connection(
     .catch_unwind()
     .await
     .is_err();
+
+    for handle in stream_tasks.lock().unwrap().drain(..) {
+        handle.abort();
+    }
 
     if panicked {
         tracing::error!(client_id = %client_id, "WebSocket handler panicked; closing connection");

@@ -82,7 +82,7 @@ impl ChatGateway {
             .send_event("message", &response)
             .await?;
 
-        Ok(None)
+        Ok(toni::WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("ping")]
@@ -91,7 +91,7 @@ impl ChatGateway {
         _client: toni::WsClient,
         _message: toni::WsMessage,
     ) -> toni::WsHandlerResult {
-        Ok(Some(toni::WsMessage::text("pong")))
+        Ok(toni::WsMessage::text("pong").into())
     }
 }
 

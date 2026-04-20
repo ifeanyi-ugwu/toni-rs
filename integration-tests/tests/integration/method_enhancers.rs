@@ -17,7 +17,7 @@ use toni::rpc::{RpcContext as RpcCallContext, RpcData, RpcError};
 use toni::traits_helpers::{
     ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni::websocket::{WsClient, WsError, WsMessage};
+use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni::module;
 use toni_macros::{rpc_controller, websocket_gateway};
@@ -82,7 +82,7 @@ impl WsPrefixInterceptor {}
 impl Interceptor for WsPrefixInterceptor {
     async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
         next.run(context).await;
-        let current = context.switch_to_ws().and_then(|ws| ws.response().cloned());
+        let current = context.switch_to_ws().and_then(|ws| ws.response());
         if let Some(Ok(Some(msg))) = current {
             let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
             context
@@ -110,14 +110,14 @@ impl WsMethodEnhancersGateway {
     #[subscribe_message("all")]
     #[use_guards(WsAllowGuard)]
     #[use_interceptors(WsPrefixInterceptor)]
-    async fn on_all(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("all-ok")))
+    async fn on_all(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("all-ok").into())
     }
 
     #[subscribe_message("piped")]
     #[use_pipes(AbortPipe)]
-    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("should-not-reach")))
+    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("should-not-reach").into())
     }
 
     #[subscribe_message("recovering")]
@@ -126,13 +126,13 @@ impl WsMethodEnhancersGateway {
         &self,
         _c: WsClient,
         _m: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         Err(WsError::Internal("intentional".into()))
     }
 
     #[subscribe_message("plain")]
-    async fn on_plain(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("plain-ok")))
+    async fn on_plain(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("plain-ok").into())
     }
 }
 

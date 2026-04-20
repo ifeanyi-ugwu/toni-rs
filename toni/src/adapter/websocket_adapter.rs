@@ -4,9 +4,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 
 use crate::http_helpers::RequestPart;
 use crate::websocket::{WsError, WsMessage, WsSink};
+
+/// Result of the message callback — tells the adapter what to do next.
+pub enum MessageCallbackResult {
+    /// Keep reading; nothing to stream.
+    Continue,
+    /// Close the read loop.
+    Stop,
+    /// Spawn a task that drives this stream and forwards items to the client.
+    /// The adapter aborts the task when the connection closes.
+    Stream(BoxStream<'static, WsMessage>),
+}
 
 /// Callbacks the framework supplies to an adapter for one gateway path.
 ///
@@ -21,8 +33,11 @@ pub struct WsConnectionCallbacks {
             + Send
             + Sync,
     >,
-    on_message:
-        Arc<dyn Fn(String, WsMessage) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>,
+    on_message: Arc<
+        dyn Fn(String, WsMessage) -> Pin<Box<dyn Future<Output = MessageCallbackResult> + Send>>
+            + Send
+            + Sync,
+    >,
     on_disconnect: Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
 }
 
@@ -35,7 +50,10 @@ impl WsConnectionCallbacks {
         + Send
         + Sync
         + 'static,
-        on_message: impl Fn(String, WsMessage) -> Pin<Box<dyn Future<Output = bool> + Send>>
+        on_message: impl Fn(
+            String,
+            WsMessage,
+        ) -> Pin<Box<dyn Future<Output = MessageCallbackResult> + Send>>
         + Send
         + Sync
         + 'static,
@@ -64,9 +82,7 @@ impl WsConnectionCallbacks {
     }
 
     /// Called by the adapter for each decoded message from a connected client.
-    ///
-    /// Returns `true` to keep reading, `false` to close the connection.
-    pub async fn message(&self, client_id: String, msg: WsMessage) -> bool {
+    pub async fn message(&self, client_id: String, msg: WsMessage) -> MessageCallbackResult {
         (self.on_message)(client_id, msg).await
     }
 

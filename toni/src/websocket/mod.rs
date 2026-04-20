@@ -12,6 +12,7 @@ pub mod helpers;
 mod ws_client;
 mod ws_client_map;
 mod ws_error;
+mod ws_handler_output;
 mod ws_message;
 
 pub use broadcast::{
@@ -24,7 +25,8 @@ pub use gateway_wrapper::GatewayWrapper;
 pub use ws_client::{WsClient, WsHandshake};
 pub(crate) use ws_client_map::WsClientMap;
 pub use ws_error::{DisconnectReason, WsError};
+pub use ws_handler_output::WsHandlerOutput;
 pub use ws_message::WsMessage;
 
 /// Convenience alias for the return type of `#[subscribe_message]` handlers.
-pub type WsHandlerResult = Result<Option<WsMessage>, WsError>;
+pub type WsHandlerResult = Result<WsHandlerOutput, WsError>;

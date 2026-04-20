@@ -45,9 +45,9 @@ impl SimpleGateway {
         &self,
         client: WsClient,
         _message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         println!("🏓 Ping from {}", client.id);
-        Ok(Some(WsMessage::text("pong")))
+        Ok(WsMessage::text("pong").into())
     }
 }
 

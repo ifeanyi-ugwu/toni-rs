@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_lock::RwLock;
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 
 use crate::http_helpers::{RequestPart, RouteMetadata};
 use crate::injector::Context;
@@ -11,7 +12,7 @@ use crate::traits_helpers::{
     PipeEntry,
 };
 
-use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsMessage};
+use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsMessage};
 
 struct WsChainNext {
     interceptors: Vec<Arc<dyn Interceptor>>,
@@ -19,6 +20,7 @@ struct WsChainNext {
     event: String,
     pipes: Vec<Arc<dyn Pipe>>,
     error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
 }
 
 #[async_trait]
@@ -31,6 +33,7 @@ impl InterceptorNext for WsChainNext {
             &self.event,
             &self.pipes,
             &self.error_handlers,
+            self.stream_slot,
         )
         .await;
     }
@@ -158,7 +161,7 @@ impl GatewayWrapper {
         &self,
         client_id: String,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> Result<WsHandlerOutput, WsError> {
         let client = self
             .clients
             .read()
@@ -209,6 +212,12 @@ impl GatewayWrapper {
 
         let interceptors = Self::resolve_interceptors(&all_interceptors, None).await;
         let pipes = Self::resolve_pipes(&all_pipes, None).await;
+
+        // Streams bypass the context (which stores only Option<WsMessage>).
+        // The handler deposits a stream here; handle_message lifts it out.
+        let stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+
         Self::execute_with_interceptors(
             &mut context,
             event,
@@ -216,8 +225,23 @@ impl GatewayWrapper {
             &interceptors,
             &pipes,
             &all_error_handlers,
+            stream_slot.clone(),
         )
-        .await
+        .await?;
+
+        if let Some(stream) = stream_slot.lock().take() {
+            return Ok(WsHandlerOutput::Stream(stream));
+        }
+
+        match context
+            .switch_to_ws_mut()
+            .and_then(|mut ws| ws.take_response())
+        {
+            Some(Ok(Some(msg))) => Ok(WsHandlerOutput::Single(msg)),
+            Some(Ok(None)) => Ok(WsHandlerOutput::Empty),
+            Some(Err(e)) => Err(e),
+            None => Err(WsError::Internal("Handler did not set response".into())),
+        }
     }
 
     async fn resolve_guards(
@@ -265,6 +289,11 @@ impl GatewayWrapper {
         out
     }
 
+    /// Runs the interceptor chain and stores the result in context.
+    ///
+    /// `stream_slot` receives any `WsHandlerOutput::Stream` the handler produces.
+    /// Streams bypass the context (which holds `Option<WsMessage>` only) and are
+    /// lifted out in `handle_message` after this returns.
     async fn execute_with_interceptors(
         context: &mut Context,
         event: String,
@@ -272,7 +301,8 @@ impl GatewayWrapper {
         interceptors: &[Arc<dyn Interceptor>],
         pipes: &[Arc<dyn Pipe>],
         error_handlers: &[Arc<dyn ErrorHandler>],
-    ) -> Result<Option<WsMessage>, WsError> {
+        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
+    ) -> Result<(), WsError> {
         Self::execute_with_interceptors_impl(
             context,
             interceptors,
@@ -280,26 +310,27 @@ impl GatewayWrapper {
             &event,
             pipes,
             error_handlers,
+            stream_slot,
         )
         .await;
 
         if context.should_abort() {
-            if let Some(response) = context.switch_to_ws().and_then(|ws| ws.response().cloned()) {
-                return response.clone();
-            }
-            return Err(WsError::Internal(
-                "Request aborted by interceptor without response".into(),
-            ));
+            return context
+                .switch_to_ws_mut()
+                .and_then(|mut ws| ws.take_response())
+                .unwrap_or_else(|| {
+                    Err(WsError::Internal(
+                        "Request aborted by interceptor without response".into(),
+                    ))
+                })
+                .map(|_| ());
         }
 
-        if let Some(response) = context.switch_to_ws().and_then(|ws| ws.response().cloned()) {
-            response.clone()
-        } else {
-            Err(WsError::Internal("Handler did not set response".into()))
-        }
+        Ok(())
     }
 
-    /// Stores the result in context rather than returning it directly (mirrors HTTP's pattern).
+    /// Stores the final `Option<WsMessage>` result in context. Streams are
+    /// deposited in `stream_slot` instead (they cannot be stored in context).
     async fn execute_with_interceptors_impl(
         context: &mut Context,
         interceptors: &[Arc<dyn Interceptor>],
@@ -307,6 +338,7 @@ impl GatewayWrapper {
         event: &str,
         pipes: &[Arc<dyn Pipe>],
         error_handlers: &[Arc<dyn ErrorHandler>],
+        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
         if interceptors.is_empty() {
             Self::execute_handler_with_error_handling(
@@ -315,6 +347,7 @@ impl GatewayWrapper {
                 event,
                 pipes,
                 error_handlers,
+                stream_slot,
             )
             .await;
             return;
@@ -328,23 +361,39 @@ impl GatewayWrapper {
             event: event.to_string(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
+            stream_slot,
         };
 
         first.intercept(context, Box::new(next)).await;
     }
 
+    /// Runs the handler, applies error handlers if needed, then stores the
+    /// final result in context. `WsHandlerOutput::Stream` is deposited in
+    /// `stream_slot` rather than context (streams are not `Sync`).
     async fn execute_handler_with_error_handling(
         context: &mut Context,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
         pipes: &[Arc<dyn Pipe>],
         error_handlers: &[Arc<dyn ErrorHandler>],
+        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
-        let _ = Self::execute_handler(context, gateway, event, pipes).await;
+        let result = Self::execute_handler(context, gateway, event, pipes).await;
 
-        if !error_handlers.is_empty() {
-            if let Some(Err(e)) = context.switch_to_ws().and_then(|ws| ws.response().cloned()) {
+        // Streams bypass context storage — deposit and return early.
+        if let Ok(WsHandlerOutput::Stream(stream)) = result {
+            *stream_slot.lock() = Some(stream);
+            context
+                .switch_to_ws_mut()
+                .expect("Expected WebSocket context")
+                .set_response(Ok(None));
+            return;
+        }
+
+        let context_result = if !error_handlers.is_empty() {
+            if let Err(ref e) = result {
                 let error_msg = e.to_string();
+                let mut recovered = None;
                 for handler in error_handlers.iter().rev() {
                     let error: Box<dyn std::error::Error + Send> = Box::new(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -353,32 +402,46 @@ impl GatewayWrapper {
                     if let Some(crate::traits_helpers::ErrorResponse::Ws(msg)) =
                         handler.handle_error(error, context).await
                     {
-                        context
-                            .switch_to_ws_mut()
-                            .expect("Expected WebSocket context")
-                            .set_response(Ok(Some(msg)));
-                        return;
+                        recovered = Some(Ok(Some(msg)));
+                        break;
                     }
                 }
+                recovered.unwrap_or_else(|| result.map(|o| match o {
+                    WsHandlerOutput::Single(m) => Some(m),
+                    _ => None,
+                }))
+            } else {
+                result.map(|o| match o {
+                    WsHandlerOutput::Single(m) => Some(m),
+                    _ => None,
+                })
             }
-        }
+        } else {
+            result.map(|o| match o {
+                WsHandlerOutput::Single(m) => Some(m),
+                _ => None,
+            })
+        };
+
+        context
+            .switch_to_ws_mut()
+            .expect("Expected WebSocket context")
+            .set_response(context_result);
     }
 
+    /// Pure handler dispatch — returns the result without touching context.
+    /// The caller (`execute_handler_with_error_handling`) is responsible for
+    /// storing the final result in context.
     async fn execute_handler(
         context: &mut Context,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
         pipes: &[Arc<dyn Pipe>],
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> Result<WsHandlerOutput, WsError> {
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
-                let result = Err(WsError::Internal("Request aborted by pipe".into()));
-                context
-                    .switch_to_ws_mut()
-                    .expect("Expected WebSocket context")
-                    .set_response(result.clone());
-                return result;
+                return Err(WsError::Internal("Request aborted by pipe".into()));
             }
         }
 
@@ -387,13 +450,7 @@ impl GatewayWrapper {
             .ok_or_else(|| WsError::Internal("Expected WebSocket context".into()))?;
         let (client, message) = (ws.client().clone(), ws.message().clone());
 
-        let result = gateway.handle_event(client, message, event).await;
-
-        context
-            .switch_to_ws_mut()
-            .expect("Expected WebSocket context")
-            .set_response(result.clone());
-        result
+        gateway.handle_event(client, message, event).await
     }
 
     pub async fn handle_disconnect(&self, client_id: String, reason: DisconnectReason) {
@@ -491,8 +548,8 @@ mod tests {
                 _client: WsClient,
                 _message: WsMessage,
                 _event: &str,
-            ) -> Result<Option<WsMessage>, WsError> {
-                Ok(None)
+            ) -> Result<WsHandlerOutput, WsError> {
+                Ok(WsHandlerOutput::Empty)
             }
         }
 

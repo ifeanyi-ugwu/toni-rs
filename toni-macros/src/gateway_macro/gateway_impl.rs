@@ -521,7 +521,7 @@ fn generate_gateway_impl(
                 client: toni::WsClient,
                 message: toni::WsMessage,
                 event: &str,
-            ) -> Result<Option<toni::WsMessage>, toni::WsError> {
+            ) -> Result<toni::WsHandlerOutput, toni::WsError> {
                 match event {
                     #(#match_arms)*
                     _ => Err(toni::WsError::EventNotFound(format!("Unknown event: {}", event)))

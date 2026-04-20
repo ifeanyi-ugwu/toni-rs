@@ -19,7 +19,9 @@ pub enum Protocol {
         client: WsClient,
         message: WsMessage,
         event: String,
-        response: Option<Result<Option<WsMessage>, crate::websocket::WsError>>,
+        // Wrapped in Mutex so that Protocol (and Context) remain Sync even
+        // though WsHandlerOutput contains a non-Sync BoxStream.
+        response: Mutex<Option<Result<Option<WsMessage>, crate::websocket::WsError>>>,
     },
 
     Rpc {
@@ -52,7 +54,7 @@ impl Protocol {
             client,
             message,
             event: event.into(),
-            response: None,
+            response: Mutex::new(None),
         }
     }
 

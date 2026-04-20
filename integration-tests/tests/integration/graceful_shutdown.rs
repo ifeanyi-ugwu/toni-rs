@@ -13,7 +13,7 @@ use serial_test::serial;
 use tokio::sync::oneshot;
 use toni::module;
 use toni::toni_factory::ToniFactory;
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
+use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerResult, WsMessage};
 use toni_axum::AxumAdapter;
 use toni_macros::websocket_gateway;
 
@@ -38,8 +38,8 @@ impl CloseGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 
