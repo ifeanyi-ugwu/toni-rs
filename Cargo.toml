@@ -14,6 +14,7 @@ members = [
     "toni-prisma",
     "toni-diesel",
     "toni-redis",
+    "toni-redis-broadcast",
     "toni-sqlx",
     "toni-mongodb",
     "toni-async-graphql",
