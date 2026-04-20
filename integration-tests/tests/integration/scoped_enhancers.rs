@@ -7,7 +7,7 @@ use serial_test::serial;
 use toni::async_trait;
 use toni::injector::Context;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
-use toni::websocket::{WsClient, WsError, WsMessage};
+use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
     controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
 };
@@ -154,8 +154,8 @@ impl GuardedGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 

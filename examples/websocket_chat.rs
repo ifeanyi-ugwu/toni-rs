@@ -28,14 +28,14 @@ impl EchoGateway {
         &self,
         client: WsClient,
         message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
 
         println!("[{}] {}", client.id, text);
 
-        Ok(Some(WsMessage::text(format!("Echo: {}", text))))
+        Ok(WsMessage::text(format!("Echo: {}", text)).into())
     }
 
     #[subscribe_message("ping")]
@@ -43,8 +43,8 @@ impl EchoGateway {
         &self,
         _client: WsClient,
         _message: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 

@@ -29,7 +29,7 @@ use crate::common::TestServer;
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use toni::toni_factory::ToniFactory;
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
+use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
 use toni::{controller, module, post, Body as ToniBody};
 use toni_axum::AxumAdapter;
 use toni_macros::websocket_gateway;
@@ -50,11 +50,11 @@ impl EchoGateway {
         &self,
         _client: WsClient,
         msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text".into()))?;
-        Ok(Some(WsMessage::text(format!("Echo: {}", text))))
+        Ok(WsMessage::text(format!("Echo: {}", text)).into())
     }
 }
 
@@ -80,8 +80,8 @@ impl RoomGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 
     /// Broadcast the raw message text to every connected client.
@@ -90,7 +90,7 @@ impl RoomGateway {
         &self,
         _client: WsClient,
         msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
+    ) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text".into()))?;
@@ -99,7 +99,7 @@ impl RoomGateway {
             .send(WsMessage::text(text.to_string()))
             .await
             .ok();
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 }
 
@@ -121,8 +121,8 @@ impl PingGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 
@@ -224,8 +224,8 @@ impl EventGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 

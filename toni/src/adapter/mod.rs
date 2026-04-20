@@ -6,4 +6,4 @@ pub(crate) use rpc_adapter::ErasedRpcAdapter;
 pub use rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 pub use rpc_client_transport::RpcClientTransport;
 pub(crate) use websocket_adapter::ErasedWebSocketAdapter;
-pub use websocket_adapter::{WebSocketAdapter, WsConnectionCallbacks};
+pub use websocket_adapter::{MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks};

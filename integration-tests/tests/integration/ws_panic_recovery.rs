@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serial_test::serial;
 use toni::module;
-use toni::websocket::{WsClient, WsError, WsMessage};
+use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -18,13 +18,13 @@ impl PanicGateway {
     }
 
     #[subscribe_message("panic")]
-    async fn on_panic(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
+    async fn on_panic(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
         panic!("intentional test panic");
     }
 
     #[subscribe_message("safe")]
-    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("safe-ok")))
+    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("safe-ok").into())
     }
 }
 

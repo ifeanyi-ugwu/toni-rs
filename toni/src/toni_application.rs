@@ -11,8 +11,8 @@ use anyhow::Result;
 
 use crate::{
     adapter::{
-        ErasedRpcAdapter, ErasedWebSocketAdapter, RpcAdapter, RpcMessageCallbacks,
-        WebSocketAdapter, WsConnectionCallbacks,
+        ErasedRpcAdapter, ErasedWebSocketAdapter, MessageCallbackResult, RpcAdapter,
+        RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
     },
     application_context::ToniApplicationContext,
     http_adapter::{ErasedHttpAdapter, HttpAdapter},
@@ -20,7 +20,8 @@ use crate::{
     router::RoutesResolver,
     rpc::{RpcContext, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
-        BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError, WsMessage,
+        BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError,
+        WsHandlerOutput, WsMessage,
         helpers::create_client_from_parts,
     },
 };
@@ -462,27 +463,28 @@ fn make_ws_callbacks(
             let handle = h_message.clone();
             Box::pin(async move {
                 match gateway.handle_message(client_id.clone(), msg).await {
-                    Ok(Some(response)) => {
+                    Ok(WsHandlerOutput::Empty) => MessageCallbackResult::Continue,
+                    Ok(WsHandlerOutput::Single(response)) => {
                         handle.send_to(&client_id, response).await;
-                        true
+                        MessageCallbackResult::Continue
                     }
-                    Ok(None) => true,
-                    Err(e) => {
-                        match &e {
-                            // Connection is already gone — stop the read loop.
-                            WsError::ConnectionClosed(_) => false,
-                            // Guard rejected this message; drop it silently and keep
-                            // the connection alive so other handlers can still run.
-                            WsError::AuthFailed(_) => true,
-                            _ => {
-                                let error_msg = WsMessage::text(
-                                    serde_json::json!({ "error": e.to_string() }).to_string(),
-                                );
-                                handle.send_to(&client_id, error_msg).await;
-                                true
-                            }
+                    Ok(WsHandlerOutput::Stream(stream)) => {
+                        MessageCallbackResult::Stream(stream)
+                    }
+                    Err(e) => match &e {
+                        // Connection is already gone — stop the read loop.
+                        WsError::ConnectionClosed(_) => MessageCallbackResult::Stop,
+                        // Guard rejected this message; drop it silently and keep
+                        // the connection alive so other handlers can still run.
+                        WsError::AuthFailed(_) => MessageCallbackResult::Continue,
+                        _ => {
+                            let error_msg = WsMessage::text(
+                                serde_json::json!({ "error": e.to_string() }).to_string(),
+                            );
+                            handle.send_to(&client_id, error_msg).await;
+                            MessageCallbackResult::Continue
                         }
-                    }
+                    },
                 }
             })
         },

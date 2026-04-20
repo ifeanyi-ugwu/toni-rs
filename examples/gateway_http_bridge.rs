@@ -51,8 +51,8 @@ impl NotificationGateway {
         &self,
         _client: WsClient,
         _msg: WsMessage,
-    ) -> Result<Option<WsMessage>, WsError> {
-        Ok(Some(WsMessage::text("pong")))
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
     }
 }
 

@@ -28,7 +28,8 @@ pub use tracing;
 
 // Re-exports for adapter crates
 pub use adapter::{
-    RpcAdapter, RpcClientTransport, RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
+    MessageCallbackResult, RpcAdapter, RpcClientTransport, RpcMessageCallbacks, WebSocketAdapter,
+    WsConnectionCallbacks,
 };
 pub use http_adapter::{HttpAdapter, HttpRequestCallbacks};
 pub use http_helpers::{
@@ -40,7 +41,7 @@ pub use rpc::{RpcClient, RpcClientError, RpcContext, RpcControllerTrait, RpcData
 pub use websocket::{
     BroadcastError, BroadcastModule, BroadcastService, BroadcastTarget, ClientId, DisconnectReason,
     GatewayTrait, GatewayWrapper, RoomId, SendError, TrySendError, WsClient, WsError,
-    WsHandlerResult, WsHandshake, WsMessage, WsSink,
+    WsHandlerOutput, WsHandlerResult, WsHandshake, WsMessage, WsSink,
 };
 
 // Re-export built-in providers

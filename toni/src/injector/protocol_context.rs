@@ -60,7 +60,7 @@ pub struct WsContext<'a> {
     pub(super) client: &'a WsClient,
     pub(super) message: &'a WsMessage,
     pub(super) event: &'a str,
-    pub(super) response: &'a Option<Result<Option<WsMessage>, WsError>>,
+    pub(super) response: &'a Mutex<Option<Result<Option<WsMessage>, WsError>>>,
 }
 
 impl<'a> WsContext<'a> {
@@ -76,8 +76,8 @@ impl<'a> WsContext<'a> {
         self.event
     }
 
-    pub fn response(&self) -> Option<&'a Result<Option<WsMessage>, WsError>> {
-        self.response.as_ref()
+    pub fn response(&self) -> Option<Result<Option<WsMessage>, WsError>> {
+        self.response.lock().clone()
     }
 }
 
@@ -85,7 +85,7 @@ pub struct WsContextMut<'a> {
     pub(super) client: &'a mut WsClient,
     pub(super) message: &'a mut WsMessage,
     pub(super) event: &'a str,
-    pub(super) response: &'a mut Option<Result<Option<WsMessage>, WsError>>,
+    pub(super) response: &'a Mutex<Option<Result<Option<WsMessage>, WsError>>>,
 }
 
 impl<'a> WsContextMut<'a> {
@@ -102,7 +102,11 @@ impl<'a> WsContextMut<'a> {
     }
 
     pub fn set_response(&mut self, response: Result<Option<WsMessage>, WsError>) {
-        *self.response = Some(response);
+        *self.response.lock() = Some(response);
+    }
+
+    pub fn take_response(&mut self) -> Option<Result<Option<WsMessage>, WsError>> {
+        self.response.lock().take()
     }
 }
 

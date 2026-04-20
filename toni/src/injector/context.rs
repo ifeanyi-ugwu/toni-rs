@@ -135,7 +135,7 @@ impl Context {
                 client,
                 message,
                 event: event.as_str(),
-                response,
+                response,  // &Mutex<...> (no longer &mut)
             }),
             _ => None,
         }
@@ -188,13 +188,15 @@ impl Context {
     ///
     /// # Panics
     /// Panics if not a WebSocket context or response was not set.
-    pub fn into_ws_response(self) -> Result<Option<WsMessage>, crate::websocket::WsError> {
+    pub fn into_ws_response(self) -> Result<Option<crate::websocket::WsMessage>, crate::websocket::WsError> {
         match self.protocol {
-            Protocol::WebSocket { response, .. } => response.unwrap_or_else(|| {
-                Err(crate::websocket::WsError::Internal(
-                    "Response not set in context".into(),
-                ))
-            }),
+            Protocol::WebSocket { response, .. } => {
+                response.into_inner().unwrap_or_else(|| {
+                    Err(crate::websocket::WsError::Internal(
+                        "Response not set in context".into(),
+                    ))
+                })
+            }
             _ => panic!("Expected WebSocket context"),
         }
     }
