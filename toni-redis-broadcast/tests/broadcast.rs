@@ -176,6 +176,31 @@ async fn send_event_formats_payload_correctly() {
     assert_eq!(v["data"], r#"{"name":"Alice"}"#);
 }
 
+/// `to_client` reaches a client on a different process via the private channel.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn to_client_delivers_cross_process() {
+    let (_container, url) = start_redis().await;
+
+    let (_app1, rbs1) = boot(&url).await;
+    let (_app2, rbs2) = boot(&url).await;
+
+    let (alice_sink, mut alice_rx) = make_client();
+    let (bob_sink, mut bob_rx) = make_client();
+    rbs1.connect("alice".to_string(), alice_sink, None).await;
+    rbs2.connect("bob".to_string(), bob_sink, None).await;
+
+    // Instance 2 sends a private message to alice, who lives on instance 1.
+    rbs2.to_client("alice")
+        .send(WsMessage::text("hey alice"))
+        .await
+        .unwrap();
+
+    assert_eq!(recv(&mut alice_rx).await.as_text(), Some("hey alice"));
+    // bob is on the publishing process but must not receive alice's message.
+    assert!(bob_rx.try_recv().is_err(), "bob should not receive alice's private message");
+}
+
 /// `get_room_clients` reflects joins from all instances — the cross-process
 /// membership guarantee that the Redis sets provide.
 #[tokio::test]

@@ -73,6 +73,18 @@ pub(crate) struct RedisBroadcastServiceFactory {
     pub local_bs: BroadcastService,
 }
 
+/// Unique identifier for this process instance. Used as the private Pub/Sub
+/// channel name so targeted `to_client` publishes reach only the process that
+/// holds that client rather than fanning out to every process.
+fn make_process_id() -> String {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{pid}-{nanos}")
+}
+
 #[async_trait]
 impl ProviderFactory for RedisBroadcastServiceFactory {
     fn get_token(&self) -> String {
@@ -97,11 +109,22 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
                 panic!("toni-redis-broadcast: failed to open pubsub connection to '{}': {e}", self.url)
             });
 
+        let process_id = make_process_id();
+
+        // Subscribe to the global channel (all-process broadcasts) and the
+        // private channel (targeted to_client publishes for this process only).
+        let private_channel = format!("toni:broadcast:{process_id}");
         pubsub
             .subscribe("toni:broadcast")
             .await
             .unwrap_or_else(|e| {
                 panic!("toni-redis-broadcast: failed to subscribe to broadcast channel: {e}")
+            });
+        pubsub
+            .subscribe(&private_channel)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("toni-redis-broadcast: failed to subscribe to private channel '{private_channel}': {e}")
             });
 
         let local = self.local_bs.clone();
@@ -123,6 +146,7 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
         let service = RedisBroadcastService::new(
             self.local_bs.clone(),
             publisher,
+            process_id,
             join_handle.abort_handle(),
         );
 

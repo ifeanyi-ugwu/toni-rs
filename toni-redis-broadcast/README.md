@@ -163,10 +163,6 @@ All four return a `RedisBroadcastTarget`.
 
 > **Note on return value:** `send()` returns `Ok(0)`, not the actual delivery count. Delivery happens asynchronously in each subscriber process and cannot be counted at publish time.
 
-## Limitations
-
-**Targeted fan-out is not optimized.** `to_client("alice")` and `except("alice")` publish to the global `toni:broadcast` channel and every process receives the message, even if only one process holds that client. Most processes will discard it silently after failing to find the client locally. This is functionally correct but wastes Redis bandwidth at high client counts.
-
 ## Running the tests
 
 The integration tests require Docker:

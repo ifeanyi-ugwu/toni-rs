@@ -7,17 +7,20 @@ use crate::message::{BroadcastTargetKind, RedisBroadcastPayload};
 
 /// Cross-process WebSocket broadcaster backed by Redis Pub/Sub.
 ///
-/// Every `send()` call publishes a message to the `toni:broadcast` Redis channel.
-/// All toni processes subscribed to that channel (including the publisher) receive
-/// the message and deliver it to their locally connected clients — the same topology
-/// Socket.io uses with `@socket.io/redis-adapter`.
+/// Every `send()` call publishes a message to a Redis channel. `to_all`,
+/// `to_room`, and `except` publish to the shared `toni:broadcast` channel;
+/// `to_client` looks up which process owns the target client and publishes
+/// directly to that process's private channel, avoiding global fan-out.
 ///
-/// Room membership is stored in Redis sets, so `join_room`/`leave_room` and the
-/// corresponding queries reflect the global state across all processes.
+/// Room membership is stored in Redis sets, so `join_room`/`leave_room` and
+/// the corresponding queries reflect the global state across all processes.
 #[derive(Clone)]
 pub struct RedisBroadcastService {
     local: BroadcastService,
     publisher: MultiplexedConnection,
+    /// Unique identifier for this process instance. Stored in Redis when a
+    /// client connects so other processes can publish directly to this channel.
+    process_id: String,
     // Aborted when all clones are dropped, shutting down the subscriber loop.
     _task: Arc<tokio::task::AbortHandle>,
 }
@@ -26,11 +29,13 @@ impl RedisBroadcastService {
     pub(crate) fn new(
         local: BroadcastService,
         publisher: MultiplexedConnection,
+        process_id: String,
         task: tokio::task::AbortHandle,
     ) -> Self {
         Self {
             local,
             publisher,
+            process_id,
             _task: Arc::new(task),
         }
     }
@@ -43,6 +48,9 @@ impl RedisBroadcastService {
         RedisBroadcastTarget::new(self.publisher.clone(), BroadcastTargetKind::Room(room.into()))
     }
 
+    /// Publishes directly to the channel of the process that owns `client_id`,
+    /// avoiding global fan-out. Falls back to the global channel if the client
+    /// is not found in Redis (e.g. already disconnected).
     pub fn to_client(&self, client_id: impl Into<String>) -> RedisBroadcastTarget {
         RedisBroadcastTarget::new(
             self.publisher.clone(),
@@ -135,22 +143,25 @@ impl RedisBroadcastService {
 
     pub async fn connect(&self, client_id: ClientId, sink: Arc<dyn WsSink>, namespace: Option<String>) {
         self.local.connect(client_id.clone(), sink, namespace);
-        // Mirror the auto-room that ConnectionManager::register() creates for every new client.
         let mut conn = self.publisher.clone();
         if let Err(e) = redis::pipe()
+            // Auto-room that ConnectionManager::register() creates locally.
             .sadd(format!("toni:rooms:{client_id}"), &client_id)
             .ignore()
             .sadd(format!("toni:client:{client_id}:rooms"), &client_id)
             .ignore()
+            // Process affinity: lets other processes publish to_client directly
+            // to our private channel instead of the global one.
+            .set(format!("toni:client:{client_id}:process"), &self.process_id)
+            .ignore()
             .query_async::<()>(&mut conn)
             .await
         {
-            tracing::warn!(error = %e, %client_id, "Failed to sync client auto-room to Redis");
+            tracing::warn!(error = %e, %client_id, "Failed to sync client connect to Redis");
         }
     }
 
     pub async fn disconnect(&self, client_id: &str) {
-        // Read local rooms before disconnecting — local state is still in sync at this point.
         let rooms = self.local.get_client_rooms(client_id);
         self.local.disconnect(client_id);
 
@@ -159,9 +170,12 @@ impl RedisBroadcastService {
         for room in &rooms {
             pipe.srem(format!("toni:rooms:{room}"), client_id).ignore();
         }
-        pipe.del(format!("toni:client:{client_id}:rooms")).ignore();
+        pipe.del(format!("toni:client:{client_id}:rooms"))
+            .ignore()
+            .del(format!("toni:client:{client_id}:process"))
+            .ignore();
         if let Err(e) = pipe.query_async::<()>(&mut conn).await {
-            tracing::warn!(error = %e, client_id, "Failed to sync disconnect to Redis");
+            tracing::warn!(error = %e, client_id, "Failed to sync client disconnect to Redis");
         }
     }
 }
@@ -194,6 +208,21 @@ impl RedisBroadcastTarget {
     /// Publish the message to Redis. Returns `Ok(0)` — delivery count is
     /// unknowable at publish time; each subscriber process counts its own.
     pub async fn send(mut self, message: WsMessage) -> Result<usize, BroadcastError> {
+        // For to_client, look up the target client's process and publish to its
+        // private channel. All other target types use the global channel.
+        let channel = if let BroadcastTargetKind::Client(ref client_id) = self.kind {
+            match redis::cmd("GET")
+                .arg(format!("toni:client:{client_id}:process"))
+                .query_async::<Option<String>>(&mut self.publisher)
+                .await
+            {
+                Ok(Some(process_id)) => format!("toni:broadcast:{process_id}"),
+                _ => "toni:broadcast".to_string(),
+            }
+        } else {
+            "toni:broadcast".to_string()
+        };
+
         let payload = RedisBroadcastPayload {
             target: self.kind,
             namespace: self.namespace,
@@ -204,12 +233,12 @@ impl RedisBroadcastTarget {
             BroadcastError::SendFailed(SendError)
         })?;
         redis::cmd("PUBLISH")
-            .arg("toni:broadcast")
+            .arg(&channel)
             .arg(&json)
             .query_async::<()>(&mut self.publisher)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, "Failed to publish to Redis");
+                tracing::error!(error = %e, "Failed to publish to Redis channel '{channel}'");
                 BroadcastError::SendFailed(SendError)
             })?;
         Ok(0)
