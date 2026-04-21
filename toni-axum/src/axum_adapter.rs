@@ -137,6 +137,17 @@ fn ws_route(callbacks: Arc<WsConnectionCallbacks>) -> axum::routing::MethodRoute
         let callbacks = callbacks.clone();
         async move {
             let (parts, _body) = req.into_parts();
+            // Echo any sub-protocol the client requests so the WebSocket handshake
+            // completes successfully. The gateway's on_connect hook is the enforcer.
+            let requested_protocol: Option<String> = parts
+                .headers
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
+            let ws = match requested_protocol {
+                Some(proto) => ws.protocols([proto]),
+                None => ws,
+            };
             ws.on_upgrade(move |socket| run_ws_connection(socket, callbacks, parts))
         }
     })

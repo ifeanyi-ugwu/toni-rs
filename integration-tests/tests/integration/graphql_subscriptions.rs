@@ -54,8 +54,24 @@ impl GqlModule {}
 async fn connect_ws(port: u16) -> tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 > {
+    connect_ws_with_protocol(port, Some("graphql-transport-ws")).await
+}
+
+async fn connect_ws_with_protocol(
+    port: u16,
+    protocol: Option<&str>,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
     let url = format!("ws://127.0.0.1:{}/graphql/ws", port);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mut req = url.into_client_request().unwrap();
+    if let Some(p) = protocol {
+        req.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            p.parse().unwrap(),
+        );
+    }
+    let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
     ws
 }
 
@@ -156,4 +172,31 @@ async fn graphql_ws_ping_pong() {
     let msgs = collect_n(&mut ws, 1, Duration::from_secs(2)).await;
 
     assert_eq!(msgs[0]["type"], "pong");
+}
+
+/// Connections without `Sec-WebSocket-Protocol: graphql-transport-ws` are rejected.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_rejects_missing_subprotocol() {
+    let server = TestServer::start(GqlModule::module_definition()).await;
+    let mut ws = connect_ws_with_protocol(server.port, None).await;
+
+    // Server closes the connection immediately — no ack should arrive.
+    let _ = ws.send(text(r#"{"type":"connection_init"}"#)).await;
+    let msgs = collect_n(&mut ws, 1, Duration::from_millis(500)).await;
+
+    assert!(msgs.is_empty());
+}
+
+/// Connections with a wrong sub-protocol value are also rejected.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_rejects_wrong_subprotocol() {
+    let server = TestServer::start(GqlModule::module_definition()).await;
+    let mut ws = connect_ws_with_protocol(server.port, Some("graphql-ws")).await;
+
+    let _ = ws.send(text(r#"{"type":"connection_init"}"#)).await;
+    let msgs = collect_n(&mut ws, 1, Duration::from_millis(500)).await;
+
+    assert!(msgs.is_empty());
 }

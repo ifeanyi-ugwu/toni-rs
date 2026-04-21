@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toni::traits_helpers::{Provider, ProviderContext};
-use toni::{GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput, WsMessage};
+use toni::{Context, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput, WsMessage};
 
 use crate::subscription_context_builder::SubscriptionContextBuilder;
 
@@ -107,6 +107,22 @@ where
     // graphql-ws protocol uses "type" as the routing field, not "event".
     fn event_field(&self) -> &str {
         "type"
+    }
+
+    // Reject connections that do not negotiate the graphql-transport-ws sub-protocol.
+    // Clients using the graphql-ws library set this automatically; raw clients must set it explicitly.
+    async fn on_connect(&self, client: &WsClient, _context: &Context) -> Result<(), WsError> {
+        let protocol = client
+            .handshake
+            .headers
+            .get("sec-websocket-protocol")
+            .map(|s| s.as_str());
+        if protocol != Some("graphql-transport-ws") {
+            return Err(WsError::AuthFailed(
+                "graphql-ws requires Sec-WebSocket-Protocol: graphql-transport-ws".into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn handle_event(
