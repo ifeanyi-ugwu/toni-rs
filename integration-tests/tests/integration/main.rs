@@ -38,5 +38,6 @@ mod streaming;
 mod tower_compat;
 mod websocket_broadcast;
 mod websocket_e2e;
+mod graphql_subscriptions;
 mod ws_handler_stream;
 mod ws_panic_recovery;

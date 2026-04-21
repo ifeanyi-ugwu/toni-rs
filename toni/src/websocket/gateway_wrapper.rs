@@ -460,19 +460,21 @@ impl GatewayWrapper {
         }
     }
 
-    /// Parses the event name from a message; expects JSON `{ "event": "...", ... }` format
+    /// Parses the event name from a message using the gateway's `event_field()` key.
     fn extract_event(&self, message: &WsMessage) -> Result<String, WsError> {
         match message {
             WsMessage::Text(text) => {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
-                    if let Some(event) = parsed.get("event").and_then(|v| v.as_str()) {
+                    let field = self.gateway.event_field();
+                    if let Some(event) = parsed.get(field).and_then(|v| v.as_str()) {
                         return Ok(event.to_string());
                     }
                 }
 
-                Err(WsError::InvalidMessage(
-                    "Missing 'event' field in JSON message".into(),
-                ))
+                Err(WsError::InvalidMessage(format!(
+                    "Missing '{}' field in JSON message",
+                    self.gateway.event_field()
+                )))
             }
             WsMessage::Binary(_) => Err(WsError::InvalidMessage(
                 "Binary messages not yet supported for event extraction".into(),

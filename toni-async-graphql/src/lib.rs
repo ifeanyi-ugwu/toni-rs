@@ -119,20 +119,29 @@ mod graphql_controller;
 mod graphql_module;
 mod graphql_service;
 mod graphql_service_factory;
+mod subscription_context_builder;
+mod subscription_gateway;
+mod subscription_gateway_factory;
 
 // Re-export key types
 pub use context_builder::{ContextBuilder, DefaultContextBuilder};
 pub use graphql_module::GraphQLModule;
 pub use graphql_service::GraphQLService;
+pub use subscription_context_builder::{
+    DefaultSubscriptionContextBuilder, SubscriptionContextBuilder,
+};
 
 // Re-export async-graphql for convenience
 pub use async_graphql;
 
 /// Prelude module with common imports
 pub mod prelude {
-    pub use crate::{ContextBuilder, DefaultContextBuilder, GraphQLModule, GraphQLService};
+    pub use crate::{
+        ContextBuilder, DefaultContextBuilder, DefaultSubscriptionContextBuilder, GraphQLModule,
+        GraphQLService, SubscriptionContextBuilder,
+    };
     pub use async_graphql::{
         Context, EmptyMutation, EmptySubscription, Enum, InputObject, Interface, Object, Schema,
-        SimpleObject, Union,
+        SimpleObject, Subscription, Union,
     };
 }

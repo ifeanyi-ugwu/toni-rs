@@ -1,6 +1,10 @@
 use crate::context_builder::ContextBuilder;
 use crate::graphql_controller::GraphQLControllerFactory;
 use crate::graphql_service_factory::GraphQLServiceFactory;
+use crate::subscription_context_builder::{
+    DefaultSubscriptionContextBuilder, SubscriptionContextBuilder,
+};
+use crate::subscription_gateway_factory::GraphQLSubscriptionGatewayFactory;
 use async_graphql::{ObjectType, Schema, SubscriptionType};
 use std::sync::Arc;
 use toni::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
@@ -67,6 +71,8 @@ where
     context_builder: Arc<Ctx>,
     path: String,
     playground_enabled: bool,
+    subscription_path: Option<String>,
+    subscription_context_builder: Arc<dyn SubscriptionContextBuilder>,
 }
 
 impl<Query, Mutation, Subscription, Ctx> GraphQLModule<Query, Mutation, Subscription, Ctx>
@@ -105,7 +111,9 @@ where
             schema: Arc::new(schema),
             context_builder: Arc::new(context_builder),
             path: "/graphql".to_string(),
-            playground_enabled: cfg!(debug_assertions), // Enabled in debug mode by default
+            playground_enabled: cfg!(debug_assertions),
+            subscription_path: None,
+            subscription_context_builder: Arc::new(DefaultSubscriptionContextBuilder),
         }
     }
 
@@ -136,6 +144,41 @@ where
     /// ```
     pub fn with_playground(mut self, enabled: bool) -> Self {
         self.playground_enabled = enabled;
+        self
+    }
+
+    /// Enable GraphQL subscriptions over the graphql-ws protocol.
+    ///
+    /// Registers a WebSocket gateway at `path`. Clients must speak the
+    /// `graphql-transport-ws` sub-protocol (graphql-ws v5+).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// GraphQLModule::for_root(schema, DefaultContextBuilder)
+    ///     .with_subscription_path("/graphql/ws")
+    /// ```
+    pub fn with_subscription_path(mut self, path: impl Into<String>) -> Self {
+        self.subscription_path = Some(path.into());
+        self
+    }
+
+    /// Use a custom context builder for subscription resolvers.
+    ///
+    /// The builder receives a `&WsClient` (carrying handshake headers and query
+    /// parameters from the HTTP upgrade request) rather than a `&RequestPart`,
+    /// because the HTTP request is no longer available at the point subscriptions
+    /// are dispatched.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// GraphQLModule::for_root(schema, DefaultContextBuilder)
+    ///     .with_subscription_path("/graphql/ws")
+    ///     .with_subscription_context(MyWsContextBuilder { auth_service })
+    /// ```
+    pub fn with_subscription_context(mut self, builder: impl SubscriptionContextBuilder) -> Self {
+        self.subscription_context_builder = Arc::new(builder);
         self
     }
 
@@ -172,10 +215,19 @@ where
     }
 
     fn providers(&self) -> Option<Vec<Box<dyn ProviderFactory>>> {
-        Some(vec![Box::new(GraphQLServiceFactory::new(
-            self.schema.clone(),
-            self.context_builder.clone(),
-        ))])
+        let mut providers: Vec<Box<dyn ProviderFactory>> = vec![Box::new(
+            GraphQLServiceFactory::new(self.schema.clone(), self.context_builder.clone()),
+        )];
+
+        if let Some(ref sub_path) = self.subscription_path {
+            providers.push(Box::new(GraphQLSubscriptionGatewayFactory::new(
+                self.schema.clone(),
+                self.subscription_context_builder.clone(),
+                sub_path.clone(),
+            )));
+        }
+
+        Some(providers)
     }
 
     fn controllers(&self) -> Option<Vec<Box<dyn ControllerFactory>>> {
