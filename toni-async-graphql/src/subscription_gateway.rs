@@ -1,12 +1,16 @@
 use std::any::Any;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toni::traits_helpers::{Provider, ProviderContext};
-use toni::{Context, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput, WsMessage};
+use toni::{
+    Context, DisconnectReason, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput,
+    WsMessage,
+};
 
 use crate::subscription_context_builder::SubscriptionContextBuilder;
 
@@ -70,6 +74,9 @@ where
     pub(crate) schema: Arc<Schema<Q, M, S>>,
     pub(crate) context_builder: Arc<dyn SubscriptionContextBuilder>,
     pub(crate) path: String,
+    // Stores the connection_init payload per client so it can be passed to the
+    // context builder when a subscribe message arrives later on the same connection.
+    pub(crate) init_payloads: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 impl<Q, M, S> Clone for GraphQLSubscriptionGateway<Q, M, S>
@@ -83,6 +90,7 @@ where
             schema: self.schema.clone(),
             context_builder: self.context_builder.clone(),
             path: self.path.clone(),
+            init_payloads: self.init_payloads.clone(),
         }
     }
 }
@@ -147,7 +155,13 @@ where
             .map_err(|e| WsError::InvalidMessage(format!("invalid graphql-ws message: {e}")))?;
 
         match client_msg {
-            ClientMessage::ConnectionInit { .. } => {
+            ClientMessage::ConnectionInit { payload } => {
+                if let Some(v) = payload {
+                    self.init_payloads
+                        .lock()
+                        .unwrap()
+                        .insert(client.id.clone(), v);
+                }
                 let ack = serde_json::to_string(&ServerMessage::ConnectionAck).unwrap();
                 Ok(WsHandlerOutput::Single(WsMessage::text(ack)))
             }
@@ -170,6 +184,10 @@ where
             }
         }
     }
+
+    async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
+        self.init_payloads.lock().unwrap().remove(&client.id);
+    }
 }
 
 impl<Q, M, S> GraphQLSubscriptionGateway<Q, M, S>
@@ -184,7 +202,8 @@ where
         id: String,
         payload: SubscribePayload,
     ) -> Result<WsHandlerOutput, WsError> {
-        let context_data = self.context_builder.build(&client).await;
+        let init_payload = self.init_payloads.lock().unwrap().get(&client.id).cloned();
+        let context_data = self.context_builder.build(&client, init_payload).await;
 
         let mut request = async_graphql::Request::new(payload.query);
         if let Some(op) = payload.operation_name {

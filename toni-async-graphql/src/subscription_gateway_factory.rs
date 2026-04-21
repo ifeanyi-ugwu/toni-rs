@@ -54,6 +54,9 @@ where
             schema: self.schema.clone(),
             context_builder: self.context_builder.clone(),
             path: self.path.clone(),
+            init_payloads: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         };
 
         let role = ProviderRole::Gateway(Arc::new(

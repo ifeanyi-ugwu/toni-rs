@@ -9,9 +9,10 @@ use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use serde_json::Value;
 use toni::module;
+use toni::{async_trait, WsClient};
 use toni_async_graphql::{
-    async_graphql::{self, EmptyMutation, Object, Schema, Subscription},
-    DefaultContextBuilder, GraphQLModule,
+    async_graphql::{self, Context, EmptyMutation, Object, Schema, Subscription},
+    DefaultContextBuilder, GraphQLModule, SubscriptionContextBuilder,
 };
 use tokio_tungstenite::tungstenite::Message;
 
@@ -48,6 +49,67 @@ fn build_module() -> GraphQLModule<Query, EmptyMutation, Sub, DefaultContextBuil
 
 #[module(imports: [build_module()], controllers: [], providers: [], exports: [])]
 impl GqlModule {}
+
+// ---- Auth-payload schema -------------------------------------------------
+
+struct AuthQuery;
+
+#[Object]
+impl AuthQuery {
+    async fn ping(&self) -> &str {
+        "pong"
+    }
+}
+
+struct AuthSub;
+
+#[Subscription]
+impl AuthSub {
+    /// Emits the token that was passed in connection_init's payload.
+    async fn auth_token(
+        &self,
+        ctx: &Context<'_>,
+    ) -> impl futures_util::Stream<Item = String> {
+        let token = ctx
+            .data::<String>()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "<missing>".to_owned());
+        futures_util::stream::once(std::future::ready(token))
+    }
+}
+
+struct TokenContextBuilder;
+
+#[async_trait]
+impl SubscriptionContextBuilder for TokenContextBuilder {
+    async fn build(
+        &self,
+        _client: &WsClient,
+        init_payload: Option<Value>,
+    ) -> async_graphql::Data {
+        let mut data = async_graphql::Data::default();
+        if let Some(token) = init_payload
+            .as_ref()
+            .and_then(|p| p.get("token"))
+            .and_then(|v| v.as_str())
+        {
+            data.insert(token.to_owned());
+        }
+        data
+    }
+}
+
+fn build_auth_module(
+) -> GraphQLModule<AuthQuery, EmptyMutation, AuthSub, DefaultContextBuilder> {
+    let schema = Schema::build(AuthQuery, EmptyMutation, AuthSub).finish();
+    GraphQLModule::for_root(schema, DefaultContextBuilder)
+        .with_path("/graphql")
+        .with_subscription_path("/graphql/ws")
+        .with_subscription_context(TokenContextBuilder)
+}
+
+#[module(imports: [build_auth_module()], controllers: [], providers: [], exports: [])]
+impl AuthModule {}
 
 // ---- Helpers -------------------------------------------------------------
 
@@ -199,4 +261,34 @@ async fn graphql_ws_rejects_wrong_subprotocol() {
     let msgs = collect_n(&mut ws, 1, Duration::from_millis(500)).await;
 
     assert!(msgs.is_empty());
+}
+
+/// The `connection_init` payload is forwarded to the context builder and available
+/// in subscription resolvers via `ctx.data::<T>()`.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_connection_init_payload_reaches_resolver() {
+    let server = TestServer::start(AuthModule::module_definition()).await;
+    let mut ws = connect_ws(server.port).await;
+
+    // Handshake with an auth token in the payload
+    ws.send(text(
+        r#"{"type":"connection_init","payload":{"token":"secret123"}}"#,
+    ))
+    .await
+    .unwrap();
+    collect_n(&mut ws, 1, Duration::from_secs(2)).await; // consume ack
+
+    // Subscribe to authToken — expects 1 next + 1 complete
+    ws.send(text(
+        r#"{"type":"subscribe","id":"1","payload":{"query":"subscription { authToken }"}}"#,
+    ))
+    .await
+    .unwrap();
+
+    let frames = collect_n(&mut ws, 2, Duration::from_secs(5)).await;
+
+    assert_eq!(frames[0]["type"], "next");
+    assert_eq!(frames[0]["payload"]["data"]["authToken"], "secret123");
+    assert_eq!(frames[1]["type"], "complete");
 }
