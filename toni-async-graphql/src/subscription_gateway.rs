@@ -2,6 +2,9 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use futures::future::AbortHandle;
+use futures::stream::Abortable;
+
 use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -77,6 +80,9 @@ where
     // Stores the connection_init payload per client so it can be passed to the
     // context builder when a subscribe message arrives later on the same connection.
     pub(crate) init_payloads: Arc<Mutex<HashMap<String, Value>>>,
+    // Tracks running subscription streams by (client_id, subscription_id) so a
+    // client-sent "complete" can abort exactly that stream without disconnecting.
+    pub(crate) abort_handles: Arc<Mutex<HashMap<(String, String), AbortHandle>>>,
 }
 
 impl<Q, M, S> Clone for GraphQLSubscriptionGateway<Q, M, S>
@@ -91,6 +97,7 @@ where
             context_builder: self.context_builder.clone(),
             path: self.path.clone(),
             init_payloads: self.init_payloads.clone(),
+            abort_handles: self.abort_handles.clone(),
         }
     }
 }
@@ -173,9 +180,15 @@ where
 
             ClientMessage::Pong { .. } => Ok(WsHandlerOutput::Empty),
 
-            ClientMessage::Complete { .. } => {
-                // Per-subscription cancellation is out of scope for MVP — all running
-                // stream tasks are aborted by the adapter when the connection closes.
+            ClientMessage::Complete { id } => {
+                if let Some(handle) = self
+                    .abort_handles
+                    .lock()
+                    .unwrap()
+                    .remove(&(client.id.clone(), id))
+                {
+                    handle.abort();
+                }
                 Ok(WsHandlerOutput::Empty)
             }
 
@@ -187,6 +200,15 @@ where
 
     async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
         self.init_payloads.lock().unwrap().remove(&client.id);
+        let mut handles = self.abort_handles.lock().unwrap();
+        handles.retain(|(cid, _), handle| {
+            if *cid == client.id {
+                handle.abort();
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -243,15 +265,25 @@ where
             WsMessage::text(frame)
         });
 
-        let id_complete = id;
+        let id_complete = id.clone();
         let complete_frame = futures::stream::once(async move {
             let json =
                 serde_json::to_string(&ServerMessage::Complete { id: &id_complete }).unwrap();
             WsMessage::text(json)
         });
 
-        let full_stream = Box::pin(futures::StreamExt::chain(next_stream, complete_frame));
-        Ok(WsHandlerOutput::Stream(full_stream))
+        let full_stream = futures::StreamExt::chain(next_stream, complete_frame);
+
+        let (abort_handle, abort_reg) = AbortHandle::new_pair();
+        self.abort_handles
+            .lock()
+            .unwrap()
+            .insert((client.id.clone(), id), abort_handle);
+
+        Ok(WsHandlerOutput::Stream(Box::pin(Abortable::new(
+            full_stream,
+            abort_reg,
+        ))))
     }
 }
 

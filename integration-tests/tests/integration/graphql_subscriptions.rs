@@ -36,6 +36,14 @@ impl Sub {
     async fn countdown(&self, from: i32) -> impl futures_util::Stream<Item = i32> {
         futures_util::stream::iter((0..=from).rev())
     }
+
+    /// Emits incrementing integers every 50 ms indefinitely (until cancelled).
+    async fn ticker(&self) -> impl futures_util::Stream<Item = i32> {
+        futures_util::stream::unfold(0i32, |n| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Some((n, n + 1))
+        })
+    }
 }
 
 // ---- Module --------------------------------------------------------------
@@ -261,6 +269,97 @@ async fn graphql_ws_rejects_wrong_subprotocol() {
     let msgs = collect_n(&mut ws, 1, Duration::from_millis(500)).await;
 
     assert!(msgs.is_empty());
+}
+
+/// A client-sent `complete` stops the subscription stream without closing the connection.
+///
+/// Uses `ticker` (50 ms between items) so at most a handful of items can arrive before
+/// the cancel propagates — far fewer than the "never-ending" default.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_per_subscription_cancel_stops_stream() {
+    let server = TestServer::start(GqlModule::module_definition()).await;
+    let mut ws = connect_ws(server.port).await;
+
+    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    collect_n(&mut ws, 1, Duration::from_secs(2)).await; // consume ack
+
+    // Subscribe to the ticker (infinite, 50 ms per item)
+    ws.send(text(
+        r#"{"type":"subscribe","id":"1","payload":{"query":"subscription { ticker }"}}"#,
+    ))
+    .await
+    .unwrap();
+
+    // Wait for at least one item to confirm the stream started
+    let started = collect_n(&mut ws, 1, Duration::from_secs(5)).await;
+    assert!(!started.is_empty(), "stream should have started");
+
+    // Cancel the subscription
+    ws.send(text(r#"{"type":"complete","id":"1"}"#)).await.unwrap();
+
+    // Collect any items that still arrive (at most a couple from the in-flight pipeline)
+    let trailing = collect_n(&mut ws, 100, Duration::from_millis(300)).await;
+
+    // Server must NOT send a server-side complete for a client-cancelled subscription
+    assert!(
+        !trailing.iter().any(|f| f["type"] == "complete" && f["id"] == "1"),
+        "server should not send complete for a client-cancelled subscription"
+    );
+    // A 50 ms ticker over 300 ms can produce at most ~6 items; allow a small buffer
+    assert!(
+        trailing.len() < 20,
+        "stream was not cancelled: got {} trailing frames",
+        trailing.len()
+    );
+}
+
+/// Cancelling one subscription leaves other subscriptions on the same connection intact.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
+    let server = TestServer::start(GqlModule::module_definition()).await;
+    let mut ws = connect_ws(server.port).await;
+
+    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    collect_n(&mut ws, 1, Duration::from_secs(2)).await;
+
+    // Start a slow infinite subscription
+    ws.send(text(
+        r#"{"type":"subscribe","id":"inf","payload":{"query":"subscription { ticker }"}}"#,
+    ))
+    .await
+    .unwrap();
+    // Wait for one item to confirm it's running
+    collect_n(&mut ws, 1, Duration::from_secs(5)).await;
+
+    // Cancel the infinite subscription
+    ws.send(text(r#"{"type":"complete","id":"inf"}"#)).await.unwrap();
+
+    // Brief pause to let any in-flight "inf" frames drain
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now start a short subscription on the SAME connection
+    ws.send(text(
+        r#"{"type":"subscribe","id":"short","payload":{"query":"subscription { countdown(from: 2) }"}}"#,
+    ))
+    .await
+    .unwrap();
+
+    // Collect frames — should be only "short" frames now that "inf" is cancelled
+    let all_frames = collect_n(&mut ws, 20, Duration::from_secs(5)).await;
+    let short_frames: Vec<&Value> = all_frames.iter().filter(|f| f["id"] == "short").collect();
+
+    assert_eq!(short_frames.len(), 4, "expected 3 next + 1 complete for 'short'");
+    let next_values: Vec<i64> = short_frames[..3]
+        .iter()
+        .map(|f| {
+            assert_eq!(f["type"], "next");
+            f["payload"]["data"]["countdown"].as_i64().unwrap()
+        })
+        .collect();
+    assert_eq!(next_values, [2, 1, 0]);
+    assert_eq!(short_frames[3]["type"], "complete");
 }
 
 /// The `connection_init` payload is forwarded to the context builder and available

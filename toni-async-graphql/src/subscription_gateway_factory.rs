@@ -57,6 +57,9 @@ where
             init_payloads: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            abort_handles: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         };
 
         let role = ProviderRole::Gateway(Arc::new(
