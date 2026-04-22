@@ -50,6 +50,14 @@ pub trait GatewayTrait: Send + Sync {
         let _ = (client, reason);
     }
 
+    /// The JSON field name used to route incoming messages to a handler.
+    ///
+    /// Default: `"event"` — matches the standard `{"event":"...", ...}` convention.
+    /// Override to `"type"` for graphql-ws protocol compatibility.
+    fn event_field(&self) -> &str {
+        "event"
+    }
+
     /// Route message to appropriate handler based on event name.
     ///
     /// Return `WsHandlerOutput::Empty` for no response, `::Single` for one

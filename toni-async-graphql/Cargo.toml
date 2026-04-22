@@ -11,6 +11,8 @@ categories = ["web-programming", "asynchronous"]
 toni = { path = "../toni", version = "0.2.0" }
 toni-macros = { path = "../toni-macros", version = "0.2.0" }
 async-graphql = "7.0"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["rt"] }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
