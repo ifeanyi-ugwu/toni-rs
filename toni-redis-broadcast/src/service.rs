@@ -205,6 +205,20 @@ impl RedisBroadcastTarget {
         self
     }
 
+    /// Chain an additional room — only clients in any of the listed rooms receive the message.
+    pub fn and_room(mut self, room: impl Into<String>) -> Self {
+        match self.kind {
+            BroadcastTargetKind::Room(r) => {
+                self.kind = BroadcastTargetKind::Rooms(vec![r, room.into()]);
+            }
+            BroadcastTargetKind::Rooms(ref mut rooms) => {
+                rooms.push(room.into());
+            }
+            _ => {}
+        }
+        self
+    }
+
     /// Publish the message to Redis. Returns `Ok(0)` — delivery count is
     /// unknowable at publish time; each subscriber process counts its own.
     pub async fn send(mut self, message: WsMessage) -> Result<usize, BroadcastError> {
@@ -266,6 +280,11 @@ pub(crate) async fn deliver_locally(local: &BroadcastService, payload: RedisBroa
     let target = match payload.target {
         BroadcastTargetKind::All => local.to_all(),
         BroadcastTargetKind::Room(r) => local.to_room(r),
+        BroadcastTargetKind::Rooms(rooms) => {
+            let mut iter = rooms.into_iter();
+            let first = iter.next().unwrap();
+            iter.fold(local.to_room(first), |t, r| t.and_room(r))
+        }
         BroadcastTargetKind::Client(id) => local.to_client(id),
         BroadcastTargetKind::Except(id) => local.except(id),
     };

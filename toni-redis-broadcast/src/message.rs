@@ -16,6 +16,7 @@ pub(crate) struct RedisBroadcastPayload {
 pub(crate) enum BroadcastTargetKind {
     All,
     Room(String),
+    Rooms(Vec<String>),
     Client(String),
     Except(String),
 }
