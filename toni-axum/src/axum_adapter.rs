@@ -8,8 +8,9 @@ use tokio::sync::watch;
 
 use axum::{
     body::Body,
-    extract::ws::WebSocketUpgrade,
+    extract::{ws::WebSocketUpgrade, Path},
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
+    routing::{MethodFilter, MethodRouter},
     Router,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
@@ -19,9 +20,9 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     AdapterContext, MessageCallbackResult,
     async_trait,
-    http_helpers::{RequestBody, RequestPart},
+    http_helpers::{PathParams, RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
-    RouteTableBuilder, WebSocketAdapter, WsConnectionCallbacks,
+    WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
@@ -29,9 +30,7 @@ use crate::tokio_sender::TokioSender;
 
 #[derive(Clone)]
 pub struct AxumAdapter {
-    /// Collects HTTP route registrations until `route_handler` is called.
-    route_builder: Arc<std::sync::Mutex<RouteTableBuilder>>,
-    /// Holds WebSocket upgrade routes only.
+    routes: Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>,
     ws_router: Router,
     ws_ports: HashMap<u16, Router>,
     shutdown_tx: Arc<watch::Sender<bool>>,
@@ -41,7 +40,7 @@ impl AxumAdapter {
     pub fn new() -> Self {
         let (tx, _) = watch::channel(false);
         Self {
-            route_builder: Arc::new(std::sync::Mutex::new(RouteTableBuilder::new())),
+            routes: Vec::new(),
             ws_router: Router::new(),
             ws_ports: HashMap::new(),
             shutdown_tx: Arc::new(tx),
@@ -55,6 +54,47 @@ impl Default for AxumAdapter {
     }
 }
 
+/// Converts toni `:param` path syntax to Axum `{param}` syntax.
+fn to_axum_path(path: &str) -> String {
+    if !path.contains(':') {
+        return path.to_owned();
+    }
+    let mut out = String::with_capacity(path.len() + 4);
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ':' && chars.peek().map_or(false, |&n| n != '/') {
+            out.push('{');
+            for n in chars.by_ref() {
+                if n == '/' {
+                    out.push('}');
+                    out.push('/');
+                    break;
+                }
+                out.push(n);
+            }
+            if !out.ends_with('}') {
+                out.push('}');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn to_method_filter(method: HttpMethod) -> MethodFilter {
+    match method {
+        HttpMethod::GET => MethodFilter::GET,
+        HttpMethod::POST => MethodFilter::POST,
+        HttpMethod::PUT => MethodFilter::PUT,
+        HttpMethod::DELETE => MethodFilter::DELETE,
+        HttpMethod::PATCH => MethodFilter::PATCH,
+        HttpMethod::HEAD => MethodFilter::HEAD,
+        HttpMethod::OPTIONS => MethodFilter::OPTIONS,
+        HttpMethod::TRACE => MethodFilter::TRACE,
+        HttpMethod::CONNECT => MethodFilter::CONNECT,
+    }
+}
 
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
@@ -204,7 +244,7 @@ impl AxumAdapter {
 
 impl HttpAdapter for AxumAdapter {
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
-        self.route_builder.lock().unwrap().insert(method, path, handler);
+        self.routes.push((method, path.to_owned(), handler));
         Ok(())
     }
 
@@ -219,51 +259,80 @@ impl HttpAdapter for AxumAdapter {
         hostname: &str,
         ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let builder = std::mem::replace(
-            &mut *self.route_builder.lock().unwrap(),
-            RouteTableBuilder::new(),
-        );
-        let table = Arc::new(builder.build());
+        let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
 
-        let router = std::mem::replace(&mut self.ws_router, Router::new());
-        let router = router.fallback(move |req: Request<Body>| {
-            let table = table.clone();
+        // Group routes by path: Axum panics if the same path is registered twice.
+        let mut by_path: HashMap<String, MethodRouter> = HashMap::new();
+        for (method, path, handler) in routes {
+            let axum_path = to_axum_path(&path);
+            let filter = to_method_filter(method);
+            let handler = handler.clone();
             let ctx = ctx.clone();
-            async move {
-                let http_req = match Self::adapt_request(req).await {
-                    Ok(r) => r,
-                    Err(e) => {
+
+            let handler_fn = move |
+                Path(params): Path<HashMap<String, String>>,
+                req: Request<Body>
+            | {
+                let handler = handler.clone();
+                let ctx = ctx.clone();
+                async move {
+                    let (mut parts, body) = req.into_parts();
+                    if !params.is_empty() {
+                        parts.extensions.insert(PathParams(params));
+                    }
+                    let req = Request::from_parts(parts, body);
+
+                    let http_req = match Self::adapt_request(req).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let body = serde_json::json!({
+                                "statusCode": 500,
+                                "message": e.to_string(),
+                                "error": "Internal Server Error"
+                            });
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(body.to_string()))
+                                .unwrap();
+                        }
+                    };
+
+                    let http_res = ctx
+                        .execute(http_req, move |req| {
+                            let handler = handler.clone();
+                            Box::pin(async move { handler.handle(req).await })
+                        })
+                        .await;
+
+                    Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                         let body = serde_json::json!({
                             "statusCode": 500,
                             "message": e.to_string(),
                             "error": "Internal Server Error"
                         });
-                        return Response::builder()
+                        Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)
                             .header("Content-Type", "application/json")
                             .body(Body::from(body.to_string()))
-                            .unwrap();
-                    }
-                };
-                let http_res = ctx.execute(http_req, move |req| {
-                    let table = table.clone();
-                    Box::pin(async move { table.dispatch(req).await })
-                }).await;
-                Self::adapt_response(http_res).await.unwrap_or_else(|e| {
-                    let body = serde_json::json!({
-                        "statusCode": 500,
-                        "message": e.to_string(),
-                        "error": "Internal Server Error"
-                    });
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header("Content-Type", "application/json")
-                        .body(Body::from(body.to_string()))
-                        .unwrap()
-                })
-            }
-        });
+                            .unwrap()
+                    })
+                }
+            };
+
+            let method_router = axum::routing::on(filter, handler_fn);
+            let entry = by_path.entry(axum_path).or_insert_with(MethodRouter::new);
+            *entry = std::mem::take(entry).merge(method_router);
+        }
+
+        let mut http_router = Router::new();
+        for (path, method_router) in by_path {
+            http_router = http_router.route(&path, method_router);
+        }
+
+        let ws_router = std::mem::replace(&mut self.ws_router, Router::new());
+        let router = ws_router.merge(http_router);
 
         let hostname = hostname.to_string();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
