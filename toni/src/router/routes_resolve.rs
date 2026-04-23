@@ -2,8 +2,14 @@ use anyhow::Result;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use crate::{
-    http_adapter::{ErasedHttpAdapter, HttpRequestCallbacks},
+    http_adapter::ErasedHttpAdapter,
     injector::ToniContainer,
+    middleware::MiddlewareChain,
+};
+
+use super::{
+    RequestDispatcher,
+    framework_router::FrameworkRouterBuilder,
 };
 
 pub struct RoutesResolver {
@@ -17,17 +23,37 @@ impl RoutesResolver {
 
     pub fn resolve(&mut self, http_adapter: &mut dyn ErasedHttpAdapter) -> Result<()> {
         let modules_token = self.container.borrow().get_modules_token();
+        let mut builder = FrameworkRouterBuilder::new();
 
         for module_token in modules_token {
-            self.register_routes(module_token, http_adapter)?;
+            self.register_routes(module_token, &mut builder)?;
         }
+
+        let router = builder.build();
+
+        // Build the global middleware chain separately — it wraps the entire
+        // router at dispatch time, so it runs pre-routing on every request.
+        let global_chain = {
+            let container = self.container.borrow();
+            let mut chain = MiddlewareChain::new();
+            if let Some(mm) = container.get_middleware_manager() {
+                for mw in mm.get_global_middleware() {
+                    chain.use_middleware(mw.clone());
+                }
+            }
+            chain
+        };
+
+        let dispatcher = Arc::new(RequestDispatcher::new(router, global_chain));
+        http_adapter.set_dispatcher(dispatcher);
+
         Ok(())
     }
 
     fn register_routes(
         &mut self,
         module_token: String,
-        http_adapter: &mut dyn ErasedHttpAdapter,
+        builder: &mut FrameworkRouterBuilder,
     ) -> Result<()> {
         let controllers_vec: Vec<_> = {
             let mut container = self.container.borrow_mut();
@@ -35,17 +61,18 @@ impl RoutesResolver {
             controllers.collect()
         };
 
-        for (_, mut controller) in controllers_vec {
-            let route_path = controller.get_path();
-            let route_method = controller.get_method();
+        for (_, mut wrapper) in controllers_vec {
+            let route_path = wrapper.get_path();
+            let route_method = wrapper.get_method();
 
+            // Route-scoped middleware only — global middleware lives in the dispatcher.
             let route_middleware = {
                 let container = self.container.borrow();
-                if let Some(middleware_manager) = container.get_middleware_manager() {
-                    middleware_manager.get_middleware_for_route(
+                if let Some(mm) = container.get_middleware_manager() {
+                    mm.get_middleware_for_route(
                         &module_token,
                         &route_path,
-                        &route_method.as_str(),
+                        route_method.as_str(),
                     )
                 } else {
                     Vec::new()
@@ -59,16 +86,11 @@ impl RoutesResolver {
                 "route registered"
             );
 
-            if let Some(wrapper) = std::sync::Arc::get_mut(&mut controller) {
-                wrapper.set_middleware(route_middleware);
+            if let Some(w) = Arc::get_mut(&mut wrapper) {
+                w.set_middleware(route_middleware);
             }
 
-            let callbacks = Arc::new(HttpRequestCallbacks::new(move |req| {
-                let controller = controller.clone();
-                Box::pin(async move { controller.handle_request(req).await })
-            }));
-
-            http_adapter.bind(route_method, &route_path, callbacks);
+            builder.insert(route_method, &route_path, wrapper);
         }
 
         Ok(())

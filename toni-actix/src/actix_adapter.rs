@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -8,27 +7,19 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    http_adapter::HttpRequestCallbacks,
-    http_helpers::{PathParams, RequestBody},
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
+    RequestDispatcher,
+    http_helpers::RequestBody,
+    HttpAdapter, HttpRequest, HttpResponse,
 };
 
 #[derive(Clone)]
 pub struct ActixAdapter {
-    routes: Arc<std::sync::Mutex<Vec<RouteConfig>>>,
-}
-
-struct RouteConfig {
-    path: String,
-    method: HttpMethod,
-    callbacks: Arc<HttpRequestCallbacks>,
+    dispatcher: Option<Arc<RequestDispatcher>>,
 }
 
 impl ActixAdapter {
     pub fn new() -> Self {
-        Self {
-            routes: Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
+        Self { dispatcher: None }
     }
 }
 
@@ -39,14 +30,12 @@ impl Default for ActixAdapter {
 }
 
 impl ActixAdapter {
+    /// Convert an Actix request to an `HttpRequest`.
+    ///
+    /// Path parameters are NOT extracted here — the framework router handles
+    /// them after path matching via matchit.
     async fn adapt_request(request: (ActixHttpRequest, Bytes)) -> Result<HttpRequest> {
         let (req, body) = request;
-
-        let path_params: HashMap<String, String> = req
-            .match_info()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
 
         let method = req
             .method()
@@ -67,8 +56,7 @@ impl ActixAdapter {
                 }
             }
         }
-        let (mut http_parts, _) = builder.body(()).unwrap().into_parts();
-        http_parts.extensions.insert(PathParams(path_params));
+        let (http_parts, _) = builder.body(()).unwrap().into_parts();
 
         Ok(HttpRequest::from_parts(
             http_parts,
@@ -117,13 +105,8 @@ impl ActixAdapter {
 }
 
 impl HttpAdapter for ActixAdapter {
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>) {
-        let mut routes = self.routes.lock().unwrap();
-        routes.push(RouteConfig {
-            path: path.to_string(),
-            method,
-            callbacks,
-        });
+    fn set_dispatcher(&mut self, dispatcher: Arc<RequestDispatcher>) {
+        self.dispatcher = Some(dispatcher);
     }
 
     fn create(
@@ -132,60 +115,26 @@ impl HttpAdapter for ActixAdapter {
         hostname: &str,
     ) -> Result<Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>> {
         let addr = format!("{}:{}", hostname, port);
-        let routes = self.routes.clone();
+        let dispatcher = self
+            .dispatcher
+            .take()
+            .ok_or_else(|| anyhow!("set_dispatcher must be called before create"))?;
 
         let server: Server = HttpServer::new(move || {
-            let mut app = App::new();
-            let routes_guard = routes.lock().unwrap();
-
-            for route_config in routes_guard.iter() {
-                let callbacks = route_config.callbacks.clone();
-                let path = route_config.path.clone();
-
-                macro_rules! actix_route {
-                    ($method_fn:expr) => {{
-                        app = app.route(
-                            &path,
-                            $method_fn.to(move |req: ActixHttpRequest, body: Bytes| {
-                                let callbacks = callbacks.clone();
-                                async move {
-                                    let http_req = match Self::adapt_request((req, body)).await {
-                                        Ok(r) => r,
-                                        Err(_) => {
-                                            return ActixHttpResponse::InternalServerError()
-                                                .finish()
-                                        }
-                                    };
-                                    let http_res = callbacks.handle(http_req).await;
-                                    Self::adapt_response(http_res).await.unwrap_or_else(|_| {
-                                        ActixHttpResponse::InternalServerError().finish()
-                                    })
-                                }
-                            }),
-                        )
-                    }};
+            let dispatcher = dispatcher.clone();
+            App::new().default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
+                let dispatcher = dispatcher.clone();
+                async move {
+                    let http_req = match Self::adapt_request((req, body)).await {
+                        Ok(r) => r,
+                        Err(_) => return ActixHttpResponse::InternalServerError().finish(),
+                    };
+                    let http_res = dispatcher.dispatch(http_req).await;
+                    Self::adapt_response(http_res).await.unwrap_or_else(|_| {
+                        ActixHttpResponse::InternalServerError().finish()
+                    })
                 }
-
-                match route_config.method {
-                    HttpMethod::GET => actix_route!(web::get()),
-                    HttpMethod::POST => actix_route!(web::post()),
-                    HttpMethod::PUT => actix_route!(web::put()),
-                    HttpMethod::DELETE => actix_route!(web::delete()),
-                    HttpMethod::PATCH => actix_route!(web::patch()),
-                    HttpMethod::HEAD => actix_route!(web::head()),
-                    HttpMethod::OPTIONS => {
-                        actix_route!(web::route().method(actix_web::http::Method::OPTIONS))
-                    }
-                    HttpMethod::TRACE => {
-                        actix_route!(web::route().method(actix_web::http::Method::TRACE))
-                    }
-                    HttpMethod::CONNECT => {
-                        actix_route!(web::route().method(actix_web::http::Method::CONNECT))
-                    }
-                };
-            }
-
-            app
+            }))
         })
         .bind(&addr)
         .with_context(|| format!("Failed to bind to {}", addr))?
