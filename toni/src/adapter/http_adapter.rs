@@ -13,8 +13,7 @@ pub trait HttpAdapter: Send + Sync + 'static {
     ///
     /// Called at bootstrap for every route the framework discovers.  The
     /// adapter stores the (method, path, handler) triple and uses it when
-    /// building its router — either via `RouteTableBuilder` or its own
-    /// native routing mechanism.
+    /// building its native router.
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
 
     /// Register a WebSocket upgrade path on the same port as HTTP.
