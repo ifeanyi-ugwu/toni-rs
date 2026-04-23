@@ -1,0 +1,22 @@
+[package]
+name = "toni-terminus"
+version = "0.1.0"
+edition = "2024"
+description = "Health checks module for the Toni framework"
+license = "MIT"
+repository = "https://github.com/monterxto/toni-rs"
+homepage = "https://github.com/monterxto/toni-rs"
+
+[features]
+default = []
+http = ["dep:reqwest"]
+memory = ["dep:sysinfo", "sysinfo?/system"]
+disk = ["dep:sysinfo", "sysinfo?/disk"]
+
+[dependencies]
+toni = { path = "../toni" }
+async-trait = "0.1"
+serde_json = "1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+sysinfo = { version = "0.38", default-features = false, optional = true }

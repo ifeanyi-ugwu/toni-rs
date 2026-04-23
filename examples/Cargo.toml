@@ -15,6 +15,7 @@ toni-axum = { path = "../toni-axum" }
 toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
 toni-nats = { path = "../toni-nats" }
+toni-terminus = { path = "../toni-terminus", features = ["http", "memory", "disk"] }
 chrono = "0.4"
 anyhow = "1.0"
 futures = "0.3"
@@ -103,3 +104,7 @@ path = "file_upload.rs"
 [[example]]
 name = "sse"
 path = "sse.rs"
+
+[[example]]
+name = "health_checks"
+path = "health_checks.rs"
