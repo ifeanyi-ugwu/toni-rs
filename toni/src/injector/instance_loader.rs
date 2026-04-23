@@ -4,8 +4,10 @@ use std::{
     any::Any,
     cell::{RefCell, RefMut},
     rc::Rc,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
+
+use parking_lot::RwLock;
 
 use super::{DependencyGraph, ToniContainer, multi_collection_provider::MultiCollectionProvider};
 use crate::{
@@ -109,7 +111,7 @@ impl ToniInstanceLoader {
         // One write into store_arc; every ModuleRef in the app sees it immediately.
         {
             let container = self.container.borrow();
-            let mut store = store_arc.write().expect("provider store lock poisoned");
+            let mut store = store_arc.write();
             for module_token in &modules_order {
                 if let Ok(instances) = container.get_providers_instance(module_token) {
                     store.insert(module_token.clone(), instances.clone());

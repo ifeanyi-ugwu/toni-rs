@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_lock::RwLock;
+use parking_lot::RwLock;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
@@ -115,7 +115,7 @@ impl GatewayWrapper {
         }
 
         tracing::debug!(client_id = %client.id, "WebSocket client connected");
-        self.clients.write().await.insert(client.id.clone(), client);
+        self.clients.write().insert(client.id.clone(), client);
         Ok(())
     }
 
@@ -128,7 +128,6 @@ impl GatewayWrapper {
         let client = self
             .clients
             .read()
-            .await
             .get(client_id)
             .cloned()
             .ok_or_else(|| WsError::ConnectionClosed("Client not found".into()))?;
@@ -165,7 +164,6 @@ impl GatewayWrapper {
         let client = self
             .clients
             .read()
-            .await
             .get(&client_id)
             .cloned()
             .ok_or_else(|| WsError::ConnectionClosed("Client not found".into()))?;
@@ -454,7 +452,8 @@ impl GatewayWrapper {
     }
 
     pub async fn handle_disconnect(&self, client_id: String, reason: DisconnectReason) {
-        if let Some(client) = self.clients.write().await.remove(&client_id) {
+        let maybe_client = self.clients.write().remove(&client_id);
+        if let Some(client) = maybe_client {
             tracing::debug!(client_id = %client_id, "WebSocket client disconnected");
             self.gateway.on_disconnect(&client, reason).await;
         }
@@ -486,11 +485,11 @@ impl GatewayWrapper {
     }
 
     pub async fn get_clients(&self) -> Vec<WsClient> {
-        self.clients.read().await.values().cloned().collect()
+        self.clients.read().values().cloned().collect()
     }
 
     pub async fn get_client(&self, client_id: &str) -> Option<WsClient> {
-        self.clients.read().await.get(client_id).cloned()
+        self.clients.read().get(client_id).cloned()
     }
 
     pub async fn call_after_init(&self) {

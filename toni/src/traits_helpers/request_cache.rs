@@ -1,8 +1,10 @@
 use rustc_hash::FxHashMap;
 use std::{
     any::{Any, TypeId},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+
+use parking_lot::Mutex;
 
 /// Per-request instance cache for request-scoped providers.
 ///
@@ -23,7 +25,7 @@ impl RequestCache {
 
     /// Returns a clone of the cached instance for `T`, if one exists.
     pub fn get<T: Any + Clone + Send + Sync>(&self) -> Option<T> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.lock();
         map.get(&TypeId::of::<T>())
             .and_then(|v| v.downcast_ref::<T>())
             .cloned()
@@ -31,7 +33,7 @@ impl RequestCache {
 
     /// Stores `value` in the cache under `T`'s `TypeId`.
     pub fn insert<T: Any + Clone + Send + Sync>(&self, value: T) {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock();
         map.insert(
             TypeId::of::<T>(),
             Arc::new(value) as Arc<dyn Any + Send + Sync>,

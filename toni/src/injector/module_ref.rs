@@ -1,4 +1,6 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use anyhow::Result;
 use rustc_hash::FxHashMap;
@@ -124,11 +126,7 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
         T: Send,
     {
         let provider_instance = {
-            let store = self
-                .module_ref
-                .store
-                .read()
-                .map_err(|_| anyhow::anyhow!("Provider store lock poisoned"))?;
+            let store = self.module_ref.store.read();
 
             if self.strict {
                 store
