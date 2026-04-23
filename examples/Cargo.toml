@@ -94,3 +94,7 @@ path = "rpc_nats_client.rs"
 [[example]]
 name = "logging"
 path = "logging.rs"
+
+[[example]]
+name = "file_upload"
+path = "file_upload.rs"
