@@ -47,18 +47,12 @@ impl MiddlewareManager {
             .push(config);
     }
 
-    /// Get all middleware that should apply to a specific route
+    /// Get route-scoped middleware for a specific route.
     ///
-    /// This combines global middleware with module-specific middleware
-    /// that matches the route pattern and HTTP method
-    ///
-    /// # Arguments
-    /// * `module_token` - The token of the module the route belongs to
-    /// * `route_path` - The path of the route (e.g., "/api/users")
-    /// * `method` - The HTTP method (e.g., "GET", "POST")
-    ///
-    /// # Returns
-    /// A vector of middleware that should be applied to this route
+    /// Returns only module-level middleware whose patterns match this route.
+    /// Global middleware is intentionally excluded — it is applied at the
+    /// dispatcher level (pre-routing) so it runs on all requests, including
+    /// those that match no route.
     pub fn get_middleware_for_route(
         &self,
         module_token: &str,
@@ -67,10 +61,6 @@ impl MiddlewareManager {
     ) -> Vec<Arc<dyn Middleware>> {
         let mut middleware = Vec::new();
 
-        // Add global middleware first (executes first in chain)
-        middleware.extend(self.global_middleware.iter().cloned());
-
-        // Add module-specific middleware if applicable
         if let Some(configs) = self.module_middleware.get(module_token) {
             for config in configs {
                 if config.should_apply(route_path, method) {
@@ -173,7 +163,9 @@ mod tests {
         let mut manager = MiddlewareManager::new();
         manager.add_global(Arc::new(DummyMiddleware::new("global")));
 
+        // Global middleware is excluded from get_middleware_for_route — it runs
+        // pre-routing via AdapterContext::execute, not per-route.
         let middleware = manager.get_middleware_for_route("TestModule", "/api/test", "GET");
-        assert_eq!(middleware.len(), 1);
+        assert_eq!(middleware.len(), 0);
     }
 }

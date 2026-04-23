@@ -3,44 +3,23 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use anyhow::Result;
 
 use crate::adapter::WsConnectionCallbacks;
-use crate::http_helpers::{HttpMethod, HttpRequest, HttpResponse};
+use crate::adapter::request_handler::RequestHandler;
+use crate::http_helpers::HttpMethod;
 
-/// Callbacks the framework supplies to an HTTP adapter for one route.
-///
-/// The adapter calls `handle` with the converted `HttpRequest` and gets back an
-/// `HttpResponse` — it never touches controllers, middleware, or guards directly.
-pub struct HttpRequestCallbacks {
-    handle: Arc<
-        dyn Fn(HttpRequest) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>> + Send + Sync,
-    >,
-}
-
-impl HttpRequestCallbacks {
-    pub(crate) fn new(
-        handle: impl Fn(HttpRequest) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        Self {
-            handle: Arc::new(handle),
-        }
-    }
-
-    /// Called by the adapter with the converted request for this route.
-    pub async fn handle(&self, req: HttpRequest) -> HttpResponse {
-        (self.handle)(req).await
-    }
-}
+use crate::adapter::adapter_context::AdapterContext;
 
 pub trait HttpAdapter: Send + Sync + 'static {
-    /// Register a route. The adapter stores `callbacks` and calls `callbacks.handle`
-    /// with the converted request on each incoming connection to this path.
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>);
+    /// Register one HTTP route with the adapter.
+    ///
+    /// Called at bootstrap for every route the framework discovers.  The
+    /// adapter stores the (method, path, handler) triple and uses it when
+    /// building its native router.
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
 
     /// Register a WebSocket upgrade path on the same port as HTTP.
     ///
-    /// **Default:** returns error — implement to support WebSocket upgrades on this adapter.
+    /// Default: returns an error — implement only if this adapter supports
+    /// same-port WebSocket upgrades.
     fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
         let _ = (path, callbacks);
         Err(anyhow::anyhow!(
@@ -48,15 +27,20 @@ pub trait HttpAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Seal configuration and return the running server future.
+    /// Seal configuration and start the server.
     ///
-    /// Called once after all `bind` and `bind_ws` calls. The returned future is the
-    /// accept loop — the framework joins it alongside any WS/RPC server futures so no
-    /// top-level spawn is needed in the adapter.
+    /// Called once after all `bind` and `bind_ws` calls.  `ctx` carries
+    /// everything the framework provides at serve time — currently the global
+    /// middleware chain (run before the adapter's routing on every request,
+    /// including 404s) and future runtime context as the framework grows.
+    ///
+    /// The adapter is responsible for composing `ctx.global_chain` around its
+    /// own routing handler so that global middleware runs pre-routing.
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
 
     fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
@@ -65,19 +49,20 @@ pub trait HttpAdapter: Send + Sync + 'static {
 }
 
 pub(crate) trait ErasedHttpAdapter: Send + Sync {
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>);
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
     fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
 impl<A: HttpAdapter + 'static> ErasedHttpAdapter for A {
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>) {
-        HttpAdapter::bind(self, method, path, callbacks);
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+        HttpAdapter::bind(self, method, path, handler)
     }
 
     fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
@@ -88,8 +73,9 @@ impl<A: HttpAdapter + 'static> ErasedHttpAdapter for A {
         &mut self,
         port: u16,
         hostname: &str,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        HttpAdapter::create(self, port, hostname)
+        HttpAdapter::create(self, port, hostname, ctx)
     }
 
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {

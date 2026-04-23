@@ -10,19 +10,19 @@ use axum::{
     body::Body,
     extract::{ws::WebSocketUpgrade, Path},
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
-    routing::{connect, delete, get, head, options, patch, post, put, trace},
-    RequestPartsExt, Router,
+    routing::{MethodFilter, MethodRouter},
+    Router,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    MessageCallbackResult,
+    AdapterContext, Body as ToniBody, MessageCallbackResult,
     async_trait,
-    http_adapter::HttpRequestCallbacks,
     http_helpers::{PathParams, RequestBody, RequestPart},
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, WebSocketAdapter, WsConnectionCallbacks,
+    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
+    WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
@@ -30,7 +30,8 @@ use crate::tokio_sender::TokioSender;
 
 #[derive(Clone)]
 pub struct AxumAdapter {
-    instance: Router,
+    routes: Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>,
+    ws_router: Router,
     ws_ports: HashMap<u16, Router>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
@@ -39,7 +40,8 @@ impl AxumAdapter {
     pub fn new() -> Self {
         let (tx, _) = watch::channel(false);
         Self {
-            instance: Router::new(),
+            routes: Vec::new(),
+            ws_router: Router::new(),
             ws_ports: HashMap::new(),
             shutdown_tx: Arc::new(tx),
         }
@@ -52,11 +54,48 @@ impl Default for AxumAdapter {
     }
 }
 
-/// Runs the full WebSocket connection lifecycle for one connected client.
-///
-/// Splits the socket, spawns a writer task, then pumps the read half through
-/// the framework callbacks until the connection closes. When a handler returns
-/// a stream, a task is spawned to drive it; the task is aborted on disconnect.
+/// Converts toni `:param` path syntax to Axum `{param}` syntax.
+fn to_axum_path(path: &str) -> String {
+    if !path.contains(':') {
+        return path.to_owned();
+    }
+    let mut out = String::with_capacity(path.len() + 4);
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ':' && chars.peek().map_or(false, |&n| n != '/') {
+            out.push('{');
+            for n in chars.by_ref() {
+                if n == '/' {
+                    out.push('}');
+                    out.push('/');
+                    break;
+                }
+                out.push(n);
+            }
+            if !out.ends_with('}') {
+                out.push('}');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn to_method_filter(method: HttpMethod) -> MethodFilter {
+    match method {
+        HttpMethod::GET => MethodFilter::GET,
+        HttpMethod::POST => MethodFilter::POST,
+        HttpMethod::PUT => MethodFilter::PUT,
+        HttpMethod::DELETE => MethodFilter::DELETE,
+        HttpMethod::PATCH => MethodFilter::PATCH,
+        HttpMethod::HEAD => MethodFilter::HEAD,
+        HttpMethod::OPTIONS => MethodFilter::OPTIONS,
+        HttpMethod::TRACE => MethodFilter::TRACE,
+        HttpMethod::CONNECT => MethodFilter::CONNECT,
+    }
+}
+
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
     callbacks: Arc<WsConnectionCallbacks>,
@@ -133,12 +172,10 @@ async fn run_ws_connection(
 }
 
 fn ws_route(callbacks: Arc<WsConnectionCallbacks>) -> axum::routing::MethodRouter {
-    get(move |ws: WebSocketUpgrade, req: Request<Body>| {
+    axum::routing::get(move |ws: WebSocketUpgrade, req: Request<Body>| {
         let callbacks = callbacks.clone();
         async move {
             let (parts, _body) = req.into_parts();
-            // Echo any sub-protocol the client requests so the WebSocket handshake
-            // completes successfully. The gateway's on_connect hook is the enforcer.
             let requested_protocol: Option<String> = parts
                 .headers
                 .get("sec-websocket-protocol")
@@ -157,21 +194,11 @@ impl AxumAdapter {
     async fn adapt_request(request: Request<Body>) -> Result<HttpRequest> {
         use http_body_util::BodyExt;
 
-        let (mut parts, body) = request.into_parts();
-
-        let Path(path_params) = parts
-            .extract::<Path<HashMap<String, String>>>()
-            .await
-            .map_err(|e| anyhow!("Failed to extract path parameters: {:?}", e))?;
-
-        parts.extensions.insert(PathParams(path_params));
+        let (parts, body) = request.into_parts();
         let box_body = body
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             .boxed_unsync();
-        Ok(HttpRequest::from_parts(
-            parts,
-            RequestBody::Streaming(box_body),
-        ))
+        Ok(HttpRequest::from_parts(parts, RequestBody::Streaming(box_body)))
     }
 
     async fn adapt_response(response: HttpResponse) -> Result<Response<Body>> {
@@ -216,10 +243,99 @@ impl AxumAdapter {
 }
 
 impl HttpAdapter for AxumAdapter {
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>) {
-        let route_handler = move |req: Request<Body>| {
-            let callbacks = callbacks.clone();
-            Box::pin(async move {
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+        self.routes.push((method, path.to_owned(), handler));
+        Ok(())
+    }
+
+    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+        self.ws_router = self.ws_router.clone().route(path, ws_route(callbacks));
+        Ok(())
+    }
+
+    fn create(
+        &mut self,
+        port: u16,
+        hostname: &str,
+        ctx: AdapterContext,
+    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+        let routes = std::mem::take(&mut self.routes);
+        let ctx = Arc::new(ctx);
+
+        // Group routes by path: Axum panics if the same path is registered twice.
+        let mut by_path: HashMap<String, MethodRouter> = HashMap::new();
+        for (method, path, handler) in routes {
+            let axum_path = to_axum_path(&path);
+            let filter = to_method_filter(method);
+            let handler = handler.clone();
+            let ctx = ctx.clone();
+
+            let handler_fn = move |
+                Path(params): Path<HashMap<String, String>>,
+                req: Request<Body>
+            | {
+                let handler = handler.clone();
+                let ctx = ctx.clone();
+                async move {
+                    let (mut parts, body) = req.into_parts();
+                    if !params.is_empty() {
+                        parts.extensions.insert(PathParams(params));
+                    }
+                    let req = Request::from_parts(parts, body);
+
+                    let http_req = match Self::adapt_request(req).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let body = serde_json::json!({
+                                "statusCode": 500,
+                                "message": e.to_string(),
+                                "error": "Internal Server Error"
+                            });
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(body.to_string()))
+                                .unwrap();
+                        }
+                    };
+
+                    let http_res = ctx
+                        .execute(http_req, move |req| {
+                            let handler = handler.clone();
+                            Box::pin(async move { handler.handle(req).await })
+                        })
+                        .await;
+
+                    Self::adapt_response(http_res).await.unwrap_or_else(|e| {
+                        let body = serde_json::json!({
+                            "statusCode": 500,
+                            "message": e.to_string(),
+                            "error": "Internal Server Error"
+                        });
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap()
+                    })
+                }
+            };
+
+            let method_router = axum::routing::on(filter, handler_fn);
+            let entry = by_path.entry(axum_path).or_insert_with(MethodRouter::new);
+            *entry = std::mem::take(entry).merge(method_router);
+        }
+
+        let mut http_router = Router::new();
+        for (path, method_router) in by_path {
+            http_router = http_router.route(&path, method_router);
+        }
+
+        let ctx_fallback = ctx.clone();
+        let ws_router = std::mem::replace(&mut self.ws_router, Router::new());
+        let router = ws_router.merge(http_router).fallback(move |req: Request<Body>| {
+            let ctx = ctx_fallback.clone();
+            async move {
                 let http_req = match Self::adapt_request(req).await {
                     Ok(r) => r,
                     Err(e) => {
@@ -235,7 +351,23 @@ impl HttpAdapter for AxumAdapter {
                             .unwrap();
                     }
                 };
-                let http_res = callbacks.handle(http_req).await;
+                let http_res = ctx
+                    .execute(http_req, |req| {
+                        Box::pin(async move {
+                            let method = req.method().as_str().to_uppercase();
+                            let path = req.uri().path().to_string();
+                            HttpResponse {
+                                status: 404,
+                                headers: vec![],
+                                body: Some(ToniBody::json(serde_json::json!({
+                                    "statusCode": 404,
+                                    "message": format!("Cannot {} {}", method, path),
+                                    "error": "Not Found"
+                                }))),
+                            }
+                        })
+                    })
+                    .await;
                 Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                     let body = serde_json::json!({
                         "statusCode": 500,
@@ -248,50 +380,11 @@ impl HttpAdapter for AxumAdapter {
                         .body(Body::from(body.to_string()))
                         .unwrap()
                 })
-            })
-        };
+            }
+        });
 
-        self.instance = match method {
-            HttpMethod::GET => self.instance.clone().route(path, get(route_handler)),
-            HttpMethod::POST => self.instance.clone().route(path, post(route_handler)),
-            HttpMethod::PUT => self.instance.clone().route(path, put(route_handler)),
-            HttpMethod::DELETE => self.instance.clone().route(path, delete(route_handler)),
-            HttpMethod::HEAD => self.instance.clone().route(path, head(route_handler)),
-            HttpMethod::PATCH => self.instance.clone().route(path, patch(route_handler)),
-            HttpMethod::OPTIONS => self.instance.clone().route(path, options(route_handler)),
-            HttpMethod::TRACE => self.instance.clone().route(path, trace(route_handler)),
-            HttpMethod::CONNECT => self.instance.clone().route(path, connect(route_handler)),
-        };
-    }
-
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
-        self.instance = self.instance.clone().route(path, ws_route(callbacks));
-        Ok(())
-    }
-
-    fn create(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let router = std::mem::replace(&mut self.instance, Router::new());
         let hostname = hostname.to_string();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-        let router = router.fallback(|req: Request<Body>| async move {
-            let method = req.method().as_str().to_uppercase();
-            let path = req.uri().path().to_owned();
-            let body = serde_json::json!({
-                "statusCode": 404,
-                "message": format!("Cannot {} {}", method, path),
-                "error": "Not Found"
-            });
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header("Content-Type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        });
 
         Ok(Box::pin(async move {
             let addr = format!("{}:{}", hostname, port);

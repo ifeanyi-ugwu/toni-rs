@@ -8,27 +8,17 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    http_adapter::HttpRequestCallbacks,
-    http_helpers::{PathParams, RequestBody},
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
+    RequestHandler, http_helpers::{PathParams, RequestBody},
 };
 
-#[derive(Clone)]
 pub struct ActixAdapter {
-    routes: Arc<std::sync::Mutex<Vec<RouteConfig>>>,
-}
-
-struct RouteConfig {
-    path: String,
-    method: HttpMethod,
-    callbacks: Arc<HttpRequestCallbacks>,
+    routes: Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>,
 }
 
 impl ActixAdapter {
     pub fn new() -> Self {
-        Self {
-            routes: Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
+        Self { routes: Vec::new() }
     }
 }
 
@@ -38,15 +28,37 @@ impl Default for ActixAdapter {
     }
 }
 
+/// Converts toni `:param` path syntax to Actix `{param}` syntax.
+fn to_actix_path(path: &str) -> String {
+    if !path.contains(':') {
+        return path.to_owned();
+    }
+    let mut out = String::with_capacity(path.len() + 4);
+    let mut chars = path.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ':' && chars.peek().map_or(false, |&n| n != '/') {
+            out.push('{');
+            for n in chars.by_ref() {
+                if n == '/' {
+                    out.push('}');
+                    out.push('/');
+                    break;
+                }
+                out.push(n);
+            }
+            if !out.ends_with('}') {
+                out.push('}');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 impl ActixAdapter {
     async fn adapt_request(request: (ActixHttpRequest, Bytes)) -> Result<HttpRequest> {
         let (req, body) = request;
-
-        let path_params: HashMap<String, String> = req
-            .match_info()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
 
         let method = req
             .method()
@@ -68,7 +80,15 @@ impl ActixAdapter {
             }
         }
         let (mut http_parts, _) = builder.body(()).unwrap().into_parts();
-        http_parts.extensions.insert(PathParams(path_params));
+
+        let path_params: HashMap<String, String> = req
+            .match_info()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        if !path_params.is_empty() {
+            http_parts.extensions.insert(PathParams(path_params));
+        }
 
         Ok(HttpRequest::from_parts(
             http_parts,
@@ -117,75 +137,82 @@ impl ActixAdapter {
 }
 
 impl HttpAdapter for ActixAdapter {
-    fn bind(&mut self, method: HttpMethod, path: &str, callbacks: Arc<HttpRequestCallbacks>) {
-        let mut routes = self.routes.lock().unwrap();
-        routes.push(RouteConfig {
-            path: path.to_string(),
-            method,
-            callbacks,
-        });
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+        self.routes.push((method, path.to_owned(), handler));
+        Ok(())
     }
 
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>> {
         let addr = format!("{}:{}", hostname, port);
-        let routes = self.routes.clone();
+        let routes = std::mem::take(&mut self.routes);
+        let ctx = Arc::new(ctx);
 
         let server: Server = HttpServer::new(move || {
+            let ctx = ctx.clone();
             let mut app = App::new();
-            let routes_guard = routes.lock().unwrap();
-
-            for route_config in routes_guard.iter() {
-                let callbacks = route_config.callbacks.clone();
-                let path = route_config.path.clone();
-
-                macro_rules! actix_route {
-                    ($method_fn:expr) => {{
-                        app = app.route(
-                            &path,
-                            $method_fn.to(move |req: ActixHttpRequest, body: Bytes| {
-                                let callbacks = callbacks.clone();
-                                async move {
-                                    let http_req = match Self::adapt_request((req, body)).await {
-                                        Ok(r) => r,
-                                        Err(_) => {
-                                            return ActixHttpResponse::InternalServerError()
-                                                .finish()
-                                        }
-                                    };
-                                    let http_res = callbacks.handle(http_req).await;
-                                    Self::adapt_response(http_res).await.unwrap_or_else(|_| {
-                                        ActixHttpResponse::InternalServerError().finish()
-                                    })
-                                }
-                            }),
-                        )
-                    }};
-                }
-
-                match route_config.method {
-                    HttpMethod::GET => actix_route!(web::get()),
-                    HttpMethod::POST => actix_route!(web::post()),
-                    HttpMethod::PUT => actix_route!(web::put()),
-                    HttpMethod::DELETE => actix_route!(web::delete()),
-                    HttpMethod::PATCH => actix_route!(web::patch()),
-                    HttpMethod::HEAD => actix_route!(web::head()),
-                    HttpMethod::OPTIONS => {
-                        actix_route!(web::route().method(actix_web::http::Method::OPTIONS))
-                    }
-                    HttpMethod::TRACE => {
-                        actix_route!(web::route().method(actix_web::http::Method::TRACE))
-                    }
-                    HttpMethod::CONNECT => {
-                        actix_route!(web::route().method(actix_web::http::Method::CONNECT))
-                    }
-                };
+            for (method, path, handler) in &routes {
+                let actix_method = to_actix_method(*method);
+                let actix_path = to_actix_path(path);
+                let handler = handler.clone();
+                let ctx = ctx.clone();
+                app = app.route(
+                    &actix_path,
+                    web::method(actix_method).to(move |req: ActixHttpRequest, body: Bytes| {
+                        let handler = handler.clone();
+                        let ctx = ctx.clone();
+                        async move {
+                            let http_req = match Self::adapt_request((req, body)).await {
+                                Ok(r) => r,
+                                Err(_) => return ActixHttpResponse::InternalServerError().finish(),
+                            };
+                            let http_res = ctx
+                                .execute(http_req, move |req| {
+                                    let handler = handler.clone();
+                                    Box::pin(async move { handler.handle(req).await })
+                                })
+                                .await;
+                            Self::adapt_response(http_res).await.unwrap_or_else(|_| {
+                                ActixHttpResponse::InternalServerError().finish()
+                            })
+                        }
+                    }),
+                );
             }
-
-            app
+            let ctx_fallback = ctx.clone();
+            app.default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
+                let ctx = ctx_fallback.clone();
+                async move {
+                    let http_req = match Self::adapt_request((req, body)).await {
+                        Ok(r) => r,
+                        Err(_) => return ActixHttpResponse::InternalServerError().finish(),
+                    };
+                    let http_res = ctx
+                        .execute(http_req, |req| {
+                            Box::pin(async move {
+                                let method = req.method().as_str().to_uppercase();
+                                let path = req.uri().path().to_string();
+                                HttpResponse {
+                                    status: 404,
+                                    headers: vec![],
+                                    body: Some(ToniBody::json(serde_json::json!({
+                                        "statusCode": 404,
+                                        "message": format!("Cannot {} {}", method, path),
+                                        "error": "Not Found"
+                                    }))),
+                                }
+                            })
+                        })
+                        .await;
+                    Self::adapt_response(http_res)
+                        .await
+                        .unwrap_or_else(|_| ActixHttpResponse::InternalServerError().finish())
+                }
+            }))
         })
         .bind(&addr)
         .with_context(|| format!("Failed to bind to {}", addr))?
@@ -200,5 +227,19 @@ impl HttpAdapter for ActixAdapter {
                 std::process::exit(1);
             }
         }))
+    }
+}
+
+fn to_actix_method(method: HttpMethod) -> actix_web::http::Method {
+    match method {
+        HttpMethod::GET => actix_web::http::Method::GET,
+        HttpMethod::POST => actix_web::http::Method::POST,
+        HttpMethod::PUT => actix_web::http::Method::PUT,
+        HttpMethod::DELETE => actix_web::http::Method::DELETE,
+        HttpMethod::PATCH => actix_web::http::Method::PATCH,
+        HttpMethod::HEAD => actix_web::http::Method::HEAD,
+        HttpMethod::OPTIONS => actix_web::http::Method::OPTIONS,
+        HttpMethod::TRACE => actix_web::http::Method::TRACE,
+        HttpMethod::CONNECT => actix_web::http::Method::CONNECT,
     }
 }
