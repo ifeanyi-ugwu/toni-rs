@@ -117,6 +117,61 @@ async fn run(builder: HealthCheckBuilder) -> HealthCheckResult {
     HealthCheckResult::from_results(results)
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "timeout"))]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::health_check_result::HealthEntry;
+
+    #[tokio::test]
+    async fn timed_out_check_is_reported_as_error() {
+        let health = HealthCheckService;
+        let result = health
+            .check(vec![Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(HealthEntry::up("never"))
+            })])
+            .timeout(Duration::from_millis(50))
+            .await;
+
+        assert_eq!(result.status(), "error");
+        assert!(!result.is_healthy());
+    }
+
+    #[tokio::test]
+    async fn fast_check_passes_within_timeout() {
+        let health = HealthCheckService;
+        let result = health
+            .check(vec![Box::pin(async { Ok(HealthEntry::up("fast")) })])
+            .timeout(Duration::from_secs(5))
+            .await;
+
+        assert_eq!(result.status(), "ok");
+    }
+
+    #[tokio::test]
+    async fn only_slow_checks_are_marked_timed_out() {
+        let health = HealthCheckService;
+        let result = health
+            .check(vec![
+                Box::pin(async { Ok(HealthEntry::up("fast")) }),
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    Ok(HealthEntry::up("slow"))
+                }),
+            ])
+            .timeout(Duration::from_millis(50))
+            .await;
+
+        // Overall is error because the slow check timed out.
+        assert_eq!(result.status(), "error");
+        // But it completed, not hung — the fast check didn't block.
+    }
+}
+
 // ── DI machinery ─────────────────────────────────────────────────────────────
 
 pub(crate) struct HealthCheckServiceFactory;
