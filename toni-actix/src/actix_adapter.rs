@@ -7,7 +7,7 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    AdapterContext, HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
+    AdapterContext, HttpAdapter, HttpMethod, HttpRequest, RequestHandler,
     RouteTableBuilder, http_helpers::RequestBody,
 };
 
@@ -116,32 +116,23 @@ impl HttpAdapter for ActixAdapter {
         let addr = format!("{}:{}", hostname, port);
         let builder = std::mem::replace(&mut self.route_builder, RouteTableBuilder::new());
         let table = Arc::new(builder.build());
-        let chain = ctx.global_chain;
+        let ctx = Arc::new(ctx);
 
         let server: Server = HttpServer::new(move || {
             let table = table.clone();
-            let chain = chain.clone();
+            let ctx = ctx.clone();
             App::new().default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
                 let table = table.clone();
-                let chain = chain.clone();
+                let ctx = ctx.clone();
                 async move {
                     let http_req = match Self::adapt_request((req, body)).await {
                         Ok(r) => r,
                         Err(_) => return ActixHttpResponse::InternalServerError().finish(),
                     };
-                    let http_res = chain
-                        .execute(http_req, move |req| {
-                            let table = table.clone();
-                            Box::pin(async move { table.dispatch(req).await })
-                        })
-                        .await
-                        .unwrap_or_else(|_| {
-                            HttpResponse {
-                                status: 500,
-                                headers: vec![],
-                                body: None,
-                            }
-                        });
+                    let http_res = ctx.execute(http_req, move |req| {
+                        let table = table.clone();
+                        Box::pin(async move { table.dispatch(req).await })
+                    }).await;
                     Self::adapt_response(http_res).await.unwrap_or_else(|_| {
                         ActixHttpResponse::InternalServerError().finish()
                     })

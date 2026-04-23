@@ -20,7 +20,7 @@ use toni::{
     AdapterContext, MessageCallbackResult,
     async_trait,
     http_helpers::{RequestBody, RequestPart},
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler, RouteTable,
+    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
     RouteTableBuilder, WebSocketAdapter, WsConnectionCallbacks,
 };
 
@@ -224,12 +224,12 @@ impl HttpAdapter for AxumAdapter {
             RouteTableBuilder::new(),
         );
         let table = Arc::new(builder.build());
-        let chain = ctx.global_chain;
+        let ctx = Arc::new(ctx);
 
         let router = std::mem::replace(&mut self.ws_router, Router::new());
         let router = router.fallback(move |req: Request<Body>| {
             let table = table.clone();
-            let chain = chain.clone();
+            let ctx = ctx.clone();
             async move {
                 let http_req = match Self::adapt_request(req).await {
                     Ok(r) => r,
@@ -246,24 +246,10 @@ impl HttpAdapter for AxumAdapter {
                             .unwrap();
                     }
                 };
-                let http_res = chain
-                    .execute(http_req, move |req| {
-                        let table = table.clone();
-                        Box::pin(async move { table.dispatch(req).await })
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::error!(error = %e, "unhandled error in global middleware chain");
-                        HttpResponse {
-                            status: 500,
-                            headers: vec![],
-                            body: Some(toni::http_helpers::Body::json(serde_json::json!({
-                                "statusCode": 500,
-                                "message": "Internal Server Error",
-                                "error": "Internal Server Error"
-                            }))),
-                        }
-                    });
+                let http_res = ctx.execute(http_req, move |req| {
+                    let table = table.clone();
+                    Box::pin(async move { table.dispatch(req).await })
+                }).await;
                 Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                     let body = serde_json::json!({
                         "statusCode": 500,
