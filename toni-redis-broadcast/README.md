@@ -62,10 +62,10 @@ struct ChatService {
 // Everyone connected across all processes
 self.broadcast.to_all().send(msg).await?;
 
-// Everyone in a room (local room membership — see Limitations)
+// Everyone in a room
 self.broadcast.to_room("lobby").send(msg).await?;
 
-// One specific client (fan-out to all processes; only the one holding the client delivers)
+// One specific client (publishes directly to the process holding that client)
 self.broadcast.to_client(&client_id).send(msg).await?;
 
 // Everyone except one client
@@ -88,12 +88,11 @@ self.broadcast
 ### 4. Room management
 
 ```rust
-self.broadcast.join_room(&client_id, "lobby")?;
-self.broadcast.leave_room(&client_id, "lobby")?;
+self.broadcast.join_room(&client_id, "lobby").await?;
+self.broadcast.leave_room(&client_id, "lobby").await?;
 
-// In-process view only — see Limitations
-let rooms = self.broadcast.get_client_rooms(&client_id);
-let members = self.broadcast.get_room_clients("lobby");
+let rooms = self.broadcast.get_client_rooms(&client_id).await;
+let members = self.broadcast.get_room_clients("lobby").await;
 ```
 
 ### Using inside a gateway
@@ -103,7 +102,7 @@ let members = self.broadcast.get_room_clients("lobby");
 impl ChatGateway {
     #[subscribe_message("join")]
     async fn on_join(&self, client: WsClient, _msg: WsMessage) -> WsHandlerResult {
-        self.broadcast.join_room(&client.id, "lobby")?;
+        self.broadcast.join_room(&client.id, "lobby").await?;
         self.broadcast
             .to_room("lobby")
             .send_event("user.joined", &client.id)
@@ -138,7 +137,7 @@ impl ChatGateway {
 | Method          | Description                                                        |
 | --------------- | ------------------------------------------------------------------ |
 | `to_all()`      | Target all connected clients across all processes                  |
-| `to_room(room)` | Target clients in a room (local membership only — see Limitations) |
+| `to_room(room)` | Target clients in a room                                           |
 | `to_client(id)` | Target one specific client                                         |
 | `except(id)`    | Target all clients except one                                      |
 
@@ -157,6 +156,7 @@ All four return a `RedisBroadcastTarget`.
 
 | Method                    | Description                                        |
 | ------------------------- | -------------------------------------------------- |
+| `and_room(room)`          | Chain an additional room target                    |
 | `in_namespace(ns)`        | Filter recipients to a namespace                   |
 | `send(message)`           | Publish to Redis. Returns `Ok(0)` — see note below |
 | `send_event(event, data)` | Publish as `{"event": "...", "data": ...}`         |
