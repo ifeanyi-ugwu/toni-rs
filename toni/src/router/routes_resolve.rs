@@ -1,39 +1,50 @@
 use anyhow::Result;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, pin::Pin, rc::Rc, sync::Arc};
 
 use crate::{
+    adapter::request_handler::RequestHandler,
     http_adapter::ErasedHttpAdapter,
-    injector::ToniContainer,
+    http_helpers::{HttpRequest, HttpResponse},
+    injector::{InstanceWrapper, ToniContainer},
     middleware::MiddlewareChain,
 };
 
-use super::{
-    RequestDispatcher,
-    framework_router::FrameworkRouterBuilder,
-};
+/// Wraps an `InstanceWrapper` as an opaque `RequestHandler`.
+///
+/// This keeps `InstanceWrapper` out of the adapter API — the adapter receives
+/// an `Arc<dyn RequestHandler>` and never sees framework internals.
+struct InstanceHandler(Arc<InstanceWrapper>);
+
+impl RequestHandler for InstanceHandler {
+    fn handle(&self, req: HttpRequest) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>> {
+        let wrapper = self.0.clone();
+        Box::pin(async move { wrapper.handle_request(req).await })
+    }
+}
 
 pub struct RoutesResolver {
     pub(crate) container: Rc<RefCell<ToniContainer>>,
+    global_chain: Option<MiddlewareChain>,
 }
 
 impl RoutesResolver {
     pub fn new(container: Rc<RefCell<ToniContainer>>) -> Self {
-        Self { container }
+        Self {
+            container,
+            global_chain: None,
+        }
     }
 
+    /// Register all routes with the adapter and store the global chain for
+    /// `take_global_chain` to hand to `start()` later.
     pub fn resolve(&mut self, http_adapter: &mut dyn ErasedHttpAdapter) -> Result<()> {
         let modules_token = self.container.borrow().get_modules_token();
-        let mut builder = FrameworkRouterBuilder::new();
 
         for module_token in modules_token {
-            self.register_routes(module_token, &mut builder)?;
+            self.register_routes(module_token, http_adapter)?;
         }
 
-        let router = builder.build();
-
-        // Build the global middleware chain separately — it wraps the entire
-        // router at dispatch time, so it runs pre-routing on every request.
-        let global_chain = {
+        self.global_chain = Some({
             let container = self.container.borrow();
             let mut chain = MiddlewareChain::new();
             if let Some(mm) = container.get_middleware_manager() {
@@ -42,18 +53,21 @@ impl RoutesResolver {
                 }
             }
             chain
-        };
-
-        let dispatcher = Arc::new(RequestDispatcher::new(router, global_chain));
-        http_adapter.set_dispatcher(dispatcher);
+        });
 
         Ok(())
+    }
+
+    /// Hand the global chain to `ToniApplication::start` so it can wrap the
+    /// adapter's routing handler with it.
+    pub fn take_global_chain(&mut self) -> MiddlewareChain {
+        self.global_chain.take().unwrap_or_default()
     }
 
     fn register_routes(
         &mut self,
         module_token: String,
-        builder: &mut FrameworkRouterBuilder,
+        http_adapter: &mut dyn ErasedHttpAdapter,
     ) -> Result<()> {
         let controllers_vec: Vec<_> = {
             let mut container = self.container.borrow_mut();
@@ -65,7 +79,6 @@ impl RoutesResolver {
             let route_path = wrapper.get_path();
             let route_method = wrapper.get_method();
 
-            // Route-scoped middleware only — global middleware lives in the dispatcher.
             let route_middleware = {
                 let container = self.container.borrow();
                 if let Some(mm) = container.get_middleware_manager() {
@@ -90,7 +103,8 @@ impl RoutesResolver {
                 w.set_middleware(route_middleware);
             }
 
-            builder.insert(route_method, &route_path, wrapper);
+            let handler: Arc<dyn RequestHandler> = Arc::new(InstanceHandler(wrapper));
+            http_adapter.bind(route_method, &route_path, handler)?;
         }
 
         Ok(())

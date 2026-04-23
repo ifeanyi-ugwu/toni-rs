@@ -18,10 +18,10 @@ use std::str::FromStr;
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
     MessageCallbackResult,
-    RequestDispatcher,
     async_trait,
     http_helpers::{RequestBody, RequestPart},
-    HttpAdapter, HttpRequest, HttpResponse, WebSocketAdapter, WsConnectionCallbacks,
+    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler, RouteTable,
+    RouteTableBuilder, WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
@@ -29,11 +29,11 @@ use crate::tokio_sender::TokioSender;
 
 #[derive(Clone)]
 pub struct AxumAdapter {
-    /// Holds WebSocket upgrade routes only. All HTTP traffic is handled by
-    /// the dispatcher via the fallback.
+    /// Collects HTTP route registrations until `route_handler` is called.
+    route_builder: Arc<std::sync::Mutex<RouteTableBuilder>>,
+    /// Holds WebSocket upgrade routes only.
     ws_router: Router,
     ws_ports: HashMap<u16, Router>,
-    dispatcher: Option<Arc<RequestDispatcher>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
@@ -41,9 +41,9 @@ impl AxumAdapter {
     pub fn new() -> Self {
         let (tx, _) = watch::channel(false);
         Self {
+            route_builder: Arc::new(std::sync::Mutex::new(RouteTableBuilder::new())),
             ws_router: Router::new(),
             ws_ports: HashMap::new(),
-            dispatcher: None,
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -55,7 +55,16 @@ impl Default for AxumAdapter {
     }
 }
 
-/// Runs the full WebSocket connection lifecycle for one connected client.
+/// Wraps a sealed `RouteTable` as a `RequestHandler`.
+struct TableHandler(Arc<RouteTable>);
+
+impl RequestHandler for TableHandler {
+    fn handle(&self, req: HttpRequest) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>> {
+        let table = self.0.clone();
+        Box::pin(async move { table.dispatch(req).await })
+    }
+}
+
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
     callbacks: Arc<WsConnectionCallbacks>,
@@ -151,10 +160,6 @@ fn ws_route(callbacks: Arc<WsConnectionCallbacks>) -> axum::routing::MethodRoute
 }
 
 impl AxumAdapter {
-    /// Convert an Axum request to an `HttpRequest`.
-    ///
-    /// Path parameters are NOT extracted here — the framework router handles
-    /// that after path matching.
     async fn adapt_request(request: Request<Body>) -> Result<HttpRequest> {
         use http_body_util::BodyExt;
 
@@ -207,8 +212,9 @@ impl AxumAdapter {
 }
 
 impl HttpAdapter for AxumAdapter {
-    fn set_dispatcher(&mut self, dispatcher: Arc<RequestDispatcher>) {
-        self.dispatcher = Some(dispatcher);
+    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+        self.route_builder.lock().unwrap().insert(method, path, handler);
+        Ok(())
     }
 
     fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
@@ -216,22 +222,23 @@ impl HttpAdapter for AxumAdapter {
         Ok(())
     }
 
+    fn route_handler(&mut self) -> Arc<dyn RequestHandler> {
+        let builder = std::mem::replace(
+            &mut *self.route_builder.lock().unwrap(),
+            RouteTableBuilder::new(),
+        );
+        Arc::new(TableHandler(Arc::new(builder.build())))
+    }
+
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
+        handler: Arc<dyn RequestHandler>,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let dispatcher = self
-            .dispatcher
-            .take()
-            .ok_or_else(|| anyhow!("set_dispatcher must be called before create"))?;
-
-        // Start with the WS-only router, then attach the dispatcher as fallback.
-        // Axum gives specific routes priority over the fallback, so WS upgrade
-        // paths are matched before the HTTP dispatcher sees the request.
         let router = std::mem::replace(&mut self.ws_router, Router::new());
         let router = router.fallback(move |req: Request<Body>| {
-            let dispatcher = dispatcher.clone();
+            let handler = handler.clone();
             async move {
                 let http_req = match Self::adapt_request(req).await {
                     Ok(r) => r,
@@ -248,7 +255,7 @@ impl HttpAdapter for AxumAdapter {
                             .unwrap();
                     }
                 };
-                let http_res = dispatcher.dispatch(http_req).await;
+                let http_res = handler.handle(http_req).await;
                 Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                     let body = serde_json::json!({
                         "statusCode": 500,

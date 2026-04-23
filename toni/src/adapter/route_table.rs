@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::http_helpers::{Body, HttpMethod, HttpRequest, HttpResponse, PathParams};
-use crate::injector::InstanceWrapper;
 
-/// Convert a toni path (`:param` style) to matchit's `{param}` style.
+use super::request_handler::RequestHandler;
+
 fn to_matchit_path(path: &str) -> String {
     if !path.contains(':') {
         return path.to_owned();
@@ -22,7 +22,6 @@ fn to_matchit_path(path: &str) -> String {
                 }
                 out.push(n);
             }
-            // param ran to end of string
             if !out.ends_with('}') {
                 out.push('}');
             }
@@ -33,62 +32,60 @@ fn to_matchit_path(path: &str) -> String {
     out
 }
 
-/// Builds a [`FrameworkRouter`].
+/// Collects route registrations before the router is sealed.
 ///
 /// matchit requires each path to be inserted exactly once, so routes are
-/// collected first and grouped by path before the router is sealed.
-pub struct FrameworkRouterBuilder {
-    /// path → (method_uppercase → wrapper)
-    routes: HashMap<String, HashMap<String, Arc<InstanceWrapper>>>,
+/// grouped by path here before `build` is called.
+pub struct RouteTableBuilder {
+    routes: HashMap<String, HashMap<String, Arc<dyn RequestHandler>>>,
 }
 
-impl FrameworkRouterBuilder {
+impl RouteTableBuilder {
     pub fn new() -> Self {
         Self {
             routes: HashMap::new(),
         }
     }
 
-    pub fn insert(&mut self, method: HttpMethod, path: &str, wrapper: Arc<InstanceWrapper>) {
+    pub fn insert(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) {
         self.routes
             .entry(path.to_owned())
             .or_default()
-            .insert(method.as_str().to_uppercase(), wrapper);
+            .insert(method.as_str().to_uppercase(), handler);
     }
 
-    pub fn build(self) -> FrameworkRouter {
+    pub fn build(self) -> RouteTable {
         let mut inner = matchit::Router::new();
         for (path, method_map) in self.routes {
             let matchit_path = to_matchit_path(&path);
-            // matchit panics on duplicate inserts — each path is unique here.
             inner.insert(matchit_path, method_map).unwrap_or_else(|e| {
-                tracing::error!(path, error = %e, "failed to register route in framework router");
+                tracing::error!(path, error = %e, "failed to register route");
             });
         }
-        FrameworkRouter { inner }
+        RouteTable { inner }
     }
 }
 
-impl Default for FrameworkRouterBuilder {
+impl Default for RouteTableBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// The framework's own path router.
+/// Immutable path router returned by `RouteTableBuilder::build`.
 ///
-/// Immutable after construction. Stored inside [`RequestDispatcher`] behind an
-/// `Arc` so it can be shared across async tasks without copying.
-pub struct FrameworkRouter {
-    inner: matchit::Router<HashMap<String, Arc<InstanceWrapper>>>,
+/// Adapters that want matchit-based routing can use this directly; adapters
+/// with their own router don't need it at all.
+pub struct RouteTable {
+    inner: matchit::Router<HashMap<String, Arc<dyn RequestHandler>>>,
 }
 
-// Safety: InstanceWrapper is Send + Sync (all its fields require Send + Sync).
-// matchit::Router<T> is Send + Sync when T: Send + Sync.
-unsafe impl Send for FrameworkRouter {}
-unsafe impl Sync for FrameworkRouter {}
+// Safety: all values inside are Send + Sync (Arc<dyn RequestHandler: Send+Sync>).
+// matchit::Router<T> doesn't auto-derive Send+Sync even when T is Send+Sync.
+unsafe impl Send for RouteTable {}
+unsafe impl Sync for RouteTable {}
 
-impl FrameworkRouter {
+impl RouteTable {
     pub async fn dispatch(&self, req: HttpRequest) -> HttpResponse {
         let (mut parts, body) = req.into_parts();
         let path = parts.uri.path().to_owned();
@@ -105,19 +102,20 @@ impl FrameworkRouter {
 
                 let req = HttpRequest::from_parts(parts, body);
 
-                if let Some(wrapper) = matched.value.get(&method) {
-                    wrapper.handle_request(req).await
+                if let Some(handler) = matched.value.get(&method) {
+                    handler.handle(req).await
                 } else {
-                    let allowed: Vec<&str> = matched.value.keys().map(String::as_str).collect();
-                    method_not_allowed_response(&method, &path, &allowed)
+                    let allowed: Vec<&str> =
+                        matched.value.keys().map(String::as_str).collect();
+                    method_not_allowed(&method, &path, &allowed)
                 }
             }
-            Err(_) => not_found_response(&method, &path),
+            Err(_) => not_found(&method, &path),
         }
     }
 }
 
-fn not_found_response(method: &str, path: &str) -> HttpResponse {
+fn not_found(method: &str, path: &str) -> HttpResponse {
     HttpResponse {
         status: 404,
         headers: vec![],
@@ -129,7 +127,7 @@ fn not_found_response(method: &str, path: &str) -> HttpResponse {
     }
 }
 
-fn method_not_allowed_response(method: &str, path: &str, _allowed: &[&str]) -> HttpResponse {
+fn method_not_allowed(method: &str, path: &str, _allowed: &[&str]) -> HttpResponse {
     HttpResponse {
         status: 405,
         headers: vec![],
@@ -146,26 +144,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_to_matchit_path_no_params() {
+    fn matchit_path_conversion() {
         assert_eq!(to_matchit_path("/users"), "/users");
-        assert_eq!(to_matchit_path("/"), "/");
-    }
-
-    #[test]
-    fn test_to_matchit_path_single_param() {
         assert_eq!(to_matchit_path("/users/:id"), "/users/{id}");
-    }
-
-    #[test]
-    fn test_to_matchit_path_multiple_params() {
         assert_eq!(
             to_matchit_path("/users/:userId/posts/:postId"),
             "/users/{userId}/posts/{postId}"
         );
-    }
-
-    #[test]
-    fn test_to_matchit_path_trailing_param() {
         assert_eq!(to_matchit_path("/users/:id/profile"), "/users/{id}/profile");
     }
 }
