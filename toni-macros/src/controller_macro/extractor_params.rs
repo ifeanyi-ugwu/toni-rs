@@ -162,6 +162,7 @@ fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
                 "Bytes" => ExtractorKind::Bytes,
                 "BodyStream" => ExtractorKind::BodyStream,
                 "Validated" => ExtractorKind::Validated,
+                "Multipart" => ExtractorKind::Body,
                 "HttpRequest" => ExtractorKind::HttpRequest,
                 "Request" => ExtractorKind::Request,
                 _ => ExtractorKind::Unknown,
