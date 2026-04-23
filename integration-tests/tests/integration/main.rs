@@ -34,6 +34,7 @@ mod rpc_panic_recovery;
 mod scope_bubbling;
 mod scoped_enhancers;
 mod static_methods;
+mod sse;
 mod streaming;
 mod tower_compat;
 mod websocket_broadcast;

@@ -30,3 +30,6 @@ pub use self::extensions::Extensions;
 
 mod route_metadata;
 pub use self::route_metadata::RouteMetadata;
+
+mod sse;
+pub use self::sse::{Sse, SseEvent, sse};
