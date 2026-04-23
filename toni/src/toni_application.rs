@@ -11,9 +11,8 @@ use anyhow::Result;
 
 use crate::{
     adapter::{
-        ErasedRpcAdapter, ErasedWebSocketAdapter, MessageCallbackResult, RpcAdapter,
-        RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
-        request_handler::{MiddlewareAdapter, RequestHandler},
+        AdapterContext, ErasedRpcAdapter, ErasedWebSocketAdapter, MessageCallbackResult,
+        RpcAdapter, RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
     },
     application_context::ToniApplicationContext,
     http_adapter::{ErasedHttpAdapter, HttpAdapter},
@@ -406,21 +405,9 @@ impl ToniApplication {
             };
             tracing::info!(server_type, host = %hostname, port, "Starting server");
 
-            // Extract the adapter's routing handler, then wrap it with the
-            // global middleware chain.  The adapter's create() receives the
-            // fully-wrapped handler and calls it per request.
-            let route = http_adapter.route_handler();
-            let chain = self.routes_resolver.take_global_chain();
-            let final_handler: Arc<dyn RequestHandler> = if chain.is_empty() {
-                route
-            } else {
-                Arc::new(MiddlewareAdapter {
-                    inner: route,
-                    chain: Arc::new(chain),
-                })
-            };
+            let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
 
-            match http_adapter.create(port, &hostname, final_handler) {
+            match http_adapter.create(port, &hostname, ctx) {
                 Ok(fut) => server_futures.push(fut),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to create HTTP server");

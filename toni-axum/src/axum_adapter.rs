@@ -17,7 +17,7 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    MessageCallbackResult,
+    AdapterContext, MessageCallbackResult,
     async_trait,
     http_helpers::{RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler, RouteTable,
@@ -55,15 +55,6 @@ impl Default for AxumAdapter {
     }
 }
 
-/// Wraps a sealed `RouteTable` as a `RequestHandler`.
-struct TableHandler(Arc<RouteTable>);
-
-impl RequestHandler for TableHandler {
-    fn handle(&self, req: HttpRequest) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>> {
-        let table = self.0.clone();
-        Box::pin(async move { table.dispatch(req).await })
-    }
-}
 
 async fn run_ws_connection(
     socket: axum::extract::ws::WebSocket,
@@ -222,23 +213,23 @@ impl HttpAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn route_handler(&mut self) -> Arc<dyn RequestHandler> {
-        let builder = std::mem::replace(
-            &mut *self.route_builder.lock().unwrap(),
-            RouteTableBuilder::new(),
-        );
-        Arc::new(TableHandler(Arc::new(builder.build())))
-    }
-
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
-        handler: Arc<dyn RequestHandler>,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+        let builder = std::mem::replace(
+            &mut *self.route_builder.lock().unwrap(),
+            RouteTableBuilder::new(),
+        );
+        let table = Arc::new(builder.build());
+        let chain = ctx.global_chain;
+
         let router = std::mem::replace(&mut self.ws_router, Router::new());
         let router = router.fallback(move |req: Request<Body>| {
-            let handler = handler.clone();
+            let table = table.clone();
+            let chain = chain.clone();
             async move {
                 let http_req = match Self::adapt_request(req).await {
                     Ok(r) => r,
@@ -255,7 +246,24 @@ impl HttpAdapter for AxumAdapter {
                             .unwrap();
                     }
                 };
-                let http_res = handler.handle(http_req).await;
+                let http_res = chain
+                    .execute(http_req, move |req| {
+                        let table = table.clone();
+                        Box::pin(async move { table.dispatch(req).await })
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "unhandled error in global middleware chain");
+                        HttpResponse {
+                            status: 500,
+                            headers: vec![],
+                            body: Some(toni::http_helpers::Body::json(serde_json::json!({
+                                "statusCode": 500,
+                                "message": "Internal Server Error",
+                                "error": "Internal Server Error"
+                            }))),
+                        }
+                    });
                 Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                     let body = serde_json::json!({
                         "statusCode": 500,

@@ -32,7 +32,7 @@ pub use adapter::{
     WsConnectionCallbacks,
 };
 pub use http_adapter::HttpAdapter;
-pub use adapter::{RequestHandler, RouteTable, RouteTableBuilder};
+pub use adapter::{AdapterContext, RequestHandler, RouteTable, RouteTableBuilder};
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
     RequestBody, RequestBoxBody, RequestPart, RouteMetadata,

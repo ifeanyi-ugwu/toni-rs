@@ -7,8 +7,8 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler, RouteTableBuilder,
-    http_helpers::RequestBody,
+    AdapterContext, HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
+    RouteTableBuilder, http_helpers::RequestBody,
 };
 
 
@@ -107,42 +107,41 @@ impl HttpAdapter for ActixAdapter {
         Ok(())
     }
 
-    fn route_handler(&mut self) -> Arc<dyn RequestHandler> {
-        let builder = std::mem::replace(&mut self.route_builder, RouteTableBuilder::new());
-        let table = Arc::new(builder.build());
-
-        struct TableHandler(Arc<toni::RouteTable>);
-        impl RequestHandler for TableHandler {
-            fn handle(
-                &self,
-                req: HttpRequest,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>> {
-                let table = self.0.clone();
-                Box::pin(async move { table.dispatch(req).await })
-            }
-        }
-
-        Arc::new(TableHandler(table))
-    }
-
     fn create(
         &mut self,
         port: u16,
         hostname: &str,
-        handler: Arc<dyn RequestHandler>,
+        ctx: AdapterContext,
     ) -> Result<Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>> {
         let addr = format!("{}:{}", hostname, port);
+        let builder = std::mem::replace(&mut self.route_builder, RouteTableBuilder::new());
+        let table = Arc::new(builder.build());
+        let chain = ctx.global_chain;
 
         let server: Server = HttpServer::new(move || {
-            let handler = handler.clone();
+            let table = table.clone();
+            let chain = chain.clone();
             App::new().default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
-                let handler = handler.clone();
+                let table = table.clone();
+                let chain = chain.clone();
                 async move {
                     let http_req = match Self::adapt_request((req, body)).await {
                         Ok(r) => r,
                         Err(_) => return ActixHttpResponse::InternalServerError().finish(),
                     };
-                    let http_res = handler.handle(http_req).await;
+                    let http_res = chain
+                        .execute(http_req, move |req| {
+                            let table = table.clone();
+                            Box::pin(async move { table.dispatch(req).await })
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            HttpResponse {
+                                status: 500,
+                                headers: vec![],
+                                body: None,
+                            }
+                        });
                     Self::adapt_response(http_res).await.unwrap_or_else(|_| {
                         ActixHttpResponse::InternalServerError().finish()
                     })
