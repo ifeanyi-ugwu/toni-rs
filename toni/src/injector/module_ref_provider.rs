@@ -1,7 +1,6 @@
-use std::{
-    any::Any,
-    sync::{Arc, RwLock},
-};
+use std::{any::Any, sync::Arc};
+
+use parking_lot::RwLock;
 
 use crate::{
     ProviderScope, async_trait,
