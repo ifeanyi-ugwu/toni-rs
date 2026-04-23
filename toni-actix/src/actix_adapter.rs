@@ -8,8 +8,8 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    AdapterContext, HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
-    http_helpers::{PathParams, RequestBody},
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
+    RequestHandler, http_helpers::{PathParams, RequestBody},
 };
 
 pub struct ActixAdapter {
@@ -183,7 +183,36 @@ impl HttpAdapter for ActixAdapter {
                     }),
                 );
             }
-            app
+            let ctx_fallback = ctx.clone();
+            app.default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
+                let ctx = ctx_fallback.clone();
+                async move {
+                    let http_req = match Self::adapt_request((req, body)).await {
+                        Ok(r) => r,
+                        Err(_) => return ActixHttpResponse::InternalServerError().finish(),
+                    };
+                    let http_res = ctx
+                        .execute(http_req, |req| {
+                            Box::pin(async move {
+                                let method = req.method().as_str().to_uppercase();
+                                let path = req.uri().path().to_string();
+                                HttpResponse {
+                                    status: 404,
+                                    headers: vec![],
+                                    body: Some(ToniBody::json(serde_json::json!({
+                                        "statusCode": 404,
+                                        "message": format!("Cannot {} {}", method, path),
+                                        "error": "Not Found"
+                                    }))),
+                                }
+                            })
+                        })
+                        .await;
+                    Self::adapt_response(http_res)
+                        .await
+                        .unwrap_or_else(|_| ActixHttpResponse::InternalServerError().finish())
+                }
+            }))
         })
         .bind(&addr)
         .with_context(|| format!("Failed to bind to {}", addr))?

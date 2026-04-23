@@ -18,7 +18,7 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, MessageCallbackResult,
+    AdapterContext, Body as ToniBody, MessageCallbackResult,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
@@ -331,8 +331,57 @@ impl HttpAdapter for AxumAdapter {
             http_router = http_router.route(&path, method_router);
         }
 
+        let ctx_fallback = ctx.clone();
         let ws_router = std::mem::replace(&mut self.ws_router, Router::new());
-        let router = ws_router.merge(http_router);
+        let router = ws_router.merge(http_router).fallback(move |req: Request<Body>| {
+            let ctx = ctx_fallback.clone();
+            async move {
+                let http_req = match Self::adapt_request(req).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let body = serde_json::json!({
+                            "statusCode": 500,
+                            "message": e.to_string(),
+                            "error": "Internal Server Error"
+                        });
+                        return Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap();
+                    }
+                };
+                let http_res = ctx
+                    .execute(http_req, |req| {
+                        Box::pin(async move {
+                            let method = req.method().as_str().to_uppercase();
+                            let path = req.uri().path().to_string();
+                            HttpResponse {
+                                status: 404,
+                                headers: vec![],
+                                body: Some(ToniBody::json(serde_json::json!({
+                                    "statusCode": 404,
+                                    "message": format!("Cannot {} {}", method, path),
+                                    "error": "Not Found"
+                                }))),
+                            }
+                        })
+                    })
+                    .await;
+                Self::adapt_response(http_res).await.unwrap_or_else(|e| {
+                    let body = serde_json::json!({
+                        "statusCode": 500,
+                        "message": e.to_string(),
+                        "error": "Internal Server Error"
+                    });
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap()
+                })
+            }
+        });
 
         let hostname = hostname.to_string();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
