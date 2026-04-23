@@ -12,6 +12,7 @@ default = []
 http = ["dep:reqwest"]
 memory = ["dep:sysinfo", "sysinfo?/system"]
 disk = ["dep:sysinfo", "sysinfo?/disk"]
+timeout = ["dep:tokio"]
 
 [dependencies]
 toni = { path = "../toni" }
@@ -20,3 +21,4 @@ serde_json = "1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 sysinfo = { version = "0.38", default-features = false, optional = true }
+tokio = { version = "1", default-features = false, features = ["time"], optional = true }

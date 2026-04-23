@@ -1,7 +1,7 @@
-use std::{any::Any, sync::Arc};
+use std::{any::Any, future::IntoFuture, sync::Arc};
 
 use async_trait::async_trait;
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, join_all};
 use toni::{
     FxHashMap,
     traits_helpers::{Injectable, Provider, ProviderContext, ProviderFactory},
@@ -9,33 +9,112 @@ use toni::{
 
 use crate::health_check_result::{HealthCheckResult, HealthIndicatorResult};
 
+#[cfg(feature = "timeout")]
+use crate::health_check_result::HealthEntry;
+
 /// Runs a set of health checks and aggregates the results.
 ///
 /// Inject this into your health controller, then call [`check`] with a vec
 /// of futures produced by your indicators:
 ///
 /// ```ignore
-/// #[get("/")]
+/// #[get("/live")]
 /// async fn liveness(&self) -> impl IntoResponse {
 ///     self.health.check(vec![
 ///         self.http.ping_check("api", "https://api.example.com"),
-///         self.memory.check_heap("memory", 300 * 1024 * 1024),
+///         self.memory.check_rss("memory", 300 * 1024 * 1024),
 ///     ]).await
 /// }
 /// ```
 ///
+/// Chain `.timeout(Duration)` before `.await` to bound each check:
+///
+/// ```ignore
+/// self.health
+///     .check(vec![self.http.ping_check("api", "https://api.example.com")])
+///     .timeout(Duration::from_secs(3))
+///     .await
+/// ```
+///
 /// Returns HTTP 200 when all checks pass, HTTP 503 when any fail.
+///
+/// [`check`]: HealthCheckService::check
 #[derive(Clone)]
 pub struct HealthCheckService;
 
 impl HealthCheckService {
-    pub async fn check(
+    pub fn check(
         &self,
         checks: Vec<BoxFuture<'static, HealthIndicatorResult>>,
-    ) -> HealthCheckResult {
-        let results = futures::future::join_all(checks).await;
-        HealthCheckResult::from_results(results)
+    ) -> HealthCheckBuilder {
+        HealthCheckBuilder::new(checks)
     }
+}
+
+// ── Builder ───────────────────────────────────────────────────────────────────
+
+/// Returned by [`HealthCheckService::check`]. Awaitable directly, or chain
+/// `.timeout(Duration)` first (requires the `timeout` feature).
+pub struct HealthCheckBuilder {
+    checks: Vec<BoxFuture<'static, HealthIndicatorResult>>,
+    #[cfg(feature = "timeout")]
+    timeout: Option<std::time::Duration>,
+}
+
+impl HealthCheckBuilder {
+    pub(crate) fn new(checks: Vec<BoxFuture<'static, HealthIndicatorResult>>) -> Self {
+        Self {
+            checks,
+            #[cfg(feature = "timeout")]
+            timeout: None,
+        }
+    }
+
+    /// Set a per-check timeout. Any individual check that does not resolve
+    /// within `duration` is marked unhealthy with key `"timed_out"`.
+    ///
+    /// All checks still run concurrently — the timeout applies to each one
+    /// independently, not to the whole group.
+    #[cfg(feature = "timeout")]
+    pub fn timeout(mut self, duration: std::time::Duration) -> Self {
+        self.timeout = Some(duration);
+        self
+    }
+}
+
+impl IntoFuture for HealthCheckBuilder {
+    type Output = HealthCheckResult;
+    type IntoFuture = BoxFuture<'static, HealthCheckResult>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(run(self))
+    }
+}
+
+async fn run(builder: HealthCheckBuilder) -> HealthCheckResult {
+    #[cfg(feature = "timeout")]
+    if let Some(dur) = builder.timeout {
+        let wrapped = builder.checks.into_iter().map(|check| {
+            Box::pin(async move {
+                tokio::time::timeout(dur, check)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(HealthEntry::down_with(
+                            "timed_out",
+                            serde_json::json!({
+                                "message": "Health check timed out",
+                                "timeoutMs": dur.as_millis(),
+                            }),
+                        ))
+                    })
+            }) as BoxFuture<'static, HealthIndicatorResult>
+        });
+        let results = join_all(wrapped).await;
+        return HealthCheckResult::from_results(results);
+    }
+
+    let results = join_all(builder.checks).await;
+    HealthCheckResult::from_results(results)
 }
 
 // ── DI machinery ─────────────────────────────────────────────────────────────

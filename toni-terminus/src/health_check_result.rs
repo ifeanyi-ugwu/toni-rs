@@ -138,3 +138,106 @@ impl IntoResponse for HealthCheckResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_body(response: HttpResponse) -> Value {
+        let bytes = response
+            .body
+            .unwrap()
+            .try_bytes()
+            .unwrap()
+            .to_vec();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn all_passing_is_ok() {
+        let result = HealthCheckResult::from_results(vec![
+            Ok(HealthEntry::up("db")),
+            Ok(HealthEntry::up("redis")),
+        ]);
+        assert_eq!(result.status(), "ok");
+        assert!(result.is_healthy());
+    }
+
+    #[test]
+    fn any_failing_is_error() {
+        let result = HealthCheckResult::from_results(vec![
+            Ok(HealthEntry::up("db")),
+            Err(HealthEntry::down("redis")),
+        ]);
+        assert_eq!(result.status(), "error");
+        assert!(!result.is_healthy());
+    }
+
+    #[test]
+    fn all_failing_is_error() {
+        let result = HealthCheckResult::from_results(vec![
+            Err(HealthEntry::down("db")),
+            Err(HealthEntry::down("redis")),
+        ]);
+        assert_eq!(result.status(), "error");
+    }
+
+    #[test]
+    fn empty_checks_is_ok() {
+        let result = HealthCheckResult::from_results(vec![]);
+        assert_eq!(result.status(), "ok");
+        assert!(result.is_healthy());
+    }
+
+    #[test]
+    fn http_200_when_all_pass() {
+        let result = HealthCheckResult::from_results(vec![Ok(HealthEntry::up("db"))]);
+        assert_eq!(result.into_response().status, 200);
+    }
+
+    #[test]
+    fn http_503_when_any_fail() {
+        let result = HealthCheckResult::from_results(vec![Err(HealthEntry::down("db"))]);
+        assert_eq!(result.into_response().status, 503);
+    }
+
+    #[test]
+    fn json_shape_all_passing() {
+        let result = HealthCheckResult::from_results(vec![Ok(HealthEntry::up("db"))]);
+        let body = parse_body(result.into_response());
+
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["info"]["db"]["status"], "up");
+        assert_eq!(body["error"], json!({}));
+        assert_eq!(body["details"]["db"]["status"], "up");
+    }
+
+    #[test]
+    fn json_shape_with_failure() {
+        let result = HealthCheckResult::from_results(vec![
+            Ok(HealthEntry::up("db")),
+            Err(HealthEntry::down_with("redis", json!({ "message": "connection refused" }))),
+        ]);
+        let body = parse_body(result.into_response());
+
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["info"]["db"]["status"], "up");
+        assert_eq!(body["error"]["redis"]["status"], "down");
+        assert_eq!(body["error"]["redis"]["message"], "connection refused");
+        assert_eq!(body["details"]["db"]["status"], "up");
+        assert_eq!(body["details"]["redis"]["status"], "down");
+    }
+
+    #[test]
+    fn extra_details_merged_into_entry() {
+        let result = HealthCheckResult::from_results(vec![Ok(HealthEntry::up_with(
+            "memory",
+            json!({ "rss": 1024, "threshold": 2048 }),
+        ))]);
+        let body = parse_body(result.into_response());
+
+        assert_eq!(body["info"]["memory"]["status"], "up");
+        assert_eq!(body["info"]["memory"]["rss"], 1024);
+        assert_eq!(body["info"]["memory"]["threshold"], 2048);
+    }
+}

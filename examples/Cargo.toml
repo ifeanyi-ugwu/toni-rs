@@ -15,7 +15,7 @@ toni-axum = { path = "../toni-axum" }
 toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
 toni-nats = { path = "../toni-nats" }
-toni-terminus = { path = "../toni-terminus", features = ["http", "memory", "disk"] }
+toni-terminus = { path = "../toni-terminus", features = ["http", "memory", "disk", "timeout"] }
 chrono = "0.4"
 anyhow = "1.0"
 futures = "0.3"
