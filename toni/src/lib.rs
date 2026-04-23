@@ -35,7 +35,7 @@ pub use http_adapter::HttpAdapter;
 pub use adapter::{AdapterContext, RequestHandler};
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
-    RequestBody, RequestBoxBody, RequestPart, RouteMetadata,
+    RequestBody, RequestBoxBody, RequestPart, RouteMetadata, Sse, SseEvent, sse,
 };
 pub use injector::{InstanceWrapper, Protocol, ProtocolType};
 pub use rpc::{RpcClient, RpcClientError, RpcContext, RpcControllerTrait, RpcData, RpcError};
