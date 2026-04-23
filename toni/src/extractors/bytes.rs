@@ -3,8 +3,8 @@ use crate::http_helpers::HttpRequest;
 
 /// Extracts the raw request body as bytes.
 ///
-/// Accepts `application/octet-stream` and requests with no content-type.
-/// For JSON or form data, use [`Json`](super::json::Json) or [`Body`](super::body::Body) instead.
+/// For structured data, use [`Json`](super::json::Json) or
+/// [`Body`](super::body::Body) instead.
 ///
 /// # Example
 ///
@@ -42,7 +42,6 @@ impl std::ops::DerefMut for Bytes {
 
 #[derive(Debug)]
 pub enum BytesError {
-    UnsupportedContentType(String),
     MissingBody,
     CollectError(String),
 }
@@ -50,9 +49,6 @@ pub enum BytesError {
 impl std::fmt::Display for BytesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BytesError::UnsupportedContentType(ct) => {
-                write!(f, "Unsupported content type for binary data: {}", ct)
-            }
             BytesError::MissingBody => write!(f, "No body provided"),
             BytesError::CollectError(msg) => write!(f, "Failed to read request body: {}", msg),
         }
@@ -65,22 +61,11 @@ impl FromRequest for Bytes {
     type Error = BytesError;
 
     async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (parts, body) = req.into_parts();
-        let content_type = parts
-            .headers
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-
-        if content_type.is_empty() || content_type.contains("application/octet-stream") {
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| BytesError::CollectError(e.to_string()))?;
-            Ok(Bytes(bytes.to_vec()))
-        } else {
-            Err(BytesError::UnsupportedContentType(content_type))
-        }
+        let (_, body) = req.into_parts();
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|e| BytesError::CollectError(e.to_string()))?;
+        Ok(Bytes(bytes.to_vec()))
     }
 }
