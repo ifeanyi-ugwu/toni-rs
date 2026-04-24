@@ -1,3 +1,5 @@
+#![cfg(feature = "integration")]
+
 use std::sync::Arc;
 use testcontainers::{runners::AsyncRunner, ContainerAsync};
 use testcontainers_modules::redis::{Redis, REDIS_PORT};
@@ -61,7 +63,6 @@ async fn recv(rx: &mut mpsc::Receiver<WsMessage>) -> WsMessage {
 
 /// `to_all()` publishes to Redis; the subscriber loop delivers it locally.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn to_all_round_trips_through_redis() {
     let (_container, url) = start_redis().await;
     let (_app, rbs) = boot(&url).await;
@@ -82,7 +83,6 @@ async fn to_all_round_trips_through_redis() {
 
 /// `to_room()` only delivers to clients that joined the room.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn to_room_delivers_only_to_members() {
     let (_container, url) = start_redis().await;
     let (_app, rbs) = boot(&url).await;
@@ -108,7 +108,6 @@ async fn to_room_delivers_only_to_members() {
 
 /// `to_client()` delivers only to the addressed client.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn to_client_delivers_only_to_target() {
     let (_container, url) = start_redis().await;
     let (_app, rbs) = boot(&url).await;
@@ -134,7 +133,6 @@ async fn to_client_delivers_only_to_target() {
 /// is delivered to a client connected to instance 1.  This is the actual cross-process
 /// guarantee: separate `BroadcastService` maps, nothing shared in memory.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn cross_process_delivery() {
     let (_container, url) = start_redis().await;
 
@@ -156,7 +154,6 @@ async fn cross_process_delivery() {
 
 /// `send_event()` wraps the payload in `{"event": ..., "data": ...}`.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn send_event_formats_payload_correctly() {
     let (_container, url) = start_redis().await;
     let (_app, rbs) = boot(&url).await;
@@ -178,7 +175,6 @@ async fn send_event_formats_payload_correctly() {
 
 /// `to_client` reaches a client on a different process via the private channel.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn to_client_delivers_cross_process() {
     let (_container, url) = start_redis().await;
 
@@ -204,7 +200,6 @@ async fn to_client_delivers_cross_process() {
 /// `get_room_clients` reflects joins from all instances — the cross-process
 /// membership guarantee that the Redis sets provide.
 #[tokio::test]
-#[ignore = "requires Docker"]
 async fn get_room_clients_reflects_cross_process_joins() {
     let (_container, url) = start_redis().await;
 

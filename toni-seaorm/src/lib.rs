@@ -1,7 +1,10 @@
 mod connection;
 mod module;
+#[cfg(feature = "health")]
+pub mod health;
 
 pub use module::SeaOrmModule;
 
-// Re-export the types users need to interact with in their services.
 pub use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait, Set};
+#[cfg(feature = "health")]
+pub use health::SeaOrmHealthIndicator;

@@ -19,6 +19,7 @@ members = [
     "toni-mongodb",
     "toni-async-graphql",
     "toni-juniper",
+    "toni-terminus",
     "integration-tests",
     "examples",
 ]

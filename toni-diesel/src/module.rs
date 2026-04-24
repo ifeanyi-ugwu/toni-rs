@@ -9,11 +9,21 @@ impl DieselModule {
         use diesel_async::{AsyncPgConnection, pooled_connection::deadpool::Pool};
 
         use crate::pool::PgPoolFactory;
-        DynamicModule::builder("DieselModule::postgres")
-            .provider(PgPoolFactory { url: url.into() })
-            .export::<Pool<AsyncPgConnection>>()
-            .global()
-            .build()
+        let url: String = url.into();
+
+        #[allow(unused_mut)]
+        let mut builder = DynamicModule::builder("DieselModule::postgres")
+            .provider(PgPoolFactory { url: url.clone() })
+            .export::<Pool<AsyncPgConnection>>();
+
+        #[cfg(feature = "health")]
+        {
+            builder = builder
+                .provider(crate::health::PgHealthIndicatorFactory { url })
+                .export::<crate::health::PgHealthIndicator>();
+        }
+
+        builder.global().build()
     }
 
     #[cfg(feature = "mysql")]
@@ -21,10 +31,20 @@ impl DieselModule {
         use diesel_async::{AsyncMysqlConnection, pooled_connection::deadpool::Pool};
 
         use crate::pool::MySqlPoolFactory;
-        DynamicModule::builder("DieselModule::mysql")
-            .provider(MySqlPoolFactory { url: url.into() })
-            .export::<Pool<AsyncMysqlConnection>>()
-            .global()
-            .build()
+        let url: String = url.into();
+
+        #[allow(unused_mut)]
+        let mut builder = DynamicModule::builder("DieselModule::mysql")
+            .provider(MySqlPoolFactory { url: url.clone() })
+            .export::<Pool<AsyncMysqlConnection>>();
+
+        #[cfg(feature = "health")]
+        {
+            builder = builder
+                .provider(crate::health::MySqlHealthIndicatorFactory { url })
+                .export::<crate::health::MySqlHealthIndicator>();
+        }
+
+        builder.global().build()
     }
 }

@@ -71,19 +71,37 @@ impl<T: DeserializeOwned> FromRequestParts for Path<T> {
 
     fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
         let params = parts.extensions.get::<PathParams>();
-        // Round-trip through serde_json::Value so any T: DeserializeOwned works,
-        // including structs with multiple named fields.
-        let json_value = match params {
+        let json_map = match params {
             Some(p) => serde_json::to_value(&p.0).map_err(|e| {
                 PathError::ParseError(format!("Failed to serialize path params: {}", e))
             })?,
             None => serde_json::Value::Object(Default::default()),
         };
 
-        let deserialized: T = serde_json::from_value(json_value).map_err(|e| {
-            PathError::ParseError(format!("Failed to deserialize path params: {}", e))
-        })?;
+        // Try the map first — handles structs with named fields (e.g. `Path<MyParams>`).
+        // If that fails and there is exactly one param, try deserializing from the bare
+        // value — handles scalars like `Path<String>` and `Path<i32>`.
+        if let Ok(v) = serde_json::from_value::<T>(json_map.clone()) {
+            return Ok(Path(v));
+        }
+        if let serde_json::Value::Object(ref obj) = json_map {
+            if obj.len() == 1 {
+                if let Some(single) = obj.values().next() {
+                    let deserialized: T =
+                        serde_json::from_value(single.clone()).map_err(|e| {
+                            PathError::ParseError(format!(
+                                "Failed to deserialize path params: {}",
+                                e
+                            ))
+                        })?;
+                    return Ok(Path(deserialized));
+                }
+            }
+        }
 
-        Ok(Path(deserialized))
+        Err(PathError::ParseError(format!(
+            "Failed to deserialize path params from {:?}",
+            json_map
+        )))
     }
 }

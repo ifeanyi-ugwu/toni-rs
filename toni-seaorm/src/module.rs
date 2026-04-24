@@ -29,12 +29,22 @@ impl SeaOrmModule {
     /// }
     /// ```
     pub fn for_root(database_url: impl Into<String>) -> DynamicModule {
-        DynamicModule::builder("SeaOrmModule")
+        let database_url: String = database_url.into();
+
+        #[allow(unused_mut)]
+        let mut builder = DynamicModule::builder("SeaOrmModule")
             .provider(SeaOrmConnectionFactory {
-                database_url: database_url.into(),
+                database_url: database_url.clone(),
             })
-            .export::<DatabaseConnection>()
-            .global()
-            .build()
+            .export::<DatabaseConnection>();
+
+        #[cfg(feature = "health")]
+        {
+            builder = builder
+                .provider(crate::health::SeaOrmHealthIndicatorFactory { database_url })
+                .export::<crate::health::SeaOrmHealthIndicator>();
+        }
+
+        builder.global().build()
     }
 }
