@@ -30,13 +30,24 @@ impl MongoModule {
     /// }
     /// ```
     pub fn for_root(uri: impl Into<String>, db_name: impl Into<String>) -> DynamicModule {
-        DynamicModule::builder("MongoModule")
+        let uri: String = uri.into();
+        let db_name: String = db_name.into();
+
+        #[allow(unused_mut)]
+        let mut builder = DynamicModule::builder("MongoModule")
             .provider(MongoConnectionFactory {
-                uri: uri.into(),
-                db_name: db_name.into(),
+                uri: uri.clone(),
+                db_name: db_name.clone(),
             })
-            .export::<Database>()
-            .global()
-            .build()
+            .export::<Database>();
+
+        #[cfg(feature = "health")]
+        {
+            builder = builder
+                .provider(crate::health::MongoHealthIndicatorFactory { uri, db_name })
+                .export::<crate::health::MongoHealthIndicator>();
+        }
+
+        builder.global().build()
     }
 }

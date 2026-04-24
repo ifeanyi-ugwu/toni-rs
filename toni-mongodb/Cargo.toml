@@ -7,8 +7,14 @@ license = "MIT"
 repository = "https://github.com/monterxto/toni-rs"
 homepage = "https://github.com/monterxto/toni-rs"
 
+[features]
+health = ["dep:toni-terminus", "dep:serde_json", "dep:futures"]
+
 [dependencies]
 toni = { path = "../toni" }
 mongodb = { version = "3" }
 async-trait = "0.1"
 tracing = "0.1"
+toni-terminus = { path = "../toni-terminus", default-features = false, optional = true }
+serde_json = { version = "1", optional = true }
+futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
