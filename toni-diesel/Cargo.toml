@@ -9,7 +9,7 @@ homepage = "https://github.com/monterxto/toni-rs"
 
 [features]
 default = []
-postgres = ["diesel-async/postgres", "diesel/postgres"]
+postgres = ["diesel-async/postgres", "diesel/postgres_backend"]
 mysql = ["diesel-async/mysql"]
 health = ["dep:toni-terminus", "dep:serde_json", "dep:futures"]
 
