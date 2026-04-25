@@ -11,7 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
 use toni::http_helpers::RequestPart;
 use toni::websocket::{SendError, TrySendError, WsMessage, WsSink};
-use toni::{MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks};
+use toni::{MessageCallbackResult, ServerHandle, WebSocketAdapter, WsConnectionCallbacks};
 
 // ── TokioSender ───────────────────────────────────────────────────────────────
 
@@ -86,53 +86,59 @@ impl WebSocketAdapter for TungsteniteAdapter {
         Ok(())
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let entry = self
-            .ports
-            .remove(&port)
-            .ok_or_else(|| anyhow::anyhow!("No bindings registered for WS port {}", port))?;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+        let entry = self.ports.remove(&port);
+        let entry = match entry {
+            Some(e) => e,
+            None => {
+                return Box::pin(async move {
+                    Err(anyhow::anyhow!("No bindings registered for WS port {}", port))
+                });
+            }
+        };
 
         // Raw TCP has no path info — use the first registered callbacks.
         let bindings: Vec<Arc<WsConnectionCallbacks>> = entry.bindings.into_values().collect();
         let addr = format!("{}:{}", hostname, port);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        Ok(Box::pin(async move {
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!(addr, error = %e, "Failed to bind WebSocket port");
-                    return;
-                }
-            };
-            tracing::info!(addr, "WebSocket listening");
-            loop {
-                tokio::select! {
-                    result = listener.accept() => {
-                        let (stream, _) = match result {
-                            Ok(r) => r,
-                            Err(e) => { tracing::error!(error = %e, "WebSocket accept error"); continue; }
-                        };
-                        if let Some(callbacks) = bindings.first().cloned() {
-                            tokio::spawn(async move {
-                                let ws_stream = match tokio_tungstenite::accept_async(stream).await {
-                                    Ok(ws) => ws,
-                                    Err(e) => { tracing::error!(error = %e, "WebSocket handshake error"); return; }
+        Box::pin(async move {
+            let listener = TcpListener::bind(&addr).await
+                .map_err(|e| anyhow::anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let local_addr = listener.local_addr()
+                .map_err(|e| anyhow::anyhow!("Failed to get local address: {}", e))?;
+            Ok(ServerHandle {
+                local_addr,
+                serve: Box::pin(async move {
+                    loop {
+                        tokio::select! {
+                            result = listener.accept() => {
+                                let (stream, _) = match result {
+                                    Ok(r) => r,
+                                    Err(e) => { tracing::error!(error = %e, "WebSocket accept error"); continue; }
                                 };
-                                run_ws_connection(ws_stream, callbacks).await;
-                            });
+                                if let Some(callbacks) = bindings.first().cloned() {
+                                    tokio::spawn(async move {
+                                        let ws_stream = match tokio_tungstenite::accept_async(stream).await {
+                                            Ok(ws) => ws,
+                                            Err(e) => { tracing::error!(error = %e, "WebSocket handshake error"); return; }
+                                        };
+                                        run_ws_connection(ws_stream, callbacks).await;
+                                    });
+                                }
+                            }
+                            _ = shutdown_rx.changed() => {
+                                if *shutdown_rx.borrow() { break; }
+                            }
                         }
                     }
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() { break; }
-                    }
-                }
-            }
-        }))
+                }),
+            })
+        })
     }
 
     async fn close(&mut self) -> Result<()> {

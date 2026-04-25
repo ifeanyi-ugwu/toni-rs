@@ -50,13 +50,13 @@ impl RpcAdapter for TcpAdapter {
         Ok(())
     }
 
-    fn create(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
         let host = self.host.clone();
         let port = self.port;
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before create()");
+            .expect("bind() must be called before serve()");
 
         Ok(Box::pin(async move {
             let addr = format!("{}:{}", host, port);

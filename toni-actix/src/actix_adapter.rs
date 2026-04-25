@@ -4,12 +4,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use actix_web::{
-    dev::Server, web, web::Bytes, App, HttpRequest as ActixHttpRequest,
+    web, web::Bytes, App, HttpRequest as ActixHttpRequest,
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
     AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    RequestHandler, http_helpers::{PathParams, RequestBody},
+    RequestHandler, ServerHandle, http_helpers::{PathParams, RequestBody},
 };
 
 pub struct ActixAdapter {
@@ -142,17 +142,19 @@ impl HttpAdapter for ActixAdapter {
         Ok(())
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Result<Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<ServerHandle>> + Send + 'static>> {
         let addr = format!("{}:{}", hostname, port);
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
 
-        let server: Server = HttpServer::new(move || {
+        // actix binds synchronously inside the future — no async bind needed.
+        Box::pin(async move {
+        let bound = HttpServer::new(move || {
             let ctx = ctx.clone();
             let mut app = App::new();
             for (method, path, handler) in &routes {
@@ -215,18 +217,26 @@ impl HttpAdapter for ActixAdapter {
             }))
         })
         .bind(&addr)
-        .with_context(|| format!("Failed to bind to {}", addr))?
-        .run();
+        .with_context(|| format!("Failed to bind to {}", addr))?;
 
-        Ok(Box::pin(async move {
-            if let Err(e) = server
-                .await
-                .with_context(|| "Actix server encountered an error")
-            {
-                tracing::error!(error = %e, "Actix server error");
-                std::process::exit(1);
-            }
-        }))
+        let local_addr = bound
+            .addrs()
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("No bound address for {}", addr))?;
+
+        let running = bound.run();
+
+        Ok(ServerHandle {
+            local_addr,
+            serve: Box::pin(async move {
+                if let Err(e) = running.await {
+                    tracing::error!(error = %e, "Actix server error");
+                    std::process::exit(1);
+                }
+            }),
+        })
+        }) // end Box::pin(async move {
     }
 }
 
