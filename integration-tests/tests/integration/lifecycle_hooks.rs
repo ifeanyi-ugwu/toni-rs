@@ -5,7 +5,7 @@
 //     → module:on_application_bootstrap → provider:on_application_bootstrap
 //
 // on_module_init fires during ToniFactory::create(); on_application_bootstrap
-// fires during app.start(). This split matters: providers that open connections
+// fires during app.bind(). This split matters: providers that open connections
 // in init are ready by the time bootstrap runs.
 
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -63,7 +63,7 @@ async fn startup_hooks_fire_in_order() {
         let mut app = ToniFactory::create(HookModule::module_definition()).await;
         app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
             .unwrap();
-        let _ = app.start().await;
+        app.start().await.unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(500)).await;

@@ -180,7 +180,7 @@ struct OrdersModule;
 // ============================================================================
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("RPC NATS Client Example");
     println!("HTTP: http://127.0.0.1:8080");
     println!("  GET  /order/create?item=keyboard&qty=3  → request-response via RpcClient");
@@ -194,5 +194,6 @@ async fn main() {
     app.use_rpc_adapter(toni_nats::NatsAdapter::new("nats://127.0.0.1:4222"))
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

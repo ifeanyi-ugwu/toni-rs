@@ -107,7 +107,7 @@ struct OrdersModule;
 // ============================================================================
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("RPC Controller Example");
     println!("HTTP: http://127.0.0.1:8080");
     println!("RPC (TCP): 127.0.0.1:4000\n");
@@ -119,5 +119,6 @@ async fn main() {
     app.use_rpc_adapter(toni_tcp::TcpAdapter::new("0.0.0.0", 4000))
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

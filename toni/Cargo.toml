@@ -23,6 +23,7 @@ validator = "0.20.0"
 serde_urlencoded = "0.7"
 thiserror = "2.0"
 parking_lot = "0.12"
+event-listener = "5"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 bytes = "1"
 http-body = "1"

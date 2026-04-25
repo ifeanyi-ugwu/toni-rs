@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\nCalling close() to trigger shutdown hooks...\n");
 
-    ctx.close().await?;
+    ctx.close().await;
 
     println!("\nProgram complete!");
     println!("\nHook execution order:");

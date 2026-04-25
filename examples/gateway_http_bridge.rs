@@ -87,7 +87,7 @@ impl AppModule {}
 // ---- main --------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🔔 toni gateway → HTTP bridge\n");
     println!("  WS   ws://127.0.0.1:3000/notifications");
     println!("  POST http://127.0.0.1:3000/notify  {{\"message\": \"hello\"}}");
@@ -102,5 +102,6 @@ async fn main() {
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

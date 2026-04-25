@@ -121,7 +121,7 @@ async fn full_integration() {
                     .await;
                 app.use_http_adapter(AxumAdapter::new(), app_port, "127.0.0.1")
                     .unwrap();
-                app.start().await;
+                app.start().await.unwrap();
             });
 
             let base = format!("http://127.0.0.1:{app_port}/items");

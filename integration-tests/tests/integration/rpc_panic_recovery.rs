@@ -20,7 +20,7 @@ async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefin
         let mut app = ToniFactory::create(module).await;
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
             .unwrap();
-        let _ = app.start().await;
+        app.start().await.unwrap();
     });
     tokio::task::spawn_local(async move { local.await });
     tokio::time::sleep(Duration::from_millis(200)).await;

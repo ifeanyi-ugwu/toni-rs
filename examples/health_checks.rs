@@ -114,7 +114,7 @@ impl HealthController {
 impl AppModule {}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     APP_START.get_or_init(Instant::now);
 
     println!("Health checks example\n");
@@ -129,5 +129,6 @@ async fn main() {
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

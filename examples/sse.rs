@@ -140,7 +140,7 @@ impl SseController {
 impl AppModule {}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🚀 toni SSE example\n");
     println!("  GET  http://127.0.0.1:3000/sse/counter  — live counter (Ctrl-C to stop)");
     println!("  GET  http://127.0.0.1:3000/sse/events   — named event types");
@@ -160,5 +160,6 @@ async fn main() {
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

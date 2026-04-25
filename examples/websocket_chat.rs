@@ -54,7 +54,7 @@ impl EchoGateway {
 struct AppModule;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🚀 Simple WebSocket echo server\n");
     println!("Connect:  websocat ws://127.0.0.1:8080/chat");
     println!(r#"Send:     {{"event": "message", "data": "Hello"}}"#);
@@ -66,5 +66,6 @@ async fn main() {
     app.use_http_adapter(toni_axum::AxumAdapter::new(), 8080, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

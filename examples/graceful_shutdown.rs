@@ -87,24 +87,22 @@ async fn main() -> anyhow::Result<()> {
     app.use_http_adapter(toni_axum::AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
+    app.bind().await?;
+
     println!("📡 WebSocket server running on ws://localhost:3000/ws");
     println!("📝 Try: wscat -c ws://localhost:3000/ws");
     println!("⚡ Press Ctrl+C or send SIGTERM to trigger graceful shutdown\n");
 
-    tokio::select! {
-        _ = app.start() => {
-            println!("Server stopped normally");
-        }
-        signal = shutdown_signal() => {
-            println!("\n\n⚡ Received {} signal", signal);
-            println!("🛑 Initiating graceful shutdown...");
+    let shutdown = app.shutdown_handle();
+    tokio::spawn(async move {
+        let signal = shutdown_signal().await;
+        println!("\n\n⚡ Received {} signal", signal);
+        println!("🛑 Initiating graceful shutdown...");
+        shutdown.shutdown();
+    });
 
-            // Triggers hooks in order: onModuleDestroy → beforeApplicationShutdown → onApplicationShutdown
-            app.close().await?;
-
-            println!("✅ Shutdown complete!");
-        }
-    }
+    app.run().await;
+    println!("✅ Shutdown complete!");
 
     Ok(())
 }

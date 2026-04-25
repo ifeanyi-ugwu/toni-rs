@@ -77,7 +77,7 @@ pub mod enhancer {
 }
 
 pub use module_helpers::DynamicModule;
-pub use toni_application::ToniApplication;
+pub use toni_application::{BoundAdapters, ShutdownHandle, ToniApplication};
 pub use toni_factory::ToniFactory;
 
 #[cfg(feature = "tower-compat")]

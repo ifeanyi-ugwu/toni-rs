@@ -299,11 +299,10 @@ impl ToniApplicationContext {
             })
     }
 
-    pub async fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self) {
         self.call_module_destroy_hooks().await;
         self.call_before_shutdown_hooks(None).await;
         self.call_shutdown_hooks(None).await;
-        Ok(())
     }
 
     pub(crate) async fn call_before_shutdown_hooks(&self, signal: Option<String>) {
