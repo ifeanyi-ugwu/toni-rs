@@ -62,13 +62,13 @@ impl RpcAdapter for NatsAdapter {
         Ok(())
     }
 
-    fn create(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
         let servers = self.servers.clone();
         let patterns = std::mem::take(&mut self.patterns);
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before create()");
+            .expect("bind() must be called before serve()");
 
         Ok(Box::pin(async move {
             let servers_for_log = servers.join(", ");

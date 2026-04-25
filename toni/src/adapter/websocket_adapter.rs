@@ -6,6 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
+use crate::adapter::server_handle::ServerHandle;
 use crate::http_helpers::RequestPart;
 use crate::websocket::{WsError, WsMessage, WsSink};
 
@@ -94,7 +95,7 @@ impl WsConnectionCallbacks {
 
 /// Interface for standalone (separate-port) WebSocket server adapters.
 ///
-/// Implement `bind`, `create`, and `close`. The framework constructs
+/// Implement `bind`, `listen`, and `close`. The framework constructs
 /// [`WsConnectionCallbacks`] with all lifecycle logic embedded — the adapter never
 /// touches `GatewayWrapper` or `ConnectionManager` directly.
 ///
@@ -103,7 +104,7 @@ impl WsConnectionCallbacks {
 pub trait WebSocketAdapter: Send + Sync + 'static {
     /// Register a gateway path for `port`, storing `callbacks` for each incoming connection.
     ///
-    /// Called once per gateway before `create` is called for the same port.
+    /// Called once per gateway before `listen` is called for the same port.
     /// **Default:** returns error — implement for separate-port support.
     fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
         let _ = (port, path, callbacks);
@@ -112,26 +113,25 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Seal the configuration for `port` and return the running server future.
+    /// Bind the listening socket for `port` and return a handle to the running server.
     ///
     /// Called once per unique port after all `bind` calls for that port. The returned
-    /// future is the accept loop — the framework joins it alongside the HTTP server future
-    /// so no server-level `tokio::spawn` is needed in the adapter.
+    /// future resolves once the socket is bound — `handle.local_addr` reflects the
+    /// actual bound address. Awaiting `handle.serve` runs the accept loop, which the
+    /// framework joins alongside the HTTP server future.
     ///
-    /// TODO: extend to `create(port, hostname, options: WsServerOptions)` once
-    /// gateway-level options (TLS, backlog, keep-alive, etc.) are captured by the
-    /// `#[websocket_gateway]` macro and propagated here.
-    ///
-    /// **Default:** returns error — implement for separate-port support.
-    fn create(
+    /// **Default:** returns a future that immediately errors — implement for separate-port support.
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
         let _ = (port, hostname);
-        Err(anyhow::anyhow!(
-            "This WebSocket adapter does not support separate-port servers"
-        ))
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "This WebSocket adapter does not support separate-port servers"
+            ))
+        })
     }
 
     async fn close(&mut self) -> Result<()> {
@@ -143,11 +143,11 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
 #[async_trait]
 pub(crate) trait ErasedWebSocketAdapter: Send + Sync + 'static {
     fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
     async fn close(&mut self) -> Result<()>;
 }
 
@@ -157,12 +157,12 @@ impl<W: WebSocketAdapter> ErasedWebSocketAdapter for W {
         <W as WebSocketAdapter>::bind(self, port, path, callbacks)
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        <W as WebSocketAdapter>::create(self, port, hostname)
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+        <W as WebSocketAdapter>::listen(self, port, hostname)
     }
 
     async fn close(&mut self) -> Result<()> {

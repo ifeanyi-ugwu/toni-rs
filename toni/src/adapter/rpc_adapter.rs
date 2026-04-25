@@ -56,7 +56,7 @@ impl RpcMessageCallbacks {
 
 /// Interface for RPC transport adapters.
 ///
-/// Implement `bind`, `create`, and optionally `close`. The framework constructs
+/// Implement `bind`, `serve`, and optionally `close`. The framework constructs
 /// [`RpcMessageCallbacks`] with all dispatch logic embedded — the adapter never
 /// touches handler types directly.
 ///
@@ -67,17 +67,17 @@ impl RpcMessageCallbacks {
 pub trait RpcAdapter: Send + Sync + 'static {
     /// Register message handlers for this transport.
     ///
-    /// Called once before `create`. `patterns` is the full set of patterns this
+    /// Called once before `serve`. `patterns` is the full set of patterns this
     /// server handles — adapters that need to subscribe per-pattern (NATS, Redis)
     /// use this list; adapters that read a pattern field from the wire (TCP) can ignore it.
     fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()>;
 
-    /// Seal configuration and return the running server future.
+    /// Seal configuration and return the running receive loop future.
     ///
     /// Called once after `bind`. The returned future is the accept/receive loop —
     /// the framework joins it alongside the HTTP server future so no top-level
     /// spawn is needed in the adapter.
-    fn create(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
 
     async fn close(&mut self) -> Result<()> {
         Ok(())
@@ -88,7 +88,7 @@ pub trait RpcAdapter: Send + Sync + 'static {
 #[async_trait]
 pub(crate) trait ErasedRpcAdapter: Send + Sync + 'static {
     fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()>;
-    fn create(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
     async fn close(&mut self) -> Result<()>;
 }
 
@@ -98,8 +98,8 @@ impl<R: RpcAdapter> ErasedRpcAdapter for R {
         <R as RpcAdapter>::bind(self, patterns, callbacks)
     }
 
-    fn create(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        <R as RpcAdapter>::create(self)
+    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+        <R as RpcAdapter>::serve(self)
     }
 
     async fn close(&mut self) -> Result<()> {

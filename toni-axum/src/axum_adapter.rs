@@ -18,7 +18,7 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, MessageCallbackResult,
+    AdapterContext, Body as ToniBody, MessageCallbackResult, ServerHandle,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
@@ -253,12 +253,12 @@ impl HttpAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
 
@@ -386,26 +386,27 @@ impl HttpAdapter for AxumAdapter {
         let hostname = hostname.to_string();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        Ok(Box::pin(async move {
+        Box::pin(async move {
             let addr = format!("{}:{}", hostname, port);
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!(addr, error = %e, "Failed to bind HTTP port");
-                    std::process::exit(1);
-                }
-            };
-            tracing::info!(addr, "HTTP listening");
-            if let Err(e) = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.wait_for(|v| *v).await;
-                })
-                .await
-            {
-                tracing::error!(error = %e, "HTTP server error");
-                std::process::exit(1);
-            }
-        }))
+            let listener = TcpListener::bind(&addr).await
+                .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+            let local_addr = listener.local_addr()
+                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
+            Ok(ServerHandle {
+                local_addr,
+                serve: Box::pin(async move {
+                    if let Err(e) = axum::serve(listener, router)
+                        .with_graceful_shutdown(async move {
+                            let _ = shutdown_rx.wait_for(|v| *v).await;
+                        })
+                        .await
+                    {
+                        tracing::error!(error = %e, "HTTP server error");
+                        std::process::exit(1);
+                    }
+                }),
+            })
+        })
     }
 
     fn close(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
@@ -425,32 +426,39 @@ impl WebSocketAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let router = self
-            .ws_ports
-            .remove(&port)
-            .ok_or_else(|| anyhow!("No routes registered for WS port {}", port))?;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+        let router = self.ws_ports.remove(&port);
+        let router = match router {
+            Some(r) => r,
+            None => {
+                let port = port;
+                return Box::pin(async move {
+                    Err(anyhow!("No routes registered for WS port {}", port))
+                });
+            }
+        };
         let addr = format!("{}:{}", hostname, port);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        Ok(Box::pin(async move {
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::error!(addr, error = %e, "Failed to bind WebSocket port");
-                    return;
-                }
-            };
-            tracing::info!(addr, "WebSocket listening");
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.wait_for(|v| *v).await;
-                })
-                .await
-                .ok();
-        }))
+        Box::pin(async move {
+            let listener = TcpListener::bind(&addr).await
+                .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let local_addr = listener.local_addr()
+                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
+            Ok(ServerHandle {
+                local_addr,
+                serve: Box::pin(async move {
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(async move {
+                            let _ = shutdown_rx.wait_for(|v| *v).await;
+                        })
+                        .await
+                        .ok();
+                }),
+            })
+        })
     }
 }

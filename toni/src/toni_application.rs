@@ -343,18 +343,21 @@ impl ToniApplication {
                     }
                 }
 
-                // Then seal each port — create returns the server future.
+                // Then bind each unique port — listen resolves once the socket is live.
                 let mut seen: HashSet<u16> = HashSet::new();
                 for (_, gw) in &separate_port {
                     if let Some(ws_port) = gw.get_port() {
                         if seen.insert(ws_port) {
                             if let Some(ws) = &mut self.ws_adapter {
-                                match ws.create(ws_port, &hostname) {
-                                    Ok(fut) => server_futures.push(fut),
+                                match ws.listen(ws_port, &hostname).await {
+                                    Ok(handle) => {
+                                        tracing::info!(addr = %handle.local_addr, "WebSocket listening");
+                                        server_futures.push(handle.serve);
+                                    }
                                     Err(e) => tracing::error!(
                                         port = ws_port,
                                         error = %e,
-                                        "Failed to create WebSocket server"
+                                        "Failed to bind WebSocket server"
                                     ),
                                 }
                             }
@@ -388,7 +391,7 @@ impl ToniApplication {
                 if let Some(rpc) = &mut self.rpc_adapter {
                     if let Err(e) = rpc.bind(&all_patterns, callbacks) {
                         tracing::error!(error = %e, "Failed to bind RPC controllers");
-                    } else if let Ok(fut) = rpc.create() {
+                    } else if let Ok(fut) = rpc.serve() {
                         server_futures.push(fut);
                     }
                 }
@@ -403,14 +406,16 @@ impl ToniApplication {
             } else {
                 "HTTP"
             };
-            tracing::info!(server_type, host = %hostname, port, "Starting server");
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
 
-            match http_adapter.create(port, &hostname, ctx) {
-                Ok(fut) => server_futures.push(fut),
+            match http_adapter.listen(port, &hostname, ctx).await {
+                Ok(handle) => {
+                    tracing::info!(addr = %handle.local_addr, server_type, "HTTP listening");
+                    server_futures.push(handle.serve);
+                }
                 Err(e) => {
-                    tracing::error!(error = %e, "Failed to create HTTP server");
+                    tracing::error!(error = %e, "Failed to bind HTTP server");
                     return;
                 }
             }

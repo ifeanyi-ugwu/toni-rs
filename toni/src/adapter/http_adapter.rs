@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use crate::adapter::WsConnectionCallbacks;
 use crate::adapter::request_handler::RequestHandler;
+use crate::adapter::server_handle::ServerHandle;
 use crate::http_helpers::HttpMethod;
 
 use crate::adapter::adapter_context::AdapterContext;
@@ -27,21 +28,22 @@ pub trait HttpAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Seal configuration and start the server.
+    /// Bind the listening socket and return a handle to the running server.
     ///
-    /// Called once after all `bind` and `bind_ws` calls.  `ctx` carries
-    /// everything the framework provides at serve time — currently the global
-    /// middleware chain (run before the adapter's routing on every request,
-    /// including 404s) and future runtime context as the framework grows.
+    /// Called once after all `bind` and `bind_ws` calls. The returned future
+    /// resolves once the socket is bound — `handle.local_addr` reflects the
+    /// actual bound address (useful when `port` is 0). Awaiting `handle.serve`
+    /// runs the accept loop.
     ///
+    /// `ctx` carries the global middleware chain and future runtime context.
     /// The adapter is responsible for composing `ctx.global_chain` around its
     /// own routing handler so that global middleware runs pre-routing.
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
 
     fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
         async { Ok(()) }
@@ -51,12 +53,12 @@ pub trait HttpAdapter: Send + Sync + 'static {
 pub(crate) trait ErasedHttpAdapter: Send + Sync {
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
     fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
@@ -69,13 +71,13 @@ impl<A: HttpAdapter + 'static> ErasedHttpAdapter for A {
         HttpAdapter::bind_ws(self, path, callbacks)
     }
 
-    fn create(
+    fn listen(
         &mut self,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        HttpAdapter::create(self, port, hostname, ctx)
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+        HttpAdapter::listen(self, port, hostname, ctx)
     }
 
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
