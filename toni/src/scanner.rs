@@ -240,7 +240,7 @@ impl ToniDependenciesScanner {
         let modules_token = self.container.borrow().get_modules_token();
 
         for module_token in &modules_token {
-            self.call_module_init_hook(module_token)?;
+            self.call_module_init_hook(module_token).await?;
         }
 
         self.call_provider_init_hooks(&modules_token).await?;
@@ -253,7 +253,7 @@ impl ToniDependenciesScanner {
         let modules_token = self.container.borrow().get_modules_token();
 
         for module_token in &modules_token {
-            self.call_module_bootstrap_hook(module_token)?;
+            self.call_module_bootstrap_hook(module_token).await?;
         }
 
         self.call_provider_bootstrap_hooks(&modules_token).await?;
@@ -261,7 +261,7 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    fn call_module_bootstrap_hook(&mut self, module_token: &str) -> Result<(), BindError> {
+    async fn call_module_bootstrap_hook(&mut self, module_token: &str) -> Result<(), BindError> {
         {
             let container = self.container.borrow();
             let module_ref = container
@@ -272,6 +272,7 @@ impl ToniDependenciesScanner {
             module_ref
                 .get_metadata()
                 .on_application_bootstrap(self.container.clone())
+                .await
                 .map_err(|source| BindError::HookFailed {
                     module: module_token.to_string(),
                     hook: "on_application_bootstrap",
@@ -328,7 +329,7 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    fn call_module_init_hook(&mut self, module_token: &str) -> Result<(), BindError> {
+    async fn call_module_init_hook(&mut self, module_token: &str) -> Result<(), BindError> {
         {
             let container = self.container.borrow();
             let module_ref = container
@@ -339,6 +340,7 @@ impl ToniDependenciesScanner {
             module_ref
                 .get_metadata()
                 .on_module_init(self.container.clone())
+                .await
                 .map_err(|source| BindError::HookFailed {
                     module: module_token.to_string(),
                     hook: "on_module_init",

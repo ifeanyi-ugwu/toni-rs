@@ -243,7 +243,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         if let Some(method) = hooks.on_module_init {
             methods.push(quote! {
-                fn on_module_init(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
+                async fn on_module_init(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
                     self.#method();
                     Ok(())
                 }
@@ -251,7 +251,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         if let Some(method) = hooks.on_application_bootstrap {
             methods.push(quote! {
-                fn on_application_bootstrap(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
+                async fn on_application_bootstrap(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
                     self.#method();
                     Ok(())
                 }
@@ -320,6 +320,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
+        #[::toni::async_trait(?Send)]
         impl ::toni::traits_helpers::ModuleMetadata for #input_ident {
             fn get_id(&self) -> String {
                 #input_name.to_string()

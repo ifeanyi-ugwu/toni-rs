@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use super::{ControllerFactory, ProviderFactory};
 use crate::middleware::{IntoRoutePattern, RoutePattern};
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
@@ -5,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[async_trait(?Send)]
 pub trait ModuleMetadata {
     fn get_id(&self) -> String;
     fn get_name(&self) -> String;
@@ -24,7 +26,7 @@ pub trait ModuleMetadata {
     ///
     /// This hook allows modules to perform initialization logic that requires
     /// access to the fully-built container (e.g., setting up event listeners, etc.)
-    fn on_module_init(
+    async fn on_module_init(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
     ) -> crate::InitResult {
@@ -39,7 +41,7 @@ pub trait ModuleMetadata {
     /// # Example
     /// ```ignore
     /// impl ModuleMetadata for MyModule {
-    ///     fn on_application_bootstrap(
+    ///     async fn on_application_bootstrap(
     ///         &self,
     ///         _container: Rc<RefCell<ToniContainer>>,
     ///     ) -> toni::InitResult {
@@ -48,7 +50,7 @@ pub trait ModuleMetadata {
     ///     }
     /// }
     /// ```
-    fn on_application_bootstrap(
+    async fn on_application_bootstrap(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
     ) -> crate::InitResult {
@@ -90,6 +92,7 @@ pub struct GlobalModuleWrapper<T: ModuleMetadata> {
     inner: T,
 }
 
+#[async_trait(?Send)]
 impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
     fn get_id(&self) -> String {
         self.inner.get_id()
@@ -123,18 +126,18 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         self.inner.configure_middleware(consumer)
     }
 
-    fn on_module_init(
+    async fn on_module_init(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
     ) -> crate::InitResult {
-        self.inner.on_module_init(container)
+        self.inner.on_module_init(container).await
     }
 
-    fn on_application_bootstrap(
+    async fn on_application_bootstrap(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
     ) -> crate::InitResult {
-        self.inner.on_application_bootstrap(container)
+        self.inner.on_application_bootstrap(container).await
     }
 
     fn before_application_shutdown(
