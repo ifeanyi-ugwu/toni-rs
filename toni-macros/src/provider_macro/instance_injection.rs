@@ -467,14 +467,29 @@ fn generate_request_provider(
     };
 
     let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { let _ = instance.#method().await; }
+        quote! {
+            if let Err(__e) = instance.#method().await {
+                ::toni::tracing::warn!(
+                    error = %__e,
+                    provider = ::std::any::type_name::<#struct_name>(),
+                    hook = "on_module_init",
+                    "lifecycle hook failed",
+                );
+            }
+        }
     });
-    let bootstrap_call = lifecycle_hooks
-        .on_application_bootstrap
-        .as_ref()
-        .map(|method| {
-            quote! { let _ = instance.#method().await; }
-        });
+    let bootstrap_call = lifecycle_hooks.on_application_bootstrap.as_ref().map(|method| {
+        quote! {
+            if let Err(__e) = instance.#method().await {
+                ::toni::tracing::warn!(
+                    error = %__e,
+                    provider = ::std::any::type_name::<#struct_name>(),
+                    hook = "on_application_bootstrap",
+                    "lifecycle hook failed",
+                );
+            }
+        }
+    });
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
@@ -568,14 +583,29 @@ fn generate_transient_provider(
     };
 
     let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { let _ = instance.#method().await; }
+        quote! {
+            if let Err(__e) = instance.#method().await {
+                ::toni::tracing::warn!(
+                    error = %__e,
+                    provider = ::std::any::type_name::<#struct_name>(),
+                    hook = "on_module_init",
+                    "lifecycle hook failed",
+                );
+            }
+        }
     });
-    let bootstrap_call = lifecycle_hooks
-        .on_application_bootstrap
-        .as_ref()
-        .map(|method| {
-            quote! { let _ = instance.#method().await; }
-        });
+    let bootstrap_call = lifecycle_hooks.on_application_bootstrap.as_ref().map(|method| {
+        quote! {
+            if let Err(__e) = instance.#method().await {
+                ::toni::tracing::warn!(
+                    error = %__e,
+                    provider = ::std::any::type_name::<#struct_name>(),
+                    hook = "on_application_bootstrap",
+                    "lifecycle hook failed",
+                );
+            }
+        }
+    });
 
     quote! {
         struct #provider_name {
