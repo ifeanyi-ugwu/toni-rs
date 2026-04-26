@@ -58,83 +58,24 @@ pub trait ModuleMetadata {
 
     // Shutdown lifecycle hooks
 
-    /// Called before application shutdown begins
-    ///
-    /// This hook allows modules to stop accepting new work and prepare for shutdown.
-    /// Receives an optional signal name (e.g., "SIGTERM", "SIGINT").
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn before_application_shutdown(
-    ///         &self,
-    ///         signal: Option<String>,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Module preparing for shutdown (signal: {:?})", signal);
-    ///         // Stop accepting new connections, finish current requests, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
+    /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
     fn before_application_shutdown(
         &self,
         _signal: Option<String>,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
-    /// Called during module destruction
-    ///
-    /// This hook allows modules to cleanup module-specific resources.
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn on_module_destroy(
-    ///         &self,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Cleaning up module resources");
-    ///         // Close connections, flush buffers, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
     fn on_module_destroy(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
-    /// Called during application shutdown
-    ///
-    /// This hook allows modules to perform final cleanup tasks.
-    /// Receives an optional signal name (e.g., "SIGTERM", "SIGINT").
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn on_application_shutdown(
-    ///         &self,
-    ///         signal: Option<String>,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Module final cleanup (signal: {:?})", signal);
-    ///         // Final cleanup, logging, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
+    /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
     fn on_application_shutdown(
         &self,
         _signal: Option<String>,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
     /// Mark this module as global, making its exports available everywhere
     fn global(self) -> GlobalModuleWrapper<Self>
@@ -201,14 +142,14 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         &self,
         signal: Option<String>,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.before_application_shutdown(signal, container)
     }
 
     fn on_module_destroy(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.on_module_destroy(container)
     }
 
@@ -216,7 +157,7 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         &self,
         signal: Option<String>,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.on_application_shutdown(signal, container)
     }
 }

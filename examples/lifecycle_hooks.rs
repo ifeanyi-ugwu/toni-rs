@@ -42,18 +42,20 @@ impl DatabaseService {
     }
 
     #[on_module_init]
-    async fn connect(&self) {
+    async fn connect(&self) -> anyhow::Result<()> {
         println!(
             "DatabaseService::on_module_init() - Connecting to {}",
             self.name
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         println!("DatabaseService connected!");
+        Ok(())
     }
 
     #[on_application_bootstrap]
-    async fn on_ready(&self) {
+    async fn on_ready(&self) -> anyhow::Result<()> {
         println!("DatabaseService::on_application_bootstrap() - Ready to serve requests");
+        Ok(())
     }
 
     #[before_application_shutdown]
@@ -117,8 +119,9 @@ impl UserService {
     }
 
     #[on_module_init]
-    async fn warm_cache(&self) {
+    async fn warm_cache(&self) -> anyhow::Result<()> {
         println!("UserService::on_module_init() - Warming cache");
+        Ok(())
     }
 
     #[on_module_destroy]

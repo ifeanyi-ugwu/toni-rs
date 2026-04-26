@@ -328,15 +328,15 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
 
     if let Some(method) = &hooks.on_module_init {
         methods.push(quote! {
-            async fn on_module_init(&self) {
-                self.instance.#method().await;
+            async fn on_module_init(&self) -> anyhow::Result<()> {
+                self.instance.#method().await
             }
         });
     }
     if let Some(method) = &hooks.on_application_bootstrap {
         methods.push(quote! {
-            async fn on_application_bootstrap(&self) {
-                self.instance.#method().await;
+            async fn on_application_bootstrap(&self) -> anyhow::Result<()> {
+                self.instance.#method().await
             }
         });
     }
@@ -467,13 +467,13 @@ fn generate_request_provider(
     };
 
     let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { instance.#method().await; }
+        quote! { let _ = instance.#method().await; }
     });
     let bootstrap_call = lifecycle_hooks
         .on_application_bootstrap
         .as_ref()
         .map(|method| {
-            quote! { instance.#method().await; }
+            quote! { let _ = instance.#method().await; }
         });
 
     // Request-scoped providers require an active HTTP context. Constructing them
@@ -568,13 +568,13 @@ fn generate_transient_provider(
     };
 
     let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { instance.#method().await; }
+        quote! { let _ = instance.#method().await; }
     });
     let bootstrap_call = lifecycle_hooks
         .on_application_bootstrap
         .as_ref()
         .map(|method| {
-            quote! { instance.#method().await; }
+            quote! { let _ = instance.#method().await; }
         });
 
     quote! {

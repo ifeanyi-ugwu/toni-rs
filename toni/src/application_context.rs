@@ -311,7 +311,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .before_application_shutdown(signal.clone(), self.container.clone());
             }
@@ -335,7 +335,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .on_module_destroy(self.container.clone());
             }
@@ -359,7 +359,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .on_application_shutdown(signal.clone(), self.container.clone());
             }

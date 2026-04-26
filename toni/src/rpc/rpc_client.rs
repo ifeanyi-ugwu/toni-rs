@@ -149,10 +149,8 @@ impl Provider for RpcClient {
         ProviderScope::Singleton
     }
 
-    async fn on_application_bootstrap(&self) {
-        if let Err(e) = self.connect().await {
-            tracing::error!(error = %e, "RpcClient connect failed at bootstrap");
-        }
+    async fn on_application_bootstrap(&self) -> anyhow::Result<()> {
+        self.connect().await.map_err(|e| anyhow::anyhow!(e))
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {

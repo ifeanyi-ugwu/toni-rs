@@ -242,7 +242,7 @@ impl ToniDependenciesScanner {
             self.call_module_init_hook(module_token)?;
         }
 
-        self.call_provider_init_hooks(&modules_token).await;
+        self.call_provider_init_hooks(&modules_token).await?;
 
         Ok(())
     }
@@ -255,7 +255,7 @@ impl ToniDependenciesScanner {
             self.call_module_bootstrap_hook(module_token)?;
         }
 
-        self.call_provider_bootstrap_hooks(&modules_token).await;
+        self.call_provider_bootstrap_hooks(&modules_token).await?;
 
         Ok(())
     }
@@ -276,7 +276,7 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    async fn call_provider_bootstrap_hooks(&self, modules_token: &[String]) {
+    async fn call_provider_bootstrap_hooks(&self, modules_token: &[String]) -> Result<()> {
         for module_token in modules_token {
             {
                 let container = self.container.borrow();
@@ -288,29 +288,30 @@ impl ToniDependenciesScanner {
                         }
 
                         tracing::debug!(module = %module_token, provider = %token, hook = "on_application_bootstrap", "lifecycle hook");
-                        provider.on_application_bootstrap().await;
+                        provider.on_application_bootstrap().await?;
                     }
                 }
             }
 
-            // Deduplicate by type name: each controller struct has N per-route wrappers; we only
-            // call lifecycle hooks once per underlying controller type, not once per route.
             {
                 let container = self.container.borrow();
                 if let Some(module) = container.get_module_by_token(module_token) {
                     let controllers = module._get_controllers_instances();
+                    // Deduplicate by type name: each controller struct has N per-route wrappers; we only
+                    // call lifecycle hooks once per underlying controller type, not once per route.
                     let mut seen: std::collections::HashSet<&'static str> =
                         std::collections::HashSet::new();
                     for (_token, wrapper) in controllers.iter() {
                         let controller = wrapper.get_instance();
                         let type_name = controller.get_controller_type_name();
                         if type_name.is_empty() || seen.insert(type_name) {
-                            controller.on_application_bootstrap().await;
+                            controller.on_application_bootstrap().await?;
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
 
     fn call_module_init_hook(&mut self, module_token: &str) -> Result<()> {
@@ -329,7 +330,7 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    async fn call_provider_init_hooks(&self, modules_token: &[String]) {
+    async fn call_provider_init_hooks(&self, modules_token: &[String]) -> Result<()> {
         for module_token in modules_token {
             {
                 let container = self.container.borrow();
@@ -342,28 +343,29 @@ impl ToniDependenciesScanner {
                         }
 
                         tracing::debug!(module = %module_token, provider = %token, hook = "on_module_init", "lifecycle hook");
-                        provider.on_module_init().await;
+                        provider.on_module_init().await?;
                     }
                 }
             }
 
-            // Deduplicate by type name: each controller struct has N per-route wrappers; we only
-            // call lifecycle hooks once per underlying controller type, not once per route.
             {
                 let container = self.container.borrow();
                 if let Some(module) = container.get_module_by_token(module_token) {
                     let controllers = module._get_controllers_instances();
+                    // Deduplicate by type name: each controller struct has N per-route wrappers; we only
+                    // call lifecycle hooks once per underlying controller type, not once per route.
                     let mut seen: std::collections::HashSet<&'static str> =
                         std::collections::HashSet::new();
                     for (_token, wrapper) in controllers.iter() {
                         let controller = wrapper.get_instance();
                         let type_name = controller.get_controller_type_name();
                         if type_name.is_empty() || seen.insert(type_name) {
-                            controller.on_module_init().await;
+                            controller.on_module_init().await?;
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
 }

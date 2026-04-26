@@ -29,13 +29,15 @@ fn get_log() -> Arc<Mutex<Vec<&'static str>>> {
 #[injectable(pub struct HookedService {})]
 impl HookedService {
     #[on_module_init]
-    async fn on_init(&self) {
+    async fn on_init(&self) -> anyhow::Result<()> {
         get_log().lock().unwrap().push("provider:init");
+        Ok(())
     }
 
     #[on_application_bootstrap]
-    async fn on_bootstrap(&self) {
+    async fn on_bootstrap(&self) -> anyhow::Result<()> {
         get_log().lock().unwrap().push("provider:bootstrap");
+        Ok(())
     }
 }
 

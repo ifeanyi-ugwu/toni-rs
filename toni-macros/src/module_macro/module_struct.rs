@@ -259,25 +259,22 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         if let Some(method) = hooks.on_module_destroy {
             methods.push(quote! {
-                fn on_module_destroy(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> anyhow::Result<()> {
+                fn on_module_destroy(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
                     self.#method();
-                    Ok(())
                 }
             });
         }
         if let Some(method) = hooks.before_application_shutdown {
             methods.push(quote! {
-                fn before_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> anyhow::Result<()> {
+                fn before_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
                     self.#method(signal);
-                    Ok(())
                 }
             });
         }
         if let Some(method) = hooks.on_application_shutdown {
             methods.push(quote! {
-                fn on_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> anyhow::Result<()> {
+                fn on_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
                     self.#method(signal);
-                    Ok(())
                 }
             });
         }
