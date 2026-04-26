@@ -42,7 +42,7 @@ impl DatabaseService {
     }
 
     #[on_module_init]
-    async fn connect(&self) -> anyhow::Result<()> {
+    async fn connect(&self) -> toni::InitResult {
         println!(
             "DatabaseService::on_module_init() - Connecting to {}",
             self.name
@@ -53,7 +53,7 @@ impl DatabaseService {
     }
 
     #[on_application_bootstrap]
-    async fn on_ready(&self) -> anyhow::Result<()> {
+    async fn on_ready(&self) -> toni::InitResult {
         println!("DatabaseService::on_application_bootstrap() - Ready to serve requests");
         Ok(())
     }
@@ -119,7 +119,7 @@ impl UserService {
     }
 
     #[on_module_init]
-    async fn warm_cache(&self) -> anyhow::Result<()> {
+    async fn warm_cache(&self) -> toni::InitResult {
         println!("UserService::on_module_init() - Warming cache");
         Ok(())
     }

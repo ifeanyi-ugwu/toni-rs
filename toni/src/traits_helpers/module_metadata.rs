@@ -27,7 +27,7 @@ pub trait ModuleMetadata {
     fn on_module_init(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         Ok(())
     }
 
@@ -42,9 +42,8 @@ pub trait ModuleMetadata {
     ///     fn on_application_bootstrap(
     ///         &self,
     ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
+    ///     ) -> toni::InitResult {
     ///         println!("Application is ready to start");
-    ///         // Send startup notifications, warm caches, etc.
     ///         Ok(())
     ///     }
     /// }
@@ -52,7 +51,7 @@ pub trait ModuleMetadata {
     fn on_application_bootstrap(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         Ok(())
     }
 
@@ -127,14 +126,14 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
     fn on_module_init(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         self.inner.on_module_init(container)
     }
 
     fn on_application_bootstrap(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         self.inner.on_application_bootstrap(container)
     }
 

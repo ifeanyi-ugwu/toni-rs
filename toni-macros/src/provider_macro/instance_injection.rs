@@ -328,14 +328,14 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
 
     if let Some(method) = &hooks.on_module_init {
         methods.push(quote! {
-            async fn on_module_init(&self) -> anyhow::Result<()> {
+            async fn on_module_init(&self) -> ::toni::InitResult {
                 self.instance.#method().await
             }
         });
     }
     if let Some(method) = &hooks.on_application_bootstrap {
         methods.push(quote! {
-            async fn on_application_bootstrap(&self) -> anyhow::Result<()> {
+            async fn on_application_bootstrap(&self) -> ::toni::InitResult {
                 self.instance.#method().await
             }
         });

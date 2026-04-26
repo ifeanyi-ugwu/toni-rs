@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::Result;
+use crate::error::BindError;
 use event_listener::Event;
 
 use crate::{
@@ -294,7 +295,7 @@ impl ToniApplication {
     /// are started by [`run`](ToniApplication::run). Call `bind()` to get the
     /// bound addresses (e.g. when port 0 was passed and the OS assigned one),
     /// then call `run()` to block until shutdown.
-    pub async fn bind(&mut self) -> Result<BoundAdapters> {
+    pub async fn bind(&mut self) -> Result<BoundAdapters, BindError> {
         self.require_state(AppState::Configuring, "bind")?;
 
         {
@@ -470,9 +471,9 @@ impl ToniApplication {
             serve_futures.push(handle.serve);
             Some(addr)
         } else if serve_futures.is_empty() {
-            anyhow::bail!(
+            return Err(anyhow::anyhow!(
                 "No adapters configured; register at least one adapter before calling bind()"
-            );
+            ).into());
         } else {
             None
         };

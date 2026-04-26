@@ -1,6 +1,7 @@
 #[path = "adapter/mod.rs"]
 pub mod adapter;
 mod application_context;
+mod error;
 pub mod builtin_module;
 pub mod di;
 pub mod errors;
@@ -63,6 +64,7 @@ pub use provider_scope::ProviderScope;
 
 pub use traits_helpers::{HttpContext, ProviderContext, RequestCache};
 
+pub use error::{BindError, InitResult};
 pub use errors::HttpError;
 
 // Re-export trait so users wont have to import manually
