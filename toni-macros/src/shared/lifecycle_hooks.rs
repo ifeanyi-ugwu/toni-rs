@@ -1,3 +1,4 @@
+use proc_macro2::TokenStream;
 use syn::{Ident, ItemImpl};
 
 /// Lifecycle hook methods detected via method-level attributes in the impl block.
@@ -15,12 +16,30 @@ pub struct LifecycleHooks {
 
 impl LifecycleHooks {
     pub fn has_any(&self) -> bool {
-        self.on_module_init.is_some()
-            || self.on_application_bootstrap.is_some()
-            || self.on_module_destroy.is_some()
-            || self.before_application_shutdown.is_some()
-            || self.on_application_shutdown.is_some()
+        self.first_annotated().is_some()
     }
+
+    /// Return the first annotated hook in declaration order, used to anchor compile errors
+    /// at the user's attribute span when the surrounding scope forbids lifecycle hooks.
+    pub fn first_annotated(&self) -> Option<&Ident> {
+        self.on_module_init
+            .as_ref()
+            .or(self.on_application_bootstrap.as_ref())
+            .or(self.on_module_destroy.as_ref())
+            .or(self.before_application_shutdown.as_ref())
+            .or(self.on_application_shutdown.as_ref())
+    }
+}
+
+/// Emit a `compile_error!` at the first annotated hook's span if any hook is present.
+///
+/// Used by request/transient provider generators where lifecycle hooks have no
+/// well-defined firing point. The message argument explains why the surrounding
+/// scope rejects hooks.
+pub fn reject_lifecycle_hooks(hooks: &LifecycleHooks, message: &str) -> Option<TokenStream> {
+    hooks
+        .first_annotated()
+        .map(|ident| syn::Error::new(ident.span(), message).to_compile_error())
 }
 
 /// Scan the impl block for methods annotated with lifecycle hook attributes.

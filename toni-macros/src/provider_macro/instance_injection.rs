@@ -14,7 +14,9 @@ use crate::{
     shared::{
         dependency_info::DependencyInfo,
         enhancer_markers::EnhancerMarkers,
-        lifecycle_hooks::{LifecycleHooks, detect_lifecycle_hooks, strip_lifecycle_attrs},
+        lifecycle_hooks::{
+            LifecycleHooks, detect_lifecycle_hooks, reject_lifecycle_hooks, strip_lifecycle_attrs,
+        },
         scope_parser::ProviderScope,
     },
     utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
@@ -466,18 +468,13 @@ fn generate_request_provider(
         }
     };
 
-    let scope_hook_error = {
-        let hook = lifecycle_hooks.on_module_init.as_ref()
-            .or(lifecycle_hooks.on_application_bootstrap.as_ref());
-        hook.map(|ident| {
-            syn::Error::new(
-                ident.span(),
-                "#[on_module_init] and #[on_application_bootstrap] only fire for singleton-scoped \
-                 providers. Request-scoped providers are created per-request, not at application \
-                 startup, so these hooks never run. Use a singleton provider for startup work.",
-            ).to_compile_error()
-        })
-    };
+    let scope_hook_error = reject_lifecycle_hooks(
+        lifecycle_hooks,
+        "Lifecycle hooks are not supported on request-scoped providers. Request-scoped \
+         instances are created per-request and dropped when the response is sent — they do \
+         not exist at application init or shutdown, so neither startup nor shutdown hooks \
+         can fire. Use a singleton provider if you need lifecycle hooks.",
+    );
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
@@ -570,19 +567,13 @@ fn generate_transient_provider(
         }
     };
 
-    let scope_hook_error = {
-        let hook = lifecycle_hooks.on_module_init.as_ref()
-            .or(lifecycle_hooks.on_application_bootstrap.as_ref());
-        hook.map(|ident| {
-            syn::Error::new(
-                ident.span(),
-                "#[on_module_init] and #[on_application_bootstrap] cannot be used on transient-scoped \
-                 providers. A transient's lifetime is consumer-determined — singleton-shaped when \
-                 consumed by a singleton, request-shaped otherwise — so whether these hooks fire \
-                 depends on the consumer, not the provider. Use a singleton provider for startup work.",
-            ).to_compile_error()
-        })
-    };
+    let scope_hook_error = reject_lifecycle_hooks(
+        lifecycle_hooks,
+        "Lifecycle hooks are not supported on transient-scoped providers. A transient's \
+         lifetime is consumer-determined — singleton-shaped when consumed by a singleton, \
+         request-shaped otherwise — so whether and when hooks fire depends on the consumer, \
+         not the provider. Use a singleton provider if you need lifecycle hooks.",
+    );
 
     quote! {
         #scope_hook_error
