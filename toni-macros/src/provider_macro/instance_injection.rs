@@ -466,30 +466,18 @@ fn generate_request_provider(
         }
     };
 
-    let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! {
-            if let Err(__e) = instance.#method().await {
-                ::toni::tracing::warn!(
-                    error = %__e,
-                    provider = ::std::any::type_name::<#struct_name>(),
-                    hook = "on_module_init",
-                    "lifecycle hook failed",
-                );
-            }
-        }
-    });
-    let bootstrap_call = lifecycle_hooks.on_application_bootstrap.as_ref().map(|method| {
-        quote! {
-            if let Err(__e) = instance.#method().await {
-                ::toni::tracing::warn!(
-                    error = %__e,
-                    provider = ::std::any::type_name::<#struct_name>(),
-                    hook = "on_application_bootstrap",
-                    "lifecycle hook failed",
-                );
-            }
-        }
-    });
+    let scope_hook_error = {
+        let hook = lifecycle_hooks.on_module_init.as_ref()
+            .or(lifecycle_hooks.on_application_bootstrap.as_ref());
+        hook.map(|ident| {
+            syn::Error::new(
+                ident.span(),
+                "#[on_module_init] and #[on_application_bootstrap] only fire for singleton-scoped \
+                 providers. Request-scoped providers are created per-request, not at application \
+                 startup, so these hooks never run. Use a singleton provider for startup work.",
+            ).to_compile_error()
+        })
+    };
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
@@ -506,13 +494,13 @@ fn generate_request_provider(
         }
         #(#field_resolutions)*
         let instance = #struct_instantiation;
-        #init_call
-        #bootstrap_call
         __http_ctx.cache.insert(instance.clone());
         Box::new(instance)
     };
 
     quote! {
+        #scope_hook_error
+
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
                 String,
@@ -582,32 +570,22 @@ fn generate_transient_provider(
         }
     };
 
-    let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! {
-            if let Err(__e) = instance.#method().await {
-                ::toni::tracing::warn!(
-                    error = %__e,
-                    provider = ::std::any::type_name::<#struct_name>(),
-                    hook = "on_module_init",
-                    "lifecycle hook failed",
-                );
-            }
-        }
-    });
-    let bootstrap_call = lifecycle_hooks.on_application_bootstrap.as_ref().map(|method| {
-        quote! {
-            if let Err(__e) = instance.#method().await {
-                ::toni::tracing::warn!(
-                    error = %__e,
-                    provider = ::std::any::type_name::<#struct_name>(),
-                    hook = "on_application_bootstrap",
-                    "lifecycle hook failed",
-                );
-            }
-        }
-    });
+    let scope_hook_error = {
+        let hook = lifecycle_hooks.on_module_init.as_ref()
+            .or(lifecycle_hooks.on_application_bootstrap.as_ref());
+        hook.map(|ident| {
+            syn::Error::new(
+                ident.span(),
+                "#[on_module_init] and #[on_application_bootstrap] only fire for singleton-scoped \
+                 providers. Transient providers are created on every resolution, not at application \
+                 startup, so these hooks never run. Use a singleton provider for startup work.",
+            ).to_compile_error()
+        })
+    };
 
     quote! {
+        #scope_hook_error
+
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
                 String,
@@ -625,8 +603,6 @@ fn generate_transient_provider(
                 #(#field_resolutions)*
 
                 let instance = #struct_instantiation;
-                #init_call
-                #bootstrap_call
 
                 Box::new(instance)
             }
