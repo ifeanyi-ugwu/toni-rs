@@ -1,10 +1,6 @@
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::Duration;
 use toni::module_helpers::module_enum::ModuleDefinition;
 use toni::toni_factory::ToniFactory;
 use toni_axum::AxumAdapter;
-
-static PORT_COUNTER: AtomicU16 = AtomicU16::new(30000);
 
 /// Install a tracing subscriber that reads `RUST_LOG` (e.g. `RUST_LOG=toni=debug`).
 /// Safe to call multiple times — only the first call takes effect.
@@ -28,29 +24,29 @@ impl TestServer {
     pub async fn start(module: ModuleDefinition) -> Self {
         init_tracing();
 
-        let port = PORT_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let base_url = format!("http://127.0.0.1:{}", port);
+        let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
         let local = tokio::task::LocalSet::new();
-
         local.spawn_local(async move {
             let mut app = ToniFactory::create(module).await;
-            app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
+            app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
                 .unwrap();
-            let _ = app.start().await;
+            let bound = app.bind().await.unwrap();
+            let addr = bound.http.expect("HTTP adapter not bound");
+            let _ = addr_tx.send(addr);
+            app.run().await;
         });
 
         tokio::task::spawn_local(async move {
             local.await;
         });
 
-        let client = reqwest::Client::new();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let addr = addr_rx.await.unwrap();
 
         Self {
-            port,
-            base_url,
-            client,
+            port: addr.port(),
+            base_url: format!("http://{}", addr),
+            client: reqwest::Client::new(),
         }
     }
 

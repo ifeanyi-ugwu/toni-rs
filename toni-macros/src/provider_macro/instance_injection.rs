@@ -14,7 +14,9 @@ use crate::{
     shared::{
         dependency_info::DependencyInfo,
         enhancer_markers::EnhancerMarkers,
-        lifecycle_hooks::{LifecycleHooks, detect_lifecycle_hooks, strip_lifecycle_attrs},
+        lifecycle_hooks::{
+            LifecycleHooks, detect_lifecycle_hooks, reject_lifecycle_hooks, strip_lifecycle_attrs,
+        },
         scope_parser::ProviderScope,
     },
     utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
@@ -328,15 +330,15 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
 
     if let Some(method) = &hooks.on_module_init {
         methods.push(quote! {
-            async fn on_module_init(&self) {
-                self.instance.#method().await;
+            async fn on_module_init(&self) -> ::toni::InitResult {
+                self.instance.#method().await
             }
         });
     }
     if let Some(method) = &hooks.on_application_bootstrap {
         methods.push(quote! {
-            async fn on_application_bootstrap(&self) {
-                self.instance.#method().await;
+            async fn on_application_bootstrap(&self) -> ::toni::InitResult {
+                self.instance.#method().await
             }
         });
     }
@@ -466,15 +468,13 @@ fn generate_request_provider(
         }
     };
 
-    let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { instance.#method().await; }
-    });
-    let bootstrap_call = lifecycle_hooks
-        .on_application_bootstrap
-        .as_ref()
-        .map(|method| {
-            quote! { instance.#method().await; }
-        });
+    let scope_hook_error = reject_lifecycle_hooks(
+        lifecycle_hooks,
+        "Lifecycle hooks are not supported on request-scoped providers. Request-scoped \
+         instances are created per-request and dropped when the response is sent — they do \
+         not exist at application init or shutdown, so neither startup nor shutdown hooks \
+         can fire. Use a singleton provider if you need lifecycle hooks.",
+    );
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
@@ -491,13 +491,13 @@ fn generate_request_provider(
         }
         #(#field_resolutions)*
         let instance = #struct_instantiation;
-        #init_call
-        #bootstrap_call
         __http_ctx.cache.insert(instance.clone());
         Box::new(instance)
     };
 
     quote! {
+        #scope_hook_error
+
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
                 String,
@@ -567,17 +567,17 @@ fn generate_transient_provider(
         }
     };
 
-    let init_call = lifecycle_hooks.on_module_init.as_ref().map(|method| {
-        quote! { instance.#method().await; }
-    });
-    let bootstrap_call = lifecycle_hooks
-        .on_application_bootstrap
-        .as_ref()
-        .map(|method| {
-            quote! { instance.#method().await; }
-        });
+    let scope_hook_error = reject_lifecycle_hooks(
+        lifecycle_hooks,
+        "Lifecycle hooks are not supported on transient-scoped providers. A transient's \
+         lifetime is consumer-determined — singleton-shaped when consumed by a singleton, \
+         request-shaped otherwise — so whether and when hooks fire depends on the consumer, \
+         not the provider. Use a singleton provider if you need lifecycle hooks.",
+    );
 
     quote! {
+        #scope_hook_error
+
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
                 String,
@@ -595,8 +595,6 @@ fn generate_transient_provider(
                 #(#field_resolutions)*
 
                 let instance = #struct_instantiation;
-                #init_call
-                #bootstrap_call
 
                 Box::new(instance)
             }

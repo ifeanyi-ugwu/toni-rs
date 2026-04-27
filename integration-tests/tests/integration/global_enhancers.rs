@@ -278,7 +278,7 @@ async fn test_three_level_enhancer_hierarchy() {
         let mut app = factory.create_with(TestModule::module_definition()).await;
         app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
             .unwrap();
-        app.start().await;
+        app.start().await.unwrap();
     });
 
     local

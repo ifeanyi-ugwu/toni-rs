@@ -63,8 +63,8 @@ pub trait Controller: Send + Sync {
         ""
     }
 
-    async fn on_module_init(&self) {}
-    async fn on_application_bootstrap(&self) {}
+    async fn on_module_init(&self) -> crate::InitResult { Ok(()) }
+    async fn on_application_bootstrap(&self) -> crate::InitResult { Ok(()) }
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_module_destroy(&self) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}

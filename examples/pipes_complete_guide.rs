@@ -544,7 +544,7 @@ impl ExamplesController {
 impl ExamplesModule {}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let mut app = toni::ToniFactory::create(ExamplesModule).await;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), 3000, "127.0.0.1")
@@ -569,7 +569,8 @@ async fn main() {
     println!();
     println!("💡 TIP: Check the source code comments for NestJS comparisons!");
 
-    app.start().await
+    app.start().await?;
+    Ok(())
 }
 
 // ============================================================================

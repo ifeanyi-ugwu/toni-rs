@@ -94,7 +94,7 @@ impl UploadController {
 impl AppModule {}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🚀 toni file upload example\n");
     println!("  POST http://127.0.0.1:3000/upload   — upload a file field + description");
     println!("  POST http://127.0.0.1:3000/inspect  — echo back all multipart fields");
@@ -110,5 +110,6 @@ async fn main() {
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

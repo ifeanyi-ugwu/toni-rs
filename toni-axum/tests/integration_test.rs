@@ -60,7 +60,7 @@ async fn test_axum_e2e() {
         let mut app = ToniFactory::create(TestModule::module_definition()).await;
         app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
             .unwrap();
-        let _ = app.start().await;
+        app.start().await.unwrap();
     });
 
     // Run tests within the LocalSet

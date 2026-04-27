@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use super::{ControllerFactory, ProviderFactory};
 use crate::middleware::{IntoRoutePattern, RoutePattern};
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
@@ -5,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[async_trait(?Send)]
 pub trait ModuleMetadata {
     fn get_id(&self) -> String;
     fn get_name(&self) -> String;
@@ -24,10 +26,10 @@ pub trait ModuleMetadata {
     ///
     /// This hook allows modules to perform initialization logic that requires
     /// access to the fully-built container (e.g., setting up event listeners, etc.)
-    fn on_module_init(
+    async fn on_module_init(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         Ok(())
     }
 
@@ -39,102 +41,42 @@ pub trait ModuleMetadata {
     /// # Example
     /// ```ignore
     /// impl ModuleMetadata for MyModule {
-    ///     fn on_application_bootstrap(
+    ///     async fn on_application_bootstrap(
     ///         &self,
     ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
+    ///     ) -> toni::InitResult {
     ///         println!("Application is ready to start");
-    ///         // Send startup notifications, warm caches, etc.
     ///         Ok(())
     ///     }
     /// }
     /// ```
-    fn on_application_bootstrap(
+    async fn on_application_bootstrap(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) -> crate::InitResult {
         Ok(())
     }
 
     // Shutdown lifecycle hooks
 
-    /// Called before application shutdown begins
-    ///
-    /// This hook allows modules to stop accepting new work and prepare for shutdown.
-    /// Receives an optional signal name (e.g., "SIGTERM", "SIGINT").
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn before_application_shutdown(
-    ///         &self,
-    ///         signal: Option<String>,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Module preparing for shutdown (signal: {:?})", signal);
-    ///         // Stop accepting new connections, finish current requests, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
+    /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
     fn before_application_shutdown(
         &self,
         _signal: Option<String>,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
-    /// Called during module destruction
-    ///
-    /// This hook allows modules to cleanup module-specific resources.
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn on_module_destroy(
-    ///         &self,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Cleaning up module resources");
-    ///         // Close connections, flush buffers, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
     fn on_module_destroy(
         &self,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
-    /// Called during application shutdown
-    ///
-    /// This hook allows modules to perform final cleanup tasks.
-    /// Receives an optional signal name (e.g., "SIGTERM", "SIGINT").
-    ///
-    /// # Example
-    /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     fn on_application_shutdown(
-    ///         &self,
-    ///         signal: Option<String>,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> anyhow::Result<()> {
-    ///         println!("Module final cleanup (signal: {:?})", signal);
-    ///         // Final cleanup, logging, etc.
-    ///         Ok(())
-    ///     }
-    /// }
-    /// ```
+    /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
     fn on_application_shutdown(
         &self,
         _signal: Option<String>,
         _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
+    ) {}
 
     /// Mark this module as global, making its exports available everywhere
     fn global(self) -> GlobalModuleWrapper<Self>
@@ -150,6 +92,7 @@ pub struct GlobalModuleWrapper<T: ModuleMetadata> {
     inner: T,
 }
 
+#[async_trait(?Send)]
 impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
     fn get_id(&self) -> String {
         self.inner.get_id()
@@ -183,32 +126,32 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         self.inner.configure_middleware(consumer)
     }
 
-    fn on_module_init(
+    async fn on_module_init(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        self.inner.on_module_init(container)
+    ) -> crate::InitResult {
+        self.inner.on_module_init(container).await
     }
 
-    fn on_application_bootstrap(
+    async fn on_application_bootstrap(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
-        self.inner.on_application_bootstrap(container)
+    ) -> crate::InitResult {
+        self.inner.on_application_bootstrap(container).await
     }
 
     fn before_application_shutdown(
         &self,
         signal: Option<String>,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.before_application_shutdown(signal, container)
     }
 
     fn on_module_destroy(
         &self,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.on_module_destroy(container)
     }
 
@@ -216,7 +159,7 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         &self,
         signal: Option<String>,
         container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> anyhow::Result<()> {
+    ) {
         self.inner.on_application_shutdown(signal, container)
     }
 }

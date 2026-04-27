@@ -299,29 +299,28 @@ async fn gateway_injected_into_rest_controller() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn websocket_separate_port_end_to_end() {
-    use std::time::Duration;
-
-    // HTTP server on a throw-away port; WS gateway listens separately on 19001.
-    static HTTP_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(31000);
-    let http_port = HTTP_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // HTTP server on OS-assigned port; WS gateway listens separately on 19001.
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(PingModule::module_definition()).await;
-        app.use_http_adapter(AxumAdapter::new(), http_port, "127.0.0.1")
+        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
             .unwrap();
-        app.start().await;
+        let bound = app.bind().await.unwrap();
+        let ws_addr = bound.websocket.into_iter().next().expect("WS adapter not bound");
+        let _ = addr_tx.send(ws_addr);
+        app.run().await;
     });
     tokio::task::spawn_local(async move {
         local.await;
     });
 
-    // Give both servers (HTTP + separate WS) time to bind.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let ws_addr = addr_rx.await.unwrap();
 
-    let (mut ws, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:19001/ws")
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", ws_addr))
         .await
         .expect("should connect to separate-port WS server");
 
@@ -335,41 +334,37 @@ async fn websocket_separate_port_end_to_end() {
     assert_eq!(reply.to_text().unwrap(), "pong");
 }
 
-/// app.close() must stop the tungstenite server on port 19001.
+/// ShutdownHandle must stop the tungstenite server.
 /// Verifies via a real TCP connect attempt that the port is no longer listening.
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn separate_port_close_stops_ws_server() {
-    use std::time::Duration;
-    use tokio::sync::oneshot;
-
-    static HTTP_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(32000);
-    let http_port = HTTP_PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-    let (close_tx, close_rx) = oneshot::channel::<()>();
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(PingModule::module_definition()).await;
-        app.use_http_adapter(AxumAdapter::new(), http_port, "127.0.0.1")
+        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
             .unwrap();
-        tokio::select! {
-            _ = app.start() => {}
-            _ = close_rx => {
-                app.close().await.unwrap();
-            }
-        }
+        let bound = app.bind().await.unwrap();
+        let http_addr = bound.http.expect("HTTP adapter not bound");
+        let ws_addr = bound.websocket.into_iter().next().expect("WS adapter not bound");
+        let _ = addr_tx.send((http_addr, ws_addr));
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (http_addr, ws_addr) = addr_rx.await.unwrap();
+    let shutdown = shutdown_rx.await.unwrap();
 
-    // Verify port 19001 is up and handling messages before shutdown.
-    let (mut ws, _) = tokio_tungstenite::connect_async("ws://127.0.0.1:19001/ws")
+    // Verify the WS server is up and handling messages before shutdown.
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", ws_addr))
         .await
-        .expect("WS server should be reachable before close");
+        .expect("WS server should be reachable before shutdown");
 
     ws.send(tokio_tungstenite::tungstenite::Message::Text(
         r#"{"event": "ping"}"#.to_string().into(),
@@ -379,21 +374,21 @@ async fn separate_port_close_stops_ws_server() {
     let reply = ws.next().await.unwrap().unwrap();
     assert_eq!(reply.to_text().unwrap(), "pong");
 
-    // Trigger graceful shutdown.
-    close_tx.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Trigger graceful shutdown and wait for completion.
+    shutdown.shutdown();
+    shutdown.completed().await;
 
-    // Port 19001 must refuse new connections.
-    let result = tokio_tungstenite::connect_async("ws://127.0.0.1:19001/ws").await;
+    // WS port must refuse new connections.
+    let result = tokio_tungstenite::connect_async(format!("ws://{}/ws", ws_addr)).await;
     assert!(
         result.is_err(),
-        "WS server on port 19001 should be stopped after app.close()"
+        "WS server should be stopped after shutdown"
     );
 
     // HTTP server must also be stopped.
-    let result = reqwest::get(format!("http://127.0.0.1:{}/", http_port)).await;
+    let result = reqwest::get(format!("http://{}/", http_addr)).await;
     assert!(
         result.is_err(),
-        "HTTP server should be stopped after app.close()"
+        "HTTP server should be stopped after shutdown"
     );
 }

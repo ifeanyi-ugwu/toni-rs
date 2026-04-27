@@ -85,7 +85,7 @@ impl AppModule {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🔐 toni auth middleware\n");
     println!("  GET http://127.0.0.1:3000/api/public   (no token needed)");
     println!("  GET http://127.0.0.1:3000/api/profile  (requires: Authorization: Bearer secret)");
@@ -98,5 +98,6 @@ async fn main() {
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

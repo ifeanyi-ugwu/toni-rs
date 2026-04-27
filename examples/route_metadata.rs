@@ -164,6 +164,6 @@ fn main() {
         let mut app = ToniFactory::create(AppModule::module_definition()).await;
         app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
             .unwrap();
-        app.start().await;
+        app.start().await.expect("failed to start");
     });
 }

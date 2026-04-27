@@ -312,7 +312,7 @@ impl ChatGateway {
 struct ChatModule;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🚀 Starting WebSocket chat server with rooms...\n");
 
     let mut app = ToniFactory::new().create_with(ChatModule).await;
@@ -331,5 +331,6 @@ async fn main() {
     println!(r#"  {{"event": "dm", "data": {{"to": "CLIENT_ID", "text": "Secret!"}}}}"#);
     println!(r#"  {{"event": "leave", "data": {{"room": "lobby"}}}}"#);
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

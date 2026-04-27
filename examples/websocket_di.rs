@@ -106,7 +106,7 @@ impl ChatGateway {
 struct ChatModule;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     println!("🚀 WebSocket DI Example - Automatic Gateway Discovery\n");
     println!("This example demonstrates:");
     println!("  • Zero manual wiring - framework auto-discovers gateways");
@@ -140,5 +140,6 @@ async fn main() {
 
     println!("✅ Server ready - guards and interceptors active!\n");
 
-    app.start().await;
+    app.start().await?;
+    Ok(())
 }

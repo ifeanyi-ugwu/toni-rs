@@ -818,21 +818,21 @@ fn generate_singleton_controller_wrapper(
 
         if let Some(method) = &lifecycle_hooks.on_module_init {
             methods.push(quote! {
-                async fn on_module_init(&self) {
+                async fn on_module_init(&self) -> ::toni::InitResult {
                     let controller = self.instance
                         .downcast_ref::<#struct_name>()
                         .expect("Failed to downcast controller instance");
-                    controller.#method().await;
+                    controller.#method().await
                 }
             });
         }
         if let Some(method) = &lifecycle_hooks.on_application_bootstrap {
             methods.push(quote! {
-                async fn on_application_bootstrap(&self) {
+                async fn on_application_bootstrap(&self) -> ::toni::InitResult {
                     let controller = self.instance
                         .downcast_ref::<#struct_name>()
                         .expect("Failed to downcast controller instance");
-                    controller.#method().await;
+                    controller.#method().await
                 }
             });
         }

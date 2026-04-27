@@ -2,12 +2,18 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     future::Future,
+    net::SocketAddr,
     pin::Pin,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::Result;
+use crate::error::BindError;
+use event_listener::Event;
 
 use crate::{
     adapter::{
@@ -20,11 +26,106 @@ use crate::{
     router::RoutesResolver,
     rpc::{RpcContext, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
-        BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError,
-        WsHandlerOutput, WsMessage,
-        helpers::create_client_from_parts,
+        BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError, WsHandlerOutput,
+        WsMessage, helpers::create_client_from_parts,
     },
 };
+
+struct ShutdownInner {
+    shutdown_flag: AtomicBool,
+    shutdown_event: Event,
+    completed_flag: AtomicBool,
+    completed_event: Event,
+}
+
+/// A cloneable handle for signalling and observing application shutdown.
+///
+/// Created by [`ToniApplication::shutdown_handle`] and usable from any task.
+/// Calling [`shutdown`](ShutdownHandle::shutdown) is idempotent — multiple
+/// callers are safe.
+#[derive(Clone)]
+pub struct ShutdownHandle {
+    inner: Arc<ShutdownInner>,
+}
+
+impl ShutdownHandle {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(ShutdownInner {
+                shutdown_flag: AtomicBool::new(false),
+                shutdown_event: Event::new(),
+                completed_flag: AtomicBool::new(false),
+                completed_event: Event::new(),
+            }),
+        }
+    }
+
+    /// Signal the application to shut down. Safe to call from multiple tasks;
+    /// only the first call takes effect.
+    pub fn shutdown(&self) {
+        if !self.inner.shutdown_flag.swap(true, Ordering::SeqCst) {
+            self.inner.shutdown_event.notify(usize::MAX);
+        }
+    }
+
+    /// Returns `true` if shutdown has been signalled.
+    pub fn is_shutdown(&self) -> bool {
+        self.inner.shutdown_flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once [`shutdown`](ShutdownHandle::shutdown) has been called.
+    pub async fn wait_for_shutdown(&self) {
+        loop {
+            if self.inner.shutdown_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            let listener = self.inner.shutdown_event.listen();
+            if self.inner.shutdown_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            listener.await;
+        }
+    }
+
+    /// Resolves once [`run`](ToniApplication::run) has returned — i.e. all
+    /// adapters are closed and lifecycle hooks have completed.
+    pub async fn completed(&self) {
+        loop {
+            if self.inner.completed_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            let listener = self.inner.completed_event.listen();
+            if self.inner.completed_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            listener.await;
+        }
+    }
+
+    fn mark_completed(&self) {
+        self.inner.completed_flag.store(true, Ordering::SeqCst);
+        self.inner.completed_event.notify(usize::MAX);
+    }
+}
+
+/// The addresses of all bound adapters, returned by [`ToniApplication::bind`].
+pub struct BoundAdapters {
+    /// The address the HTTP adapter is listening on, or `None` if no HTTP
+    /// adapter was registered.
+    pub http: Option<SocketAddr>,
+    /// One address per unique separate-port WebSocket listener that was bound.
+    pub websocket: Vec<SocketAddr>,
+}
+
+#[derive(Debug, PartialEq)]
+enum AppState {
+    Configuring,
+    Bound,
+}
+
+struct BoundState {
+    serve_futures: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+}
 
 pub struct ToniApplication {
     http_adapter: Option<Box<dyn ErasedHttpAdapter>>,
@@ -36,6 +137,9 @@ pub struct ToniApplication {
     ws_adapter: Option<Box<dyn ErasedWebSocketAdapter>>,
     rpc_adapter: Option<Box<dyn ErasedRpcAdapter>>,
     rpc_controllers: Vec<Arc<RpcControllerWrapper>>,
+    state: AppState,
+    bound: Option<BoundState>,
+    shutdown: ShutdownHandle,
 }
 
 impl ToniApplication {
@@ -50,7 +154,21 @@ impl ToniApplication {
             ws_adapter: None,
             rpc_adapter: None,
             rpc_controllers: Vec::new(),
+            state: AppState::Configuring,
+            bound: None,
+            shutdown: ShutdownHandle::new(),
         }
+    }
+
+    fn require_state(&self, expected: AppState, op: &str) -> Result<()> {
+        if self.state != expected {
+            anyhow::bail!(
+                "{op}() cannot be called in state {:?}; expected {:?}",
+                self.state,
+                expected
+            );
+        }
+        Ok(())
     }
 
     pub fn use_http_adapter<A: HttpAdapter + 'static>(
@@ -59,6 +177,7 @@ impl ToniApplication {
         port: u16,
         hostname: &str,
     ) -> Result<&mut Self> {
+        self.require_state(AppState::Configuring, "use_http_adapter")?;
         let mut boxed = Box::new(adapter) as Box<dyn ErasedHttpAdapter>;
         self.routes_resolver.resolve(boxed.as_mut())?;
         self.http_adapter = Some(boxed);
@@ -68,11 +187,12 @@ impl ToniApplication {
         Ok(self)
     }
 
-    /// Gateway discovery is deferred to `start()` to allow adapter configuration beforehand.
+    /// Gateway discovery is deferred to `bind()` to allow adapter configuration beforehand.
     pub fn use_websocket_adapter<A>(&mut self, adapter: A) -> Result<&mut Self>
     where
         A: WebSocketAdapter,
     {
+        self.require_state(AppState::Configuring, "use_websocket_adapter")?;
         self.ws_adapter = Some(Box::new(adapter) as Box<dyn ErasedWebSocketAdapter>);
         tracing::debug!("WebSocket adapter registered");
         Ok(self)
@@ -82,9 +202,19 @@ impl ToniApplication {
     where
         A: RpcAdapter,
     {
+        self.require_state(AppState::Configuring, "use_rpc_adapter")?;
         self.rpc_adapter = Some(Box::new(adapter) as Box<dyn ErasedRpcAdapter>);
         tracing::debug!("RPC adapter registered");
         Ok(self)
+    }
+
+    /// Returns a cloneable handle for triggering and observing shutdown.
+    ///
+    /// The handle is valid immediately after `new()` — no need to wait for
+    /// `bind()`. Calling [`ShutdownHandle::shutdown`] before `bind()` is a
+    /// no-op (nothing is listening yet).
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        self.shutdown.clone()
     }
 
     fn discover_gateways(&mut self) -> Result<()> {
@@ -159,99 +289,24 @@ impl ToniApplication {
         self.context.resolve_by_token::<T>(token, parts).await
     }
 
-    pub async fn close(&mut self) -> Result<()> {
-        tracing::info!("Application shutting down");
-        self.call_module_destroy_hooks().await;
-        self.call_before_shutdown_hooks(None).await;
-        self.call_shutdown_hooks(None).await;
+    /// Bind all registered adapters and run bootstrap hooks.
+    ///
+    /// Sockets are live and listening when this returns. The actual serve loops
+    /// are started by [`run`](ToniApplication::run). Call `bind()` to get the
+    /// bound addresses (e.g. when port 0 was passed and the OS assigned one),
+    /// then call `run()` to block until shutdown.
+    pub async fn bind(&mut self) -> Result<BoundAdapters, BindError> {
+        self.require_state(AppState::Configuring, "bind")?;
 
-        if let Ok(bs) = self.get::<BroadcastService>().await {
-            bs.close_all().await;
-        }
-
-        if let Some(http) = &mut self.http_adapter {
-            let _ = http.close().await;
-        }
-
-        if let Some(ws) = &mut self.ws_adapter {
-            let _ = ws.close().await;
-        }
-
-        if let Some(rpc) = &mut self.rpc_adapter {
-            let _ = rpc.close().await;
-        }
-
-        tracing::info!("Application shutdown complete");
-        Ok(())
-    }
-
-    async fn call_before_shutdown_hooks(&self, signal: Option<String>) {
-        self.context
-            .call_before_shutdown_hooks(signal.clone())
-            .await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
-                    controller.before_application_shutdown(signal.clone()).await;
-                }
-            }
-        }
-    }
-
-    async fn call_module_destroy_hooks(&self) {
-        self.context.call_module_destroy_hooks().await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
-                    controller.on_module_destroy().await;
-                }
-            }
-        }
-    }
-
-    async fn call_shutdown_hooks(&self, signal: Option<String>) {
-        self.context.call_shutdown_hooks(signal.clone()).await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
-                    controller.on_application_shutdown(signal.clone()).await;
-                }
-            }
-        }
-    }
-
-    pub async fn start(&mut self) {
         {
             let mut scanner = crate::scanner::ToniDependenciesScanner::new(
                 self.routes_resolver.container.clone(),
             );
-            if let Err(e) = scanner.call_bootstrap_hooks().await {
-                tracing::error!(error = %e, "Bootstrap hooks failed");
-            }
+            scanner.call_bootstrap_hooks().await?;
         }
 
-        if let Err(e) = self.discover_gateways() {
-            tracing::error!(error = %e, "WebSocket gateway discovery failed");
-        }
-
-        if let Err(e) = self.discover_rpc_controllers() {
-            tracing::error!(error = %e, "RPC controller discovery failed");
-        }
+        self.discover_gateways()?;
+        self.discover_rpc_controllers()?;
 
         let http_port = self.http_port;
         let hostname = self
@@ -306,7 +361,8 @@ impl ToniApplication {
             }
         }
 
-        let mut server_futures: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> = vec![];
+        let mut serve_futures: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> = vec![];
+        let mut ws_addrs: Vec<SocketAddr> = vec![];
 
         // Wire separate-port gateways into the standalone WS adapter.
         if !separate_port.is_empty() {
@@ -352,7 +408,8 @@ impl ToniApplication {
                                 match ws.listen(ws_port, &hostname).await {
                                     Ok(handle) => {
                                         tracing::info!(addr = %handle.local_addr, "WebSocket listening");
-                                        server_futures.push(handle.serve);
+                                        ws_addrs.push(handle.local_addr);
+                                        serve_futures.push(handle.serve);
                                     }
                                     Err(e) => tracing::error!(
                                         port = ws_port,
@@ -392,13 +449,13 @@ impl ToniApplication {
                     if let Err(e) = rpc.bind(&all_patterns, callbacks) {
                         tracing::error!(error = %e, "Failed to bind RPC controllers");
                     } else if let Ok(fut) = rpc.serve() {
-                        server_futures.push(fut);
+                        serve_futures.push(fut);
                     }
                 }
             }
         }
 
-        if let Some(http_adapter) = &mut self.http_adapter {
+        let http_addr = if let Some(http_adapter) = &mut self.http_adapter {
             let port = self.http_port.unwrap();
             let has_same_port_ws = !same_port.is_empty();
             let server_type = if has_same_port_ws {
@@ -408,25 +465,162 @@ impl ToniApplication {
             };
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
+            let handle = http_adapter.listen(port, &hostname, ctx).await?;
+            tracing::info!(addr = %handle.local_addr, server_type, "HTTP listening");
+            let addr = handle.local_addr;
+            serve_futures.push(handle.serve);
+            Some(addr)
+        } else if serve_futures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No adapters configured; register at least one adapter before calling bind()"
+            ).into());
+        } else {
+            None
+        };
 
-            match http_adapter.listen(port, &hostname, ctx).await {
-                Ok(handle) => {
-                    tracing::info!(addr = %handle.local_addr, server_type, "HTTP listening");
-                    server_futures.push(handle.serve);
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to bind HTTP server");
-                    return;
-                }
+        self.state = AppState::Bound;
+        self.bound = Some(BoundState { serve_futures });
+
+        Ok(BoundAdapters {
+            http: http_addr,
+            websocket: ws_addrs,
+        })
+    }
+
+    /// Bind all adapters and drive the serve loops until shutdown.
+    ///
+    /// Convenience wrapper over [`bind`](ToniApplication::bind) +
+    /// [`run`](ToniApplication::run). Use this when you don't need the bound
+    /// address; use `bind()` + `run()` explicitly when you do (dynamic ports,
+    /// tests, readiness probes).
+    pub async fn start(mut self) -> Result<()> {
+        self.bind().await?;
+        self.run().await;
+        Ok(())
+    }
+
+    /// Drive the serve loops until all adapters exit or [`ShutdownHandle::shutdown`] is called.
+    ///
+    /// Consumes `self`. On a shutdown signal, adapters are closed first so
+    /// in-flight requests can drain before lifecycle hooks run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`bind`](ToniApplication::bind). Use
+    /// [`start`](ToniApplication::start) to bind and run in one step.
+    pub async fn run(mut self) {
+        let bound = self
+            .bound
+            .take()
+            .expect("run() called before bind() — call bind() first or use start()");
+
+        let serve_all = Box::pin(futures::future::join_all(bound.serve_futures));
+        let shutdown = self.shutdown.clone();
+        let shutdown_wait = Box::pin(async move { shutdown.wait_for_shutdown().await });
+
+        match futures::future::select(serve_all, shutdown_wait).await {
+            futures::future::Either::Left(_) => {
+                // Serve loops exited naturally — run lifecycle hooks then close adapters.
+                self.close().await;
             }
-        } else if server_futures.is_empty() {
-            tracing::error!(
-                "No adapters configured; register at least one adapter before calling start()"
-            );
-            return;
+            futures::future::Either::Right((_, serve_all)) => {
+                // Shutdown signalled — close adapters so accept loops exit, drain,
+                // then run lifecycle hooks.
+                tracing::info!("Application shutting down");
+                self.close_adapters().await;
+                serve_all.await;
+                self.close_hooks().await;
+                tracing::info!("Application shutdown complete");
+            }
         }
 
-        futures::future::join_all(server_futures).await;
+        self.shutdown.mark_completed();
+    }
+
+    /// Immediately run lifecycle hooks and close all adapters.
+    ///
+    /// Prefer triggering shutdown via [`ShutdownHandle::shutdown`] so that
+    /// in-flight requests are given a chance to drain. Call `close()` directly
+    /// only when an immediate stop is required.
+    pub async fn close(&mut self) {
+        tracing::info!("Application shutting down");
+        self.close_hooks().await;
+        self.close_adapters().await;
+        tracing::info!("Application shutdown complete");
+    }
+
+    async fn close_hooks(&mut self) {
+        self.call_module_destroy_hooks().await;
+        self.call_before_shutdown_hooks(None).await;
+        self.call_shutdown_hooks(None).await;
+    }
+
+    async fn close_adapters(&mut self) {
+        if let Ok(bs) = self.get::<BroadcastService>().await {
+            bs.close_all().await;
+        }
+
+        if let Some(http) = &mut self.http_adapter {
+            let _ = http.close().await;
+        }
+
+        if let Some(ws) = &mut self.ws_adapter {
+            let _ = ws.close().await;
+        }
+
+        if let Some(rpc) = &mut self.rpc_adapter {
+            let _ = rpc.close().await;
+        }
+    }
+
+    async fn call_before_shutdown_hooks(&self, signal: Option<String>) {
+        self.context
+            .call_before_shutdown_hooks(signal.clone())
+            .await;
+
+        let container = self.routes_resolver.container.borrow();
+        let modules = container.get_modules_token();
+        for module_token in modules {
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                let controllers = module._get_controllers_instances();
+                for (_token, wrapper) in controllers.iter() {
+                    let controller = wrapper.get_instance();
+                    controller.before_application_shutdown(signal.clone()).await;
+                }
+            }
+        }
+    }
+
+    async fn call_module_destroy_hooks(&self) {
+        self.context.call_module_destroy_hooks().await;
+
+        let container = self.routes_resolver.container.borrow();
+        let modules = container.get_modules_token();
+        for module_token in modules {
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                let controllers = module._get_controllers_instances();
+                for (_token, wrapper) in controllers.iter() {
+                    let controller = wrapper.get_instance();
+                    controller.on_module_destroy().await;
+                }
+            }
+        }
+    }
+
+    async fn call_shutdown_hooks(&self, signal: Option<String>) {
+        self.context.call_shutdown_hooks(signal.clone()).await;
+
+        let container = self.routes_resolver.container.borrow();
+        let modules = container.get_modules_token();
+        for module_token in modules {
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                let controllers = module._get_controllers_instances();
+                for (_token, wrapper) in controllers.iter() {
+                    let controller = wrapper.get_instance();
+                    controller.on_application_shutdown(signal.clone()).await;
+                }
+            }
+        }
     }
 }
 
@@ -476,9 +670,7 @@ fn make_ws_callbacks(
                         handle.send_to(&client_id, response).await;
                         MessageCallbackResult::Continue
                     }
-                    Ok(WsHandlerOutput::Stream(stream)) => {
-                        MessageCallbackResult::Stream(stream)
-                    }
+                    Ok(WsHandlerOutput::Stream(stream)) => MessageCallbackResult::Stream(stream),
                     Err(e) => match &e {
                         // Connection is already gone — stop the read loop.
                         WsError::ConnectionClosed(_) => MessageCallbackResult::Stop,

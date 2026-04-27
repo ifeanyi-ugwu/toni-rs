@@ -299,11 +299,10 @@ impl ToniApplicationContext {
             })
     }
 
-    pub async fn close(&mut self) -> Result<()> {
+    pub async fn close(&mut self) {
         self.call_module_destroy_hooks().await;
         self.call_before_shutdown_hooks(None).await;
         self.call_shutdown_hooks(None).await;
-        Ok(())
     }
 
     pub(crate) async fn call_before_shutdown_hooks(&self, signal: Option<String>) {
@@ -312,7 +311,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .before_application_shutdown(signal.clone(), self.container.clone());
             }
@@ -336,7 +335,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .on_module_destroy(self.container.clone());
             }
@@ -360,7 +359,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                let _ = module_ref
+                module_ref
                     .get_metadata()
                     .on_application_shutdown(signal.clone(), self.container.clone());
             }

@@ -28,8 +28,8 @@ pub trait Provider: Send + Sync {
 
     // Lifecycle hooks — overridden by the macro when the user annotates a method.
     // Default implementations are no-ops so providers without hooks incur no overhead.
-    async fn on_module_init(&self) {}
-    async fn on_application_bootstrap(&self) {}
+    async fn on_module_init(&self) -> crate::InitResult { Ok(()) }
+    async fn on_application_bootstrap(&self) -> crate::InitResult { Ok(()) }
     async fn on_module_destroy(&self) {}
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
