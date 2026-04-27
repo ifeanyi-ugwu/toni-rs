@@ -26,6 +26,12 @@ pub enum BindError {
         #[source]
         source: Box<dyn Error + Send + Sync + 'static>,
     },
-    #[error("{0:#}")]
-    Setup(#[from] anyhow::Error),
+    #[error("{0}")]
+    Setup(Box<dyn Error + Send + Sync + 'static>),
+}
+
+impl From<anyhow::Error> for BindError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Setup(e.into())
+    }
 }
