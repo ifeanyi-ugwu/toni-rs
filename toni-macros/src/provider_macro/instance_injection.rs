@@ -576,9 +576,10 @@ fn generate_transient_provider(
         hook.map(|ident| {
             syn::Error::new(
                 ident.span(),
-                "#[on_module_init] and #[on_application_bootstrap] only fire for singleton-scoped \
-                 providers. Transient providers are created on every resolution, not at application \
-                 startup, so these hooks never run. Use a singleton provider for startup work.",
+                "#[on_module_init] and #[on_application_bootstrap] cannot be used on transient-scoped \
+                 providers. A transient's lifetime is consumer-determined — singleton-shaped when \
+                 consumed by a singleton, request-shaped otherwise — so whether these hooks fire \
+                 depends on the consumer, not the provider. Use a singleton provider for startup work.",
             ).to_compile_error()
         })
     };
