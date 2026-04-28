@@ -26,6 +26,7 @@
 //!    Verifies that the WS port refuses new connections after shutdown.
 
 use crate::common::TestServer;
+use serial_test::serial;
 use futures_util::{SinkExt, StreamExt};
 use toni::toni_factory::ToniFactory;
 use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
@@ -292,6 +293,10 @@ async fn gateway_injected_into_rest_controller() {
 /// to port 19001 exercises the full chain:
 ///
 ///   TCP connect → tungstenite handshake → TungsteniteWsSocket → GatewayWrapper → PingGateway
+///
+/// `PingGateway` hardcodes `port = 19001` in the macro, so this test and any other
+/// using `PingModule` must be serialized to avoid binding the same port concurrently.
+#[serial]
 #[tokio_localset_test::localset_test]
 async fn websocket_separate_port_end_to_end() {
     // HTTP server on OS-assigned port; WS gateway listens separately on 19001.
@@ -331,6 +336,10 @@ async fn websocket_separate_port_end_to_end() {
 
 /// ShutdownHandle must stop the tungstenite server.
 /// Verifies via a real TCP connect attempt that the port is no longer listening.
+///
+/// Shares `PingModule` (port 19001) with `websocket_separate_port_end_to_end`,
+/// so it must be serialized.
+#[serial]
 #[tokio_localset_test::localset_test]
 async fn separate_port_close_stops_ws_server() {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();
