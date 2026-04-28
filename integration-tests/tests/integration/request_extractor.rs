@@ -1,6 +1,5 @@
 use crate::common::TestServer;
 use serde::Deserialize;
-use serial_test::serial;
 use toni::{controller, extractors::Json, get, module, post, Body as ToniBody, Request};
 
 #[derive(Debug, Deserialize)]
@@ -53,7 +52,6 @@ impl RequestExtractorController {
 #[module(controllers: [RequestExtractorController], providers: [])]
 impl RequestExtractorModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_extractor_variants() {
     let server = TestServer::start(RequestExtractorModule::module_definition()).await;

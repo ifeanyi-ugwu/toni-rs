@@ -7,11 +7,8 @@
 //   2. A method-level handler runs before the global fallback (chain of responsibility):
 //      the method handler owns 400s; everything else falls through to global.
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use serial_test::serial;
 use toni::{
     async_trait, controller,
     errors::HttpError,
@@ -24,8 +21,6 @@ use toni::{
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_error_handlers;
-
-static PORT: AtomicU16 = AtomicU16::new(36000);
 
 struct GlobalHandler;
 
@@ -67,7 +62,30 @@ impl ErrorHandler for BadRequestHandler {
     }
 }
 
-#[serial]
+async fn start_with_global_handler(
+    module: toni::module_helpers::module_enum::ModuleDefinition,
+) -> std::net::SocketAddr {
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
+
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut factory = ToniFactory::new();
+        factory.use_global_error_handler(Arc::new(GlobalHandler));
+        let mut app = factory.create_with(module).await;
+        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+            .unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = addr_tx.send(bound.http.expect("HTTP adapter not bound"));
+        app.run().await;
+    });
+
+    tokio::task::spawn_local(async move {
+        local.await;
+    });
+
+    addr_rx.await.unwrap()
+}
+
 #[tokio_localset_test::localset_test]
 async fn global_error_handler_intercepts_http_error() {
     #[controller("/api", pub struct TestController {})]
@@ -81,27 +99,15 @@ async fn global_error_handler_intercepts_http_error() {
     #[module(controllers: [TestController], providers: [])]
     impl TestModule {}
 
-    let port = PORT.fetch_add(1, Ordering::SeqCst);
+    let addr = start_with_global_handler(TestModule::module_definition()).await;
 
-    tokio::task::spawn_local(async move {
-        let mut factory = ToniFactory::new();
-        factory.use_global_error_handler(Arc::new(GlobalHandler));
-        let mut app = factory.create_with(TestModule::module_definition()).await;
-        app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
-            .unwrap();
-        app.start().await.unwrap();
-    });
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/missing", port))
+    let resp = reqwest::get(format!("http://{}/api/missing", addr))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
     assert_eq!(resp.text().await.unwrap(), "global:resource not found");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn method_error_handler_runs_before_global() {
     #[controller("/api", pub struct TestController {})]
@@ -122,24 +128,13 @@ async fn method_error_handler_runs_before_global() {
     #[module(controllers: [TestController], providers: [])]
     impl TestModule {}
 
-    let port = PORT.fetch_add(1, Ordering::SeqCst);
-
-    tokio::task::spawn_local(async move {
-        let mut factory = ToniFactory::new();
-        factory.use_global_error_handler(Arc::new(GlobalHandler));
-        let mut app = factory.create_with(TestModule::module_definition()).await;
-        app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")
-            .unwrap();
-        app.start().await.unwrap();
-    });
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let addr = start_with_global_handler(TestModule::module_definition()).await;
 
     let client = reqwest::Client::new();
 
     // 400: method handler claims it, global never runs
     let resp = client
-        .get(format!("http://127.0.0.1:{}/api/bad", port))
+        .get(format!("http://{}/api/bad", addr))
         .send()
         .await
         .unwrap();
@@ -148,7 +143,7 @@ async fn method_error_handler_runs_before_global() {
 
     // 404: method handler returns None (only handles 400), falls through to global
     let resp = client
-        .get(format!("http://127.0.0.1:{}/api/gone", port))
+        .get(format!("http://{}/api/gone", addr))
         .send()
         .await
         .unwrap();

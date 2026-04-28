@@ -2,19 +2,25 @@
 //! response to the caller instead of leaving the request hanging indefinitely,
 //! and that the connection stays alive for subsequent messages.
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
-use serial_test::serial;
 use toni::module;
 use toni::rpc::{RpcContext, RpcData, RpcError};
 use toni_macros::rpc_controller;
 
-static RPC_PORT: AtomicU16 = AtomicU16::new(32000);
+/// Pick an OS-assigned free port by binding then dropping a listener.
+/// Tiny TOCTOU window — fine for localhost tests, robust under nextest's
+/// process-per-test isolation.
+async fn pick_free_port() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    port
+}
 
 async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
     use toni::toni_factory::ToniFactory;
-    let port = RPC_PORT.fetch_add(1, Ordering::SeqCst);
+    let port = pick_free_port().await;
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(module).await;
@@ -23,8 +29,22 @@ async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefin
         app.start().await.unwrap();
     });
     tokio::task::spawn_local(async move { local.await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
     port
+}
+
+/// `TcpAdapter` binds inside its serve future, so there's no readiness signal
+/// from the framework. Retry connect until success or the deadline expires.
+async fn connect_with_retry(port: u16) -> tokio::net::TcpStream {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+            Ok(s) => return s,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("RPC server never accepted on port {}: {}", port, e),
+        }
+    }
 }
 
 /// Sends one request over a raw TCP connection with a timeout.
@@ -36,11 +56,8 @@ async fn tcp_rpc_timeout(
     deadline: Duration,
 ) -> Option<serde_json::Value> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::TcpStream;
 
-    let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
+    let stream = connect_with_retry(port).await;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -81,7 +98,6 @@ impl RpcPanicModule {}
 ///
 /// Note: the test produces a "panicked at" line in stderr — that is the Rust
 /// panic hook firing before catch_unwind catches the unwind. It is expected.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     let port = start_rpc_server(RpcPanicModule::module_definition()).await;

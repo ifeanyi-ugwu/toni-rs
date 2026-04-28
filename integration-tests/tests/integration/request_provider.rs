@@ -1,5 +1,4 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use toni::{controller, get, module, Body as ToniBody, Request};
 
 #[controller("/test", pub struct TestController {
@@ -24,7 +23,6 @@ impl TestController {
 #[module(controllers: [TestController], providers: [])]
 impl TestModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_auto_injected_without_providers_entry() {
     let server = TestServer::start(TestModule::module_definition()).await;

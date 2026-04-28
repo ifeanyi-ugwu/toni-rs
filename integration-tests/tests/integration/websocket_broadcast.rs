@@ -141,7 +141,6 @@ async fn leave_room_stops_room_messages() {
 // DI resolution tests — verify BroadcastModule tokens are correct
 
 mod di_tests {
-    use serial_test::serial;
     use std::sync::Arc;
     use toni::module;
     use toni::toni_factory::ToniFactory;
@@ -151,7 +150,6 @@ mod di_tests {
     #[module(imports: [BroadcastModule::new()])]
     struct WsTestModule;
 
-    #[serial]
     #[tokio_localset_test::localset_test]
     async fn broadcast_module_provides_broadcast_service() {
         let app = ToniFactory::create(WsTestModule::module_definition()).await;
@@ -163,7 +161,6 @@ mod di_tests {
         );
     }
 
-    #[serial]
     #[tokio_localset_test::localset_test]
     async fn broadcast_service_can_send_to_connected_client() {
         let app = ToniFactory::create(WsTestModule::module_definition()).await;

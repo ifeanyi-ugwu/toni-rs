@@ -1,6 +1,5 @@
 use crate::common::TestServer;
 use futures_util::stream;
-use serial_test::serial;
 use toni::{
     controller,
     extractors::{BodyStream, Bytes},
@@ -32,7 +31,6 @@ impl StreamingModule {}
 
 /// The axum adapter streams the request body via UnsyncBoxBody rather than buffering it.
 /// This test sends the body as a stream of chunks to verify end-to-end collection works.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_streaming_body_reaches_controller() {
     let server = TestServer::start(StreamingModule::module_definition()).await;
@@ -57,7 +55,6 @@ async fn test_streaming_body_reaches_controller() {
     assert_eq!(resp.text().await.unwrap(), "hello streaming world");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_body_stream_into_stream() {
     let server = TestServer::start(StreamingModule::module_definition()).await;

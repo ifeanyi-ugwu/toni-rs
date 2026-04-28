@@ -1,6 +1,5 @@
 use crate::common::TestServer;
 use serde::Deserialize;
-use serial_test::serial;
 use toni::{
     controller,
     extractors::{Json, Query, Validated},
@@ -48,7 +47,6 @@ impl ExtractorController {
 )]
 impl ExtractorModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_query_extractor() {
     let server = TestServer::start(ExtractorModule::module_definition()).await;
@@ -87,7 +85,6 @@ async fn test_query_extractor() {
     assert_eq!(resp.status(), 400);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_json_extractor() {
     let server = TestServer::start(ExtractorModule::module_definition()).await;
@@ -157,7 +154,6 @@ impl ValidatedController {
 )]
 impl ValidatedModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_validated_extractor() {
     let server = TestServer::start(ValidatedModule::module_definition()).await;

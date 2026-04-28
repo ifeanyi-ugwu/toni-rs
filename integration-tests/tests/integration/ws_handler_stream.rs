@@ -7,7 +7,6 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serial_test::serial;
 use toni::module;
 use toni::websocket::{WsClient, WsHandlerOutput, WsHandlerResult, WsMessage};
 use toni_macros::websocket_gateway;
@@ -36,7 +35,6 @@ impl CountGateway {
 struct CountModule;
 
 /// A Stream handler delivers all items to the client in order.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn ws_stream_handler_delivers_all_items_in_order() {
     use tokio_tungstenite::tungstenite::Message;

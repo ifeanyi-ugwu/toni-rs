@@ -3,7 +3,6 @@
 //! from contributing to the enhancer pipeline — a fresh instance is constructed
 //! per request using the DynGuardFactory / DynInterceptorFactory path.
 
-use serial_test::serial;
 use toni::async_trait;
 use toni::injector::Context;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
@@ -164,7 +163,6 @@ impl WsGuardModule {}
 
 // ---- tests -------------------------------------------------------------------
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_scoped_guard_activates() {
     let server = TestServer::start(RequestGuardModule::module_definition()).await;
@@ -190,7 +188,6 @@ async fn request_scoped_guard_activates() {
     assert_eq!(resp.text().await.unwrap(), "passed");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_scoped_guard_injects_request() {
     let server = TestServer::start(HeaderGuardModule::module_definition()).await;
@@ -217,7 +214,6 @@ async fn request_scoped_guard_injects_request() {
     assert_eq!(resp.text().await.unwrap(), "unlocked");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn transient_scoped_interceptor() {
     let server = TestServer::start(TransientInterceptorModule::module_definition()).await;
@@ -238,7 +234,6 @@ async fn transient_scoped_interceptor() {
 /// The guard injects `Request` (built from the upgrade `RequestPart`) and checks
 /// `x-auth-token`. This exercises the full path:
 /// Axum upgrade parts → WsConnectionCallbacks → begin_connect → DynGuardFactory::create(Some(parts))
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn ws_request_scoped_guard_uses_handshake_header() {
     use futures_util::{SinkExt, StreamExt};
