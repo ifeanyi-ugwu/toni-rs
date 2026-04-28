@@ -1,5 +1,4 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use std::sync::Arc;
 use toni::{controller, get, injectable, module, provide, Body as ToniBody};
 
@@ -10,7 +9,6 @@ trait Plugin: Send + Sync {
 
 // ── Test 1: type-path variant ────────────────────────────────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_type_path_collects_all_contributions() {
     #[injectable(pub struct PluginA {})]
@@ -79,7 +77,6 @@ async fn multi_type_path_collects_all_contributions() {
 
 // ── Test 2: factory-closure variant ─────────────────────────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_factory_closure_collects_contributions() {
     struct Greeter {
@@ -136,7 +133,6 @@ async fn multi_factory_closure_collects_contributions() {
 
 // ── Test 3: empty collection — no contributions registered ───────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_empty_when_no_contributions() {
     #[injectable(pub struct EmptyRegistry {
@@ -167,7 +163,6 @@ async fn multi_empty_when_no_contributions() {
 
 // ── Test 4: single contribution behaves like a Vec of one ───────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_single_contribution_is_vec_of_one() {
     struct Solo;
@@ -220,7 +215,6 @@ async fn multi_single_contribution_is_vec_of_one() {
 
 // ── Test 5: raw-value variant (expression, not closure) ─────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_raw_value_contributes_to_collection() {
     struct Named {
@@ -276,7 +270,6 @@ async fn multi_raw_value_contributes_to_collection() {
 
 // ── Test 6: existing(Type) variant — reuse a registered singleton ────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_existing_reuses_registered_singleton() {
     #[injectable(pub struct Alpha {})]
@@ -346,7 +339,6 @@ async fn multi_existing_reuses_registered_singleton() {
 
 // ── Test 7: existing("STRING", ConcreteType) — string token with explicit type ─
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_existing_string_token_with_explicit_type() {
     #[injectable(pub struct Gamma {})]
@@ -414,7 +406,6 @@ async fn multi_existing_string_token_with_explicit_type() {
 
 // ── Test 8: provider(Type) variant — useClass + multi ───────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn multi_provider_useclass_collects_contributions() {
     #[injectable(pub struct Echo {})]

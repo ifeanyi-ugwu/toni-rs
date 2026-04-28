@@ -6,11 +6,9 @@
 
 use crate::common::TestServer;
 use futures_util::future::join_all;
-use serial_test::serial;
 use toni::{controller, get, module, provider_factory, Body as ToniBody};
 use uuid::Uuid;
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_scoped_instances_are_isolated_under_concurrency() {
     #[derive(Clone)]

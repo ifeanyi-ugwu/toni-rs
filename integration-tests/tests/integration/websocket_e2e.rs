@@ -27,7 +27,6 @@
 
 use crate::common::TestServer;
 use futures_util::{SinkExt, StreamExt};
-use serial_test::serial;
 use toni::toni_factory::ToniFactory;
 use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
 use toni::{controller, module, post, Body as ToniBody};
@@ -135,7 +134,6 @@ struct PingModule;
 
 /// Full path: TCP upgrade → AxumWsSocket → GatewayWrapper → echo handler → response.
 /// Uses the simple `handle_connection()` path (no BroadcastModule).
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn websocket_echo_end_to_end() {
     let server = TestServer::start(EchoModule::module_definition()).await;
@@ -159,7 +157,6 @@ async fn websocket_echo_end_to_end() {
 /// Full path: two real TCP clients, `handle_connection_with_broadcast()` path.
 /// Race-free: each client handshakes with ping/pong before the broadcast is sent,
 /// proving it has passed `complete_connect()` and is registered in `ConnectionManager`.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn websocket_broadcast_end_to_end() {
     let server = TestServer::start(RoomModule::module_definition()).await;
@@ -259,7 +256,6 @@ struct GatewayInjectionModule;
 ///   2. HTTP client POSTs to `/trigger` — controller calls `gateway.push("server_push")`.
 ///   3. WS client receives `"server_push"` — proves the injected gateway shares the same
 ///      `ConnectionManager` as the live gateway.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn gateway_injected_into_rest_controller() {
     let server = TestServer::start(GatewayInjectionModule::module_definition()).await;
@@ -296,7 +292,6 @@ async fn gateway_injected_into_rest_controller() {
 /// to port 19001 exercises the full chain:
 ///
 ///   TCP connect → tungstenite handshake → TungsteniteWsSocket → GatewayWrapper → PingGateway
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn websocket_separate_port_end_to_end() {
     // HTTP server on OS-assigned port; WS gateway listens separately on 19001.
@@ -336,7 +331,6 @@ async fn websocket_separate_port_end_to_end() {
 
 /// ShutdownHandle must stop the tungstenite server.
 /// Verifies via a real TCP connect attempt that the port is no longer listening.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn separate_port_close_stops_ws_server() {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();

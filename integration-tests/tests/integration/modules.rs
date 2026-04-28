@@ -1,9 +1,7 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use toni::injector::ModuleRef;
 use toni::{controller, get, injectable, module, Body as ToniBody};
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn global_modules_attribute_syntax() {
     #[injectable(pub struct GlobalService {})]
@@ -59,7 +57,6 @@ async fn global_modules_attribute_syntax() {
     assert_eq!(body, "global");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn module_ref_runtime_provider_access() {
     #[injectable(pub struct RuntimeService {})]
@@ -98,7 +95,6 @@ async fn module_ref_runtime_provider_access() {
     assert_eq!(body, "42");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn nested_module_imports() {
     #[injectable(pub struct DatabaseService {})]
@@ -159,7 +155,6 @@ async fn nested_module_imports() {
     assert_eq!(body, "data");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn module_exports_selective_providers() {
     #[injectable(pub struct PublicService {})]
@@ -217,7 +212,6 @@ async fn module_exports_selective_providers() {
     assert_eq!(body, "public");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn module_struct_syntax() {
     #[injectable(pub struct TestService {})]

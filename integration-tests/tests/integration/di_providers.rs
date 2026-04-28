@@ -1,12 +1,10 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use std::time::Duration;
 use toni::{
     controller, get, injectable, module, provider_alias, provider_factory, provider_token,
     provider_value, Body as ToniBody,
 };
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_value_injects_constant() {
     #[controller(pub struct TestController {})]
@@ -33,7 +31,6 @@ async fn provider_value_injects_constant() {
     assert_eq!(resp.status(), 200);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_factory_sync_without_deps() {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -71,7 +68,6 @@ async fn provider_factory_sync_without_deps() {
     assert_eq!(resp.status(), 200);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_factory_sync_with_deps() {
     #[injectable(pub struct ConfigService {
@@ -118,7 +114,6 @@ async fn provider_factory_sync_with_deps() {
     assert_eq!(resp.status(), 200);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_factory_async_with_deps() {
     #[injectable(pub struct LoggerService {
@@ -166,7 +161,6 @@ async fn provider_factory_async_with_deps() {
     assert_eq!(resp.status(), 200);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_alias_creates_alternate_token() {
     #[injectable(pub struct ConfigService {
@@ -229,7 +223,6 @@ async fn provider_alias_creates_alternate_token() {
     assert_eq!(resp.text().await.unwrap(), "production|production");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_token_for_custom_types() {
     #[injectable(pub struct DatabaseService {
@@ -289,7 +282,6 @@ async fn provider_token_for_custom_types() {
     assert_eq!(resp.text().await.unwrap(), "localhost:5432");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn all_provider_variants_work_together() {
     #[injectable(pub struct ConfigService {

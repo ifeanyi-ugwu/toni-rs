@@ -5,7 +5,6 @@
 // losing type information, and always produced 500.
 
 use crate::common::TestServer;
-use serial_test::serial;
 use toni::async_trait;
 use toni::errors::HttpError;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
@@ -23,7 +22,6 @@ impl Middleware for RejectWith {
     }
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn middleware_http_error_preserves_status() {
     #[controller("/", pub struct PingController {})]
@@ -63,7 +61,6 @@ async fn middleware_http_error_preserves_status() {
 
 // ── Test 2: named variant (Unauthorized) ─────────────────────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn middleware_http_error_unauthorized() {
     #[controller("/", pub struct AuthController {})]

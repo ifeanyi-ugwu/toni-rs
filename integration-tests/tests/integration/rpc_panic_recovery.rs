@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use serial_test::serial;
 use toni::module;
 use toni::rpc::{RpcContext, RpcData, RpcError};
 use toni_macros::rpc_controller;
@@ -99,7 +98,6 @@ impl RpcPanicModule {}
 ///
 /// Note: the test produces a "panicked at" line in stderr — that is the Rust
 /// panic hook firing before catch_unwind catches the unwind. It is expected.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     let port = start_rpc_server(RpcPanicModule::module_definition()).await;

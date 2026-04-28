@@ -1,9 +1,7 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use std::time::Duration;
 use toni::{controller, get, injectable, module, provide, Body as ToniBody};
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_constructor_patterns() {
     #[injectable(pub struct BaseService {
@@ -133,7 +131,6 @@ async fn provider_constructor_patterns() {
     assert_eq!(body, "base|base|custom:base|2|name='',count=0");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn controller_constructor_patterns() {
     #[injectable(pub struct DataService {
@@ -227,7 +224,6 @@ async fn controller_constructor_patterns() {
     assert_eq!(resp.text().await.unwrap(), "name='', count=0");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn constructor_param_injection_patterns() {
     const DB_TOKEN: &str = "CustomDatabase";

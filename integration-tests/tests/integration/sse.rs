@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use crate::common::TestServer;
 use futures_util::{stream, StreamExt};
-use serial_test::serial;
 use toni::{
     controller, get, module, post,
     sse, Sse, SseEvent,
@@ -97,7 +96,6 @@ impl SseModule {}
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_headers() {
     let server = TestServer::start(SseModule::module_definition()).await;
@@ -116,7 +114,6 @@ async fn test_sse_headers() {
     );
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_basic_wire_format() {
     let server = TestServer::start(SseModule::module_definition()).await;
@@ -133,7 +130,6 @@ async fn test_sse_basic_wire_format() {
     assert_eq!(body, "data: hello\n\ndata: world\n\n");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_event_fields() {
     let server = TestServer::start(SseModule::module_definition()).await;
@@ -153,7 +149,6 @@ async fn test_sse_event_fields() {
     assert!(body.contains("data: payload\n"), "missing data line");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_multiline_data() {
     let server = TestServer::start(SseModule::module_definition()).await;
@@ -171,7 +166,6 @@ async fn test_sse_multiline_data() {
     assert_eq!(body, "data: line1\ndata: line2\ndata: line3\n\n");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_fallible_stream() {
     let server = TestServer::start(SseModule::module_definition()).await;
@@ -188,7 +182,6 @@ async fn test_sse_fallible_stream() {
     assert_eq!(body, "data: ok-event\n\n");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn test_sse_broadcaster_delivers_to_subscriber() {
     let server = TestServer::start(SseModule::module_definition()).await;

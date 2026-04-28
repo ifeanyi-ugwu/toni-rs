@@ -1,5 +1,4 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use std::time::Duration;
 use toni::{controller, get, injectable, module, provide, Body as ToniBody};
 
@@ -36,7 +35,6 @@ impl CacheService {
     }
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn provide_macro_patterns() {
     #[injectable(pub struct AppService {

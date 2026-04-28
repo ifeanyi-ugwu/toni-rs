@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use serial_test::serial;
 use toni::module;
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni_macros::websocket_gateway;
@@ -37,7 +36,6 @@ impl PanicGatewayModule {}
 /// Note: the test produces a "panicked at" line in stderr — that is the
 /// Rust panic hook firing before catch_unwind catches the unwind.
 /// It is expected and does not indicate a test failure.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn ws_handler_panic_closes_connection_and_leaves_siblings_unaffected() {
     use futures_util::{SinkExt, StreamExt};

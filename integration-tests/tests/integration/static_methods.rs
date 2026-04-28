@@ -1,5 +1,4 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use toni::{controller, get, injectable, module, Body as ToniBody, HttpRequest};
 
 #[controller("/static", pub struct StaticController {})]
@@ -18,7 +17,6 @@ impl StaticController {
 #[module(controllers: [StaticController], providers: [])]
 impl StaticModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn static_method_controller() {
     let server = TestServer::start(StaticModule::module_definition()).await;
@@ -68,7 +66,6 @@ impl MixedController {
 #[module(controllers: [MixedController], providers: [MixedService])]
 impl MixedModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn mixed_static_and_instance_methods() {
     let server = TestServer::start(MixedModule::module_definition()).await;
@@ -103,7 +100,6 @@ impl RequestScopedStaticController {
 #[module(controllers: [RequestScopedStaticController], providers: [])]
 impl RequestScopedStaticModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_scoped_static_methods() {
     let server = TestServer::start(RequestScopedStaticModule::module_definition()).await;
@@ -133,7 +129,6 @@ impl AsyncStaticController {
 #[module(controllers: [AsyncStaticController], providers: [])]
 impl AsyncStaticModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn async_static_methods() {
     let server = TestServer::start(AsyncStaticModule::module_definition()).await;

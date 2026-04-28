@@ -9,7 +9,6 @@
 
 use std::time::Duration;
 
-use serial_test::serial;
 use toni::async_trait;
 use toni::injector::Context;
 use toni::rpc::{RpcContext as RpcCallContext, RpcData, RpcError};
@@ -296,7 +295,6 @@ async fn tcp_rpc(port: u16, pattern: &str, data: serde_json::Value) -> serde_jso
 /// Without `x-allow`:
 ///   "all"   → guard blocks silently (no reply)
 ///   "plain" → still "plain-ok"  (guard is isolated to "all")
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn ws_method_level_enhancers_work() {
     use futures_util::{SinkExt, StreamExt};
@@ -391,7 +389,6 @@ async fn ws_method_level_enhancers_work() {
 /// "rpc.piped"      → pipe aborts → err frame
 /// "rpc.recovering" → error handler recovers → "recovered"
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn rpc_method_level_enhancers_work() {
     let port = start_rpc_server(RpcMethodEnhancersModule::module_definition()).await;

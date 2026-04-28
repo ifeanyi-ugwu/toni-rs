@@ -1,5 +1,4 @@
 use crate::common::TestServer;
-use serial_test::serial;
 use toni::{controller, get, injectable, module, Body as ToniBody};
 
 #[injectable(pub struct AsyncService;)]
@@ -46,7 +45,6 @@ impl AsyncController {
 #[module(controllers: [AsyncController], providers: [AsyncService])]
 impl AsyncModule {}
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn async_controller_methods() {
     let server = TestServer::start(AsyncModule::module_definition()).await;

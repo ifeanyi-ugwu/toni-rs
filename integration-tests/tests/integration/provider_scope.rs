@@ -5,13 +5,11 @@
 //! - Request: Same instance per HTTP request, fresh instance for each request
 //! - Transient: Fresh instance per injection point at construction time
 
-use serial_test::serial;
 use toni::{controller, get, module, provider_factory, Body as ToniBody};
 use uuid::Uuid;
 
 use crate::common::TestServer;
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn scope_behavior() {
     #[derive(Clone)]

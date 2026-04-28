@@ -1,6 +1,5 @@
 use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
-use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
 use toni::{
     controller, extractors::Json, get, injectable, module, post, Body as ToniBody, Request,
@@ -14,7 +13,6 @@ struct AppConfig {
     pub env: String,
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn async_controller_methods_with_http_server() {
     #[injectable(pub struct AsyncService {})]
@@ -54,7 +52,6 @@ async fn async_controller_methods_with_http_server() {
     assert_eq!(body, "processed");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn config_service_injection_in_controllers() {
     #[controller("/api", pub struct TestController {
@@ -85,7 +82,6 @@ async fn config_service_injection_in_controllers() {
     assert_eq!(body, "test");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn singleton_controllers_share_state() {
     static INSTANCE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -123,7 +119,6 @@ async fn singleton_controllers_share_state() {
     }
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_scoped_controllers_create_per_request() {
     static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -168,7 +163,6 @@ async fn request_scoped_controllers_create_per_request() {
     assert_ne!(body1, body2);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn optional_request_extractor() {
     #[controller("/api", pub struct TestController {})]
@@ -195,7 +189,6 @@ async fn optional_request_extractor() {
     assert_eq!(body, "true");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn json_body_and_request_extraction() {
     #[derive(Serialize, Deserialize)]
@@ -236,7 +229,6 @@ async fn json_body_and_request_extraction() {
     assert!(body.contains("application/json"));
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn request_extensions_pattern() {
     use toni::async_trait;

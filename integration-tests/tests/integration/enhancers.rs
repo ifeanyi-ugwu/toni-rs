@@ -1,5 +1,4 @@
 use crate::common::{ExecutionOrder, TestServer};
-use serial_test::serial;
 use toni::async_trait;
 use toni::injector::Context;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
@@ -203,7 +202,6 @@ impl Pipe for TransformPipe {
     }
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn enhancers_execution_order() {
     use std::sync::OnceLock;
@@ -338,7 +336,6 @@ async fn enhancers_execution_order() {
     tracker.assert_not_contains("controller:validate");
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn guard_authorization() {
     use std::sync::OnceLock;
@@ -402,7 +399,6 @@ async fn guard_authorization() {
     assert!(events.contains(&"controller:auth_only".to_string()));
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn di_in_enhancers() {
     #[injectable(pub struct AuthService {})]
@@ -461,7 +457,6 @@ async fn di_in_enhancers() {
     assert_eq!(resp.status(), 200);
 }
 
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn app_token_global_enhancers() {
     use std::sync::OnceLock;

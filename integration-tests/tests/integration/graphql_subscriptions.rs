@@ -6,7 +6,6 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serial_test::serial;
 use serde_json::Value;
 use toni::module;
 use toni::{async_trait, WsClient};
@@ -179,7 +178,6 @@ async fn collect_n(
 // ---- Tests ---------------------------------------------------------------
 
 /// A `connection_init` is acknowledged with `connection_ack`.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_connection_ack() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -192,7 +190,6 @@ async fn graphql_ws_connection_ack() {
 }
 
 /// A subscription emits all `next` frames followed by a `complete` frame.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_subscription_delivers_items_and_complete() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -229,7 +226,6 @@ async fn graphql_ws_subscription_delivers_items_and_complete() {
 }
 
 /// A ping is answered with a pong.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_ping_pong() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -245,7 +241,6 @@ async fn graphql_ws_ping_pong() {
 }
 
 /// Connections without `Sec-WebSocket-Protocol: graphql-transport-ws` are rejected.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_rejects_missing_subprotocol() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -259,7 +254,6 @@ async fn graphql_ws_rejects_missing_subprotocol() {
 }
 
 /// Connections with a wrong sub-protocol value are also rejected.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_rejects_wrong_subprotocol() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -275,7 +269,6 @@ async fn graphql_ws_rejects_wrong_subprotocol() {
 ///
 /// Uses `ticker` (50 ms between items) so at most a handful of items can arrive before
 /// the cancel propagates — far fewer than the "never-ending" default.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_per_subscription_cancel_stops_stream() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -315,7 +308,6 @@ async fn graphql_ws_per_subscription_cancel_stops_stream() {
 }
 
 /// Cancelling one subscription leaves other subscriptions on the same connection intact.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
     let server = TestServer::start(GqlModule::module_definition()).await;
@@ -364,7 +356,6 @@ async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
 
 /// The `connection_init` payload is forwarded to the context builder and available
 /// in subscription resolvers via `ctx.data::<T>()`.
-#[serial]
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_connection_init_payload_reaches_resolver() {
     let server = TestServer::start(AuthModule::module_definition()).await;
