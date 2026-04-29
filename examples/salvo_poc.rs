@@ -11,9 +11,10 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use futures::stream;
 use serde_json::json;
-use toni::extractors::Path;
+use toni::extractors::{BodyStream, Bytes, Path};
 use toni::*;
 use toni_macros::{module, websocket_gateway};
 use toni_salvo::SalvoAdapter;
@@ -51,6 +52,30 @@ impl HelloController {
             Some((Ok::<_, std::io::Error>(chunk), n + 1))
         });
         Body::stream(s).with_content_type("text/plain; charset=utf-8")
+    }
+
+    /// Reads the request body via toni's buffered `Bytes` extractor (collects
+    /// the streaming body) and echoes its size.
+    #[post("/_/echo")]
+    async fn echo(&self, body: Bytes) -> Body {
+        Body::json(json!({ "received": body.0.len() }))
+    }
+
+    /// Consumes the request body as a true stream — counts incoming chunks
+    /// without ever buffering the full payload. Used to verify the salvo
+    /// adapter exposes salvo's frames frame-by-frame.
+    #[post("/_/count")]
+    async fn count_chunks(&self, body: BodyStream) -> Body {
+        let mut chunks = 0u32;
+        let mut bytes = 0u64;
+        let mut s = Box::pin(body.into_stream());
+        while let Some(item) = s.next().await {
+            if let Ok(b) = item {
+                chunks += 1;
+                bytes += b.len() as u64;
+            }
+        }
+        Body::json(json!({ "chunks": chunks, "bytes": bytes }))
     }
 }
 
