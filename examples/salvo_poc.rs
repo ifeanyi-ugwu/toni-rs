@@ -9,6 +9,9 @@
 //!           websocat ws://127.0.0.1:3001/chat       # same-port WS
 //!           websocat ws://127.0.0.1:3002/ping       # separate-port WS
 
+use std::time::Duration;
+
+use futures::stream;
 use serde_json::json;
 use toni::extractors::Path;
 use toni::*;
@@ -32,6 +35,22 @@ impl HelloController {
     #[get("/:name")]
     fn hello_name(&self, name: Path<String>) -> Body {
         Body::json(json!({ "message": format!("Hello, {}!", name.0) }))
+    }
+
+    /// Streams three chunks with a 500ms gap between each. Used to verify the
+    /// salvo adapter forwards body chunks incrementally rather than buffering.
+    /// Path is `/hello/_/stream` to avoid colliding with `/hello/:name`.
+    #[get("/_/stream")]
+    async fn stream_demo(&self) -> Body {
+        let s = stream::unfold(0u32, |n| async move {
+            if n >= 3 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let chunk = bytes::Bytes::from(format!("chunk {n}\n"));
+            Some((Ok::<_, std::io::Error>(chunk), n + 1))
+        });
+        Body::stream(s).with_content_type("text/plain; charset=utf-8")
     }
 }
 

@@ -20,6 +20,7 @@ toni-terminus = { path = "../toni-terminus", features = ["http", "memory", "disk
 chrono = "0.4"
 anyhow = "1.0"
 futures = "0.3"
+bytes = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[example]]
