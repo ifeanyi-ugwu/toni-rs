@@ -4,8 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use http_body_util::BodyExt;
 use tokio::sync::watch;
 
 use salvo::Router;
@@ -126,11 +126,15 @@ fn build_request_part(req: &SalvoRequest) -> RequestPart {
     parts
 }
 
-async fn read_body_bytes(req: &mut SalvoRequest) -> Bytes {
-    match req.payload().await {
-        Ok(bytes) => bytes.clone(),
-        Err(_) => Bytes::new(),
-    }
+/// Hand toni an unbuffered body so extractors can stream when they want to.
+/// `BodyStream` and friends consume frames directly; `RequestBody::collect` still
+/// works for extractors that need the full payload as `Bytes`.
+fn take_streaming_body(req: &mut SalvoRequest) -> RequestBody {
+    let body = req.take_body();
+    let boxed = body
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed_unsync();
+    RequestBody::Streaming(boxed)
 }
 
 fn write_response(http_res: HttpResponse, res: &mut SalvoResponse) {
@@ -190,8 +194,8 @@ impl Handler for ToniRouteHandler {
         _ctrl: &mut FlowCtrl,
     ) {
         let parts = build_request_part(req);
-        let body = read_body_bytes(req).await;
-        let http_req = HttpRequest::from_parts(parts, RequestBody::Buffered(body));
+        let body = take_streaming_body(req);
+        let http_req = HttpRequest::from_parts(parts, body);
 
         let handler = self.handler.clone();
         let http_res = self
@@ -221,8 +225,8 @@ impl Handler for ToniFallbackHandler {
         _ctrl: &mut FlowCtrl,
     ) {
         let parts = build_request_part(req);
-        let body = read_body_bytes(req).await;
-        let http_req = HttpRequest::from_parts(parts, RequestBody::Buffered(body));
+        let body = take_streaming_body(req);
+        let http_req = HttpRequest::from_parts(parts, body);
 
         let http_res = self
             .ctx
