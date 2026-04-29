@@ -1,13 +1,13 @@
 //! toni-salvo proof-of-concept
 //!
-//! Smoke test for the salvo adapter: one HTTP route, one path-param route, and a
-//! same-port WebSocket gateway echoing messages back to the sender.
+//! Smoke test for the salvo adapter: HTTP routes, same-port WebSocket on
+//! port 3001, and a separate-port WebSocket on port 3002.
 //!
 //! Run with: cargo run --example salvo_poc
 //! Test:     curl http://127.0.0.1:3001/hello
 //!           curl http://127.0.0.1:3001/hello/world
-//!           websocat ws://127.0.0.1:3001/chat
-//!           > {"event": "message", "data": "hi"}
+//!           websocat ws://127.0.0.1:3001/chat       # same-port WS
+//!           websocat ws://127.0.0.1:3002/ping       # separate-port WS
 
 use serde_json::json;
 use toni::extractors::Path;
@@ -55,15 +55,31 @@ impl EchoGateway {
     }
 }
 
-#[module(controllers: [HelloController], providers: [EchoGateway])]
+#[websocket_gateway("/ping", port = 3002, pub struct PingGateway {})]
+impl PingGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("ping")]
+    async fn handle_ping(
+        &self,
+        _client: WsClient,
+        _msg: WsMessage,
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
+    }
+}
+
+#[module(controllers: [HelloController], providers: [EchoGateway, PingGateway])]
 impl AppModule {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("toni-salvo PoC running on http://127.0.0.1:3001");
-    println!("  GET  /hello");
-    println!("  GET  /hello/:name");
-    println!("  WS   /chat");
+    println!("toni-salvo PoC");
+    println!("  HTTP   :3001 GET /hello, GET /hello/:name");
+    println!("  WS     :3001 /chat        (same-port upgrade)");
+    println!("  WS     :3002 /ping        (separate-port adapter)");
 
     let mut app = ToniFactory::new()
         .create_with(AppModule::module_definition())
@@ -71,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     app.use_http_adapter(SalvoAdapter::new(), 3001, "127.0.0.1")
         .unwrap();
+    app.use_websocket_adapter(SalvoAdapter::new()).unwrap();
 
     app.start().await?;
     Ok(())

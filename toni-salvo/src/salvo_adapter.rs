@@ -18,7 +18,8 @@ use salvo::{Depot, FlowCtrl, Handler, Server, async_trait as salvo_async_trait};
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
     AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    MessageCallbackResult, RequestHandler, ServerHandle, WsConnectionCallbacks,
+    MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
 };
 
@@ -29,6 +30,7 @@ use crate::tokio_sender::TokioSender;
 pub struct SalvoAdapter {
     routes: Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>,
     ws_routes: Vec<(String, Arc<WsConnectionCallbacks>)>,
+    ws_ports: HashMap<u16, Vec<(String, Arc<WsConnectionCallbacks>)>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
@@ -38,6 +40,7 @@ impl SalvoAdapter {
         Self {
             routes: Vec::new(),
             ws_routes: Vec::new(),
+            ws_ports: HashMap::new(),
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -422,5 +425,71 @@ impl HttpAdapter for SalvoAdapter {
             let _ = tx.send(true);
             Ok(())
         }
+    }
+}
+
+#[async_trait]
+impl WebSocketAdapter for SalvoAdapter {
+    fn bind(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
+        self.ws_ports
+            .entry(port)
+            .or_default()
+            .push((path.to_owned(), callbacks));
+        Ok(())
+    }
+
+    fn listen(
+        &mut self,
+        port: u16,
+        hostname: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+        let routes = match self.ws_ports.remove(&port) {
+            Some(r) => r,
+            None => {
+                return Box::pin(async move {
+                    Err(anyhow!("No routes registered for WS port {}", port))
+                });
+            }
+        };
+
+        let mut router = Router::new();
+        for (path, callbacks) in routes {
+            let salvo_path = to_salvo_path(&path);
+            let ws_handler = ToniWsHandler { callbacks };
+            router = router.push(Router::with_path(salvo_path).goal(ws_handler));
+        }
+
+        let addr = format!("{}:{}", hostname, port);
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        Box::pin(async move {
+            let acceptor = TcpListener::new(addr.clone())
+                .try_bind()
+                .await
+                .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let local_addr = acceptor
+                .local_addr()
+                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
+
+            let server = Server::new(acceptor);
+            let server_handle = server.handle();
+
+            tokio::spawn(async move {
+                let _ = shutdown_rx.wait_for(|v| *v).await;
+                server_handle.stop_graceful(None);
+            });
+
+            Ok(ServerHandle {
+                local_addr,
+                serve: Box::pin(async move {
+                    server.serve(router).await;
+                }),
+            })
+        })
     }
 }

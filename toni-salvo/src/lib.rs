@@ -12,4 +12,4 @@ pub(crate) mod tokio_sender;
 pub use salvo_adapter::SalvoAdapter;
 pub use tokio_sender::TokioSender;
 
-pub use toni::HttpAdapter;
+pub use toni::{HttpAdapter, WebSocketAdapter};
