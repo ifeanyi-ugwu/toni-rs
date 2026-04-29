@@ -1,0 +1,23 @@
+[package]
+name = "toni-salvo"
+version = "0.1.0"
+edition = "2021"
+description = "Salvo adapter for the Toni framework"
+license = "MIT"
+keywords = ["toni", "salvo", "web", "framework", "adapter"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+toni = { path = "../toni" }
+salvo = { version = "0.92", features = ["websocket"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+serde_json = "1.0"
+futures-util = "0.3"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json"] }

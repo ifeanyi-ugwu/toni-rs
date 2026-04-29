@@ -12,6 +12,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 validator = { version = "0.20.0", features = ["derive"] }
 toni-axum = { path = "../toni-axum" }
+toni-salvo = { path = "../toni-salvo" }
 toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
 toni-nats = { path = "../toni-nats" }
@@ -108,3 +109,7 @@ path = "sse.rs"
 [[example]]
 name = "health_checks"
 path = "health_checks.rs"
+
+[[example]]
+name = "salvo_poc"
+path = "salvo_poc.rs"
