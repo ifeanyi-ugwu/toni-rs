@@ -395,3 +395,75 @@ async fn separate_port_close_stops_ws_server() {
         "HTTP server should be stopped after shutdown"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `port = 0` on a gateway means "I want my own listener, OS-assigned" — even
+// when the HTTP server also requested 0. The same/separate-port partition used
+// to compare requested port numbers, which made `Some(0) == Some(0)` route the
+// gateway as same-port. Now both bind to distinct OS-assigned listeners.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[websocket_gateway("/zero", port = 0, pub struct ZeroPortGateway {})]
+impl ZeroPortGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("ping")]
+    async fn on_ping(
+        &self,
+        _client: WsClient,
+        _msg: WsMessage,
+    ) -> WsHandlerResult {
+        Ok(WsMessage::text("pong").into())
+    }
+}
+
+#[module(providers: [ZeroPortGateway])]
+struct ZeroPortModule;
+
+#[tokio_localset_test::localset_test]
+async fn gateway_port_zero_binds_separately_from_http_port_zero() {
+    let (addr_tx, addr_rx) =
+        tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();
+
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(ZeroPortModule::module_definition()).await;
+        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+            .unwrap();
+        app.use_websocket_adapter(TungsteniteAdapter::new())
+            .unwrap();
+        let bound = app.bind().await.unwrap();
+        let http_addr = bound.http.expect("HTTP adapter not bound");
+        let ws_addr = bound
+            .websocket
+            .into_iter()
+            .next()
+            .expect("WS adapter not bound — gateway with port=0 was misrouted as same-port");
+        let _ = addr_tx.send((http_addr, ws_addr));
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move {
+        local.await;
+    });
+
+    let (http_addr, ws_addr) = addr_rx.await.unwrap();
+
+    assert_ne!(
+        http_addr.port(),
+        ws_addr.port(),
+        "HTTP and gateway both requested port 0 but landed on the same listener"
+    );
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/zero", ws_addr))
+        .await
+        .expect("WS connect to OS-assigned separate port");
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        r#"{"event": "ping"}"#.to_string().into(),
+    ))
+    .await
+    .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert_eq!(reply.to_text().unwrap(), "pong");
+}

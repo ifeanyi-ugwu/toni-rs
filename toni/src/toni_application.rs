@@ -318,13 +318,19 @@ impl ToniApplication {
         // otherwise a fresh WsClientMap per gateway (no CM needed).
         let broadcast_service = self.get::<BroadcastService>().await.ok().map(Arc::new);
 
+        // Same-port vs separate-port is a property of how the gateway was declared,
+        // not of the port number. A gateway with no `port` shares the HTTP listener;
+        // any `port = N` (including 0) wants its own. Port 0 means the OS assigns
+        // distinct ports, so a gateway requesting 0 is always separate-port even
+        // when HTTP also requested 0 — comparing literal numbers conflates intent
+        // with coincidence and breaks at 0.
         let (same_port, separate_port): (Vec<_>, Vec<_>) = self
             .ws_gateways
             .iter()
             .map(|(p, gw)| (p.clone(), gw.clone()))
             .partition(|(_, gw)| {
                 let p = gw.get_port();
-                p.is_none() || http_port.map_or(false, |hp| p == Some(hp))
+                p.is_none() || http_port.map_or(false, |hp| hp != 0 && p == Some(hp))
             });
 
         // Wire same-port gateways into the HTTP adapter as upgrade routes.
