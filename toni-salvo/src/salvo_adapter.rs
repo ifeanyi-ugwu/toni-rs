@@ -144,18 +144,31 @@ fn write_response(http_res: HttpResponse, res: &mut SalvoResponse) {
 
     if let Some(body) = http_res.body.as_ref() {
         if let Some(ct) = body.content_type() {
-            if let Ok(value) = http::HeaderValue::from_str(ct) {
-                res.headers_mut().insert(http::header::CONTENT_TYPE, value);
+            match http::HeaderValue::from_str(ct) {
+                Ok(value) => {
+                    res.headers_mut().insert(http::header::CONTENT_TYPE, value);
+                }
+                Err(e) => {
+                    tracing::warn!(content_type = %ct, error = %e, "invalid content-type from handler; dropping");
+                }
             }
         }
     }
 
     for (k, v) in &http_res.headers {
-        if let (Ok(name), Ok(value)) = (
+        match (
             http::HeaderName::from_bytes(k.as_bytes()),
             http::HeaderValue::from_str(v),
         ) {
-            res.headers_mut().insert(name, value);
+            (Ok(name), Ok(value)) => {
+                res.headers_mut().insert(name, value);
+            }
+            (Err(e), _) => {
+                tracing::warn!(header = %k, error = %e, "invalid response header name; dropping");
+            }
+            (_, Err(e)) => {
+                tracing::warn!(header = %k, value = %v, error = %e, "invalid response header value; dropping");
+            }
         }
     }
 
@@ -298,9 +311,15 @@ async fn run_ws_connection(
     tokio::spawn(async move {
         let mut write = write;
         while let Some(msg) = rx.recv().await {
-            if let Ok(salvo_msg) = ws_message_to_salvo(msg) {
-                if write.send(salvo_msg).await.is_err() {
-                    break;
+            match ws_message_to_salvo(msg) {
+                Ok(salvo_msg) => {
+                    if let Err(e) = write.send(salvo_msg).await {
+                        tracing::debug!(error = %e, "WebSocket write failed; closing write task");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "skipping outbound message: convert failed");
                 }
             }
         }
@@ -310,7 +329,10 @@ async fn run_ws_connection(
 
     let client_id = match callbacks.connect(parts, sender.clone()).await {
         Ok(id) => id,
-        Err(_) => return,
+        Err(e) => {
+            tracing::debug!(error = %e, "WebSocket connect rejected by guard or handler");
+            return;
+        }
     };
 
     tracing::debug!(client_id = %client_id, "WebSocket connection established");
@@ -331,15 +353,28 @@ async fn run_ws_connection(
                         let handle = tokio::spawn(async move {
                             tokio::pin!(stream);
                             while let Some(msg) = stream.next().await {
-                                let _ = sink.send(msg).await;
+                                if let Err(e) = sink.send(msg).await {
+                                    tracing::debug!(
+                                        error = %e,
+                                        "stream task: sink closed; ending stream"
+                                    );
+                                    break;
+                                }
                             }
                         });
                         stream_tasks_inner.lock().unwrap().push(handle);
                     }
                 },
-                Err(_) => break,
+                // Close frames return ConnectionClosed — log at debug, not warn.
+                Err(e) => {
+                    tracing::debug!(client_id = %client_id, error = %e, "ending read loop");
+                    break;
+                }
             },
-            Err(_) => break,
+            Err(e) => {
+                tracing::debug!(client_id = %client_id, error = %e, "salvo WebSocket read error");
+                break;
+            }
         }
     }
 
