@@ -532,3 +532,41 @@ impl WebSocketAdapter for SalvoAdapter {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::to_salvo_path;
+
+    #[test]
+    fn no_params_returns_input_unchanged() {
+        assert_eq!(to_salvo_path("/"), "/");
+        assert_eq!(to_salvo_path("/users"), "/users");
+        assert_eq!(to_salvo_path("/api/v1/users"), "/api/v1/users");
+    }
+
+    #[test]
+    fn single_param_in_middle() {
+        assert_eq!(to_salvo_path("/users/:id/posts"), "/users/{id}/posts");
+    }
+
+    #[test]
+    fn single_param_at_end() {
+        assert_eq!(to_salvo_path("/users/:id"), "/users/{id}");
+    }
+
+    #[test]
+    fn single_param_at_root() {
+        assert_eq!(to_salvo_path("/:name"), "/{name}");
+    }
+
+    #[test]
+    fn back_to_back_params_separated_by_slash() {
+        assert_eq!(to_salvo_path("/:a/:b"), "/{a}/{b}");
+        assert_eq!(to_salvo_path("/users/:id/comments/:cid"), "/users/{id}/comments/{cid}");
+    }
+
+    #[test]
+    fn trailing_slash_after_param_preserved() {
+        assert_eq!(to_salvo_path("/users/:id/"), "/users/{id}/");
+    }
+}
