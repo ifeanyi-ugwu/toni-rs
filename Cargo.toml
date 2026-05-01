@@ -9,6 +9,7 @@ members = [
     "toni-poem",
     "toni-rocket",
     "toni-tcp",
+    "toni-udp",
     "toni-nats",
     "toni-tungstenite",
     "toni-actix",
