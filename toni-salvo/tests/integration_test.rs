@@ -64,11 +64,7 @@ impl EchoGateway {
     }
 }
 
-// Fixed port: the framework partitions same/separate-port gateways by literal
-// port equality against the HTTP port the user passed to `use_http_adapter`.
-// `port = 0` would collide because the HTTP test also uses 0, sending the
-// gateway down the same-port path even though the OS-assigned ports differ.
-#[websocket_gateway("/separate", port = 19499, pub struct SeparateGateway {})]
+#[websocket_gateway("/separate", port = 0, pub struct SeparateGateway {})]
 impl SeparateGateway {
     pub fn new() -> Self {
         Self {}
