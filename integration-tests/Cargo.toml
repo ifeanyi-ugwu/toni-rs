@@ -17,6 +17,7 @@ toni-macros = { path = "../toni-macros" }
 toni-axum = { path = "../toni-axum" }
 toni-tungstenite = { path = "../toni-tungstenite" }
 toni-tcp = { path = "../toni-tcp" }
+toni-udp = { path = "../toni-udp" }
 toni-async-graphql = { path = "../toni-async-graphql" }
 
 # Testing dependencies
