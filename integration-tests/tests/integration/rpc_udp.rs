@@ -182,6 +182,59 @@ async fn udp_fire_and_forget_produces_no_reply() {
     assert!(resp.is_none(), "fire-and-forget must not produce a reply");
 }
 
+/// `app.shutdown()` must drive the UDP adapter's recv loop to exit, otherwise
+/// `shutdown.completed().await` would hang forever. After completion, the
+/// socket is closed and the next datagram gets no reply.
+#[tokio_localset_test::localset_test]
+async fn udp_app_shutdown_stops_the_recv_loop() {
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_udp_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(UdpRpcModule::module_definition()).await;
+        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", port))
+            .unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+
+    let shutdown = shutdown_rx.await.unwrap();
+
+    // Server is responsive before shutdown.
+    let resp = udp_rpc_timeout(
+        port,
+        "udp.echo",
+        serde_json::json!("hi"),
+        Some("1"),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("server should be up");
+    assert_eq!(resp["response"], "hi");
+
+    // Trigger shutdown. If the recv loop didn't exit, completed() would hang.
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete within 2s once close() fires");
+
+    // Subsequent datagrams must not receive a reply.
+    let resp = udp_rpc_timeout(
+        port,
+        "udp.echo",
+        serde_json::json!("after"),
+        Some("2"),
+        Duration::from_millis(200),
+    )
+    .await;
+    assert!(resp.is_none(), "no reply expected after shutdown");
+}
+
 #[tokio_localset_test::localset_test]
 async fn udp_client_transport_round_trips_and_rejects_oversized() {
     use toni::{RpcClientTransport, RpcData};

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::net::UdpSocket;
-use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use tokio::sync::watch;
+use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
 const MAX_DATAGRAM: usize = 65_507;
@@ -44,19 +45,23 @@ pub struct UdpAdapter {
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     socket: Option<Arc<UdpSocket>>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl UdpAdapter {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        let (tx, _) = watch::channel(false);
         Self {
             host: host.into(),
             port,
             callbacks: None,
             socket: None,
+            shutdown_tx: Arc::new(tx),
         }
     }
 }
 
+#[async_trait]
 impl RpcAdapter for UdpAdapter {
     fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
         // Bind synchronously so `app.start().await` surfaces a port-in-use
@@ -84,6 +89,7 @@ impl RpcAdapter for UdpAdapter {
             .socket
             .take()
             .expect("bind() must be called before serve()");
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
             let addr = socket
@@ -94,29 +100,41 @@ impl RpcAdapter for UdpAdapter {
 
             let mut buf = vec![0u8; MAX_DATAGRAM];
             loop {
-                match socket.recv_from(&mut buf).await {
-                    Ok((n, src)) => {
-                        // recv_from returns the full datagram size if it fit.
-                        // If it equals the buffer it may have been truncated;
-                        // we accept it but warn.
-                        if n == MAX_DATAGRAM {
-                            tracing::warn!(addr = %src, "UdpAdapter possibly truncated datagram");
-                        }
-
-                        let payload = buf[..n].to_vec();
-                        let socket = socket.clone();
-                        let callbacks = callbacks.clone();
-
-                        tokio::spawn(async move {
-                            handle_datagram(socket, src, payload, callbacks).await;
-                        });
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.wait_for(|v| *v) => {
+                        tracing::info!(addr, "UdpAdapter shutting down");
+                        break;
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "UdpAdapter recv error");
+                    res = socket.recv_from(&mut buf) => match res {
+                        Ok((n, src)) => {
+                            // recv_from returns the full datagram size if it fit.
+                            // If it equals the buffer it may have been truncated;
+                            // we accept it but warn.
+                            if n == MAX_DATAGRAM {
+                                tracing::warn!(addr = %src, "UdpAdapter possibly truncated datagram");
+                            }
+
+                            let payload = buf[..n].to_vec();
+                            let socket = socket.clone();
+                            let callbacks = callbacks.clone();
+
+                            tokio::spawn(async move {
+                                handle_datagram(socket, src, payload, callbacks).await;
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "UdpAdapter recv error");
+                        }
                     }
                 }
             }
         }))
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }
 
