@@ -191,6 +191,32 @@ pub fn generate_extractor_extractions(
     let mut ordered: Vec<&ExtractorParam> = params.iter().collect();
     ordered.sort_by_key(|p| p.kind.is_body_consuming() as u8);
 
+    // The macro detects extractors by literal type name, so an aliased import
+    // (e.g. `use toni::extractors::Bytes as Foo`) lands in `Unknown`. Pass the
+    // real body to a sole `Unknown` extractor when no named body-consuming
+    // extractor is competing for it — otherwise stay on the safe path of giving
+    // each `Unknown` an empty body so multiple custom parts-only extractors
+    // can coexist.
+    let known_body_count = params
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.kind,
+                ExtractorKind::Json
+                    | ExtractorKind::Body
+                    | ExtractorKind::Bytes
+                    | ExtractorKind::BodyStream
+                    | ExtractorKind::Validated
+                    | ExtractorKind::HttpRequest
+            )
+        })
+        .count();
+    let unknown_count = params
+        .iter()
+        .filter(|p| matches!(p.kind, ExtractorKind::Unknown))
+        .count();
+    let unknown_gets_body = known_body_count == 0 && unknown_count == 1;
+
     let mut extractions = Vec::new();
 
     for param in &ordered {
@@ -272,29 +298,53 @@ pub fn generate_extractor_extractions(
                 extractions.push(extraction);
             }
 
-            // Unknown types implement FromRequest with a parts-only (empty body) request,
-            // allowing multiple custom extractors without consuming the streaming body.
+            // Unknown types implement FromRequest. When this is the sole body-eligible
+            // extractor in the handler, hand it the real streaming body so aliased imports
+            // of body-consuming extractors (e.g. `use Bytes as Foo`) work the same as the
+            // un-aliased name. Otherwise pass `RequestBody::empty()` so multiple custom
+            // parts-only extractors can coexist.
             ExtractorKind::Unknown => {
-                let extraction = quote! {
-                    let #param_name = match <#param_type as ::toni::FromRequest>::from_request(
-                        ::toni::http_helpers::HttpRequest::from_parts(
-                            _req_parts.clone(),
-                            ::toni::http_helpers::RequestBody::empty(),
-                        )
-                    ).await {
-                        Ok(value) => value,
-                        Err(e) => {
-                            let error_body = ::serde_json::json!({
-                                "error": "Extraction failed",
-                                "details": e.to_string()
-                            });
-                            return ::toni::http_helpers::HttpResponse {
-                                body: Some(::toni::http_helpers::Body::json(error_body)),
-                                status: 400,
-                                headers: vec![],
-                            };
-                        }
-                    };
+                let extraction = if unknown_gets_body {
+                    quote! {
+                        let #param_name = match <#param_type as ::toni::FromRequest>::from_request(
+                            ::toni::http_helpers::HttpRequest::from_parts(_req_parts, _req_body)
+                        ).await {
+                            Ok(value) => value,
+                            Err(e) => {
+                                let error_body = ::serde_json::json!({
+                                    "error": "Extraction failed",
+                                    "details": e.to_string()
+                                });
+                                return ::toni::http_helpers::HttpResponse {
+                                    body: Some(::toni::http_helpers::Body::json(error_body)),
+                                    status: 400,
+                                    headers: vec![],
+                                };
+                            }
+                        };
+                    }
+                } else {
+                    quote! {
+                        let #param_name = match <#param_type as ::toni::FromRequest>::from_request(
+                            ::toni::http_helpers::HttpRequest::from_parts(
+                                _req_parts.clone(),
+                                ::toni::http_helpers::RequestBody::empty(),
+                            )
+                        ).await {
+                            Ok(value) => value,
+                            Err(e) => {
+                                let error_body = ::serde_json::json!({
+                                    "error": "Extraction failed",
+                                    "details": e.to_string()
+                                });
+                                return ::toni::http_helpers::HttpResponse {
+                                    body: Some(::toni::http_helpers::Body::json(error_body)),
+                                    status: 400,
+                                    headers: vec![],
+                                };
+                            }
+                        };
+                    }
                 };
                 extractions.push(extraction);
             }

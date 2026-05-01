@@ -2,7 +2,7 @@ use crate::common::TestServer;
 use serde::Deserialize;
 use toni::{
     controller,
-    extractors::{Json, Query, Validated},
+    extractors::{Bytes as RenamedBytes, Json, Query, Validated},
     get, module, post, Body as ToniBody,
 };
 use validator::Validate;
@@ -38,6 +38,15 @@ impl ExtractorController {
     #[post("/echo")]
     fn echo_json(&self, body: Json<serde_json::Value>) -> ToniBody {
         ToniBody::json(body.into_inner())
+    }
+
+    /// Verifies the controller macro routes an aliased import of a body-consuming
+    /// extractor through the body code path instead of dropping it into the
+    /// `Unknown` parts-only branch. Without the fix, `body.0` would always be
+    /// empty here regardless of what the client sent.
+    #[post("/aliased-bytes")]
+    fn aliased_bytes(&self, body: RenamedBytes) -> ToniBody {
+        ToniBody::text(format!("len={}", body.0.len()))
     }
 }
 
@@ -83,6 +92,21 @@ async fn test_query_extractor() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+#[tokio_localset_test::localset_test]
+async fn test_aliased_body_extractor_receives_body() {
+    let server = TestServer::start(ExtractorModule::module_definition()).await;
+
+    let resp = server
+        .client()
+        .post(server.url("/api/aliased-bytes"))
+        .body("payload-of-12")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "len=13");
 }
 
 #[tokio_localset_test::localset_test]
