@@ -14,6 +14,7 @@ validator = { version = "0.20.0", features = ["derive"] }
 toni-axum = { path = "../toni-axum" }
 toni-salvo = { path = "../toni-salvo" }
 toni-poem = { path = "../toni-poem" }
+toni-rocket = { path = "../toni-rocket" }
 toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
 toni-nats = { path = "../toni-nats" }
@@ -119,3 +120,7 @@ path = "salvo_poc.rs"
 [[example]]
 name = "poem_poc"
 path = "poem_poc.rs"
+
+[[example]]
+name = "rocket_poc"
+path = "rocket_poc.rs"
