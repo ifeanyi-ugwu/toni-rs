@@ -1,0 +1,28 @@
+[package]
+name = "toni-poem"
+version = "0.1.0"
+edition = "2021"
+description = "Poem adapter for the Toni framework"
+license = "MIT"
+keywords = ["toni", "poem", "web", "framework", "adapter"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+toni = { path = "../toni" }
+poem = { version = "3.1", features = ["websocket"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+serde_json = "1.0"
+futures-util = "0.3"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json"] }
+tokio-tungstenite = "0.28"
+toni-macros = { path = "../toni-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
