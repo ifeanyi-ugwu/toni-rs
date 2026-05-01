@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::net::UdpSocket;
 use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
@@ -43,6 +43,7 @@ pub struct UdpAdapter {
     host: String,
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
+    socket: Option<Arc<UdpSocket>>,
 }
 
 impl UdpAdapter {
@@ -51,31 +52,44 @@ impl UdpAdapter {
             host: host.into(),
             port,
             callbacks: None,
+            socket: None,
         }
     }
 }
 
 impl RpcAdapter for UdpAdapter {
     fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+        // Bind synchronously so `app.start().await` surfaces a port-in-use
+        // failure as `Err` instead of panicking inside the spawned recv loop.
+        let addr = format!("{}:{}", self.host, self.port);
+        let std_socket = std::net::UdpSocket::bind(&addr)
+            .with_context(|| format!("UdpAdapter: failed to bind {}", addr))?;
+        std_socket
+            .set_nonblocking(true)
+            .context("UdpAdapter: failed to set socket nonblocking")?;
+        let socket = UdpSocket::from_std(std_socket)
+            .context("UdpAdapter: failed to register socket with the tokio runtime")?;
+
         self.callbacks = Some(callbacks);
+        self.socket = Some(Arc::new(socket));
         Ok(())
     }
 
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let host = self.host.clone();
-        let port = self.port;
         let callbacks = self
             .callbacks
             .take()
             .expect("bind() must be called before serve()");
+        let socket = self
+            .socket
+            .take()
+            .expect("bind() must be called before serve()");
 
         Ok(Box::pin(async move {
-            let addr = format!("{}:{}", host, port);
-            let socket = UdpSocket::bind(&addr)
-                .await
-                .unwrap_or_else(|e| panic!("UdpAdapter: failed to bind {} — {}", addr, e));
-            let socket = Arc::new(socket);
-
+            let addr = socket
+                .local_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             tracing::info!(addr, "UdpAdapter listening");
 
             let mut buf = vec![0u8; MAX_DATAGRAM];
