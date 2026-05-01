@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -32,6 +32,7 @@ pub struct TcpAdapter {
     host: String,
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
+    listener: Option<TcpListener>,
 }
 
 impl TcpAdapter {
@@ -40,30 +41,44 @@ impl TcpAdapter {
             host: host.into(),
             port,
             callbacks: None,
+            listener: None,
         }
     }
 }
 
 impl RpcAdapter for TcpAdapter {
     fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+        // Bind synchronously so port-in-use surfaces as `Err` from
+        // `app.start()` instead of panicking inside the spawned accept loop.
+        let addr = format!("{}:{}", self.host, self.port);
+        let std_listener = std::net::TcpListener::bind(&addr)
+            .with_context(|| format!("TcpAdapter: failed to bind {}", addr))?;
+        std_listener
+            .set_nonblocking(true)
+            .context("TcpAdapter: failed to set listener nonblocking")?;
+        let listener = TcpListener::from_std(std_listener)
+            .context("TcpAdapter: failed to register listener with the tokio runtime")?;
+
         self.callbacks = Some(callbacks);
+        self.listener = Some(listener);
         Ok(())
     }
 
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let host = self.host.clone();
-        let port = self.port;
         let callbacks = self
             .callbacks
             .take()
             .expect("bind() must be called before serve()");
+        let listener = self
+            .listener
+            .take()
+            .expect("bind() must be called before serve()");
 
         Ok(Box::pin(async move {
-            let addr = format!("{}:{}", host, port);
-            let listener = TcpListener::bind(&addr)
-                .await
-                .unwrap_or_else(|e| panic!("TcpAdapter: failed to bind {} — {}", addr, e));
-
+            let addr = listener
+                .local_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             tracing::info!(addr, "TcpAdapter listening");
 
             loop {
