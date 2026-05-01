@@ -31,6 +31,7 @@ mod provider_scope;
 mod request_extractor;
 mod request_provider;
 mod rpc_panic_recovery;
+mod rpc_tcp_shutdown;
 mod rpc_udp;
 mod scope_bubbling;
 mod scoped_enhancers;

@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
-use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use tokio::sync::{watch, Mutex};
+use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 /// TCP transport adapter for the Toni RPC gateway.
 ///
@@ -33,19 +33,23 @@ pub struct TcpAdapter {
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     listener: Option<TcpListener>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl TcpAdapter {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        let (tx, _) = watch::channel(false);
         Self {
             host: host.into(),
             port,
             callbacks: None,
             listener: None,
+            shutdown_tx: Arc::new(tx),
         }
     }
 }
 
+#[async_trait]
 impl RpcAdapter for TcpAdapter {
     fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
         // Bind synchronously so port-in-use surfaces as `Err` from
@@ -73,6 +77,7 @@ impl RpcAdapter for TcpAdapter {
             .listener
             .take()
             .expect("bind() must be called before serve()");
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
             let addr = listener
@@ -82,15 +87,27 @@ impl RpcAdapter for TcpAdapter {
             tracing::info!(addr, "TcpAdapter listening");
 
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
-                        let callbacks = callbacks.clone();
-                        tokio::spawn(handle_connection(stream, addr, callbacks));
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.wait_for(|v| *v) => {
+                        tracing::info!(addr, "TcpAdapter shutting down");
+                        break;
                     }
-                    Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
+                    res = listener.accept() => match res {
+                        Ok((stream, addr)) => {
+                            let callbacks = callbacks.clone();
+                            tokio::spawn(handle_connection(stream, addr, callbacks));
+                        }
+                        Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
+                    }
                 }
             }
         }))
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }
 
