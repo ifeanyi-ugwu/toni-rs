@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::{oneshot, Mutex, OnceCell};
+use tokio::sync::{oneshot, Mutex};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -18,7 +18,7 @@ struct Inner {
 
 /// TCP transport for [`RpcClient`].
 ///
-/// Maintains a single persistent TCP connection to the remote service.
+/// Maintains a persistent TCP connection to the remote service.
 /// Request-response uses a monotonic correlation id; the background reader
 /// loop matches each incoming `{"id":..., "response":...}` or `{"id":...,
 /// "err":...}` frame to the waiting caller and delivers it via an in-memory
@@ -26,6 +26,10 @@ struct Inner {
 ///
 /// Fire-and-forget (`emit`) sends a frame with no `id` field and returns as
 /// soon as the write completes.
+///
+/// The transport rebinds lazily on the next call after a fatal error
+/// (reader-loop exit, write error). Pending requests at the moment of
+/// failure surface as `RpcClientError::Transport("connection closed")`.
 ///
 /// # Example
 ///
@@ -37,11 +41,16 @@ struct Inner {
 /// ```
 ///
 /// [`RpcClient`]: toni::RpcClient
+// Slot type shared between the public transport and the background reader
+// loop. The reader clears the slot on exit so the next caller rebuilds the
+// connection — this is the lazy-reconnect path.
+type Slot = Arc<Mutex<Option<Arc<Inner>>>>;
+
 pub struct TcpClientTransport {
     host: String,
     port: u16,
     timeout: Duration,
-    inner: OnceCell<Arc<Inner>>,
+    slot: Slot,
 }
 
 impl TcpClientTransport {
@@ -50,7 +59,7 @@ impl TcpClientTransport {
             host: host.into(),
             port,
             timeout: Duration::from_secs(5),
-            inner: OnceCell::new(),
+            slot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -61,30 +70,36 @@ impl TcpClientTransport {
     }
 
     async fn get_or_connect(&self) -> Result<Arc<Inner>, RpcClientError> {
-        self.inner
-            .get_or_try_init(|| async {
-                let addr = format!("{}:{}", self.host, self.port);
-                let stream = TcpStream::connect(&addr)
-                    .await
-                    .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let mut guard = self.slot.lock().await;
+        if let Some(inner) = guard.as_ref() {
+            return Ok(inner.clone());
+        }
 
-                let (reader, writer) = stream.into_split();
-                let inner = Arc::new(Inner {
-                    writer: Mutex::new(writer),
-                    pending: Mutex::new(HashMap::new()),
-                });
-
-                tokio::spawn(reader_loop(reader, inner.clone()));
-
-                tracing::info!(addr, "TcpClientTransport connected");
-                Ok(inner)
-            })
+        let addr = format!("{}:{}", self.host, self.port);
+        let stream = TcpStream::connect(&addr)
             .await
-            .cloned()
+            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+
+        let (reader, writer) = stream.into_split();
+        let inner = Arc::new(Inner {
+            writer: Mutex::new(writer),
+            pending: Mutex::new(HashMap::new()),
+        });
+
+        tokio::spawn(reader_loop(reader, inner.clone(), self.slot.clone()));
+
+        tracing::info!(addr, "TcpClientTransport connected");
+        *guard = Some(inner.clone());
+        Ok(inner)
+    }
+
+    /// Drop the cached connection so the next call rebuilds. Idempotent.
+    async fn invalidate(&self) {
+        self.slot.lock().await.take();
     }
 }
 
-async fn reader_loop(reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>) {
+async fn reader_loop(reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>, slot: Slot) {
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
@@ -128,6 +143,9 @@ async fn reader_loop(reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>) 
             }
         }
     }
+
+    // Clear the cached connection so the next caller rebuilds.
+    slot.lock().await.take();
 
     // Drain all pending requests so callers don't hang indefinitely.
     let mut pending = inner.pending.lock().await;
@@ -173,6 +191,9 @@ impl RpcClientTransport for TcpClientTransport {
 
         if let Err(e) = inner.writer.lock().await.write_all(frame.as_bytes()).await {
             inner.pending.lock().await.remove(&id);
+            // Fatal-looking — drop the cached connection so the next call
+            // rebuilds rather than retrying on a half-broken handle.
+            self.invalidate().await;
             return Err(RpcClientError::Transport(e.to_string()));
         }
 
@@ -197,13 +218,51 @@ impl RpcClientTransport for TcpClientTransport {
         let mut frame = msg.to_string();
         frame.push('\n');
 
-        let result = inner
-            .writer
-            .lock()
-            .await
-            .write_all(frame.as_bytes())
-            .await
-            .map_err(|e| RpcClientError::Transport(e.to_string()));
-        result
+        let write_result = inner.writer.lock().await.write_all(frame.as_bytes()).await;
+        match write_result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                drop(inner);
+                self.invalidate().await;
+                Err(RpcClientError::Transport(e.to_string()))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// After `invalidate()`, the next `get_or_connect()` call must establish
+    /// a fresh TCP connection. Compare the OS-assigned local ports — they
+    /// cannot match while both connections are alive.
+    #[tokio::test]
+    async fn invalidate_rebuilds_connection_on_next_call() {
+        // Stand up a dummy server that just accepts connections.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let transport = TcpClientTransport::new("127.0.0.1", port);
+
+        let inner1 = transport.get_or_connect().await.unwrap();
+        let local1 = inner1.writer.lock().await.local_addr().unwrap();
+
+        transport.invalidate().await;
+
+        let inner2 = transport.get_or_connect().await.unwrap();
+        let local2 = inner2.writer.lock().await.local_addr().unwrap();
+
+        assert_ne!(
+            local1.port(),
+            local2.port(),
+            "reconnect should bind a new ephemeral port"
+        );
     }
 }

@@ -3,12 +3,12 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
-use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use tokio::sync::{watch, Mutex};
+use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 /// TCP transport adapter for the Toni RPC gateway.
 ///
@@ -32,50 +32,82 @@ pub struct TcpAdapter {
     host: String,
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
+    listener: Option<TcpListener>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl TcpAdapter {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        let (tx, _) = watch::channel(false);
         Self {
             host: host.into(),
             port,
             callbacks: None,
+            listener: None,
+            shutdown_tx: Arc::new(tx),
         }
     }
 }
 
+#[async_trait]
 impl RpcAdapter for TcpAdapter {
     fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+        // Bind synchronously so port-in-use surfaces as `Err` from
+        // `app.start()` instead of panicking inside the spawned accept loop.
+        let addr = format!("{}:{}", self.host, self.port);
+        let std_listener = std::net::TcpListener::bind(&addr)
+            .with_context(|| format!("TcpAdapter: failed to bind {}", addr))?;
+        std_listener
+            .set_nonblocking(true)
+            .context("TcpAdapter: failed to set listener nonblocking")?;
+        let listener = TcpListener::from_std(std_listener)
+            .context("TcpAdapter: failed to register listener with the tokio runtime")?;
+
         self.callbacks = Some(callbacks);
+        self.listener = Some(listener);
         Ok(())
     }
 
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        let host = self.host.clone();
-        let port = self.port;
         let callbacks = self
             .callbacks
             .take()
             .expect("bind() must be called before serve()");
+        let listener = self
+            .listener
+            .take()
+            .expect("bind() must be called before serve()");
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
-            let addr = format!("{}:{}", host, port);
-            let listener = TcpListener::bind(&addr)
-                .await
-                .unwrap_or_else(|e| panic!("TcpAdapter: failed to bind {} — {}", addr, e));
-
+            let addr = listener
+                .local_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             tracing::info!(addr, "TcpAdapter listening");
 
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
-                        let callbacks = callbacks.clone();
-                        tokio::spawn(handle_connection(stream, addr, callbacks));
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.wait_for(|v| *v) => {
+                        tracing::info!(addr, "TcpAdapter shutting down");
+                        break;
                     }
-                    Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
+                    res = listener.accept() => match res {
+                        Ok((stream, addr)) => {
+                            let callbacks = callbacks.clone();
+                            tokio::spawn(handle_connection(stream, addr, callbacks));
+                        }
+                        Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
+                    }
                 }
             }
         }))
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }
 

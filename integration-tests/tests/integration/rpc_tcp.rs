@@ -1,6 +1,9 @@
-//! Verifies that a panic inside an RPC message handler returns an error
-//! response to the caller instead of leaving the request hanging indefinitely,
-//! and that the connection stays alive for subsequent messages.
+//! End-to-end coverage for the TCP RPC adapter:
+//!
+//! - panicking handlers return an error frame instead of hanging
+//!   the caller, and the connection stays alive afterwards
+//! - `app.shutdown()` drives the accept loop to exit so
+//!   `ShutdownHandle::completed().await` resolves cleanly
 
 use std::time::Duration;
 
@@ -32,8 +35,9 @@ async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefin
     port
 }
 
-/// `TcpAdapter` binds inside its serve future, so there's no readiness signal
-/// from the framework. Retry connect until success or the deadline expires.
+/// `start_rpc_server` spawns the app on a `LocalSet`; the bind happens in
+/// `app.start()` synchronously but there is no signal back to this task
+/// before that completes. Retry connect until success or the deadline expires.
 async fn connect_with_retry(port: u16) -> tokio::net::TcpStream {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
@@ -130,4 +134,72 @@ async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     )
     .await;
     assert_eq!(resp.unwrap()["response"], "safe-ok");
+}
+
+#[rpc_controller(pub struct ShutdownTcpController {})]
+impl ShutdownTcpController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("tcp.echo")]
+    async fn echo(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+        Ok(data)
+    }
+}
+
+#[module(providers: [ShutdownTcpController])]
+impl ShutdownTcpModule {}
+
+/// `app.shutdown()` must drive the accept loop to exit; otherwise
+/// `shutdown.completed().await` would hang forever. After completion, new
+/// connections to the listener are refused.
+#[tokio_localset_test::localset_test]
+async fn tcp_app_shutdown_stops_the_accept_loop() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(ShutdownTcpModule::module_definition()).await;
+        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
+            .unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+
+    let shutdown = shutdown_rx.await.unwrap();
+
+    // Server is responsive before shutdown.
+    let stream = connect_with_retry(port).await;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut frame = serde_json::json!({"pattern":"tcp.echo","data":"hi","id":"1"}).to_string();
+    frame.push('\n');
+    writer.write_all(frame.as_bytes()).await.unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut line))
+        .await
+        .expect("read should not time out")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["response"], "hi");
+
+    // Trigger shutdown. If the accept loop didn't exit, completed() would hang.
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete within 2s once close() fires");
+
+    // Listener is closed — new connections are refused.
+    let connect = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await;
+    assert!(
+        connect.is_err(),
+        "listener should be closed after shutdown, got {connect:?}"
+    );
 }
