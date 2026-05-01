@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{oneshot, Mutex, OnceCell};
+use tokio::sync::{oneshot, Mutex};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
@@ -29,14 +29,16 @@ struct Inner {
 /// Fire-and-forget (`emit`) sends a datagram with no `id` field and returns
 /// as soon as `send` completes.
 ///
-/// # Caveats (v1)
+/// # Caveats
 ///
 /// - **No retries**: a lost datagram surfaces as `RpcClientError::Timeout`.
 ///   Wrap calls in your own retry policy if needed.
-/// - **No reconnect**: the socket is created once; if the OS reports a fatal
-///   error the next call returns `RpcClientError::Transport`.
 /// - **Size-bound**: payloads above ~65 KiB are rejected with a transport
 ///   error before sending.
+///
+/// The transport rebinds lazily on the next call after a fatal socket error
+/// (recv loop exits, `send` returns an error). Pending requests at the moment
+/// of failure surface as `RpcClientError::Transport("socket closed")`.
 ///
 /// # Example
 ///
@@ -48,11 +50,16 @@ struct Inner {
 /// ```
 ///
 /// [`RpcClient`]: toni::RpcClient
+// Slot type shared between the public transport and the background reader
+// loop. The reader clears the slot on exit so the next caller rebuilds the
+// socket — this is the lazy-reconnect path.
+type Slot = Arc<Mutex<Option<Arc<Inner>>>>;
+
 pub struct UdpClientTransport {
     host: String,
     port: u16,
     timeout: Duration,
-    inner: OnceCell<Arc<Inner>>,
+    slot: Slot,
 }
 
 impl UdpClientTransport {
@@ -61,7 +68,7 @@ impl UdpClientTransport {
             host: host.into(),
             port,
             timeout: Duration::from_secs(5),
-            inner: OnceCell::new(),
+            slot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -72,36 +79,44 @@ impl UdpClientTransport {
     }
 
     async fn get_or_connect(&self) -> Result<Arc<Inner>, RpcClientError> {
-        self.inner
-            .get_or_try_init(|| async {
-                // Bind to an OS-assigned ephemeral port. Use IPv4 wildcard;
-                // `connect` below pins the peer.
-                let socket = UdpSocket::bind("0.0.0.0:0")
-                    .await
-                    .map_err(|e| RpcClientError::Transport(e.to_string()))?;
-                let addr = format!("{}:{}", self.host, self.port);
-                socket
-                    .connect(&addr)
-                    .await
-                    .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let mut guard = self.slot.lock().await;
+        if let Some(inner) = guard.as_ref() {
+            return Ok(inner.clone());
+        }
 
-                let socket = Arc::new(socket);
-                let inner = Arc::new(Inner {
-                    socket: socket.clone(),
-                    pending: Mutex::new(HashMap::new()),
-                });
-
-                tokio::spawn(reader_loop(socket, inner.clone()));
-
-                tracing::info!(addr, "UdpClientTransport connected");
-                Ok(inner)
-            })
+        // Bind to an OS-assigned ephemeral port. Use IPv4 wildcard;
+        // `connect` below pins the peer.
+        let socket = UdpSocket::bind("0.0.0.0:0")
             .await
-            .cloned()
+            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let addr = format!("{}:{}", self.host, self.port);
+        socket
+            .connect(&addr)
+            .await
+            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+
+        let socket = Arc::new(socket);
+        let inner = Arc::new(Inner {
+            socket: socket.clone(),
+            pending: Mutex::new(HashMap::new()),
+        });
+
+        tokio::spawn(reader_loop(socket, inner.clone(), self.slot.clone()));
+
+        tracing::info!(addr, "UdpClientTransport connected");
+        *guard = Some(inner.clone());
+        Ok(inner)
+    }
+
+    /// Drop the cached socket so the next call rebuilds. Safe to call
+    /// concurrently — the reader loop and `send` paths race to clear, but
+    /// `take()` is idempotent.
+    async fn invalidate(&self) {
+        self.slot.lock().await.take();
     }
 }
 
-async fn reader_loop(socket: Arc<UdpSocket>, inner: Arc<Inner>) {
+async fn reader_loop(socket: Arc<UdpSocket>, inner: Arc<Inner>, slot: Slot) {
     let mut buf = vec![0u8; MAX_DATAGRAM];
     loop {
         match socket.recv(&mut buf).await {
@@ -136,6 +151,9 @@ async fn reader_loop(socket: Arc<UdpSocket>, inner: Arc<Inner>) {
             }
         }
     }
+
+    // Clear the cached socket so the next caller rebuilds.
+    slot.lock().await.take();
 
     // Drain all pending requests so callers don't hang indefinitely.
     let mut pending = inner.pending.lock().await;
@@ -188,6 +206,9 @@ impl RpcClientTransport for UdpClientTransport {
 
         if let Err(e) = inner.socket.send(&frame).await {
             inner.pending.lock().await.remove(&id);
+            // Fatal-looking — drop the cached socket so the next call
+            // rebuilds rather than retrying on a half-broken handle.
+            self.invalidate().await;
             return Err(RpcClientError::Transport(e.to_string()));
         }
 
@@ -219,11 +240,43 @@ impl RpcClientTransport for UdpClientTransport {
             )));
         }
 
-        inner
-            .socket
-            .send(&frame)
-            .await
-            .map(|_| ())
-            .map_err(|e| RpcClientError::Transport(e.to_string()))
+        match inner.socket.send(&frame).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.invalidate().await;
+                Err(RpcClientError::Transport(e.to_string()))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// After `invalidate()`, the next `get_or_connect()` call must bind a
+    /// fresh socket. Compare the OS-assigned local ports — they cannot match
+    /// while both sockets are alive.
+    #[tokio::test]
+    async fn invalidate_rebuilds_socket_on_next_call() {
+        // Bind a dummy server so the client has a real peer to connect to.
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+
+        let transport = UdpClientTransport::new("127.0.0.1", port);
+
+        let inner1 = transport.get_or_connect().await.unwrap();
+        let local1 = inner1.socket.local_addr().unwrap();
+
+        transport.invalidate().await;
+
+        let inner2 = transport.get_or_connect().await.unwrap();
+        let local2 = inner2.socket.local_addr().unwrap();
+
+        assert_ne!(
+            local1.port(),
+            local2.port(),
+            "reconnect should bind a new ephemeral port"
+        );
     }
 }
