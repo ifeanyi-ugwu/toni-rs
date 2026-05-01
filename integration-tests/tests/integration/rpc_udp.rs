@@ -235,6 +235,68 @@ async fn udp_app_shutdown_stops_the_recv_loop() {
     assert!(resp.is_none(), "no reply expected after shutdown");
 }
 
+/// Spawn a raw UDP responder that drops the first `drop_first` datagrams
+/// and echoes each subsequent one back as `{"id":..,"response":<data>}`.
+/// Returns the bound port. The server task exits after one echoed reply.
+async fn spawn_lossy_echo(drop_first: usize) -> u16 {
+    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        let mut dropped = 0usize;
+        loop {
+            let (n, src) = server.recv_from(&mut buf).await.unwrap();
+            if dropped < drop_first {
+                dropped += 1;
+                continue;
+            }
+            let req: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+            let reply = serde_json::json!({
+                "id": req["id"],
+                "response": req["data"],
+            });
+            server
+                .send_to(reply.to_string().as_bytes(), src)
+                .await
+                .unwrap();
+            return;
+        }
+    });
+    port
+}
+
+/// `with_retries(1)` must produce a successful reply when the first datagram
+/// is dropped; without retries the same scenario times out.
+#[tokio_localset_test::localset_test]
+async fn udp_client_retries_recover_from_packet_loss() {
+    use toni::{RpcClientTransport, RpcData};
+
+    // No retries → the dropped first datagram is fatal.
+    let port_no_retry = spawn_lossy_echo(1).await;
+    let no_retry = toni_udp::UdpClientTransport::new("127.0.0.1", port_no_retry)
+        .with_timeout(Duration::from_millis(80));
+    let err = no_retry
+        .send("noop", RpcData::Json(serde_json::json!("hi")))
+        .await
+        .expect_err("first datagram dropped, no retries → Timeout");
+    assert!(matches!(err, toni::RpcClientError::Timeout));
+
+    // One retry → the second datagram gets through.
+    let port_retry = spawn_lossy_echo(1).await;
+    let retry = toni_udp::UdpClientTransport::new("127.0.0.1", port_retry)
+        .with_timeout(Duration::from_millis(80))
+        .with_retries(1)
+        .with_retry_backoff(Duration::from_millis(20));
+    let reply = retry
+        .send("noop", RpcData::Json(serde_json::json!("hi")))
+        .await
+        .expect("retry should recover");
+    match reply {
+        RpcData::Json(v) => assert_eq!(v, serde_json::json!("hi")),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
 #[tokio_localset_test::localset_test]
 async fn udp_client_transport_round_trips_and_rejects_oversized() {
     use toni::{RpcClientTransport, RpcData};

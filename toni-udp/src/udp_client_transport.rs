@@ -59,6 +59,8 @@ pub struct UdpClientTransport {
     host: String,
     port: u16,
     timeout: Duration,
+    retries: u32,
+    retry_backoff: Duration,
     slot: Slot,
 }
 
@@ -68,13 +70,32 @@ impl UdpClientTransport {
             host: host.into(),
             port,
             timeout: Duration::from_secs(5),
+            retries: 0,
+            retry_backoff: Duration::from_millis(100),
             slot: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Override the request-response timeout (default: 5 s).
+    /// Per-attempt request-response timeout (default: 5 s).
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Re-send `n` additional times if `send` times out. Each retry uses a
+    /// fresh correlation id so a delayed reply for an earlier attempt is
+    /// silently dropped instead of satisfying a later one. Default: `0`
+    /// (off). Total wall time is bounded by
+    /// `(retries + 1) * timeout + retries * backoff`.
+    pub fn with_retries(mut self, n: u32) -> Self {
+        self.retries = n;
+        self
+    }
+
+    /// Constant delay between retry attempts. Default: 100 ms. Ignored when
+    /// `retries == 0`.
+    pub fn with_retry_backoff(mut self, backoff: Duration) -> Self {
+        self.retry_backoff = backoff;
         self
     }
 
@@ -183,43 +204,62 @@ impl RpcClientTransport for UdpClientTransport {
     }
 
     async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
-        let inner = self.get_or_connect().await?;
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string();
+        // Pre-serialize the data once. Each attempt rewraps it with a fresh
+        // correlation id so a late reply for an earlier attempt is dropped by
+        // the reader loop instead of satisfying a later one.
+        let data_json = data_to_json(data);
 
-        let msg = serde_json::json!({
-            "pattern": pattern,
-            "data": data_to_json(data),
-            "id": id,
-        });
-        let frame = msg.to_string().into_bytes();
+        let attempts = self.retries.saturating_add(1);
+        let mut last_timeout: Option<RpcClientError> = None;
 
-        if frame.len() > MAX_DATAGRAM {
-            return Err(RpcClientError::Transport(format!(
-                "payload {} bytes exceeds UDP max ({})",
-                frame.len(),
-                MAX_DATAGRAM
-            )));
-        }
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                tokio::time::sleep(self.retry_backoff).await;
+            }
 
-        let (tx, rx) = oneshot::channel();
-        inner.pending.lock().await.insert(id.clone(), tx);
+            let inner = self.get_or_connect().await?;
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string();
 
-        if let Err(e) = inner.socket.send(&frame).await {
-            inner.pending.lock().await.remove(&id);
-            // Fatal-looking — drop the cached socket so the next call
-            // rebuilds rather than retrying on a half-broken handle.
-            self.invalidate().await;
-            return Err(RpcClientError::Transport(e.to_string()));
-        }
+            let msg = serde_json::json!({
+                "pattern": pattern,
+                "data": data_json,
+                "id": id,
+            });
+            let frame = msg.to_string().into_bytes();
 
-        match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(RpcClientError::Transport("socket closed".to_string())),
-            Err(_) => {
+            if frame.len() > MAX_DATAGRAM {
+                return Err(RpcClientError::Transport(format!(
+                    "payload {} bytes exceeds UDP max ({})",
+                    frame.len(),
+                    MAX_DATAGRAM
+                )));
+            }
+
+            let (tx, rx) = oneshot::channel();
+            inner.pending.lock().await.insert(id.clone(), tx);
+
+            if let Err(e) = inner.socket.send(&frame).await {
                 inner.pending.lock().await.remove(&id);
-                Err(RpcClientError::Timeout)
+                // Fatal-looking — drop the cached socket so the next call
+                // rebuilds rather than retrying on a half-broken handle.
+                self.invalidate().await;
+                return Err(RpcClientError::Transport(e.to_string()));
+            }
+
+            match tokio::time::timeout(self.timeout, rx).await {
+                Ok(Ok(result)) => return result,
+                Ok(Err(_)) => {
+                    return Err(RpcClientError::Transport("socket closed".to_string()))
+                }
+                Err(_) => {
+                    inner.pending.lock().await.remove(&id);
+                    last_timeout = Some(RpcClientError::Timeout);
+                    // Fall through to next attempt.
+                }
             }
         }
+
+        Err(last_timeout.unwrap_or(RpcClientError::Timeout))
     }
 
     async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
