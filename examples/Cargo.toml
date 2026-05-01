@@ -17,6 +17,7 @@ toni-poem = { path = "../toni-poem" }
 toni-rocket = { path = "../toni-rocket" }
 toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
+toni-udp = { path = "../toni-udp" }
 toni-nats = { path = "../toni-nats" }
 toni-terminus = { path = "../toni-terminus", features = ["http", "memory", "disk", "timeout"] }
 chrono = "0.4"
@@ -88,6 +89,10 @@ path = "graceful_shutdown.rs"
 [[example]]
 name = "rpc_controller"
 path = "rpc_controller.rs"
+
+[[example]]
+name = "rpc_udp"
+path = "rpc_udp.rs"
 
 [[example]]
 name = "rpc_nats"
