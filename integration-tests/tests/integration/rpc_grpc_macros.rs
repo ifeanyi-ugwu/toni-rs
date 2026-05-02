@@ -139,10 +139,19 @@ impl Orders for OrdersGrpcService {
 #[module(providers: [OrdersCounter, OrdersGrpcService])]
 struct GrpcMacrosModule;
 
-/// Boots the gRPC server, returns (port, shutdown handle).
+/// Boots the gRPC server with the default drain timeout.
 async fn boot() -> (u16, toni::ShutdownHandle) {
+    boot_with(|a| a).await
+}
+
+/// Boots the gRPC server, applying a custom configuration to the adapter
+/// before it's registered (e.g. `with_drain_timeout`).
+async fn boot_with<F>(configure: F) -> (u16, toni::ShutdownHandle)
+where
+    F: FnOnce(toni_grpc::GrpcAdapter) -> toni_grpc::GrpcAdapter + Send + 'static,
+{
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let adapter = configure(toni_grpc::GrpcAdapter::new(addr));
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
@@ -260,6 +269,61 @@ async fn grpc_client_streaming_round_trip() {
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
         .await
         .expect("shutdown must complete");
+}
+
+/// Without drain enforcement a never-closing bidi stream pins the server
+/// open after `shutdown()` because tonic's `serve_with_incoming_shutdown`
+/// waits for in-flight handlers to return. With `with_drain_timeout` the
+/// budget elapses, the serve future is dropped, and the in-flight stream
+/// is aborted (clients see UNAVAILABLE).
+#[tokio_localset_test::localset_test]
+async fn grpc_drain_timeout_aborts_long_running_streams() {
+    let drain = Duration::from_millis(150);
+    let (port, shutdown) = boot_with(move |a| a.with_drain_timeout(drain)).await;
+    let mut client = connect(port).await;
+
+    // Open a bidi stream where the client never closes its outbound channel
+    // — the server-side `chat()` handler stays parked in `inbound.next().await`.
+    let (tx, rx) = tokio::sync::mpsc::channel::<orders_pb::ChatMessage>(1);
+    let outbound = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let mut stream = client
+        .chat(outbound)
+        .await
+        .expect("bidi call must succeed")
+        .into_inner();
+
+    // Send one message so the server enters the handler and starts blocking.
+    tx.send(orders_pb::ChatMessage {
+        text: "ping".into(),
+        id: 0,
+    })
+    .await
+    .unwrap();
+    // Wait for the server's reply so we know the handler is mid-flight.
+    let _ = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("first echo should arrive")
+        .expect("stream item present")
+        .expect("item is Ok");
+
+    // Trigger shutdown. Without enforcement, completed() would hang because
+    // the bidi stream is still in-flight from the server's perspective.
+    let before = tokio::time::Instant::now();
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(1), shutdown.completed())
+        .await
+        .expect("drain budget should bound shutdown");
+    let elapsed = before.elapsed();
+    assert!(
+        elapsed >= drain,
+        "shutdown raced past the drain budget — was the timer skipped? elapsed={:?}",
+        elapsed,
+    );
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "shutdown took noticeably longer than the drain budget — was it enforced? elapsed={:?}",
+        elapsed,
+    );
 }
 
 #[tokio_localset_test::localset_test]
