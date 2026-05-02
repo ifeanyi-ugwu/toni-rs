@@ -3,6 +3,7 @@ pub mod adapter;
 mod application_context;
 mod error;
 pub mod builtin_module;
+pub mod context;
 pub mod di;
 pub mod errors;
 pub mod extractors;
