@@ -8,6 +8,9 @@
 //! - in-flight datagram handlers are awaited during `close()` up to the
 //!   configured drain timeout; tasks still running after the timeout are
 //!   aborted
+//! - inbound datagrams that would exceed `with_max_inflight` are rejected
+//!   with an `"overloaded"` frame and the slot is released when the
+//!   in-flight handler completes
 
 use std::time::Duration;
 
@@ -352,19 +355,20 @@ impl SlowUdpModule {}
 async fn udp_in_flight_request_completes_during_drain() {
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_udp_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(SlowUdpModule::module_definition()).await;
-        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
     let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -374,18 +378,7 @@ async fn udp_in_flight_request_completes_during_drain() {
         .unwrap();
     let frame =
         serde_json::json!({"pattern":"udp.slow","data":"hi","id":"1"}).to_string();
-
-    // Retry the send until the server is bound.
-    let send_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match client.send(frame.as_bytes()).await {
-            Ok(_) => break,
-            Err(_) if tokio::time::Instant::now() < send_deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(e) => panic!("UDP send failed: {e}"),
-        }
-    }
+    client.send(frame.as_bytes()).await.unwrap();
 
     // Give the handler time to enter its sleep before shutdown fires.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -411,20 +404,21 @@ async fn udp_in_flight_request_completes_during_drain() {
 async fn udp_drain_aborts_after_timeout() {
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_udp_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(SlowUdpModule::module_definition()).await;
-        let adapter = toni_udp::UdpAdapter::new("127.0.0.1", port)
+        let adapter = toni_udp::UdpAdapter::new("127.0.0.1", 0)
             .with_drain_timeout(Duration::from_millis(50));
         app.use_rpc_adapter(adapter).unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
     let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -434,16 +428,7 @@ async fn udp_drain_aborts_after_timeout() {
         .unwrap();
     let frame =
         serde_json::json!({"pattern":"udp.slow","data":"hi","id":"1"}).to_string();
-    let send_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match client.send(frame.as_bytes()).await {
-            Ok(_) => break,
-            Err(_) if tokio::time::Instant::now() < send_deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(e) => panic!("UDP send failed: {e}"),
-        }
-    }
+    client.send(frame.as_bytes()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     shutdown.shutdown();
@@ -452,4 +437,78 @@ async fn udp_drain_aborts_after_timeout() {
     tokio::time::timeout(Duration::from_millis(500), shutdown.completed())
         .await
         .expect("shutdown must complete after drain timeout aborts the in-flight task");
+}
+
+/// With `with_max_inflight(1)` and a slow handler holding the only slot, a
+/// concurrent datagram must be rejected immediately with an `"overloaded"`
+/// frame. After the slow handler completes the slot is released and a
+/// follow-up datagram succeeds.
+#[tokio_localset_test::localset_test]
+async fn udp_backpressure_rejects_excess_and_releases_after_completion() {
+    use toni::toni_factory::ToniFactory;
+
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowUdpModule::module_definition()).await;
+        let adapter = toni_udp::UdpAdapter::new("127.0.0.1", 0).with_max_inflight(1);
+        app.use_rpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
+
+    // Client 1: occupy the only slot with a slow handler.
+    let client1 = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client1
+        .connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let frame =
+        serde_json::json!({"pattern":"udp.slow","data":"first","id":"1"}).to_string();
+    client1.send(frame.as_bytes()).await.unwrap();
+    // Give the server time to spawn the handler so the slot is genuinely held.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Client 2: must be rejected with "overloaded" while the slot is full.
+    let client2 = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client2
+        .connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let frame =
+        serde_json::json!({"pattern":"udp.slow","data":"second","id":"2"}).to_string();
+    client2.send(frame.as_bytes()).await.unwrap();
+
+    let mut buf = vec![0u8; 65_507];
+    let n = tokio::time::timeout(Duration::from_millis(200), client2.recv(&mut buf))
+        .await
+        .expect("rejection should arrive immediately")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+    assert_eq!(v["id"], "2");
+    assert_eq!(v["err"]["status"], "overloaded");
+
+    // Wait for client 1's reply — slot is freed when this handler finishes.
+    let mut buf = vec![0u8; 65_507];
+    let n = tokio::time::timeout(Duration::from_secs(2), client1.recv(&mut buf))
+        .await
+        .expect("first handler should reply within 2s")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+    assert_eq!(v["response"], "first");
+
+    // Slot is free — a fresh datagram from client 2 succeeds.
+    let frame =
+        serde_json::json!({"pattern":"udp.slow","data":"third","id":"3"}).to_string();
+    client2.send(frame.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 65_507];
+    let n = tokio::time::timeout(Duration::from_secs(2), client2.recv(&mut buf))
+        .await
+        .expect("third handler should reply after slot is freed")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+    assert_eq!(v["response"], "third");
 }

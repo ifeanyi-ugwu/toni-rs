@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
@@ -40,6 +40,14 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// awaited up to a configurable drain timeout (default 10 s). Tasks still
 /// running after the timeout are aborted. Override the timeout — including
 /// disabling it — with [`TcpAdapter::with_drain_timeout`].
+///
+/// # Backpressure
+///
+/// By default the adapter spawns one task per inbound message with no
+/// upper bound. Set a cap with [`TcpAdapter::with_max_inflight`] to
+/// reject requests that would exceed it. Rejected request-response
+/// messages get an `"overloaded"` error frame back; fire-and-forget
+/// messages are dropped with a log line.
 pub struct TcpAdapter {
     host: String,
     port: u16,
@@ -48,6 +56,7 @@ pub struct TcpAdapter {
     local_addr: Option<SocketAddr>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     drain_timeout: Option<Duration>,
+    inflight: Option<Arc<Semaphore>>,
 }
 
 impl TcpAdapter {
@@ -61,6 +70,7 @@ impl TcpAdapter {
             local_addr: None,
             shutdown_tx: Arc::new(tx),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
+            inflight: None,
         }
     }
 
@@ -68,6 +78,15 @@ impl TcpAdapter {
     /// aborting them. Pass `None` to wait without bound.
     pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.drain_timeout = timeout.into();
+        self
+    }
+
+    /// Cap the number of concurrently running handler tasks across all
+    /// connections. Inbound requests over the cap are rejected immediately
+    /// with an `"overloaded"` error frame (or dropped, for fire-and-forget).
+    /// Default: unbounded.
+    pub fn with_max_inflight(mut self, max: usize) -> Self {
+        self.inflight = Some(Arc::new(Semaphore::new(max)));
         self
     }
 }
@@ -106,6 +125,7 @@ impl RpcAdapter for TcpAdapter {
             .expect("bind() must be called before serve()");
         let shutdown_tx = self.shutdown_tx.clone();
         let drain_timeout = self.drain_timeout;
+        let inflight = self.inflight.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
@@ -131,12 +151,14 @@ impl RpcAdapter for TcpAdapter {
                             let callbacks = callbacks.clone();
                             let tasks_for_conn = tasks.clone();
                             let conn_shutdown_rx = shutdown_tx.subscribe();
+                            let inflight = inflight.clone();
                             tasks.lock().await.spawn(handle_connection(
                                 stream,
                                 peer,
                                 callbacks,
                                 tasks_for_conn,
                                 conn_shutdown_rx,
+                                inflight,
                             ));
                         }
                         Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
@@ -211,6 +233,7 @@ async fn handle_connection(
     callbacks: Arc<RpcMessageCallbacks>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    inflight: Option<Arc<Semaphore>>,
 ) {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -250,10 +273,49 @@ async fn handle_connection(
                 let id = msg["id"].as_str().map(|s| s.to_string());
                 let ctx = RpcContext::new(pattern);
 
+                // Backpressure: try to claim a permit before spawning. If
+                // the cap is full, reject inline (write is cheap) so the
+                // caller learns immediately instead of queuing forever.
+                let permit: Option<OwnedSemaphorePermit> = match &inflight {
+                    Some(sem) => match sem.clone().try_acquire_owned() {
+                        Ok(p) => Some(p),
+                        Err(_) => {
+                            match &id {
+                                Some(id) => {
+                                    let frame = serde_json::json!({
+                                        "id": id,
+                                        "err": {
+                                            "message": "server at capacity",
+                                            "status": "overloaded"
+                                        }
+                                    });
+                                    let mut line = frame.to_string();
+                                    line.push('\n');
+                                    let mut w = writer.lock().await;
+                                    if let Err(e) = w.write_all(line.as_bytes()).await {
+                                        tracing::error!(error = %e, "TcpAdapter write error on overload reject");
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        addr = %addr,
+                                        "TcpAdapter dropping fire-and-forget message: at capacity"
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                    },
+                    None => None,
+                };
+
                 let callbacks = callbacks.clone();
                 let writer = writer.clone();
 
                 tasks.lock().await.spawn(async move {
+                    // Permit is held for the lifetime of this task; releases
+                    // on drop when the task completes or is aborted.
+                    let _permit = permit;
                     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
                         .catch_unwind()
                         .await;

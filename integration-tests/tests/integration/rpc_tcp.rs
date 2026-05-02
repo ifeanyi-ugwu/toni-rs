@@ -6,6 +6,9 @@
 //!   `ShutdownHandle::completed().await` resolves cleanly
 //! - in-flight requests are awaited during `close()` up to the configured
 //!   drain timeout; tasks still running after the timeout are aborted
+//! - inbound requests that would exceed `with_max_inflight` are rejected
+//!   with an `"overloaded"` frame and the slot is released when the
+//!   in-flight handler completes
 
 use std::time::Duration;
 
@@ -214,22 +217,25 @@ async fn tcp_in_flight_request_completes_during_drain() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
-        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
-    let stream = connect_with_retry(port).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -262,23 +268,26 @@ async fn tcp_drain_aborts_after_timeout() {
     use tokio::io::AsyncWriteExt;
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
-        let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", port)
+        let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", 0)
             .with_drain_timeout(Duration::from_millis(50));
         app.use_rpc_adapter(adapter).unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
-    let stream = connect_with_retry(port).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let (_reader, mut writer) = stream.into_split();
     // Handler sleeps 300 ms but the drain budget is only 50 ms.
     let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"hi","id":"1"}).to_string();
@@ -292,4 +301,79 @@ async fn tcp_drain_aborts_after_timeout() {
     tokio::time::timeout(Duration::from_millis(500), shutdown.completed())
         .await
         .expect("shutdown must complete after drain timeout aborts the in-flight task");
+}
+
+/// With `with_max_inflight(1)` and a slow handler holding the only slot, a
+/// concurrent request on a second connection must be rejected immediately
+/// with an `"overloaded"` frame rather than queuing. After the slow handler
+/// completes the slot is released and a follow-up request succeeds.
+#[tokio_localset_test::localset_test]
+async fn tcp_backpressure_rejects_excess_and_releases_after_completion() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use toni::toni_factory::ToniFactory;
+
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", 0).with_max_inflight(1);
+        app.use_rpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let port = port_rx.await.unwrap();
+
+    // Connection 1: occupy the only slot with a slow handler.
+    let stream1 = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let (reader1, mut writer1) = stream1.into_split();
+    let mut reader1 = BufReader::new(reader1);
+    let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"first","id":"1"}).to_string();
+    frame.push('\n');
+    writer1.write_all(frame.as_bytes()).await.unwrap();
+    // Give the server time to spawn the handler so the slot is genuinely held.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Connection 2: should be rejected with "overloaded" since the slot is full.
+    let stream2 = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let (reader2, mut writer2) = stream2.into_split();
+    let mut reader2 = BufReader::new(reader2);
+    let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"second","id":"2"}).to_string();
+    frame.push('\n');
+    writer2.write_all(frame.as_bytes()).await.unwrap();
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(200), reader2.read_line(&mut line))
+        .await
+        .expect("rejection should arrive immediately, not queue")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["id"], "2");
+    assert_eq!(v["err"]["status"], "overloaded");
+
+    // Wait for the slow handler on connection 1 to finish.
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(2), reader1.read_line(&mut line))
+        .await
+        .expect("first handler should reply within 2s")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["response"], "first");
+
+    // Slot is now free — a fresh request on connection 2 succeeds.
+    let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"third","id":"3"}).to_string();
+    frame.push('\n');
+    writer2.write_all(frame.as_bytes()).await.unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(2), reader2.read_line(&mut line))
+        .await
+        .expect("third handler should reply after slot is freed")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["response"], "third");
 }
