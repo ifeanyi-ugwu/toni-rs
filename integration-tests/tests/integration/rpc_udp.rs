@@ -15,25 +15,23 @@ use toni::module;
 use toni::rpc::{RpcContext, RpcData, RpcError};
 use toni_macros::rpc_controller;
 
-async fn pick_free_udp_port() -> u16 {
-    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = socket.local_addr().unwrap().port();
-    drop(socket);
-    port
-}
-
+/// Spawn an app with the UDP RPC adapter on an OS-assigned port and wait
+/// for `app.bind().await` to surface the listening address before returning.
+/// The caller is guaranteed the socket is live by the time it gets the port.
 async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
     use toni::toni_factory::ToniFactory;
-    let port = pick_free_udp_port().await;
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(module).await;
-        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.start().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
-    port
+    port_rx.await.expect("RPC server failed to bind")
 }
 
 /// Send one datagram and wait briefly for a reply on the same client socket.
@@ -56,8 +54,9 @@ async fn udp_rpc_timeout(
         frame["id"] = serde_json::Value::String(id.to_string());
     }
 
-    // The server binds inside its serve future, so the first datagram may be
-    // dropped if it lands before bind completes. Retry the send a few times.
+    // Defensive retry on send errors (kernel queue pressure on the local
+    // socket). The server is already bound by the time we get here — the
+    // port channel guarantees readiness — so this isn't covering bind timing.
     let body = frame.to_string();
     let send_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
@@ -192,20 +191,21 @@ async fn udp_fire_and_forget_produces_no_reply() {
 async fn udp_app_shutdown_stops_the_recv_loop() {
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_udp_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(UdpRpcModule::module_definition()).await;
-        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
 
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
     // Server is responsive before shutdown.
@@ -305,9 +305,6 @@ async fn udp_client_transport_round_trips_and_rejects_oversized() {
     use toni::{RpcClientTransport, RpcData};
 
     let port = start_rpc_server(UdpRpcModule::module_definition()).await;
-
-    // Give the server a moment to bind before the typed client tries to send.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let transport = toni_udp::UdpClientTransport::new("127.0.0.1", port)
         .with_timeout(Duration::from_millis(500));

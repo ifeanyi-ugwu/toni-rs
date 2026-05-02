@@ -13,44 +13,23 @@ use toni::module;
 use toni::rpc::{RpcContext, RpcData, RpcError};
 use toni_macros::rpc_controller;
 
-/// Pick an OS-assigned free port by binding then dropping a listener.
-/// Tiny TOCTOU window — fine for localhost tests, robust under nextest's
-/// process-per-test isolation.
-async fn pick_free_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
-}
-
+/// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
+/// for `app.bind().await` to surface the listening address before returning.
+/// The caller is guaranteed the listener is live by the time it gets the port.
 async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
     use toni::toni_factory::ToniFactory;
-    let port = pick_free_port().await;
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(module).await;
-        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.start().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
-    port
-}
-
-/// `start_rpc_server` spawns the app on a `LocalSet`; the bind happens in
-/// `app.start()` synchronously but there is no signal back to this task
-/// before that completes. Retry connect until success or the deadline expires.
-async fn connect_with_retry(port: u16) -> tokio::net::TcpStream {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await {
-            Ok(s) => return s,
-            Err(_) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(e) => panic!("RPC server never accepted on port {}: {}", port, e),
-        }
-    }
+    port_rx.await.expect("RPC server failed to bind")
 }
 
 /// Sends one request over a raw TCP connection with a timeout.
@@ -63,7 +42,9 @@ async fn tcp_rpc_timeout(
 ) -> Option<serde_json::Value> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let stream = connect_with_retry(port).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -72,7 +53,7 @@ async fn tcp_rpc_timeout(
     writer.write_all(frame.as_bytes()).await.unwrap();
 
     let mut line = String::new();
-    tokio::time::timeout(deadline, reader.read_line(&mut line))
+    let _ = tokio::time::timeout(deadline, reader.read_line(&mut line))
         .await
         .ok()?;
     serde_json::from_str(line.trim()).ok()
@@ -161,24 +142,27 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use toni::toni_factory::ToniFactory;
 
-    let port = pick_free_port().await;
-
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(ShutdownTcpModule::module_definition()).await;
-        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
+        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
-        app.bind().await.unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
 
+    let port = port_rx.await.unwrap();
     let shutdown = shutdown_rx.await.unwrap();
 
     // Server is responsive before shutdown.
-    let stream = connect_with_retry(port).await;
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut frame = serde_json::json!({"pattern":"tcp.echo","data":"hi","id":"1"}).to_string();
