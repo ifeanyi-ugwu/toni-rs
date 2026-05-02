@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::net::UdpSocket;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
@@ -50,6 +50,14 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// datagrams, then in-flight per-datagram tasks are awaited up to a
 /// configurable drain timeout (default 10 s). Tasks still running after the
 /// timeout are aborted. Override with [`UdpAdapter::with_drain_timeout`].
+///
+/// # Backpressure
+///
+/// By default the adapter spawns one task per inbound datagram with no
+/// upper bound. Set a cap with [`UdpAdapter::with_max_inflight`] to
+/// reject datagrams that would exceed it. Rejected request-response
+/// datagrams get an `"overloaded"` error frame back; fire-and-forget
+/// datagrams are dropped with a log line.
 pub struct UdpAdapter {
     host: String,
     port: u16,
@@ -58,6 +66,7 @@ pub struct UdpAdapter {
     local_addr: Option<SocketAddr>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     drain_timeout: Option<Duration>,
+    inflight: Option<Arc<Semaphore>>,
 }
 
 impl UdpAdapter {
@@ -71,6 +80,7 @@ impl UdpAdapter {
             local_addr: None,
             shutdown_tx: Arc::new(tx),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
+            inflight: None,
         }
     }
 
@@ -78,6 +88,15 @@ impl UdpAdapter {
     /// before aborting them. Pass `None` to wait without bound.
     pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.drain_timeout = timeout.into();
+        self
+    }
+
+    /// Cap the number of concurrently running datagram handlers. Inbound
+    /// datagrams over the cap are rejected immediately with an
+    /// `"overloaded"` error frame (or dropped, for fire-and-forget).
+    /// Default: unbounded.
+    pub fn with_max_inflight(mut self, max: usize) -> Self {
+        self.inflight = Some(Arc::new(Semaphore::new(max)));
         self
     }
 }
@@ -115,6 +134,7 @@ impl RpcAdapter for UdpAdapter {
             .take()
             .expect("bind() must be called before serve()");
         let drain_timeout = self.drain_timeout;
+        let inflight = self.inflight.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
@@ -148,7 +168,22 @@ impl RpcAdapter for UdpAdapter {
                             let socket = socket.clone();
                             let callbacks = callbacks.clone();
 
+                            // Backpressure: claim a permit before spawning.
+                            // If the cap is full, reject inline so the caller
+                            // learns immediately. Fire-and-forget is dropped.
+                            let permit: Option<OwnedSemaphorePermit> = match &inflight {
+                                Some(sem) => match sem.clone().try_acquire_owned() {
+                                    Ok(p) => Some(p),
+                                    Err(_) => {
+                                        reject_overloaded(&socket, src, &payload).await;
+                                        continue;
+                                    }
+                                },
+                                None => None,
+                            };
+
                             tasks.lock().await.spawn(async move {
+                                let _permit = permit;
                                 handle_datagram(socket, src, payload, callbacks).await;
                             });
                         }
@@ -209,6 +244,33 @@ async fn drain_tasks(
             }
         }
         None => drain.await,
+    }
+}
+
+/// Send an `"overloaded"` error frame to the source if the inbound datagram
+/// has an `id` (request-response). Fire-and-forget messages are dropped with
+/// a log line — there's no caller waiting to be notified.
+async fn reject_overloaded(
+    socket: &UdpSocket,
+    src: std::net::SocketAddr,
+    payload: &[u8],
+) {
+    let id: Option<String> = serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v["id"].as_str().map(|s| s.to_string()));
+
+    let Some(id) = id else {
+        tracing::warn!(addr = %src, "UdpAdapter dropping fire-and-forget datagram: at capacity");
+        return;
+    };
+
+    let frame = serde_json::json!({
+        "id": id,
+        "err": { "message": "server at capacity", "status": "overloaded" }
+    });
+    let bytes = frame.to_string().into_bytes();
+    if let Err(e) = socket.send_to(&bytes, src).await {
+        tracing::error!(error = %e, "UdpAdapter send error on overload reject");
     }
 }
 
