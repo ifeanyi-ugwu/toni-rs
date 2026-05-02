@@ -8,12 +8,16 @@
 //! - The user never types `*Server::new(handler)` and never calls
 //!   `adapter.add_service()` — DI + module registration is the entire
 //!   wiring story.
-//! - An injected dependency reaches the handler, verifying DI works.
+//! - All four call modes (unary, server-streaming, client-streaming, bidi)
+//!   work through the macros without per-mode special handling — the macro
+//!   just hands tonic an instance of the trait impl, and tonic dispatches.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
 use toni_macros::{grpc_methods, grpc_service, injectable, module};
 
@@ -65,19 +69,82 @@ impl Orders for OrdersGrpcService {
             status: format!("created:{}", req.item),
         }))
     }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let id = request.into_inner().id;
+        let stream = futures_util::stream::iter(
+            ["queued", "picked", "shipped"]
+                .into_iter()
+                .map(move |status| {
+                    Ok(orders_pb::ProgressEvent {
+                        id,
+                        status: status.to_string(),
+                    })
+                }),
+        );
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        let mut stream = request.into_inner();
+        let mut created: u32 = 0;
+        let first_id = self.counter.next_id();
+        // Reserve subsequent ids contiguously so the response can summarise.
+        while let Some(item) = stream.next().await {
+            let _req = item?;
+            if created > 0 {
+                self.counter.next_id();
+            }
+            created += 1;
+        }
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created,
+            first_id,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let mut inbound = request.into_inner();
+        let counter = self.counter.clone();
+        let outbound = async_stream::stream! {
+            while let Some(msg) = inbound.next().await {
+                match msg {
+                    Ok(m) => yield Ok(orders_pb::ChatMessage {
+                        text: m.text,
+                        id: counter.next_id(),
+                    }),
+                    Err(e) => yield Err(e),
+                }
+            }
+        };
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
 }
 
 #[module(providers: [OrdersCounter, OrdersGrpcService])]
 struct GrpcMacrosModule;
 
-#[tokio_localset_test::localset_test]
-async fn grpc_service_macro_di_round_trip() {
+/// Boots the gRPC server, returns (port, shutdown handle).
+async fn boot() -> (u16, toni::ShutdownHandle) {
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let adapter = toni_grpc::GrpcAdapter::new(addr);
-
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
-
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(GrpcMacrosModule::module_definition()).await;
@@ -92,17 +159,23 @@ async fn grpc_service_macro_di_round_trip() {
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
 
-    let port = port_rx.await.unwrap();
-    let shutdown = shutdown_rx.await.unwrap();
-
+async fn connect(port: u16) -> OrdersClient<tonic::transport::Channel> {
     let endpoint = format!("http://127.0.0.1:{}", port);
-    let mut client = tonic::transport::Endpoint::from_shared(endpoint)
+    tonic::transport::Endpoint::from_shared(endpoint)
         .unwrap()
         .connect()
         .await
         .map(OrdersClient::new)
-        .expect("gRPC connect should succeed");
+        .expect("gRPC connect should succeed")
+}
+
+#[tokio_localset_test::localset_test]
+async fn grpc_service_macro_di_round_trip() {
+    let (port, shutdown) = boot().await;
+    let mut client = connect(port).await;
 
     let resp = tokio::time::timeout(
         Duration::from_secs(2),
@@ -119,7 +192,6 @@ async fn grpc_service_macro_di_round_trip() {
     assert!(resp.id >= 1000, "id should come from the injected counter, got {}", resp.id);
     assert_eq!(resp.status, "created:keyboard");
 
-    // The handler-side validation path also reaches the service through DI.
     let err = client
         .create(orders_pb::CreateOrderRequest {
             item: "ignored".to_string(),
@@ -128,6 +200,94 @@ async fn grpc_service_macro_di_round_trip() {
         .await
         .expect_err("qty=0 must fail");
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+#[tokio_localset_test::localset_test]
+async fn grpc_server_streaming_round_trip() {
+    let (port, shutdown) = boot().await;
+    let mut client = connect(port).await;
+
+    let mut stream = client
+        .watch_progress(orders_pb::WatchRequest { id: 42 })
+        .await
+        .expect("server-streaming call must succeed")
+        .into_inner();
+
+    let mut statuses = Vec::new();
+    while let Some(item) = stream.next().await {
+        let evt = item.expect("stream item must be Ok");
+        assert_eq!(evt.id, 42, "server-streaming events must echo the request id");
+        statuses.push(evt.status);
+    }
+    assert_eq!(statuses, vec!["queued", "picked", "shipped"]);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+#[tokio_localset_test::localset_test]
+async fn grpc_client_streaming_round_trip() {
+    let (port, shutdown) = boot().await;
+    let mut client = connect(port).await;
+
+    let outbound = futures_util::stream::iter(vec![
+        orders_pb::CreateOrderRequest { item: "a".into(), qty: 1 },
+        orders_pb::CreateOrderRequest { item: "b".into(), qty: 2 },
+        orders_pb::CreateOrderRequest { item: "c".into(), qty: 3 },
+    ]);
+
+    let resp = client
+        .bulk_create(outbound)
+        .await
+        .expect("client-streaming call must succeed")
+        .into_inner();
+
+    assert_eq!(resp.created, 3);
+    assert!(
+        resp.first_id >= 1000,
+        "first_id should come from the injected counter, got {}",
+        resp.first_id
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+#[tokio_localset_test::localset_test]
+async fn grpc_bidi_streaming_round_trip() {
+    let (port, shutdown) = boot().await;
+    let mut client = connect(port).await;
+
+    let outbound = futures_util::stream::iter(vec![
+        orders_pb::ChatMessage { text: "hello".into(), id: 0 },
+        orders_pb::ChatMessage { text: "world".into(), id: 0 },
+    ]);
+
+    let mut inbound = client
+        .chat(outbound)
+        .await
+        .expect("bidi call must succeed")
+        .into_inner();
+
+    let mut texts = Vec::new();
+    let mut ids = Vec::new();
+    while let Some(item) = inbound.next().await {
+        let m = item.expect("bidi item must be Ok");
+        texts.push(m.text);
+        ids.push(m.id);
+    }
+    assert_eq!(texts, vec!["hello", "world"]);
+    assert_eq!(ids.len(), 2);
+    assert!(ids[0] >= 1000 && ids[1] == ids[0] + 1, "ids must come from the counter");
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
