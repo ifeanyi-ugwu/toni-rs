@@ -21,6 +21,8 @@ toni-udp = { path = "../toni-udp" }
 toni-grpc = { path = "../toni-grpc" }
 tonic = "0.14"
 tonic-health = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
 toni-async-graphql = { path = "../toni-async-graphql" }
 
 # Testing dependencies
@@ -38,3 +40,7 @@ tokio-tungstenite = "0.28"
 futures-util = "0.3"
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+protoc-bin-vendored = "3"

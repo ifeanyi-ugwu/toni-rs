@@ -32,6 +32,7 @@ pub struct EnhancerTraits {
     pub is_error_handler: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
+    pub is_grpc_service: bool,
 }
 
 /// Detect which enhancer traits a struct implements.
@@ -96,6 +97,7 @@ pub fn generate_instance_provider_system(
     scope: ProviderScope,
     is_gateway: bool,
     is_rpc_controller: bool,
+    is_grpc_service: bool,
 ) -> Result<TokenStream> {
     let struct_name = match struct_def {
         Some(s) => s.ident.clone(),
@@ -121,6 +123,7 @@ pub fn generate_instance_provider_system(
     let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
     enhancer_traits.is_gateway = is_gateway;
     enhancer_traits.is_rpc_controller = is_rpc_controller;
+    enhancer_traits.is_grpc_service = is_grpc_service;
 
     let provider_wrapper = generate_provider_wrapper(
         &struct_name,
@@ -313,6 +316,15 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
             __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
                 ::std::sync::Arc::new(
                     Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
+                )
+            ));
+        });
+    }
+    if traits.is_grpc_service {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::GrpcService(
+                ::std::sync::Arc::new(
+                    Box::new((*instance).clone()) as Box<dyn ::toni::adapter::GrpcServiceTrait>
                 )
             ));
         });

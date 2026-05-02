@@ -514,12 +514,21 @@ impl ToniApplication {
             }
         }
 
-        // Wire the gRPC adapter (no discovery yet — gRPC services are passed
-        // to the adapter directly during construction by the user, before
-        // `use_grpc_adapter` is called).
+        // Wire the gRPC adapter. Services declared with `#[grpc_service]` +
+        // `#[grpc_methods]` are picked up from the DI container; users may
+        // also wire services directly on the adapter via its own
+        // `add_service` builder before `use_grpc_adapter`.
         let mut grpc_addr: Option<SocketAddr> = None;
         if let Some(adapter) = self.grpc_adapter.take() {
-            match GrpcLifecycleHandle::bind(adapter) {
+            let grpc_services: Vec<Arc<Box<dyn crate::adapter::GrpcServiceTrait>>> = self
+                .routes_resolver
+                .container
+                .borrow()
+                .get_grpc_services()
+                .values()
+                .cloned()
+                .collect();
+            match GrpcLifecycleHandle::bind(adapter, grpc_services) {
                 Ok(handle) => {
                     grpc_addr = handle.local_addr();
                     if let Some(addr) = grpc_addr {

@@ -1,9 +1,12 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+
+use crate::adapter::grpc_service_trait::GrpcServiceTrait;
 
 /// Interface for gRPC transport adapters.
 ///
@@ -21,14 +24,20 @@ use async_trait::async_trait;
 /// inside tonic and the user's trait `impl`s.
 #[async_trait]
 pub trait GrpcAdapter: Send + Sync + 'static {
-    /// Acquire the listening socket.
+    /// Acquire the listening socket and accept any framework-discovered
+    /// services for registration.
     ///
     /// Called once before `serve`. Implementations should bind synchronously
     /// (so port-in-use surfaces as `Err` from `bind()` rather than panicking
     /// inside the spawned serve loop), capture the local address for
-    /// [`local_addr`](GrpcAdapter::local_addr), and prepare the configured
-    /// tonic `Server`.
-    fn bind(&mut self) -> Result<()>;
+    /// [`local_addr`](GrpcAdapter::local_addr), and merge `services` into the
+    /// configured tonic `Server`'s routes — each service contributes itself
+    /// via [`GrpcServiceTrait::register_with`] using a tonic
+    /// `RoutesBuilder` passed as `&mut dyn Any`.
+    ///
+    /// `services` may be empty when the user wires services directly via
+    /// adapter-specific `add_service` calls.
+    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()>;
 
     /// Return the future that drives the gRPC serve loop.
     ///
@@ -55,7 +64,7 @@ pub trait GrpcAdapter: Send + Sync + 'static {
 /// `ToniApplication`.
 #[async_trait]
 pub(crate) trait ErasedGrpcAdapter: Send + Sync + 'static {
-    fn bind(&mut self) -> Result<()>;
+    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()>;
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
     fn local_addr(&self) -> Option<SocketAddr>;
     async fn close(&mut self) -> Result<()>;
@@ -63,8 +72,8 @@ pub(crate) trait ErasedGrpcAdapter: Send + Sync + 'static {
 
 #[async_trait]
 impl<G: GrpcAdapter> ErasedGrpcAdapter for G {
-    fn bind(&mut self) -> Result<()> {
-        <G as GrpcAdapter>::bind(self)
+    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()> {
+        <G as GrpcAdapter>::bind(self, services)
     }
 
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {

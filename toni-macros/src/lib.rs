@@ -10,6 +10,7 @@ mod config_macro;
 mod controller_macro;
 mod enhancer;
 mod gateway_macro;
+mod grpc_macro;
 mod markers_params;
 mod middleware_macro;
 mod module_macro;
@@ -546,4 +547,57 @@ pub fn message_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
+}
+
+// ============================================================================
+// gRPC SERVICE MACROS
+// ============================================================================
+
+/// Declares a struct as a gRPC service that the framework discovers and
+/// registers with the gRPC adapter at bind time.
+///
+/// Lives on the struct declaration plus its inherent impl block (parallel
+/// to `#[rpc_controller]`). The proto trait impl gets `#[grpc_methods]`
+/// separately.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[grpc_service(pub struct OrdersGrpcService { #[inject] repo: OrdersRepo })]
+/// impl OrdersGrpcService {
+///     pub fn new(repo: ::std::sync::Arc<OrdersRepo>) -> Self { Self { repo } }
+/// }
+///
+/// #[grpc_methods]
+/// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
+/// ```
+#[proc_macro_attribute]
+pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = proc_macro2::TokenStream::from(attr);
+    let item = proc_macro2::TokenStream::from(item);
+    let output = grpc_macro::grpc_service::handle_grpc_service(attr, item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
+/// Annotates `impl SomeProtoTrait for YourService` with the wiring that
+/// makes the service register itself with the gRPC adapter.
+///
+/// The wrapping `*Server` type is inferred from the proto trait's name
+/// (`OrdersService` → `OrdersServer` in the same parent path). Override
+/// when needed:
+///
+/// ```rust,ignore
+/// #[grpc_methods(server = orders_proto::OrdersServer)]
+/// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
+/// ```
+///
+/// The annotated impl block is passed through unchanged; only an
+/// additional `impl GrpcServiceTrait for YourService` block is emitted
+/// alongside it.
+#[proc_macro_attribute]
+pub fn grpc_methods(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = proc_macro2::TokenStream::from(attr);
+    let item = proc_macro2::TokenStream::from(item);
+    let output = grpc_macro::grpc_methods::handle_grpc_methods(attr, item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
