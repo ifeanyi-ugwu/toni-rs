@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
+use tracing::Instrument;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -271,6 +272,16 @@ async fn handle_connection(
                 let data = RpcData::Json(msg["data"].clone());
                 // `id` present → caller expects a response
                 let id = msg["id"].as_str().map(|s| s.to_string());
+                // Build the per-request span before `pattern` is moved into ctx.
+                // Each spawned handler runs inside this span so all events
+                // emitted by user handlers inherit pattern/id/peer fields.
+                let span = tracing::info_span!(
+                    "rpc.request",
+                    transport = "tcp",
+                    pattern = %pattern,
+                    id = ?id,
+                    peer = %addr,
+                );
                 let ctx = RpcContext::new(pattern);
 
                 // Backpressure: try to claim a permit before spawning. If
@@ -312,7 +323,7 @@ async fn handle_connection(
                 let callbacks = callbacks.clone();
                 let writer = writer.clone();
 
-                tasks.lock().await.spawn(async move {
+                let task = async move {
                     // Permit is held for the lifetime of this task; releases
                     // on drop when the task completes or is aborted.
                     let _permit = permit;
@@ -367,7 +378,8 @@ async fn handle_connection(
                     if let Err(e) = w.write_all(line.as_bytes()).await {
                         tracing::error!(error = %e, "TcpAdapter write error");
                     }
-                });
+                };
+                tasks.lock().await.spawn(task.instrument(span));
             }
             Err(e) => {
                 tracing::error!(addr = %addr, error = %e, "TcpAdapter read error");

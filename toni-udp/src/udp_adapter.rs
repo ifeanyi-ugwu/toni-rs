@@ -9,6 +9,7 @@ use futures_util::FutureExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
+use tracing::Instrument;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
@@ -300,62 +301,76 @@ async fn handle_datagram(
     let data = RpcData::Json(msg["data"].clone());
     // `id` present → caller expects a response
     let id = msg["id"].as_str().map(|s| s.to_string());
+    // Per-request span — covers the user handler invocation and the
+    // response-write so any events from the handler inherit the request
+    // context. Built before `pattern` is moved into ctx.
+    let span = tracing::info_span!(
+        "rpc.request",
+        transport = "udp",
+        pattern = %pattern,
+        id = ?id,
+        peer = %src,
+    );
     let ctx = RpcContext::new(pattern);
 
-    let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
-        .catch_unwind()
-        .await;
+    async move {
+        let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
+            .catch_unwind()
+            .await;
 
-    let Some(id) = id else {
-        if outcome.is_err() {
-            tracing::error!("RPC handler panicked on fire-and-forget message");
-        }
-        return;
-    };
+        let Some(id) = id else {
+            if outcome.is_err() {
+                tracing::error!("RPC handler panicked on fire-and-forget message");
+            }
+            return;
+        };
 
-    let payload_json = match outcome {
-        Err(_) => {
-            tracing::error!("RPC handler panicked; returning error to caller");
-            serde_json::json!({
-                "id": id,
-                "err": { "message": "internal server error", "status": "error" }
-            })
-        }
-        Ok(outcome) => match outcome {
-            Ok(Some(reply)) => {
-                let v = match reply {
-                    RpcData::Json(v) => v,
-                    RpcData::Text(s) => serde_json::Value::String(s),
-                    RpcData::Binary(_) => serde_json::Value::Null,
-                };
-                serde_json::json!({ "id": id, "response": v })
-            }
-            Ok(None) => {
-                // Handler is fire-and-forget (#[event_pattern]) but caller
-                // sent an id — send an explicit ack so the caller can close
-                // the pending request rather than timing out.
-                serde_json::json!({ "id": id, "response": null })
-            }
-            Err(e) => {
-                let status = error_status(&e);
+        let payload_json = match outcome {
+            Err(_) => {
+                tracing::error!("RPC handler panicked; returning error to caller");
                 serde_json::json!({
                     "id": id,
-                    "err": { "message": e.to_string(), "status": status }
+                    "err": { "message": "internal server error", "status": "error" }
                 })
             }
-        },
-    };
+            Ok(outcome) => match outcome {
+                Ok(Some(reply)) => {
+                    let v = match reply {
+                        RpcData::Json(v) => v,
+                        RpcData::Text(s) => serde_json::Value::String(s),
+                        RpcData::Binary(_) => serde_json::Value::Null,
+                    };
+                    serde_json::json!({ "id": id, "response": v })
+                }
+                Ok(None) => {
+                    // Handler is fire-and-forget (#[event_pattern]) but caller
+                    // sent an id — send an explicit ack so the caller can close
+                    // the pending request rather than timing out.
+                    serde_json::json!({ "id": id, "response": null })
+                }
+                Err(e) => {
+                    let status = error_status(&e);
+                    serde_json::json!({
+                        "id": id,
+                        "err": { "message": e.to_string(), "status": status }
+                    })
+                }
+            },
+        };
 
-    let bytes = payload_json.to_string().into_bytes();
-    if bytes.len() > MAX_DATAGRAM {
-        tracing::error!(
-            len = bytes.len(),
-            "UdpAdapter response exceeds max datagram size; dropping"
-        );
-        return;
-    }
+        let bytes = payload_json.to_string().into_bytes();
+        if bytes.len() > MAX_DATAGRAM {
+            tracing::error!(
+                len = bytes.len(),
+                "UdpAdapter response exceeds max datagram size; dropping"
+            );
+            return;
+        }
 
-    if let Err(e) = socket.send_to(&bytes, src).await {
-        tracing::error!(error = %e, "UdpAdapter send error");
+        if let Err(e) = socket.send_to(&bytes, src).await {
+            tracing::error!(error = %e, "UdpAdapter send error");
+        }
     }
+    .instrument(span)
+    .await;
 }

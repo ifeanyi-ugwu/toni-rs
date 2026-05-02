@@ -24,6 +24,7 @@ chrono = "0.4"
 anyhow = "1.0"
 futures = "0.3"
 bytes = "1"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[example]]
@@ -101,6 +102,10 @@ path = "rpc_nats.rs"
 [[example]]
 name = "rpc_nats_client"
 path = "rpc_nats_client.rs"
+
+[[example]]
+name = "rpc_tracing"
+path = "rpc_tracing.rs"
 
 [[example]]
 name = "logging"
