@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::body::Body as TonicBody;
 use tonic::server::NamedService;
@@ -43,18 +43,22 @@ pub struct GrpcAdapter {
     drain_timeout: Option<Duration>,
     listener: Option<TcpListener>,
     local_addr: Option<SocketAddr>,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Two consumers subscribe: tonic's `serve_with_incoming_shutdown` (so
+    /// it begins natural drain), and the drain-timeout guard (so the deadline
+    /// timer starts only *after* shutdown is signalled, not at startup).
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl GrpcAdapter {
     pub fn new(addr: SocketAddr) -> Self {
+        let (tx, _) = watch::channel(false);
         Self {
             addr,
             routes_builder: RoutesBuilder::default(),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
             listener: None,
             local_addr: None,
-            shutdown_tx: None,
+            shutdown_tx: Arc::new(tx),
         }
     }
 
@@ -123,28 +127,57 @@ impl toni::GrpcAdapter for GrpcAdapter {
             .take()
             .expect("bind() must be called before serve()");
         let routes: Routes = std::mem::take(&mut self.routes_builder).routes();
-
-        let (tx, rx) = oneshot::channel::<()>();
-        self.shutdown_tx = Some(tx);
+        let drain_timeout = self.drain_timeout;
         let addr = self.local_addr;
 
+        let shutdown_tonic = self.shutdown_tx.subscribe();
+        let shutdown_drain = self.shutdown_tx.subscribe();
+
         Ok(Box::pin(async move {
-            let shutdown = async move {
-                let _ = rx.await;
+            // Tonic's shutdown signal: fires when the watch flips to true.
+            // From there tonic begins natural drain — completes once every
+            // in-flight RPC finishes (or the deadline below abort-races it).
+            let shutdown_for_tonic = wait_for_shutdown(shutdown_tonic);
+
+            // Drain deadline: the timer starts *only* after shutdown is
+            // signalled. Without this gate, a `tokio::time::timeout` over
+            // the whole serve future would cap total uptime, not drain time.
+            let drain_guard = async move {
+                wait_for_shutdown(shutdown_drain).await;
+                match drain_timeout {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
             };
 
-            // tonic's `serve_with_incoming_shutdown` resolves once the
-            // shutdown signal fires *and* in-flight requests drain. The
-            // drain-timeout knob — bounding how long streaming RPCs are
-            // allowed to hold the future open — lands with the streaming
-            // PR; today it's stored on `self` but not yet enforced.
-            if let Err(e) = Server::builder()
+            let server_fut = Server::builder()
                 .layer(TracingLayer::new())
                 .add_routes(routes)
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
-                .await
-            {
-                tracing::error!(?addr, error = %e, "GrpcAdapter serve error");
+                .serve_with_incoming_shutdown(
+                    TcpListenerStream::new(listener),
+                    shutdown_for_tonic,
+                );
+
+            tokio::pin!(server_fut);
+            tokio::pin!(drain_guard);
+
+            tokio::select! {
+                res = &mut server_fut => {
+                    if let Err(e) = res {
+                        tracing::error!(?addr, error = %e, "GrpcAdapter serve error");
+                    }
+                }
+                _ = &mut drain_guard => {
+                    tracing::warn!(
+                        ?addr,
+                        timeout_ms = drain_timeout.map(|d| d.as_millis() as u64),
+                        "GrpcAdapter drain timed out; in-flight streams will see UNAVAILABLE",
+                    );
+                    // Dropping `server_fut` by leaving the select arm is the
+                    // abort: hyper closes connections, and any task still
+                    // executing a streaming handler is cancelled when its
+                    // task handle inside tonic gets dropped.
+                }
             }
         }))
     }
@@ -154,12 +187,17 @@ impl toni::GrpcAdapter for GrpcAdapter {
     }
 
     async fn close(&mut self) -> Result<()> {
-        if let Some(tx) = self.shutdown_tx.take() {
-            // tonic's serve_with_incoming_shutdown begins draining on this
-            // signal. The serve future itself enforces the drain timeout.
-            let _ = tx.send(());
-        }
+        // Idempotent — the watch coalesces repeat sends into the same value.
+        let _ = self.shutdown_tx.send(true);
         Ok(())
     }
+}
+
+/// `watch::Receiver::wait_for` returns a `Ref<'_, bool>` guard that's
+/// `!Send`; holding it across an `.await` would force the whole serve
+/// future to be `!Send`. Discarding the guard inside this helper keeps the
+/// outer scope's send-ness.
+async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
+    let _ = rx.wait_for(|v| *v).await;
 }
 

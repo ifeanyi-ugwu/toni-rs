@@ -4,6 +4,16 @@ package toni_test.orders;
 
 service Orders {
     rpc Create (CreateOrderRequest) returns (CreateOrderResponse);
+
+    // Server streaming: emits each order's status as it transitions.
+    rpc WatchProgress (WatchRequest) returns (stream ProgressEvent);
+
+    // Client streaming: ingests a sequence of items, returns a summary.
+    rpc BulkCreate (stream CreateOrderRequest) returns (BulkCreateResponse);
+
+    // Bidi streaming: client sends item updates, server echoes each one back
+    // tagged with a server-assigned id.
+    rpc Chat (stream ChatMessage) returns (stream ChatMessage);
 }
 
 message CreateOrderRequest {
@@ -14,4 +24,23 @@ message CreateOrderRequest {
 message CreateOrderResponse {
     uint64 id = 1;
     string status = 2;
+}
+
+message WatchRequest {
+    uint64 id = 1;
+}
+
+message ProgressEvent {
+    uint64 id = 1;
+    string status = 2;
+}
+
+message BulkCreateResponse {
+    uint32 created = 1;
+    uint64 first_id = 2;
+}
+
+message ChatMessage {
+    string text = 1;
+    uint64 id = 2;
 }
