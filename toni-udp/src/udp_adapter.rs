@@ -1,15 +1,19 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::net::UdpSocket;
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex};
+use tokio::task::JoinSet;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
 const MAX_DATAGRAM: usize = 65_507;
+
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// UDP transport adapter for the Toni RPC gateway.
 ///
@@ -38,14 +42,20 @@ const MAX_DATAGRAM: usize = 65_507;
 /// - **Size-bound**: payloads larger than ~65 KiB cannot fit in a single
 ///   datagram. Oversized inbound datagrams are truncated by the kernel and
 ///   the truncated frame is logged and dropped.
-/// - **No graceful shutdown** in v1: the receive loop runs until the process
-///   exits.
+///
+/// # Graceful shutdown
+///
+/// On [`close`](RpcAdapter::close) the receive loop stops accepting new
+/// datagrams, then in-flight per-datagram tasks are awaited up to a
+/// configurable drain timeout (default 10 s). Tasks still running after the
+/// timeout are aborted. Override with [`UdpAdapter::with_drain_timeout`].
 pub struct UdpAdapter {
     host: String,
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     socket: Option<Arc<UdpSocket>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
+    drain_timeout: Option<Duration>,
 }
 
 impl UdpAdapter {
@@ -57,7 +67,15 @@ impl UdpAdapter {
             callbacks: None,
             socket: None,
             shutdown_tx: Arc::new(tx),
+            drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
         }
+    }
+
+    /// Set how long `close()` waits for in-flight datagram tasks to finish
+    /// before aborting them. Pass `None` to wait without bound.
+    pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.drain_timeout = timeout.into();
+        self
     }
 }
 
@@ -89,6 +107,7 @@ impl RpcAdapter for UdpAdapter {
             .socket
             .take()
             .expect("bind() must be called before serve()");
+        let drain_timeout = self.drain_timeout;
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
@@ -98,11 +117,14 @@ impl RpcAdapter for UdpAdapter {
                 .unwrap_or_default();
             tracing::info!(addr, "UdpAdapter listening");
 
+            // Tracks every spawned per-datagram task so close() can drain them.
+            let tasks: Arc<Mutex<JoinSet<()>>> = Arc::new(Mutex::new(JoinSet::new()));
+
             let mut buf = vec![0u8; MAX_DATAGRAM];
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown_rx.wait_for(|v| *v) => {
+                    _ = wait_for_shutdown(&mut shutdown_rx) => {
                         tracing::info!(addr, "UdpAdapter shutting down");
                         break;
                     }
@@ -119,7 +141,7 @@ impl RpcAdapter for UdpAdapter {
                             let socket = socket.clone();
                             let callbacks = callbacks.clone();
 
-                            tokio::spawn(async move {
+                            tasks.lock().await.spawn(async move {
                                 handle_datagram(socket, src, payload, callbacks).await;
                             });
                         }
@@ -129,12 +151,53 @@ impl RpcAdapter for UdpAdapter {
                     }
                 }
             }
+
+            drain_tasks(tasks, drain_timeout, &addr).await;
         }))
     }
 
     async fn close(&mut self) -> Result<()> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+// `watch::Receiver::wait_for` resolves to `Result<Ref<'_, T>, _>`. The
+// `Ref` guard isn't `Send`, which forces the whole `serve` future to be
+// `!Send` whenever we hold a `Mutex` lock across it. Wrapping the await
+// here drops the guard inside the helper so the outer scope sees `()`.
+async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
+    let _ = rx.wait_for(|v| *v).await;
+}
+
+async fn drain_tasks(
+    tasks: Arc<Mutex<JoinSet<()>>>,
+    drain_timeout: Option<Duration>,
+    addr: &str,
+) {
+    let drain = async {
+        let mut js = tasks.lock().await;
+        while js.join_next().await.is_some() {}
+    };
+
+    match drain_timeout {
+        Some(d) => {
+            if tokio::time::timeout(d, drain).await.is_err() {
+                let mut js = tasks.lock().await;
+                let aborted = js.len();
+                if aborted > 0 {
+                    tracing::warn!(
+                        addr,
+                        aborted,
+                        timeout_ms = d.as_millis() as u64,
+                        "UdpAdapter drain timed out; aborting in-flight tasks"
+                    );
+                    js.abort_all();
+                    while js.join_next().await.is_some() {}
+                }
+            }
+        }
+        None => drain.await,
     }
 }
 

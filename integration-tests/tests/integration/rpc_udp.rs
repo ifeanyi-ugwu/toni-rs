@@ -5,6 +5,9 @@
 //! - unknown patterns return a structured error frame
 //! - panicking handlers return an error frame instead of hanging
 //! - oversized client payloads are rejected before sending
+//! - in-flight datagram handlers are awaited during `close()` up to the
+//!   configured drain timeout; tasks still running after the timeout are
+//!   aborted
 
 use std::time::Duration;
 
@@ -328,4 +331,128 @@ async fn udp_client_transport_round_trips_and_rejects_oversized() {
         toni::RpcClientError::Transport(msg) => assert!(msg.contains("exceeds")),
         other => panic!("expected Transport error, got {other:?}"),
     }
+}
+
+#[rpc_controller(pub struct SlowUdpController {})]
+impl SlowUdpController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("udp.slow")]
+    async fn slow(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(data)
+    }
+}
+
+#[module(providers: [SlowUdpController])]
+impl SlowUdpModule {}
+
+/// A datagram handler already running when shutdown fires must finish
+/// during the drain window — its reply must arrive on the client socket.
+#[tokio_localset_test::localset_test]
+async fn udp_in_flight_request_completes_during_drain() {
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_udp_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowUdpModule::module_definition()).await;
+        app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", port))
+            .unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let shutdown = shutdown_rx.await.unwrap();
+
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client
+        .connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let frame =
+        serde_json::json!({"pattern":"udp.slow","data":"hi","id":"1"}).to_string();
+
+    // Retry the send until the server is bound.
+    let send_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match client.send(frame.as_bytes()).await {
+            Ok(_) => break,
+            Err(_) if tokio::time::Instant::now() < send_deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("UDP send failed: {e}"),
+        }
+    }
+
+    // Give the handler time to enter its sleep before shutdown fires.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    shutdown.shutdown();
+
+    let mut buf = vec![0u8; 65_507];
+    let n = tokio::time::timeout(Duration::from_secs(2), client.recv(&mut buf))
+        .await
+        .expect("in-flight datagram handler must reply during drain")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+    assert_eq!(v["response"], "hi");
+
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete after drain");
+}
+
+/// A datagram handler that outruns the configured drain timeout is aborted.
+/// `shutdown.completed()` must resolve promptly even though the handler
+/// would otherwise have slept for 300 ms.
+#[tokio_localset_test::localset_test]
+async fn udp_drain_aborts_after_timeout() {
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_udp_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowUdpModule::module_definition()).await;
+        let adapter = toni_udp::UdpAdapter::new("127.0.0.1", port)
+            .with_drain_timeout(Duration::from_millis(50));
+        app.use_rpc_adapter(adapter).unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let shutdown = shutdown_rx.await.unwrap();
+
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client
+        .connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let frame =
+        serde_json::json!({"pattern":"udp.slow","data":"hi","id":"1"}).to_string();
+    let send_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match client.send(frame.as_bytes()).await {
+            Ok(_) => break,
+            Err(_) if tokio::time::Instant::now() < send_deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("UDP send failed: {e}"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    shutdown.shutdown();
+
+    // 50 ms drain budget + slack — must resolve well before the 300 ms handler.
+    tokio::time::timeout(Duration::from_millis(500), shutdown.completed())
+        .await
+        .expect("shutdown must complete after drain timeout aborts the in-flight task");
 }
