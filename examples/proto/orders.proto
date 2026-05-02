@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package toni_examples.orders;
+
+service Orders {
+    rpc Create (CreateOrderRequest) returns (CreateOrderResponse);
+}
+
+message CreateOrderRequest {
+    string item = 1;
+    uint32 qty = 2;
+}
+
+message CreateOrderResponse {
+    uint64 id = 1;
+    string item = 2;
+    uint32 qty = 3;
+    string status = 4;
+}

@@ -17,5 +17,6 @@
 //! ```
 
 mod grpc_adapter;
+mod tracing_layer;
 
 pub use grpc_adapter::GrpcAdapter;
