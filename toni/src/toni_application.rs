@@ -115,6 +115,10 @@ pub struct BoundAdapters {
     pub http: Option<SocketAddr>,
     /// One address per unique separate-port WebSocket listener that was bound.
     pub websocket: Vec<SocketAddr>,
+    /// The address the RPC adapter is listening on, when it binds to one.
+    /// `None` for subject-based transports (NATS, Kafka) that have no local
+    /// listener, or when no RPC adapter was registered.
+    pub rpc: Option<SocketAddr>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -431,6 +435,7 @@ impl ToniApplication {
         }
 
         // Wire RPC controllers into the RPC adapter.
+        let mut rpc_addr: Option<SocketAddr> = None;
         if !self.rpc_controllers.is_empty() {
             if self.rpc_adapter.is_none() {
                 tracing::error!(
@@ -454,8 +459,11 @@ impl ToniApplication {
                 if let Some(rpc) = &mut self.rpc_adapter {
                     if let Err(e) = rpc.bind(&all_patterns, callbacks) {
                         tracing::error!(error = %e, "Failed to bind RPC controllers");
-                    } else if let Ok(fut) = rpc.serve() {
-                        serve_futures.push(fut);
+                    } else {
+                        rpc_addr = rpc.local_addr();
+                        if let Ok(fut) = rpc.serve() {
+                            serve_futures.push(fut);
+                        }
                     }
                 }
             }
@@ -490,6 +498,7 @@ impl ToniApplication {
         Ok(BoundAdapters {
             http: http_addr,
             websocket: ws_addrs,
+            rpc: rpc_addr,
         })
     }
 

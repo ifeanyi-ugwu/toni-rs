@@ -33,6 +33,7 @@ pub struct TcpAdapter {
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     listener: Option<TcpListener>,
+    local_addr: Option<SocketAddr>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
@@ -44,6 +45,7 @@ impl TcpAdapter {
             port,
             callbacks: None,
             listener: None,
+            local_addr: None,
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -62,9 +64,13 @@ impl RpcAdapter for TcpAdapter {
             .context("TcpAdapter: failed to set listener nonblocking")?;
         let listener = TcpListener::from_std(std_listener)
             .context("TcpAdapter: failed to register listener with the tokio runtime")?;
+        let local_addr = listener
+            .local_addr()
+            .context("TcpAdapter: failed to read local address from listener")?;
 
         self.callbacks = Some(callbacks);
         self.listener = Some(listener);
+        self.local_addr = Some(local_addr);
         Ok(())
     }
 
@@ -103,6 +109,10 @@ impl RpcAdapter for TcpAdapter {
                 }
             }
         }))
+    }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
     }
 
     async fn close(&mut self) -> Result<()> {
