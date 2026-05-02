@@ -17,6 +17,8 @@ use tower::Service;
 use toni::async_trait;
 use toni::adapter::GrpcServiceTrait;
 
+use crate::tracing_layer::TracingLayer;
+
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// gRPC transport adapter for the Toni framework.
@@ -137,6 +139,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
             // allowed to hold the future open — lands with the streaming
             // PR; today it's stored on `self` but not yet enforced.
             if let Err(e) = Server::builder()
+                .layer(TracingLayer::new())
                 .add_routes(routes)
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
                 .await
