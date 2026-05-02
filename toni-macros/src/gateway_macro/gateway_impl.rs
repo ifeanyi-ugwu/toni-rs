@@ -473,8 +473,9 @@ fn generate_gateway_impl(
         &impl_def,
         dependencies,
         ProviderScope::Singleton,
-        true,
-        false,
+        true,  // is_gateway
+        false, // is_rpc_controller
+        false, // is_grpc_service
     )?;
 
     let gateway_trait_impl = quote! {

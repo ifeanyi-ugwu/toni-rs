@@ -177,6 +177,10 @@ impl ToniContainer {
                     let rc_token = rc.get_token();
                     self.role_registry.rpc_controllers.insert(rc_token, rc);
                 }
+                ProviderRole::GrpcService(gs) => {
+                    let gs_token = gs.token();
+                    self.role_registry.grpc_services.insert(gs_token, gs);
+                }
             }
         }
 
@@ -205,6 +209,12 @@ impl ToniContainer {
 
     pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>> {
         &self.role_registry.rpc_controllers
+    }
+
+    pub fn get_grpc_services(
+        &self,
+    ) -> &FxHashMap<String, Arc<Box<dyn crate::adapter::GrpcServiceTrait>>> {
+        &self.role_registry.grpc_services
     }
 
     /// Resolve middleware tokens for one module against the role registry.

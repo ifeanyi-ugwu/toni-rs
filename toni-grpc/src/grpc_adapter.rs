@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -9,11 +10,12 @@ use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::body::Body as TonicBody;
 use tonic::server::NamedService;
-use tonic::service::Routes;
+use tonic::service::{Routes, RoutesBuilder};
 use tonic::transport::Server;
 use tower::Service;
 
 use toni::async_trait;
+use toni::adapter::GrpcServiceTrait;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -35,7 +37,7 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// pass `None` to wait without bound.
 pub struct GrpcAdapter {
     addr: SocketAddr,
-    routes: Routes,
+    routes_builder: RoutesBuilder,
     drain_timeout: Option<Duration>,
     listener: Option<TcpListener>,
     local_addr: Option<SocketAddr>,
@@ -46,7 +48,7 @@ impl GrpcAdapter {
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             addr,
-            routes: Routes::default(),
+            routes_builder: RoutesBuilder::default(),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
             listener: None,
             local_addr: None,
@@ -71,7 +73,7 @@ impl GrpcAdapter {
             + 'static,
         S::Future: Send + 'static,
     {
-        self.routes = self.routes.add_service(svc);
+        self.routes_builder.add_service(svc);
         self
     }
 
@@ -85,7 +87,16 @@ impl GrpcAdapter {
 
 #[async_trait]
 impl toni::GrpcAdapter for GrpcAdapter {
-    fn bind(&mut self) -> Result<()> {
+    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()> {
+        // Framework-discovered services (`#[grpc_service]` + `#[grpc_methods]`)
+        // each know how to wrap themselves in their tonic `*Server` — hand
+        // them the same `RoutesBuilder` already accumulating any
+        // user-`add_service`'d entries and let macro-generated code add
+        // itself.
+        for svc in &services {
+            svc.register_with(&mut self.routes_builder as &mut dyn std::any::Any);
+        }
+
         // Bind synchronously so port-in-use surfaces as `Err` from
         // `app.bind()` instead of panicking inside the spawned serve loop.
         let std_listener = std::net::TcpListener::bind(self.addr)
@@ -109,7 +120,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
             .listener
             .take()
             .expect("bind() must be called before serve()");
-        let routes = std::mem::take(&mut self.routes);
+        let routes: Routes = std::mem::take(&mut self.routes_builder).routes();
 
         let (tx, rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(tx);

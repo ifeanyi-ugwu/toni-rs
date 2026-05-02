@@ -99,6 +99,7 @@ pub enum ProviderRole {
     ErrorHandler(Arc<dyn ErrorHandler>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
     RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
+    GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),
 }
 
 /// A fully-built, ready-to-inject provider with its role registrations.

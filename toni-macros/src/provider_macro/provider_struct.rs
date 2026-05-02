@@ -174,7 +174,8 @@ fn resolve_provider(
         &impl_block,
         &dependencies,
         scope,
-        false,
-        false,
+        false, // is_gateway
+        false, // is_rpc_controller
+        false, // is_grpc_service
     )
 }

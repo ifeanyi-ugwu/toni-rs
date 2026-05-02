@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use crate::{
+    adapter::GrpcServiceTrait,
     rpc::RpcControllerTrait,
     traits_helpers::{
         ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry, ProviderRole, middleware::Middleware,
@@ -20,6 +21,8 @@ pub(crate) struct RoleRegistry {
     pub gateways: FxHashMap<String, Arc<Box<dyn GatewayTrait>>>,
     /// Keyed by the RPC controller's own token.
     pub rpc_controllers: FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>>,
+    /// Keyed by the gRPC service's own token.
+    pub grpc_services: FxHashMap<String, Arc<Box<dyn GrpcServiceTrait>>>,
 }
 
 impl RoleRegistry {
@@ -32,6 +35,7 @@ impl RoleRegistry {
             error_handlers: FxHashMap::default(),
             gateways: FxHashMap::default(),
             rpc_controllers: FxHashMap::default(),
+            grpc_services: FxHashMap::default(),
         }
     }
 

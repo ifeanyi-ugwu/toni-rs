@@ -1,5 +1,6 @@
 pub(crate) mod adapter_context;
 pub(crate) mod grpc_adapter;
+pub(crate) mod grpc_service_trait;
 pub(crate) mod http_adapter;
 pub(crate) mod lifecycle_handles;
 pub(crate) mod rpc_adapter;
@@ -11,6 +12,7 @@ pub(crate) mod request_handler;
 pub use adapter_context::AdapterContext;
 pub(crate) use grpc_adapter::ErasedGrpcAdapter;
 pub use grpc_adapter::GrpcAdapter;
+pub use grpc_service_trait::GrpcServiceTrait;
 pub(crate) use http_adapter::ErasedHttpAdapter;
 pub use http_adapter::HttpAdapter;
 pub(crate) use rpc_adapter::ErasedRpcAdapter;

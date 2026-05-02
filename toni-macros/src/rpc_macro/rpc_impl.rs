@@ -351,8 +351,9 @@ fn generate_rpc_controller_impl(
         &impl_def,
         dependencies,
         ProviderScope::Singleton,
-        false,
-        true, // is_rpc_controller
+        false, // is_gateway
+        true,  // is_rpc_controller
+        false, // is_grpc_service
     )?;
 
     let rpc_trait_impl = quote! {
