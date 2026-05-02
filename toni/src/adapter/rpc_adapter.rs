@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -79,6 +80,15 @@ pub trait RpcAdapter: Send + Sync + 'static {
     /// spawn is needed in the adapter.
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
 
+    /// Local listening address, if this adapter binds to one.
+    ///
+    /// Listener-based transports (TCP, UDP, gRPC) return `Some` after `bind` —
+    /// useful when port 0 was passed and the OS assigned a port. Subject-based
+    /// transports (NATS, Kafka, MQTT) return `None`.
+    fn local_addr(&self) -> Option<SocketAddr> {
+        None
+    }
+
     async fn close(&mut self) -> Result<()> {
         Ok(())
     }
@@ -89,6 +99,7 @@ pub trait RpcAdapter: Send + Sync + 'static {
 pub(crate) trait ErasedRpcAdapter: Send + Sync + 'static {
     fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()>;
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
+    fn local_addr(&self) -> Option<SocketAddr>;
     async fn close(&mut self) -> Result<()>;
 }
 
@@ -100,6 +111,10 @@ impl<R: RpcAdapter> ErasedRpcAdapter for R {
 
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
         <R as RpcAdapter>::serve(self)
+    }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        <R as RpcAdapter>::local_addr(self)
     }
 
     async fn close(&mut self) -> Result<()> {

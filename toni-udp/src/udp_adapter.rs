@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -45,6 +46,7 @@ pub struct UdpAdapter {
     port: u16,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     socket: Option<Arc<UdpSocket>>,
+    local_addr: Option<SocketAddr>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
@@ -56,6 +58,7 @@ impl UdpAdapter {
             port,
             callbacks: None,
             socket: None,
+            local_addr: None,
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -74,9 +77,13 @@ impl RpcAdapter for UdpAdapter {
             .context("UdpAdapter: failed to set socket nonblocking")?;
         let socket = UdpSocket::from_std(std_socket)
             .context("UdpAdapter: failed to register socket with the tokio runtime")?;
+        let local_addr = socket
+            .local_addr()
+            .context("UdpAdapter: failed to read local address from socket")?;
 
         self.callbacks = Some(callbacks);
         self.socket = Some(Arc::new(socket));
+        self.local_addr = Some(local_addr);
         Ok(())
     }
 
@@ -130,6 +137,10 @@ impl RpcAdapter for UdpAdapter {
                 }
             }
         }))
+    }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
     }
 
     async fn close(&mut self) -> Result<()> {
