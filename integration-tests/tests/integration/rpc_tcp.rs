@@ -4,6 +4,8 @@
 //!   the caller, and the connection stays alive afterwards
 //! - `app.shutdown()` drives the accept loop to exit so
 //!   `ShutdownHandle::completed().await` resolves cleanly
+//! - in-flight requests are awaited during `close()` up to the configured
+//!   drain timeout; tasks still running after the timeout are aborted
 
 use std::time::Duration;
 
@@ -202,4 +204,108 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
         connect.is_err(),
         "listener should be closed after shutdown, got {connect:?}"
     );
+}
+
+#[rpc_controller(pub struct SlowTcpController {})]
+impl SlowTcpController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("tcp.slow")]
+    async fn slow(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(data)
+    }
+}
+
+#[module(providers: [SlowTcpController])]
+impl SlowTcpModule {}
+
+/// A request already running when shutdown fires must finish during the
+/// drain window, not be killed mid-flight. The default 10 s drain timeout
+/// comfortably covers a 300 ms handler.
+#[tokio_localset_test::localset_test]
+async fn tcp_in_flight_request_completes_during_drain() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
+            .unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let shutdown = shutdown_rx.await.unwrap();
+
+    let stream = connect_with_retry(port).await;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"hi","id":"1"}).to_string();
+    frame.push('\n');
+    writer.write_all(frame.as_bytes()).await.unwrap();
+
+    // Give the handler time to enter its sleep before shutdown fires.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    shutdown.shutdown();
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .expect("in-flight request must complete during drain")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["response"], "hi");
+
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete after drain");
+}
+
+/// When a handler outruns the configured drain timeout, the framework aborts
+/// it instead of waiting forever. The caller doesn't get a reply (the task is
+/// killed mid-flight) but `shutdown.completed()` resolves promptly.
+#[tokio_localset_test::localset_test]
+async fn tcp_drain_aborts_after_timeout() {
+    use tokio::io::AsyncWriteExt;
+    use toni::toni_factory::ToniFactory;
+
+    let port = pick_free_port().await;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", port)
+            .with_drain_timeout(Duration::from_millis(50));
+        app.use_rpc_adapter(adapter).unwrap();
+        app.bind().await.unwrap();
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    let shutdown = shutdown_rx.await.unwrap();
+
+    let stream = connect_with_retry(port).await;
+    let (_reader, mut writer) = stream.into_split();
+    // Handler sleeps 300 ms but the drain budget is only 50 ms.
+    let mut frame = serde_json::json!({"pattern":"tcp.slow","data":"hi","id":"1"}).to_string();
+    frame.push('\n');
+    writer.write_all(frame.as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    shutdown.shutdown();
+
+    // 50 ms drain + slack — must finish well before the 300 ms handler would.
+    tokio::time::timeout(Duration::from_millis(500), shutdown.completed())
+        .await
+        .expect("shutdown must complete after drain timeout aborts the in-flight task");
 }
