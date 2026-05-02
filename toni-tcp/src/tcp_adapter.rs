@@ -2,13 +2,17 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::FutureExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex};
+use tokio::task::JoinSet;
 use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// TCP transport adapter for the Toni RPC gateway.
 ///
@@ -28,6 +32,14 @@ use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCal
 ///
 /// Fire-and-forget events (no `id`, or handlers declared with `#[event_pattern]`)
 /// produce no response on the wire.
+///
+/// # Graceful shutdown
+///
+/// On [`close`](RpcAdapter::close), the accept loop stops, connection
+/// handlers stop reading new lines, and in-flight per-message tasks are
+/// awaited up to a configurable drain timeout (default 10 s). Tasks still
+/// running after the timeout are aborted. Override the timeout — including
+/// disabling it — with [`TcpAdapter::with_drain_timeout`].
 pub struct TcpAdapter {
     host: String,
     port: u16,
@@ -35,6 +47,7 @@ pub struct TcpAdapter {
     listener: Option<TcpListener>,
     local_addr: Option<SocketAddr>,
     shutdown_tx: Arc<watch::Sender<bool>>,
+    drain_timeout: Option<Duration>,
 }
 
 impl TcpAdapter {
@@ -47,7 +60,15 @@ impl TcpAdapter {
             listener: None,
             local_addr: None,
             shutdown_tx: Arc::new(tx),
+            drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
         }
+    }
+
+    /// Set how long `close()` waits for in-flight requests to finish before
+    /// aborting them. Pass `None` to wait without bound.
+    pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.drain_timeout = timeout.into();
+        self
     }
 }
 
@@ -83,7 +104,9 @@ impl RpcAdapter for TcpAdapter {
             .listener
             .take()
             .expect("bind() must be called before serve()");
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
+        let drain_timeout = self.drain_timeout;
+        let mut shutdown_rx = shutdown_tx.subscribe();
 
         Ok(Box::pin(async move {
             let addr = listener
@@ -92,22 +115,36 @@ impl RpcAdapter for TcpAdapter {
                 .unwrap_or_default();
             tracing::info!(addr, "TcpAdapter listening");
 
+            // All spawned work — connection handlers and per-message tasks —
+            // is tracked here so close() can drain it.
+            let tasks: Arc<Mutex<JoinSet<()>>> = Arc::new(Mutex::new(JoinSet::new()));
+
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown_rx.wait_for(|v| *v) => {
+                    _ = wait_for_shutdown(&mut shutdown_rx) => {
                         tracing::info!(addr, "TcpAdapter shutting down");
                         break;
                     }
                     res = listener.accept() => match res {
-                        Ok((stream, addr)) => {
+                        Ok((stream, peer)) => {
                             let callbacks = callbacks.clone();
-                            tokio::spawn(handle_connection(stream, addr, callbacks));
+                            let tasks_for_conn = tasks.clone();
+                            let conn_shutdown_rx = shutdown_tx.subscribe();
+                            tasks.lock().await.spawn(handle_connection(
+                                stream,
+                                peer,
+                                callbacks,
+                                tasks_for_conn,
+                                conn_shutdown_rx,
+                            ));
                         }
                         Err(e) => tracing::error!(error = %e, "TcpAdapter accept error"),
                     }
                 }
             }
+
+            drain_tasks(tasks, drain_timeout, &addr).await;
         }))
     }
 
@@ -118,6 +155,45 @@ impl RpcAdapter for TcpAdapter {
     async fn close(&mut self) -> Result<()> {
         let _ = self.shutdown_tx.send(true);
         Ok(())
+    }
+}
+
+// `watch::Receiver::wait_for` resolves to `Result<Ref<'_, T>, _>`. The
+// `Ref` guard isn't `Send`, which forces the whole `serve` future to be
+// `!Send` whenever we hold a `Mutex` lock across it. Wrapping the await
+// here drops the guard inside the helper so the outer scope sees `()`.
+async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
+    let _ = rx.wait_for(|v| *v).await;
+}
+
+async fn drain_tasks(
+    tasks: Arc<Mutex<JoinSet<()>>>,
+    drain_timeout: Option<Duration>,
+    addr: &str,
+) {
+    let drain = async {
+        let mut js = tasks.lock().await;
+        while js.join_next().await.is_some() {}
+    };
+
+    match drain_timeout {
+        Some(d) => {
+            if tokio::time::timeout(d, drain).await.is_err() {
+                let mut js = tasks.lock().await;
+                let aborted = js.len();
+                if aborted > 0 {
+                    tracing::warn!(
+                        addr,
+                        aborted,
+                        timeout_ms = d.as_millis() as u64,
+                        "TcpAdapter drain timed out; aborting in-flight tasks"
+                    );
+                    js.abort_all();
+                    while js.join_next().await.is_some() {}
+                }
+            }
+        }
+        None => drain.await,
     }
 }
 
@@ -133,6 +209,8 @@ async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
     callbacks: Arc<RpcMessageCallbacks>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -142,7 +220,15 @@ async fn handle_connection(
 
     loop {
         line.clear();
-        match reader.read_line(&mut line).await {
+        let read = tokio::select! {
+            biased;
+            // Stop reading new requests on shutdown; in-flight per-message
+            // tasks already in `tasks` will be drained by serve().
+            _ = wait_for_shutdown(&mut shutdown_rx) => break,
+            res = reader.read_line(&mut line) => res,
+        };
+
+        match read {
             Ok(0) => break, // clean close
             Ok(_) => {
                 let trimmed = line.trim();
@@ -167,7 +253,7 @@ async fn handle_connection(
                 let callbacks = callbacks.clone();
                 let writer = writer.clone();
 
-                tokio::spawn(async move {
+                tasks.lock().await.spawn(async move {
                     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
                         .catch_unwind()
                         .await;
