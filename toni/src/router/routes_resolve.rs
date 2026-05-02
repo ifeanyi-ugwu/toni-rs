@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::{cell::RefCell, pin::Pin, rc::Rc, sync::Arc};
 
 use crate::{
+    adapter::ErasedHttpAdapter,
     adapter::request_handler::RequestHandler,
-    http_adapter::ErasedHttpAdapter,
     http_helpers::{HttpRequest, HttpResponse},
     injector::{InstanceWrapper, ToniContainer},
     middleware::MiddlewareChain,

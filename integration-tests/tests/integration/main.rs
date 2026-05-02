@@ -30,6 +30,7 @@ mod provide_macro;
 mod provider_scope;
 mod request_extractor;
 mod request_provider;
+mod rpc_grpc;
 mod rpc_tcp;
 mod rpc_udp;
 mod scope_bubbling;

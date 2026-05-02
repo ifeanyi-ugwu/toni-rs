@@ -6,8 +6,6 @@ pub mod builtin_module;
 pub mod di;
 pub mod errors;
 pub mod extractors;
-#[path = "adapter/http_adapter.rs"]
-pub mod http_adapter;
 pub mod http_helpers;
 pub mod injector;
 pub mod middleware;
@@ -29,11 +27,9 @@ pub use tracing;
 
 // Re-exports for adapter crates
 pub use adapter::{
-    MessageCallbackResult, RpcAdapter, RpcClientTransport, RpcMessageCallbacks, WebSocketAdapter,
-    WsConnectionCallbacks,
+    AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RequestHandler, RpcAdapter,
+    RpcClientTransport, RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
 };
-pub use http_adapter::HttpAdapter;
-pub use adapter::{AdapterContext, RequestHandler, ServerHandle};
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
     RequestBody, RequestBoxBody, RequestPart, RouteMetadata, Sse, SseEvent, sse,
