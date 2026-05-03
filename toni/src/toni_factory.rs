@@ -5,32 +5,31 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::application_context::ToniApplicationContext;
+use crate::context::HttpContext;
+use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};
 use crate::middleware::Middleware;
 use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
-use crate::traits_helpers::{Guard, GuardEntry, Interceptor, InterceptorEntry, Pipe, PipeEntry};
+use crate::traits_helpers::{
+    ErrorHandler, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
+    Interceptor, Pipe,
+};
 
 #[derive(Default)]
 pub struct ToniFactory {
     global_middleware: Vec<Arc<dyn Middleware>>,
-    global_guards: Vec<Arc<dyn Guard>>,
-    global_interceptors: Vec<Arc<dyn Interceptor>>,
-    global_pipes: Vec<Arc<dyn Pipe>>,
-    global_error_handler: Option<Arc<dyn crate::traits_helpers::ErrorHandler>>,
+    global_http_guards: Vec<HttpGuardEntry>,
+    global_http_interceptors: Vec<HttpInterceptorEntry>,
+    global_http_pipes: Vec<HttpPipeEntry>,
+    global_http_error_handlers: Vec<HttpErrorHandlerArc>,
 }
 
 impl ToniFactory {
     #[inline]
     pub fn new() -> Self {
-        Self {
-            global_middleware: Vec::new(),
-            global_guards: Vec::new(),
-            global_interceptors: Vec::new(),
-            global_pipes: Vec::new(),
-            global_error_handler: None,
-        }
+        Self::default()
     }
 
     pub fn use_global_middleware(&mut self, middleware: Arc<dyn Middleware>) -> &mut Self {
@@ -38,27 +37,35 @@ impl ToniFactory {
         self
     }
 
-    pub fn use_global_guards(&mut self, guard: Arc<dyn Guard>) -> &mut Self {
-        self.global_guards.push(guard);
+    /// Register a global guard that runs on every HTTP route.
+    pub fn use_global_http_guards(&mut self, guard: Arc<dyn Guard<HttpContext>>) -> &mut Self {
+        self.global_http_guards.push(HttpGuardEntry::Ready(guard));
         self
     }
 
-    pub fn use_global_interceptors(&mut self, interceptor: Arc<dyn Interceptor>) -> &mut Self {
-        self.global_interceptors.push(interceptor);
-        self
-    }
-
-    pub fn use_global_pipes(&mut self, pipe: Arc<dyn Pipe>) -> &mut Self {
-        self.global_pipes.push(pipe);
-        self
-    }
-
-    /// Overridden per-controller if a controller registers its own error handler
-    pub fn use_global_error_handler(
+    /// Register a global interceptor that wraps every HTTP route handler.
+    pub fn use_global_http_interceptors(
         &mut self,
-        handler: Arc<dyn crate::traits_helpers::ErrorHandler>,
+        interceptor: Arc<dyn Interceptor<HttpContext>>,
     ) -> &mut Self {
-        self.global_error_handler = Some(handler);
+        self.global_http_interceptors
+            .push(HttpInterceptorEntry::Ready(interceptor));
+        self
+    }
+
+    /// Register a global pipe that runs on every HTTP route.
+    pub fn use_global_http_pipes(&mut self, pipe: Arc<dyn Pipe<HttpContext>>) -> &mut Self {
+        self.global_http_pipes.push(HttpPipeEntry::Ready(pipe));
+        self
+    }
+
+    /// Register a global HTTP error handler. Stacks with controller- and
+    /// method-level handlers — the most specific is consulted first.
+    pub fn use_global_http_error_handler(
+        &mut self,
+        handler: Arc<dyn ErrorHandler<HttpContext, HttpResponse>>,
+    ) -> &mut Self {
+        self.global_http_error_handlers.push(handler);
         self
     }
 
@@ -140,17 +147,17 @@ impl ToniFactory {
         // Register global enhancers
         {
             let mut container_mut = container.borrow_mut();
-            for guard in &self.global_guards {
-                container_mut.add_global_guard(GuardEntry::Ready(guard.clone()));
+            for guard in &self.global_http_guards {
+                container_mut.add_global_http_guard(guard.clone());
             }
-            for interceptor in &self.global_interceptors {
-                container_mut.add_global_interceptor(InterceptorEntry::Ready(interceptor.clone()));
+            for interceptor in &self.global_http_interceptors {
+                container_mut.add_global_http_interceptor(interceptor.clone());
             }
-            for pipe in &self.global_pipes {
-                container_mut.add_global_pipe(PipeEntry::Ready(pipe.clone()));
+            for pipe in &self.global_http_pipes {
+                container_mut.add_global_http_pipe(pipe.clone());
             }
-            if let Some(error_handler) = &self.global_error_handler {
-                container_mut.add_global_error_handler(error_handler.clone());
+            for handler in &self.global_http_error_handlers {
+                container_mut.add_global_http_error_handler(handler.clone());
             }
         }
 

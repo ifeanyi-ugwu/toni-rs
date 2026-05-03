@@ -2,29 +2,28 @@ use std::sync::Arc;
 
 use crate::{
     async_trait,
+    context::{HandlerContext, HttpContext},
     http_helpers::{HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ErrorHandler, ErrorResponse, Guard, GuardEntry, Interceptor, InterceptorEntry,
-        InterceptorNext, Pipe, PipeEntry,
+        Controller, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
+        Interceptor, InterceptorNext, Pipe,
     },
 };
 
-use super::Context;
-
-/// Represents the next step in the interceptor chain (after factory entries are resolved)
+/// The next step in the interceptor chain after factory entries are resolved.
 struct ChainNext {
-    interceptors: Vec<Arc<dyn Interceptor>>,
+    interceptors: Vec<Arc<dyn Interceptor<HttpContext>>>,
     instance: Arc<Box<dyn Controller>>,
-    pipes: Vec<Arc<dyn Pipe>>,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
+    error_handlers: Vec<HttpErrorHandlerArc>,
     route_metadata: Arc<RouteMetadata>,
 }
 
 #[async_trait]
-impl InterceptorNext for ChainNext {
-    async fn run(self: Box<Self>, context: &mut Context) {
+impl InterceptorNext<HttpContext> for ChainNext {
+    async fn run(self: Box<Self>, context: &mut HttpContext) {
         InstanceWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
@@ -39,11 +38,11 @@ impl InterceptorNext for ChainNext {
 
 pub struct InstanceWrapper {
     instance: Arc<Box<dyn Controller>>,
-    guards: Vec<GuardEntry>,
-    interceptors: Vec<InterceptorEntry>,
-    pipes: Vec<PipeEntry>,
+    guards: Vec<HttpGuardEntry>,
+    interceptors: Vec<HttpInterceptorEntry>,
+    pipes: Vec<HttpPipeEntry>,
     middleware_chain: MiddlewareChain,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    error_handlers: Vec<HttpErrorHandlerArc>,
     route_metadata: Arc<RouteMetadata>,
 }
 
@@ -53,8 +52,7 @@ impl InstanceWrapper {
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
     ) -> Self {
-        // Merge enhancers: global first, then controller/method
-        // Execution order: global < controller < method
+        // Execution order: global → controller → method
         let mut guards = global_enhancers.guards;
         guards.extend(enhancer_metadata.guards);
 
@@ -98,7 +96,6 @@ impl InstanceWrapper {
         }
     }
 
-    /// Get the controller instance for lifecycle hook checks
     pub fn get_instance(&self) -> Arc<Box<dyn Controller>> {
         self.instance.clone()
     }
@@ -115,10 +112,6 @@ impl InstanceWrapper {
         let error_handlers_for_controller = self.error_handlers.clone();
         let error_handlers_for_middleware = self.error_handlers.clone();
         let route_metadata = self.route_metadata.clone();
-
-        let (parts, body) = req.into_parts();
-        let req_parts_for_error = parts.clone();
-        let req = HttpRequest::from_parts(parts, body);
 
         let middleware_result = self
             .middleware_chain
@@ -145,28 +138,28 @@ impl InstanceWrapper {
             })
             .await;
 
-        // Handle the result from middleware chain
         match middleware_result {
             Ok(response) => {
                 tracing::debug!(method = %method.as_str(), path = %path, status = response.status, "request completed");
                 response
             }
             Err(e) => {
-                // HttpError carries an intended HTTP status — use it directly
-                // rather than collapsing to 500.
                 if let Some(http_err) = e.downcast_ref::<crate::errors::HttpError>() {
                     return http_err.to_response();
                 }
 
                 let error_msg = e.to_string();
-                let error_ctx = Context::from_parts(req_parts_for_error);
+                // Middleware failed before the request body could be split; we have no
+                // parts to thread through to the handler context. Construct a stub
+                // from a minimal request so error handlers still get a typed context.
+                let stub = http::Request::builder().body(()).unwrap();
+                let error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 for handler in error_handlers_for_middleware.iter().rev() {
-                    let error: Box<dyn std::error::Error + Send + Sync> = Box::new(
-                        std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone()),
-                    );
-                    if let Some(ErrorResponse::Http(response)) =
-                        handler.handle_error(error, &error_ctx).await
-                    {
+                    let error: Box<dyn std::error::Error + Send> = Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        error_msg.clone(),
+                    ));
+                    if let Some(response) = handler.handle_error(error, &error_ctx).await {
                         return response;
                     }
                 }
@@ -182,17 +175,15 @@ impl InstanceWrapper {
         }
     }
 
-    /// Resolve `GuardEntry` list to concrete `Arc<dyn Guard>` instances.
-    /// Factory entries are called with the request parts for per-request dep construction.
     async fn resolve_guards(
-        entries: &[GuardEntry],
+        entries: &[HttpGuardEntry],
         parts: &crate::http_helpers::RequestPart,
-    ) -> Vec<Arc<dyn Guard>> {
+    ) -> Vec<Arc<dyn Guard<HttpContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
-                GuardEntry::Ready(g) => g.clone(),
-                GuardEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpGuardEntry::Ready(g) => g.clone(),
+                HttpGuardEntry::Factory(f) => f.create(Some(parts)).await,
             };
             out.push(g);
         }
@@ -200,14 +191,14 @@ impl InstanceWrapper {
     }
 
     async fn resolve_interceptors(
-        entries: &[InterceptorEntry],
+        entries: &[HttpInterceptorEntry],
         parts: &crate::http_helpers::RequestPart,
-    ) -> Vec<Arc<dyn Interceptor>> {
+    ) -> Vec<Arc<dyn Interceptor<HttpContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
-                InterceptorEntry::Ready(i) => i.clone(),
-                InterceptorEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpInterceptorEntry::Ready(i) => i.clone(),
+                HttpInterceptorEntry::Factory(f) => f.create(Some(parts)).await,
             };
             out.push(i);
         }
@@ -215,61 +206,52 @@ impl InstanceWrapper {
     }
 
     async fn resolve_pipes(
-        entries: &[PipeEntry],
+        entries: &[HttpPipeEntry],
         parts: &crate::http_helpers::RequestPart,
-    ) -> Vec<Arc<dyn Pipe>> {
+    ) -> Vec<Arc<dyn Pipe<HttpContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
-                PipeEntry::Ready(p) => p.clone(),
-                PipeEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpPipeEntry::Ready(p) => p.clone(),
+                HttpPipeEntry::Factory(f) => f.create(Some(parts)).await,
             };
             out.push(p);
         }
         out
     }
 
-    /// Execute the controller logic with guards, interceptors, and pipes
     async fn execute_controller_logic(
         req: HttpRequest,
         instance: Arc<Box<dyn Controller>>,
-        guards: Vec<GuardEntry>,
-        interceptors: Vec<InterceptorEntry>,
-        pipes: Vec<PipeEntry>,
-        error_handlers: Vec<Arc<dyn ErrorHandler>>,
+        guards: Vec<HttpGuardEntry>,
+        interceptors: Vec<HttpInterceptorEntry>,
+        pipes: Vec<HttpPipeEntry>,
+        error_handlers: Vec<HttpErrorHandlerArc>,
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
-        // Split req so we can pass parts to factory entries before Context takes ownership.
+        // Split req so factory entries see parts before the context takes ownership.
         let (parts, body) = req.into_parts();
         let guards = Self::resolve_guards(&guards, &parts).await;
         let interceptors = Self::resolve_interceptors(&interceptors, &parts).await;
         let pipes = Self::resolve_pipes(&pipes, &parts).await;
         let req = HttpRequest::from_parts(parts, body);
 
-        let mut context = Context::new(req, route_metadata.clone());
+        let mut context = HttpContext::new(req, route_metadata.clone());
 
-        // Execute guards
         for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context).await {
                 tracing::debug!(guard_index = i, "guard rejected request");
-                // Get the guard's response (or create default 403 if not set)
-                let guard_response = context
-                    .switch_to_http_mut()
-                    .expect("Expected HTTP context")
-                    .take_response()
-                    .unwrap_or_else(|| {
-                        let mut forbidden = HttpResponse::new();
-                        forbidden.status = 403;
-                        forbidden.body = Some(crate::Body::text("Forbidden"));
-                        forbidden
-                    });
+                let guard_response = context.take_response().unwrap_or_else(|| {
+                    let mut forbidden = HttpResponse::new();
+                    forbidden.status = 403;
+                    forbidden.body = Some(crate::Body::text("Forbidden"));
+                    forbidden
+                });
 
-                return Self::handle_error_response(guard_response, &error_handlers, &context)
-                    .await;
+                return Self::handle_error_response(guard_response, &error_handlers, &context).await;
             }
         }
 
-        // Execute interceptors wrapping the handler
         if !interceptors.is_empty() {
             tracing::trace!(count = interceptors.len(), "entering interceptor chain");
         }
@@ -283,23 +265,22 @@ impl InstanceWrapper {
         )
         .await;
 
-        context.into_http_response()
+        context.into_response()
     }
 
-    /// Helper: Route error responses (status >= 400) through ErrorHandler
-    /// Uses the last handler in the vec (most specific: method > controller > global)
+    /// Route 4xx/5xx responses through error handlers. Most-specific
+    /// (method > controller > global) is consulted first.
     async fn handle_error_response(
         response: HttpResponse,
-        error_handlers: &[Arc<dyn ErrorHandler>],
-        ctx: &Context,
+        error_handlers: &[HttpErrorHandlerArc],
+        ctx: &HttpContext,
     ) -> HttpResponse {
         if response.status >= 400 {
-            // Reconstruct HttpError from response to preserve type information
             let http_error = Self::response_to_http_error(&response);
 
             for handler in error_handlers.iter().rev() {
                 let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                if let Some(ErrorResponse::Http(handled)) = handler.handle_error(error, ctx).await {
+                if let Some(handled) = handler.handle_error(error, ctx).await {
                     return handled;
                 }
             }
@@ -307,26 +288,23 @@ impl InstanceWrapper {
         response
     }
 
-    /// Execute handler wrapped by interceptors (onion/Russian doll pattern)
+    /// Onion/Russian doll dispatch through the interceptor chain.
     async fn execute_with_interceptors(
-        context: &mut Context,
-        interceptors: &[Arc<dyn Interceptor>],
+        context: &mut HttpContext,
+        interceptors: &[Arc<dyn Interceptor<HttpContext>>],
         instance: &Arc<Box<dyn Controller>>,
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        pipes: &[Arc<dyn Pipe<HttpContext>>],
+        error_handlers: &[HttpErrorHandlerArc],
         route_metadata: &Arc<RouteMetadata>,
     ) {
-        // If no interceptors, execute handler directly with error handling
         if interceptors.is_empty() {
             Self::execute_handler_with_error_handling(context, instance, pipes, error_handlers)
                 .await;
             return;
         }
 
-        // Get first interceptor and remaining
         let (first, rest) = interceptors.split_first().unwrap();
 
-        // Create the "next" handler that wraps the rest of the chain
         let next = ChainNext {
             interceptors: rest.to_vec(),
             instance: instance.clone(),
@@ -335,23 +313,15 @@ impl InstanceWrapper {
             route_metadata: route_metadata.clone(),
         };
 
-        // Execute this interceptor with the next chain
         first.intercept(context, Box::new(next)).await;
     }
 
-    /// Execute the actual handler (pipes + controller)
     async fn execute_handler(
-        context: &mut Context,
+        context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,
-        pipes: &[Arc<dyn Pipe>],
+        pipes: &[Arc<dyn Pipe<HttpContext>>],
     ) {
-        // Get and validate DTO
-        let dto = instance.get_body_dto(
-            context
-                .switch_to_http()
-                .expect("Expected HTTP context")
-                .request(),
-        );
+        let dto = instance.get_body_dto(context.request());
         if let Some(dto) = dto {
             match dto.validate_dto() {
                 Ok(()) => {
@@ -367,17 +337,13 @@ impl InstanceWrapper {
                         status: 400,
                         headers: vec![],
                     };
-                    context
-                        .switch_to_http_mut()
-                        .expect("Expected HTTP context")
-                        .set_response(response);
+                    context.set_response(response);
                     context.abort();
                     return;
                 }
             }
         }
 
-        // Execute pipes
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
@@ -386,61 +352,44 @@ impl InstanceWrapper {
         }
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
-        let mut http = context.switch_to_http_mut().expect("Expected HTTP context");
-        let req = http.take_request();
+        let req = context.take_request();
         let controller_response = instance.execute(req).await;
-        context
-            .switch_to_http_mut()
-            .expect("Expected HTTP context")
-            .set_response(controller_response);
+        context.set_response(controller_response);
     }
 
-    /// Execute handler with error handling support
     async fn execute_handler_with_error_handling(
-        context: &mut Context,
+        context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        pipes: &[Arc<dyn Pipe<HttpContext>>],
+        error_handlers: &[HttpErrorHandlerArc],
     ) {
         Self::execute_handler(context, instance, pipes).await;
 
         if !error_handlers.is_empty() {
             let needs_error_handling = context
-                .switch_to_http()
-                .and_then(|h| h.response().map(|r| r.status >= 400))
+                .response()
+                .map(|r| r.status >= 400)
                 .unwrap_or(false);
 
             if needs_error_handling {
                 let http_response = context
-                    .switch_to_http_mut()
-                    .expect("Expected HTTP context")
                     .take_response()
                     .expect("Response not set in context");
                 let http_error = Self::response_to_http_error(&http_response);
 
                 for handler in error_handlers.iter().rev() {
                     let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                    if let Some(ErrorResponse::Http(handled_response)) =
-                        handler.handle_error(error, context).await
-                    {
-                        context
-                            .switch_to_http_mut()
-                            .expect("Expected HTTP context")
-                            .set_response(handled_response);
+                    if let Some(handled_response) = handler.handle_error(error, context).await {
+                        context.set_response(handled_response);
                         return;
                     }
                 }
 
-                context
-                    .switch_to_http_mut()
-                    .expect("Expected HTTP context")
-                    .set_response(http_response);
+                context.set_response(http_response);
             }
         }
     }
 
-    /// Reconstruct HttpError from HttpResponse
-    /// This preserves the error type for proper error handler matching
     fn response_to_http_error(response: &HttpResponse) -> crate::errors::HttpError {
         let message = if let Some(body) = &response.body {
             if let Some(bytes) = body.try_bytes() {

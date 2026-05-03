@@ -85,7 +85,7 @@ impl RpcControllerResolver {
     }
 
     fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
-        let mut guards = self.container.borrow().get_global_enhancers().guards;
+        let mut guards: Vec<GuardEntry> = Vec::new();
         for token in tokens {
             let entry = self.resolve_guard_by_token(&token)?;
             // Factory guards with request-scoped deps cannot be used on RPC controllers
@@ -105,7 +105,7 @@ impl RpcControllerResolver {
     }
 
     fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<InterceptorEntry>> {
-        let mut interceptors = self.container.borrow().get_global_enhancers().interceptors;
+        let mut interceptors: Vec<InterceptorEntry> = Vec::new();
         for token in tokens {
             let entry = self.resolve_interceptor_by_token(&token)?;
             if let InterceptorEntry::Factory(ref f) = entry {
@@ -123,7 +123,7 @@ impl RpcControllerResolver {
     }
 
     fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
-        let mut pipes = self.container.borrow().get_global_enhancers().pipes;
+        let mut pipes: Vec<PipeEntry> = Vec::new();
         for token in tokens {
             let entry = self.resolve_pipe_by_token(&token)?;
             if let PipeEntry::Factory(ref f) = entry {
@@ -141,11 +141,8 @@ impl RpcControllerResolver {
     }
 
     fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn ErrorHandler>>> {
-        let mut error_handlers = self
-            .container
-            .borrow()
-            .get_global_enhancers()
-            .error_handlers;
+        let mut error_handlers: Vec<Arc<dyn ErrorHandler>> = Vec::new();
+        let _ = &self.container;
         for token in tokens {
             error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }

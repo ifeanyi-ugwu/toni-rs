@@ -8,8 +8,8 @@ use crate::{
     rpc::RpcControllerTrait,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, GuardEntry, InterceptorEntry, ModuleMetadata, PipeEntry,
-        Provider, ProviderFactory, ProviderRole,
+        Controller, ControllerFactory, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
+        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole,
     },
     websocket::GatewayTrait,
 };
@@ -23,11 +23,11 @@ pub struct ToniContainer {
     global_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
-    /// Global enhancers - applied to all controllers
-    global_guards: Vec<GuardEntry>,
-    global_interceptors: Vec<InterceptorEntry>,
-    global_pipes: Vec<PipeEntry>,
-    global_error_handlers: Vec<Arc<dyn crate::traits_helpers::ErrorHandler>>,
+    /// Global enhancers - applied to every HTTP route's pipeline.
+    global_http_guards: Vec<HttpGuardEntry>,
+    global_http_interceptors: Vec<HttpInterceptorEntry>,
+    global_http_pipes: Vec<HttpPipeEntry>,
+    global_http_error_handlers: Vec<HttpErrorHandlerArc>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
@@ -57,10 +57,10 @@ impl ToniContainer {
             middleware_manager: Some(MiddlewareManager::new()),
             global_providers: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
-            global_guards: Vec::new(),
-            global_interceptors: Vec::new(),
-            global_pipes: Vec::new(),
-            global_error_handlers: Vec::new(),
+            global_http_guards: Vec::new(),
+            global_http_interceptors: Vec::new(),
+            global_http_pipes: Vec::new(),
+            global_http_error_handlers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
             app_pipe_providers: Vec::new(),
@@ -70,31 +70,28 @@ impl ToniContainer {
         }
     }
 
-    pub fn add_global_guard(&mut self, guard: GuardEntry) {
-        self.global_guards.push(guard);
+    pub fn add_global_http_guard(&mut self, guard: HttpGuardEntry) {
+        self.global_http_guards.push(guard);
     }
 
-    pub fn add_global_interceptor(&mut self, interceptor: InterceptorEntry) {
-        self.global_interceptors.push(interceptor);
+    pub fn add_global_http_interceptor(&mut self, interceptor: HttpInterceptorEntry) {
+        self.global_http_interceptors.push(interceptor);
     }
 
-    pub fn add_global_pipe(&mut self, pipe: PipeEntry) {
-        self.global_pipes.push(pipe);
+    pub fn add_global_http_pipe(&mut self, pipe: HttpPipeEntry) {
+        self.global_http_pipes.push(pipe);
     }
 
-    pub fn add_global_error_handler(
-        &mut self,
-        handler: Arc<dyn crate::traits_helpers::ErrorHandler>,
-    ) {
-        self.global_error_handlers.push(handler);
+    pub fn add_global_http_error_handler(&mut self, handler: HttpErrorHandlerArc) {
+        self.global_http_error_handlers.push(handler);
     }
 
     pub fn get_global_enhancers(&self) -> EnhancerMetadata {
         EnhancerMetadata {
-            guards: self.global_guards.clone(),
-            interceptors: self.global_interceptors.clone(),
-            pipes: self.global_pipes.clone(),
-            error_handlers: self.global_error_handlers.clone(),
+            guards: self.global_http_guards.clone(),
+            interceptors: self.global_http_interceptors.clone(),
+            pipes: self.global_http_pipes.clone(),
+            error_handlers: self.global_http_error_handlers.clone(),
         }
     }
 
