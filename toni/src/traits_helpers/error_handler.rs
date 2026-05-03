@@ -1,4 +1,5 @@
 use crate::async_trait;
+use crate::context::HandlerContext;
 use crate::errors::HttpError;
 use crate::http_helpers::{Body, HttpResponse};
 use crate::injector::Context;
@@ -76,13 +77,13 @@ impl From<RpcData> for ErrorResponse {
 ///     }
 /// }
 /// ```
+// TODO: drop `= Context` and `= ErrorResponse` defaults once the legacy
+// `Context` and `ErrorResponse` enum are removed.
 #[async_trait]
-pub trait ErrorHandler: Send + Sync {
-    async fn handle_error(
-        &self,
-        error: Box<dyn Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse>;
+pub trait ErrorHandler<C: ?Sized + HandlerContext = Context, R = ErrorResponse>:
+    Send + Sync
+{
+    async fn handle_error(&self, error: Box<dyn Error + Send>, ctx: &C) -> Option<R>;
 }
 
 pub struct DefaultErrorHandler;

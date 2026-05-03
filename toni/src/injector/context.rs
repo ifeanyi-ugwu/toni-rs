@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    context::{CancellationToken, Extensions, HandlerContext},
     http_helpers::{HttpRequest, HttpResponse, RequestBody, RequestPart, RouteMetadata},
     rpc::{RpcContext as RpcCallContext, RpcData},
     traits_helpers::validate::Validatable,
@@ -18,12 +19,15 @@ use super::{
 ///
 /// Unified interface for guards, interceptors, and error handlers to work across
 /// HTTP, WebSocket, and RPC with protocol switching.
-#[derive(Debug)]
+// TODO: replace with per-transport handler contexts (`crate::context::*`); drop
+// the `extensions`/`cancellation` fields with it.
 pub struct Context {
     protocol: Protocol,
     route_metadata: Option<Arc<RouteMetadata>>, // None for global handlers (404, error filters)
     should_abort: bool,
     dto: Option<Box<dyn Validatable>>,
+    extensions: Extensions,
+    cancellation: CancellationToken,
 }
 
 impl Context {
@@ -33,6 +37,8 @@ impl Context {
             route_metadata: Some(route_metadata),
             should_abort: false,
             dto: None,
+            extensions: Extensions::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -43,6 +49,8 @@ impl Context {
             route_metadata: Some(Arc::new(RouteMetadata::new())),
             should_abort: false,
             dto: None,
+            extensions: Extensions::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -61,6 +69,8 @@ impl Context {
             route_metadata,
             should_abort: false,
             dto: None,
+            extensions: Extensions::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -74,6 +84,8 @@ impl Context {
             route_metadata,
             should_abort: false,
             dto: None,
+            extensions: Extensions::new(),
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -224,5 +236,31 @@ impl Context {
 
     pub fn get_dto(&self) -> Option<&dyn Validatable> {
         self.dto.as_deref()
+    }
+}
+
+impl HandlerContext for Context {
+    fn route_metadata(&self) -> Option<&RouteMetadata> {
+        self.route_metadata.as_deref()
+    }
+
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+
+    fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    fn abort(&mut self) {
+        self.should_abort = true;
+    }
+
+    fn should_abort(&self) -> bool {
+        self.should_abort
     }
 }
