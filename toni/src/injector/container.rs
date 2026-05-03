@@ -163,11 +163,53 @@ impl ToniContainer {
                 ProviderRole::Pipe(p) => {
                     self.role_registry.pipes.insert(token.clone(), p);
                 }
-                ProviderRole::Middleware(m) => {
-                    self.role_registry.middleware.insert(token.clone(), m);
-                }
                 ProviderRole::ErrorHandler(eh) => {
                     self.role_registry.error_handlers.insert(token.clone(), eh);
+                }
+                ProviderRole::HttpGuard(g) => {
+                    self.role_registry.http_guards.insert(token.clone(), g);
+                }
+                ProviderRole::HttpInterceptor(i) => {
+                    self.role_registry.http_interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::HttpPipe(p) => {
+                    self.role_registry.http_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::HttpErrorHandler(eh) => {
+                    self.role_registry
+                        .http_error_handlers
+                        .insert(token.clone(), eh);
+                }
+                ProviderRole::RpcGuard(g) => {
+                    self.role_registry.rpc_guards.insert(token.clone(), g);
+                }
+                ProviderRole::RpcInterceptor(i) => {
+                    self.role_registry.rpc_interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::RpcPipe(p) => {
+                    self.role_registry.rpc_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::RpcErrorHandler(eh) => {
+                    self.role_registry
+                        .rpc_error_handlers
+                        .insert(token.clone(), eh);
+                }
+                ProviderRole::WsGuard(g) => {
+                    self.role_registry.ws_guards.insert(token.clone(), g);
+                }
+                ProviderRole::WsInterceptor(i) => {
+                    self.role_registry.ws_interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::WsPipe(p) => {
+                    self.role_registry.ws_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::WsErrorHandler(eh) => {
+                    self.role_registry
+                        .ws_error_handlers
+                        .insert(token.clone(), eh);
+                }
+                ProviderRole::Middleware(m) => {
+                    self.role_registry.middleware.insert(token.clone(), m);
                 }
                 ProviderRole::Gateway(gw) => {
                     let path = gw.get_path();

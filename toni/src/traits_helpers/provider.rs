@@ -4,7 +4,13 @@ use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
 use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
-use crate::{ProviderScope, http_helpers::RequestPart};
+use crate::{
+    ProviderScope,
+    context::{HttpContext, RpcContext, WsContext},
+    http_helpers::{HttpResponse, RequestPart},
+    rpc::RpcData,
+    websocket::WsMessage,
+};
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -84,6 +90,84 @@ pub enum PipeEntry {
     Factory(Arc<dyn DynPipeFactory>),
 }
 
+// ---- Per-transport entry / factory types (typed registries) ----------------
+
+macro_rules! transport_factory_types {
+    (
+        $context:ty,
+        $guard_factory:ident, $guard_entry:ident,
+        $interceptor_factory:ident, $interceptor_entry:ident,
+        $pipe_factory:ident, $pipe_entry:ident
+    ) => {
+        pub trait $guard_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<$context>>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $guard_entry {
+            Ready(Arc<dyn Guard<$context>>),
+            Factory(Arc<dyn $guard_factory>),
+        }
+
+        pub trait $interceptor_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor<$context>>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $interceptor_entry {
+            Ready(Arc<dyn Interceptor<$context>>),
+            Factory(Arc<dyn $interceptor_factory>),
+        }
+
+        pub trait $pipe_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe<$context>>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $pipe_entry {
+            Ready(Arc<dyn Pipe<$context>>),
+            Factory(Arc<dyn $pipe_factory>),
+        }
+    };
+}
+
+transport_factory_types!(
+    HttpContext,
+    DynHttpGuardFactory, HttpGuardEntry,
+    DynHttpInterceptorFactory, HttpInterceptorEntry,
+    DynHttpPipeFactory, HttpPipeEntry
+);
+
+transport_factory_types!(
+    RpcContext,
+    DynRpcGuardFactory, RpcGuardEntry,
+    DynRpcInterceptorFactory, RpcInterceptorEntry,
+    DynRpcPipeFactory, RpcPipeEntry
+);
+
+transport_factory_types!(
+    WsContext,
+    DynWsGuardFactory, WsGuardEntry,
+    DynWsInterceptorFactory, WsInterceptorEntry,
+    DynWsPipeFactory, WsPipeEntry
+);
+
+pub type HttpErrorHandlerArc = Arc<dyn ErrorHandler<HttpContext, HttpResponse>>;
+pub type RpcErrorHandlerArc = Arc<dyn ErrorHandler<RpcContext, RpcData>>;
+pub type WsErrorHandlerArc = Arc<dyn ErrorHandler<WsContext, WsMessage>>;
+
 /// Role trait-objects a provider may contribute to the registry.
 ///
 /// Returned as the second element of `ProviderFactory::build`. The container
@@ -92,11 +176,30 @@ pub enum PipeEntry {
 /// controller token).
 #[derive(Clone)]
 pub enum ProviderRole {
+    // Legacy enum-shaped roles. TODO: remove once per-transport variants
+    // fully replace them at every dispatcher and macro emission site.
     Guard(GuardEntry),
     Interceptor(InterceptorEntry),
     Pipe(PipeEntry),
-    Middleware(Arc<dyn Middleware>),
     ErrorHandler(Arc<dyn ErrorHandler>),
+
+    // Per-transport typed roles.
+    HttpGuard(HttpGuardEntry),
+    HttpInterceptor(HttpInterceptorEntry),
+    HttpPipe(HttpPipeEntry),
+    HttpErrorHandler(HttpErrorHandlerArc),
+
+    RpcGuard(RpcGuardEntry),
+    RpcInterceptor(RpcInterceptorEntry),
+    RpcPipe(RpcPipeEntry),
+    RpcErrorHandler(RpcErrorHandlerArc),
+
+    WsGuard(WsGuardEntry),
+    WsInterceptor(WsInterceptorEntry),
+    WsPipe(WsPipeEntry),
+    WsErrorHandler(WsErrorHandlerArc),
+
+    Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
     RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
     GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),

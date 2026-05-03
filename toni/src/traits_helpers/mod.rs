@@ -10,8 +10,13 @@ pub use self::provider_context::{HttpContext, ProviderContext};
 
 mod provider;
 pub use self::provider::{
-    DynGuardFactory, DynInterceptorFactory, DynPipeFactory, GuardEntry, Injectable,
-    InterceptorEntry, PipeEntry, Provider, ProviderFactory, ProviderRole,
+    DynGuardFactory, DynHttpGuardFactory, DynHttpInterceptorFactory, DynHttpPipeFactory,
+    DynInterceptorFactory, DynPipeFactory, DynRpcGuardFactory, DynRpcInterceptorFactory,
+    DynRpcPipeFactory, DynWsGuardFactory, DynWsInterceptorFactory, DynWsPipeFactory, GuardEntry,
+    HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable,
+    InterceptorEntry, PipeEntry, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
+    RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
+    WsInterceptorEntry, WsPipeEntry,
 };
 
 mod controller;
