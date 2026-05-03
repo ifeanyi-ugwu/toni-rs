@@ -25,14 +25,145 @@ use crate::{
 /// Detected enhancer traits that a struct implements
 #[derive(Debug, Clone, Default)]
 pub struct EnhancerTraits {
+    // Legacy enum-shaped roles (Guard / Interceptor / Pipe / ErrorHandler taking the
+    // legacy `Context`). Set when the impl head has no generic arg (or `<Context>`)
+    // or when the marker `#[guard]` etc. is present without transport args.
     pub is_guard: bool,
     pub is_interceptor: bool,
     pub is_pipe: bool,
-    pub is_middleware: bool,
     pub is_error_handler: bool,
+
+    pub is_middleware: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
+
+    // Per-transport typed roles. Multiple may be set on the same struct (e.g. a
+    // guard with separate impl blocks for HttpContext and RpcContext, or a
+    // universal blanket impl marked `#[guard(http, rpc, ws)]`).
+    pub is_http_guard: bool,
+    pub is_http_interceptor: bool,
+    pub is_http_pipe: bool,
+    pub is_http_error_handler: bool,
+
+    pub is_rpc_guard: bool,
+    pub is_rpc_interceptor: bool,
+    pub is_rpc_pipe: bool,
+    pub is_rpc_error_handler: bool,
+
+    pub is_ws_guard: bool,
+    pub is_ws_interceptor: bool,
+    pub is_ws_pipe: bool,
+    pub is_ws_error_handler: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TransportFlags {
+    http: bool,
+    rpc: bool,
+    ws: bool,
+    /// Explicit `Context` or no generic arg — legacy path.
+    legacy: bool,
+    /// User declared a transport-specific intent (via marker arg or typed impl
+    /// head). Suppresses the legacy fallback even if no transport matched.
+    explicit: bool,
+}
+
+impl TransportFlags {
+    fn any_typed(&self) -> bool {
+        self.http || self.rpc || self.ws
+    }
+
+    fn merge(&mut self, other: TransportFlags) {
+        self.http |= other.http;
+        self.rpc |= other.rpc;
+        self.ws |= other.ws;
+        self.legacy |= other.legacy;
+        self.explicit |= other.explicit;
+    }
+}
+
+/// Parse `#[guard(http, rpc, ws)]` style transport args from a marker attribute.
+///
+/// Returns the union of transports requested; `explicit = true` if any args
+/// were present (even unrecognized ones).
+fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
+    let mut flags = TransportFlags::default();
+    if matches!(attr.meta, syn::Meta::Path(_)) {
+        return flags;
+    }
+    let parsed = attr.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+    );
+    let Ok(idents) = parsed else {
+        return flags;
+    };
+    for ident in idents {
+        flags.explicit = true;
+        match ident.to_string().as_str() {
+            "http" => flags.http = true,
+            "rpc" => flags.rpc = true,
+            "ws" | "websocket" => flags.ws = true,
+            "universal" | "all" => {
+                flags.http = true;
+                flags.rpc = true;
+                flags.ws = true;
+            }
+            "context" | "legacy" => flags.legacy = true,
+            _ => {}
+        }
+    }
+    flags
+}
+
+/// Inspect a typed enhancer impl head (`Guard<...>` etc.) to decide which
+/// transport(s) it serves. The first generic argument is the context type.
+fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
+    let mut flags = TransportFlags::default();
+    let Some((_, path, _)) = &impl_block.trait_ else {
+        return flags;
+    };
+    let Some(last) = path.segments.last() else {
+        return flags;
+    };
+
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        // Bare `Guard` — defaults to `Context`. Legacy.
+        return flags;
+    };
+    let Some(syn::GenericArgument::Type(ctx_ty)) = args.args.first() else {
+        return flags;
+    };
+    let syn::Type::Path(type_path) = ctx_ty else {
+        return flags;
+    };
+    let Some(last_seg) = type_path.path.segments.last() else {
+        return flags;
+    };
+
+    flags.explicit = true;
+    match last_seg.ident.to_string().as_str() {
+        "HttpContext" => flags.http = true,
+        "RpcContext" => flags.rpc = true,
+        "WsContext" => flags.ws = true,
+        "Context" => flags.legacy = true,
+        // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
+        _ if impl_block
+            .generics
+            .params
+            .iter()
+            .any(|p| matches!(p, syn::GenericParam::Type(t) if t.ident == last_seg.ident)) =>
+        {
+            flags.http = true;
+            flags.rpc = true;
+            flags.ws = true;
+        }
+        // Unknown concrete type (e.g. user-defined HandlerContext impl).
+        // Treat as explicit-but-unrouted; the legacy fallback won't fire.
+        _ => {}
+    }
+
+    flags
 }
 
 /// Detect which enhancer traits a struct implements.
@@ -45,23 +176,76 @@ fn detect_enhancer_traits(
 ) -> EnhancerTraits {
     let mut traits = EnhancerTraits::default();
 
-    let markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
-    traits.is_guard = markers.is_guard;
-    traits.is_interceptor = markers.is_interceptor;
-    traits.is_middleware = markers.is_middleware;
-    traits.is_pipe = markers.is_pipe;
-    traits.is_error_handler = markers.is_error_handler;
+    let struct_markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
+    traits.is_middleware = struct_markers.is_middleware;
+
+    let mut guard_flags = TransportFlags::default();
+    let mut interceptor_flags = TransportFlags::default();
+    let mut pipe_flags = TransportFlags::default();
+    let mut error_handler_flags = TransportFlags::default();
+
+    if struct_markers.is_guard {
+        guard_flags.legacy = true;
+    }
+    if struct_markers.is_interceptor {
+        interceptor_flags.legacy = true;
+    }
+    if struct_markers.is_pipe {
+        pipe_flags.legacy = true;
+    }
+    if struct_markers.is_error_handler {
+        error_handler_flags.legacy = true;
+    }
+
+    let typed_impl_flags = detect_typed_impl_transport(impl_block);
 
     for attr in &impl_block.attrs {
-        if let Some(ident) = attr.path().get_ident() {
-            match ident.to_string().as_str() {
-                "guard" => traits.is_guard = true,
-                "interceptor" => traits.is_interceptor = true,
-                "middleware" => traits.is_middleware = true,
-                "pipe" => traits.is_pipe = true,
-                "error_handler" => traits.is_error_handler = true,
-                _ => {}
+        let Some(ident) = attr.path().get_ident() else {
+            continue;
+        };
+        match ident.to_string().as_str() {
+            "guard" => {
+                let mut f = parse_marker_transport_args(attr);
+                if !f.explicit {
+                    f.merge(typed_impl_flags);
+                }
+                if !f.explicit {
+                    f.legacy = true;
+                }
+                guard_flags.merge(f);
             }
+            "interceptor" => {
+                let mut f = parse_marker_transport_args(attr);
+                if !f.explicit {
+                    f.merge(typed_impl_flags);
+                }
+                if !f.explicit {
+                    f.legacy = true;
+                }
+                interceptor_flags.merge(f);
+            }
+            "pipe" => {
+                let mut f = parse_marker_transport_args(attr);
+                if !f.explicit {
+                    f.merge(typed_impl_flags);
+                }
+                if !f.explicit {
+                    f.legacy = true;
+                }
+                pipe_flags.merge(f);
+            }
+            "error_handler" => {
+                let mut f = parse_marker_transport_args(attr);
+                if !f.explicit {
+                    f.merge(typed_impl_flags);
+                }
+                if !f.explicit {
+                    f.legacy = true;
+                }
+                error_handler_flags.merge(f);
+            }
+            "middleware" => traits.is_middleware = true,
+            _ => {}
         }
     }
 
@@ -73,14 +257,46 @@ fn detect_enhancer_traits(
             .unwrap_or_default();
 
         match trait_name.as_str() {
-            "Guard" => traits.is_guard = true,
-            "Interceptor" => traits.is_interceptor = true,
-            "Pipe" => traits.is_pipe = true,
+            "Guard" => guard_flags.merge(typed_impl_flags),
+            "Interceptor" => interceptor_flags.merge(typed_impl_flags),
+            "Pipe" => pipe_flags.merge(typed_impl_flags),
+            "ErrorHandler" => error_handler_flags.merge(typed_impl_flags),
             "Middleware" => traits.is_middleware = true,
-            "ErrorHandler" => traits.is_error_handler = true,
             _ => {}
         }
     }
+
+    // Legacy fallback: if the impl head is `Guard for X` (no generic arg) and
+    // no marker overrode it, the typed flags will all be unset and `legacy`
+    // is set. Also promote to legacy if neither typed nor explicit fired.
+    let resolve = |f: TransportFlags| -> (bool, bool, bool, bool) {
+        let legacy = f.legacy || (!f.any_typed() && !f.explicit);
+        (legacy, f.http, f.rpc, f.ws)
+    };
+
+    let (g_l, g_h, g_r, g_w) = resolve(guard_flags);
+    traits.is_guard = g_l;
+    traits.is_http_guard = g_h;
+    traits.is_rpc_guard = g_r;
+    traits.is_ws_guard = g_w;
+
+    let (i_l, i_h, i_r, i_w) = resolve(interceptor_flags);
+    traits.is_interceptor = i_l;
+    traits.is_http_interceptor = i_h;
+    traits.is_rpc_interceptor = i_r;
+    traits.is_ws_interceptor = i_w;
+
+    let (p_l, p_h, p_r, p_w) = resolve(pipe_flags);
+    traits.is_pipe = p_l;
+    traits.is_http_pipe = p_h;
+    traits.is_rpc_pipe = p_r;
+    traits.is_ws_pipe = p_w;
+
+    let (e_l, e_h, e_r, e_w) = resolve(error_handler_flags);
+    traits.is_error_handler = e_l;
+    traits.is_http_error_handler = e_h;
+    traits.is_rpc_error_handler = e_r;
+    traits.is_ws_error_handler = e_w;
 
     traits
 }
@@ -299,6 +515,111 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::ErrorHandler(
                 instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>
+            ));
+        });
+    }
+
+    if traits.is_http_guard {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpGuard(
+                ::toni::traits_helpers::HttpGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpInterceptor(
+                ::toni::traits_helpers::HttpInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpPipe(
+                ::toni::traits_helpers::HttpPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse>>
+            ));
+        });
+    }
+
+    if traits.is_rpc_guard {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcGuard(
+                ::toni::traits_helpers::RpcGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcInterceptor(
+                ::toni::traits_helpers::RpcInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcPipe(
+                ::toni::traits_helpers::RpcPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::RpcContext, ::toni::rpc::RpcData>>
+            ));
+        });
+    }
+
+    if traits.is_ws_guard {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsGuard(
+                ::toni::traits_helpers::WsGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsInterceptor(
+                ::toni::traits_helpers::WsInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsPipe(
+                ::toni::traits_helpers::WsPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage>>
             ));
         });
     }
