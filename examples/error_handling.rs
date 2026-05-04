@@ -19,14 +19,14 @@
 use serde_json::json;
 use std::sync::Arc;
 use toni::{
-    async_trait, controller,
+    async_trait,
+    context::HttpContext,
+    controller,
     enhancer::error_handler,
     errors::HttpError,
-    get, injectable,
-    injector::Context,
-    module, post,
+    get, injectable, module, post,
     toni_factory::ToniFactory,
-    traits_helpers::{ErrorHandler, ErrorResponse, Guard},
+    traits_helpers::{ErrorHandler, Guard},
     Body as ToniBody, HttpRequest, HttpResponse,
 };
 use toni_axum::AxumAdapter;
@@ -36,25 +36,23 @@ use toni_macros::{use_error_handlers, use_guards};
 pub struct GlobalErrorHandler;
 
 #[async_trait]
-impl ErrorHandler for GlobalErrorHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for GlobalErrorHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        let http = ctx.switch_to_http()?;
+        ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let req = ctx.request();
         eprintln!(
             "[GlobalErrorHandler] {} {}: {}",
-            http.request().method,
-            http.request().uri,
-            error
+            req.method, req.uri, error
         );
 
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            return Some(ErrorResponse::Http(http_error.to_response()));
+            return Some(http_error.to_response());
         }
 
-        Some(ErrorResponse::Http(
+        Some(
             HttpResponse::builder()
                 .status(500)
                 .json(json!({
@@ -63,10 +61,10 @@ impl ErrorHandler for GlobalErrorHandler {
                     "error": "Internal Server Error",
                     "handler": "GlobalErrorHandler",
                     "timestamp": chrono::Utc::now().to_rfc3339(),
-                    "path": http.request().uri.to_string(),
+                    "path": req.uri.to_string(),
                 }))
                 .build(),
-        ))
+        )
     }
 }
 
@@ -74,22 +72,21 @@ impl ErrorHandler for GlobalErrorHandler {
 pub struct ValidationErrorHandler;
 
 #[async_trait]
-impl ErrorHandler for ValidationErrorHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for ValidationErrorHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        let http = ctx.switch_to_http()?;
+        ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let req = ctx.request();
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
             let status = http_error.status_code();
             if matches!(status, 400 | 422) {
                 eprintln!(
                     "[ValidationErrorHandler] Handling validation error on {}: {}",
-                    http.request().uri,
-                    error
+                    req.uri, error
                 );
-                return Some(ErrorResponse::Http(
+                return Some(
                     HttpResponse::builder()
                         .status(status)
                         .json(json!({
@@ -98,10 +95,10 @@ impl ErrorHandler for ValidationErrorHandler {
                             "error": "Validation Error",
                             "handler": "ValidationErrorHandler",
                             "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": http.request().uri.to_string(),
+                            "path": req.uri.to_string(),
                         }))
                         .build(),
-                ));
+                );
             }
         }
         None
@@ -112,21 +109,20 @@ impl ErrorHandler for ValidationErrorHandler {
 pub struct DatabaseErrorHandler;
 
 #[async_trait]
-impl ErrorHandler for DatabaseErrorHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for DatabaseErrorHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        let http = ctx.switch_to_http()?;
+        ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let req = ctx.request();
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
             if http_error.status_code() == 409 {
                 eprintln!(
                     "[DatabaseErrorHandler] Handling conflict error on {}: {}",
-                    http.request().uri,
-                    error
+                    req.uri, error
                 );
-                return Some(ErrorResponse::Http(
+                return Some(
                     HttpResponse::builder()
                         .status(409)
                         .json(json!({
@@ -135,10 +131,10 @@ impl ErrorHandler for DatabaseErrorHandler {
                             "error": "Database Conflict",
                             "handler": "DatabaseErrorHandler",
                             "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": http.request().uri.to_string(),
+                            "path": req.uri.to_string(),
                         }))
                         .build(),
-                ));
+                );
             }
         }
         None
@@ -149,22 +145,20 @@ impl ErrorHandler for DatabaseErrorHandler {
 pub struct UserControllerErrorHandler;
 
 #[async_trait]
-impl ErrorHandler for UserControllerErrorHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for UserControllerErrorHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        let http = ctx.switch_to_http()?;
+        ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let req = ctx.request();
         eprintln!(
             "[UserControllerErrorHandler] {} {}: {}",
-            http.request().method,
-            http.request().uri,
-            error
+            req.method, req.uri, error
         );
 
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            return Some(ErrorResponse::Http(
+            return Some(
                 HttpResponse::builder()
                     .status(http_error.status_code())
                     .json(json!({
@@ -172,10 +166,10 @@ impl ErrorHandler for UserControllerErrorHandler {
                         "message": http_error.message(),
                         "handler": "UserControllerErrorHandler",
                         "timestamp": chrono::Utc::now().to_rfc3339(),
-                        "path": http.request().uri.to_string(),
+                        "path": req.uri.to_string(),
                     }))
                     .build(),
-            ));
+            );
         }
 
         None
@@ -184,7 +178,7 @@ impl ErrorHandler for UserControllerErrorHandler {
 
 // DI-based error handler - registered in providers and resolved from container
 #[injectable(pub struct NotFoundErrorHandler {})]
-#[error_handler]
+#[error_handler(http)]
 impl NotFoundErrorHandler {
     pub fn new() -> Self {
         Self {}
@@ -192,21 +186,20 @@ impl NotFoundErrorHandler {
 }
 
 #[async_trait]
-impl ErrorHandler for NotFoundErrorHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for NotFoundErrorHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        let http = ctx.switch_to_http()?;
+        ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let req = ctx.request();
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
             if http_error.status_code() == 404 {
                 eprintln!(
                     "[NotFoundErrorHandler - DI] Handling 404 on {}: {}",
-                    http.request().uri,
-                    error
+                    req.uri, error
                 );
-                return Some(ErrorResponse::Http(
+                return Some(
                     HttpResponse::builder()
                         .status(404)
                         .json(json!({
@@ -215,10 +208,10 @@ impl ErrorHandler for NotFoundErrorHandler {
                             "error": "Not Found",
                             "handler": "NotFoundErrorHandler (DI-based)",
                             "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": http.request().uri.to_string(),
+                            "path": req.uri.to_string(),
                         }))
                         .build(),
-                ));
+                );
             }
         }
         None
@@ -228,14 +221,9 @@ impl ErrorHandler for NotFoundErrorHandler {
 pub struct AuthGuard;
 
 #[async_trait]
-impl Guard for AuthGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_http()
-            .expect("Expected HTTP context")
-            .request()
-            .headers
-            .contains_key("x-auth-token")
+impl Guard<HttpContext> for AuthGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
+        context.request().headers.contains_key("x-auth-token")
     }
 }
 
@@ -483,7 +471,7 @@ async fn main() -> anyhow::Result<()> {
     println!("     - Used by ProductController\n");
 
     let mut factory = ToniFactory::new();
-    factory.use_global_error_handler(Arc::new(GlobalErrorHandler));
+    factory.use_global_http_error_handler(Arc::new(GlobalErrorHandler));
 
     let mut app = factory.create_with(AppModule).await;
 

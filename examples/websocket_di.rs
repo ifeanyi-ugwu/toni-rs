@@ -58,7 +58,8 @@ impl Interceptor for WsLoggingInterceptor {
 #[websocket_gateway("/chat", pub struct ChatGateway {
     broadcast: BroadcastService,
 })]
-
+#[use_guards(WsAuthGuard)]
+#[use_interceptors(WsLoggingInterceptor)]
 impl ChatGateway {
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
@@ -128,11 +129,7 @@ async fn main() -> anyhow::Result<()> {
     println!(r#"  websocat --header='X-Auth-Token: secret123' ws://127.0.0.1:8080/chat"#);
     println!();
 
-    let mut factory = ToniFactory::new();
-
-    factory.use_global_guards(Arc::new(WsAuthGuard));
-    factory.use_global_interceptors(Arc::new(WsLoggingInterceptor));
-
+    let factory = ToniFactory::new();
     let mut app = factory.create_with(ChatModule).await;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), 8080, "127.0.0.1")

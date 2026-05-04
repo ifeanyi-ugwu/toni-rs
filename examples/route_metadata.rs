@@ -13,8 +13,10 @@
 //! 3. Guards/interceptors read via `context.metadata().unwrap().get::<YourType>()`
 
 use toni::{
-    async_trait, controller, get, http_helpers::Body as ToniBody, module, set_metadata,
-    traits_helpers::Guard, use_guards, Context,
+    async_trait,
+    context::{HandlerContext, HttpContext},
+    controller, get, http_helpers::Body as ToniBody, module, set_metadata,
+    traits_helpers::Guard, use_guards,
 };
 
 // ============================================================================
@@ -43,26 +45,20 @@ pub struct Public;
 pub struct RolesGuard;
 
 #[async_trait]
-impl Guard for RolesGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        let metadata = context.metadata().expect("Route metadata not available");
+impl Guard<HttpContext> for RolesGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
+        let metadata = context.route_metadata().expect("Route metadata not available");
 
-        // Public routes bypass role checks
         if metadata.get::<Public>().is_some() {
             return true;
         }
 
-        // No roles specified = allow all
         let Some(Roles(required)) = metadata.get::<Roles>() else {
             return true;
         };
 
-        // In production: extract user from JWT/session and check roles
-        let req = context
-            .switch_to_http()
-            .expect("Expected HTTP context")
-            .request();
-        let user_role = req
+        let user_role = context
+            .request()
             .headers
             .get("x-user-role")
             .and_then(|v| v.to_str().ok())
@@ -75,9 +71,9 @@ impl Guard for RolesGuard {
 pub struct RateLimitGuard;
 
 #[async_trait]
-impl Guard for RateLimitGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        let metadata = context.metadata().expect("Route metadata not available");
+impl Guard<HttpContext> for RateLimitGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
+        let metadata = context.route_metadata().expect("Route metadata not available");
 
         let Some(RateLimit {
             max_requests,
