@@ -5,7 +5,11 @@ use rustc_hash::FxHashMap;
 
 use crate::http_helpers::{HttpMethod, HttpRequest, HttpResponse, RequestPart, RouteMetadata};
 
-use super::{ErrorHandler, Guard, Interceptor, Pipe, provider::Provider, validate::Validatable};
+use crate::context::HttpContext;
+
+use super::{
+    Guard, HttpErrorHandlerArc, Interceptor, Pipe, provider::Provider, validate::Validatable,
+};
 
 #[async_trait]
 pub trait Controller: Send + Sync {
@@ -14,36 +18,36 @@ pub trait Controller: Send + Sync {
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 
-    /// Get guard instances (deprecated - use get_guard_tokens instead)
-    fn get_guards(&self) -> Vec<Arc<dyn Guard>>;
-
-    /// Get pipe instances (deprecated - use get_pipe_tokens instead)
-    fn get_pipes(&self) -> Vec<Arc<dyn Pipe>>;
-
-    /// Get interceptor instances (deprecated - use get_interceptor_tokens instead)
-    fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor>>;
-
-    /// Get guard tokens for DI resolution
     fn get_guard_tokens(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Get interceptor tokens for DI resolution
     fn get_interceptor_tokens(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Get pipe tokens for DI resolution
     fn get_pipe_tokens(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Get error handler tokens for DI resolution
     fn get_error_handler_tokens(&self) -> Vec<String> {
         vec![]
     }
 
-    fn get_error_handlers(&self) -> Vec<Arc<dyn ErrorHandler>> {
+    /// Direct-instantiation enhancers (e.g. `#[use_guards(MyGuard{})]`) — bypass DI.
+    fn get_guards(&self) -> Vec<Arc<dyn Guard<HttpContext>>> {
+        vec![]
+    }
+
+    fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor<HttpContext>>> {
+        vec![]
+    }
+
+    fn get_pipes(&self) -> Vec<Arc<dyn Pipe<HttpContext>>> {
+        vec![]
+    }
+
+    fn get_error_handlers(&self) -> Vec<HttpErrorHandlerArc> {
         vec![]
     }
 

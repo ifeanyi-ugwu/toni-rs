@@ -414,6 +414,7 @@ impl ToniInstanceLoader {
             })?;
             guards.push(guard);
         }
+        guards.extend(controller.get_guards().into_iter().map(HttpGuardEntry::Ready));
 
         let mut interceptors: Vec<HttpInterceptorEntry> = Vec::new();
         for token in controller.get_interceptor_tokens() {
@@ -431,6 +432,12 @@ impl ToniInstanceLoader {
                 })?;
             interceptors.push(interceptor);
         }
+        interceptors.extend(
+            controller
+                .get_interceptors()
+                .into_iter()
+                .map(HttpInterceptorEntry::Ready),
+        );
 
         let mut pipes: Vec<HttpPipeEntry> = Vec::new();
         for token in controller.get_pipe_tokens() {
@@ -444,6 +451,7 @@ impl ToniInstanceLoader {
             })?;
             pipes.push(pipe);
         }
+        pipes.extend(controller.get_pipes().into_iter().map(HttpPipeEntry::Ready));
 
         let mut error_handlers = Vec::new();
         for token in controller.get_error_handler_tokens() {
@@ -461,6 +469,7 @@ impl ToniInstanceLoader {
                 })?;
             error_handlers.push(eh);
         }
+        error_handlers.extend(controller.get_error_handlers());
 
         Ok(EnhancerMetadata {
             guards,

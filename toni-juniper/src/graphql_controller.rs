@@ -6,7 +6,7 @@ use juniper::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use toni::traits_helpers::{Controller, ControllerFactory, Guard, Interceptor, Pipe, Provider};
+use toni::traits_helpers::{Controller, ControllerFactory, Provider};
 use toni::{http_helpers::Body, FxHashMap, HttpMethod, HttpRequest, HttpResponse};
 
 /// GraphQL request payload
@@ -283,18 +283,6 @@ where
         HttpMethod::POST
     }
 
-    fn get_guards(&self) -> Vec<Arc<dyn Guard>> {
-        vec![]
-    }
-
-    fn get_pipes(&self) -> Vec<Arc<dyn Pipe>> {
-        vec![]
-    }
-
-    fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor>> {
-        vec![]
-    }
-
     fn get_body_dto(
         &self,
         _req: &toni::RequestPart,
@@ -329,18 +317,6 @@ impl Controller for GraphQLPlaygroundController {
 
     fn get_method(&self) -> HttpMethod {
         HttpMethod::GET
-    }
-
-    fn get_guards(&self) -> Vec<Arc<dyn Guard>> {
-        vec![]
-    }
-
-    fn get_pipes(&self) -> Vec<Arc<dyn Pipe>> {
-        vec![]
-    }
-
-    fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor>> {
-        vec![]
     }
 
     fn get_body_dto(
