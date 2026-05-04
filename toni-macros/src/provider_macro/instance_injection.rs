@@ -179,71 +179,54 @@ fn detect_enhancer_traits(
     let struct_markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
     traits.is_middleware = struct_markers.is_middleware;
 
-    let mut guard_flags = TransportFlags::default();
-    let mut interceptor_flags = TransportFlags::default();
-    let mut pipe_flags = TransportFlags::default();
-    let mut error_handler_flags = TransportFlags::default();
+    // (transport_flags, signal_seen) — `signal_seen` gates whether the resolver
+    // fires anything at all. Without a signal (no marker, no trait header match),
+    // an unrelated struct (gateway, plain service) must not be cast as Guard.
+    let mut guard = (TransportFlags::default(), false);
+    let mut interceptor = (TransportFlags::default(), false);
+    let mut pipe = (TransportFlags::default(), false);
+    let mut error_handler = (TransportFlags::default(), false);
 
     if struct_markers.is_guard {
-        guard_flags.legacy = true;
+        guard.0.legacy = true;
+        guard.1 = true;
     }
     if struct_markers.is_interceptor {
-        interceptor_flags.legacy = true;
+        interceptor.0.legacy = true;
+        interceptor.1 = true;
     }
     if struct_markers.is_pipe {
-        pipe_flags.legacy = true;
+        pipe.0.legacy = true;
+        pipe.1 = true;
     }
     if struct_markers.is_error_handler {
-        error_handler_flags.legacy = true;
+        error_handler.0.legacy = true;
+        error_handler.1 = true;
     }
 
     let typed_impl_flags = detect_typed_impl_transport(impl_block);
+
+    let merge_marker = |slot: &mut (TransportFlags, bool), attr: &syn::Attribute| {
+        let mut f = parse_marker_transport_args(attr);
+        if !f.explicit {
+            f.merge(typed_impl_flags);
+        }
+        if !f.explicit {
+            f.legacy = true;
+        }
+        slot.0.merge(f);
+        slot.1 = true;
+    };
 
     for attr in &impl_block.attrs {
         let Some(ident) = attr.path().get_ident() else {
             continue;
         };
         match ident.to_string().as_str() {
-            "guard" => {
-                let mut f = parse_marker_transport_args(attr);
-                if !f.explicit {
-                    f.merge(typed_impl_flags);
-                }
-                if !f.explicit {
-                    f.legacy = true;
-                }
-                guard_flags.merge(f);
-            }
-            "interceptor" => {
-                let mut f = parse_marker_transport_args(attr);
-                if !f.explicit {
-                    f.merge(typed_impl_flags);
-                }
-                if !f.explicit {
-                    f.legacy = true;
-                }
-                interceptor_flags.merge(f);
-            }
-            "pipe" => {
-                let mut f = parse_marker_transport_args(attr);
-                if !f.explicit {
-                    f.merge(typed_impl_flags);
-                }
-                if !f.explicit {
-                    f.legacy = true;
-                }
-                pipe_flags.merge(f);
-            }
-            "error_handler" => {
-                let mut f = parse_marker_transport_args(attr);
-                if !f.explicit {
-                    f.merge(typed_impl_flags);
-                }
-                if !f.explicit {
-                    f.legacy = true;
-                }
-                error_handler_flags.merge(f);
-            }
+            "guard" => merge_marker(&mut guard, attr),
+            "interceptor" => merge_marker(&mut interceptor, attr),
+            "pipe" => merge_marker(&mut pipe, attr),
+            "error_handler" => merge_marker(&mut error_handler, attr),
             "middleware" => traits.is_middleware = true,
             _ => {}
         }
@@ -257,42 +240,55 @@ fn detect_enhancer_traits(
             .unwrap_or_default();
 
         match trait_name.as_str() {
-            "Guard" => guard_flags.merge(typed_impl_flags),
-            "Interceptor" => interceptor_flags.merge(typed_impl_flags),
-            "Pipe" => pipe_flags.merge(typed_impl_flags),
-            "ErrorHandler" => error_handler_flags.merge(typed_impl_flags),
+            "Guard" => {
+                guard.0.merge(typed_impl_flags);
+                guard.1 = true;
+            }
+            "Interceptor" => {
+                interceptor.0.merge(typed_impl_flags);
+                interceptor.1 = true;
+            }
+            "Pipe" => {
+                pipe.0.merge(typed_impl_flags);
+                pipe.1 = true;
+            }
+            "ErrorHandler" => {
+                error_handler.0.merge(typed_impl_flags);
+                error_handler.1 = true;
+            }
             "Middleware" => traits.is_middleware = true,
             _ => {}
         }
     }
 
-    // Legacy fallback: if the impl head is `Guard for X` (no generic arg) and
-    // no marker overrode it, the typed flags will all be unset and `legacy`
-    // is set. Also promote to legacy if neither typed nor explicit fired.
-    let resolve = |f: TransportFlags| -> (bool, bool, bool, bool) {
+    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool, bool) {
+        if !slot.1 {
+            return (false, false, false, false);
+        }
+        let f = slot.0;
         let legacy = f.legacy || (!f.any_typed() && !f.explicit);
         (legacy, f.http, f.rpc, f.ws)
     };
 
-    let (g_l, g_h, g_r, g_w) = resolve(guard_flags);
+    let (g_l, g_h, g_r, g_w) = resolve(guard);
     traits.is_guard = g_l;
     traits.is_http_guard = g_h;
     traits.is_rpc_guard = g_r;
     traits.is_ws_guard = g_w;
 
-    let (i_l, i_h, i_r, i_w) = resolve(interceptor_flags);
+    let (i_l, i_h, i_r, i_w) = resolve(interceptor);
     traits.is_interceptor = i_l;
     traits.is_http_interceptor = i_h;
     traits.is_rpc_interceptor = i_r;
     traits.is_ws_interceptor = i_w;
 
-    let (p_l, p_h, p_r, p_w) = resolve(pipe_flags);
+    let (p_l, p_h, p_r, p_w) = resolve(pipe);
     traits.is_pipe = p_l;
     traits.is_http_pipe = p_h;
     traits.is_rpc_pipe = p_r;
     traits.is_ws_pipe = p_w;
 
-    let (e_l, e_h, e_r, e_w) = resolve(error_handler_flags);
+    let (e_l, e_h, e_r, e_w) = resolve(error_handler);
     traits.is_error_handler = e_l;
     traits.is_http_error_handler = e_h;
     traits.is_rpc_error_handler = e_r;
@@ -1741,11 +1737,20 @@ fn generate_dyn_factories(
     dependencies: &DependencyInfo,
     enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
-    let needs_guard = enhancer_traits.is_guard;
-    let needs_interceptor = enhancer_traits.is_interceptor;
-    let needs_pipe = enhancer_traits.is_pipe;
+    let any_factory = enhancer_traits.is_guard
+        || enhancer_traits.is_interceptor
+        || enhancer_traits.is_pipe
+        || enhancer_traits.is_http_guard
+        || enhancer_traits.is_http_interceptor
+        || enhancer_traits.is_http_pipe
+        || enhancer_traits.is_rpc_guard
+        || enhancer_traits.is_rpc_interceptor
+        || enhancer_traits.is_rpc_pipe
+        || enhancer_traits.is_ws_guard
+        || enhancer_traits.is_ws_interceptor
+        || enhancer_traits.is_ws_pipe;
 
-    if !needs_guard && !needs_interceptor && !needs_pipe {
+    if !any_factory {
         return (quote! {}, quote! {});
     }
 
@@ -1794,9 +1799,13 @@ fn generate_dyn_factories(
     let mut struct_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
-    if needs_guard {
+    let mut emit = |kind_name: &str,
+                    trait_path: TokenStream,
+                    factory_trait_path: TokenStream,
+                    role_variant: TokenStream,
+                    entry_variant: TokenStream| {
         let factory_struct_name = Ident::new(
-            &format!("__Toni{}GuardDynFactory", struct_name),
+            &format!("__Toni{}{}DynFactory", struct_name, kind_name),
             struct_name.span(),
         );
         struct_defs.push(quote! {
@@ -1805,7 +1814,7 @@ fn generate_dyn_factories(
                 has_request_deps: bool,
             }
 
-            impl ::toni::traits_helpers::DynGuardFactory for #factory_struct_name {
+            impl #factory_trait_path for #factory_struct_name {
                 fn requires_http_parts(&self) -> bool {
                     self.has_request_deps
                 }
@@ -1814,21 +1823,21 @@ fn generate_dyn_factories(
                     &'a self,
                     request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
                 ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                    Output = ::std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {
                     let all_deps = self.all_deps.clone();
                     ::std::boxed::Box::pin(async move {
                         let __request_cache = ::toni::traits_helpers::RequestCache::new();
                         #(#field_resolutions)*
                         let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn #trait_path + Send + Sync>
                     })
                 }
             }
         });
         role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
-                ::toni::traits_helpers::GuardEntry::Factory(
+            __roles.push(#role_variant(
+                #entry_variant(
                     ::std::sync::Arc::new(#factory_struct_name {
                         all_deps: __all_deps.clone(),
                         has_request_deps: __has_request_deps,
@@ -1836,94 +1845,118 @@ fn generate_dyn_factories(
                 )
             ));
         });
+    };
+
+    if enhancer_traits.is_guard {
+        emit(
+            "Guard",
+            quote! { ::toni::traits_helpers::Guard },
+            quote! { ::toni::traits_helpers::DynGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::Guard },
+            quote! { ::toni::traits_helpers::GuardEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_interceptor {
+        emit(
+            "Interceptor",
+            quote! { ::toni::traits_helpers::Interceptor },
+            quote! { ::toni::traits_helpers::DynInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::Interceptor },
+            quote! { ::toni::traits_helpers::InterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_pipe {
+        emit(
+            "Pipe",
+            quote! { ::toni::traits_helpers::Pipe },
+            quote! { ::toni::traits_helpers::DynPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::Pipe },
+            quote! { ::toni::traits_helpers::PipeEntry::Factory },
+        );
     }
 
-    if needs_interceptor {
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}InterceptorDynFactory", struct_name),
-            struct_name.span(),
+    if enhancer_traits.is_http_guard {
+        emit(
+            "HttpGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpGuard },
+            quote! { ::toni::traits_helpers::HttpGuardEntry::Factory },
         );
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
-
-            impl ::toni::traits_helpers::DynInterceptorFactory for #factory_struct_name {
-                fn requires_http_parts(&self) -> bool {
-                    self.has_request_deps
-                }
-
-                fn create<'a>(
-                    &'a self,
-                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
-                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
-                > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
-                    ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
-                    })
-                }
-            }
-        });
-        role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
-                ::toni::traits_helpers::InterceptorEntry::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
-        });
+    }
+    if enhancer_traits.is_http_interceptor {
+        emit(
+            "HttpInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpInterceptor },
+            quote! { ::toni::traits_helpers::HttpInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_http_pipe {
+        emit(
+            "HttpPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpPipe },
+            quote! { ::toni::traits_helpers::HttpPipeEntry::Factory },
+        );
     }
 
-    if needs_pipe {
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}PipeDynFactory", struct_name),
-            struct_name.span(),
+    if enhancer_traits.is_rpc_guard {
+        emit(
+            "RpcGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcGuard },
+            quote! { ::toni::traits_helpers::RpcGuardEntry::Factory },
         );
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
+    }
+    if enhancer_traits.is_rpc_interceptor {
+        emit(
+            "RpcInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcInterceptor },
+            quote! { ::toni::traits_helpers::RpcInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_rpc_pipe {
+        emit(
+            "RpcPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcPipe },
+            quote! { ::toni::traits_helpers::RpcPipeEntry::Factory },
+        );
+    }
 
-            impl ::toni::traits_helpers::DynPipeFactory for #factory_struct_name {
-                fn requires_http_parts(&self) -> bool {
-                    self.has_request_deps
-                }
-
-                fn create<'a>(
-                    &'a self,
-                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
-                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
-                > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
-                    ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
-                    })
-                }
-            }
-        });
-        role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
-                ::toni::traits_helpers::PipeEntry::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
-        });
+    if enhancer_traits.is_ws_guard {
+        emit(
+            "WsGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsGuard },
+            quote! { ::toni::traits_helpers::WsGuardEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_ws_interceptor {
+        emit(
+            "WsInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsInterceptor },
+            quote! { ::toni::traits_helpers::WsInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_ws_pipe {
+        emit(
+            "WsPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsPipe },
+            quote! { ::toni::traits_helpers::WsPipeEntry::Factory },
+        );
     }
 
     (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })

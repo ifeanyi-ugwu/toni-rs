@@ -104,7 +104,7 @@ macro_rules! transport_factory_types {
             fn create<'a>(
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
-            ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<$context>>> + Send + 'a>>;
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<$context> + Send + Sync>> + Send + 'a>>;
         }
 
         #[derive(Clone)]
@@ -118,7 +118,7 @@ macro_rules! transport_factory_types {
             fn create<'a>(
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
-            ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor<$context>>> + Send + 'a>>;
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor<$context> + Send + Sync>> + Send + 'a>>;
         }
 
         #[derive(Clone)]
@@ -132,7 +132,7 @@ macro_rules! transport_factory_types {
             fn create<'a>(
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
-            ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe<$context>>> + Send + 'a>>;
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe<$context> + Send + Sync>> + Send + 'a>>;
         }
 
         #[derive(Clone)]
