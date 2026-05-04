@@ -4,6 +4,7 @@ mod application_context;
 mod error;
 pub mod builtin_module;
 pub mod context;
+pub use context::{CancellationToken, HandlerContext};
 pub mod di;
 pub mod errors;
 pub mod extractors;
