@@ -10,13 +10,11 @@
 use std::sync::Arc;
 
 use toni::{
-    async_trait, controller,
+    async_trait, context::HttpContext, controller,
     errors::HttpError,
-    get,
-    injector::Context,
-    module,
+    get, module,
     toni_factory::ToniFactory,
-    traits_helpers::{ErrorHandler, ErrorResponse},
+    traits_helpers::ErrorHandler,
     Body as ToniBody, HttpResponse,
 };
 use toni_axum::AxumAdapter;
@@ -25,17 +23,17 @@ use toni_macros::use_error_handlers;
 struct GlobalHandler;
 
 #[async_trait]
-impl ErrorHandler for GlobalHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for GlobalHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        _ctx: &Context,
-    ) -> Option<ErrorResponse> {
+        _ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
         if let Some(e) = error.downcast_ref::<HttpError>() {
             let mut resp = HttpResponse::new();
             resp.status = e.status_code();
             resp.body = Some(ToniBody::text(format!("global:{}", e.message())));
-            return Some(ErrorResponse::Http(resp));
+            return Some(resp);
         }
         None
     }
@@ -44,18 +42,18 @@ impl ErrorHandler for GlobalHandler {
 struct BadRequestHandler;
 
 #[async_trait]
-impl ErrorHandler for BadRequestHandler {
+impl ErrorHandler<HttpContext, HttpResponse> for BadRequestHandler {
     async fn handle_error(
         &self,
         error: Box<dyn std::error::Error + Send>,
-        _ctx: &Context,
-    ) -> Option<ErrorResponse> {
+        _ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
         if let Some(e) = error.downcast_ref::<HttpError>() {
             if e.status_code() == 400 {
                 let mut resp = HttpResponse::new();
                 resp.status = 400;
                 resp.body = Some(ToniBody::text(format!("method:{}", e.message())));
-                return Some(ErrorResponse::Http(resp));
+                return Some(resp);
             }
         }
         None
@@ -70,7 +68,7 @@ async fn start_with_global_handler(
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut factory = ToniFactory::new();
-        factory.use_global_error_handler(Arc::new(GlobalHandler));
+        factory.use_global_http_error_handler(Arc::new(GlobalHandler));
         let mut app = factory.create_with(module).await;
         app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();

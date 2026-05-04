@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
 use toni::di::{APP_GUARD, APP_INTERCEPTOR};
 use toni::enhancer::{guard, interceptor};
-use toni::injector::Context;
+use toni::context::HttpContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::{controller, get, injectable, module, provider_token, provider_value, Body as ToniBody};
 
@@ -61,7 +61,7 @@ impl MockService {
     service: MockService,
     tracker: ExecutionTracker,
 })]
-#[guard]
+#[guard(http)]
 impl AppGuardWithDI {
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
@@ -69,8 +69,8 @@ impl AppGuardWithDI {
 }
 
 #[async_trait]
-impl Guard for AppGuardWithDI {
-    async fn can_activate(&self, _context: &Context) -> bool {
+impl Guard<HttpContext> for AppGuardWithDI {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         self.tracker
             .track(&format!("guard:app_token:{}", self.service.get_name()));
         true
@@ -81,7 +81,7 @@ impl Guard for AppGuardWithDI {
     service: MockService,
     tracker: ExecutionTracker,
 })]
-#[interceptor]
+#[interceptor(http)]
 impl AppInterceptorWithDI {
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
@@ -89,8 +89,12 @@ impl AppInterceptorWithDI {
 }
 
 #[async_trait]
-impl Interceptor for AppInterceptorWithDI {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for AppInterceptorWithDI {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         self.tracker.track(&format!(
             "interceptor:app_token:{}:before",
             self.service.get_name()

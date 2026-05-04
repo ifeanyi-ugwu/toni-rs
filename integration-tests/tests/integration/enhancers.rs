@@ -1,6 +1,6 @@
 use crate::common::{ExecutionOrder, TestServer};
 use toni::async_trait;
-use toni::injector::Context;
+use toni::context::{HandlerContext, HttpContext};
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
 use toni::{
@@ -86,14 +86,12 @@ impl AdminGuard {
 }
 
 #[async_trait]
-impl Guard for AdminGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
+impl Guard<HttpContext> for AdminGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.tracker.track("guard:admin");
-        let req = context
-            .switch_to_http()
-            .expect("Expected HTTP context")
-            .request();
-        req.headers
+        context
+            .request()
+            .headers
             .get("x-admin-token")
             .and_then(|v| v.to_str().ok())
             .map(|value| value == "secret123")
@@ -113,14 +111,10 @@ impl AuthGuard {
 }
 
 #[async_trait]
-impl Guard for AuthGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
+impl Guard<HttpContext> for AuthGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.tracker.track("guard:auth");
-        let req = context
-            .switch_to_http()
-            .expect("Expected HTTP context")
-            .request();
-        req.headers.contains_key("authorization")
+        context.request().headers.contains_key("authorization")
     }
 }
 
@@ -139,8 +133,12 @@ impl LoggingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for LoggingInterceptor {
-    async fn intercept(&self, _context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        _context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         self.tracker
             .track(format!("interceptor:{}:before", self.name));
         next.run(_context).await;
@@ -159,14 +157,11 @@ impl ValidationPipe {
     }
 }
 
-impl Pipe for ValidationPipe {
-    fn process(&self, context: &mut Context) {
+impl Pipe<HttpContext> for ValidationPipe {
+    fn process(&self, context: &mut HttpContext) {
         self.tracker.track("pipe:validation");
-        let req = context
-            .switch_to_http()
-            .expect("Expected HTTP context")
-            .request();
-        let is_invalid = req
+        let is_invalid = context
+            .request()
             .headers
             .get("x-valid")
             .and_then(|v| v.to_str().ok())
@@ -177,10 +172,7 @@ impl Pipe for ValidationPipe {
             let mut response = HttpResponse::new();
             response.status = 400;
             response.body = Some(ToniBody::text("Validation failed".to_string()));
-            context
-                .switch_to_http_mut()
-                .expect("Expected HTTP context")
-                .set_response(response);
+            context.set_response(response);
             context.abort();
         }
     }
@@ -196,8 +188,8 @@ impl TransformPipe {
     }
 }
 
-impl Pipe for TransformPipe {
-    fn process(&self, _context: &mut Context) {
+impl Pipe<HttpContext> for TransformPipe {
+    fn process(&self, _context: &mut HttpContext) {
         self.tracker.track("pipe:transform");
     }
 }
@@ -365,7 +357,7 @@ async fn guard_authorization() {
         controllers: [TestController],
         providers: [
             provider_value!(ExecutionOrder, get_tracker()),
-            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker), AuthGuard, guard),
+            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker), AuthGuard, guard(http)),
         ],
     )]
     impl TestModule {}
@@ -419,13 +411,11 @@ async fn di_in_enhancers() {
     }
 
     #[async_trait]
-    impl Guard for DIGuard {
-        async fn can_activate(&self, context: &Context) -> bool {
-            let req = context
-                .switch_to_http()
-                .expect("Expected HTTP context")
-                .request();
-            req.headers
+    impl Guard<HttpContext> for DIGuard {
+        async fn can_activate(&self, context: &HttpContext) -> bool {
+            context
+                .request()
+                .headers
                 .get("x-token")
                 .and_then(|v| v.to_str().ok())
                 .map(|token| self.auth.validate(token))
@@ -476,8 +466,8 @@ async fn app_token_global_enhancers() {
         tracker: ExecutionOrder,
     })]
     #[async_trait]
-    impl Guard for GlobalGuard {
-        async fn can_activate(&self, _context: &Context) -> bool {
+    impl Guard<HttpContext> for GlobalGuard {
+        async fn can_activate(&self, _context: &HttpContext) -> bool {
             self.tracker.track("global_guard");
             true
         }

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
 use toni::enhancer::{guard, interceptor, middleware};
-use toni::injector::Context;
+use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
@@ -123,7 +123,7 @@ impl Middleware for HeaderValidationMiddleware {
 #[injectable(pub struct AdminGuard {
     auth_service: AuthService,
 })]
-#[guard]
+#[guard(http)]
 impl AdminGuard {
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
@@ -131,22 +131,17 @@ impl AdminGuard {
 }
 
 #[async_trait]
-impl Guard for AdminGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
+impl Guard<HttpContext> for AdminGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.auth_service.tracker.track("guard:admin_check");
-        self.auth_service.is_admin(
-            context
-                .switch_to_http()
-                .expect("Expected HTTP context")
-                .request(),
-        )
+        self.auth_service.is_admin(context.request())
     }
 }
 
 #[injectable(pub struct UserGuard {
     auth_service: AuthService,
 })]
-#[guard]
+#[guard(http)]
 impl UserGuard {
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
@@ -154,15 +149,10 @@ impl UserGuard {
 }
 
 #[async_trait]
-impl Guard for UserGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
+impl Guard<HttpContext> for UserGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.auth_service.tracker.track("guard:user_check");
-        self.auth_service.validate_user(
-            context
-                .switch_to_http()
-                .expect("Expected HTTP context")
-                .request(),
-        )
+        self.auth_service.validate_user(context.request())
     }
 }
 
@@ -171,7 +161,7 @@ impl Guard for UserGuard {
 #[injectable(pub struct LoggingInterceptor {
     tracker: ExecutionTracker,
 })]
-#[interceptor]
+#[interceptor(http)]
 impl LoggingInterceptor {
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
@@ -179,8 +169,12 @@ impl LoggingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for LoggingInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         self.tracker.track("interceptor:before");
         next.run(context).await;
         self.tracker.track("interceptor:after");
@@ -190,7 +184,7 @@ impl Interceptor for LoggingInterceptor {
 #[injectable(pub struct TimingInterceptor {
     tracker: ExecutionTracker,
 })]
-#[interceptor]
+#[interceptor(http)]
 impl TimingInterceptor {
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
@@ -198,8 +192,12 @@ impl TimingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for TimingInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for TimingInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         self.tracker.track("interceptor:timing_start");
         next.run(context).await;
         self.tracker.track("interceptor:timing_end");
