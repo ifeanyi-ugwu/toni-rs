@@ -14,8 +14,9 @@
 
 use std::time::Duration;
 
+use toni::context::RpcContext;
 use toni::module;
-use toni::rpc::{RpcContext, RpcData, RpcError};
+use toni::rpc::{RpcData, RpcError};
 use toni_macros::rpc_controller;
 
 /// Spawn an app with the UDP RPC adapter on an OS-assigned port and wait
@@ -87,17 +88,17 @@ impl UdpRpcController {
     }
 
     #[message_pattern("udp.echo")]
-    async fn echo(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn echo(&self, data: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(data)
     }
 
     #[message_pattern("udp.panic")]
-    async fn panic_handler(&self, _d: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn panic_handler(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         panic!("intentional udp rpc panic");
     }
 
     #[event_pattern("udp.shipped")]
-    async fn shipped(&self, _d: RpcData, _c: RpcContext) -> Result<(), RpcError> {
+    async fn shipped(&self, _d: RpcData, _c: &RpcContext) -> Result<(), RpcError> {
         Ok(())
     }
 }
@@ -340,7 +341,7 @@ impl SlowUdpController {
     }
 
     #[message_pattern("udp.slow")]
-    async fn slow(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn slow(&self, data: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(data)
     }
