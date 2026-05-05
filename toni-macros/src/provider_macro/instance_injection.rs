@@ -187,23 +187,6 @@ fn detect_enhancer_traits(
     let mut pipe = (TransportFlags::default(), false);
     let mut error_handler = (TransportFlags::default(), false);
 
-    if struct_markers.is_guard {
-        guard.0.legacy = true;
-        guard.1 = true;
-    }
-    if struct_markers.is_interceptor {
-        interceptor.0.legacy = true;
-        interceptor.1 = true;
-    }
-    if struct_markers.is_pipe {
-        pipe.0.legacy = true;
-        pipe.1 = true;
-    }
-    if struct_markers.is_error_handler {
-        error_handler.0.legacy = true;
-        error_handler.1 = true;
-    }
-
     let typed_impl_flags = detect_typed_impl_transport(impl_block);
 
     let merge_marker = |slot: &mut (TransportFlags, bool), attr: &syn::Attribute| {
@@ -218,19 +201,45 @@ fn detect_enhancer_traits(
         slot.1 = true;
     };
 
-    for attr in &impl_block.attrs {
-        let Some(ident) = attr.path().get_ident() else {
-            continue;
-        };
-        match ident.to_string().as_str() {
-            "guard" => merge_marker(&mut guard, attr),
-            "interceptor" => merge_marker(&mut interceptor, attr),
-            "pipe" => merge_marker(&mut pipe, attr),
-            "error_handler" => merge_marker(&mut error_handler, attr),
-            "middleware" => traits.is_middleware = true,
-            _ => {}
+    let scan_attrs = |attrs: &[syn::Attribute],
+                      guard: &mut (TransportFlags, bool),
+                      interceptor: &mut (TransportFlags, bool),
+                      pipe: &mut (TransportFlags, bool),
+                      error_handler: &mut (TransportFlags, bool),
+                      traits: &mut EnhancerTraits| {
+        for attr in attrs {
+            let Some(ident) = attr.path().get_ident() else {
+                continue;
+            };
+            match ident.to_string().as_str() {
+                "guard" => merge_marker(guard, attr),
+                "interceptor" => merge_marker(interceptor, attr),
+                "pipe" => merge_marker(pipe, attr),
+                "error_handler" => merge_marker(error_handler, attr),
+                "middleware" => traits.is_middleware = true,
+                _ => {}
+            }
         }
+    };
+
+    if let Some(s) = struct_def {
+        scan_attrs(
+            &s.attrs,
+            &mut guard,
+            &mut interceptor,
+            &mut pipe,
+            &mut error_handler,
+            &mut traits,
+        );
     }
+    scan_attrs(
+        &impl_block.attrs,
+        &mut guard,
+        &mut interceptor,
+        &mut pipe,
+        &mut error_handler,
+        &mut traits,
+    );
 
     if let Some((_, path, _)) = &impl_block.trait_ {
         let trait_name = path

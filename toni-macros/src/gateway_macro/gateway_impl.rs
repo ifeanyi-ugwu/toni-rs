@@ -203,7 +203,7 @@ fn generate_gateway_impl(
             async fn on_connect(
                 &self,
                 client: &toni::WsClient,
-                _context: &toni::Context,
+                _context: &toni::context::WsContext,
             ) -> Result<(), toni::WsError> {
                 self.#method_name(client).await
             }

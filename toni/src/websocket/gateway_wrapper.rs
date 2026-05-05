@@ -1,31 +1,31 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use parking_lot::RwLock;
 
+use crate::context::{HandlerContext, WsContext};
 use crate::http_helpers::{RequestPart, RouteMetadata};
-use crate::injector::Context;
 use crate::traits_helpers::{
-    ErrorHandler, Guard, GuardEntry, Interceptor, InterceptorEntry, InterceptorNext, Pipe,
-    PipeEntry,
+    Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
+    WsInterceptorEntry, WsPipeEntry,
 };
 
 use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsMessage};
 
 struct WsChainNext {
-    interceptors: Vec<Arc<dyn Interceptor>>,
+    interceptors: Vec<Arc<dyn Interceptor<WsContext>>>,
     gateway: Arc<Box<dyn GatewayTrait>>,
     event: String,
-    pipes: Vec<Arc<dyn Pipe>>,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    pipes: Vec<Arc<dyn Pipe<WsContext>>>,
+    error_handlers: Vec<WsErrorHandlerArc>,
     stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
 }
 
 #[async_trait]
-impl InterceptorNext for WsChainNext {
-    async fn run(self: Box<Self>, context: &mut Context) {
+impl InterceptorNext<WsContext> for WsChainNext {
+    async fn run(self: Box<Self>, context: &mut WsContext) {
         GatewayWrapper::execute_with_interceptors_impl(
             context,
             &self.interceptors,
@@ -43,17 +43,15 @@ impl InterceptorNext for WsChainNext {
 /// guard/interceptor/pipe pipeline and tracks its own connected clients.
 pub struct GatewayWrapper {
     gateway: Arc<Box<dyn GatewayTrait>>,
-    guards: Vec<GuardEntry>,
-    interceptors: Vec<InterceptorEntry>,
-    pipes: Vec<PipeEntry>,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    guards: Vec<WsGuardEntry>,
+    interceptors: Vec<WsInterceptorEntry>,
+    pipes: Vec<WsPipeEntry>,
+    error_handlers: Vec<WsErrorHandlerArc>,
     route_metadata: Arc<RouteMetadata>,
-    /// Per-handler enhancers keyed by event name, pre-resolved at startup.
-    /// Appended after gateway-level enhancers when dispatching a message.
-    handler_guards: HashMap<String, Vec<GuardEntry>>,
-    handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
-    handler_pipes: HashMap<String, Vec<PipeEntry>>,
-    handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
+    handler_guards: HashMap<String, Vec<WsGuardEntry>>,
+    handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
+    handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
+    handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>>,
     /// Active client connections (client_id => WsClient)
     clients: Arc<RwLock<HashMap<String, WsClient>>>,
 }
@@ -61,15 +59,15 @@ pub struct GatewayWrapper {
 impl GatewayWrapper {
     pub fn new(
         gateway: Arc<Box<dyn GatewayTrait>>,
-        guards: Vec<GuardEntry>,
-        interceptors: Vec<InterceptorEntry>,
-        pipes: Vec<PipeEntry>,
-        error_handlers: Vec<Arc<dyn ErrorHandler>>,
+        guards: Vec<WsGuardEntry>,
+        interceptors: Vec<WsInterceptorEntry>,
+        pipes: Vec<WsPipeEntry>,
+        error_handlers: Vec<WsErrorHandlerArc>,
         route_metadata: Arc<RouteMetadata>,
-        handler_guards: HashMap<String, Vec<GuardEntry>>,
-        handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
-        handler_pipes: HashMap<String, Vec<PipeEntry>>,
-        handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
+        handler_guards: HashMap<String, Vec<WsGuardEntry>>,
+        handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
+        handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
+        handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>>,
     ) -> Self {
         Self {
             gateway,
@@ -87,16 +85,12 @@ impl GatewayWrapper {
     }
 
     /// Phase 1 of connection setup: run guards and store client.
-    ///
-    /// Does NOT fire `on_connect` — call `complete_connect` after any external
-    /// registration (e.g. `ConnectionManager`) so the hook fires when the client
-    /// is fully live everywhere.
     pub async fn begin_connect(
         &self,
         client: WsClient,
         parts: &RequestPart,
     ) -> Result<(), WsError> {
-        let context = Context::from_websocket(
+        let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
             "connect",
@@ -120,10 +114,6 @@ impl GatewayWrapper {
     }
 
     /// Phase 2 of connection setup: fire the `on_connect` lifecycle hook.
-    ///
-    /// Must be called after `begin_connect` and after any external registration
-    /// (e.g. `ConnectionManager`). When this fires, the client is in both
-    /// `GatewayWrapper.clients` and `ConnectionManager`.
     pub async fn complete_connect(&self, client_id: &str) -> Result<(), WsError> {
         let client = self
             .clients
@@ -132,7 +122,7 @@ impl GatewayWrapper {
             .cloned()
             .ok_or_else(|| WsError::ConnectionClosed("Client not found".into()))?;
 
-        let context = Context::from_websocket(
+        let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
             "connect",
@@ -143,9 +133,6 @@ impl GatewayWrapper {
     }
 
     /// Handle new WebSocket connection (simple path — no ConnectionManager).
-    ///
-    /// Composes `begin_connect` + `complete_connect` in sequence. Used by
-    /// `handle_connection()` where there is no broadcast infrastructure.
     pub async fn handle_connect(
         &self,
         client: WsClient,
@@ -172,14 +159,13 @@ impl GatewayWrapper {
 
         tracing::trace!(client_id = %client_id, event = %event, "WebSocket message received");
 
-        let mut context = Context::from_websocket(
+        let mut context = WsContext::new(
             client.clone(),
             message.clone(),
             event.clone(),
             Some(self.route_metadata.clone()),
         );
 
-        // Merge gateway-level + handler-level entries (handler appended after gateway).
         let mut all_guards = self.guards.clone();
         if let Some(h) = self.handler_guards.get(&event) {
             all_guards.extend_from_slice(h);
@@ -202,7 +188,6 @@ impl GatewayWrapper {
             if !guard.can_activate(&context).await {
                 return Err(WsError::AuthFailed("Guard rejected message".into()));
             }
-
             if context.should_abort() {
                 return Err(WsError::AuthFailed("Message aborted by guard".into()));
             }
@@ -231,10 +216,7 @@ impl GatewayWrapper {
             return Ok(WsHandlerOutput::Stream(stream));
         }
 
-        match context
-            .switch_to_ws_mut()
-            .and_then(|mut ws| ws.take_response())
-        {
+        match context.take_response() {
             Some(Ok(Some(msg))) => Ok(WsHandlerOutput::Single(msg)),
             Some(Ok(None)) => Ok(WsHandlerOutput::Empty),
             Some(Err(e)) => Err(e),
@@ -243,14 +225,14 @@ impl GatewayWrapper {
     }
 
     async fn resolve_guards(
-        entries: &[GuardEntry],
+        entries: &[WsGuardEntry],
         parts: Option<&RequestPart>,
-    ) -> Vec<Arc<dyn Guard>> {
+    ) -> Vec<Arc<dyn Guard<WsContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
-                GuardEntry::Ready(g) => g.clone(),
-                GuardEntry::Factory(f) => f.create(parts).await,
+                WsGuardEntry::Ready(g) => g.clone(),
+                WsGuardEntry::Factory(f) => f.create(parts).await,
             };
             out.push(g);
         }
@@ -258,14 +240,14 @@ impl GatewayWrapper {
     }
 
     async fn resolve_interceptors(
-        entries: &[InterceptorEntry],
+        entries: &[WsInterceptorEntry],
         parts: Option<&RequestPart>,
-    ) -> Vec<Arc<dyn Interceptor>> {
+    ) -> Vec<Arc<dyn Interceptor<WsContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
-                InterceptorEntry::Ready(i) => i.clone(),
-                InterceptorEntry::Factory(f) => f.create(parts).await,
+                WsInterceptorEntry::Ready(i) => i.clone(),
+                WsInterceptorEntry::Factory(f) => f.create(parts).await,
             };
             out.push(i);
         }
@@ -273,32 +255,27 @@ impl GatewayWrapper {
     }
 
     async fn resolve_pipes(
-        entries: &[PipeEntry],
+        entries: &[WsPipeEntry],
         parts: Option<&RequestPart>,
-    ) -> Vec<Arc<dyn Pipe>> {
+    ) -> Vec<Arc<dyn Pipe<WsContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
-                PipeEntry::Ready(p) => p.clone(),
-                PipeEntry::Factory(f) => f.create(parts).await,
+                WsPipeEntry::Ready(p) => p.clone(),
+                WsPipeEntry::Factory(f) => f.create(parts).await,
             };
             out.push(p);
         }
         out
     }
 
-    /// Runs the interceptor chain and stores the result in context.
-    ///
-    /// `stream_slot` receives any `WsHandlerOutput::Stream` the handler produces.
-    /// Streams bypass the context (which holds `Option<WsMessage>` only) and are
-    /// lifted out in `handle_message` after this returns.
     async fn execute_with_interceptors(
-        context: &mut Context,
+        context: &mut WsContext,
         event: String,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        interceptors: &[Arc<dyn Interceptor>],
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        interceptors: &[Arc<dyn Interceptor<WsContext>>],
+        pipes: &[Arc<dyn Pipe<WsContext>>],
+        error_handlers: &[WsErrorHandlerArc],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) -> Result<(), WsError> {
         Self::execute_with_interceptors_impl(
@@ -314,8 +291,7 @@ impl GatewayWrapper {
 
         if context.should_abort() {
             return context
-                .switch_to_ws_mut()
-                .and_then(|mut ws| ws.take_response())
+                .take_response()
                 .unwrap_or_else(|| {
                     Err(WsError::Internal(
                         "Request aborted by interceptor without response".into(),
@@ -327,15 +303,13 @@ impl GatewayWrapper {
         Ok(())
     }
 
-    /// Stores the final `Option<WsMessage>` result in context. Streams are
-    /// deposited in `stream_slot` instead (they cannot be stored in context).
     async fn execute_with_interceptors_impl(
-        context: &mut Context,
-        interceptors: &[Arc<dyn Interceptor>],
+        context: &mut WsContext,
+        interceptors: &[Arc<dyn Interceptor<WsContext>>],
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        pipes: &[Arc<dyn Pipe<WsContext>>],
+        error_handlers: &[WsErrorHandlerArc],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
         if interceptors.is_empty() {
@@ -365,15 +339,12 @@ impl GatewayWrapper {
         first.intercept(context, Box::new(next)).await;
     }
 
-    /// Runs the handler, applies error handlers if needed, then stores the
-    /// final result in context. `WsHandlerOutput::Stream` is deposited in
-    /// `stream_slot` rather than context (streams are not `Sync`).
     async fn execute_handler_with_error_handling(
-        context: &mut Context,
+        context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        pipes: &[Arc<dyn Pipe<WsContext>>],
+        error_handlers: &[WsErrorHandlerArc],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
         let result = Self::execute_handler(context, gateway, event, pipes).await;
@@ -381,10 +352,7 @@ impl GatewayWrapper {
         // Streams bypass context storage — deposit and return early.
         if let Ok(WsHandlerOutput::Stream(stream)) = result {
             *stream_slot.lock() = Some(stream);
-            context
-                .switch_to_ws_mut()
-                .expect("Expected WebSocket context")
-                .set_response(Ok(None));
+            context.set_response(Ok(None));
             return;
         }
 
@@ -397,17 +365,17 @@ impl GatewayWrapper {
                         std::io::ErrorKind::Other,
                         error_msg.clone(),
                     ));
-                    if let Some(crate::traits_helpers::ErrorResponse::Ws(msg)) =
-                        handler.handle_error(error, context).await
-                    {
+                    if let Some(msg) = handler.handle_error(error, context).await {
                         recovered = Some(Ok(Some(msg)));
                         break;
                     }
                 }
-                recovered.unwrap_or_else(|| result.map(|o| match o {
-                    WsHandlerOutput::Single(m) => Some(m),
-                    _ => None,
-                }))
+                recovered.unwrap_or_else(|| {
+                    result.map(|o| match o {
+                        WsHandlerOutput::Single(m) => Some(m),
+                        _ => None,
+                    })
+                })
             } else {
                 result.map(|o| match o {
                     WsHandlerOutput::Single(m) => Some(m),
@@ -421,20 +389,14 @@ impl GatewayWrapper {
             })
         };
 
-        context
-            .switch_to_ws_mut()
-            .expect("Expected WebSocket context")
-            .set_response(context_result);
+        context.set_response(context_result);
     }
 
-    /// Pure handler dispatch — returns the result without touching context.
-    /// The caller (`execute_handler_with_error_handling`) is responsible for
-    /// storing the final result in context.
     async fn execute_handler(
-        context: &mut Context,
+        context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
-        pipes: &[Arc<dyn Pipe>],
+        pipes: &[Arc<dyn Pipe<WsContext>>],
     ) -> Result<WsHandlerOutput, WsError> {
         for pipe in pipes {
             pipe.process(context);
@@ -443,11 +405,8 @@ impl GatewayWrapper {
             }
         }
 
-        let ws = context
-            .switch_to_ws()
-            .ok_or_else(|| WsError::Internal("Expected WebSocket context".into()))?;
-        let (client, message) = (ws.client().clone(), ws.message().clone());
-
+        let client = context.client().clone();
+        let message = context.message().clone();
         gateway.handle_event(client, message, event).await
     }
 

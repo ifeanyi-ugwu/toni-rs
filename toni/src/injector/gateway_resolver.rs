@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
-use crate::traits_helpers::{ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry};
+use crate::traits_helpers::{
+    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+};
 use crate::websocket::{GatewayTrait, GatewayWrapper};
 
 use super::ToniContainer;
@@ -36,13 +38,10 @@ impl GatewayResolver {
         let error_handlers = self.resolve_error_handlers(gateway.get_error_handler_tokens())?;
         let route_metadata = gateway.get_route_metadata();
 
-        // Pre-resolve handler-level enhancers at startup (globals are already in gateway-level
-        // vecs above, so handler entries are token-only — no globals prepended).
-        let mut handler_guards: HashMap<String, Vec<GuardEntry>> = HashMap::new();
-        let mut handler_interceptors: HashMap<String, Vec<InterceptorEntry>> = HashMap::new();
-        let mut handler_pipes: HashMap<String, Vec<PipeEntry>> = HashMap::new();
-        let mut handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>> =
-            HashMap::new();
+        let mut handler_guards: HashMap<String, Vec<WsGuardEntry>> = HashMap::new();
+        let mut handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>> = HashMap::new();
+        let mut handler_pipes: HashMap<String, Vec<WsPipeEntry>> = HashMap::new();
+        let mut handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>> = HashMap::new();
 
         for event in gateway.get_handler_events() {
             handler_guards.insert(
@@ -81,13 +80,11 @@ impl GatewayResolver {
         ))
     }
 
-    fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
-        // Globals are HTTP-typed now; WS gateways start with an empty list and
-        // pull only their own configured tokens. TODO: per-transport globals.
-        let mut guards: Vec<GuardEntry> = Vec::new();
+    fn resolve_guards(&self, tokens: Vec<String>) -> Result<Vec<WsGuardEntry>> {
+        let mut guards = self.container.borrow().get_global_ws_guards();
         for token in tokens {
             let entry = self.resolve_guard_by_token(&token)?;
-            if let GuardEntry::Factory(ref f) = entry {
+            if let WsGuardEntry::Factory(ref f) = entry {
                 if f.requires_http_parts() {
                     anyhow::bail!(
                         "Guard '{}' has request-scoped dependencies and cannot be used on a \
@@ -101,11 +98,11 @@ impl GatewayResolver {
         Ok(guards)
     }
 
-    fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<InterceptorEntry>> {
-        let mut interceptors: Vec<InterceptorEntry> = Vec::new();
+    fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<WsInterceptorEntry>> {
+        let mut interceptors = self.container.borrow().get_global_ws_interceptors();
         for token in tokens {
             let entry = self.resolve_interceptor_by_token(&token)?;
-            if let InterceptorEntry::Factory(ref f) = entry {
+            if let WsInterceptorEntry::Factory(ref f) = entry {
                 if f.requires_http_parts() {
                     anyhow::bail!(
                         "Interceptor '{}' has request-scoped dependencies and cannot be used on \
@@ -119,11 +116,11 @@ impl GatewayResolver {
         Ok(interceptors)
     }
 
-    fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
-        let mut pipes: Vec<PipeEntry> = Vec::new();
+    fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<WsPipeEntry>> {
+        let mut pipes = self.container.borrow().get_global_ws_pipes();
         for token in tokens {
             let entry = self.resolve_pipe_by_token(&token)?;
-            if let PipeEntry::Factory(ref f) = entry {
+            if let WsPipeEntry::Factory(ref f) = entry {
                 if f.requires_http_parts() {
                     anyhow::bail!(
                         "Pipe '{}' has request-scoped dependencies and cannot be used on a \
@@ -137,21 +134,20 @@ impl GatewayResolver {
         Ok(pipes)
     }
 
-    fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<Arc<dyn ErrorHandler>>> {
-        let mut error_handlers: Vec<Arc<dyn ErrorHandler>> = Vec::new();
+    fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<WsErrorHandlerArc>> {
+        let mut error_handlers = self.container.borrow().get_global_ws_error_handlers();
         for token in tokens {
             error_handlers.push(self.resolve_error_handler_by_token(&token)?);
         }
         Ok(error_handlers)
     }
 
-    /// Resolve tokens without prepending globals — for handler-level enhancers.
-    fn resolve_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<GuardEntry>> {
+    fn resolve_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<WsGuardEntry>> {
         tokens
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_guard_by_token(&token)?;
-                if let GuardEntry::Factory(ref f) = entry {
+                if let WsGuardEntry::Factory(ref f) = entry {
                     if f.requires_http_parts() {
                         anyhow::bail!(
                             "Guard '{}' has request-scoped dependencies and cannot be used on a \
@@ -168,12 +164,12 @@ impl GatewayResolver {
     fn resolve_interceptor_tokens_only(
         &self,
         tokens: Vec<String>,
-    ) -> Result<Vec<InterceptorEntry>> {
+    ) -> Result<Vec<WsInterceptorEntry>> {
         tokens
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_interceptor_by_token(&token)?;
-                if let InterceptorEntry::Factory(ref f) = entry {
+                if let WsInterceptorEntry::Factory(ref f) = entry {
                     if f.requires_http_parts() {
                         anyhow::bail!(
                             "Interceptor '{}' has request-scoped dependencies and cannot be used \
@@ -187,12 +183,12 @@ impl GatewayResolver {
             .collect()
     }
 
-    fn resolve_pipe_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<PipeEntry>> {
+    fn resolve_pipe_tokens_only(&self, tokens: Vec<String>) -> Result<Vec<WsPipeEntry>> {
         tokens
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_pipe_by_token(&token)?;
-                if let PipeEntry::Factory(ref f) = entry {
+                if let WsPipeEntry::Factory(ref f) = entry {
                     if f.requires_http_parts() {
                         anyhow::bail!(
                             "Pipe '{}' has request-scoped dependencies and cannot be used on a \
@@ -209,50 +205,78 @@ impl GatewayResolver {
     fn resolve_error_handler_tokens_only(
         &self,
         tokens: Vec<String>,
-    ) -> Result<Vec<Arc<dyn ErrorHandler>>> {
+    ) -> Result<Vec<WsErrorHandlerArc>> {
         tokens
             .into_iter()
             .map(|t| self.resolve_error_handler_by_token(&t))
             .collect()
     }
 
-    fn resolve_guard_by_token(&self, token: &str) -> Result<GuardEntry> {
+    fn resolve_guard_by_token(&self, token: &str) -> Result<WsGuardEntry> {
         self.container
             .borrow()
             .get_role_registry()
-            .guards
+            .ws_guards
             .get(token)
             .cloned()
-            .ok_or_else(|| anyhow!("Guard '{}' not found in role registry", token))
+            .ok_or_else(|| {
+                anyhow!(
+                    "WS Guard '{}' not found in registry. \
+                     Implement Guard<WsContext> and mark the provider \
+                     with `#[guard(ws)]` or a typed impl head.",
+                    token
+                )
+            })
     }
 
-    fn resolve_interceptor_by_token(&self, token: &str) -> Result<InterceptorEntry> {
+    fn resolve_interceptor_by_token(&self, token: &str) -> Result<WsInterceptorEntry> {
         self.container
             .borrow()
             .get_role_registry()
-            .interceptors
+            .ws_interceptors
             .get(token)
             .cloned()
-            .ok_or_else(|| anyhow!("Interceptor '{}' not found in role registry", token))
+            .ok_or_else(|| {
+                anyhow!(
+                    "WS Interceptor '{}' not found in registry. \
+                     Implement Interceptor<WsContext> and mark the provider \
+                     with `#[interceptor(ws)]` or a typed impl head.",
+                    token
+                )
+            })
     }
 
-    fn resolve_pipe_by_token(&self, token: &str) -> Result<PipeEntry> {
+    fn resolve_pipe_by_token(&self, token: &str) -> Result<WsPipeEntry> {
         self.container
             .borrow()
             .get_role_registry()
-            .pipes
+            .ws_pipes
             .get(token)
             .cloned()
-            .ok_or_else(|| anyhow!("Pipe '{}' not found in role registry", token))
+            .ok_or_else(|| {
+                anyhow!(
+                    "WS Pipe '{}' not found in registry. \
+                     Implement Pipe<WsContext> and mark the provider \
+                     with `#[pipe(ws)]` or a typed impl head.",
+                    token
+                )
+            })
     }
 
-    fn resolve_error_handler_by_token(&self, token: &str) -> Result<Arc<dyn ErrorHandler>> {
+    fn resolve_error_handler_by_token(&self, token: &str) -> Result<WsErrorHandlerArc> {
         self.container
             .borrow()
             .get_role_registry()
-            .error_handlers
+            .ws_error_handlers
             .get(token)
             .cloned()
-            .ok_or_else(|| anyhow!("ErrorHandler '{}' not found in role registry", token))
+            .ok_or_else(|| {
+                anyhow!(
+                    "WS ErrorHandler '{}' not found in registry. \
+                     Implement ErrorHandler<WsContext, WsMessage> and mark the provider \
+                     with `#[error_handler(ws)]` or a typed impl head.",
+                    token
+                )
+            })
     }
 }

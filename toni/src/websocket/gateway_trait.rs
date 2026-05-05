@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::WsContext;
 use crate::http_helpers::RouteMetadata;
-use crate::injector::Context;
 
 use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput, WsMessage};
 
@@ -38,7 +38,7 @@ pub trait GatewayTrait: Send + Sync {
     async fn after_init(&self) {}
 
     /// Connection lifecycle: called when a client connects
-    async fn on_connect(&self, client: &WsClient, context: &Context) -> Result<(), WsError> {
+    async fn on_connect(&self, client: &WsClient, context: &WsContext) -> Result<(), WsError> {
         // Default implementation: allow all connections
         let _ = (client, context);
         Ok(())
