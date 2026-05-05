@@ -54,7 +54,7 @@ impl OrdersController {
     async fn create_order(
         &self,
         data: toni::RpcData,
-        _ctx: toni::RpcContext,
+        _ctx: &toni::context::RpcContext,
     ) -> Result<toni::RpcData, toni::RpcError> {
         let payload = data
             .as_json()
@@ -75,7 +75,7 @@ impl OrdersController {
     async fn on_order_shipped(
         &self,
         data: toni::RpcData,
-        _ctx: toni::RpcContext,
+        _ctx: &toni::context::RpcContext,
     ) -> Result<(), toni::RpcError> {
         let payload = data
             .as_json()

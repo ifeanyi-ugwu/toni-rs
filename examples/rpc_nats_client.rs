@@ -92,7 +92,7 @@ impl OrdersRpcController {
     async fn create_order(
         &self,
         payload: CreateOrderDto,
-        _ctx: toni::RpcContext,
+        _ctx: &toni::context::RpcContext,
     ) -> Result<OrderDto, toni::RpcError> {
         if payload.qty == 0 {
             return Err(toni::RpcError::Internal("qty must be positive".into()));
@@ -104,7 +104,7 @@ impl OrdersRpcController {
     async fn on_order_shipped(
         &self,
         payload: ShipOrderDto,
-        _ctx: toni::RpcContext,
+        _ctx: &toni::context::RpcContext,
     ) -> Result<(), toni::RpcError> {
         self.service.handle_shipment(payload.order_id);
         Ok(())
