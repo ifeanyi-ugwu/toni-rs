@@ -9,7 +9,9 @@ use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, ControllerFactory, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole,
+        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
+        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
+        WsInterceptorEntry, WsPipeEntry,
     },
     websocket::GatewayTrait,
 };
@@ -28,6 +30,16 @@ pub struct ToniContainer {
     global_http_interceptors: Vec<HttpInterceptorEntry>,
     global_http_pipes: Vec<HttpPipeEntry>,
     global_http_error_handlers: Vec<HttpErrorHandlerArc>,
+    /// Global enhancers - applied to every RPC controller's pipeline.
+    global_rpc_guards: Vec<RpcGuardEntry>,
+    global_rpc_interceptors: Vec<RpcInterceptorEntry>,
+    global_rpc_pipes: Vec<RpcPipeEntry>,
+    global_rpc_error_handlers: Vec<RpcErrorHandlerArc>,
+    /// Global enhancers - applied to every WS gateway's pipeline.
+    global_ws_guards: Vec<WsGuardEntry>,
+    global_ws_interceptors: Vec<WsInterceptorEntry>,
+    global_ws_pipes: Vec<WsPipeEntry>,
+    global_ws_error_handlers: Vec<WsErrorHandlerArc>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
@@ -61,6 +73,14 @@ impl ToniContainer {
             global_http_interceptors: Vec::new(),
             global_http_pipes: Vec::new(),
             global_http_error_handlers: Vec::new(),
+            global_rpc_guards: Vec::new(),
+            global_rpc_interceptors: Vec::new(),
+            global_rpc_pipes: Vec::new(),
+            global_rpc_error_handlers: Vec::new(),
+            global_ws_guards: Vec::new(),
+            global_ws_interceptors: Vec::new(),
+            global_ws_pipes: Vec::new(),
+            global_ws_error_handlers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
             app_pipe_providers: Vec::new(),
@@ -84,6 +104,70 @@ impl ToniContainer {
 
     pub fn add_global_http_error_handler(&mut self, handler: HttpErrorHandlerArc) {
         self.global_http_error_handlers.push(handler);
+    }
+
+    pub fn add_global_rpc_guard(&mut self, guard: RpcGuardEntry) {
+        self.global_rpc_guards.push(guard);
+    }
+
+    pub fn add_global_rpc_interceptor(&mut self, interceptor: RpcInterceptorEntry) {
+        self.global_rpc_interceptors.push(interceptor);
+    }
+
+    pub fn add_global_rpc_pipe(&mut self, pipe: RpcPipeEntry) {
+        self.global_rpc_pipes.push(pipe);
+    }
+
+    pub fn add_global_rpc_error_handler(&mut self, handler: RpcErrorHandlerArc) {
+        self.global_rpc_error_handlers.push(handler);
+    }
+
+    pub fn get_global_rpc_guards(&self) -> Vec<RpcGuardEntry> {
+        self.global_rpc_guards.clone()
+    }
+
+    pub fn get_global_rpc_interceptors(&self) -> Vec<RpcInterceptorEntry> {
+        self.global_rpc_interceptors.clone()
+    }
+
+    pub fn get_global_rpc_pipes(&self) -> Vec<RpcPipeEntry> {
+        self.global_rpc_pipes.clone()
+    }
+
+    pub fn get_global_rpc_error_handlers(&self) -> Vec<RpcErrorHandlerArc> {
+        self.global_rpc_error_handlers.clone()
+    }
+
+    pub fn add_global_ws_guard(&mut self, guard: WsGuardEntry) {
+        self.global_ws_guards.push(guard);
+    }
+
+    pub fn add_global_ws_interceptor(&mut self, interceptor: WsInterceptorEntry) {
+        self.global_ws_interceptors.push(interceptor);
+    }
+
+    pub fn add_global_ws_pipe(&mut self, pipe: WsPipeEntry) {
+        self.global_ws_pipes.push(pipe);
+    }
+
+    pub fn add_global_ws_error_handler(&mut self, handler: WsErrorHandlerArc) {
+        self.global_ws_error_handlers.push(handler);
+    }
+
+    pub fn get_global_ws_guards(&self) -> Vec<WsGuardEntry> {
+        self.global_ws_guards.clone()
+    }
+
+    pub fn get_global_ws_interceptors(&self) -> Vec<WsInterceptorEntry> {
+        self.global_ws_interceptors.clone()
+    }
+
+    pub fn get_global_ws_pipes(&self) -> Vec<WsPipeEntry> {
+        self.global_ws_pipes.clone()
+    }
+
+    pub fn get_global_ws_error_handlers(&self) -> Vec<WsErrorHandlerArc> {
+        self.global_ws_error_handlers.clone()
     }
 
     pub fn get_global_enhancers(&self) -> EnhancerMetadata {

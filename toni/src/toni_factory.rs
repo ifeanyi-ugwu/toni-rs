@@ -5,17 +5,20 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::application_context::ToniApplicationContext;
-use crate::context::HttpContext;
+use crate::context::{HttpContext, RpcContext, WsContext};
 use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};
 use crate::middleware::Middleware;
 use crate::module_helpers::module_enum::ModuleDefinition;
+use crate::rpc::RpcData;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
 use crate::traits_helpers::{
     ErrorHandler, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
-    Interceptor, Pipe,
+    Interceptor, Pipe, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry,
+    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
 };
+use crate::websocket::WsMessage;
 
 #[derive(Default)]
 pub struct ToniFactory {
@@ -24,6 +27,14 @@ pub struct ToniFactory {
     global_http_interceptors: Vec<HttpInterceptorEntry>,
     global_http_pipes: Vec<HttpPipeEntry>,
     global_http_error_handlers: Vec<HttpErrorHandlerArc>,
+    global_rpc_guards: Vec<RpcGuardEntry>,
+    global_rpc_interceptors: Vec<RpcInterceptorEntry>,
+    global_rpc_pipes: Vec<RpcPipeEntry>,
+    global_rpc_error_handlers: Vec<RpcErrorHandlerArc>,
+    global_ws_guards: Vec<WsGuardEntry>,
+    global_ws_interceptors: Vec<WsInterceptorEntry>,
+    global_ws_pipes: Vec<WsPipeEntry>,
+    global_ws_error_handlers: Vec<WsErrorHandlerArc>,
 }
 
 impl ToniFactory {
@@ -66,6 +77,60 @@ impl ToniFactory {
         handler: Arc<dyn ErrorHandler<HttpContext, HttpResponse>>,
     ) -> &mut Self {
         self.global_http_error_handlers.push(handler);
+        self
+    }
+
+    pub fn use_global_rpc_guards(&mut self, guard: Arc<dyn Guard<RpcContext>>) -> &mut Self {
+        self.global_rpc_guards.push(RpcGuardEntry::Ready(guard));
+        self
+    }
+
+    pub fn use_global_rpc_interceptors(
+        &mut self,
+        interceptor: Arc<dyn Interceptor<RpcContext>>,
+    ) -> &mut Self {
+        self.global_rpc_interceptors
+            .push(RpcInterceptorEntry::Ready(interceptor));
+        self
+    }
+
+    pub fn use_global_rpc_pipes(&mut self, pipe: Arc<dyn Pipe<RpcContext>>) -> &mut Self {
+        self.global_rpc_pipes.push(RpcPipeEntry::Ready(pipe));
+        self
+    }
+
+    pub fn use_global_rpc_error_handler(
+        &mut self,
+        handler: Arc<dyn ErrorHandler<RpcContext, RpcData>>,
+    ) -> &mut Self {
+        self.global_rpc_error_handlers.push(handler);
+        self
+    }
+
+    pub fn use_global_ws_guards(&mut self, guard: Arc<dyn Guard<WsContext>>) -> &mut Self {
+        self.global_ws_guards.push(WsGuardEntry::Ready(guard));
+        self
+    }
+
+    pub fn use_global_ws_interceptors(
+        &mut self,
+        interceptor: Arc<dyn Interceptor<WsContext>>,
+    ) -> &mut Self {
+        self.global_ws_interceptors
+            .push(WsInterceptorEntry::Ready(interceptor));
+        self
+    }
+
+    pub fn use_global_ws_pipes(&mut self, pipe: Arc<dyn Pipe<WsContext>>) -> &mut Self {
+        self.global_ws_pipes.push(WsPipeEntry::Ready(pipe));
+        self
+    }
+
+    pub fn use_global_ws_error_handler(
+        &mut self,
+        handler: Arc<dyn ErrorHandler<WsContext, WsMessage>>,
+    ) -> &mut Self {
+        self.global_ws_error_handlers.push(handler);
         self
     }
 
@@ -158,6 +223,30 @@ impl ToniFactory {
             }
             for handler in &self.global_http_error_handlers {
                 container_mut.add_global_http_error_handler(handler.clone());
+            }
+            for guard in &self.global_rpc_guards {
+                container_mut.add_global_rpc_guard(guard.clone());
+            }
+            for interceptor in &self.global_rpc_interceptors {
+                container_mut.add_global_rpc_interceptor(interceptor.clone());
+            }
+            for pipe in &self.global_rpc_pipes {
+                container_mut.add_global_rpc_pipe(pipe.clone());
+            }
+            for handler in &self.global_rpc_error_handlers {
+                container_mut.add_global_rpc_error_handler(handler.clone());
+            }
+            for guard in &self.global_ws_guards {
+                container_mut.add_global_ws_guard(guard.clone());
+            }
+            for interceptor in &self.global_ws_interceptors {
+                container_mut.add_global_ws_interceptor(interceptor.clone());
+            }
+            for pipe in &self.global_ws_pipes {
+                container_mut.add_global_ws_pipe(pipe.clone());
+            }
+            for handler in &self.global_ws_error_handlers {
+                container_mut.add_global_ws_error_handler(handler.clone());
             }
         }
 

@@ -103,12 +103,12 @@ fn generate_rpc_controller_impl(
             let payload_expr = typed_payload_expr(method);
             if returns_rpc_data(method) {
                 quote! {
-                    #pattern => Ok(Some(self.#method_name(#payload_expr, context).await?)),
+                    #pattern => Ok(Some(self.#method_name(#payload_expr, ctx).await?)),
                 }
             } else {
                 quote! {
                     #pattern => {
-                        let __result = self.#method_name(#payload_expr, context).await?;
+                        let __result = self.#method_name(#payload_expr, ctx).await?;
                         let __data = toni::rpc::RpcData::from_serialize(&__result)
                             .map_err(|e| toni::rpc::RpcError::Internal(e.to_string()))?;
                         Ok(Some(__data))
@@ -125,7 +125,7 @@ fn generate_rpc_controller_impl(
             let payload_expr = typed_payload_expr(method);
             quote! {
                 #pattern => {
-                    self.#method_name(#payload_expr, context).await?;
+                    self.#method_name(#payload_expr, ctx).await?;
                     Ok(None)
                 }
             }
@@ -380,14 +380,15 @@ fn generate_rpc_controller_impl(
 
             async fn handle_message(
                 &self,
-                data: toni::rpc::RpcData,
-                context: toni::rpc::RpcContext,
+                ctx: &toni::context::RpcContext,
             ) -> Result<Option<toni::rpc::RpcData>, toni::rpc::RpcError> {
-                match context.pattern.as_str() {
+                let data = ctx.data().clone();
+                let _ = &data;
+                match ctx.pattern() {
                     #(#message_arms)*
                     #(#event_arms)*
                     _ => Err(toni::rpc::RpcError::PatternNotFound(
-                        format!("Unknown pattern: {}", context.pattern),
+                        format!("Unknown pattern: {}", ctx.pattern()),
                     )),
                 }
             }

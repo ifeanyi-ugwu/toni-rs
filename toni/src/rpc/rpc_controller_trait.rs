@@ -2,31 +2,30 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::RpcContext;
 use crate::http_helpers::RouteMetadata;
 
-use super::{RpcContext, RpcData, RpcError};
+use super::{RpcData, RpcError};
 
 /// Core trait for RPC message handlers.
 ///
-/// Mirrors [`GatewayTrait`] for WebSocket — one struct per RPC controller,
-/// auto-discovered from the DI container. Implement via `#[rpc_controller]`.
-///
-/// [`GatewayTrait`]: crate::websocket::GatewayTrait
+/// One struct per RPC controller, auto-discovered from the DI container.
+/// Implement via `#[rpc_controller]`.
 #[async_trait]
 pub trait RpcControllerTrait: Send + Sync {
     fn get_token(&self) -> String;
 
-    /// All patterns this controller handles (e.g. `["order.create", "order.list"]`).
+    /// All patterns this controller handles.
     fn get_patterns(&self) -> Vec<String>;
 
-    /// Route an incoming message to the right handler by `context.pattern`.
+    /// Route an inbound message to the right per-pattern handler.
     ///
-    /// Returns `Some(reply)` for request-response patterns (`#[message_pattern]`),
-    /// or `None` for fire-and-forget events (`#[event_pattern]`).
+    /// Returns `Some(reply)` for request-response patterns
+    /// (`#[message_pattern]`), or `None` for fire-and-forget events
+    /// (`#[event_pattern]`).
     async fn handle_message(
         &self,
-        data: RpcData,
-        context: RpcContext,
+        ctx: &RpcContext,
     ) -> Result<Option<RpcData>, RpcError>;
 
     fn get_guard_tokens(&self) -> Vec<String> {
