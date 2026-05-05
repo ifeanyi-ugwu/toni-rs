@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use toni::async_trait;
-use toni::context::{HandlerContext, RpcContext};
+use toni::context::{HandlerContext, RpcContext, WsContext};
 use toni::injector::Context;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
@@ -26,14 +26,8 @@ use crate::common::TestServer;
 // ---- shared (protocol-agnostic) enhancers ------------------------------------
 
 #[injectable(pub struct AbortPipe {})]
-#[pipe(rpc, legacy)]
+#[pipe(rpc, ws)]
 impl AbortPipe {}
-
-impl Pipe for AbortPipe {
-    fn process(&self, context: &mut Context) {
-        context.abort();
-    }
-}
 
 impl Pipe<RpcContext> for AbortPipe {
     fn process(&self, ctx: &mut RpcContext) {
@@ -41,8 +35,14 @@ impl Pipe<RpcContext> for AbortPipe {
     }
 }
 
+impl Pipe<WsContext> for AbortPipe {
+    fn process(&self, ctx: &mut WsContext) {
+        ctx.abort();
+    }
+}
+
 #[injectable(pub struct RecoveryErrorHandler {})]
-#[error_handler(rpc, legacy)]
+#[error_handler(rpc, ws)]
 impl RecoveryErrorHandler {}
 
 #[async_trait]
@@ -57,17 +57,13 @@ impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
 }
 
 #[async_trait]
-impl ErrorHandler for RecoveryErrorHandler {
+impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        if ctx.switch_to_ws().is_some() {
-            Some(ErrorResponse::Ws(WsMessage::text("recovered")))
-        } else {
-            None
-        }
+        _ctx: &WsContext,
+    ) -> Option<WsMessage> {
+        Some(WsMessage::text("recovered"))
     }
 }
 
@@ -75,35 +71,37 @@ impl ErrorHandler for RecoveryErrorHandler {
 
 /// Passes when the WS handshake contains `x-allow: ok`.
 #[injectable(pub struct WsAllowGuard {})]
-#[guard]
+#[guard(ws)]
 impl WsAllowGuard {}
 
 #[async_trait]
-impl Guard for WsAllowGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_ws()
-            .and_then(|ws| ws.client().handshake.headers.get("x-allow").cloned())
+impl Guard<WsContext> for WsAllowGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
+        ctx.client()
+            .handshake
+            .headers
+            .get("x-allow")
+            .cloned()
             .map_or(false, |v| v == "ok")
     }
 }
 
 /// Prefixes the WS text response with "prefixed:".
 #[injectable(pub struct WsPrefixInterceptor {})]
-#[interceptor]
+#[interceptor(ws)]
 impl WsPrefixInterceptor {}
 
 #[async_trait]
-impl Interceptor for WsPrefixInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
-        next.run(context).await;
-        let current = context.switch_to_ws().and_then(|ws| ws.response());
-        if let Some(Ok(Some(msg))) = current {
+impl Interceptor<WsContext> for WsPrefixInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext>>,
+    ) {
+        next.run(ctx).await;
+        if let Some(Ok(Some(msg))) = ctx.response() {
             let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
-            context
-                .switch_to_ws_mut()
-                .expect("WS context required")
-                .set_response(Ok(Some(WsMessage::text(prefixed))));
+            ctx.set_response(Ok(Some(WsMessage::text(prefixed))));
         }
     }
 }

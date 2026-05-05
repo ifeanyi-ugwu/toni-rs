@@ -4,8 +4,7 @@
 //! per request using the DynGuardFactory / DynInterceptorFactory path.
 
 use toni::async_trait;
-use toni::context::HttpContext;
-use toni::injector::Context;
+use toni::context::{HttpContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
@@ -126,15 +125,17 @@ impl TransientInterceptorModule {}
 // works identically at connect time and per-message, with no HTTP Request injection.
 
 #[injectable(pub struct WsHandshakeGuard {})]
-#[guard]
+#[guard(ws)]
 impl WsHandshakeGuard {}
 
 #[async_trait]
-impl Guard for WsHandshakeGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_ws()
-            .and_then(|ws| ws.client().handshake.headers.get("x-auth-token").cloned())
+impl Guard<WsContext> for WsHandshakeGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
+        ctx.client()
+            .handshake
+            .headers
+            .get("x-auth-token")
+            .cloned()
             .map_or(false, |v| v == "secret")
     }
 }
