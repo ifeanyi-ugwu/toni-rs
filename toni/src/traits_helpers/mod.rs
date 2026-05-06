@@ -6,12 +6,16 @@ pub mod request_cache;
 pub use self::request_cache::RequestCache;
 
 mod provider_context;
-pub use self::provider_context::{HttpContext, ProviderContext};
+pub use self::provider_context::{HttpProviderContext, ProviderContext};
 
 mod provider;
 pub use self::provider::{
-    DynGuardFactory, DynInterceptorFactory, DynPipeFactory, GuardEntry, Injectable,
-    InterceptorEntry, PipeEntry, Provider, ProviderFactory, ProviderRole,
+    DynHttpGuardFactory, DynHttpInterceptorFactory, DynHttpPipeFactory, DynRpcGuardFactory,
+    DynRpcInterceptorFactory, DynRpcPipeFactory, DynWsGuardFactory, DynWsInterceptorFactory,
+    DynWsPipeFactory, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
+    Injectable, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
+    RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+    WsPipeEntry,
 };
 
 mod controller;
@@ -31,5 +35,6 @@ pub use self::validator::validate;
 
 pub mod error_handler;
 pub use self::error_handler::{
-    DefaultErrorHandler, ErrorHandler, ErrorResponse, LoggingErrorHandler,
+    DefaultHttpErrorHandler, DefaultRpcErrorHandler, DefaultWsErrorHandler, ErrorHandler,
+    LoggingHttpErrorHandler,
 };

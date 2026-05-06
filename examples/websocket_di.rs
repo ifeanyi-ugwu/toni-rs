@@ -6,51 +6,44 @@
 // 3. Full integration of WebSocket with toni's DI system
 // 4. Zero manual wiring - framework handles everything automatically
 
-use std::sync::Arc;
+use toni::context::WsContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{BroadcastModule, BroadcastService};
 use toni::*;
 use toni_macros::{injectable, module, websocket_gateway};
 
 #[injectable]
-#[guard]
+#[guard(ws)]
 pub struct WsAuthGuard;
 
 #[async_trait]
-impl Guard for WsAuthGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
+impl Guard<WsContext> for WsAuthGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         println!("[WsAuthGuard] Checking authentication...");
-
-        if let Some(ws) = context.switch_to_ws() {
-            let client = ws.client();
-            // Headers are stored in lowercase for case-insensitive matching
-            if let Some(token) = client.handshake.headers.get("x-auth-token") {
-                println!("[WsAuthGuard] ✅ Auth token found: {}", token);
-                return true;
-            }
+        if let Some(token) = ctx.client().handshake.headers.get("x-auth-token") {
+            println!("[WsAuthGuard] ✅ Auth token found: {}", token);
+            return true;
         }
-
         println!("[WsAuthGuard] ❌ No auth token - connection rejected");
         false
     }
 }
 
 #[injectable]
-#[interceptor]
+#[interceptor(ws)]
 pub struct WsLoggingInterceptor;
 
 #[async_trait]
-impl Interceptor for WsLoggingInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<WsContext> for WsLoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext>>,
+    ) {
         println!("[WsLoggingInterceptor] 📥 Incoming message");
-
-        if let Some(ws) = context.switch_to_ws() {
-            println!("  Client: {}", ws.client().id);
-            println!("  Event: {}", ws.event());
-        }
-
-        next.run(context).await;
-
+        println!("  Client: {}", ctx.client().id);
+        println!("  Event: {}", ctx.event());
+        next.run(ctx).await;
         println!("[WsLoggingInterceptor] 📤 Message processed");
     }
 }
@@ -58,7 +51,8 @@ impl Interceptor for WsLoggingInterceptor {
 #[websocket_gateway("/chat", pub struct ChatGateway {
     broadcast: BroadcastService,
 })]
-
+#[use_guards(WsAuthGuard)]
+#[use_interceptors(WsLoggingInterceptor)]
 impl ChatGateway {
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
@@ -128,11 +122,7 @@ async fn main() -> anyhow::Result<()> {
     println!(r#"  websocat --header='X-Auth-Token: secret123' ws://127.0.0.1:8080/chat"#);
     println!();
 
-    let mut factory = ToniFactory::new();
-
-    factory.use_global_guards(Arc::new(WsAuthGuard));
-    factory.use_global_interceptors(Arc::new(WsLoggingInterceptor));
-
+    let factory = ToniFactory::new();
     let mut app = factory.create_with(ChatModule).await;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), 8080, "127.0.0.1")

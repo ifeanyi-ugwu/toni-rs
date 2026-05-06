@@ -486,7 +486,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                         .get(&__lookup_token)
                         .unwrap_or_else(|| panic!("Missing dependency '{}'", __lookup_token));
 
-                    let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpContext { parts: &_req_parts, cache: &_req_cache })).await;
+                    let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(
@@ -530,7 +530,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                     // Transient: fresh instance per field
                     #(
                         #field_idents = {
-                            let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpContext { parts: &_req_parts, cache: &_req_cache })).await;
+                            let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
                             *any_box.downcast::<#full_type>()
                                 .unwrap_or_else(|_| panic!(
                                     "Failed to downcast '{}' to {}",
@@ -542,7 +542,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                 } else {
                     // Singleton/Request: shared instance cloned to all fields
                     let #temp_var: #full_type = {
-                        let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpContext { parts: &_req_parts, cache: &_req_cache })).await;
+                        let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
                         *any_box.downcast::<#full_type>()
                             .unwrap_or_else(|_| panic!(
                                 "Failed to downcast '{}' to {}",
@@ -914,15 +914,15 @@ fn generate_singleton_controller_wrapper(
                 #controller_token.to_string()
             }
 
-            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard>> {
+            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#guard_instances)),*]
             }
 
-            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>> {
+            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#interceptor_instances)),*]
             }
 
-            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>> {
+            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#pipe_instances)),*]
             }
 
@@ -942,7 +942,7 @@ fn generate_singleton_controller_wrapper(
                 vec![#(#error_handler_tokens),*]
             }
 
-            fn get_error_handlers(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>> {
+            fn get_error_handlers(&self) -> Vec<::toni::traits_helpers::HttpErrorHandlerArc> {
                 vec![#(::std::sync::Arc::new(#error_handler_instances)),*]
             }
 
@@ -1122,18 +1122,15 @@ fn generate_request_controller_wrapper(
                 #controller_token.to_string()
             }
 
-            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard>> {
-                // Direct instantiation fallback for enhancers not in DI
+            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#guard_instances)),*]
             }
 
-            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>> {
-                // Direct instantiation fallback for enhancers not in DI
+            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#interceptor_instances)),*]
             }
 
-            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>> {
-                // Direct instantiation fallback for enhancers not in DI
+            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>> {
                 vec![#(::std::sync::Arc::new(#pipe_instances)),*]
             }
 
@@ -1153,7 +1150,7 @@ fn generate_request_controller_wrapper(
                 vec![#(#error_handler_tokens),*]
             }
 
-            fn get_error_handlers(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>> {
+            fn get_error_handlers(&self) -> Vec<::toni::traits_helpers::HttpErrorHandlerArc> {
                 vec![#(::std::sync::Arc::new(#error_handler_instances)),*]
             }
 

@@ -12,7 +12,9 @@ use parking_lot::RwLock;
 use super::{DependencyGraph, ToniContainer, multi_collection_provider::MultiCollectionProvider};
 use crate::{
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, GuardEntry, Injectable, InterceptorEntry, PipeEntry, Provider},
+    traits_helpers::{
+        Controller, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable, Provider,
+    },
 };
 
 pub struct ToniInstanceLoader {
@@ -198,16 +200,16 @@ impl ToniInstanceLoader {
                 .container
                 .borrow()
                 .get_role_registry()
-                .guards
+                .http_guards
                 .get(&provider_token)
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "Provider '{}' with APP_GUARD token does not implement Guard trait",
+                        "Provider '{}' with APP_GUARD token does not implement Guard<HttpContext>",
                         provider_token
                     )
                 })?;
-            self.container.borrow_mut().add_global_guard(guard);
+            self.container.borrow_mut().add_global_http_guard(guard);
         }
 
         for (_, provider_token) in app_interceptor_providers {
@@ -215,18 +217,18 @@ impl ToniInstanceLoader {
                 .container
                 .borrow()
                 .get_role_registry()
-                .interceptors
+                .http_interceptors
                 .get(&provider_token)
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "Provider '{}' with APP_INTERCEPTOR token does not implement Interceptor trait",
+                        "Provider '{}' with APP_INTERCEPTOR token does not implement Interceptor<HttpContext>",
                         provider_token
                     )
                 })?;
             self.container
                 .borrow_mut()
-                .add_global_interceptor(interceptor);
+                .add_global_http_interceptor(interceptor);
         }
 
         for (_, provider_token) in app_pipe_providers {
@@ -234,16 +236,16 @@ impl ToniInstanceLoader {
                 .container
                 .borrow()
                 .get_role_registry()
-                .pipes
+                .http_pipes
                 .get(&provider_token)
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "Provider '{}' with APP_PIPE token does not implement Pipe trait",
+                        "Provider '{}' with APP_PIPE token does not implement Pipe<HttpContext>",
                         provider_token
                     )
                 })?;
-            self.container.borrow_mut().add_global_pipe(pipe);
+            self.container.borrow_mut().add_global_http_pipe(pipe);
         }
 
         Ok(())
@@ -400,59 +402,71 @@ impl ToniInstanceLoader {
         let registry = self.container.borrow();
         let registry = registry.get_role_registry();
 
-        let mut guards: Vec<GuardEntry> = Vec::new();
+        let mut guards: Vec<HttpGuardEntry> = Vec::new();
         for token in controller.get_guard_tokens() {
-            let guard = registry.guards.get(&token).cloned().ok_or_else(|| {
+            let guard = registry.http_guards.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
-                    "Guard '{}' not found in role registry. \
-                     Ensure the provider implements the Guard trait and is registered in the module's providers.",
+                    "HTTP Guard '{}' not found in registry. \
+                     Implement Guard<HttpContext> (or a universal blanket impl) and \
+                     mark the provider with `#[guard(http)]` or a Guard<HttpContext> impl head.",
                     token
                 )
             })?;
             guards.push(guard);
         }
-        guards.extend(controller.get_guards().into_iter().map(GuardEntry::Ready));
+        guards.extend(controller.get_guards().into_iter().map(HttpGuardEntry::Ready));
 
-        let mut interceptors: Vec<InterceptorEntry> = Vec::new();
+        let mut interceptors: Vec<HttpInterceptorEntry> = Vec::new();
         for token in controller.get_interceptor_tokens() {
-            let interceptor = registry.interceptors.get(&token).cloned().ok_or_else(|| {
-                anyhow!(
-                    "Interceptor '{}' not found in role registry. \
-                     Ensure the provider implements the Interceptor trait and is registered in the module's providers.",
-                    token
-                )
-            })?;
+            let interceptor = registry
+                .http_interceptors
+                .get(&token)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "HTTP Interceptor '{}' not found in registry. \
+                         Implement Interceptor<HttpContext> and mark the provider \
+                         with `#[interceptor(http)]` or a typed impl head.",
+                        token
+                    )
+                })?;
             interceptors.push(interceptor);
         }
         interceptors.extend(
             controller
                 .get_interceptors()
                 .into_iter()
-                .map(InterceptorEntry::Ready),
+                .map(HttpInterceptorEntry::Ready),
         );
 
-        let mut pipes: Vec<PipeEntry> = Vec::new();
+        let mut pipes: Vec<HttpPipeEntry> = Vec::new();
         for token in controller.get_pipe_tokens() {
-            let pipe = registry.pipes.get(&token).cloned().ok_or_else(|| {
+            let pipe = registry.http_pipes.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
-                    "Pipe '{}' not found in role registry. \
-                     Ensure the provider implements the Pipe trait and is registered in the module's providers.",
+                    "HTTP Pipe '{}' not found in registry. \
+                     Implement Pipe<HttpContext> and mark the provider \
+                     with `#[pipe(http)]` or a typed impl head.",
                     token
                 )
             })?;
             pipes.push(pipe);
         }
-        pipes.extend(controller.get_pipes().into_iter().map(PipeEntry::Ready));
+        pipes.extend(controller.get_pipes().into_iter().map(HttpPipeEntry::Ready));
 
         let mut error_handlers = Vec::new();
         for token in controller.get_error_handler_tokens() {
-            let eh = registry.error_handlers.get(&token).cloned().ok_or_else(|| {
-                anyhow!(
-                    "ErrorHandler '{}' not found in role registry. \
-                     Ensure the provider implements the ErrorHandler trait and is registered in the module's providers.",
-                    token
-                )
-            })?;
+            let eh = registry
+                .http_error_handlers
+                .get(&token)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "HTTP ErrorHandler '{}' not found in registry. \
+                         Implement ErrorHandler<HttpContext, HttpResponse> and mark \
+                         the provider with `#[error_handler(http)]` or a typed impl head.",
+                        token
+                    )
+                })?;
             error_handlers.push(eh);
         }
         error_handlers.extend(controller.get_error_handlers());

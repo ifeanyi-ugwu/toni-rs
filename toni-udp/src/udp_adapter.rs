@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tracing::Instrument;
-use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
 const MAX_DATAGRAM: usize = 65_507;
@@ -311,7 +311,7 @@ async fn handle_datagram(
         id = ?id,
         peer = %src,
     );
-    let ctx = RpcContext::new(pattern);
+    let ctx = RpcCallInfo::new(pattern);
 
     async move {
         let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))

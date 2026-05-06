@@ -4,7 +4,7 @@
 //! per request using the DynGuardFactory / DynInterceptorFactory path.
 
 use toni::async_trait;
-use toni::injector::Context;
+use toni::context::{HttpContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
@@ -18,18 +18,13 @@ use crate::common::TestServer;
 // ---- request-scoped guard, no injected deps ----------------------------------
 
 #[injectable(scope = "request", pub struct RequestGuard {})]
-#[guard]
+#[guard(http)]
 impl RequestGuard {}
 
 #[async_trait]
-impl Guard for RequestGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_http()
-            .expect("HTTP context required")
-            .request()
-            .headers
-            .contains_key("x-allow")
+impl Guard<HttpContext> for RequestGuard {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
+        context.request().headers.contains_key("x-allow")
     }
 }
 
@@ -39,12 +34,12 @@ impl Guard for RequestGuard {
     #[inject]
     request: Request,
 })]
-#[guard]
+#[guard(http)]
 impl HeaderGuard {}
 
 #[async_trait]
-impl Guard for HeaderGuard {
-    async fn can_activate(&self, _context: &Context) -> bool {
+impl Guard<HttpContext> for HeaderGuard {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         self.request
             .header("x-secret")
             .map_or(false, |v| v == "open-sesame")
@@ -54,16 +49,18 @@ impl Guard for HeaderGuard {
 // ---- transient-scoped interceptor --------------------------------------------
 
 #[injectable(scope = "transient", pub struct TransientInterceptor {})]
-#[interceptor]
+#[interceptor(http)]
 impl TransientInterceptor {}
 
 #[async_trait]
-impl Interceptor for TransientInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for TransientInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         next.run(context).await;
         context
-            .switch_to_http_mut()
-            .expect("HTTP context required")
             .response_mut()
             .unwrap()
             .headers
@@ -128,15 +125,17 @@ impl TransientInterceptorModule {}
 // works identically at connect time and per-message, with no HTTP Request injection.
 
 #[injectable(pub struct WsHandshakeGuard {})]
-#[guard]
+#[guard(ws)]
 impl WsHandshakeGuard {}
 
 #[async_trait]
-impl Guard for WsHandshakeGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_ws()
-            .and_then(|ws| ws.client().handshake.headers.get("x-auth-token").cloned())
+impl Guard<WsContext> for WsHandshakeGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
+        ctx.client()
+            .handshake
+            .headers
+            .get("x-auth-token")
+            .cloned()
             .map_or(false, |v| v == "secret")
     }
 }

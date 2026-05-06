@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::{
     injector::{IntoToken, ToniContainer},
-    traits_helpers::{HttpContext, RequestCache},
+    traits_helpers::{HttpProviderContext, RequestCache},
 };
 
 /// Full DI container without an HTTP server
@@ -227,7 +227,7 @@ impl ToniApplicationContext {
         };
 
         let cache = RequestCache::new();
-        let http_ctx = HttpContext {
+        let http_ctx = HttpProviderContext {
             parts,
             cache: &cache,
         };
@@ -277,7 +277,7 @@ impl ToniApplicationContext {
         };
 
         let cache = RequestCache::new();
-        let http_ctx = HttpContext {
+        let http_ctx = HttpProviderContext {
             parts,
             cache: &cache,
         };

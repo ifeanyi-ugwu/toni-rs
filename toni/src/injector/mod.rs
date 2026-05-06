@@ -12,17 +12,6 @@ pub use self::dependency_graph::DependencyGraph;
 mod instance_wrapper;
 pub use self::instance_wrapper::InstanceWrapper;
 
-mod protocol;
-pub use self::protocol::{Protocol, ProtocolType};
-
-mod protocol_context;
-pub use self::protocol_context::{
-    HttpContext, HttpContextMut, RpcContext, RpcContextMut, WsContext, WsContextMut,
-};
-
-mod context;
-pub use self::context::Context;
-
 pub mod token;
 pub use self::token::IntoToken;
 

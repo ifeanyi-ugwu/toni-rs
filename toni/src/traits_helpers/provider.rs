@@ -4,7 +4,16 @@ use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
 use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
-use crate::{ProviderScope, http_helpers::RequestPart};
+use crate::{
+    ProviderScope,
+    context::{HttpContext, RpcContext, WsContext},
+    http_helpers::{HttpResponse, RequestPart},
+    rpc::RpcData,
+    websocket::WsMessage,
+};
+
+#[allow(unused_imports)]
+use std::marker::PhantomData;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -35,54 +44,83 @@ pub trait Provider: Send + Sync {
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
 }
 
-/// Factory for a guard that needs per-request construction (request- or transient-scoped).
-///
-/// `requires_http_parts` is checked at startup when wiring to RPC controllers — if true,
-/// the framework panics immediately rather than deferring to first invocation.
-pub trait DynGuardFactory: Send + Sync {
-    fn requires_http_parts(&self) -> bool;
-    fn create<'a>(
-        &'a self,
-        request_parts: Option<&'a RequestPart>,
-    ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard + Send + Sync>> + Send + 'a>>;
+// ---- Per-transport entry / factory types (typed registries) ----------------
+
+macro_rules! transport_factory_types {
+    (
+        $context:ty,
+        $guard_factory:ident, $guard_entry:ident,
+        $interceptor_factory:ident, $interceptor_entry:ident,
+        $pipe_factory:ident, $pipe_entry:ident
+    ) => {
+        pub trait $guard_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<$context> + Send + Sync>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $guard_entry {
+            Ready(Arc<dyn Guard<$context>>),
+            Factory(Arc<dyn $guard_factory>),
+        }
+
+        pub trait $interceptor_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor<$context> + Send + Sync>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $interceptor_entry {
+            Ready(Arc<dyn Interceptor<$context>>),
+            Factory(Arc<dyn $interceptor_factory>),
+        }
+
+        pub trait $pipe_factory: Send + Sync {
+            fn requires_http_parts(&self) -> bool;
+            fn create<'a>(
+                &'a self,
+                request_parts: Option<&'a RequestPart>,
+            ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe<$context> + Send + Sync>> + Send + 'a>>;
+        }
+
+        #[derive(Clone)]
+        pub enum $pipe_entry {
+            Ready(Arc<dyn Pipe<$context>>),
+            Factory(Arc<dyn $pipe_factory>),
+        }
+    };
 }
 
-pub trait DynInterceptorFactory: Send + Sync {
-    fn requires_http_parts(&self) -> bool;
-    fn create<'a>(
-        &'a self,
-        request_parts: Option<&'a RequestPart>,
-    ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor + Send + Sync>> + Send + 'a>>;
-}
+transport_factory_types!(
+    HttpContext,
+    DynHttpGuardFactory, HttpGuardEntry,
+    DynHttpInterceptorFactory, HttpInterceptorEntry,
+    DynHttpPipeFactory, HttpPipeEntry
+);
 
-pub trait DynPipeFactory: Send + Sync {
-    fn requires_http_parts(&self) -> bool;
-    fn create<'a>(
-        &'a self,
-        request_parts: Option<&'a RequestPart>,
-    ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe + Send + Sync>> + Send + 'a>>;
-}
+transport_factory_types!(
+    RpcContext,
+    DynRpcGuardFactory, RpcGuardEntry,
+    DynRpcInterceptorFactory, RpcInterceptorEntry,
+    DynRpcPipeFactory, RpcPipeEntry
+);
 
-/// Unified guard storage — either a ready singleton instance or a per-request factory.
-#[derive(Clone)]
-pub enum GuardEntry {
-    Ready(Arc<dyn Guard>),
-    Factory(Arc<dyn DynGuardFactory>),
-}
+transport_factory_types!(
+    WsContext,
+    DynWsGuardFactory, WsGuardEntry,
+    DynWsInterceptorFactory, WsInterceptorEntry,
+    DynWsPipeFactory, WsPipeEntry
+);
 
-/// Unified interceptor storage.
-#[derive(Clone)]
-pub enum InterceptorEntry {
-    Ready(Arc<dyn Interceptor>),
-    Factory(Arc<dyn DynInterceptorFactory>),
-}
-
-/// Unified pipe storage.
-#[derive(Clone)]
-pub enum PipeEntry {
-    Ready(Arc<dyn Pipe>),
-    Factory(Arc<dyn DynPipeFactory>),
-}
+pub type HttpErrorHandlerArc = Arc<dyn ErrorHandler<HttpContext, HttpResponse>>;
+pub type RpcErrorHandlerArc = Arc<dyn ErrorHandler<RpcContext, RpcData>>;
+pub type WsErrorHandlerArc = Arc<dyn ErrorHandler<WsContext, WsMessage>>;
 
 /// Role trait-objects a provider may contribute to the registry.
 ///
@@ -92,11 +130,22 @@ pub enum PipeEntry {
 /// controller token).
 #[derive(Clone)]
 pub enum ProviderRole {
-    Guard(GuardEntry),
-    Interceptor(InterceptorEntry),
-    Pipe(PipeEntry),
+    HttpGuard(HttpGuardEntry),
+    HttpInterceptor(HttpInterceptorEntry),
+    HttpPipe(HttpPipeEntry),
+    HttpErrorHandler(HttpErrorHandlerArc),
+
+    RpcGuard(RpcGuardEntry),
+    RpcInterceptor(RpcInterceptorEntry),
+    RpcPipe(RpcPipeEntry),
+    RpcErrorHandler(RpcErrorHandlerArc),
+
+    WsGuard(WsGuardEntry),
+    WsInterceptor(WsInterceptorEntry),
+    WsPipe(WsPipeEntry),
+    WsErrorHandler(WsErrorHandlerArc),
+
     Middleware(Arc<dyn Middleware>),
-    ErrorHandler(Arc<dyn ErrorHandler>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
     RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
     GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),

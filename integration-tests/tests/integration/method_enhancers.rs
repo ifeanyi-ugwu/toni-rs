@@ -10,11 +10,9 @@
 use std::time::Duration;
 
 use toni::async_trait;
-use toni::injector::Context;
-use toni::rpc::{RpcContext as RpcCallContext, RpcData, RpcError};
-use toni::traits_helpers::{
-    ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe,
-};
+use toni::context::{HandlerContext, RpcContext, WsContext};
+use toni::rpc::{RpcData, RpcError};
+use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni::module;
@@ -25,32 +23,44 @@ use crate::common::TestServer;
 // ---- shared (protocol-agnostic) enhancers ------------------------------------
 
 #[injectable(pub struct AbortPipe {})]
-#[pipe]
+#[pipe(rpc, ws)]
 impl AbortPipe {}
 
-impl Pipe for AbortPipe {
-    fn process(&self, context: &mut Context) {
-        context.abort();
+impl Pipe<RpcContext> for AbortPipe {
+    fn process(&self, ctx: &mut RpcContext) {
+        ctx.abort();
+    }
+}
+
+impl Pipe<WsContext> for AbortPipe {
+    fn process(&self, ctx: &mut WsContext) {
+        ctx.abort();
     }
 }
 
 #[injectable(pub struct RecoveryErrorHandler {})]
-#[error_handler]
+#[error_handler(rpc, ws)]
 impl RecoveryErrorHandler {}
 
 #[async_trait]
-impl ErrorHandler for RecoveryErrorHandler {
+impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: Box<dyn std::error::Error + Send>,
-        ctx: &Context,
-    ) -> Option<ErrorResponse> {
-        if ctx.switch_to_ws().is_some() {
-            Some(ErrorResponse::Ws(WsMessage::text("recovered")))
-        } else {
-            ctx.switch_to_rpc()
-                .map(|_| ErrorResponse::Rpc(RpcData::json(serde_json::json!("recovered"))))
-        }
+        _ctx: &RpcContext,
+    ) -> Option<RpcData> {
+        Some(RpcData::json(serde_json::json!("recovered")))
+    }
+}
+
+#[async_trait]
+impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
+    async fn handle_error(
+        &self,
+        _error: Box<dyn std::error::Error + Send>,
+        _ctx: &WsContext,
+    ) -> Option<WsMessage> {
+        Some(WsMessage::text("recovered"))
     }
 }
 
@@ -58,35 +68,37 @@ impl ErrorHandler for RecoveryErrorHandler {
 
 /// Passes when the WS handshake contains `x-allow: ok`.
 #[injectable(pub struct WsAllowGuard {})]
-#[guard]
+#[guard(ws)]
 impl WsAllowGuard {}
 
 #[async_trait]
-impl Guard for WsAllowGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_ws()
-            .and_then(|ws| ws.client().handshake.headers.get("x-allow").cloned())
+impl Guard<WsContext> for WsAllowGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
+        ctx.client()
+            .handshake
+            .headers
+            .get("x-allow")
+            .cloned()
             .map_or(false, |v| v == "ok")
     }
 }
 
 /// Prefixes the WS text response with "prefixed:".
 #[injectable(pub struct WsPrefixInterceptor {})]
-#[interceptor]
+#[interceptor(ws)]
 impl WsPrefixInterceptor {}
 
 #[async_trait]
-impl Interceptor for WsPrefixInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
-        next.run(context).await;
-        let current = context.switch_to_ws().and_then(|ws| ws.response());
-        if let Some(Ok(Some(msg))) = current {
+impl Interceptor<WsContext> for WsPrefixInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext>>,
+    ) {
+        next.run(ctx).await;
+        if let Some(Ok(Some(msg))) = ctx.response() {
             let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
-            context
-                .switch_to_ws_mut()
-                .expect("WS context required")
-                .set_response(Ok(Some(WsMessage::text(prefixed))));
+            ctx.set_response(Ok(Some(WsMessage::text(prefixed))));
         }
     }
 }
@@ -141,46 +153,42 @@ impl WsMethodEnhancersModule {}
 
 /// Passes when the RPC payload contains `{"allow": "ok"}`.
 #[injectable(pub struct RpcAllowGuard {})]
-#[guard]
+#[guard(rpc)]
 impl RpcAllowGuard {}
 
 #[async_trait]
-impl Guard for RpcAllowGuard {
-    async fn can_activate(&self, context: &Context) -> bool {
-        context
-            .switch_to_rpc()
-            .and_then(|rpc| {
-                rpc.data()
-                    .as_json()
-                    .and_then(|v| v["allow"].as_str())
-                    .map(|v| v == "ok")
-            })
+impl Guard<RpcContext> for RpcAllowGuard {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+        ctx.data()
+            .as_json()
+            .and_then(|v| v["allow"].as_str())
+            .map(|v| v == "ok")
             .unwrap_or(false)
     }
 }
 
 /// Prefixes the RPC string response with "prefixed:".
 #[injectable(pub struct RpcPrefixInterceptor {})]
-#[interceptor]
+#[interceptor(rpc)]
 impl RpcPrefixInterceptor {}
 
 #[async_trait]
-impl Interceptor for RpcPrefixInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
-        next.run(context).await;
-        let prefixed: Option<String> = context
-            .switch_to_rpc()
-            .and_then(|rpc| rpc.response())
+impl Interceptor<RpcContext> for RpcPrefixInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut RpcContext,
+        next: Box<dyn InterceptorNext<RpcContext>>,
+    ) {
+        next.run(ctx).await;
+        let prefixed: Option<String> = ctx
+            .response()
             .and_then(|r| r.as_ref().ok())
             .and_then(|opt| opt.as_ref())
             .and_then(|data| data.as_json())
             .and_then(|v| v.as_str())
             .map(|s| format!("prefixed:{}", s));
         if let Some(val) = prefixed {
-            context
-                .switch_to_rpc_mut()
-                .expect("RPC context required")
-                .set_response(Ok(Some(RpcData::json(serde_json::json!(val)))));
+            ctx.set_response(Ok(Some(RpcData::json(serde_json::json!(val)))));
         }
     }
 }
@@ -198,24 +206,24 @@ impl RpcMethodEnhancersController {
     #[message_pattern("rpc.all")]
     #[use_guards(RpcAllowGuard)]
     #[use_interceptors(RpcPrefixInterceptor)]
-    async fn all(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
+    async fn all(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("all-ok")))
     }
 
     #[message_pattern("rpc.piped")]
     #[use_pipes(AbortPipe)]
-    async fn piped(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
+    async fn piped(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("should-not-reach")))
     }
 
     #[message_pattern("rpc.recovering")]
     #[use_error_handlers(RecoveryErrorHandler)]
-    async fn recovering(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
+    async fn recovering(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Err(RpcError::Internal("intentional".into()))
     }
 
     #[message_pattern("rpc.plain")]
-    async fn plain(&self, _d: RpcData, _c: RpcCallContext) -> Result<RpcData, RpcError> {
+    async fn plain(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("plain-ok")))
     }
 }

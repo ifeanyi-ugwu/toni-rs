@@ -1,5 +1,6 @@
-use crate::injector::Context;
+use crate::context::HandlerContext;
 
-pub trait Pipe: Send + Sync {
-    fn process(&self, data: &mut Context);
+/// A pipe transforms or validates the request before the handler runs.
+pub trait Pipe<C: ?Sized + HandlerContext>: Send + Sync {
+    fn process(&self, data: &mut C);
 }

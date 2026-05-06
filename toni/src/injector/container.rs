@@ -8,8 +8,10 @@ use crate::{
     rpc::RpcControllerTrait,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, GuardEntry, InterceptorEntry, ModuleMetadata, PipeEntry,
-        Provider, ProviderFactory, ProviderRole,
+        Controller, ControllerFactory, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
+        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
+        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
+        WsInterceptorEntry, WsPipeEntry,
     },
     websocket::GatewayTrait,
 };
@@ -23,11 +25,21 @@ pub struct ToniContainer {
     global_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
-    /// Global enhancers - applied to all controllers
-    global_guards: Vec<GuardEntry>,
-    global_interceptors: Vec<InterceptorEntry>,
-    global_pipes: Vec<PipeEntry>,
-    global_error_handlers: Vec<Arc<dyn crate::traits_helpers::ErrorHandler>>,
+    /// Global enhancers - applied to every HTTP route's pipeline.
+    global_http_guards: Vec<HttpGuardEntry>,
+    global_http_interceptors: Vec<HttpInterceptorEntry>,
+    global_http_pipes: Vec<HttpPipeEntry>,
+    global_http_error_handlers: Vec<HttpErrorHandlerArc>,
+    /// Global enhancers - applied to every RPC controller's pipeline.
+    global_rpc_guards: Vec<RpcGuardEntry>,
+    global_rpc_interceptors: Vec<RpcInterceptorEntry>,
+    global_rpc_pipes: Vec<RpcPipeEntry>,
+    global_rpc_error_handlers: Vec<RpcErrorHandlerArc>,
+    /// Global enhancers - applied to every WS gateway's pipeline.
+    global_ws_guards: Vec<WsGuardEntry>,
+    global_ws_interceptors: Vec<WsInterceptorEntry>,
+    global_ws_pipes: Vec<WsPipeEntry>,
+    global_ws_error_handlers: Vec<WsErrorHandlerArc>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
@@ -57,10 +69,18 @@ impl ToniContainer {
             middleware_manager: Some(MiddlewareManager::new()),
             global_providers: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
-            global_guards: Vec::new(),
-            global_interceptors: Vec::new(),
-            global_pipes: Vec::new(),
-            global_error_handlers: Vec::new(),
+            global_http_guards: Vec::new(),
+            global_http_interceptors: Vec::new(),
+            global_http_pipes: Vec::new(),
+            global_http_error_handlers: Vec::new(),
+            global_rpc_guards: Vec::new(),
+            global_rpc_interceptors: Vec::new(),
+            global_rpc_pipes: Vec::new(),
+            global_rpc_error_handlers: Vec::new(),
+            global_ws_guards: Vec::new(),
+            global_ws_interceptors: Vec::new(),
+            global_ws_pipes: Vec::new(),
+            global_ws_error_handlers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
             app_pipe_providers: Vec::new(),
@@ -70,31 +90,92 @@ impl ToniContainer {
         }
     }
 
-    pub fn add_global_guard(&mut self, guard: GuardEntry) {
-        self.global_guards.push(guard);
+    pub fn add_global_http_guard(&mut self, guard: HttpGuardEntry) {
+        self.global_http_guards.push(guard);
     }
 
-    pub fn add_global_interceptor(&mut self, interceptor: InterceptorEntry) {
-        self.global_interceptors.push(interceptor);
+    pub fn add_global_http_interceptor(&mut self, interceptor: HttpInterceptorEntry) {
+        self.global_http_interceptors.push(interceptor);
     }
 
-    pub fn add_global_pipe(&mut self, pipe: PipeEntry) {
-        self.global_pipes.push(pipe);
+    pub fn add_global_http_pipe(&mut self, pipe: HttpPipeEntry) {
+        self.global_http_pipes.push(pipe);
     }
 
-    pub fn add_global_error_handler(
-        &mut self,
-        handler: Arc<dyn crate::traits_helpers::ErrorHandler>,
-    ) {
-        self.global_error_handlers.push(handler);
+    pub fn add_global_http_error_handler(&mut self, handler: HttpErrorHandlerArc) {
+        self.global_http_error_handlers.push(handler);
+    }
+
+    pub fn add_global_rpc_guard(&mut self, guard: RpcGuardEntry) {
+        self.global_rpc_guards.push(guard);
+    }
+
+    pub fn add_global_rpc_interceptor(&mut self, interceptor: RpcInterceptorEntry) {
+        self.global_rpc_interceptors.push(interceptor);
+    }
+
+    pub fn add_global_rpc_pipe(&mut self, pipe: RpcPipeEntry) {
+        self.global_rpc_pipes.push(pipe);
+    }
+
+    pub fn add_global_rpc_error_handler(&mut self, handler: RpcErrorHandlerArc) {
+        self.global_rpc_error_handlers.push(handler);
+    }
+
+    pub fn get_global_rpc_guards(&self) -> Vec<RpcGuardEntry> {
+        self.global_rpc_guards.clone()
+    }
+
+    pub fn get_global_rpc_interceptors(&self) -> Vec<RpcInterceptorEntry> {
+        self.global_rpc_interceptors.clone()
+    }
+
+    pub fn get_global_rpc_pipes(&self) -> Vec<RpcPipeEntry> {
+        self.global_rpc_pipes.clone()
+    }
+
+    pub fn get_global_rpc_error_handlers(&self) -> Vec<RpcErrorHandlerArc> {
+        self.global_rpc_error_handlers.clone()
+    }
+
+    pub fn add_global_ws_guard(&mut self, guard: WsGuardEntry) {
+        self.global_ws_guards.push(guard);
+    }
+
+    pub fn add_global_ws_interceptor(&mut self, interceptor: WsInterceptorEntry) {
+        self.global_ws_interceptors.push(interceptor);
+    }
+
+    pub fn add_global_ws_pipe(&mut self, pipe: WsPipeEntry) {
+        self.global_ws_pipes.push(pipe);
+    }
+
+    pub fn add_global_ws_error_handler(&mut self, handler: WsErrorHandlerArc) {
+        self.global_ws_error_handlers.push(handler);
+    }
+
+    pub fn get_global_ws_guards(&self) -> Vec<WsGuardEntry> {
+        self.global_ws_guards.clone()
+    }
+
+    pub fn get_global_ws_interceptors(&self) -> Vec<WsInterceptorEntry> {
+        self.global_ws_interceptors.clone()
+    }
+
+    pub fn get_global_ws_pipes(&self) -> Vec<WsPipeEntry> {
+        self.global_ws_pipes.clone()
+    }
+
+    pub fn get_global_ws_error_handlers(&self) -> Vec<WsErrorHandlerArc> {
+        self.global_ws_error_handlers.clone()
     }
 
     pub fn get_global_enhancers(&self) -> EnhancerMetadata {
         EnhancerMetadata {
-            guards: self.global_guards.clone(),
-            interceptors: self.global_interceptors.clone(),
-            pipes: self.global_pipes.clone(),
-            error_handlers: self.global_error_handlers.clone(),
+            guards: self.global_http_guards.clone(),
+            interceptors: self.global_http_interceptors.clone(),
+            pipes: self.global_http_pipes.clone(),
+            error_handlers: self.global_http_error_handlers.clone(),
         }
     }
 
@@ -154,20 +235,50 @@ impl ToniContainer {
 
         for role in roles {
             match role {
-                ProviderRole::Guard(g) => {
-                    self.role_registry.guards.insert(token.clone(), g);
+                ProviderRole::HttpGuard(g) => {
+                    self.role_registry.http_guards.insert(token.clone(), g);
                 }
-                ProviderRole::Interceptor(i) => {
-                    self.role_registry.interceptors.insert(token.clone(), i);
+                ProviderRole::HttpInterceptor(i) => {
+                    self.role_registry.http_interceptors.insert(token.clone(), i);
                 }
-                ProviderRole::Pipe(p) => {
-                    self.role_registry.pipes.insert(token.clone(), p);
+                ProviderRole::HttpPipe(p) => {
+                    self.role_registry.http_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::HttpErrorHandler(eh) => {
+                    self.role_registry
+                        .http_error_handlers
+                        .insert(token.clone(), eh);
+                }
+                ProviderRole::RpcGuard(g) => {
+                    self.role_registry.rpc_guards.insert(token.clone(), g);
+                }
+                ProviderRole::RpcInterceptor(i) => {
+                    self.role_registry.rpc_interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::RpcPipe(p) => {
+                    self.role_registry.rpc_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::RpcErrorHandler(eh) => {
+                    self.role_registry
+                        .rpc_error_handlers
+                        .insert(token.clone(), eh);
+                }
+                ProviderRole::WsGuard(g) => {
+                    self.role_registry.ws_guards.insert(token.clone(), g);
+                }
+                ProviderRole::WsInterceptor(i) => {
+                    self.role_registry.ws_interceptors.insert(token.clone(), i);
+                }
+                ProviderRole::WsPipe(p) => {
+                    self.role_registry.ws_pipes.insert(token.clone(), p);
+                }
+                ProviderRole::WsErrorHandler(eh) => {
+                    self.role_registry
+                        .ws_error_handlers
+                        .insert(token.clone(), eh);
                 }
                 ProviderRole::Middleware(m) => {
                     self.role_registry.middleware.insert(token.clone(), m);
-                }
-                ProviderRole::ErrorHandler(eh) => {
-                    self.role_registry.error_handlers.insert(token.clone(), eh);
                 }
                 ProviderRole::Gateway(gw) => {
                     let path = gw.get_path();

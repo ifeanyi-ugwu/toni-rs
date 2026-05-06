@@ -3,6 +3,8 @@ pub mod adapter;
 mod application_context;
 mod error;
 pub mod builtin_module;
+pub mod context;
+pub use context::{CancellationToken, HandlerContext, HttpContext, RpcContext, WsContext};
 pub mod di;
 pub mod errors;
 pub mod extractors;
@@ -34,8 +36,8 @@ pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
     RequestBody, RequestBoxBody, RequestPart, RouteMetadata, Sse, SseEvent, sse,
 };
-pub use injector::{InstanceWrapper, Protocol, ProtocolType};
-pub use rpc::{RpcClient, RpcClientError, RpcContext, RpcControllerTrait, RpcData, RpcError};
+pub use injector::InstanceWrapper;
+pub use rpc::{RpcCallInfo, RpcClient, RpcClientError, RpcControllerTrait, RpcData, RpcError};
 pub use websocket::{
     BroadcastError, BroadcastModule, BroadcastService, BroadcastTarget, ClientId, DisconnectReason,
     GatewayTrait, GatewayWrapper, RoomId, SendError, TrySendError, WsClient, WsError,
@@ -46,7 +48,7 @@ pub use websocket::{
 pub use request::{Request, RequestFactory};
 
 // Re-export ModuleRef for dynamic DI resolution
-pub use injector::{Context, IntoToken, ModuleRef};
+pub use injector::{IntoToken, ModuleRef};
 
 pub use application_context::ToniApplicationContext;
 
@@ -58,7 +60,7 @@ pub use rustc_hash::FxHashMap;
 // Re-export provider scope
 pub use provider_scope::ProviderScope;
 
-pub use traits_helpers::{HttpContext, ProviderContext, RequestCache};
+pub use traits_helpers::{HttpProviderContext, ProviderContext, RequestCache};
 
 pub use error::{BindError, InitResult};
 pub use errors::HttpError;

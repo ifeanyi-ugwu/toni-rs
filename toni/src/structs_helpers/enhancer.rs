@@ -1,10 +1,14 @@
-use std::sync::Arc;
+use crate::traits_helpers::{
+    HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
+};
 
-use crate::traits_helpers::{ErrorHandler, GuardEntry, InterceptorEntry, PipeEntry};
-
+/// Resolved HTTP enhancer pipeline for a single route.
+///
+/// Entries are typed for `HttpContext` — the dispatcher walks them directly
+/// without any runtime protocol switch.
 pub struct EnhancerMetadata {
-    pub guards: Vec<GuardEntry>,
-    pub interceptors: Vec<InterceptorEntry>,
-    pub pipes: Vec<PipeEntry>,
-    pub error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    pub guards: Vec<HttpGuardEntry>,
+    pub interceptors: Vec<HttpInterceptorEntry>,
+    pub pipes: Vec<HttpPipeEntry>,
+    pub error_handlers: Vec<HttpErrorHandlerArc>,
 }

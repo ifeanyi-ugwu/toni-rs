@@ -7,13 +7,7 @@ use syn::{
 
 use crate::shared::TokenType;
 
-/// Enhancer type flags
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EnhancerType {
-    Guard,
-    Interceptor,
-    Pipe,
-}
+pub use super::factory_provider::EnhancerType;
 
 /// Parse provider_value! macro input
 /// Syntax: provider_value!("TOKEN", value) or provider_value!(TOKEN, value)
@@ -51,10 +45,57 @@ impl Parse for ProviderValueInput {
                 let ident: Ident = input.parse()?;
                 let ident_str = ident.to_string();
 
+                let parse_transport = |input: ParseStream| -> Result<Option<String>> {
+                    if input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in input);
+                        let arg: Ident = content.parse()?;
+                        Ok(Some(arg.to_string()))
+                    } else {
+                        Ok(None)
+                    }
+                };
+
                 match ident_str.as_str() {
-                    "guard" => enhancers.push(EnhancerType::Guard),
-                    "interceptor" => enhancers.push(EnhancerType::Interceptor),
-                    "pipe" => enhancers.push(EnhancerType::Pipe),
+                    "guard" => match parse_transport(input)?.as_deref() {
+                        Some("http") | None => enhancers.push(EnhancerType::HttpGuard),
+                        Some("rpc") => enhancers.push(EnhancerType::RpcGuard),
+                        Some("ws") | Some("websocket") => {
+                            enhancers.push(EnhancerType::WsGuard)
+                        }
+                        Some(other) => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("unknown guard transport `{}`", other),
+                            ));
+                        }
+                    },
+                    "interceptor" => match parse_transport(input)?.as_deref() {
+                        Some("http") | None => enhancers.push(EnhancerType::HttpInterceptor),
+                        Some("rpc") => enhancers.push(EnhancerType::RpcInterceptor),
+                        Some("ws") | Some("websocket") => {
+                            enhancers.push(EnhancerType::WsInterceptor)
+                        }
+                        Some(other) => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("unknown interceptor transport `{}`", other),
+                            ));
+                        }
+                    },
+                    "pipe" => match parse_transport(input)?.as_deref() {
+                        Some("http") | None => enhancers.push(EnhancerType::HttpPipe),
+                        Some("rpc") => enhancers.push(EnhancerType::RpcPipe),
+                        Some("ws") | Some("websocket") => {
+                            enhancers.push(EnhancerType::WsPipe)
+                        }
+                        Some(other) => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("unknown pipe transport `{}`", other),
+                            ));
+                        }
+                    },
                     "lifecycle" => lifecycle = true,
                     _ => {
                         // Not an enhancer keyword - could be start of a type hint
@@ -115,35 +156,10 @@ fn validate_enhancers(
 }
 
 /// Generate role-push statements to embed inside `build()` for value providers,
-/// before the concrete `instance: Arc<T>` is boxed.
+/// before the concrete `instance: Arc<T>` is boxed. Reuses the typed role-push
+/// emission from `factory_provider`.
 fn generate_value_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
-    let mut pushes = Vec::new();
-    for enhancer in enhancers {
-        match enhancer {
-            EnhancerType::Guard => pushes.push(quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Guard(
-                    toni::traits_helpers::GuardEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
-                    )
-                ));
-            }),
-            EnhancerType::Interceptor => pushes.push(quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Interceptor(
-                    toni::traits_helpers::InterceptorEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
-                    )
-                ));
-            }),
-            EnhancerType::Pipe => pushes.push(quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Pipe(
-                    toni::traits_helpers::PipeEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
-                    )
-                ));
-            }),
-        }
-    }
-    quote! { #(#pushes)* }
+    super::factory_provider::generate_factory_role_pushes_external(enhancers)
 }
 
 pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {

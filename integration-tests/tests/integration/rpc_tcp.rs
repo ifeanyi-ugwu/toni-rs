@@ -12,8 +12,9 @@
 
 use std::time::Duration;
 
+use toni::context::RpcContext;
 use toni::module;
-use toni::rpc::{RpcContext, RpcData, RpcError};
+use toni::rpc::{RpcData, RpcError};
 use toni_macros::rpc_controller;
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
@@ -69,12 +70,12 @@ impl RpcPanicController {
     }
 
     #[message_pattern("rpc.panic")]
-    async fn panic_handler(&self, _d: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn panic_handler(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         panic!("intentional rpc panic");
     }
 
     #[message_pattern("rpc.safe")]
-    async fn safe_handler(&self, _d: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn safe_handler(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("safe-ok")))
     }
 }
@@ -129,7 +130,7 @@ impl ShutdownTcpController {
     }
 
     #[message_pattern("tcp.echo")]
-    async fn echo(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn echo(&self, data: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(data)
     }
 }
@@ -200,7 +201,7 @@ impl SlowTcpController {
     }
 
     #[message_pattern("tcp.slow")]
-    async fn slow(&self, data: RpcData, _c: RpcContext) -> Result<RpcData, RpcError> {
+    async fn slow(&self, data: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(data)
     }

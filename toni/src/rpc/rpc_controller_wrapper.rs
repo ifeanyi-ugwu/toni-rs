@@ -3,25 +3,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::{HandlerContext, RpcContext};
 use crate::http_helpers::RouteMetadata;
-use crate::injector::Context;
 use crate::traits_helpers::{
-    ErrorHandler, Guard, GuardEntry, Interceptor, InterceptorEntry, InterceptorNext, Pipe,
-    PipeEntry,
+    Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
+    RpcInterceptorEntry, RpcPipeEntry,
 };
 
-use super::{RpcContext, RpcControllerTrait, RpcData, RpcError};
+use super::{RpcControllerTrait, RpcData, RpcError};
 
 struct RpcChainNext {
-    interceptors: Vec<Arc<dyn Interceptor>>,
+    interceptors: Vec<Arc<dyn Interceptor<RpcContext>>>,
     controller: Arc<Box<dyn RpcControllerTrait>>,
-    pipes: Vec<Arc<dyn Pipe>>,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    pipes: Vec<Arc<dyn Pipe<RpcContext>>>,
+    error_handlers: Vec<RpcErrorHandlerArc>,
 }
 
 #[async_trait]
-impl InterceptorNext for RpcChainNext {
-    async fn run(self: Box<Self>, context: &mut Context) {
+impl InterceptorNext<RpcContext> for RpcChainNext {
+    async fn run(self: Box<Self>, context: &mut RpcContext) {
         RpcControllerWrapper::execute_with_interceptors_impl(
             context,
             &self.interceptors,
@@ -34,38 +34,31 @@ impl InterceptorNext for RpcChainNext {
 }
 
 /// Wraps an [`RpcControllerTrait`] with the full guard/interceptor/pipe pipeline.
-///
-/// Parallel to [`GatewayWrapper`] for WebSocket — the framework constructs one
-/// wrapper per discovered RPC controller and routes all incoming messages through it.
-///
-/// [`GatewayWrapper`]: crate::websocket::GatewayWrapper
 pub struct RpcControllerWrapper {
     controller: Arc<Box<dyn RpcControllerTrait>>,
-    guards: Vec<GuardEntry>,
-    interceptors: Vec<InterceptorEntry>,
-    pipes: Vec<PipeEntry>,
-    error_handlers: Vec<Arc<dyn ErrorHandler>>,
+    guards: Vec<RpcGuardEntry>,
+    interceptors: Vec<RpcInterceptorEntry>,
+    pipes: Vec<RpcPipeEntry>,
+    error_handlers: Vec<RpcErrorHandlerArc>,
     route_metadata: Arc<RouteMetadata>,
-    /// Per-handler enhancers keyed by pattern, pre-resolved at startup.
-    /// Appended after controller-level enhancers when dispatching a message.
-    handler_guards: HashMap<String, Vec<GuardEntry>>,
-    handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
-    handler_pipes: HashMap<String, Vec<PipeEntry>>,
-    handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
+    handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
+    handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
+    handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
+    handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>>,
 }
 
 impl RpcControllerWrapper {
     pub fn new(
         controller: Arc<Box<dyn RpcControllerTrait>>,
-        guards: Vec<GuardEntry>,
-        interceptors: Vec<InterceptorEntry>,
-        pipes: Vec<PipeEntry>,
-        error_handlers: Vec<Arc<dyn ErrorHandler>>,
+        guards: Vec<RpcGuardEntry>,
+        interceptors: Vec<RpcInterceptorEntry>,
+        pipes: Vec<RpcPipeEntry>,
+        error_handlers: Vec<RpcErrorHandlerArc>,
         route_metadata: Arc<RouteMetadata>,
-        handler_guards: HashMap<String, Vec<GuardEntry>>,
-        handler_interceptors: HashMap<String, Vec<InterceptorEntry>>,
-        handler_pipes: HashMap<String, Vec<PipeEntry>>,
-        handler_error_handlers: HashMap<String, Vec<Arc<dyn ErrorHandler>>>,
+        handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
+        handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
+        handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
+        handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>>,
     ) -> Self {
         Self {
             controller,
@@ -88,12 +81,12 @@ impl RpcControllerWrapper {
     pub async fn handle_message(
         &self,
         data: RpcData,
-        context: RpcContext,
+        call_metadata: HashMap<String, String>,
+        pattern: String,
     ) -> Result<Option<RpcData>, RpcError> {
-        let pattern = context.pattern.clone();
-        let mut ctx = Context::from_rpc(data, context, Some(self.route_metadata.clone()));
+        let mut ctx = RpcContext::new(pattern.clone(), data, Some(self.route_metadata.clone()));
+        *ctx.metadata_mut() = call_metadata;
 
-        // Merge controller-level + handler-level entries (handler appended after controller).
         let mut all_guards = self.guards.clone();
         if let Some(h) = self.handler_guards.get(&pattern) {
             all_guards.extend_from_slice(h);
@@ -136,36 +129,38 @@ impl RpcControllerWrapper {
     /// RPC has no HTTP request; factory entries are called with `None`.
     /// Factory guards with `requires_http_parts() == true` should have been
     /// rejected at startup by the resolver.
-    async fn resolve_guards(entries: &[GuardEntry]) -> Vec<Arc<dyn Guard>> {
+    async fn resolve_guards(entries: &[RpcGuardEntry]) -> Vec<Arc<dyn Guard<RpcContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
-                GuardEntry::Ready(g) => g.clone(),
-                GuardEntry::Factory(f) => f.create(None).await,
+                RpcGuardEntry::Ready(g) => g.clone(),
+                RpcGuardEntry::Factory(f) => f.create(None).await,
             };
             out.push(g);
         }
         out
     }
 
-    async fn resolve_interceptors(entries: &[InterceptorEntry]) -> Vec<Arc<dyn Interceptor>> {
+    async fn resolve_interceptors(
+        entries: &[RpcInterceptorEntry],
+    ) -> Vec<Arc<dyn Interceptor<RpcContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
-                InterceptorEntry::Ready(i) => i.clone(),
-                InterceptorEntry::Factory(f) => f.create(None).await,
+                RpcInterceptorEntry::Ready(i) => i.clone(),
+                RpcInterceptorEntry::Factory(f) => f.create(None).await,
             };
             out.push(i);
         }
         out
     }
 
-    async fn resolve_pipes(entries: &[PipeEntry]) -> Vec<Arc<dyn Pipe>> {
+    async fn resolve_pipes(entries: &[RpcPipeEntry]) -> Vec<Arc<dyn Pipe<RpcContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
-                PipeEntry::Ready(p) => p.clone(),
-                PipeEntry::Factory(f) => f.create(None).await,
+                RpcPipeEntry::Ready(p) => p.clone(),
+                RpcPipeEntry::Factory(f) => f.create(None).await,
             };
             out.push(p);
         }
@@ -173,11 +168,11 @@ impl RpcControllerWrapper {
     }
 
     async fn execute_with_interceptors(
-        context: &mut Context,
+        context: &mut RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
-        interceptors: &[Arc<dyn Interceptor>],
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        interceptors: &[Arc<dyn Interceptor<RpcContext>>],
+        pipes: &[Arc<dyn Pipe<RpcContext>>],
+        error_handlers: &[RpcErrorHandlerArc],
     ) -> Result<Option<RpcData>, RpcError> {
         Self::execute_with_interceptors_impl(
             context,
@@ -189,57 +184,48 @@ impl RpcControllerWrapper {
         .await;
 
         if context.should_abort() {
-            if let Some(response) = context
-                .switch_to_rpc()
-                .and_then(|rpc| rpc.response().cloned())
-            {
-                return response.clone();
+            if let Some(response) = context.take_response() {
+                return response.map(|opt| opt);
             }
             return Err(RpcError::Internal(
                 "Request aborted by interceptor without response".into(),
             ));
         }
 
-        if let Some(response) = context
-            .switch_to_rpc()
-            .and_then(|rpc| rpc.response().cloned())
-        {
-            response.clone()
+        if let Some(response) = context.take_response() {
+            response.map(|opt| opt)
         } else {
             Err(RpcError::Internal("Handler did not set response".into()))
         }
     }
 
-    /// Stores the result in context rather than returning it directly.
     async fn execute_with_interceptors_impl(
-        context: &mut Context,
-        interceptors: &[Arc<dyn Interceptor>],
+        context: &mut RpcContext,
+        interceptors: &[Arc<dyn Interceptor<RpcContext>>],
         controller: &Arc<Box<dyn RpcControllerTrait>>,
-        pipes: &[Arc<dyn Pipe>],
-        error_handlers: &[Arc<dyn ErrorHandler>],
+        pipes: &[Arc<dyn Pipe<RpcContext>>],
+        error_handlers: &[RpcErrorHandlerArc],
     ) {
         if interceptors.is_empty() {
             Self::execute_handler(context, controller, pipes).await;
             if !error_handlers.is_empty() {
-                if let Some(Err(e)) = context
-                    .switch_to_rpc()
-                    .and_then(|rpc| rpc.response().cloned())
-                {
+                let needs_recovery = matches!(context.response(), Some(Err(_)));
+                if needs_recovery {
+                    let Some(Err(e)) = context.take_response() else {
+                        return;
+                    };
                     let error_msg = e.to_string();
                     for handler in error_handlers.iter().rev() {
                         let error: Box<dyn std::error::Error + Send> = Box::new(
                             std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone()),
                         );
-                        if let Some(crate::traits_helpers::ErrorResponse::Rpc(data)) =
-                            handler.handle_error(error, context).await
-                        {
-                            context
-                                .switch_to_rpc_mut()
-                                .expect("Expected RPC context")
-                                .set_response(Ok(Some(data)));
+                        if let Some(data) = handler.handle_error(error, context).await {
+                            context.set_response(Ok(Some(data)));
                             return;
                         }
                     }
+                    // No handler claimed it — restore the original error.
+                    context.set_response(Err(RpcError::Internal(error_msg)));
                 }
             }
             return;
@@ -258,35 +244,19 @@ impl RpcControllerWrapper {
     }
 
     async fn execute_handler(
-        context: &mut Context,
+        context: &mut RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
-        pipes: &[Arc<dyn Pipe>],
+        pipes: &[Arc<dyn Pipe<RpcContext>>],
     ) {
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
-                context
-                    .switch_to_rpc_mut()
-                    .expect("Expected RPC context")
-                    .set_response(Err(RpcError::Internal("Request aborted by pipe".into())));
+                context.set_response(Err(RpcError::Internal("Request aborted by pipe".into())));
                 return;
             }
         }
 
-        let Some(rpc) = context.switch_to_rpc() else {
-            context
-                .switch_to_rpc_mut()
-                .expect("Expected RPC context")
-                .set_response(Err(RpcError::Internal("Expected RPC context".into())));
-            return;
-        };
-        let (data, call_context) = (rpc.data().clone(), rpc.call_context().clone());
-
-        let result = controller.handle_message(data, call_context).await;
-
-        context
-            .switch_to_rpc_mut()
-            .expect("Expected RPC context")
-            .set_response(result);
+        let result = controller.handle_message(context).await;
+        context.set_response(result);
     }
 }

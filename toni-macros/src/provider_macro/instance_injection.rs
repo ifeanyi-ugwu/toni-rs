@@ -22,17 +22,134 @@ use crate::{
     utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
 };
 
-/// Detected enhancer traits that a struct implements
+/// Detected enhancer traits that a struct implements.
+///
+/// Multiple flags may be set on the same struct (e.g. a guard with separate
+/// impl blocks for `HttpContext` and `RpcContext`, or a universal blanket
+/// impl marked `#[guard(http, rpc, ws)]`).
 #[derive(Debug, Clone, Default)]
 pub struct EnhancerTraits {
-    pub is_guard: bool,
-    pub is_interceptor: bool,
-    pub is_pipe: bool,
     pub is_middleware: bool,
-    pub is_error_handler: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
+
+    pub is_http_guard: bool,
+    pub is_http_interceptor: bool,
+    pub is_http_pipe: bool,
+    pub is_http_error_handler: bool,
+
+    pub is_rpc_guard: bool,
+    pub is_rpc_interceptor: bool,
+    pub is_rpc_pipe: bool,
+    pub is_rpc_error_handler: bool,
+
+    pub is_ws_guard: bool,
+    pub is_ws_interceptor: bool,
+    pub is_ws_pipe: bool,
+    pub is_ws_error_handler: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TransportFlags {
+    http: bool,
+    rpc: bool,
+    ws: bool,
+    /// User declared a transport via a marker arg or typed impl head.
+    /// When false and no transport matched, the resolver falls back to
+    /// "universal" (all three transports) so a blanket impl works.
+    explicit: bool,
+}
+
+impl TransportFlags {
+    fn any(&self) -> bool {
+        self.http || self.rpc || self.ws
+    }
+
+    fn merge(&mut self, other: TransportFlags) {
+        self.http |= other.http;
+        self.rpc |= other.rpc;
+        self.ws |= other.ws;
+        self.explicit |= other.explicit;
+    }
+}
+
+/// Parse `#[guard(http, rpc, ws)]` style transport args from a marker attribute.
+fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
+    let mut flags = TransportFlags::default();
+    if matches!(attr.meta, syn::Meta::Path(_)) {
+        return flags;
+    }
+    let parsed = attr.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+    );
+    let Ok(idents) = parsed else {
+        return flags;
+    };
+    for ident in idents {
+        flags.explicit = true;
+        match ident.to_string().as_str() {
+            "http" => flags.http = true,
+            "rpc" => flags.rpc = true,
+            "ws" | "websocket" => flags.ws = true,
+            "universal" | "all" => {
+                flags.http = true;
+                flags.rpc = true;
+                flags.ws = true;
+            }
+            _ => {}
+        }
+    }
+    flags
+}
+
+/// Inspect a typed enhancer impl head (`Guard<...>` etc.) to decide which
+/// transport(s) it serves. The first generic argument is the context type.
+fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
+    let mut flags = TransportFlags::default();
+    let Some((_, path, _)) = &impl_block.trait_ else {
+        return flags;
+    };
+    let Some(last) = path.segments.last() else {
+        return flags;
+    };
+
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        // Bare `Guard` — defaults to `Context`. Legacy.
+        return flags;
+    };
+    let Some(syn::GenericArgument::Type(ctx_ty)) = args.args.first() else {
+        return flags;
+    };
+    let syn::Type::Path(type_path) = ctx_ty else {
+        return flags;
+    };
+    let Some(last_seg) = type_path.path.segments.last() else {
+        return flags;
+    };
+
+    flags.explicit = true;
+    match last_seg.ident.to_string().as_str() {
+        "HttpContext" => flags.http = true,
+        "RpcContext" => flags.rpc = true,
+        "WsContext" => flags.ws = true,
+        // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
+        _ if impl_block
+            .generics
+            .params
+            .iter()
+            .any(|p| matches!(p, syn::GenericParam::Type(t) if t.ident == last_seg.ident)) =>
+        {
+            flags.http = true;
+            flags.rpc = true;
+            flags.ws = true;
+        }
+        // Unknown concrete type — leave flags empty so the resolver doesn't
+        // route it; it will fall back to universal if no other signal arrives.
+        _ => {}
+    }
+
+    flags
 }
 
 /// Detect which enhancer traits a struct implements.
@@ -45,25 +162,67 @@ fn detect_enhancer_traits(
 ) -> EnhancerTraits {
     let mut traits = EnhancerTraits::default();
 
-    let markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
-    traits.is_guard = markers.is_guard;
-    traits.is_interceptor = markers.is_interceptor;
-    traits.is_middleware = markers.is_middleware;
-    traits.is_pipe = markers.is_pipe;
-    traits.is_error_handler = markers.is_error_handler;
+    let struct_markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
+    traits.is_middleware = struct_markers.is_middleware;
 
-    for attr in &impl_block.attrs {
-        if let Some(ident) = attr.path().get_ident() {
+    // (transport_flags, signal_seen) — `signal_seen` gates whether the resolver
+    // fires anything at all. Without a signal (no marker, no trait header match),
+    // an unrelated struct (gateway, plain service) must not be cast as Guard.
+    let mut guard = (TransportFlags::default(), false);
+    let mut interceptor = (TransportFlags::default(), false);
+    let mut pipe = (TransportFlags::default(), false);
+    let mut error_handler = (TransportFlags::default(), false);
+
+    let typed_impl_flags = detect_typed_impl_transport(impl_block);
+
+    let merge_marker = |slot: &mut (TransportFlags, bool), attr: &syn::Attribute| {
+        let mut f = parse_marker_transport_args(attr);
+        if !f.explicit {
+            f.merge(typed_impl_flags);
+        }
+        slot.0.merge(f);
+        slot.1 = true;
+    };
+
+    let scan_attrs = |attrs: &[syn::Attribute],
+                      guard: &mut (TransportFlags, bool),
+                      interceptor: &mut (TransportFlags, bool),
+                      pipe: &mut (TransportFlags, bool),
+                      error_handler: &mut (TransportFlags, bool),
+                      traits: &mut EnhancerTraits| {
+        for attr in attrs {
+            let Some(ident) = attr.path().get_ident() else {
+                continue;
+            };
             match ident.to_string().as_str() {
-                "guard" => traits.is_guard = true,
-                "interceptor" => traits.is_interceptor = true,
+                "guard" => merge_marker(guard, attr),
+                "interceptor" => merge_marker(interceptor, attr),
+                "pipe" => merge_marker(pipe, attr),
+                "error_handler" => merge_marker(error_handler, attr),
                 "middleware" => traits.is_middleware = true,
-                "pipe" => traits.is_pipe = true,
-                "error_handler" => traits.is_error_handler = true,
                 _ => {}
             }
         }
+    };
+
+    if let Some(s) = struct_def {
+        scan_attrs(
+            &s.attrs,
+            &mut guard,
+            &mut interceptor,
+            &mut pipe,
+            &mut error_handler,
+            &mut traits,
+        );
     }
+    scan_attrs(
+        &impl_block.attrs,
+        &mut guard,
+        &mut interceptor,
+        &mut pipe,
+        &mut error_handler,
+        &mut traits,
+    );
 
     if let Some((_, path, _)) = &impl_block.trait_ {
         let trait_name = path
@@ -73,14 +232,60 @@ fn detect_enhancer_traits(
             .unwrap_or_default();
 
         match trait_name.as_str() {
-            "Guard" => traits.is_guard = true,
-            "Interceptor" => traits.is_interceptor = true,
-            "Pipe" => traits.is_pipe = true,
+            "Guard" => {
+                guard.0.merge(typed_impl_flags);
+                guard.1 = true;
+            }
+            "Interceptor" => {
+                interceptor.0.merge(typed_impl_flags);
+                interceptor.1 = true;
+            }
+            "Pipe" => {
+                pipe.0.merge(typed_impl_flags);
+                pipe.1 = true;
+            }
+            "ErrorHandler" => {
+                error_handler.0.merge(typed_impl_flags);
+                error_handler.1 = true;
+            }
             "Middleware" => traits.is_middleware = true,
-            "ErrorHandler" => traits.is_error_handler = true,
             _ => {}
         }
     }
+
+    // No transport signal at all (bare `#[guard]`, no typed impl head) → assume
+    // a universal blanket impl and route to all three transports.
+    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool) {
+        if !slot.1 {
+            return (false, false, false);
+        }
+        let f = slot.0;
+        if f.any() {
+            (f.http, f.rpc, f.ws)
+        } else {
+            (true, true, true)
+        }
+    };
+
+    let (g_h, g_r, g_w) = resolve(guard);
+    traits.is_http_guard = g_h;
+    traits.is_rpc_guard = g_r;
+    traits.is_ws_guard = g_w;
+
+    let (i_h, i_r, i_w) = resolve(interceptor);
+    traits.is_http_interceptor = i_h;
+    traits.is_rpc_interceptor = i_r;
+    traits.is_ws_interceptor = i_w;
+
+    let (p_h, p_r, p_w) = resolve(pipe);
+    traits.is_http_pipe = p_h;
+    traits.is_rpc_pipe = p_r;
+    traits.is_ws_pipe = p_w;
+
+    let (e_h, e_r, e_w) = resolve(error_handler);
+    traits.is_http_error_handler = e_h;
+    traits.is_rpc_error_handler = e_r;
+    traits.is_ws_error_handler = e_w;
 
     traits
 }
@@ -261,33 +466,6 @@ fn generate_provider_wrapper(
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     let mut pushes = Vec::new();
 
-    if traits.is_guard {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
-                ::toni::traits_helpers::GuardEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard>
-                )
-            ));
-        });
-    }
-    if traits.is_interceptor {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
-                ::toni::traits_helpers::InterceptorEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>
-                )
-            ));
-        });
-    }
-    if traits.is_pipe {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
-                ::toni::traits_helpers::PipeEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>
-                )
-            ));
-        });
-    }
     if traits.is_middleware {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Middleware(
@@ -295,10 +473,108 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
             ));
         });
     }
-    if traits.is_error_handler {
+
+    if traits.is_http_guard {
         pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::ErrorHandler(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpGuard(
+                ::toni::traits_helpers::HttpGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpInterceptor(
+                ::toni::traits_helpers::HttpInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpPipe(
+                ::toni::traits_helpers::HttpPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_http_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::HttpErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse>>
+            ));
+        });
+    }
+
+    if traits.is_rpc_guard {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcGuard(
+                ::toni::traits_helpers::RpcGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcInterceptor(
+                ::toni::traits_helpers::RpcInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcPipe(
+                ::toni::traits_helpers::RpcPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::RpcContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_rpc_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::RpcContext, ::toni::rpc::RpcData>>
+            ));
+        });
+    }
+
+    if traits.is_ws_guard {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsGuard(
+                ::toni::traits_helpers::WsGuardEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_interceptor {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsInterceptor(
+                ::toni::traits_helpers::WsInterceptorEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_pipe {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsPipe(
+                ::toni::traits_helpers::WsPipeEntry::Ready(
+                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::WsContext>>
+                )
+            ));
+        });
+    }
+    if traits.is_ws_error_handler {
+        pushes.push(quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::WsErrorHandler(
+                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage>>
             ));
         });
     }
@@ -1345,7 +1621,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
                         parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
                         cache: &__request_cache,
                     })
@@ -1387,7 +1663,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
                         parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
                         cache: &__request_cache,
                     })
@@ -1420,11 +1696,17 @@ fn generate_dyn_factories(
     dependencies: &DependencyInfo,
     enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
-    let needs_guard = enhancer_traits.is_guard;
-    let needs_interceptor = enhancer_traits.is_interceptor;
-    let needs_pipe = enhancer_traits.is_pipe;
+    let any_factory = enhancer_traits.is_http_guard
+        || enhancer_traits.is_http_interceptor
+        || enhancer_traits.is_http_pipe
+        || enhancer_traits.is_rpc_guard
+        || enhancer_traits.is_rpc_interceptor
+        || enhancer_traits.is_rpc_pipe
+        || enhancer_traits.is_ws_guard
+        || enhancer_traits.is_ws_interceptor
+        || enhancer_traits.is_ws_pipe;
 
-    if !needs_guard && !needs_interceptor && !needs_pipe {
+    if !any_factory {
         return (quote! {}, quote! {});
     }
 
@@ -1473,9 +1755,13 @@ fn generate_dyn_factories(
     let mut struct_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
-    if needs_guard {
+    let mut emit = |kind_name: &str,
+                    trait_path: TokenStream,
+                    factory_trait_path: TokenStream,
+                    role_variant: TokenStream,
+                    entry_variant: TokenStream| {
         let factory_struct_name = Ident::new(
-            &format!("__Toni{}GuardDynFactory", struct_name),
+            &format!("__Toni{}{}DynFactory", struct_name, kind_name),
             struct_name.span(),
         );
         struct_defs.push(quote! {
@@ -1484,7 +1770,7 @@ fn generate_dyn_factories(
                 has_request_deps: bool,
             }
 
-            impl ::toni::traits_helpers::DynGuardFactory for #factory_struct_name {
+            impl #factory_trait_path for #factory_struct_name {
                 fn requires_http_parts(&self) -> bool {
                     self.has_request_deps
                 }
@@ -1493,21 +1779,21 @@ fn generate_dyn_factories(
                     &'a self,
                     request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
                 ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                    Output = ::std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {
                     let all_deps = self.all_deps.clone();
                     ::std::boxed::Box::pin(async move {
                         let __request_cache = ::toni::traits_helpers::RequestCache::new();
                         #(#field_resolutions)*
                         let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard + Send + Sync>
+                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn #trait_path + Send + Sync>
                     })
                 }
             }
         });
         role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
-                ::toni::traits_helpers::GuardEntry::Factory(
+            __roles.push(#role_variant(
+                #entry_variant(
                     ::std::sync::Arc::new(#factory_struct_name {
                         all_deps: __all_deps.clone(),
                         has_request_deps: __has_request_deps,
@@ -1515,94 +1801,90 @@ fn generate_dyn_factories(
                 )
             ));
         });
+    };
+
+    if enhancer_traits.is_http_guard {
+        emit(
+            "HttpGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpGuard },
+            quote! { ::toni::traits_helpers::HttpGuardEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_http_interceptor {
+        emit(
+            "HttpInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpInterceptor },
+            quote! { ::toni::traits_helpers::HttpInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_http_pipe {
+        emit(
+            "HttpPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::HttpContext> },
+            quote! { ::toni::traits_helpers::DynHttpPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::HttpPipe },
+            quote! { ::toni::traits_helpers::HttpPipeEntry::Factory },
+        );
     }
 
-    if needs_interceptor {
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}InterceptorDynFactory", struct_name),
-            struct_name.span(),
+    if enhancer_traits.is_rpc_guard {
+        emit(
+            "RpcGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcGuard },
+            quote! { ::toni::traits_helpers::RpcGuardEntry::Factory },
         );
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
-
-            impl ::toni::traits_helpers::DynInterceptorFactory for #factory_struct_name {
-                fn requires_http_parts(&self) -> bool {
-                    self.has_request_deps
-                }
-
-                fn create<'a>(
-                    &'a self,
-                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
-                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
-                > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
-                    ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor + Send + Sync>
-                    })
-                }
-            }
-        });
-        role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
-                ::toni::traits_helpers::InterceptorEntry::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
-        });
+    }
+    if enhancer_traits.is_rpc_interceptor {
+        emit(
+            "RpcInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcInterceptor },
+            quote! { ::toni::traits_helpers::RpcInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_rpc_pipe {
+        emit(
+            "RpcPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::RpcContext> },
+            quote! { ::toni::traits_helpers::DynRpcPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::RpcPipe },
+            quote! { ::toni::traits_helpers::RpcPipeEntry::Factory },
+        );
     }
 
-    if needs_pipe {
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}PipeDynFactory", struct_name),
-            struct_name.span(),
+    if enhancer_traits.is_ws_guard {
+        emit(
+            "WsGuard",
+            quote! { ::toni::traits_helpers::Guard<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsGuardFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsGuard },
+            quote! { ::toni::traits_helpers::WsGuardEntry::Factory },
         );
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
-
-            impl ::toni::traits_helpers::DynPipeFactory for #factory_struct_name {
-                fn requires_http_parts(&self) -> bool {
-                    self.has_request_deps
-                }
-
-                fn create<'a>(
-                    &'a self,
-                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
-                ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
-                    Output = ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
-                > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
-                    ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe + Send + Sync>
-                    })
-                }
-            }
-        });
-        role_push_stmts.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
-                ::toni::traits_helpers::PipeEntry::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
-        });
+    }
+    if enhancer_traits.is_ws_interceptor {
+        emit(
+            "WsInterceptor",
+            quote! { ::toni::traits_helpers::Interceptor<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsInterceptorFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsInterceptor },
+            quote! { ::toni::traits_helpers::WsInterceptorEntry::Factory },
+        );
+    }
+    if enhancer_traits.is_ws_pipe {
+        emit(
+            "WsPipe",
+            quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext> },
+            quote! { ::toni::traits_helpers::DynWsPipeFactory },
+            quote! { ::toni::traits_helpers::ProviderRole::WsPipe },
+            quote! { ::toni::traits_helpers::WsPipeEntry::Factory },
+        );
     }
 
     (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::rpc::{RpcContext, RpcData, RpcError};
+use crate::rpc::{RpcCallInfo, RpcData, RpcError};
 
 /// Callbacks the framework supplies to an RPC adapter.
 ///
@@ -17,7 +17,7 @@ pub struct RpcMessageCallbacks {
     on_message: Arc<
         dyn Fn(
                 RpcData,
-                RpcContext,
+                RpcCallInfo,
             )
                 -> Pin<Box<dyn Future<Output = Result<Option<RpcData>, RpcError>> + Send>>
             + Send
@@ -29,7 +29,7 @@ impl RpcMessageCallbacks {
     pub(crate) fn new(
         on_message: impl Fn(
             RpcData,
-            RpcContext,
+            RpcCallInfo,
         )
             -> Pin<Box<dyn Future<Output = Result<Option<RpcData>, RpcError>> + Send>>
         + Send
@@ -49,7 +49,7 @@ impl RpcMessageCallbacks {
     pub async fn message(
         &self,
         data: RpcData,
-        context: RpcContext,
+        context: RpcCallInfo,
     ) -> Result<Option<RpcData>, RpcError> {
         (self.on_message)(data, context).await
     }

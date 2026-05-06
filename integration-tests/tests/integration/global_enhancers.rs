@@ -15,7 +15,7 @@ use toni::{
 };
 use toni_axum::AxumAdapter;
 
-use toni::injector::Context;
+use toni::context::HttpContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, Pipe};
 
 // ============================================================================
@@ -68,8 +68,8 @@ impl GlobalGuard {
 }
 
 #[async_trait]
-impl Guard for GlobalGuard {
-    async fn can_activate(&self, _context: &Context) -> bool {
+impl Guard<HttpContext> for GlobalGuard {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:global");
         true
     }
@@ -84,8 +84,8 @@ impl ControllerGuard {
 }
 
 #[async_trait]
-impl Guard for ControllerGuard {
-    async fn can_activate(&self, _context: &Context) -> bool {
+impl Guard<HttpContext> for ControllerGuard {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:controller");
         true
     }
@@ -100,8 +100,8 @@ impl MethodGuard {
 }
 
 #[async_trait]
-impl Guard for MethodGuard {
-    async fn can_activate(&self, _context: &Context) -> bool {
+impl Guard<HttpContext> for MethodGuard {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:method");
         true
     }
@@ -120,8 +120,12 @@ impl GlobalInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for GlobalInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for GlobalInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         get_tracker().track("interceptor:global:before");
         next.run(context).await;
         get_tracker().track("interceptor:global:after");
@@ -137,8 +141,12 @@ impl ControllerInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for ControllerInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for ControllerInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         get_tracker().track("interceptor:controller:before");
         next.run(context).await;
         get_tracker().track("interceptor:controller:after");
@@ -154,8 +162,12 @@ impl MethodInterceptor {
 }
 
 #[async_trait]
-impl Interceptor for MethodInterceptor {
-    async fn intercept(&self, context: &mut Context, next: Box<dyn InterceptorNext>) {
+impl Interceptor<HttpContext> for MethodInterceptor {
+    async fn intercept(
+        &self,
+        context: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
         get_tracker().track("interceptor:method:before");
         next.run(context).await;
         get_tracker().track("interceptor:method:after");
@@ -174,8 +186,8 @@ impl GlobalPipe {
     }
 }
 
-impl Pipe for GlobalPipe {
-    fn process(&self, _context: &mut Context) {
+impl Pipe<HttpContext> for GlobalPipe {
+    fn process(&self, _context: &mut HttpContext) {
         get_tracker().track("pipe:global");
     }
 }
@@ -188,8 +200,8 @@ impl ControllerPipe {
     }
 }
 
-impl Pipe for ControllerPipe {
-    fn process(&self, _context: &mut Context) {
+impl Pipe<HttpContext> for ControllerPipe {
+    fn process(&self, _context: &mut HttpContext) {
         get_tracker().track("pipe:controller");
     }
 }
@@ -202,8 +214,8 @@ impl MethodPipe {
     }
 }
 
-impl Pipe for MethodPipe {
-    fn process(&self, _context: &mut Context) {
+impl Pipe<HttpContext> for MethodPipe {
+    fn process(&self, _context: &mut HttpContext) {
         get_tracker().track("pipe:method");
     }
 }
@@ -271,9 +283,9 @@ async fn test_three_level_enhancer_hierarchy() {
         // Create factory and register GLOBAL enhancers
         let mut factory = ToniFactory::new();
         factory
-            .use_global_guards(Arc::new(GlobalGuard::new()))
-            .use_global_interceptors(Arc::new(GlobalInterceptor::new()))
-            .use_global_pipes(Arc::new(GlobalPipe::new()));
+            .use_global_http_guards(Arc::new(GlobalGuard::new()))
+            .use_global_http_interceptors(Arc::new(GlobalInterceptor::new()))
+            .use_global_http_pipes(Arc::new(GlobalPipe::new()));
 
         let mut app = factory.create_with(TestModule::module_definition()).await;
         app.use_http_adapter(AxumAdapter::new(), port, "127.0.0.1")

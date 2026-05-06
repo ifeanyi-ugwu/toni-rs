@@ -1,136 +1,224 @@
-//! Writing guards and interceptors that work across HTTP, WebSocket, and RPC
+//! A guard and an interceptor that each run on HTTP, RPC, and WebSocket.
 //!
-//! toni routes all three protocols through a unified Context. Guards and
-//! interceptors receive the same type regardless of protocol — they switch
-//! on `context.protocol_type()` to extract the protocol-specific data they need.
+//! `Guard<C>` and `Interceptor<C>` take the per-request context type as a
+//! parameter, so a struct can implement them three times — once per
+//! transport — with reading code shaped for that transport's data source.
+//! The DI marker `#[guard(http, rpc, ws)]` registers the same struct for all
+//! three; a guard implemented only for `Guard<HttpContext>` cannot be
+//! attached to a gRPC method because the type system rejects the cast.
 //!
 //! Run with:  cargo run --example multi_protocol_context
+//!
+//! HTTP — `Authorization` header:
+//!   curl -H 'Authorization: Bearer valid-secret' http://127.0.0.1:3000/api/orders
+//!   curl http://127.0.0.1:3000/api/orders                  → 403
+//!
+//! RPC — `auth` field in the JSON payload (the TCP adapter doesn't surface
+//! per-call metadata; reading from the payload works on any adapter):
+//!   echo '{"pattern":"order.create","data":{"auth":"valid-secret","item":"book","qty":2},"id":"r1"}' | nc 127.0.0.1 4000
+//!   echo '{"pattern":"order.create","data":{"item":"book","qty":2},"id":"r2"}' | nc 127.0.0.1 4000
+//!     → second request is rejected by the guard.
+//!
+//! WebSocket — `token` query param on the handshake URL:
+//!   websocat 'ws://127.0.0.1:3000/orders-ws?token=valid-secret'
+//!     → send {"event":"echo","data":"hi"}; server replies with {"echo":"hi"}.
+//!   websocat 'ws://127.0.0.1:3000/orders-ws'
+//!     → handshake guard rejects, server closes the connection.
 
-use std::collections::HashMap;
-use toni::http_helpers::RequestBody;
-use toni::websocket::WsHandshake;
-use toni::{Context, HttpRequest, ProtocolType, RpcContext, RpcData, WsClient, WsMessage};
+use serde_json::json;
+use toni::async_trait;
+use toni::context::{HttpContext, RpcContext, WsContext};
+use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
+use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
+use toni::*;
+use toni_macros::{injectable, module, rpc_controller, websocket_gateway};
 
-// ---- universal auth guard ----------------------------------------------------
-//
-// HTTP:      Bearer token in Authorization header
-// WebSocket: token query param in the upgrade handshake
-// RPC:       authorization metadata key
+// ---- one guard, three transport-shaped impls --------------------------------
 
-struct UniversalAuthGuard;
+#[injectable(pub struct UniversalAuthGuard {})]
+#[guard(http, rpc, ws)]
+impl UniversalAuthGuard {}
 
-impl UniversalAuthGuard {
-    fn can_activate(&self, context: &Context) -> bool {
-        let token = match context.protocol_type() {
-            ProtocolType::Http => {
-                let request = context.switch_to_http().expect("HTTP context").request();
-                request
-                    .headers
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|h| h.strip_prefix("Bearer "))
-            }
-            ProtocolType::WebSocket => {
-                let ws = context.switch_to_ws().expect("WebSocket context");
-                let client = ws.client();
-                client.handshake.query.get("token").map(|s| s.as_str())
-            }
-            ProtocolType::Rpc => {
-                let rpc_ctx = context.switch_to_rpc().expect("RPC context");
-                let rpc_ctx = rpc_ctx.call_context();
-                rpc_ctx.get_metadata("authorization")
-            }
-        };
-
-        token.map_or(false, |t| t == "valid-secret")
+#[async_trait]
+impl Guard<HttpContext> for UniversalAuthGuard {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+        ctx.request()
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map_or(false, |t| t == "valid-secret")
     }
 }
 
-// ---- universal logging interceptor -------------------------------------------
-
-struct LoggingInterceptor;
-
-impl LoggingInterceptor {
-    fn log_request(&self, context: &Context) {
-        match context.protocol_type() {
-            ProtocolType::Http => {
-                let req = context.switch_to_http().unwrap().request();
-                println!(
-                    "[HTTP]      {} {} (agent: {:?})",
-                    req.method,
-                    req.uri,
-                    req.headers.get("user-agent").and_then(|v| v.to_str().ok())
-                );
-            }
-            ProtocolType::WebSocket => {
-                let ws = context.switch_to_ws().unwrap();
-                println!(
-                    "[WebSocket] event='{}' client={} message={:?}",
-                    ws.event(),
-                    ws.client().id,
-                    ws.message()
-                );
-            }
-            ProtocolType::Rpc => {
-                let rpc = context.switch_to_rpc().unwrap();
-                println!(
-                    "[RPC]       pattern='{}' data={:?}",
-                    rpc.call_context().pattern,
-                    rpc.data()
-                );
-            }
-        }
+#[async_trait]
+impl Guard<RpcContext> for UniversalAuthGuard {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+        ctx.data()
+            .as_json()
+            .and_then(|v| v.get("auth").and_then(|a| a.as_str()))
+            .map_or(false, |t| t == "valid-secret")
     }
 }
 
-// ---- main --------------------------------------------------------------------
+#[async_trait]
+impl Guard<WsContext> for UniversalAuthGuard {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
+        ctx.client()
+            .handshake
+            .query
+            .get("token")
+            .map_or(false, |t| t == "valid-secret")
+    }
+}
 
-fn main() {
-    let guard = UniversalAuthGuard;
-    let logger = LoggingInterceptor;
+// ---- one logging interceptor, three transport-shaped impls ------------------
 
-    // HTTP — valid token in Authorization header
-    println!("--- HTTP ---");
-    let (http_parts, ()) = HttpRequest::builder()
-        .method("GET")
-        .uri("/api/orders")
-        .header("authorization", "Bearer valid-secret")
-        .header("user-agent", "example/1.0")
-        .body(())
-        .unwrap()
-        .into_parts();
-    let http_ctx = Context::from_request(HttpRequest::from_parts(http_parts, RequestBody::empty()));
-    logger.log_request(&http_ctx);
-    println!("auth: {}\n", guard.can_activate(&http_ctx));
+#[injectable(pub struct LoggingInterceptor {})]
+#[interceptor(http, rpc, ws)]
+impl LoggingInterceptor {}
 
-    // WebSocket — token in handshake query params
-    println!("--- WebSocket ---");
-    let ws_ctx = Context::from_websocket(
-        WsClient {
-            id: "client-123".to_string(),
-            handshake: WsHandshake {
-                query: HashMap::from([("token".to_string(), "valid-secret".to_string())]),
-                headers: HashMap::new(),
-                remote_addr: Some("127.0.0.1:8080".to_string()),
-            },
-            extensions: Default::default(),
-        },
-        WsMessage::text(r#"{"action":"subscribe","channel":"updates"}"#),
-        "message",
-        None,
-    );
-    logger.log_request(&ws_ctx);
-    println!("auth: {}\n", guard.can_activate(&ws_ctx));
+#[async_trait]
+impl Interceptor<HttpContext> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
+        let req = ctx.request();
+        println!(
+            "[HTTP]      {} {} (agent: {:?})",
+            req.method,
+            req.uri,
+            req.headers.get("user-agent").and_then(|v| v.to_str().ok())
+        );
+        next.run(ctx).await;
+    }
+}
 
-    // RPC — authorization in metadata
-    println!("--- RPC ---");
-    let rpc_ctx = Context::from_rpc(
-        RpcData::json(serde_json::json!({"order_id": 123})),
-        RpcContext::new("order.process")
-            .with_metadata("authorization", "valid-secret")
-            .with_metadata("client-id", "service-456"),
-        None,
-    );
-    logger.log_request(&rpc_ctx);
-    println!("auth: {}", guard.can_activate(&rpc_ctx));
+#[async_trait]
+impl Interceptor<RpcContext> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut RpcContext,
+        next: Box<dyn InterceptorNext<RpcContext>>,
+    ) {
+        println!(
+            "[RPC]       pattern='{}' data={:?}",
+            ctx.pattern(),
+            ctx.data()
+        );
+        next.run(ctx).await;
+    }
+}
+
+#[async_trait]
+impl Interceptor<WsContext> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext>>,
+    ) {
+        println!(
+            "[WebSocket] event='{}' client={} message={:?}",
+            ctx.event(),
+            ctx.client().id,
+            ctx.message()
+        );
+        next.run(ctx).await;
+    }
+}
+
+// ---- HTTP controller --------------------------------------------------------
+
+#[controller("/api", pub struct OrdersHttp {})]
+#[use_guards(UniversalAuthGuard)]
+#[use_interceptors(LoggingInterceptor)]
+impl OrdersHttp {
+    #[get("/orders")]
+    fn list(&self) -> Body {
+        Body::json(json!({ "orders": [{ "id": 1001, "item": "book" }] }))
+    }
+}
+
+// ---- RPC controller ---------------------------------------------------------
+
+#[rpc_controller(pub struct OrdersRpc {})]
+#[use_guards(UniversalAuthGuard)]
+#[use_interceptors(LoggingInterceptor)]
+impl OrdersRpc {
+    #[message_pattern("order.create")]
+    async fn create(
+        &self,
+        data: RpcData,
+        _ctx: &context::RpcContext,
+    ) -> Result<RpcData, RpcError> {
+        let payload = data
+            .as_json()
+            .ok_or_else(|| RpcError::Internal("expected JSON payload".into()))?;
+        let item = payload["item"].as_str().unwrap_or("unknown");
+        let qty = payload["qty"].as_u64().unwrap_or(1);
+        Ok(RpcData::json(
+            json!({ "id": 1001, "item": item, "qty": qty, "status": "created" }),
+        ))
+    }
+}
+
+// ---- WebSocket gateway ------------------------------------------------------
+
+#[websocket_gateway("/orders-ws", pub struct OrdersWs {})]
+#[use_guards(UniversalAuthGuard)]
+#[use_interceptors(LoggingInterceptor)]
+impl OrdersWs {
+    #[subscribe_message("echo")]
+    async fn echo(
+        &self,
+        _client: WsClient,
+        msg: WsMessage,
+    ) -> WsHandlerResult {
+        let text = msg
+            .as_text()
+            .ok_or_else(|| WsError::InvalidMessage("expected text frame".into()))?;
+        let payload: serde_json::Value =
+            serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+        let data = payload.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        Ok(WsMessage::text(json!({ "echo": data }).to_string()).into())
+    }
+}
+
+// ---- module + bootstrap -----------------------------------------------------
+
+#[module(
+    providers: [
+        UniversalAuthGuard,
+        LoggingInterceptor,
+        OrdersRpc,
+        OrdersWs,
+    ],
+    controllers: [OrdersHttp],
+)]
+impl AppModule {}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    println!("multi-protocol example");
+    println!("  HTTP : http://127.0.0.1:3000/api/orders");
+    println!("  RPC  : 127.0.0.1:4000  (newline-delimited JSON over TCP)");
+    println!("  WS   : ws://127.0.0.1:3000/orders-ws");
+    println!();
+    println!("Token: send `valid-secret` as Bearer (HTTP), `authorization` metadata (RPC),");
+    println!("or `?token=` query param (WS).");
+    println!();
+
+    let mut app = ToniFactory::new()
+        .create_with(AppModule::module_definition())
+        .await;
+
+    app.use_http_adapter(toni_axum::AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
+    app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 4000))
+        .unwrap();
+
+    app.start().await?;
+    Ok(())
 }

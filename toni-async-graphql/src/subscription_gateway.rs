@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toni::traits_helpers::{Provider, ProviderContext};
 use toni::{
-    Context, DisconnectReason, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput,
+    DisconnectReason, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput,
+    context::WsContext,
     WsMessage,
 };
 
@@ -126,7 +127,7 @@ where
 
     // Reject connections that do not negotiate the graphql-transport-ws sub-protocol.
     // Clients using the graphql-ws library set this automatically; raw clients must set it explicitly.
-    async fn on_connect(&self, client: &WsClient, _context: &Context) -> Result<(), WsError> {
+    async fn on_connect(&self, client: &WsClient, _context: &WsContext) -> Result<(), WsError> {
         let protocol = client
             .handshake
             .headers
