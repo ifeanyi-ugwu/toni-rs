@@ -401,9 +401,10 @@ impl ToniInstanceLoader {
     ) -> Result<EnhancerMetadata> {
         let registry = self.container.borrow();
         let registry = registry.get_role_registry();
+        let declared = controller.enhancers();
 
         let mut guards: Vec<HttpGuardEntry> = Vec::new();
-        for token in controller.get_guard_tokens() {
+        for token in declared.guard_tokens {
             let guard = registry.http_guards.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
                     "HTTP Guard '{}' not found in registry. \
@@ -414,10 +415,10 @@ impl ToniInstanceLoader {
             })?;
             guards.push(guard);
         }
-        guards.extend(controller.get_guards().into_iter().map(HttpGuardEntry::Ready));
+        guards.extend(declared.guards.into_iter().map(HttpGuardEntry::Ready));
 
         let mut interceptors: Vec<HttpInterceptorEntry> = Vec::new();
-        for token in controller.get_interceptor_tokens() {
+        for token in declared.interceptor_tokens {
             let interceptor = registry
                 .http_interceptors
                 .get(&token)
@@ -433,14 +434,14 @@ impl ToniInstanceLoader {
             interceptors.push(interceptor);
         }
         interceptors.extend(
-            controller
-                .get_interceptors()
+            declared
+                .interceptors
                 .into_iter()
                 .map(HttpInterceptorEntry::Ready),
         );
 
         let mut pipes: Vec<HttpPipeEntry> = Vec::new();
-        for token in controller.get_pipe_tokens() {
+        for token in declared.pipe_tokens {
             let pipe = registry.http_pipes.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
                     "HTTP Pipe '{}' not found in registry. \
@@ -451,10 +452,10 @@ impl ToniInstanceLoader {
             })?;
             pipes.push(pipe);
         }
-        pipes.extend(controller.get_pipes().into_iter().map(HttpPipeEntry::Ready));
+        pipes.extend(declared.pipes.into_iter().map(HttpPipeEntry::Ready));
 
         let mut error_handlers = Vec::new();
-        for token in controller.get_error_handler_tokens() {
+        for token in declared.error_handler_tokens {
             let eh = registry
                 .http_error_handlers
                 .get(&token)
@@ -469,7 +470,7 @@ impl ToniInstanceLoader {
                 })?;
             error_handlers.push(eh);
         }
-        error_handlers.extend(controller.get_error_handlers());
+        error_handlers.extend(declared.error_handlers);
 
         Ok(EnhancerMetadata {
             guards,

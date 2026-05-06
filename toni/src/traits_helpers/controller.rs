@@ -11,6 +11,24 @@ use super::{
     Guard, HttpErrorHandlerArc, Interceptor, Pipe, provider::Provider, validate::Validatable,
 };
 
+/// Per-route enhancer manifest — both DI-resolved tokens and direct-instantiation arcs.
+///
+/// `*_tokens` come from `#[use_guards(MyGuard)]`-style attributes that resolve via
+/// the DI container; `guards` / `interceptors` / `pipes` / `error_handlers` come
+/// from `#[use_guards(MyGuard{})]`-style attributes that bypass DI and instantiate
+/// the enhancer inline.
+#[derive(Default)]
+pub struct ControllerEnhancers {
+    pub guard_tokens: Vec<String>,
+    pub interceptor_tokens: Vec<String>,
+    pub pipe_tokens: Vec<String>,
+    pub error_handler_tokens: Vec<String>,
+    pub guards: Vec<Arc<dyn Guard<HttpContext>>>,
+    pub interceptors: Vec<Arc<dyn Interceptor<HttpContext>>>,
+    pub pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
+    pub error_handlers: Vec<HttpErrorHandlerArc>,
+}
+
 #[async_trait]
 pub trait Controller: Send + Sync {
     fn get_token(&self) -> String;
@@ -18,37 +36,8 @@ pub trait Controller: Send + Sync {
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 
-    fn get_guard_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_interceptor_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_pipe_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_error_handler_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    /// Direct-instantiation enhancers (e.g. `#[use_guards(MyGuard{})]`) — bypass DI.
-    fn get_guards(&self) -> Vec<Arc<dyn Guard<HttpContext>>> {
-        vec![]
-    }
-
-    fn get_interceptors(&self) -> Vec<Arc<dyn Interceptor<HttpContext>>> {
-        vec![]
-    }
-
-    fn get_pipes(&self) -> Vec<Arc<dyn Pipe<HttpContext>>> {
-        vec![]
-    }
-
-    fn get_error_handlers(&self) -> Vec<HttpErrorHandlerArc> {
-        vec![]
+    fn enhancers(&self) -> ControllerEnhancers {
+        ControllerEnhancers::default()
     }
 
     /// Get route metadata (roles, permissions, custom config)
