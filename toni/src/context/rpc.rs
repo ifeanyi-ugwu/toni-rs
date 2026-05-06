@@ -11,9 +11,6 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// Owns the inbound payload, the call's pattern (subject/topic/method name),
 /// transport metadata (NATS headers, TCP envelope fields, etc.), and the
 /// (eventual) response.
-///
-/// Folds in what was previously the standalone `rpc::RpcContext` so there is
-/// one type in flight per request, not two.
 pub struct RpcContext {
     pub(crate) shared: SharedState,
     pub(crate) pattern: String,
