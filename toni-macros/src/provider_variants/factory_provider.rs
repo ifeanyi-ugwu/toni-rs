@@ -6,19 +6,9 @@ use syn::{
 };
 
 use crate::shared::TokenType;
+use crate::shared::enhancer_emit::{EnhancerKind, ready_role_push};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EnhancerType {
-    HttpGuard,
-    HttpInterceptor,
-    HttpPipe,
-    RpcGuard,
-    RpcInterceptor,
-    RpcPipe,
-    WsGuard,
-    WsInterceptor,
-    WsPipe,
-}
+pub type EnhancerType = EnhancerKind;
 
 pub struct ProviderFactoryInput {
     pub token: TokenType,
@@ -173,75 +163,10 @@ pub(super) fn generate_factory_role_pushes_external(
 }
 
 fn generate_factory_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
-    let mut pushes = Vec::new();
-    for enhancer in enhancers {
-        let push = match enhancer {
-            EnhancerType::HttpGuard => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::HttpGuard(
-                    toni::traits_helpers::HttpGuardEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard<toni::context::HttpContext>>
-                    )
-                ));
-            },
-            EnhancerType::HttpInterceptor => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::HttpInterceptor(
-                    toni::traits_helpers::HttpInterceptorEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor<toni::context::HttpContext>>
-                    )
-                ));
-            },
-            EnhancerType::HttpPipe => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::HttpPipe(
-                    toni::traits_helpers::HttpPipeEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe<toni::context::HttpContext>>
-                    )
-                ));
-            },
-            EnhancerType::RpcGuard => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::RpcGuard(
-                    toni::traits_helpers::RpcGuardEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard<toni::context::RpcContext>>
-                    )
-                ));
-            },
-            EnhancerType::RpcInterceptor => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::RpcInterceptor(
-                    toni::traits_helpers::RpcInterceptorEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor<toni::context::RpcContext>>
-                    )
-                ));
-            },
-            EnhancerType::RpcPipe => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::RpcPipe(
-                    toni::traits_helpers::RpcPipeEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe<toni::context::RpcContext>>
-                    )
-                ));
-            },
-            EnhancerType::WsGuard => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::WsGuard(
-                    toni::traits_helpers::WsGuardEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard<toni::context::WsContext>>
-                    )
-                ));
-            },
-            EnhancerType::WsInterceptor => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::WsInterceptor(
-                    toni::traits_helpers::WsInterceptorEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor<toni::context::WsContext>>
-                    )
-                ));
-            },
-            EnhancerType::WsPipe => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::WsPipe(
-                    toni::traits_helpers::WsPipeEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe<toni::context::WsContext>>
-                    )
-                ));
-            },
-        };
-        pushes.push(push);
-    }
+    let pushes: Vec<_> = enhancers
+        .iter()
+        .map(|kind| ready_role_push(&kind.spec()))
+        .collect();
     quote! { #(#pushes)* }
 }
 
@@ -648,73 +573,17 @@ fn generate_noncaching_factory_structs(
     let mut struct_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
-    for enhancer in enhancers {
-        let (struct_name, trait_path, entry_variant, role_variant, dyn_factory_trait) =
-            match enhancer {
-                EnhancerType::HttpGuard => (
-                    format_ident!("__ToniFactoryHttpGuardDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Guard<toni::context::HttpContext> },
-                    quote! { toni::traits_helpers::HttpGuardEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::HttpGuard },
-                    quote! { toni::traits_helpers::DynHttpGuardFactory },
-                ),
-                EnhancerType::HttpInterceptor => (
-                    format_ident!("__ToniFactoryHttpInterceptorDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Interceptor<toni::context::HttpContext> },
-                    quote! { toni::traits_helpers::HttpInterceptorEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::HttpInterceptor },
-                    quote! { toni::traits_helpers::DynHttpInterceptorFactory },
-                ),
-                EnhancerType::HttpPipe => (
-                    format_ident!("__ToniFactoryHttpPipeDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Pipe<toni::context::HttpContext> },
-                    quote! { toni::traits_helpers::HttpPipeEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::HttpPipe },
-                    quote! { toni::traits_helpers::DynHttpPipeFactory },
-                ),
-                EnhancerType::RpcGuard => (
-                    format_ident!("__ToniFactoryRpcGuardDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Guard<toni::context::RpcContext> },
-                    quote! { toni::traits_helpers::RpcGuardEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::RpcGuard },
-                    quote! { toni::traits_helpers::DynRpcGuardFactory },
-                ),
-                EnhancerType::RpcInterceptor => (
-                    format_ident!("__ToniFactoryRpcInterceptorDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Interceptor<toni::context::RpcContext> },
-                    quote! { toni::traits_helpers::RpcInterceptorEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::RpcInterceptor },
-                    quote! { toni::traits_helpers::DynRpcInterceptorFactory },
-                ),
-                EnhancerType::RpcPipe => (
-                    format_ident!("__ToniFactoryRpcPipeDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Pipe<toni::context::RpcContext> },
-                    quote! { toni::traits_helpers::RpcPipeEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::RpcPipe },
-                    quote! { toni::traits_helpers::DynRpcPipeFactory },
-                ),
-                EnhancerType::WsGuard => (
-                    format_ident!("__ToniFactoryWsGuardDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Guard<toni::context::WsContext> },
-                    quote! { toni::traits_helpers::WsGuardEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::WsGuard },
-                    quote! { toni::traits_helpers::DynWsGuardFactory },
-                ),
-                EnhancerType::WsInterceptor => (
-                    format_ident!("__ToniFactoryWsInterceptorDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Interceptor<toni::context::WsContext> },
-                    quote! { toni::traits_helpers::WsInterceptorEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::WsInterceptor },
-                    quote! { toni::traits_helpers::DynWsInterceptorFactory },
-                ),
-                EnhancerType::WsPipe => (
-                    format_ident!("__ToniFactoryWsPipeDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Pipe<toni::context::WsContext> },
-                    quote! { toni::traits_helpers::WsPipeEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::WsPipe },
-                    quote! { toni::traits_helpers::DynWsPipeFactory },
-                ),
-            };
+    for kind in enhancers {
+        let spec = kind.spec();
+        let struct_name = format_ident!(
+            "__ToniFactory{}DynFactory_{}",
+            spec.factory_suffix,
+            sanitized_name
+        );
+        let trait_path = &spec.trait_path;
+        let entry_path = &spec.entry_path;
+        let role_variant = &spec.role_variant;
+        let dyn_factory_trait = &spec.dyn_factory_trait;
 
         struct_defs.push(quote! {
             struct #struct_name {
@@ -743,7 +612,7 @@ fn generate_noncaching_factory_structs(
 
         role_push_stmts.push(quote! {
             __roles.push(#role_variant(
-                #entry_variant(std::sync::Arc::new(#struct_name { all_deps: __all_deps.clone() }))
+                #entry_path::Factory(std::sync::Arc::new(#struct_name { all_deps: __all_deps.clone() }))
             ));
         });
     }

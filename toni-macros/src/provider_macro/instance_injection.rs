@@ -460,10 +460,44 @@ fn generate_provider_wrapper(
     }
 }
 
+fn enhancer_kind_active(
+    traits: &EnhancerTraits,
+    kind: crate::shared::enhancer_emit::EnhancerKind,
+) -> bool {
+    use crate::shared::enhancer_emit::EnhancerKind;
+    match kind {
+        EnhancerKind::HttpGuard => traits.is_http_guard,
+        EnhancerKind::HttpInterceptor => traits.is_http_interceptor,
+        EnhancerKind::HttpPipe => traits.is_http_pipe,
+        EnhancerKind::RpcGuard => traits.is_rpc_guard,
+        EnhancerKind::RpcInterceptor => traits.is_rpc_interceptor,
+        EnhancerKind::RpcPipe => traits.is_rpc_pipe,
+        EnhancerKind::WsGuard => traits.is_ws_guard,
+        EnhancerKind::WsInterceptor => traits.is_ws_interceptor,
+        EnhancerKind::WsPipe => traits.is_ws_pipe,
+    }
+}
+
+fn error_handler_kind_active(
+    traits: &EnhancerTraits,
+    kind: crate::shared::enhancer_emit::ErrorHandlerKind,
+) -> bool {
+    use crate::shared::enhancer_emit::ErrorHandlerKind;
+    match kind {
+        ErrorHandlerKind::Http => traits.is_http_error_handler,
+        ErrorHandlerKind::Rpc => traits.is_rpc_error_handler,
+        ErrorHandlerKind::Ws => traits.is_ws_error_handler,
+    }
+}
+
 /// Generate role-push statements to embed inside `build()`, before the concrete
 /// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
 /// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
+    use crate::shared::enhancer_emit::{
+        EnhancerKind, ErrorHandlerKind, ready_error_handler_push, ready_role_push,
+    };
+
     let mut pushes = Vec::new();
 
     if traits.is_middleware {
@@ -474,110 +508,17 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
         });
     }
 
-    if traits.is_http_guard {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::HttpGuard(
-                ::toni::traits_helpers::HttpGuardEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>
-                )
-            ));
-        });
+    for kind in EnhancerKind::all() {
+        if enhancer_kind_active(traits, kind) {
+            pushes.push(ready_role_push(&kind.spec()));
+        }
     }
-    if traits.is_http_interceptor {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::HttpInterceptor(
-                ::toni::traits_helpers::HttpInterceptorEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_http_pipe {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::HttpPipe(
-                ::toni::traits_helpers::HttpPipeEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_http_error_handler {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::HttpErrorHandler(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse>>
-            ));
-        });
+    for kind in ErrorHandlerKind::all() {
+        if error_handler_kind_active(traits, kind) {
+            pushes.push(ready_error_handler_push(&kind.spec()));
+        }
     }
 
-    if traits.is_rpc_guard {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::RpcGuard(
-                ::toni::traits_helpers::RpcGuardEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::RpcContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_rpc_interceptor {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::RpcInterceptor(
-                ::toni::traits_helpers::RpcInterceptorEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::RpcContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_rpc_pipe {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::RpcPipe(
-                ::toni::traits_helpers::RpcPipeEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::RpcContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_rpc_error_handler {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::RpcErrorHandler(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::RpcContext, ::toni::rpc::RpcData>>
-            ));
-        });
-    }
-
-    if traits.is_ws_guard {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::WsGuard(
-                ::toni::traits_helpers::WsGuardEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::WsContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_ws_interceptor {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::WsInterceptor(
-                ::toni::traits_helpers::WsInterceptorEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::WsContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_ws_pipe {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::WsPipe(
-                ::toni::traits_helpers::WsPipeEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::WsContext>>
-                )
-            ));
-        });
-    }
-    if traits.is_ws_error_handler {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::WsErrorHandler(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage>>
-            ));
-        });
-    }
     if traits.is_gateway {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Gateway(
@@ -1696,17 +1637,14 @@ fn generate_dyn_factories(
     dependencies: &DependencyInfo,
     enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
-    let any_factory = enhancer_traits.is_http_guard
-        || enhancer_traits.is_http_interceptor
-        || enhancer_traits.is_http_pipe
-        || enhancer_traits.is_rpc_guard
-        || enhancer_traits.is_rpc_interceptor
-        || enhancer_traits.is_rpc_pipe
-        || enhancer_traits.is_ws_guard
-        || enhancer_traits.is_ws_interceptor
-        || enhancer_traits.is_ws_pipe;
+    use crate::shared::enhancer_emit::EnhancerKind;
 
-    if !any_factory {
+    let active_kinds: Vec<EnhancerKind> = EnhancerKind::all()
+        .into_iter()
+        .filter(|k| enhancer_kind_active(enhancer_traits, *k))
+        .collect();
+
+    if active_kinds.is_empty() {
         return (quote! {}, quote! {});
     }
 
@@ -1755,15 +1693,17 @@ fn generate_dyn_factories(
     let mut struct_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
-    let mut emit = |kind_name: &str,
-                    trait_path: TokenStream,
-                    factory_trait_path: TokenStream,
-                    role_variant: TokenStream,
-                    entry_variant: TokenStream| {
+    for kind in active_kinds {
+        let spec = kind.spec();
         let factory_struct_name = Ident::new(
-            &format!("__Toni{}{}DynFactory", struct_name, kind_name),
+            &format!("__Toni{}{}DynFactory", struct_name, spec.factory_suffix),
             struct_name.span(),
         );
+        let trait_path = &spec.trait_path;
+        let factory_trait_path = &spec.dyn_factory_trait;
+        let role_variant = &spec.role_variant;
+        let entry_path = &spec.entry_path;
+
         struct_defs.push(quote! {
             struct #factory_struct_name {
                 all_deps: #deps_arc_ty,
@@ -1793,7 +1733,7 @@ fn generate_dyn_factories(
         });
         role_push_stmts.push(quote! {
             __roles.push(#role_variant(
-                #entry_variant(
+                #entry_path::Factory(
                     ::std::sync::Arc::new(#factory_struct_name {
                         all_deps: __all_deps.clone(),
                         has_request_deps: __has_request_deps,
@@ -1801,90 +1741,6 @@ fn generate_dyn_factories(
                 )
             ));
         });
-    };
-
-    if enhancer_traits.is_http_guard {
-        emit(
-            "HttpGuard",
-            quote! { ::toni::traits_helpers::Guard<::toni::context::HttpContext> },
-            quote! { ::toni::traits_helpers::DynHttpGuardFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::HttpGuard },
-            quote! { ::toni::traits_helpers::HttpGuardEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_http_interceptor {
-        emit(
-            "HttpInterceptor",
-            quote! { ::toni::traits_helpers::Interceptor<::toni::context::HttpContext> },
-            quote! { ::toni::traits_helpers::DynHttpInterceptorFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::HttpInterceptor },
-            quote! { ::toni::traits_helpers::HttpInterceptorEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_http_pipe {
-        emit(
-            "HttpPipe",
-            quote! { ::toni::traits_helpers::Pipe<::toni::context::HttpContext> },
-            quote! { ::toni::traits_helpers::DynHttpPipeFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::HttpPipe },
-            quote! { ::toni::traits_helpers::HttpPipeEntry::Factory },
-        );
-    }
-
-    if enhancer_traits.is_rpc_guard {
-        emit(
-            "RpcGuard",
-            quote! { ::toni::traits_helpers::Guard<::toni::context::RpcContext> },
-            quote! { ::toni::traits_helpers::DynRpcGuardFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::RpcGuard },
-            quote! { ::toni::traits_helpers::RpcGuardEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_rpc_interceptor {
-        emit(
-            "RpcInterceptor",
-            quote! { ::toni::traits_helpers::Interceptor<::toni::context::RpcContext> },
-            quote! { ::toni::traits_helpers::DynRpcInterceptorFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::RpcInterceptor },
-            quote! { ::toni::traits_helpers::RpcInterceptorEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_rpc_pipe {
-        emit(
-            "RpcPipe",
-            quote! { ::toni::traits_helpers::Pipe<::toni::context::RpcContext> },
-            quote! { ::toni::traits_helpers::DynRpcPipeFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::RpcPipe },
-            quote! { ::toni::traits_helpers::RpcPipeEntry::Factory },
-        );
-    }
-
-    if enhancer_traits.is_ws_guard {
-        emit(
-            "WsGuard",
-            quote! { ::toni::traits_helpers::Guard<::toni::context::WsContext> },
-            quote! { ::toni::traits_helpers::DynWsGuardFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::WsGuard },
-            quote! { ::toni::traits_helpers::WsGuardEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_ws_interceptor {
-        emit(
-            "WsInterceptor",
-            quote! { ::toni::traits_helpers::Interceptor<::toni::context::WsContext> },
-            quote! { ::toni::traits_helpers::DynWsInterceptorFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::WsInterceptor },
-            quote! { ::toni::traits_helpers::WsInterceptorEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_ws_pipe {
-        emit(
-            "WsPipe",
-            quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext> },
-            quote! { ::toni::traits_helpers::DynWsPipeFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::WsPipe },
-            quote! { ::toni::traits_helpers::WsPipeEntry::Factory },
-        );
     }
 
     (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })
