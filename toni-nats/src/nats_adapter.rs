@@ -126,6 +126,7 @@ impl RpcAdapter for NatsAdapter {
                         let subject = msg.subject.to_string();
                         let reply_to = msg.reply.clone();
                         let payload = msg.payload.clone();
+                        let headers = msg.headers.clone();
 
                         tokio::spawn(async move {
                             let data = match serde_json::from_slice::<serde_json::Value>(&payload) {
@@ -133,7 +134,15 @@ impl RpcAdapter for NatsAdapter {
                                 Err(_) => RpcData::Binary(payload.to_vec()),
                             };
 
-                            let ctx = RpcCallInfo::new(subject);
+                            let mut ctx = RpcCallInfo::new(subject);
+                            if let Some(headers) = headers {
+                                for (name, values) in headers.iter() {
+                                    if let Some(first) = values.iter().next() {
+                                        ctx.metadata
+                                            .insert(name.to_string(), first.to_string());
+                                    }
+                                }
+                            }
                             let outcome =
                                 std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
                                     .catch_unwind()
