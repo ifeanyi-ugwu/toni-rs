@@ -11,11 +11,8 @@ use std::time::Duration;
 
 use toni::async_trait;
 use toni::context::{HandlerContext, RpcContext, WsContext};
-use toni::injector::Context;
 use toni::rpc::{RpcData, RpcError};
-use toni::traits_helpers::{
-    ErrorHandler, ErrorResponse, Guard, Interceptor, InterceptorNext, Pipe,
-};
+use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni::module;

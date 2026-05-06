@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};
-use toni::{RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use toni::{RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
 
 use crate::IntoNatsServers;
 
@@ -133,7 +133,7 @@ impl RpcAdapter for NatsAdapter {
                                 Err(_) => RpcData::Binary(payload.to_vec()),
                             };
 
-                            let ctx = RpcContext::new(subject);
+                            let ctx = RpcCallInfo::new(subject);
                             let outcome =
                                 std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
                                     .catch_unwind()

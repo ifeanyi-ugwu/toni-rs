@@ -22,25 +22,18 @@ use crate::{
     utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
 };
 
-/// Detected enhancer traits that a struct implements
+/// Detected enhancer traits that a struct implements.
+///
+/// Multiple flags may be set on the same struct (e.g. a guard with separate
+/// impl blocks for `HttpContext` and `RpcContext`, or a universal blanket
+/// impl marked `#[guard(http, rpc, ws)]`).
 #[derive(Debug, Clone, Default)]
 pub struct EnhancerTraits {
-    // Legacy enum-shaped roles (Guard / Interceptor / Pipe / ErrorHandler taking the
-    // legacy `Context`). Set when the impl head has no generic arg (or `<Context>`)
-    // or when the marker `#[guard]` etc. is present without transport args.
-    pub is_guard: bool,
-    pub is_interceptor: bool,
-    pub is_pipe: bool,
-    pub is_error_handler: bool,
-
     pub is_middleware: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
 
-    // Per-transport typed roles. Multiple may be set on the same struct (e.g. a
-    // guard with separate impl blocks for HttpContext and RpcContext, or a
-    // universal blanket impl marked `#[guard(http, rpc, ws)]`).
     pub is_http_guard: bool,
     pub is_http_interceptor: bool,
     pub is_http_pipe: bool,
@@ -62,15 +55,14 @@ struct TransportFlags {
     http: bool,
     rpc: bool,
     ws: bool,
-    /// Explicit `Context` or no generic arg — legacy path.
-    legacy: bool,
-    /// User declared a transport-specific intent (via marker arg or typed impl
-    /// head). Suppresses the legacy fallback even if no transport matched.
+    /// User declared a transport via a marker arg or typed impl head.
+    /// When false and no transport matched, the resolver falls back to
+    /// "universal" (all three transports) so a blanket impl works.
     explicit: bool,
 }
 
 impl TransportFlags {
-    fn any_typed(&self) -> bool {
+    fn any(&self) -> bool {
         self.http || self.rpc || self.ws
     }
 
@@ -78,15 +70,11 @@ impl TransportFlags {
         self.http |= other.http;
         self.rpc |= other.rpc;
         self.ws |= other.ws;
-        self.legacy |= other.legacy;
         self.explicit |= other.explicit;
     }
 }
 
 /// Parse `#[guard(http, rpc, ws)]` style transport args from a marker attribute.
-///
-/// Returns the union of transports requested; `explicit = true` if any args
-/// were present (even unrecognized ones).
 fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
     let mut flags = TransportFlags::default();
     if matches!(attr.meta, syn::Meta::Path(_)) {
@@ -109,7 +97,6 @@ fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
                 flags.rpc = true;
                 flags.ws = true;
             }
-            "context" | "legacy" => flags.legacy = true,
             _ => {}
         }
     }
@@ -146,7 +133,6 @@ fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
         "HttpContext" => flags.http = true,
         "RpcContext" => flags.rpc = true,
         "WsContext" => flags.ws = true,
-        "Context" => flags.legacy = true,
         // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
         _ if impl_block
             .generics
@@ -158,8 +144,8 @@ fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
             flags.rpc = true;
             flags.ws = true;
         }
-        // Unknown concrete type (e.g. user-defined HandlerContext impl).
-        // Treat as explicit-but-unrouted; the legacy fallback won't fire.
+        // Unknown concrete type — leave flags empty so the resolver doesn't
+        // route it; it will fall back to universal if no other signal arrives.
         _ => {}
     }
 
@@ -193,9 +179,6 @@ fn detect_enhancer_traits(
         let mut f = parse_marker_transport_args(attr);
         if !f.explicit {
             f.merge(typed_impl_flags);
-        }
-        if !f.explicit {
-            f.legacy = true;
         }
         slot.0.merge(f);
         slot.1 = true;
@@ -270,35 +253,36 @@ fn detect_enhancer_traits(
         }
     }
 
-    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool, bool) {
+    // No transport signal at all (bare `#[guard]`, no typed impl head) → assume
+    // a universal blanket impl and route to all three transports.
+    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool) {
         if !slot.1 {
-            return (false, false, false, false);
+            return (false, false, false);
         }
         let f = slot.0;
-        let legacy = f.legacy || (!f.any_typed() && !f.explicit);
-        (legacy, f.http, f.rpc, f.ws)
+        if f.any() {
+            (f.http, f.rpc, f.ws)
+        } else {
+            (true, true, true)
+        }
     };
 
-    let (g_l, g_h, g_r, g_w) = resolve(guard);
-    traits.is_guard = g_l;
+    let (g_h, g_r, g_w) = resolve(guard);
     traits.is_http_guard = g_h;
     traits.is_rpc_guard = g_r;
     traits.is_ws_guard = g_w;
 
-    let (i_l, i_h, i_r, i_w) = resolve(interceptor);
-    traits.is_interceptor = i_l;
+    let (i_h, i_r, i_w) = resolve(interceptor);
     traits.is_http_interceptor = i_h;
     traits.is_rpc_interceptor = i_r;
     traits.is_ws_interceptor = i_w;
 
-    let (p_l, p_h, p_r, p_w) = resolve(pipe);
-    traits.is_pipe = p_l;
+    let (p_h, p_r, p_w) = resolve(pipe);
     traits.is_http_pipe = p_h;
     traits.is_rpc_pipe = p_r;
     traits.is_ws_pipe = p_w;
 
-    let (e_l, e_h, e_r, e_w) = resolve(error_handler);
-    traits.is_error_handler = e_l;
+    let (e_h, e_r, e_w) = resolve(error_handler);
     traits.is_http_error_handler = e_h;
     traits.is_rpc_error_handler = e_r;
     traits.is_ws_error_handler = e_w;
@@ -482,44 +466,10 @@ fn generate_provider_wrapper(
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     let mut pushes = Vec::new();
 
-    if traits.is_guard {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Guard(
-                ::toni::traits_helpers::GuardEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Guard>
-                )
-            ));
-        });
-    }
-    if traits.is_interceptor {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Interceptor(
-                ::toni::traits_helpers::InterceptorEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor>
-                )
-            ));
-        });
-    }
-    if traits.is_pipe {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Pipe(
-                ::toni::traits_helpers::PipeEntry::Ready(
-                    instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::Pipe>
-                )
-            ));
-        });
-    }
     if traits.is_middleware {
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::Middleware(
                 instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::middleware::Middleware>
-            ));
-        });
-    }
-    if traits.is_error_handler {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::ErrorHandler(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::ErrorHandler>
             ));
         });
     }
@@ -1671,7 +1621,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
                         parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
                         cache: &__request_cache,
                     })
@@ -1713,7 +1663,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpContext {
+                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
                         parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
                         cache: &__request_cache,
                     })
@@ -1746,10 +1696,7 @@ fn generate_dyn_factories(
     dependencies: &DependencyInfo,
     enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
-    let any_factory = enhancer_traits.is_guard
-        || enhancer_traits.is_interceptor
-        || enhancer_traits.is_pipe
-        || enhancer_traits.is_http_guard
+    let any_factory = enhancer_traits.is_http_guard
         || enhancer_traits.is_http_interceptor
         || enhancer_traits.is_http_pipe
         || enhancer_traits.is_rpc_guard
@@ -1855,34 +1802,6 @@ fn generate_dyn_factories(
             ));
         });
     };
-
-    if enhancer_traits.is_guard {
-        emit(
-            "Guard",
-            quote! { ::toni::traits_helpers::Guard },
-            quote! { ::toni::traits_helpers::DynGuardFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::Guard },
-            quote! { ::toni::traits_helpers::GuardEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_interceptor {
-        emit(
-            "Interceptor",
-            quote! { ::toni::traits_helpers::Interceptor },
-            quote! { ::toni::traits_helpers::DynInterceptorFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::Interceptor },
-            quote! { ::toni::traits_helpers::InterceptorEntry::Factory },
-        );
-    }
-    if enhancer_traits.is_pipe {
-        emit(
-            "Pipe",
-            quote! { ::toni::traits_helpers::Pipe },
-            quote! { ::toni::traits_helpers::DynPipeFactory },
-            quote! { ::toni::traits_helpers::ProviderRole::Pipe },
-            quote! { ::toni::traits_helpers::PipeEntry::Factory },
-        );
-    }
 
     if enhancer_traits.is_http_guard {
         emit(

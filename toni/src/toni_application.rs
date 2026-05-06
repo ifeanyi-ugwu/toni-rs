@@ -28,7 +28,7 @@ use crate::{
     application_context::ToniApplicationContext,
     injector::{GatewayResolver, IntoToken, RpcControllerResolver, ToniContainer},
     router::RoutesResolver,
-    rpc::{RpcContext, RpcControllerWrapper, RpcData, RpcError},
+    rpc::{RpcCallInfo, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
         BroadcastService, DisconnectReason, GatewayWrapper, WsClientMap, WsError, WsHandlerOutput,
         WsMessage, helpers::create_client_from_parts,
@@ -813,7 +813,7 @@ fn make_rpc_callbacks(wrappers: Vec<Arc<RpcControllerWrapper>>) -> RpcMessageCal
     }
     let pattern_map = Arc::new(pattern_map);
 
-    RpcMessageCallbacks::new(move |data: RpcData, ctx: RpcContext| {
+    RpcMessageCallbacks::new(move |data: RpcData, ctx: RpcCallInfo| {
         let pattern_map = pattern_map.clone();
         Box::pin(async move {
             let pattern = ctx.pattern.clone();

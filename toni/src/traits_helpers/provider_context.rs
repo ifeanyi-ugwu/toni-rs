@@ -8,7 +8,7 @@ use super::request_cache::RequestCache;
 /// `cache` is framework-internal — used by request-scoped provider wrappers
 /// to share a single instance across all injection points within one request.
 #[derive(Clone, Copy)]
-pub struct HttpContext<'a> {
+pub struct HttpProviderContext<'a> {
     pub parts: &'a RequestPart,
     #[doc(hidden)]
     pub cache: &'a RequestCache,
@@ -23,7 +23,7 @@ pub struct HttpContext<'a> {
 pub enum ProviderContext<'a> {
     /// An HTTP request is being handled. Request-scoped providers use this to
     /// access live request metadata (headers, URI, path params, extensions).
-    Http(HttpContext<'a>),
+    Http(HttpProviderContext<'a>),
     /// A WebSocket message is being handled.
     WebSocket,
     /// An RPC message is being handled.

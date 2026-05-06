@@ -9,9 +9,6 @@ use crate::shared::TokenType;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EnhancerType {
-    Guard,
-    Interceptor,
-    Pipe,
     HttpGuard,
     HttpInterceptor,
     HttpPipe,
@@ -67,8 +64,7 @@ impl Parse for ProviderFactoryInput {
 
                 match ident_str.as_str() {
                     "guard" => match parse_transport_arg(input)?.as_deref() {
-                        None => enhancers.push(EnhancerType::Guard),
-                        Some("http") => enhancers.push(EnhancerType::HttpGuard),
+                        Some("http") | None => enhancers.push(EnhancerType::HttpGuard),
                         Some("rpc") => enhancers.push(EnhancerType::RpcGuard),
                         Some("ws") | Some("websocket") => {
                             enhancers.push(EnhancerType::WsGuard)
@@ -81,8 +77,7 @@ impl Parse for ProviderFactoryInput {
                         }
                     },
                     "interceptor" => match parse_transport_arg(input)?.as_deref() {
-                        None => enhancers.push(EnhancerType::Interceptor),
-                        Some("http") => enhancers.push(EnhancerType::HttpInterceptor),
+                        Some("http") | None => enhancers.push(EnhancerType::HttpInterceptor),
                         Some("rpc") => enhancers.push(EnhancerType::RpcInterceptor),
                         Some("ws") | Some("websocket") => {
                             enhancers.push(EnhancerType::WsInterceptor)
@@ -95,8 +90,7 @@ impl Parse for ProviderFactoryInput {
                         }
                     },
                     "pipe" => match parse_transport_arg(input)?.as_deref() {
-                        None => enhancers.push(EnhancerType::Pipe),
-                        Some("http") => enhancers.push(EnhancerType::HttpPipe),
+                        Some("http") | None => enhancers.push(EnhancerType::HttpPipe),
                         Some("rpc") => enhancers.push(EnhancerType::RpcPipe),
                         Some("ws") | Some("websocket") => {
                             enhancers.push(EnhancerType::WsPipe)
@@ -172,31 +166,16 @@ fn is_async_expr(expr: &Expr) -> bool {
     }
 }
 
+pub(super) fn generate_factory_role_pushes_external(
+    enhancers: &[EnhancerType],
+) -> TokenStream {
+    generate_factory_role_pushes(enhancers)
+}
+
 fn generate_factory_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
     let mut pushes = Vec::new();
     for enhancer in enhancers {
         let push = match enhancer {
-            EnhancerType::Guard => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Guard(
-                    toni::traits_helpers::GuardEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Guard>
-                    )
-                ));
-            },
-            EnhancerType::Interceptor => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Interceptor(
-                    toni::traits_helpers::InterceptorEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Interceptor>
-                    )
-                ));
-            },
-            EnhancerType::Pipe => quote! {
-                __roles.push(toni::traits_helpers::ProviderRole::Pipe(
-                    toni::traits_helpers::PipeEntry::Ready(
-                        instance.clone() as std::sync::Arc<dyn toni::traits_helpers::Pipe>
-                    )
-                ));
-            },
             EnhancerType::HttpGuard => quote! {
                 __roles.push(toni::traits_helpers::ProviderRole::HttpGuard(
                     toni::traits_helpers::HttpGuardEntry::Ready(
@@ -672,27 +651,6 @@ fn generate_noncaching_factory_structs(
     for enhancer in enhancers {
         let (struct_name, trait_path, entry_variant, role_variant, dyn_factory_trait) =
             match enhancer {
-                EnhancerType::Guard => (
-                    format_ident!("__ToniFactoryGuardDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Guard },
-                    quote! { toni::traits_helpers::GuardEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::Guard },
-                    quote! { toni::traits_helpers::DynGuardFactory },
-                ),
-                EnhancerType::Interceptor => (
-                    format_ident!("__ToniFactoryInterceptorDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Interceptor },
-                    quote! { toni::traits_helpers::InterceptorEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::Interceptor },
-                    quote! { toni::traits_helpers::DynInterceptorFactory },
-                ),
-                EnhancerType::Pipe => (
-                    format_ident!("__ToniFactoryPipeDynFactory_{}", sanitized_name),
-                    quote! { toni::traits_helpers::Pipe },
-                    quote! { toni::traits_helpers::PipeEntry::Factory },
-                    quote! { toni::traits_helpers::ProviderRole::Pipe },
-                    quote! { toni::traits_helpers::DynPipeFactory },
-                ),
                 EnhancerType::HttpGuard => (
                     format_ident!("__ToniFactoryHttpGuardDynFactory_{}", sanitized_name),
                     quote! { toni::traits_helpers::Guard<toni::context::HttpContext> },

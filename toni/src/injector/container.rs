@@ -235,18 +235,6 @@ impl ToniContainer {
 
         for role in roles {
             match role {
-                ProviderRole::Guard(g) => {
-                    self.role_registry.guards.insert(token.clone(), g);
-                }
-                ProviderRole::Interceptor(i) => {
-                    self.role_registry.interceptors.insert(token.clone(), i);
-                }
-                ProviderRole::Pipe(p) => {
-                    self.role_registry.pipes.insert(token.clone(), p);
-                }
-                ProviderRole::ErrorHandler(eh) => {
-                    self.role_registry.error_handlers.insert(token.clone(), eh);
-                }
                 ProviderRole::HttpGuard(g) => {
                     self.role_registry.http_guards.insert(token.clone(), g);
                 }

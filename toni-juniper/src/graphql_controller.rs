@@ -248,7 +248,7 @@ where
             .graphql_service
             .execute(
                 vec![],
-                toni::ProviderContext::Http(toni::HttpContext {
+                toni::ProviderContext::Http(toni::HttpProviderContext {
                     parts: &parts,
                     cache: &__req_cache,
                 }),

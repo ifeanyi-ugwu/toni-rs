@@ -6,23 +6,14 @@ use crate::{
     adapter::GrpcServiceTrait,
     rpc::RpcControllerTrait,
     traits_helpers::{
-        ErrorHandler, GuardEntry, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, InterceptorEntry, PipeEntry, ProviderRole, RpcErrorHandlerArc,
-        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
-        WsInterceptorEntry, WsPipeEntry, middleware::Middleware,
+        HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ProviderRole,
+        RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc,
+        WsGuardEntry, WsInterceptorEntry, WsPipeEntry, middleware::Middleware,
     },
     websocket::GatewayTrait,
 };
 
 pub(crate) struct RoleRegistry {
-    // Legacy enum-shaped registries. TODO: remove once per-transport sub-registries
-    // fully replace them.
-    pub guards: FxHashMap<String, GuardEntry>,
-    pub interceptors: FxHashMap<String, InterceptorEntry>,
-    pub pipes: FxHashMap<String, PipeEntry>,
-    pub error_handlers: FxHashMap<String, Arc<dyn ErrorHandler>>,
-
-    // Per-transport typed registries.
     pub http_guards: FxHashMap<String, HttpGuardEntry>,
     pub http_interceptors: FxHashMap<String, HttpInterceptorEntry>,
     pub http_pipes: FxHashMap<String, HttpPipeEntry>,
@@ -50,10 +41,6 @@ pub(crate) struct RoleRegistry {
 impl RoleRegistry {
     pub fn new() -> Self {
         Self {
-            guards: FxHashMap::default(),
-            interceptors: FxHashMap::default(),
-            pipes: FxHashMap::default(),
-            error_handlers: FxHashMap::default(),
             http_guards: FxHashMap::default(),
             http_interceptors: FxHashMap::default(),
             http_pipes: FxHashMap::default(),
@@ -79,18 +66,6 @@ impl RoleRegistry {
     /// roles of an already-built provider (e.g. alias targets from imported modules).
     pub fn get_roles_for_token(&self, token: &str) -> Vec<ProviderRole> {
         let mut roles = Vec::new();
-        if let Some(g) = self.guards.get(token) {
-            roles.push(ProviderRole::Guard(g.clone()));
-        }
-        if let Some(i) = self.interceptors.get(token) {
-            roles.push(ProviderRole::Interceptor(i.clone()));
-        }
-        if let Some(p) = self.pipes.get(token) {
-            roles.push(ProviderRole::Pipe(p.clone()));
-        }
-        if let Some(eh) = self.error_handlers.get(token) {
-            roles.push(ProviderRole::ErrorHandler(eh.clone()));
-        }
 
         if let Some(g) = self.http_guards.get(token) {
             roles.push(ProviderRole::HttpGuard(g.clone()));

@@ -11,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tracing::Instrument;
-use toni::{async_trait, RpcAdapter, RpcContext, RpcData, RpcError, RpcMessageCallbacks};
+use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -282,7 +282,7 @@ async fn handle_connection(
                     id = ?id,
                     peer = %addr,
                 );
-                let ctx = RpcContext::new(pattern);
+                let ctx = RpcCallInfo::new(pattern);
 
                 // Backpressure: try to claim a permit before spawning. If
                 // the cap is full, reject inline (write is cheap) so the
