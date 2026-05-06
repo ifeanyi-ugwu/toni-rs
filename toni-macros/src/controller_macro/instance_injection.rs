@@ -914,36 +914,17 @@ fn generate_singleton_controller_wrapper(
                 #controller_token.to_string()
             }
 
-            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#guard_instances)),*]
-            }
-
-            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#interceptor_instances)),*]
-            }
-
-            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#pipe_instances)),*]
-            }
-
-            fn get_guard_tokens(&self) -> Vec<String> {
-                vec![#(#guard_tokens),*]
-            }
-
-            fn get_interceptor_tokens(&self) -> Vec<String> {
-                vec![#(#interceptor_tokens),*]
-            }
-
-            fn get_pipe_tokens(&self) -> Vec<String> {
-                vec![#(#pipe_tokens),*]
-            }
-
-            fn get_error_handler_tokens(&self) -> Vec<String> {
-                vec![#(#error_handler_tokens),*]
-            }
-
-            fn get_error_handlers(&self) -> Vec<::toni::traits_helpers::HttpErrorHandlerArc> {
-                vec![#(::std::sync::Arc::new(#error_handler_instances)),*]
+            fn enhancers(&self) -> ::toni::traits_helpers::ControllerEnhancers {
+                ::toni::traits_helpers::ControllerEnhancers {
+                    guard_tokens: vec![#(#guard_tokens),*],
+                    interceptor_tokens: vec![#(#interceptor_tokens),*],
+                    pipe_tokens: vec![#(#pipe_tokens),*],
+                    error_handler_tokens: vec![#(#error_handler_tokens),*],
+                    guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
+                    interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
+                    pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
+                    error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
+                }
             }
 
             fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
@@ -1122,36 +1103,17 @@ fn generate_request_controller_wrapper(
                 #controller_token.to_string()
             }
 
-            fn get_guards(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Guard<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#guard_instances)),*]
-            }
-
-            fn get_interceptors(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Interceptor<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#interceptor_instances)),*]
-            }
-
-            fn get_pipes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Pipe<::toni::context::HttpContext>>> {
-                vec![#(::std::sync::Arc::new(#pipe_instances)),*]
-            }
-
-            fn get_guard_tokens(&self) -> Vec<String> {
-                vec![#(#guard_tokens),*]
-            }
-
-            fn get_interceptor_tokens(&self) -> Vec<String> {
-                vec![#(#interceptor_tokens),*]
-            }
-
-            fn get_pipe_tokens(&self) -> Vec<String> {
-                vec![#(#pipe_tokens),*]
-            }
-
-            fn get_error_handler_tokens(&self) -> Vec<String> {
-                vec![#(#error_handler_tokens),*]
-            }
-
-            fn get_error_handlers(&self) -> Vec<::toni::traits_helpers::HttpErrorHandlerArc> {
-                vec![#(::std::sync::Arc::new(#error_handler_instances)),*]
+            fn enhancers(&self) -> ::toni::traits_helpers::ControllerEnhancers {
+                ::toni::traits_helpers::ControllerEnhancers {
+                    guard_tokens: vec![#(#guard_tokens),*],
+                    interceptor_tokens: vec![#(#interceptor_tokens),*],
+                    pipe_tokens: vec![#(#pipe_tokens),*],
+                    error_handler_tokens: vec![#(#error_handler_tokens),*],
+                    guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
+                    interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
+                    pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
+                    error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
+                }
             }
 
             fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
