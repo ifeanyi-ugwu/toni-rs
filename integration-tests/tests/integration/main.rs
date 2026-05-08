@@ -1,5 +1,6 @@
 mod common;
 
+mod app_error_derive;
 mod app_token_enhancers;
 mod async_controllers;
 mod attribute_extractors;

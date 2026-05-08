@@ -6,6 +6,7 @@ use proc_macro2::Span;
 use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
+mod app_error_macro;
 mod config_macro;
 mod controller_macro;
 mod enhancer;
@@ -358,6 +359,32 @@ pub fn derive_injectable(_input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
+}
+
+/// Derive `AppError` from an annotated error type.
+///
+/// Tag the type (or each enum variant) with `#[app_error(KIND)]`, where
+/// `KIND` is a variant of `toni::ErrorKind`. Untagged variants fall back
+/// to a top-level `#[app_error(...)]` if present, otherwise to
+/// `ErrorKind::Internal`.
+///
+/// ```ignore
+/// use toni::AppError;
+///
+/// #[derive(Debug, thiserror::Error, AppError)]
+/// enum BillingError {
+///     #[error("invoice {0} not found")]
+///     #[app_error(NotFound)]
+///     InvoiceNotFound(String),
+///
+///     #[error("card declined")]
+///     #[app_error(UnprocessableEntity)]
+///     CardDeclined,
+/// }
+/// ```
+#[proc_macro_derive(AppError, attributes(app_error))]
+pub fn derive_app_error(input: TokenStream) -> TokenStream {
+    app_error_macro::derive_app_error(input)
 }
 
 #[proc_macro]
