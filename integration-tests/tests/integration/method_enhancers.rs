@@ -46,7 +46,7 @@ impl RecoveryErrorHandler {}
 impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
-        _error: Box<dyn std::error::Error + Send>,
+        _error: toni::traits_helpers::ChainError<'_>,
         _ctx: &RpcContext,
     ) -> Option<RpcData> {
         Some(RpcData::json(serde_json::json!("recovered")))
@@ -57,7 +57,7 @@ impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
 impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
-        _error: Box<dyn std::error::Error + Send>,
+        _error: toni::traits_helpers::ChainError<'_>,
         _ctx: &WsContext,
     ) -> Option<WsMessage> {
         Some(WsMessage::text("recovered"))

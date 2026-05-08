@@ -154,12 +154,10 @@ impl InstanceWrapper {
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
+                let error =
+                    std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone());
                 for handler in error_handlers_for_middleware.iter().rev() {
-                    let error: Box<dyn std::error::Error + Send> = Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        error_msg.clone(),
-                    ));
-                    if let Some(response) = handler.handle_error(error, &error_ctx).await {
+                    if let Some(response) = handler.handle_error(&error, &error_ctx).await {
                         return response;
                     }
                 }
@@ -279,8 +277,7 @@ impl InstanceWrapper {
             let http_error = Self::response_to_http_error(&response);
 
             for handler in error_handlers.iter().rev() {
-                let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                if let Some(handled) = handler.handle_error(error, ctx).await {
+                if let Some(handled) = handler.handle_error(&http_error, ctx).await {
                     return handled;
                 }
             }
@@ -378,8 +375,9 @@ impl InstanceWrapper {
                 let http_error = Self::response_to_http_error(&http_response);
 
                 for handler in error_handlers.iter().rev() {
-                    let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                    if let Some(handled_response) = handler.handle_error(error, context).await {
+                    if let Some(handled_response) =
+                        handler.handle_error(&http_error, context).await
+                    {
                         context.set_response(handled_response);
                         return;
                     }

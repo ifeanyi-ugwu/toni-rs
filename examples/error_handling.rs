@@ -39,7 +39,7 @@ pub struct GlobalErrorHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for GlobalErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();
@@ -75,7 +75,7 @@ pub struct ValidationErrorHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for ValidationErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();
@@ -112,7 +112,7 @@ pub struct DatabaseErrorHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for DatabaseErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();
@@ -148,7 +148,7 @@ pub struct UserControllerErrorHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for UserControllerErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();
@@ -189,7 +189,7 @@ impl NotFoundErrorHandler {
 impl ErrorHandler<HttpContext, HttpResponse> for NotFoundErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();

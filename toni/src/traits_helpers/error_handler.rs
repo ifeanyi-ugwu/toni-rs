@@ -7,6 +7,14 @@ use crate::websocket::WsMessage;
 use serde_json::json;
 use std::error::Error;
 
+/// Convenience alias for the borrowed error reference passed to handlers.
+///
+/// The chain owns the boxed error and lends it to each handler in turn —
+/// handlers borrow, downcast, and either claim (`Some`) or fall through
+/// (`None`). Borrowing avoids forcing user errors to be `Clone` so each
+/// chain iteration can re-box them.
+pub type ChainError<'a> = &'a (dyn Error + Send + Sync + 'static);
+
 /// Customize how errors are turned into responses.
 ///
 /// Handlers are tried in order (method > controller > global) until one
@@ -14,7 +22,7 @@ use std::error::Error;
 /// `None`, the framework's default fallback is sent.
 #[async_trait]
 pub trait ErrorHandler<C: ?Sized + HandlerContext, R>: Send + Sync {
-    async fn handle_error(&self, error: Box<dyn Error + Send>, ctx: &C) -> Option<R>;
+    async fn handle_error(&self, error: ChainError<'_>, ctx: &C) -> Option<R>;
 }
 
 /// Default fallback for HTTP routes that didn't match a registered handler.
@@ -24,7 +32,7 @@ pub struct DefaultHttpErrorHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for DefaultHttpErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn Error + Send>,
+        error: ChainError<'_>,
         _ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
@@ -50,7 +58,7 @@ pub struct DefaultRpcErrorHandler;
 impl ErrorHandler<RpcContext, RpcData> for DefaultRpcErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn Error + Send>,
+        error: ChainError<'_>,
         _ctx: &RpcContext,
     ) -> Option<RpcData> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
@@ -71,7 +79,7 @@ pub struct DefaultWsErrorHandler;
 impl ErrorHandler<WsContext, WsMessage> for DefaultWsErrorHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn Error + Send>,
+        error: ChainError<'_>,
         _ctx: &WsContext,
     ) -> Option<WsMessage> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
@@ -102,7 +110,7 @@ impl<H: ErrorHandler<HttpContext, HttpResponse>> ErrorHandler<HttpContext, HttpR
 {
     async fn handle_error(
         &self,
-        error: Box<dyn Error + Send>,
+        error: ChainError<'_>,
         ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         let req = ctx.request();
@@ -121,7 +129,7 @@ mod tests {
         let error = HttpError::not_found("Resource not found");
         let stub = http::Request::builder().body(()).unwrap();
         let ctx = HttpContext::from_parts(stub.into_parts().0);
-        let r = handler.handle_error(Box::new(error), &ctx).await.unwrap();
+        let r = handler.handle_error(&error, &ctx).await.unwrap();
         assert_eq!(r.status, 404);
     }
 
@@ -131,7 +139,7 @@ mod tests {
         let error = std::io::Error::new(std::io::ErrorKind::Other, "Unknown error");
         let stub = http::Request::builder().body(()).unwrap();
         let ctx = HttpContext::from_parts(stub.into_parts().0);
-        let r = handler.handle_error(Box::new(error), &ctx).await.unwrap();
+        let r = handler.handle_error(&error, &ctx).await.unwrap();
         assert_eq!(r.status, 500);
     }
 }

@@ -215,11 +215,10 @@ impl RpcControllerWrapper {
                         return;
                     };
                     let error_msg = e.to_string();
+                    let error =
+                        std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone());
                     for handler in error_handlers.iter().rev() {
-                        let error: Box<dyn std::error::Error + Send> = Box::new(
-                            std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone()),
-                        );
-                        if let Some(data) = handler.handle_error(error, context).await {
+                        if let Some(data) = handler.handle_error(&error, context).await {
                             context.set_response(Ok(Some(data)));
                             return;
                         }

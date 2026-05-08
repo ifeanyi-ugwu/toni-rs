@@ -26,7 +26,7 @@ struct GlobalHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for GlobalHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         _ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         if let Some(e) = error.downcast_ref::<HttpError>() {
@@ -45,7 +45,7 @@ struct BadRequestHandler;
 impl ErrorHandler<HttpContext, HttpResponse> for BadRequestHandler {
     async fn handle_error(
         &self,
-        error: Box<dyn std::error::Error + Send>,
+        error: toni::traits_helpers::ChainError<'_>,
         _ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         if let Some(e) = error.downcast_ref::<HttpError>() {
