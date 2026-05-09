@@ -3,14 +3,17 @@ use std::sync::Arc;
 use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
-    http_helpers::{HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
+    errors::{AppError, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment},
+    http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
-        Interceptor, InterceptorNext, Pipe,
+        Controller, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry,
+        HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe,
     },
 };
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 /// The next step in the interceptor chain after factory entries are resolved.
 struct ChainNext {
@@ -18,6 +21,7 @@ struct ChainNext {
     instance: Arc<Box<dyn Controller>>,
     pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
     error_handlers: Vec<HttpErrorHandlerArc>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
 }
 
@@ -30,6 +34,7 @@ impl InterceptorNext<HttpContext> for ChainNext {
             &self.instance,
             &self.pipes,
             &self.error_handlers,
+            &self.observers,
             &self.route_metadata,
         )
         .await;
@@ -43,6 +48,7 @@ pub struct InstanceWrapper {
     pipes: Vec<HttpPipeEntry>,
     middleware_chain: MiddlewareChain,
     error_handlers: Vec<HttpErrorHandlerArc>,
+    error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
 }
 
@@ -51,6 +57,7 @@ impl InstanceWrapper {
         instance: Arc<Box<dyn Controller>>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
+        error_observers: Vec<Arc<dyn ErrorObserver>>,
     ) -> Self {
         // Execution order: global → controller → method
         let mut guards = global_enhancers.guards;
@@ -74,6 +81,7 @@ impl InstanceWrapper {
             pipes,
             middleware_chain: MiddlewareChain::new(),
             error_handlers,
+            error_observers,
             route_metadata,
         }
     }
@@ -111,6 +119,8 @@ impl InstanceWrapper {
         let pipes = self.pipes.clone();
         let error_handlers_for_controller = self.error_handlers.clone();
         let error_handlers_for_middleware = self.error_handlers.clone();
+        let observers_for_controller = self.error_observers.clone();
+        let observers_for_middleware = self.error_observers.clone();
         let route_metadata = self.route_metadata.clone();
 
         let middleware_result = self
@@ -121,6 +131,7 @@ impl InstanceWrapper {
                 let interceptors = interceptors.clone();
                 let pipes = pipes.clone();
                 let error_handlers = error_handlers_for_controller.clone();
+                let observers = observers_for_controller.clone();
                 let route_metadata = route_metadata.clone();
 
                 Box::pin(async move {
@@ -131,6 +142,7 @@ impl InstanceWrapper {
                         interceptors,
                         pipes,
                         error_handlers,
+                        observers,
                         route_metadata,
                     )
                     .await
@@ -144,33 +156,27 @@ impl InstanceWrapper {
                 response
             }
             Err(e) => {
+                // If the middleware bubbled an `HttpError`, that's an
+                // `AppError`-implementing user value — render it directly
+                // without going through the chain.
                 if let Some(http_err) = e.downcast_ref::<crate::errors::HttpError>() {
-                    return http_err.to_response();
+                    return http_err.into_http_response();
                 }
 
-                let error_msg = e.to_string();
                 // Middleware failed before the request body could be split; we have no
                 // parts to thread through to the handler context. Construct a stub
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
+                let event = MiddlewareFailure::new(e.to_string());
+                Self::fan_out_observers(&observers_for_middleware, &event, &error_ctx).await;
                 for handler in error_handlers_for_middleware.iter().rev() {
-                    let error: Box<dyn std::error::Error + Send> = Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        error_msg.clone(),
-                    ));
-                    if let Some(response) = handler.handle_error(error, &error_ctx).await {
+                    if let Some(response) = handler.handle_error(&event, &error_ctx).await {
                         return response;
                     }
                 }
 
-                let mut error_response = HttpResponse::new();
-                error_response.status = 500;
-                error_response.body = Some(crate::http_helpers::Body::json(serde_json::json!({
-                    "error": "Internal Server Error",
-                    "message": "An error occurred while processing the request"
-                })));
-                error_response
+                event.into_http_response()
             }
         }
     }
@@ -227,6 +233,7 @@ impl InstanceWrapper {
         interceptors: Vec<HttpInterceptorEntry>,
         pipes: Vec<HttpPipeEntry>,
         error_handlers: Vec<HttpErrorHandlerArc>,
+        observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
         // Split req so factory entries see parts before the context takes ownership.
@@ -241,14 +248,16 @@ impl InstanceWrapper {
         for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context).await {
                 tracing::debug!(guard_index = i, "guard rejected request");
-                let guard_response = context.take_response().unwrap_or_else(|| {
-                    let mut forbidden = HttpResponse::new();
-                    forbidden.status = 403;
-                    forbidden.body = Some(crate::Body::text("Forbidden"));
-                    forbidden
-                });
-
-                return Self::handle_error_response(guard_response, &error_handlers, &context).await;
+                let event = GuardRejection::new(i);
+                let claimed_response = context.take_response();
+                return Self::handle_framework_event(
+                    event,
+                    claimed_response,
+                    &error_handlers,
+                    &observers,
+                    &context,
+                )
+                .await;
             }
         }
 
@@ -261,6 +270,7 @@ impl InstanceWrapper {
             &instance,
             &pipes,
             &error_handlers,
+            &observers,
             &route_metadata,
         )
         .await;
@@ -268,24 +278,55 @@ impl InstanceWrapper {
         context.into_response()
     }
 
-    /// Route 4xx/5xx responses through error handlers. Most-specific
-    /// (method > controller > global) is consulted first.
-    async fn handle_error_response(
-        response: HttpResponse,
+    /// Run the chain on a typed framework event. Observers fan out first so
+    /// they see every framework-generated error regardless of whether a chain
+    /// handler claims it; if no handler claims, the event renders itself
+    /// through its `AppError` impl. A `claimed_response` (for example, a
+    /// custom response set by the rejecting guard) takes precedence over the
+    /// canonical envelope.
+    async fn handle_framework_event<E>(
+        event: E,
+        claimed_response: Option<HttpResponse>,
         error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         ctx: &HttpContext,
-    ) -> HttpResponse {
-        if response.status >= 400 {
-            let http_error = Self::response_to_http_error(&response);
+    ) -> HttpResponse
+    where
+        E: AppError,
+    {
+        Self::fan_out_observers(observers, &event, ctx).await;
 
-            for handler in error_handlers.iter().rev() {
-                let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                if let Some(handled) = handler.handle_error(error, ctx).await {
-                    return handled;
-                }
+        for handler in error_handlers.iter().rev() {
+            if let Some(handled) = handler.handle_error(&event, ctx).await {
+                return handled;
             }
         }
-        response
+
+        claimed_response.unwrap_or_else(|| event.into_http_response())
+    }
+
+    async fn fan_out_observers(
+        observers: &[Arc<dyn ErrorObserver>],
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &dyn HandlerContext,
+    ) {
+        for observer in observers {
+            // A panicking observer must not corrupt the dispatch path.
+            // Catch the unwind, log via tracing (the observer system itself
+            // is the thing that just failed, so we can't route it back
+            // through observers), and continue to the next observer.
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            if let Err(payload) = observe.catch_unwind().await {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    *s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "<panic payload was not a string>"
+                };
+                tracing::error!(error = %error, panic = %msg, "error observer panicked");
+            }
+        }
     }
 
     /// Onion/Russian doll dispatch through the interceptor chain.
@@ -295,11 +336,11 @@ impl InstanceWrapper {
         instance: &Arc<Box<dyn Controller>>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
         error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         route_metadata: &Arc<RouteMetadata>,
     ) {
         if interceptors.is_empty() {
-            Self::execute_handler_with_error_handling(context, instance, pipes, error_handlers)
-                .await;
+            Self::execute_handler(context, instance, pipes, error_handlers, observers).await;
             return;
         }
 
@@ -310,16 +351,26 @@ impl InstanceWrapper {
             instance: instance.clone(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
+            observers: observers.to_vec(),
             route_metadata: route_metadata.clone(),
         };
 
         first.intercept(context, Box::new(next)).await;
     }
 
+    /// Run pipes + handler, then route the result.
+    ///
+    /// On `ExecutionResult::Ok`, the response goes straight to the context.
+    /// On `ExecutionResult::Err`, the user's typed error is preserved as a
+    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `AppError::into_http_response`
+    /// is the fallback envelope when no handler claims.
     async fn execute_handler(
         context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
+        error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) {
         let dto = instance.get_body_dto(context.request());
         if let Some(dto) = dto {
@@ -353,72 +404,34 @@ impl InstanceWrapper {
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
         let req = context.take_request();
-        let controller_response = instance.execute(req).await;
-        context.set_response(controller_response);
-    }
-
-    async fn execute_handler_with_error_handling(
-        context: &mut HttpContext,
-        instance: &Arc<Box<dyn Controller>>,
-        pipes: &[Arc<dyn Pipe<HttpContext>>],
-        error_handlers: &[HttpErrorHandlerArc],
-    ) {
-        Self::execute_handler(context, instance, pipes).await;
-
-        if !error_handlers.is_empty() {
-            let needs_error_handling = context
-                .response()
-                .map(|r| r.status >= 400)
-                .unwrap_or(false);
-
-            if needs_error_handling {
-                let http_response = context
-                    .take_response()
-                    .expect("Response not set in context");
-                let http_error = Self::response_to_http_error(&http_response);
-
+        // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
+        // and adding `RefUnwindSafe` bounds to user code would be punitive.
+        // We trust the application to set its own state to a sane shape after
+        // a panic — this layer only ensures the panic doesn't escape the
+        // dispatcher.
+        let exec_result = AssertUnwindSafe(instance.execute(req)).catch_unwind().await;
+        let exec_result = match exec_result {
+            Ok(result) => result,
+            Err(payload) => {
+                let event = PanicRecovered::from_panic_payload(
+                    PipelineSegment::HandlerBody,
+                    payload,
+                );
+                ExecutionResult::Err(Box::new(event))
+            }
+        };
+        match exec_result {
+            ExecutionResult::Ok(response) => context.set_response(response),
+            ExecutionResult::Err(err) => {
+                Self::fan_out_observers(observers, &*err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    let error: Box<dyn std::error::Error + Send> = Box::new(http_error.clone());
-                    if let Some(handled_response) = handler.handle_error(error, context).await {
-                        context.set_response(handled_response);
+                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                        context.set_response(claimed);
                         return;
                     }
                 }
-
-                context.set_response(http_response);
+                context.set_response(err.into_http_response());
             }
-        }
-    }
-
-    fn response_to_http_error(response: &HttpResponse) -> crate::errors::HttpError {
-        let message = if let Some(body) = &response.body {
-            if let Some(bytes) = body.try_bytes() {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
-                    v.get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("HTTP Error")
-                        .to_string()
-                } else {
-                    std::str::from_utf8(bytes)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|_| format!("HTTP {} Error", response.status))
-                }
-            } else {
-                format!("HTTP {} Error", response.status)
-            }
-        } else {
-            format!("HTTP {} Error", response.status)
-        };
-
-        match response.status {
-            400 => crate::errors::HttpError::bad_request(message),
-            401 => crate::errors::HttpError::unauthorized(message),
-            403 => crate::errors::HttpError::forbidden(message),
-            404 => crate::errors::HttpError::not_found(message),
-            409 => crate::errors::HttpError::conflict(message),
-            422 => crate::errors::HttpError::unprocessable_entity(message),
-            500 => crate::errors::HttpError::internal_server_error(message),
-            status => crate::errors::HttpError::custom(status, message),
         }
     }
 }

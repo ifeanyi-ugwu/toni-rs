@@ -46,7 +46,7 @@ impl RecoveryErrorHandler {}
 impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
-        _error: Box<dyn std::error::Error + Send>,
+        _error: toni::traits_helpers::ChainError<'_>,
         _ctx: &RpcContext,
     ) -> Option<RpcData> {
         Some(RpcData::json(serde_json::json!("recovered")))
@@ -57,7 +57,7 @@ impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
 impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
-        _error: Box<dyn std::error::Error + Send>,
+        _error: toni::traits_helpers::ChainError<'_>,
         _ctx: &WsContext,
     ) -> Option<WsMessage> {
         Some(WsMessage::text("recovered"))
@@ -348,6 +348,10 @@ async fn ws_method_level_enhancers_work() {
         .await
         .unwrap();
         let reply = ws.next().await.unwrap().unwrap();
+        // User-handler `Err(WsError::Internal)` flows through the chain;
+        // the method-level `RecoveryErrorHandler` claims it and replaces
+        // the response with `"recovered"`. (Without that handler, AppError's
+        // `into_ws_message` would render the canonical envelope instead.)
         assert_eq!(reply.to_text().unwrap(), "recovered");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
@@ -395,7 +399,8 @@ async fn ws_method_level_enhancers_work() {
 ///   - `{}`             → guard blocks → Forbidden
 ///
 /// "rpc.piped"      → pipe aborts → err frame
-/// "rpc.recovering" → error handler recovers → "recovered"
+/// "rpc.recovering" → handler errors; chain claims via RecoveryErrorHandler
+///                    → "recovered"
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
 #[tokio_localset_test::localset_test]
 async fn rpc_method_level_enhancers_work() {
@@ -410,6 +415,10 @@ async fn rpc_method_level_enhancers_work() {
     let resp = tcp_rpc(port, "rpc.piped", serde_json::json!({})).await;
     assert!(resp.get("err").is_some(), "pipe should have aborted");
 
+    // User-handler `Err(RpcError::Internal)` flows through the chain;
+    // the method-level `RecoveryErrorHandler` claims it and replaces the
+    // response with `"recovered"`. (Without that handler, AppError's
+    // `into_rpc_data` would render the canonical error envelope instead.)
     let resp = tcp_rpc(port, "rpc.recovering", serde_json::json!({})).await;
     assert_eq!(resp["response"], "recovered");
 

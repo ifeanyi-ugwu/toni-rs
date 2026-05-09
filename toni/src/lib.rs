@@ -63,7 +63,10 @@ pub use provider_scope::ProviderScope;
 pub use traits_helpers::{HttpProviderContext, ProviderContext, RequestCache};
 
 pub use error::{BindError, InitResult};
-pub use errors::HttpError;
+pub use errors::{
+    AppError, Cancelled, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
+    PipelineSegment,
+};
 
 // Re-export trait so users wont have to import manually
 pub use extractors::{BodyStream, FromRequest, FromRequestParts};

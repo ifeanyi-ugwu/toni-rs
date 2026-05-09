@@ -1,6 +1,10 @@
 mod common;
 
+mod app_error_derive;
 mod app_token_enhancers;
+mod catch_macro;
+mod error_observer;
+mod panic_recovery;
 mod async_controllers;
 mod attribute_extractors;
 mod attribute_syntax;

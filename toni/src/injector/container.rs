@@ -8,10 +8,10 @@ use crate::{
     rpc::RpcControllerTrait,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
-        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
-        WsInterceptorEntry, WsPipeEntry,
+        Controller, ControllerFactory, ErrorObserver, HttpErrorHandlerArc, HttpGuardEntry,
+        HttpInterceptorEntry, HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory,
+        ProviderRole, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry,
+        WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
     },
     websocket::GatewayTrait,
 };
@@ -40,6 +40,9 @@ pub struct ToniContainer {
     global_ws_interceptors: Vec<WsInterceptorEntry>,
     global_ws_pipes: Vec<WsPipeEntry>,
     global_ws_error_handlers: Vec<WsErrorHandlerArc>,
+    /// Universal error observers — fire on any framework-generated error
+    /// across every transport.
+    global_error_observers: Vec<Arc<dyn ErrorObserver>>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
@@ -81,6 +84,7 @@ impl ToniContainer {
             global_ws_interceptors: Vec::new(),
             global_ws_pipes: Vec::new(),
             global_ws_error_handlers: Vec::new(),
+            global_error_observers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
             app_pipe_providers: Vec::new(),
@@ -168,6 +172,14 @@ impl ToniContainer {
 
     pub fn get_global_ws_error_handlers(&self) -> Vec<WsErrorHandlerArc> {
         self.global_ws_error_handlers.clone()
+    }
+
+    pub fn add_global_error_observer(&mut self, observer: Arc<dyn ErrorObserver>) {
+        self.global_error_observers.push(observer);
+    }
+
+    pub fn get_global_error_observers(&self) -> Vec<Arc<dyn ErrorObserver>> {
+        self.global_error_observers.clone()
     }
 
     pub fn get_global_enhancers(&self) -> EnhancerMetadata {
@@ -346,6 +358,7 @@ impl ToniContainer {
         enhancer_metadata: EnhancerMetadata,
     ) -> Result<()> {
         let global_enhancers = self.get_global_enhancers();
+        let error_observers = self.get_global_error_observers();
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
@@ -354,6 +367,7 @@ impl ToniContainer {
             controller_instance,
             enhancer_metadata,
             global_enhancers,
+            error_observers,
         );
         Ok(())
     }

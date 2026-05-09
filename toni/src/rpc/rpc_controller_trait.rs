@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::RpcContext;
-use crate::http_helpers::RouteMetadata;
+use crate::http_helpers::{ExecutionResult, RouteMetadata};
 
-use super::{RpcData, RpcError};
+use super::RpcData;
 
 /// Core trait for RPC message handlers.
 ///
@@ -20,13 +20,12 @@ pub trait RpcControllerTrait: Send + Sync {
 
     /// Route an inbound message to the right per-pattern handler.
     ///
-    /// Returns `Some(reply)` for request-response patterns
-    /// (`#[message_pattern]`), or `None` for fire-and-forget events
-    /// (`#[event_pattern]`).
-    async fn handle_message(
-        &self,
-        ctx: &RpcContext,
-    ) -> Result<Option<RpcData>, RpcError>;
+    /// `Ok(Some(reply))` for request-response patterns (`#[message_pattern]`),
+    /// `Ok(None)` for fire-and-forget events (`#[event_pattern]`), and
+    /// `Err` carrying the user's typed error so the dispatcher can fan
+    /// observers + run the chain on it before falling back to
+    /// `AppError::into_rpc_data`.
+    async fn handle_message(&self, ctx: &RpcContext) -> ExecutionResult<Option<RpcData>>;
 
     fn get_guard_tokens(&self) -> Vec<String> {
         vec![]

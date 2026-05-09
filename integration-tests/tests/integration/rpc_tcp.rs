@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use toni::context::RpcContext;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
@@ -83,8 +84,10 @@ impl RpcPanicController {
 #[module(providers: [RpcPanicController])]
 impl RpcPanicModule {}
 
-/// A panicking RPC handler must return an error response instead of hanging
-/// the caller indefinitely. The connection must remain usable for subsequent
+/// A panicking RPC handler is caught by the dispatcher, surfaced as a
+/// `PanicRecovered` framework event, and rendered through
+/// `AppError::into_rpc_data`. The reply is a canonical-envelope success
+/// frame (not a wire-Err) and the connection stays usable for subsequent
 /// messages.
 ///
 /// Note: the test produces a "panicked at" line in stderr — that is the Rust
@@ -93,24 +96,18 @@ impl RpcPanicModule {}
 async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     let port = start_rpc_server(RpcPanicModule::module_definition()).await;
 
-    // Panicking handler must return an error response within 500 ms,
-    // not leave the caller hanging.
+    // Panicking handler must return a response within 500 ms, not hang.
     let resp = tcp_rpc_timeout(
         port,
         "rpc.panic",
         serde_json::json!({}),
         Duration::from_millis(500),
     )
-    .await;
-    assert!(
-        resp.is_some(),
-        "panicking handler should return an error response, not hang"
-    );
-    let resp = resp.unwrap();
-    assert!(
-        resp.get("err").is_some(),
-        "response should be an error frame, got: {resp}"
-    );
+    .await
+    .expect("panicking handler should return a response, not hang");
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
 
     // Connection must still be usable — safe handler works on a fresh connection.
     let resp = tcp_rpc_timeout(
@@ -377,4 +374,77 @@ async fn tcp_backpressure_rejects_excess_and_releases_after_completion() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     assert_eq!(v["response"], "third");
+}
+
+// ---- Typed-payload coverage --------------------------------------------------
+//
+// The macro emits two distinct payload-extraction shapes: `data` for handlers
+// that take raw `RpcData`, and `data.parse::<T>()` for typed DTOs. Earlier
+// transitions had only `RpcData` coverage in tests, so changes that broke the
+// typed path slipped past CI. These tests exercise the typed-DTO path
+// explicitly.
+
+#[derive(Debug, Deserialize)]
+struct EchoDto {
+    text: String,
+    count: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct EchoReply {
+    repeated: String,
+}
+
+#[rpc_controller(pub struct TypedPayloadController {})]
+impl TypedPayloadController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("typed.echo")]
+    async fn echo(
+        &self,
+        payload: EchoDto,
+        _ctx: &RpcContext,
+    ) -> Result<EchoReply, RpcError> {
+        Ok(EchoReply {
+            repeated: payload.text.repeat(payload.count as usize),
+        })
+    }
+}
+
+#[module(providers: [TypedPayloadController])]
+impl TypedPayloadModule {}
+
+#[tokio_localset_test::localset_test]
+async fn typed_payload_round_trip_succeeds() {
+    let port = start_rpc_server(TypedPayloadModule::module_definition()).await;
+    let resp = tcp_rpc_timeout(
+        port,
+        "typed.echo",
+        serde_json::json!({"text": "ab", "count": 3}),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("typed echo response");
+    assert_eq!(resp["response"]["repeated"], "ababab");
+}
+
+#[tokio_localset_test::localset_test]
+async fn typed_payload_parse_failure_renders_canonical_envelope() {
+    // Exercises the macro's typed-payload parse-error path: deserialise
+    // failure renders through `AppError::into_rpc_data` rather than
+    // surfacing as a wire-level Err frame.
+    let port = start_rpc_server(TypedPayloadModule::module_definition()).await;
+    let resp = tcp_rpc_timeout(
+        port,
+        "typed.echo",
+        serde_json::json!({"wrong": "shape"}),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("parse-error response");
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
 }

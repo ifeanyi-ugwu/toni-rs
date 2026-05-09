@@ -3,20 +3,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::AppError;
 use crate::context::{HandlerContext, RpcContext};
-use crate::http_helpers::RouteMetadata;
+use crate::errors::{PanicRecovered, PipelineSegment};
+use crate::http_helpers::{ExecutionResult, RouteMetadata};
 use crate::traits_helpers::{
-    Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
+    ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
     RpcInterceptorEntry, RpcPipeEntry,
 };
 
 use super::{RpcControllerTrait, RpcData, RpcError};
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext>>>,
     controller: Arc<Box<dyn RpcControllerTrait>>,
     pipes: Vec<Arc<dyn Pipe<RpcContext>>>,
     error_handlers: Vec<RpcErrorHandlerArc>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 #[async_trait]
@@ -28,6 +33,7 @@ impl InterceptorNext<RpcContext> for RpcChainNext {
             &self.controller,
             &self.pipes,
             &self.error_handlers,
+            &self.observers,
         )
         .await;
     }
@@ -40,6 +46,7 @@ pub struct RpcControllerWrapper {
     interceptors: Vec<RpcInterceptorEntry>,
     pipes: Vec<RpcPipeEntry>,
     error_handlers: Vec<RpcErrorHandlerArc>,
+    error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
     handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
@@ -54,6 +61,7 @@ impl RpcControllerWrapper {
         interceptors: Vec<RpcInterceptorEntry>,
         pipes: Vec<RpcPipeEntry>,
         error_handlers: Vec<RpcErrorHandlerArc>,
+        error_observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
@@ -66,6 +74,7 @@ impl RpcControllerWrapper {
             interceptors,
             pipes,
             error_handlers,
+            error_observers,
             route_metadata,
             handler_guards,
             handler_interceptors,
@@ -103,14 +112,19 @@ impl RpcControllerWrapper {
         if let Some(h) = self.handler_error_handlers.get(&pattern) {
             all_error_handlers.extend_from_slice(h);
         }
+        let observers = self.error_observers.clone();
 
         let guards = Self::resolve_guards(&all_guards).await;
         for guard in &guards {
             if !guard.can_activate(&ctx).await {
-                return Err(RpcError::Forbidden("Guard rejected message".into()));
+                let err = RpcError::Forbidden("Guard rejected message".into());
+                Self::fan_out_observers(&observers, &err, &ctx).await;
+                return Err(err);
             }
             if ctx.should_abort() {
-                return Err(RpcError::Forbidden("Message aborted by guard".into()));
+                let err = RpcError::Forbidden("Message aborted by guard".into());
+                Self::fan_out_observers(&observers, &err, &ctx).await;
+                return Err(err);
             }
         }
 
@@ -122,8 +136,29 @@ impl RpcControllerWrapper {
             &interceptors,
             &pipes,
             &all_error_handlers,
+            &observers,
         )
         .await
+    }
+
+    async fn fan_out_observers(
+        observers: &[Arc<dyn ErrorObserver>],
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &RpcContext,
+    ) {
+        for observer in observers {
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            if let Err(payload) = observe.catch_unwind().await {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    *s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "<panic payload was not a string>"
+                };
+                tracing::error!(error = %error, panic = %msg, "error observer panicked");
+            }
+        }
     }
 
     /// RPC has no HTTP request; factory entries are called with `None`.
@@ -173,6 +208,7 @@ impl RpcControllerWrapper {
         interceptors: &[Arc<dyn Interceptor<RpcContext>>],
         pipes: &[Arc<dyn Pipe<RpcContext>>],
         error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) -> Result<Option<RpcData>, RpcError> {
         Self::execute_with_interceptors_impl(
             context,
@@ -180,6 +216,7 @@ impl RpcControllerWrapper {
             controller,
             pipes,
             error_handlers,
+            observers,
         )
         .await;
 
@@ -205,29 +242,10 @@ impl RpcControllerWrapper {
         controller: &Arc<Box<dyn RpcControllerTrait>>,
         pipes: &[Arc<dyn Pipe<RpcContext>>],
         error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) {
         if interceptors.is_empty() {
-            Self::execute_handler(context, controller, pipes).await;
-            if !error_handlers.is_empty() {
-                let needs_recovery = matches!(context.response(), Some(Err(_)));
-                if needs_recovery {
-                    let Some(Err(e)) = context.take_response() else {
-                        return;
-                    };
-                    let error_msg = e.to_string();
-                    for handler in error_handlers.iter().rev() {
-                        let error: Box<dyn std::error::Error + Send> = Box::new(
-                            std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone()),
-                        );
-                        if let Some(data) = handler.handle_error(error, context).await {
-                            context.set_response(Ok(Some(data)));
-                            return;
-                        }
-                    }
-                    // No handler claimed it — restore the original error.
-                    context.set_response(Err(RpcError::Internal(error_msg)));
-                }
-            }
+            Self::execute_handler(context, controller, pipes, error_handlers, observers).await;
             return;
         }
 
@@ -238,25 +256,66 @@ impl RpcControllerWrapper {
             controller: controller.clone(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
+            observers: observers.to_vec(),
         };
 
         first.intercept(context, Box::new(next)).await;
     }
 
+    /// Run pipes + handler, then route the result.
+    ///
+    /// On `ExecutionResult::Ok`, the response goes straight to the context.
+    /// On `ExecutionResult::Err`, the typed error is preserved as a
+    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `AppError::into_rpc_data`
+    /// is the fallback envelope when no handler claims.
     async fn execute_handler(
         context: &mut RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
         pipes: &[Arc<dyn Pipe<RpcContext>>],
+        error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) {
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
-                context.set_response(Err(RpcError::Internal("Request aborted by pipe".into())));
+                // Pipe abort blocks the handler from running — surface as a
+                // wire-level Err so adapters can frame it as an "the
+                // framework couldn't process this" outcome, parallel to
+                // guard rejection. User-error responses use the Ok+envelope
+                // path; this isn't a user error.
+                context.set_response(Err(RpcError::Internal(
+                    "Request aborted by pipe".into(),
+                )));
                 return;
             }
         }
 
-        let result = controller.handle_message(context).await;
-        context.set_response(result);
+        let exec_result = AssertUnwindSafe(controller.handle_message(context))
+            .catch_unwind()
+            .await;
+        let exec_result = match exec_result {
+            Ok(result) => result,
+            Err(payload) => {
+                let event = PanicRecovered::from_panic_payload(
+                    PipelineSegment::HandlerBody,
+                    payload,
+                );
+                ExecutionResult::Err(Box::new(event))
+            }
+        };
+        match exec_result {
+            ExecutionResult::Ok(data) => context.set_response(Ok(data)),
+            ExecutionResult::Err(err) => {
+                Self::fan_out_observers(observers, &*err, context).await;
+                for handler in error_handlers.iter().rev() {
+                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                        context.set_response(Ok(Some(claimed)));
+                        return;
+                    }
+                }
+                context.set_response(Ok(Some(err.into_rpc_data())));
+            }
+        }
     }
 }

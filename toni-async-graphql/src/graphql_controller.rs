@@ -126,7 +126,35 @@ where
         format!("GraphQLPostController_{}", self.path)
     }
 
-    async fn execute(&self, req: HttpRequest) -> HttpResponse {
+    async fn execute(&self, req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse> {
+        self.execute_inner(req).await.into()
+    }
+
+    fn get_path(&self) -> String {
+        self.path.clone()
+    }
+
+    fn get_method(&self) -> HttpMethod {
+        HttpMethod::POST
+    }
+
+    fn get_body_dto(
+        &self,
+        _req: &toni::RequestPart,
+    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
+        None // GraphQL doesn't use DTO validation (uses GraphQL schema validation)
+    }
+}
+
+impl<Query, Mutation, Subscription, Ctx>
+    GraphQLPostController<Query, Mutation, Subscription, Ctx>
+where
+    Query: ObjectType + 'static,
+    Mutation: ObjectType + 'static,
+    Subscription: SubscriptionType + 'static,
+    Ctx: ContextBuilder,
+{
+    async fn execute_inner(&self, req: HttpRequest) -> HttpResponse {
         let (parts, body) = req.into_parts();
         let body_bytes = match body.collect().await {
             Ok(b) => b,
@@ -189,21 +217,6 @@ where
             headers: vec![],
         }
     }
-
-    fn get_path(&self) -> String {
-        self.path.clone()
-    }
-
-    fn get_method(&self) -> HttpMethod {
-        HttpMethod::POST
-    }
-
-    fn get_body_dto(
-        &self,
-        _req: &toni::RequestPart,
-    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
-        None // GraphQL doesn't use DTO validation (uses GraphQL schema validation)
-    }
 }
 
 /// GET controller for serving GraphQL Playground
@@ -218,12 +231,13 @@ impl Controller for GraphQLPlaygroundController {
         format!("GraphQLPlaygroundController_{}", self.path)
     }
 
-    async fn execute(&self, _req: HttpRequest) -> HttpResponse {
+    async fn execute(&self, _req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse> {
         HttpResponse {
             status: 200,
             body: Some(Body::text(self.playground_html.clone())),
             headers: vec![],
         }
+        .into()
     }
 
     fn get_path(&self) -> String {

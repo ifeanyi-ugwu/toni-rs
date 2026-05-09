@@ -6,6 +6,8 @@ use proc_macro2::Span;
 use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
+mod app_error_macro;
+mod catch_macro;
 mod config_macro;
 mod controller_macro;
 mod enhancer;
@@ -360,6 +362,32 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
 }
 
+/// Derive `AppError` from an annotated error type.
+///
+/// Tag the type (or each enum variant) with `#[app_error(KIND)]`, where
+/// `KIND` is a variant of `toni::ErrorKind`. Untagged variants fall back
+/// to a top-level `#[app_error(...)]` if present, otherwise to
+/// `ErrorKind::Internal`.
+///
+/// ```ignore
+/// use toni::AppError;
+///
+/// #[derive(Debug, thiserror::Error, AppError)]
+/// enum BillingError {
+///     #[error("invoice {0} not found")]
+///     #[app_error(NotFound)]
+///     InvoiceNotFound(String),
+///
+///     #[error("card declined")]
+///     #[app_error(UnprocessableEntity)]
+///     CardDeclined,
+/// }
+/// ```
+#[proc_macro_derive(AppError, attributes(app_error))]
+pub fn derive_app_error(input: TokenStream) -> TokenStream {
+    app_error_macro::derive_app_error(input)
+}
+
 #[proc_macro]
 pub fn provider_value(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
@@ -424,6 +452,36 @@ pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
+}
+
+/// `#[catch(T)]` — escape hatch for runtime-selected error handling.
+///
+/// The framework's primary error path is `AppError`: a domain error type
+/// implements `AppError` and renders itself for whichever transport is
+/// active. `#[catch]` is for the cases that path doesn't reach — typically
+/// re-shaping framework-synthesised errors (`HttpError`, etc.) per route or
+/// per controller, where one handler claims an error and the chain falls
+/// through otherwise.
+///
+/// Lowers a free `async fn` into a unit struct whose `ErrorHandler<C, R>`
+/// impl runs `error.downcast_ref::<T>()` and returns `None` on no match
+/// (so the chain advances to the next handler).
+///
+/// ```ignore
+/// use toni::{context::HttpContext, errors::HttpError, HttpResponse};
+///
+/// #[catch(HttpError)]
+/// async fn render_4xx(err: &HttpError, _ctx: &HttpContext) -> HttpResponse {
+///     // custom envelope for HttpError 4xx/5xx in this scope
+///     err.to_response()
+/// }
+///
+/// // Register on a controller / method:
+/// #[use_error_handlers(render_4xx)]
+/// ```
+#[proc_macro_attribute]
+pub fn catch(attr: TokenStream, item: TokenStream) -> TokenStream {
+    catch_macro::catch(attr, item)
 }
 
 // ============================================================================

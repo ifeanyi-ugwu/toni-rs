@@ -146,6 +146,35 @@ where
         client: WsClient,
         message: WsMessage,
         event: &str,
+    ) -> toni::http_helpers::ExecutionResult<WsHandlerOutput> {
+        self.handle_event_inner(client, message, event).await.into()
+    }
+
+    async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
+        self.init_payloads.lock().unwrap().remove(&client.id);
+        let mut handles = self.abort_handles.lock().unwrap();
+        handles.retain(|(cid, _), handle| {
+            if *cid == client.id {
+                handle.abort();
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+impl<Q, M, S> GraphQLSubscriptionGateway<Q, M, S>
+where
+    Q: ObjectType + 'static,
+    M: ObjectType + 'static,
+    S: SubscriptionType + 'static,
+{
+    async fn handle_event_inner(
+        &self,
+        client: WsClient,
+        message: WsMessage,
+        event: &str,
     ) -> Result<WsHandlerOutput, WsError> {
         let text = match &message {
             WsMessage::Text(t) => t.clone(),
@@ -199,26 +228,6 @@ where
         }
     }
 
-    async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
-        self.init_payloads.lock().unwrap().remove(&client.id);
-        let mut handles = self.abort_handles.lock().unwrap();
-        handles.retain(|(cid, _), handle| {
-            if *cid == client.id {
-                handle.abort();
-                false
-            } else {
-                true
-            }
-        });
-    }
-}
-
-impl<Q, M, S> GraphQLSubscriptionGateway<Q, M, S>
-where
-    Q: ObjectType + 'static,
-    M: ObjectType + 'static,
-    S: SubscriptionType + 'static,
-{
     async fn handle_subscribe(
         &self,
         client: WsClient,

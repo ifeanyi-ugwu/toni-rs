@@ -166,7 +166,10 @@ fn generate_gateway_impl(
         }
     }
 
-    // Generate handle_event implementation
+    // User errors are preserved past the macro boundary as
+    // `ExecutionResult::Err` so the dispatcher can fan observers + run the
+    // chain on the typed error before falling back to
+    // `AppError::into_ws_message`.
     let match_arms: Vec<_> = message_handlers
         .iter()
         .map(|(event, method)| {
@@ -174,7 +177,12 @@ fn generate_gateway_impl(
 
             quote! {
                 #event => {
-                    self.#method_name(client, message).await
+                    match self.#method_name(client, message).await {
+                        Ok(__output) => ::toni::http_helpers::ExecutionResult::Ok(__output),
+                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(__err),
+                        ),
+                    }
                 }
             }
         })
@@ -522,10 +530,14 @@ fn generate_gateway_impl(
                 client: toni::WsClient,
                 message: toni::WsMessage,
                 event: &str,
-            ) -> Result<toni::WsHandlerOutput, toni::WsError> {
+            ) -> ::toni::http_helpers::ExecutionResult<toni::WsHandlerOutput> {
                 match event {
                     #(#match_arms)*
-                    _ => Err(toni::WsError::EventNotFound(format!("Unknown event: {}", event)))
+                    _ => ::toni::http_helpers::ExecutionResult::Err(
+                        ::std::boxed::Box::new(toni::WsError::EventNotFound(
+                            format!("Unknown event: {}", event),
+                        )),
+                    ),
                 }
             }
         }

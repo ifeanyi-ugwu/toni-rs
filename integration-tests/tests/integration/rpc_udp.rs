@@ -142,6 +142,14 @@ async fn udp_unknown_pattern_returns_error_frame() {
     assert_eq!(resp["err"]["status"], "not_found");
 }
 
+/// A panicking RPC handler is caught by the dispatcher, surfaced as a
+/// `PanicRecovered` framework event, and rendered through
+/// `AppError::into_rpc_data`. The reply is a canonical-envelope success
+/// frame (not a wire-Err) and the server stays responsive on subsequent
+/// datagrams.
+///
+/// Note: the test produces a "panicked at" line in stderr — that is the Rust
+/// panic hook firing before catch_unwind catches the unwind. It is expected.
 #[tokio_localset_test::localset_test]
 async fn udp_panicking_handler_returns_error_frame() {
     let port = start_rpc_server(UdpRpcModule::module_definition()).await;
@@ -157,7 +165,16 @@ async fn udp_panicking_handler_returns_error_frame() {
     .expect("panicking handler must not hang the caller");
 
     assert_eq!(resp["id"], "1");
-    assert!(resp.get("err").is_some(), "expected err frame, got: {resp}");
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("intentional udp rpc panic"),
+        "panic message should surface in the envelope, got: {resp}",
+    );
 
     // Subsequent request on a fresh socket still succeeds.
     let resp = udp_rpc_timeout(

@@ -14,9 +14,9 @@ use crate::rpc::RpcData;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
 use crate::traits_helpers::{
-    ErrorHandler, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
-    Interceptor, Pipe, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry,
-    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+    ErrorHandler, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
+    HttpPipeEntry, Interceptor, Pipe, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
+    RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
 };
 use crate::websocket::WsMessage;
 
@@ -35,6 +35,7 @@ pub struct ToniFactory {
     global_ws_interceptors: Vec<WsInterceptorEntry>,
     global_ws_pipes: Vec<WsPipeEntry>,
     global_ws_error_handlers: Vec<WsErrorHandlerArc>,
+    global_error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 impl ToniFactory {
@@ -131,6 +132,22 @@ impl ToniFactory {
         handler: Arc<dyn ErrorHandler<WsContext, WsMessage>>,
     ) -> &mut Self {
         self.global_ws_error_handlers.push(handler);
+        self
+    }
+
+    /// Register a transport-agnostic observer that fires whenever a
+    /// framework-generated error reaches the chain (guard rejections,
+    /// missing routes, panic recovery). Observers are fire-and-forget
+    /// — they don't shape the response.
+    ///
+    /// User-handler errors render directly via `AppError::into_*` and
+    /// don't pass through observers; if you need to log those, override
+    /// the rendering method on your error type.
+    pub fn use_global_error_observer(
+        &mut self,
+        observer: Arc<dyn ErrorObserver>,
+    ) -> &mut Self {
+        self.global_error_observers.push(observer);
         self
     }
 
@@ -247,6 +264,9 @@ impl ToniFactory {
             }
             for handler in &self.global_ws_error_handlers {
                 container_mut.add_global_ws_error_handler(handler.clone());
+            }
+            for observer in &self.global_error_observers {
+                container_mut.add_global_error_observer(observer.clone());
             }
         }
 

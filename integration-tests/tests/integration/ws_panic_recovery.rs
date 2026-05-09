@@ -1,8 +1,8 @@
-//! Verifies that a panic inside a WebSocket handler closes the connection
-//! cleanly (disconnect callback fires, client gets EOF/close) instead of
-//! leaving the connection dangling indefinitely.
-
-use std::time::Duration;
+//! A panic inside a WebSocket handler is caught by the dispatcher,
+//! surfaced as a `PanicRecovered` framework event, and rendered through
+//! `AppError::into_ws_message` — the connection stays alive and the next
+//! message goes through normally. Sibling connections on the same gateway
+//! are unaffected.
 
 use toni::module;
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
@@ -30,42 +30,48 @@ impl PanicGateway {
 #[module(providers: [PanicGateway])]
 impl PanicGatewayModule {}
 
-/// A handler panic must close the connection promptly.
-/// Sibling connections on the same gateway must be unaffected.
+/// A handler panic surfaces as a canonical-envelope WS frame; the connection
+/// stays open and the same client can send another message. Sibling
+/// connections are unaffected.
 ///
 /// Note: the test produces a "panicked at" line in stderr — that is the
-/// Rust panic hook firing before catch_unwind catches the unwind.
-/// It is expected and does not indicate a test failure.
+/// Rust panic hook firing before catch_unwind catches the unwind. It is
+/// expected and does not indicate a test failure.
 #[tokio_localset_test::localset_test]
-async fn ws_handler_panic_closes_connection_and_leaves_siblings_unaffected() {
+async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
     let server = TestServer::start(PanicGatewayModule::module_definition()).await;
     let ws_url = format!("ws://127.0.0.1:{}/ws-panic-recovery", server.port);
 
-    // Client A triggers the panic — its connection must close.
+    // Client A triggers the panic — receives the canonical envelope, not a Close.
     let (mut ws_a, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     ws_a.send(Message::Text(r#"{"event":"panic"}"#.to_string().into()))
         .await
         .unwrap();
 
-    let closed = tokio::time::timeout(Duration::from_millis(500), async {
-        while let Some(msg) = ws_a.next().await {
-            match msg {
-                Ok(Message::Close(_)) | Err(_) => return true,
-                _ => {}
-            }
-        }
-        true // stream ended = closed
-    })
-    .await;
+    let reply = ws_a.next().await.unwrap().unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
     assert!(
-        closed.is_ok(),
-        "panicking handler should close the connection within 500 ms"
+        json["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("intentional test panic"),
+        "panic message should surface in the envelope, got: {json}",
     );
 
-    // Client B connects after the panic — must reach the safe handler normally.
+    // Same connection still works for subsequent messages.
+    ws_a.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
+        .await
+        .unwrap();
+    let reply = ws_a.next().await.unwrap().unwrap();
+    assert_eq!(reply.to_text().unwrap(), "safe-ok");
+
+    // Client B (connected after the panic) reaches the safe handler normally.
     let (mut ws_b, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     ws_b.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
         .await
