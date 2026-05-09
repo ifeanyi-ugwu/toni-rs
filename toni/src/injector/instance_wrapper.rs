@@ -7,8 +7,8 @@ use crate::{
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
-        Interceptor, InterceptorNext, Pipe,
+        Controller, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry,
+        HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe,
     },
 };
 
@@ -41,6 +41,7 @@ pub struct InstanceWrapper {
     pipes: Vec<HttpPipeEntry>,
     middleware_chain: MiddlewareChain,
     error_handlers: Vec<HttpErrorHandlerArc>,
+    error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
 }
 
@@ -49,6 +50,7 @@ impl InstanceWrapper {
         instance: Arc<Box<dyn Controller>>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
+        error_observers: Vec<Arc<dyn ErrorObserver>>,
     ) -> Self {
         // Execution order: global → controller → method
         let mut guards = global_enhancers.guards;
@@ -72,6 +74,7 @@ impl InstanceWrapper {
             pipes,
             middleware_chain: MiddlewareChain::new(),
             error_handlers,
+            error_observers,
             route_metadata,
         }
     }
@@ -109,6 +112,8 @@ impl InstanceWrapper {
         let pipes = self.pipes.clone();
         let error_handlers_for_controller = self.error_handlers.clone();
         let error_handlers_for_middleware = self.error_handlers.clone();
+        let observers_for_controller = self.error_observers.clone();
+        let observers_for_middleware = self.error_observers.clone();
         let route_metadata = self.route_metadata.clone();
 
         let middleware_result = self
@@ -119,6 +124,7 @@ impl InstanceWrapper {
                 let interceptors = interceptors.clone();
                 let pipes = pipes.clone();
                 let error_handlers = error_handlers_for_controller.clone();
+                let observers = observers_for_controller.clone();
                 let route_metadata = route_metadata.clone();
 
                 Box::pin(async move {
@@ -129,6 +135,7 @@ impl InstanceWrapper {
                         interceptors,
                         pipes,
                         error_handlers,
+                        observers,
                         route_metadata,
                     )
                     .await
@@ -154,6 +161,7 @@ impl InstanceWrapper {
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let error =
                     std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone());
+                Self::fan_out_observers(&observers_for_middleware, &error, &error_ctx).await;
                 for handler in error_handlers_for_middleware.iter().rev() {
                     if let Some(response) = handler.handle_error(&error, &error_ctx).await {
                         return response;
@@ -223,6 +231,7 @@ impl InstanceWrapper {
         interceptors: Vec<HttpInterceptorEntry>,
         pipes: Vec<HttpPipeEntry>,
         error_handlers: Vec<HttpErrorHandlerArc>,
+        observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
         // Split req so factory entries see parts before the context takes ownership.
@@ -244,7 +253,13 @@ impl InstanceWrapper {
                     forbidden
                 });
 
-                return Self::handle_error_response(guard_response, &error_handlers, &context).await;
+                return Self::handle_error_response(
+                    guard_response,
+                    &error_handlers,
+                    &observers,
+                    &context,
+                )
+                .await;
             }
         }
 
@@ -264,14 +279,19 @@ impl InstanceWrapper {
     }
 
     /// Route 4xx/5xx responses through error handlers. Most-specific
-    /// (method > controller > global) is consulted first.
+    /// (method > controller > global) is consulted first. Observers fan
+    /// out before the chain so they see every framework-generated error
+    /// regardless of whether a handler claims it.
     async fn handle_error_response(
         response: HttpResponse,
         error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         ctx: &HttpContext,
     ) -> HttpResponse {
         if response.status >= 400 {
             let http_error = Self::response_to_http_error(&response);
+
+            Self::fan_out_observers(observers, &http_error, ctx).await;
 
             for handler in error_handlers.iter().rev() {
                 if let Some(handled) = handler.handle_error(&http_error, ctx).await {
@@ -280,6 +300,16 @@ impl InstanceWrapper {
             }
         }
         response
+    }
+
+    async fn fan_out_observers(
+        observers: &[Arc<dyn ErrorObserver>],
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &dyn HandlerContext,
+    ) {
+        for observer in observers {
+            observer.observe(error, ctx).await;
+        }
     }
 
     /// Onion/Russian doll dispatch through the interceptor chain.

@@ -38,6 +38,7 @@ impl RpcControllerResolver {
         let interceptors = self.resolve_interceptors(controller.get_interceptor_tokens())?;
         let pipes = self.resolve_pipes(controller.get_pipe_tokens())?;
         let error_handlers = self.resolve_error_handlers(controller.get_error_handler_tokens())?;
+        let error_observers = self.container.borrow().get_global_error_observers();
         let route_metadata = controller.get_route_metadata();
 
         let mut handler_guards: HashMap<String, Vec<RpcGuardEntry>> = HashMap::new();
@@ -74,6 +75,7 @@ impl RpcControllerResolver {
             interceptors,
             pipes,
             error_handlers,
+            error_observers,
             route_metadata,
             handler_guards,
             handler_interceptors,

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use crate::context::{HandlerContext, RpcContext};
 use crate::http_helpers::RouteMetadata;
 use crate::traits_helpers::{
-    Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
+    ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
     RpcInterceptorEntry, RpcPipeEntry,
 };
 
@@ -17,6 +17,7 @@ struct RpcChainNext {
     controller: Arc<Box<dyn RpcControllerTrait>>,
     pipes: Vec<Arc<dyn Pipe<RpcContext>>>,
     error_handlers: Vec<RpcErrorHandlerArc>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 #[async_trait]
@@ -28,6 +29,7 @@ impl InterceptorNext<RpcContext> for RpcChainNext {
             &self.controller,
             &self.pipes,
             &self.error_handlers,
+            &self.observers,
         )
         .await;
     }
@@ -40,6 +42,7 @@ pub struct RpcControllerWrapper {
     interceptors: Vec<RpcInterceptorEntry>,
     pipes: Vec<RpcPipeEntry>,
     error_handlers: Vec<RpcErrorHandlerArc>,
+    error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
     handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
@@ -54,6 +57,7 @@ impl RpcControllerWrapper {
         interceptors: Vec<RpcInterceptorEntry>,
         pipes: Vec<RpcPipeEntry>,
         error_handlers: Vec<RpcErrorHandlerArc>,
+        error_observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
@@ -66,6 +70,7 @@ impl RpcControllerWrapper {
             interceptors,
             pipes,
             error_handlers,
+            error_observers,
             route_metadata,
             handler_guards,
             handler_interceptors,
@@ -103,14 +108,19 @@ impl RpcControllerWrapper {
         if let Some(h) = self.handler_error_handlers.get(&pattern) {
             all_error_handlers.extend_from_slice(h);
         }
+        let observers = self.error_observers.clone();
 
         let guards = Self::resolve_guards(&all_guards).await;
         for guard in &guards {
             if !guard.can_activate(&ctx).await {
-                return Err(RpcError::Forbidden("Guard rejected message".into()));
+                let err = RpcError::Forbidden("Guard rejected message".into());
+                Self::fan_out_observers(&observers, &err, &ctx).await;
+                return Err(err);
             }
             if ctx.should_abort() {
-                return Err(RpcError::Forbidden("Message aborted by guard".into()));
+                let err = RpcError::Forbidden("Message aborted by guard".into());
+                Self::fan_out_observers(&observers, &err, &ctx).await;
+                return Err(err);
             }
         }
 
@@ -122,8 +132,19 @@ impl RpcControllerWrapper {
             &interceptors,
             &pipes,
             &all_error_handlers,
+            &observers,
         )
         .await
+    }
+
+    async fn fan_out_observers(
+        observers: &[Arc<dyn ErrorObserver>],
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &RpcContext,
+    ) {
+        for observer in observers {
+            observer.observe(error, ctx).await;
+        }
     }
 
     /// RPC has no HTTP request; factory entries are called with `None`.
@@ -173,6 +194,7 @@ impl RpcControllerWrapper {
         interceptors: &[Arc<dyn Interceptor<RpcContext>>],
         pipes: &[Arc<dyn Pipe<RpcContext>>],
         error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) -> Result<Option<RpcData>, RpcError> {
         Self::execute_with_interceptors_impl(
             context,
@@ -180,6 +202,7 @@ impl RpcControllerWrapper {
             controller,
             pipes,
             error_handlers,
+            observers,
         )
         .await;
 
@@ -205,10 +228,11 @@ impl RpcControllerWrapper {
         controller: &Arc<Box<dyn RpcControllerTrait>>,
         pipes: &[Arc<dyn Pipe<RpcContext>>],
         error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) {
         if interceptors.is_empty() {
             Self::execute_handler(context, controller, pipes).await;
-            if !error_handlers.is_empty() {
+            if !error_handlers.is_empty() || !observers.is_empty() {
                 let needs_recovery = matches!(context.response(), Some(Err(_)));
                 if needs_recovery {
                     let Some(Err(e)) = context.take_response() else {
@@ -217,6 +241,7 @@ impl RpcControllerWrapper {
                     let error_msg = e.to_string();
                     let error =
                         std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone());
+                    Self::fan_out_observers(observers, &error, context).await;
                     for handler in error_handlers.iter().rev() {
                         if let Some(data) = handler.handle_error(&error, context).await {
                             context.set_response(Ok(Some(data)));
@@ -237,6 +262,7 @@ impl RpcControllerWrapper {
             controller: controller.clone(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
+            observers: observers.to_vec(),
         };
 
         first.intercept(context, Box::new(next)).await;

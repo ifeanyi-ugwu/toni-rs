@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use crate::context::{HandlerContext, WsContext};
 use crate::http_helpers::{RequestPart, RouteMetadata};
 use crate::traits_helpers::{
-    Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
+    ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
     WsInterceptorEntry, WsPipeEntry,
 };
 
@@ -20,6 +20,7 @@ struct WsChainNext {
     event: String,
     pipes: Vec<Arc<dyn Pipe<WsContext>>>,
     error_handlers: Vec<WsErrorHandlerArc>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
     stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
 }
 
@@ -33,6 +34,7 @@ impl InterceptorNext<WsContext> for WsChainNext {
             &self.event,
             &self.pipes,
             &self.error_handlers,
+            &self.observers,
             self.stream_slot,
         )
         .await;
@@ -47,6 +49,7 @@ pub struct GatewayWrapper {
     interceptors: Vec<WsInterceptorEntry>,
     pipes: Vec<WsPipeEntry>,
     error_handlers: Vec<WsErrorHandlerArc>,
+    error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
     handler_guards: HashMap<String, Vec<WsGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
@@ -63,6 +66,7 @@ impl GatewayWrapper {
         interceptors: Vec<WsInterceptorEntry>,
         pipes: Vec<WsPipeEntry>,
         error_handlers: Vec<WsErrorHandlerArc>,
+        error_observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
         handler_guards: HashMap<String, Vec<WsGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
@@ -75,6 +79,7 @@ impl GatewayWrapper {
             interceptors,
             pipes,
             error_handlers,
+            error_observers,
             route_metadata,
             handler_guards,
             handler_interceptors,
@@ -101,10 +106,14 @@ impl GatewayWrapper {
         for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context).await {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
-                return Err(WsError::AuthFailed("Guard rejected connection".into()));
+                let err = WsError::AuthFailed("Guard rejected connection".into());
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
+                return Err(err);
             }
             if context.should_abort() {
-                return Err(WsError::AuthFailed("Connection aborted by guard".into()));
+                let err = WsError::AuthFailed("Connection aborted by guard".into());
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
+                return Err(err);
             }
         }
 
@@ -186,10 +195,14 @@ impl GatewayWrapper {
         let guards = Self::resolve_guards(&all_guards, None).await;
         for guard in &guards {
             if !guard.can_activate(&context).await {
-                return Err(WsError::AuthFailed("Guard rejected message".into()));
+                let err = WsError::AuthFailed("Guard rejected message".into());
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
+                return Err(err);
             }
             if context.should_abort() {
-                return Err(WsError::AuthFailed("Message aborted by guard".into()));
+                let err = WsError::AuthFailed("Message aborted by guard".into());
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
+                return Err(err);
             }
         }
 
@@ -208,6 +221,7 @@ impl GatewayWrapper {
             &interceptors,
             &pipes,
             &all_error_handlers,
+            &self.error_observers,
             stream_slot.clone(),
         )
         .await?;
@@ -276,6 +290,7 @@ impl GatewayWrapper {
         interceptors: &[Arc<dyn Interceptor<WsContext>>],
         pipes: &[Arc<dyn Pipe<WsContext>>],
         error_handlers: &[WsErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) -> Result<(), WsError> {
         Self::execute_with_interceptors_impl(
@@ -285,6 +300,7 @@ impl GatewayWrapper {
             &event,
             pipes,
             error_handlers,
+            observers,
             stream_slot,
         )
         .await;
@@ -310,6 +326,7 @@ impl GatewayWrapper {
         event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
         error_handlers: &[WsErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
         if interceptors.is_empty() {
@@ -319,6 +336,7 @@ impl GatewayWrapper {
                 event,
                 pipes,
                 error_handlers,
+                observers,
                 stream_slot,
             )
             .await;
@@ -333,6 +351,7 @@ impl GatewayWrapper {
             event: event.to_string(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
+            observers: observers.to_vec(),
             stream_slot,
         };
 
@@ -345,6 +364,7 @@ impl GatewayWrapper {
         event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
         error_handlers: &[WsErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
         let result = Self::execute_handler(context, gateway, event, pipes).await;
@@ -356,10 +376,11 @@ impl GatewayWrapper {
             return;
         }
 
-        let context_result = if !error_handlers.is_empty() {
+        let context_result = if !error_handlers.is_empty() || !observers.is_empty() {
             if let Err(ref e) = result {
                 let error_msg = e.to_string();
                 let error = std::io::Error::new(std::io::ErrorKind::Other, error_msg);
+                Self::fan_out_observers(observers, &error, context).await;
                 let mut recovered = None;
                 for handler in error_handlers.iter().rev() {
                     if let Some(msg) = handler.handle_error(&error, context).await {
@@ -387,6 +408,16 @@ impl GatewayWrapper {
         };
 
         context.set_response(context_result);
+    }
+
+    async fn fan_out_observers(
+        observers: &[Arc<dyn ErrorObserver>],
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &WsContext,
+    ) {
+        for observer in observers {
+            observer.observe(error, ctx).await;
+        }
     }
 
     async fn execute_handler(
@@ -512,6 +543,7 @@ mod tests {
 
         GatewayWrapper::new(
             Arc::new(Box::new(TestGateway)),
+            vec![],
             vec![],
             vec![],
             vec![],

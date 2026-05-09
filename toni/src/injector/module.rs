@@ -59,10 +59,15 @@ impl Module {
         controller: Arc<Box<dyn Controller>>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
+        error_observers: Vec<Arc<dyn crate::traits_helpers::ErrorObserver>>,
     ) {
         let token = controller.get_token();
-        let instance_wrapper =
-            InstanceWrapper::new(controller, enhancer_metadata, global_enhancers);
+        let instance_wrapper = InstanceWrapper::new(
+            controller,
+            enhancer_metadata,
+            global_enhancers,
+            error_observers,
+        );
         self.controllers_instances
             .insert(token, Arc::new(instance_wrapper));
     }
