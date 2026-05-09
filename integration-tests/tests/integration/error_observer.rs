@@ -105,9 +105,11 @@ async fn observer_fires_on_guard_rejection() {
 }
 
 #[tokio_localset_test::localset_test]
-async fn observer_does_not_fire_on_user_error() {
-    // User errors render via `AppError::into_http_response` directly and
-    // bypass the chain — observers don't see them.
+async fn observer_fires_on_user_error() {
+    // User errors render via `AppError::into_http_response`, but the
+    // dispatcher preserves the typed error past that boundary so observers
+    // can see it too. Symmetric semantics: observers fire on every error,
+    // user-typed and framework-generated alike.
     #[controller("/api", pub struct UserErrController {})]
     impl UserErrController {
         #[get("/missing")]
@@ -123,7 +125,7 @@ async fn observer_does_not_fire_on_user_error() {
     let last_message = Arc::new(std::sync::Mutex::new(String::new()));
     let observer = Arc::new(CountingObserver {
         count: count.clone(),
-        last_message,
+        last_message: last_message.clone(),
     });
 
     let addr = start_app(UserErrModule::module_definition(), observer).await;
@@ -133,11 +135,13 @@ async fn observer_does_not_fire_on_user_error() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 
-    // User-error rendering doesn't run through the chain, so the observer
-    // should not have fired.
     assert_eq!(
         count.load(Ordering::SeqCst),
-        0,
-        "observer must not fire on user-handler errors",
+        1,
+        "observer should have fired on the user-handler error",
+    );
+    assert!(
+        last_message.lock().unwrap().contains("user-error"),
+        "observer should have captured the user error message",
     );
 }

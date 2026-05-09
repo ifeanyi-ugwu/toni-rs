@@ -4,7 +4,7 @@ use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
     errors::{AppError, GuardRejection, MiddlewareFailure},
-    http_helpers::{HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
+    http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
@@ -18,6 +18,8 @@ struct ChainNext {
     interceptors: Vec<Arc<dyn Interceptor<HttpContext>>>,
     instance: Arc<Box<dyn Controller>>,
     pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
+    error_handlers: Vec<HttpErrorHandlerArc>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
 }
 
@@ -29,6 +31,8 @@ impl InterceptorNext<HttpContext> for ChainNext {
             &self.interceptors,
             &self.instance,
             &self.pipes,
+            &self.error_handlers,
+            &self.observers,
             &self.route_metadata,
         )
         .await;
@@ -263,6 +267,8 @@ impl InstanceWrapper {
             &interceptors,
             &instance,
             &pipes,
+            &error_handlers,
+            &observers,
             &route_metadata,
         )
         .await;
@@ -313,10 +319,12 @@ impl InstanceWrapper {
         interceptors: &[Arc<dyn Interceptor<HttpContext>>],
         instance: &Arc<Box<dyn Controller>>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
+        error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
         route_metadata: &Arc<RouteMetadata>,
     ) {
         if interceptors.is_empty() {
-            Self::execute_handler_with_error_handling(context, instance, pipes).await;
+            Self::execute_handler(context, instance, pipes, error_handlers, observers).await;
             return;
         }
 
@@ -326,16 +334,27 @@ impl InstanceWrapper {
             interceptors: rest.to_vec(),
             instance: instance.clone(),
             pipes: pipes.to_vec(),
+            error_handlers: error_handlers.to_vec(),
+            observers: observers.to_vec(),
             route_metadata: route_metadata.clone(),
         };
 
         first.intercept(context, Box::new(next)).await;
     }
 
+    /// Run pipes + handler, then route the result.
+    ///
+    /// On `ExecutionResult::Ok`, the response goes straight to the context.
+    /// On `ExecutionResult::Err`, the user's typed error is preserved as a
+    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `AppError::into_http_response`
+    /// is the fallback envelope when no handler claims.
     async fn execute_handler(
         context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
+        error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
     ) {
         let dto = instance.get_body_dto(context.request());
         if let Some(dto) = dto {
@@ -369,21 +388,18 @@ impl InstanceWrapper {
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
         let req = context.take_request();
-        let controller_response = instance.execute(req).await;
-        context.set_response(controller_response);
+        match instance.execute(req).await {
+            ExecutionResult::Ok(response) => context.set_response(response),
+            ExecutionResult::Err(err) => {
+                Self::fan_out_observers(observers, &*err, context).await;
+                for handler in error_handlers.iter().rev() {
+                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                        context.set_response(claimed);
+                        return;
+                    }
+                }
+                context.set_response(err.into_http_response());
+            }
+        }
     }
-
-    /// User errors render via `AppError::into_http_response` at the macro
-    /// boundary — the response that arrives here is already the user's
-    /// final answer. The error-handler chain only runs on framework-
-    /// generated errors (guard rejections, middleware failures), where it
-    /// has a typed framework error to dispatch on.
-    async fn execute_handler_with_error_handling(
-        context: &mut HttpContext,
-        instance: &Arc<Box<dyn Controller>>,
-        pipes: &[Arc<dyn Pipe<HttpContext>>],
-    ) {
-        Self::execute_handler(context, instance, pipes).await;
-    }
-
 }

@@ -411,6 +411,8 @@ fn generate_controller_wrapper(
         (method_call, extractions, body_dto)
     };
 
+    let returns_result = returns_result_type(&method.sig.output);
+
     let wrapper = generate_controller_wrapper_code(
         &controller_name,
         &controller_token,
@@ -427,6 +429,7 @@ fn generate_controller_wrapper(
         struct_name,
         is_static_method,
         lifecycle_hooks,
+        returns_result,
     );
 
     let controller_dependencies: Vec<(Ident, TokenStream)> = dependencies
@@ -668,6 +671,7 @@ fn generate_controller_wrapper_code(
     struct_name: &Ident,
     is_static_method: bool,
     lifecycle_hooks: &LifecycleHooks,
+    returns_result: bool,
 ) -> TokenStream {
     use crate::shared::scope_parser::ControllerScope;
 
@@ -685,6 +689,7 @@ fn generate_controller_wrapper_code(
             struct_name,
             is_static_method,
             lifecycle_hooks,
+            returns_result,
         ),
         ControllerScope::Request => generate_request_controller_wrapper(
             controller_name,
@@ -700,6 +705,7 @@ fn generate_controller_wrapper_code(
             metadata_exprs,
             is_static_method,
             lifecycle_hooks,
+            returns_result,
         ),
     }
 }
@@ -718,6 +724,7 @@ fn generate_singleton_controller_wrapper(
     struct_name: &Ident,
     is_static_method: bool,
     lifecycle_hooks: &LifecycleHooks,
+    returns_result: bool,
 ) -> TokenStream {
     let binding = Vec::new();
 
@@ -880,6 +887,8 @@ fn generate_singleton_controller_wrapper(
         quote! {}
     };
 
+    let exec_body = exec_body_for(method_call, returns_result);
+
     quote! {
         struct #controller_name {
             #struct_fields
@@ -890,7 +899,7 @@ fn generate_singleton_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
-            ) -> ::toni::http_helpers::HttpResponse {
+            ) -> ::toni::http_helpers::ExecutionResult {
                 let (_req_parts, _req_body) = __req.0.into_parts();
 
                 #(#marker_params_extraction)*
@@ -898,8 +907,7 @@ fn generate_singleton_controller_wrapper(
                 #instance_downcast
 
                 use ::toni::http_helpers::IntoResponse;
-                let result = #method_call;
-                result.into_response()
+                #exec_body
             }
 
             fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
@@ -957,6 +965,7 @@ fn generate_request_controller_wrapper(
     metadata_exprs: &[TokenStream],
     is_static_method: bool,
     lifecycle_hooks: &LifecycleHooks,
+    returns_result: bool,
 ) -> TokenStream {
     let binding = Vec::new();
 
@@ -1066,6 +1075,8 @@ fn generate_request_controller_wrapper(
         }
     };
 
+    let exec_body = exec_body_for(method_call, returns_result);
+
     quote! {
         struct #controller_name {
             #struct_fields
@@ -1076,7 +1087,7 @@ fn generate_request_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
-            ) -> ::toni::http_helpers::HttpResponse {
+            ) -> ::toni::http_helpers::ExecutionResult {
                 let (_req_parts, _req_body) = __req.0.into_parts();
                 let _req_cache = ::toni::RequestCache::new();
 
@@ -1087,8 +1098,7 @@ fn generate_request_controller_wrapper(
                 #bootstrap_call
 
                 use ::toni::http_helpers::IntoResponse;
-                let result = #method_call;
-                result.into_response()
+                #exec_body
             }
 
             fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
@@ -1626,4 +1636,47 @@ fn join_paths(prefix: &str, path: &str) -> String {
     } else {
         format!("{}/{}", prefix, path)
     }
+}
+
+/// Body of the wrapper's `execute` for a user method.
+///
+/// `Result<T, E>` returns are pattern-matched so the typed `E` survives the
+/// macro boundary boxed as `dyn AppError`, ready for the dispatcher's
+/// observer + chain pipeline. Plain `T` returns just wrap in
+/// `ExecutionResult::Ok` — no typed error to preserve.
+fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream {
+    if returns_result {
+        quote! {
+            match #method_call {
+                ::std::result::Result::Ok(__t) => ::toni::http_helpers::ExecutionResult::Ok(
+                    ::toni::http_helpers::IntoResponse::into_response(__t),
+                ),
+                ::std::result::Result::Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
+                    ::std::boxed::Box::new(__e),
+                ),
+            }
+        }
+    } else {
+        quote! {
+            ::toni::http_helpers::ExecutionResult::Ok(
+                ::toni::http_helpers::IntoResponse::into_response(#method_call),
+            )
+        }
+    }
+}
+
+/// `true` when the user method's return type is `Result<_, _>` — drives
+/// whether the controller wrapper emits a typed-error preservation arm or
+/// a straight `IntoResponse::into_response` call.
+fn returns_result_type(output: &syn::ReturnType) -> bool {
+    if let syn::ReturnType::Type(_, ty) = output
+        && let syn::Type::Path(type_path) = ty.as_ref()
+    {
+        return type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "Result");
+    }
+    false
 }

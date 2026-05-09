@@ -89,10 +89,11 @@ async fn custom_app_error_renders_canonical_envelope() {
 }
 
 #[tokio_localset_test::localset_test]
-async fn chain_does_not_fire_on_user_error() {
-    // Sanity: a registered global ErrorHandler<HttpContext, HttpResponse> must
-    // *not* intercept user errors. If it did, the user's AppError rendering
-    // wouldn't be the source of truth.
+async fn unmatched_chain_handler_falls_through_to_app_error_default() {
+    // The chain runs on user errors (symmetric with framework events), but
+    // a handler that downcasts to a *different* type than the boxed user
+    // error returns None and the chain advances. With no claim, the
+    // `AppError` default envelope is the response.
     #[controller("/api", pub struct UserErrController {})]
     impl UserErrController {
         #[get("/bad")]
@@ -104,6 +105,9 @@ async fn chain_does_not_fire_on_user_error() {
     #[module(controllers: [UserErrController], providers: [])]
     impl UserErrModule {}
 
+    // MarkerHandler downcasts to `GuardRejection` — it must NOT claim a
+    // user `HttpError`. The boxed error is HttpError, downcast returns None,
+    // chain falls through, AppError default renders the canonical envelope.
     let addr = start_app(
         UserErrModule::module_definition(),
         Some(Arc::new(MarkerHandler { marker: "REWRITTEN" })),
@@ -115,7 +119,6 @@ async fn chain_does_not_fire_on_user_error() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    // Canonical envelope, not the chain's `MarkerHandler` rewrite.
     assert_eq!(body["statusCode"], 400);
     assert_eq!(body["message"], "user-error");
     assert_ne!(body["message"], "REWRITTEN");
@@ -181,6 +184,58 @@ async fn chain_fires_on_guard_rejection() {
     // Guard rejection produces 403; chain handler claims it and rewrites the body.
     assert_eq!(resp.status(), 403);
     assert_eq!(resp.text().await.unwrap(), "guard-caught");
+}
+
+// ---- Per-scope override on a user error type --------------------------------
+
+struct HttpErrorOverride;
+
+#[async_trait]
+impl ErrorHandler<HttpContext, HttpResponse> for HttpErrorOverride {
+    async fn handle_error(
+        &self,
+        error: ChainError<'_>,
+        _ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        let e = error.downcast_ref::<HttpError>()?;
+        let mut resp = HttpResponse::new();
+        resp.status = e.status_code();
+        resp.body = Some(ToniBody::text(format!("scope-override:{}", e.message())));
+        Some(resp)
+    }
+}
+
+#[tokio_localset_test::localset_test]
+async fn scope_chain_overrides_app_error_default_on_user_error() {
+    // Stratification in action: `AppError` is the type-level default, the
+    // chain is the scope-level override. A handler registered on this scope
+    // that downcasts to the user error type wins; everywhere else, the
+    // type's `AppError` envelope is the response.
+    #[controller("/api", pub struct UserErrController {})]
+    impl UserErrController {
+        #[get("/missing")]
+        fn missing(&self) -> Result<ToniBody, HttpError> {
+            Err(HttpError::not_found("user-error"))
+        }
+    }
+
+    #[module(controllers: [UserErrController], providers: [])]
+    impl UserErrModule {}
+
+    let addr = start_app(
+        UserErrModule::module_definition(),
+        Some(Arc::new(HttpErrorOverride)),
+    )
+    .await;
+
+    let resp = reqwest::get(format!("http://{}/api/missing", addr))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    // Chain handler claimed the user error and replaced the canonical
+    // envelope with the scope-specific shape.
+    assert_eq!(body, "scope-override:user-error");
 }
 
 // ---- Test harness -----------------------------------------------------------

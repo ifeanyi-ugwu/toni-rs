@@ -214,7 +214,52 @@ where
         format!("GraphQLPostController_{}", self.path)
     }
 
-    async fn execute(&self, req: HttpRequest) -> HttpResponse {
+    async fn execute(&self, req: HttpRequest) -> toni::http_helpers::ExecutionResult {
+        self.execute_inner(req).await.into()
+    }
+
+    fn get_path(&self) -> String {
+        self.path.clone()
+    }
+
+    fn get_method(&self) -> HttpMethod {
+        HttpMethod::POST
+    }
+
+    fn get_body_dto(
+        &self,
+        _req: &toni::RequestPart,
+    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
+        None // GraphQL doesn't use DTO validation (uses GraphQL schema validation)
+    }
+}
+
+impl<Query, Mutation, Subscription, Ctx, S>
+    GraphQLPostController<Query, Mutation, Subscription, Ctx, S>
+where
+    Query: GraphQLType<S, Context = Ctx::Context>
+        + GraphQLTypeAsync<S, Context = Ctx::Context>
+        + Send
+        + Sync
+        + 'static,
+    Mutation: GraphQLType<S, Context = Ctx::Context>
+        + GraphQLTypeAsync<S, Context = Ctx::Context>
+        + Send
+        + Sync
+        + 'static,
+    Subscription: GraphQLType<S, Context = Ctx::Context>
+        + GraphQLSubscriptionType<S, Context = Ctx::Context>
+        + Send
+        + Sync
+        + 'static,
+    Ctx: ContextBuilder,
+    Ctx::Context: Send + Sync,
+    S: ScalarValue + Send + Sync + 'static,
+    Query::TypeInfo: Send + Sync,
+    Mutation::TypeInfo: Send + Sync,
+    Subscription::TypeInfo: Send + Sync,
+{
+    async fn execute_inner(&self, req: HttpRequest) -> HttpResponse {
         let (parts, body) = req.into_parts();
         let body_bytes = match body.collect().await {
             Ok(b) => b,
@@ -274,21 +319,6 @@ where
             headers: vec![],
         }
     }
-
-    fn get_path(&self) -> String {
-        self.path.clone()
-    }
-
-    fn get_method(&self) -> HttpMethod {
-        HttpMethod::POST
-    }
-
-    fn get_body_dto(
-        &self,
-        _req: &toni::RequestPart,
-    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
-        None // GraphQL doesn't use DTO validation (uses GraphQL schema validation)
-    }
 }
 
 /// GET controller for serving GraphQL Playground
@@ -303,12 +333,13 @@ impl Controller for GraphQLPlaygroundController {
         format!("GraphQLPlaygroundController_{}", self.path)
     }
 
-    async fn execute(&self, _req: HttpRequest) -> HttpResponse {
+    async fn execute(&self, _req: HttpRequest) -> toni::http_helpers::ExecutionResult {
         HttpResponse {
             status: 200,
             body: Some(Body::text(self.playground_html.clone())),
             headers: vec![],
         }
+        .into()
     }
 
     fn get_path(&self) -> String {
