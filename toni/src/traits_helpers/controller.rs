@@ -3,7 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
-use crate::http_helpers::{ExecutionResult, HttpMethod, HttpRequest, RequestPart, RouteMetadata};
+use crate::http_helpers::{
+    ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RequestPart, RouteMetadata,
+};
 
 use crate::context::HttpContext;
 
@@ -35,7 +37,7 @@ pub trait Controller: Send + Sync {
     /// Run the user handler and return either the rendered success response
     /// or the user's typed error preserved for the dispatcher's observer +
     /// chain pipeline.
-    async fn execute(&self, req: HttpRequest) -> ExecutionResult;
+    async fn execute(&self, req: HttpRequest) -> ExecutionResult<HttpResponse>;
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 

@@ -96,10 +96,9 @@ fn generate_rpc_controller_impl(
         .chain(event_handlers.iter().map(|(p, _)| p.as_str()))
         .collect();
 
-    // User errors render at the macro boundary via `AppError::into_rpc_data`,
-    // so the trait method observes them as `Ok(Some(error_payload))` and the
-    // dispatcher's error chain isn't involved. The chain only fires for
-    // framework-generated errors (guard rejection, pattern not found).
+    // User errors are preserved past the macro boundary as `ExecutionResult::Err`
+    // so the dispatcher can fan observers + run the chain on the typed error
+    // before falling back to `AppError::into_rpc_data`.
     let message_arms: Vec<_> = message_handlers
         .iter()
         .map(|(pattern, method)| {
@@ -108,19 +107,26 @@ fn generate_rpc_controller_impl(
             if returns_rpc_data(method) {
                 quote! {
                     #pattern => match self.#method_name(#payload_expr, ctx).await {
-                        Ok(__data) => Ok(Some(__data)),
-                        Err(__err) => Ok(Some(::toni::AppError::into_rpc_data(&__err))),
+                        Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
+                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(__err),
+                        ),
                     },
                 }
             } else {
                 quote! {
                     #pattern => match self.#method_name(#payload_expr, ctx).await {
                         Ok(__result) => {
-                            let __data = toni::rpc::RpcData::from_serialize(&__result)
-                                .map_err(|e| toni::rpc::RpcError::Internal(e.to_string()))?;
-                            Ok(Some(__data))
+                            match toni::rpc::RpcData::from_serialize(&__result) {
+                                Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
+                                Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
+                                    ::std::boxed::Box::new(toni::rpc::RpcError::Internal(__e.to_string())),
+                                ),
+                            }
                         }
-                        Err(__err) => Ok(Some(::toni::AppError::into_rpc_data(&__err))),
+                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(__err),
+                        ),
                     },
                 }
             }
@@ -133,9 +139,11 @@ fn generate_rpc_controller_impl(
             let method_name = &method.sig.ident;
             let payload_expr = typed_payload_expr(method);
             quote! {
-                #pattern => {
-                    self.#method_name(#payload_expr, ctx).await?;
-                    Ok(None)
+                #pattern => match self.#method_name(#payload_expr, ctx).await {
+                    Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
+                    Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                        ::std::boxed::Box::new(__err),
+                    ),
                 }
             }
         })
@@ -390,15 +398,17 @@ fn generate_rpc_controller_impl(
             async fn handle_message(
                 &self,
                 ctx: &toni::context::RpcContext,
-            ) -> Result<Option<toni::rpc::RpcData>, toni::rpc::RpcError> {
+            ) -> ::toni::http_helpers::ExecutionResult<Option<toni::rpc::RpcData>> {
                 let data = ctx.data().clone();
                 let _ = &data;
                 match ctx.pattern() {
                     #(#message_arms)*
                     #(#event_arms)*
-                    _ => Err(toni::rpc::RpcError::PatternNotFound(
-                        format!("Unknown pattern: {}", ctx.pattern()),
-                    )),
+                    _ => ::toni::http_helpers::ExecutionResult::Err(
+                        ::std::boxed::Box::new(toni::rpc::RpcError::PatternNotFound(
+                            format!("Unknown pattern: {}", ctx.pattern()),
+                        )),
+                    ),
                 }
             }
         }

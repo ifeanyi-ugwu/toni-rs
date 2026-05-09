@@ -426,22 +426,12 @@ async fn rpc_method_level_enhancers_work() {
     let resp = tcp_rpc(port, "rpc.piped", serde_json::json!({})).await;
     assert!(resp.get("err").is_some(), "pipe should have aborted");
 
-    // User-handler `Err(RpcError::Internal)` renders via `RpcError`'s
-    // `AppError::into_rpc_data` — the registered `RecoveryErrorHandler`
-    // does not fire because the chain only runs on framework-generated
-    // errors.
+    // User-handler `Err(RpcError::Internal)` flows through the chain;
+    // the method-level `RecoveryErrorHandler` claims it and replaces the
+    // response with `"recovered"`. (Without that handler, AppError's
+    // `into_rpc_data` would render the canonical error envelope instead.)
     let resp = tcp_rpc(port, "rpc.recovering", serde_json::json!({})).await;
-    let payload = &resp["response"];
-    assert_eq!(payload["status"], "error");
-    assert_eq!(payload["kind"], "Internal");
-    assert!(
-        payload["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("intentional"),
-        "expected canonical envelope to carry the user error message, got: {resp}",
-    );
-    assert_ne!(payload, "recovered");
+    assert_eq!(resp["response"], "recovered");
 
     let resp = tcp_rpc(port, "rpc.plain", serde_json::json!({})).await;
     assert_eq!(resp["response"], "plain-ok");
