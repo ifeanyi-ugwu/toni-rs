@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use parking_lot::RwLock;
 
+use crate::AppError;
 use crate::context::{HandlerContext, WsContext};
-use crate::http_helpers::{RequestPart, RouteMetadata};
+use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
     WsInterceptorEntry, WsPipeEntry,
@@ -358,6 +359,13 @@ impl GatewayWrapper {
         first.intercept(context, Box::new(next)).await;
     }
 
+    /// Run pipes + handler, then route the outcome.
+    ///
+    /// On `ExecutionResult::Ok`, the response goes straight to the context.
+    /// On `ExecutionResult::Err`, the typed error is preserved as a
+    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `AppError::into_ws_message`
+    /// is the fallback envelope when no handler claims.
     async fn execute_handler_with_error_handling(
         context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
@@ -369,45 +377,29 @@ impl GatewayWrapper {
     ) {
         let result = Self::execute_handler(context, gateway, event, pipes).await;
 
-        // Streams bypass context storage — deposit and return early.
-        if let Ok(WsHandlerOutput::Stream(stream)) = result {
-            *stream_slot.lock() = Some(stream);
-            context.set_response(Ok(None));
-            return;
-        }
-
-        let context_result = if !error_handlers.is_empty() || !observers.is_empty() {
-            if let Err(ref e) = result {
-                let error_msg = e.to_string();
-                let error = std::io::Error::new(std::io::ErrorKind::Other, error_msg);
-                Self::fan_out_observers(observers, &error, context).await;
-                let mut recovered = None;
+        match result {
+            ExecutionResult::Ok(WsHandlerOutput::Stream(stream)) => {
+                // Streams bypass context storage — deposit and return early.
+                *stream_slot.lock() = Some(stream);
+                context.set_response(Ok(None));
+            }
+            ExecutionResult::Ok(WsHandlerOutput::Single(msg)) => {
+                context.set_response(Ok(Some(msg)));
+            }
+            ExecutionResult::Ok(WsHandlerOutput::Empty) => {
+                context.set_response(Ok(None));
+            }
+            ExecutionResult::Err(err) => {
+                Self::fan_out_observers(observers, &*err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(msg) = handler.handle_error(&error, context).await {
-                        recovered = Some(Ok(Some(msg)));
-                        break;
+                    if let Some(msg) = handler.handle_error(&*err, context).await {
+                        context.set_response(Ok(Some(msg)));
+                        return;
                     }
                 }
-                recovered.unwrap_or_else(|| {
-                    result.map(|o| match o {
-                        WsHandlerOutput::Single(m) => Some(m),
-                        _ => None,
-                    })
-                })
-            } else {
-                result.map(|o| match o {
-                    WsHandlerOutput::Single(m) => Some(m),
-                    _ => None,
-                })
+                context.set_response(Ok(Some(err.into_ws_message())));
             }
-        } else {
-            result.map(|o| match o {
-                WsHandlerOutput::Single(m) => Some(m),
-                _ => None,
-            })
-        };
-
-        context.set_response(context_result);
+        }
     }
 
     async fn fan_out_observers(
@@ -425,11 +417,13 @@ impl GatewayWrapper {
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
-    ) -> Result<WsHandlerOutput, WsError> {
+    ) -> ExecutionResult<WsHandlerOutput> {
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
-                return Err(WsError::Internal("Request aborted by pipe".into()));
+                return ExecutionResult::Err(Box::new(WsError::Internal(
+                    "Request aborted by pipe".into(),
+                )));
             }
         }
 
@@ -536,8 +530,8 @@ mod tests {
                 _client: WsClient,
                 _message: WsMessage,
                 _event: &str,
-            ) -> Result<WsHandlerOutput, WsError> {
-                Ok(WsHandlerOutput::Empty)
+            ) -> ExecutionResult<WsHandlerOutput> {
+                ExecutionResult::Ok(WsHandlerOutput::Empty)
             }
         }
 

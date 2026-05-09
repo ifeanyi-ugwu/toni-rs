@@ -46,3 +46,12 @@ impl<R> From<R> for ExecutionResult<R> {
         Self::Ok(value)
     }
 }
+
+impl<R, E: AppError + Send + Sync> From<Result<R, E>> for ExecutionResult<R> {
+    fn from(result: Result<R, E>) -> Self {
+        match result {
+            Ok(value) => Self::Ok(value),
+            Err(err) => Self::Err(Box::new(err)),
+        }
+    }
+}

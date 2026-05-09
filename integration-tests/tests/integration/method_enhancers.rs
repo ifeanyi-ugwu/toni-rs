@@ -348,22 +348,11 @@ async fn ws_method_level_enhancers_work() {
         .await
         .unwrap();
         let reply = ws.next().await.unwrap().unwrap();
-        // User-handler `Err(WsError::Internal)` renders via `WsError`'s
-        // `AppError::into_ws_message` (canonical envelope). The registered
-        // `RecoveryErrorHandler` does not fire — chain only runs on
-        // framework-generated errors.
-        let json: serde_json::Value =
-            serde_json::from_str(reply.to_text().unwrap()).unwrap();
-        assert_eq!(json["status"], "error");
-        assert_eq!(json["kind"], "Internal");
-        assert!(
-            json["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("intentional"),
-            "expected canonical envelope to carry the user error message, got: {json}",
-        );
-        assert_ne!(reply.to_text().unwrap(), "recovered");
+        // User-handler `Err(WsError::Internal)` flows through the chain;
+        // the method-level `RecoveryErrorHandler` claims it and replaces
+        // the response with `"recovered"`. (Without that handler, AppError's
+        // `into_ws_message` would render the canonical envelope instead.)
+        assert_eq!(reply.to_text().unwrap(), "recovered");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             r#"{"event":"plain"}"#.to_string().into(),
@@ -410,8 +399,8 @@ async fn ws_method_level_enhancers_work() {
 ///   - `{}`             → guard blocks → Forbidden
 ///
 /// "rpc.piped"      → pipe aborts → err frame
-/// "rpc.recovering" → handler errors; AppError renders canonical envelope
-///                    (RecoveryErrorHandler does NOT fire — chain bypassed)
+/// "rpc.recovering" → handler errors; chain claims via RecoveryErrorHandler
+///                    → "recovered"
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
 #[tokio_localset_test::localset_test]
 async fn rpc_method_level_enhancers_work() {

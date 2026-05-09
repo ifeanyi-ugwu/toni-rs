@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::WsContext;
-use crate::http_helpers::RouteMetadata;
+use crate::http_helpers::{ExecutionResult, RouteMetadata};
 
 use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput, WsMessage};
 
@@ -60,15 +60,16 @@ pub trait GatewayTrait: Send + Sync {
 
     /// Route message to appropriate handler based on event name.
     ///
-    /// Return `WsHandlerOutput::Empty` for no response, `::Single` for one
-    /// message, or `::Stream` to push an unbounded sequence — the framework
-    /// drives the stream and cancels it on disconnect.
+    /// `Ok(WsHandlerOutput)` for the success path (Empty / Single / Stream);
+    /// `Err` carries the user's typed error so the dispatcher can fan
+    /// observers + run the chain on it before falling back to
+    /// `AppError::into_ws_message`.
     async fn handle_event(
         &self,
         client: WsClient,
         message: WsMessage,
         event: &str,
-    ) -> Result<WsHandlerOutput, WsError>;
+    ) -> ExecutionResult<WsHandlerOutput>;
 
     /// Get guard tokens for DI resolution
     fn get_guard_tokens(&self) -> Vec<String> {

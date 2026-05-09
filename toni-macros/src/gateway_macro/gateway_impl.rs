@@ -166,10 +166,10 @@ fn generate_gateway_impl(
         }
     }
 
-    // User errors render at the macro boundary via `AppError::into_ws_message`,
-    // so the trait method observes them as `Ok(WsHandlerOutput::Single(...))`
-    // and the dispatcher's error chain isn't involved. The chain only fires
-    // for framework-generated errors (guard rejection, event-not-found).
+    // User errors are preserved past the macro boundary as
+    // `ExecutionResult::Err` so the dispatcher can fan observers + run the
+    // chain on the typed error before falling back to
+    // `AppError::into_ws_message`.
     let match_arms: Vec<_> = message_handlers
         .iter()
         .map(|(event, method)| {
@@ -178,10 +178,10 @@ fn generate_gateway_impl(
             quote! {
                 #event => {
                     match self.#method_name(client, message).await {
-                        Ok(__output) => Ok(__output),
-                        Err(__err) => Ok(toni::WsHandlerOutput::Single(
-                            ::toni::AppError::into_ws_message(&__err),
-                        )),
+                        Ok(__output) => ::toni::http_helpers::ExecutionResult::Ok(__output),
+                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(__err),
+                        ),
                     }
                 }
             }
@@ -530,10 +530,14 @@ fn generate_gateway_impl(
                 client: toni::WsClient,
                 message: toni::WsMessage,
                 event: &str,
-            ) -> Result<toni::WsHandlerOutput, toni::WsError> {
+            ) -> ::toni::http_helpers::ExecutionResult<toni::WsHandlerOutput> {
                 match event {
                     #(#match_arms)*
-                    _ => Err(toni::WsError::EventNotFound(format!("Unknown event: {}", event)))
+                    _ => ::toni::http_helpers::ExecutionResult::Err(
+                        ::std::boxed::Box::new(toni::WsError::EventNotFound(
+                            format!("Unknown event: {}", event),
+                        )),
+                    ),
                 }
             }
         }
