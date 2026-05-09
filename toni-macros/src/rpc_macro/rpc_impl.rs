@@ -103,31 +103,35 @@ fn generate_rpc_controller_impl(
         .iter()
         .map(|(pattern, method)| {
             let method_name = &method.sig.ident;
-            let payload_expr = typed_payload_expr(method);
+            let (payload_extract, payload_expr) = typed_payload_expr(method);
             if returns_rpc_data(method) {
                 quote! {
-                    #pattern => match self.#method_name(#payload_expr, ctx).await {
-                        Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
-                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                            ::std::boxed::Box::new(__err),
-                        ),
-                    },
+                    #pattern => {
+                        #payload_extract
+                        match self.#method_name(#payload_expr, ctx).await {
+                            Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
+                            Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                                ::std::boxed::Box::new(__err),
+                            ),
+                        }
+                    }
                 }
             } else {
                 quote! {
-                    #pattern => match self.#method_name(#payload_expr, ctx).await {
-                        Ok(__result) => {
-                            match toni::rpc::RpcData::from_serialize(&__result) {
+                    #pattern => {
+                        #payload_extract
+                        match self.#method_name(#payload_expr, ctx).await {
+                            Ok(__result) => match toni::rpc::RpcData::from_serialize(&__result) {
                                 Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
                                 Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
                                     ::std::boxed::Box::new(toni::rpc::RpcError::Internal(__e.to_string())),
                                 ),
-                            }
+                            },
+                            Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                                ::std::boxed::Box::new(__err),
+                            ),
                         }
-                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                            ::std::boxed::Box::new(__err),
-                        ),
-                    },
+                    }
                 }
             }
         })
@@ -137,13 +141,16 @@ fn generate_rpc_controller_impl(
         .iter()
         .map(|(pattern, method)| {
             let method_name = &method.sig.ident;
-            let payload_expr = typed_payload_expr(method);
+            let (payload_extract, payload_expr) = typed_payload_expr(method);
             quote! {
-                #pattern => match self.#method_name(#payload_expr, ctx).await {
-                    Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
-                    Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                        ::std::boxed::Box::new(__err),
-                    ),
+                #pattern => {
+                    #payload_extract
+                    match self.#method_name(#payload_expr, ctx).await {
+                        Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
+                        Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(__err),
+                        ),
+                    }
                 }
             }
         })
@@ -481,7 +488,20 @@ fn is_rpc_data(ty: &syn::Type) -> bool {
 /// If the declared parameter type is `RpcData` (or a path ending in it), the
 /// raw `data` value is forwarded directly.  Otherwise, the payload is
 /// deserialized into the declared type so handlers can use concrete structs.
-fn typed_payload_expr(method: &syn::ImplItemFn) -> proc_macro2::TokenStream {
+/// Emit the per-arm payload extraction.
+///
+/// Returns `(extract_stmt, payload_expr)`:
+/// - `extract_stmt` is either empty (untyped — payload is the raw `data`)
+///   or a `let __payload = ...` that early-returns
+///   `ExecutionResult::Err(RpcError::Internal)` if parsing fails.
+/// - `payload_expr` is what the macro passes to the user method —
+///   `data` for untyped, `__payload` for typed.
+///
+/// Splitting this way avoids the `?` operator (which doesn't work
+/// against `ExecutionResult`) without losing the parse-error path.
+fn typed_payload_expr(
+    method: &syn::ImplItemFn,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let payload_ty = method.sig.inputs.iter().find_map(|arg| {
         if let syn::FnArg::Typed(pt) = arg {
             Some(pt.ty.as_ref())
@@ -491,10 +511,22 @@ fn typed_payload_expr(method: &syn::ImplItemFn) -> proc_macro2::TokenStream {
     });
 
     match payload_ty {
-        Some(ty) if !is_rpc_data(ty) => quote! {
-            data.parse::<#ty>().map_err(|e| toni::rpc::RpcError::Internal(e.to_string()))?
-        },
-        _ => quote! { data },
+        Some(ty) if !is_rpc_data(ty) => {
+            let extract = quote! {
+                let __payload = match data.parse::<#ty>() {
+                    Ok(__p) => __p,
+                    Err(__e) => {
+                        return ::toni::http_helpers::ExecutionResult::Err(
+                            ::std::boxed::Box::new(
+                                toni::rpc::RpcError::Internal(__e.to_string()),
+                            ),
+                        );
+                    }
+                };
+            };
+            (extract, quote! { __payload })
+        }
+        _ => (proc_macro2::TokenStream::new(), quote! { data }),
     }
 }
 
