@@ -96,6 +96,10 @@ fn generate_rpc_controller_impl(
         .chain(event_handlers.iter().map(|(p, _)| p.as_str()))
         .collect();
 
+    // User errors render at the macro boundary via `AppError::into_rpc_data`,
+    // so the trait method observes them as `Ok(Some(error_payload))` and the
+    // dispatcher's error chain isn't involved. The chain only fires for
+    // framework-generated errors (guard rejection, pattern not found).
     let message_arms: Vec<_> = message_handlers
         .iter()
         .map(|(pattern, method)| {
@@ -103,16 +107,21 @@ fn generate_rpc_controller_impl(
             let payload_expr = typed_payload_expr(method);
             if returns_rpc_data(method) {
                 quote! {
-                    #pattern => Ok(Some(self.#method_name(#payload_expr, ctx).await?)),
+                    #pattern => match self.#method_name(#payload_expr, ctx).await {
+                        Ok(__data) => Ok(Some(__data)),
+                        Err(__err) => Ok(Some(::toni::AppError::into_rpc_data(&__err))),
+                    },
                 }
             } else {
                 quote! {
-                    #pattern => {
-                        let __result = self.#method_name(#payload_expr, ctx).await?;
-                        let __data = toni::rpc::RpcData::from_serialize(&__result)
-                            .map_err(|e| toni::rpc::RpcError::Internal(e.to_string()))?;
-                        Ok(Some(__data))
-                    }
+                    #pattern => match self.#method_name(#payload_expr, ctx).await {
+                        Ok(__result) => {
+                            let __data = toni::rpc::RpcData::from_serialize(&__result)
+                                .map_err(|e| toni::rpc::RpcError::Internal(e.to_string()))?;
+                            Ok(Some(__data))
+                        }
+                        Err(__err) => Ok(Some(::toni::AppError::into_rpc_data(&__err))),
+                    },
                 }
             }
         })

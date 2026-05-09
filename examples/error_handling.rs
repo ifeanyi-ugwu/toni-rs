@@ -1,483 +1,265 @@
-//! Comprehensive error handling example
+//! Error handling — the AppError way.
 //!
 //! Demonstrates:
-//! 1. Global error handlers (via factory.use_global_error_handler)
-//! 2. Controller-level error handlers (via #[use_error_handlers] on impl)
-//! 3. Method-level error handlers (via #[use_error_handlers] on methods)
-//! 4. Chain-of-responsibility pattern (handlers return Option)
-//! 5. Specialized error handlers for different error types
-//! 6. HttpError enum for controller errors
-//! 7. HttpResponse builder pattern
-//! 8. Guards causing errors
-//! 9. DI-based error handlers (registered in providers and resolved from container)
+//! 1. Domain error types with `#[derive(AppError)]` — the 95% path
+//! 2. Returning `Result<T, MyError>` from handlers — auto-rendered to a
+//!    canonical JSON envelope by the framework
+//! 3. Overriding `into_http_response()` per error type for custom envelopes
+//! 4. `HttpError` as a user-convenience type (for trivial cases that don't
+//!    warrant a dedicated error)
+//! 5. `#[catch(HttpError)]` as the escape hatch for re-shaping framework-
+//!    generated errors (guard rejections, missing routes) — chain dispatch
+//!    only fires for these, not for user errors
 //!
 //! Run with:
 //! ```bash
 //! cargo run --example error_handling
 //! ```
 
+use serde::Serialize;
 use serde_json::json;
-use std::sync::Arc;
 use toni::{
-    async_trait,
-    context::HttpContext,
-    controller,
-    enhancer::error_handler,
-    errors::HttpError,
-    get, injectable, module, post,
-    toni_factory::ToniFactory,
-    traits_helpers::{ErrorHandler, Guard},
-    Body as ToniBody, HttpRequest, HttpResponse,
+    AppError, HttpRequest, HttpResponse, async_trait, catch, context::HttpContext, controller,
+    errors::HttpError, get, http_helpers::Body, injectable, module, post,
+    toni_factory::ToniFactory, traits_helpers::Guard,
 };
 use toni_axum::AxumAdapter;
-use toni_macros::{use_error_handlers, use_guards};
+use toni_macros::use_guards;
 
-// Global error handler - catches all unhandled errors
-pub struct GlobalErrorHandler;
+// ---- Domain error: derived AppError, default canonical envelope -------------
 
-#[async_trait]
-impl ErrorHandler<HttpContext, HttpResponse> for GlobalErrorHandler {
-    async fn handle_error(
-        &self,
-        error: toni::traits_helpers::ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        eprintln!(
-            "[GlobalErrorHandler] {} {}: {}",
-            req.method, req.uri, error
-        );
+#[derive(Debug, toni::AppError)]
+enum UserError {
+    #[app_error(NotFound)]
+    NotFound(String),
 
-        if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            return Some(http_error.to_response());
+    #[app_error(BadRequest)]
+    InvalidId(String),
+
+    #[app_error(Conflict)]
+    EmailTaken(String),
+
+    #[app_error(UnprocessableEntity)]
+    InvalidEmail(String),
+}
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(id) => write!(f, "user {id} not found"),
+            Self::InvalidId(id) => write!(f, "invalid user id: {id}"),
+            Self::EmailTaken(email) => write!(f, "email already in use: {email}"),
+            Self::InvalidEmail(email) => write!(f, "malformed email: {email}"),
         }
-
-        Some(
-            HttpResponse::builder()
-                .status(500)
-                .json(json!({
-                    "statusCode": 500,
-                    "message": "An unexpected error occurred",
-                    "error": "Internal Server Error",
-                    "handler": "GlobalErrorHandler",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                    "path": req.uri.to_string(),
-                }))
-                .build(),
-        )
     }
 }
 
-// Specialized handler for validation errors (400, 422)
-pub struct ValidationErrorHandler;
+impl std::error::Error for UserError {}
 
-#[async_trait]
-impl ErrorHandler<HttpContext, HttpResponse> for ValidationErrorHandler {
-    async fn handle_error(
-        &self,
-        error: toni::traits_helpers::ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            let status = http_error.status_code();
-            if matches!(status, 400 | 422) {
-                eprintln!(
-                    "[ValidationErrorHandler] Handling validation error on {}: {}",
-                    req.uri, error
-                );
-                return Some(
-                    HttpResponse::builder()
-                        .status(status)
-                        .json(json!({
-                            "statusCode": status,
-                            "message": http_error.message(),
-                            "error": "Validation Error",
-                            "handler": "ValidationErrorHandler",
-                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": req.uri.to_string(),
-                        }))
-                        .build(),
-                );
-            }
+// ---- Domain error with a custom HTTP envelope override ----------------------
+
+#[derive(Debug)]
+struct PaymentDeclined {
+    reason_code: &'static str,
+    retry_after_secs: u32,
+}
+
+impl std::fmt::Display for PaymentDeclined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "payment declined ({})", self.reason_code)
+    }
+}
+
+impl std::error::Error for PaymentDeclined {}
+
+impl AppError for PaymentDeclined {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::UnprocessableEntity
+    }
+
+    // Override the default envelope with payment-specific structure.
+    fn into_http_response(&self) -> HttpResponse {
+        HttpResponse::builder()
+            .status(self.kind().http_status())
+            .header("Retry-After", self.retry_after_secs.to_string())
+            .json(json!({
+                "type": "payment_declined",
+                "reason_code": self.reason_code,
+                "retry_after_secs": self.retry_after_secs,
+            }))
+            .build()
+    }
+}
+
+// ---- Service ----------------------------------------------------------------
+
+#[derive(Serialize)]
+struct User {
+    id: String,
+    name: String,
+    email: String,
+}
+
+#[injectable(pub struct UserService {})]
+impl UserService {
+    fn find_user(&self, id: &str) -> Result<User, UserError> {
+        if id == "1" {
+            Ok(User {
+                id: "1".into(),
+                name: "John Doe".into(),
+                email: "john@example.com".into(),
+            })
+        } else if id == "invalid" {
+            Err(UserError::InvalidId(id.into()))
+        } else {
+            Err(UserError::NotFound(id.into()))
         }
-        None
     }
-}
 
-// Specialized handler for database errors (409 conflict)
-pub struct DatabaseErrorHandler;
-
-#[async_trait]
-impl ErrorHandler<HttpContext, HttpResponse> for DatabaseErrorHandler {
-    async fn handle_error(
-        &self,
-        error: toni::traits_helpers::ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            if http_error.status_code() == 409 {
-                eprintln!(
-                    "[DatabaseErrorHandler] Handling conflict error on {}: {}",
-                    req.uri, error
-                );
-                return Some(
-                    HttpResponse::builder()
-                        .status(409)
-                        .json(json!({
-                            "statusCode": 409,
-                            "message": http_error.message(),
-                            "error": "Database Conflict",
-                            "handler": "DatabaseErrorHandler",
-                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": req.uri.to_string(),
-                        }))
-                        .build(),
-                );
-            }
+    fn create_user(&self, email: &str) -> Result<User, UserError> {
+        if email == "existing@example.com" {
+            Err(UserError::EmailTaken(email.into()))
+        } else if !email.contains('@') {
+            Err(UserError::InvalidEmail(email.into()))
+        } else {
+            Ok(User {
+                id: "new-123".into(),
+                name: "New User".into(),
+                email: email.into(),
+            })
         }
-        None
     }
 }
 
-// Controller-level error handler for user operations (direct instantiation)
-pub struct UserControllerErrorHandler;
-
-#[async_trait]
-impl ErrorHandler<HttpContext, HttpResponse> for UserControllerErrorHandler {
-    async fn handle_error(
-        &self,
-        error: toni::traits_helpers::ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        eprintln!(
-            "[UserControllerErrorHandler] {} {}: {}",
-            req.method, req.uri, error
-        );
-
-        if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            return Some(
-                HttpResponse::builder()
-                    .status(http_error.status_code())
-                    .json(json!({
-                        "statusCode": http_error.status_code(),
-                        "message": http_error.message(),
-                        "handler": "UserControllerErrorHandler",
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                        "path": req.uri.to_string(),
-                    }))
-                    .build(),
-            );
-        }
-
-        None
-    }
-}
-
-// DI-based error handler - registered in providers and resolved from container
-#[injectable(pub struct NotFoundErrorHandler {})]
-#[error_handler(http)]
-impl NotFoundErrorHandler {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl ErrorHandler<HttpContext, HttpResponse> for NotFoundErrorHandler {
-    async fn handle_error(
-        &self,
-        error: toni::traits_helpers::ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        if let Some(http_error) = error.downcast_ref::<HttpError>() {
-            if http_error.status_code() == 404 {
-                eprintln!(
-                    "[NotFoundErrorHandler - DI] Handling 404 on {}: {}",
-                    req.uri, error
-                );
-                return Some(
-                    HttpResponse::builder()
-                        .status(404)
-                        .json(json!({
-                            "statusCode": 404,
-                            "message": http_error.message(),
-                            "error": "Not Found",
-                            "handler": "NotFoundErrorHandler (DI-based)",
-                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                            "path": req.uri.to_string(),
-                        }))
-                        .build(),
-                );
-            }
-        }
-        None
-    }
-}
+// ---- Guard for chain demonstration -----------------------------------------
 
 pub struct AuthGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, context: &HttpContext) -> bool {
-        context.request().headers.contains_key("x-auth-token")
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+        ctx.request().headers.contains_key("x-auth-token")
     }
 }
 
-#[injectable(pub struct UserService {})]
-impl UserService {
-    fn find_user(&self, id: &str) -> Result<serde_json::Value, HttpError> {
-        if id == "1" {
-            Ok(json!({
-                "id": "1",
-                "name": "John Doe",
-                "email": "john@example.com"
-            }))
-        } else if id == "invalid" {
-            Err(HttpError::bad_request("Invalid user ID format"))
-        } else {
-            Err(HttpError::not_found(format!("User {} not found", id)))
-        }
-    }
+// ---- #[catch] escape hatch: reshape guard-rejection 4xx --------------------
+//
+// AppError handles user errors directly. The chain only fires for framework-
+// generated errors — guard rejections, missing routes, middleware failures.
+// `#[catch(HttpError)]` registered on a controller intercepts those and
+// re-shapes the response.
 
-    fn authenticate(&self, token: &str) -> Result<(), HttpError> {
-        if token == "valid-token" {
-            Ok(())
-        } else if token.is_empty() {
-            Err(HttpError::unauthorized("Authentication token required"))
-        } else {
-            Err(HttpError::forbidden("Invalid authentication token"))
-        }
-    }
-
-    fn create_user(&self, email: &str) -> Result<serde_json::Value, HttpError> {
-        if email == "existing@example.com" {
-            Err(HttpError::conflict("User with this email already exists"))
-        } else if !email.contains('@') {
-            Err(HttpError::unprocessable_entity("Invalid email format"))
-        } else {
-            Ok(json!({
-                "id": "new-123",
-                "email": email,
-                "created": true
-            }))
-        }
-    }
+#[catch(HttpError)]
+async fn auth_failure(err: &HttpError, _ctx: &HttpContext) -> HttpResponse {
+    HttpResponse::builder()
+        .status(err.status_code())
+        .json(json!({
+            "error": "auth_required",
+            "hint": "Send `x-auth-token: <token>`",
+            "detail": err.message(),
+        }))
+        .build()
 }
 
-#[controller("/api", pub struct ApiController {})]
-impl ApiController {
-    #[get("/hello")]
-    fn hello(&self) -> HttpResponse {
-        HttpResponse::ok()
-            .json(json!({"message": "Hello, World!"}))
-            .build()
-    }
-
-    #[get("/with-headers")]
-    fn with_headers(&self) -> HttpResponse {
-        HttpResponse::ok()
-            .header("X-Custom-Header", "CustomValue")
-            .header("X-Request-ID", "12345")
-            .json(json!({"status": "success"}))
-            .build()
-    }
-
-    #[post("/create")]
-    fn create(&self) -> HttpResponse {
-        HttpResponse::created()
-            .header("Location", "/api/resource/123")
-            .json(json!({
-                "id": 123,
-                "message": "Resource created"
-            }))
-            .build()
-    }
-
-    #[get("/protected")]
-    #[use_guards(AuthGuard{})]
-    fn protected(&self) -> ToniBody {
-        ToniBody::json(json!({"message": "Access granted"}))
-    }
-
-    #[get("/not-found")]
-    fn not_found(&self) -> Result<ToniBody, HttpError> {
-        Err(HttpError::not_found("Resource not found"))
-    }
-
-    #[get("/server-error")]
-    fn server_error(&self) -> Result<ToniBody, HttpError> {
-        Err(HttpError::internal_server_error("Something went wrong"))
-    }
-}
+// ---- Controllers ------------------------------------------------------------
 
 #[controller("/users", pub struct UserController {
     #[inject]
     service: UserService,
 })]
-#[use_error_handlers(UserControllerErrorHandler{})]
 impl UserController {
-    #[get("/{id}")]
-    fn get_user(&self, req: HttpRequest) -> Result<ToniBody, HttpError> {
+    /// Returning `Result<T, UserError>` — the framework calls
+    /// `UserError::into_http_response()` on Err, no chain involvement.
+    #[get("/:id")]
+    fn get_user(&self, req: HttpRequest) -> Result<Body, UserError> {
         let id = req
             .extensions()
             .get::<toni::http_helpers::PathParams>()
             .and_then(|p| p.0.get("id").map(|s| s.as_str()))
-            .ok_or_else(|| HttpError::bad_request("Missing user ID"))?;
+            .ok_or_else(|| UserError::InvalidId("(missing)".into()))?;
 
         let user = self.service.find_user(id)?;
-        Ok(ToniBody::json(user))
-    }
-
-    #[get("/me")]
-    fn get_current_user(&self, req: HttpRequest) -> Result<ToniBody, HttpError> {
-        let token = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| HttpError::unauthorized("Authorization header required"))?;
-
-        self.service.authenticate(token)?;
-
-        Ok(ToniBody::json(json!({
-            "id": "current-user",
-            "name": "Authenticated User"
-        })))
+        Ok(Body::json(serde_json::to_value(user).unwrap()))
     }
 
     #[post("/")]
-    #[use_error_handlers(ValidationErrorHandler{}, DatabaseErrorHandler{})]
     async fn create_user(
         &self,
         toni::extractors::Json(body): toni::extractors::Json<serde_json::Value>,
-    ) -> Result<HttpResponse, HttpError> {
+    ) -> Result<HttpResponse, UserError> {
         let email = body
             .get("email")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| HttpError::bad_request("Email is required"))?;
+            .ok_or_else(|| UserError::InvalidEmail("(missing)".into()))?;
 
         let user = self.service.create_user(email)?;
 
         Ok(HttpResponse::created()
-            .header("Location", format!("/users/{}", user["id"]))
-            .json(user)
+            .header("Location", format!("/users/{}", user.id))
+            .json(serde_json::to_value(user).unwrap())
             .build())
     }
 
-    #[get("/special")]
-    fn special(&self) -> Result<ToniBody, HttpError> {
+    /// `HttpError` is a convenience type for trivial cases that don't
+    /// warrant a dedicated error type. It implements `AppError` so the same
+    /// rendering path applies.
+    #[get("/-/teapot")]
+    fn teapot(&self) -> Result<Body, HttpError> {
         Err(HttpError::custom(418, "I'm a teapot"))
     }
 }
 
-// Demonstrates DI-based error handler using type name only (no direct instantiation)
-#[controller("/products", pub struct ProductController {})]
-#[use_error_handlers(NotFoundErrorHandler)]
-impl ProductController {
-    #[get("/{id}")]
-    fn get_product(&self, req: HttpRequest) -> Result<ToniBody, HttpError> {
-        let id = req
-            .extensions()
-            .get::<toni::http_helpers::PathParams>()
-            .and_then(|p| p.0.get("id").map(|s| s.as_str()))
-            .ok_or_else(|| HttpError::bad_request("Missing product ID"))?;
-
-        if id == "1" {
-            Ok(ToniBody::json(json!({
-                "id": "1",
-                "name": "Widget",
-                "price": 19.99
-            })))
-        } else {
-            Err(HttpError::not_found(format!("Product {} not found", id)))
-        }
-    }
-
-    #[get("/")]
-    fn list_products(&self) -> ToniBody {
-        ToniBody::json(json!([
-            {"id": "1", "name": "Widget", "price": 19.99}
-        ]))
+#[controller("/billing", pub struct BillingController {})]
+impl BillingController {
+    /// `PaymentDeclined` overrides `into_http_response()` for a domain-shaped
+    /// envelope (Retry-After header, custom JSON shape).
+    #[post("/charge")]
+    fn charge(&self) -> Result<Body, PaymentDeclined> {
+        Err(PaymentDeclined {
+            reason_code: "insufficient_funds",
+            retry_after_secs: 60,
+        })
     }
 }
 
+#[controller("/admin", pub struct AdminController {})]
+#[use_guards(AuthGuard {})]
+#[toni_macros::use_error_handlers(auth_failure)]
+impl AdminController {
+    /// Guard rejection is a framework-generated error. The `#[catch]` handler
+    /// registered above reshapes the 403 envelope.
+    #[get("/dashboard")]
+    fn dashboard(&self) -> Body {
+        Body::json(json!({"status": "ok"}))
+    }
+}
+
+// ---- Wiring -----------------------------------------------------------------
+
 #[module(
-    controllers: [ApiController, UserController, ProductController],
-    providers: [UserService, NotFoundErrorHandler],
+    controllers: [UserController, BillingController, AdminController],
+    providers: [UserService],
 )]
 pub struct AppModule;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("Server running on http://localhost:3000\n");
-    println!("HttpResponse builder examples:");
-    println!("  GET  http://localhost:3000/api/hello");
-    println!("  GET  http://localhost:3000/api/with-headers");
-    println!("  POST http://localhost:3000/api/create\n");
+    println!("AppError-rendered responses (auto, no chain):");
+    println!("  GET  /users/1            -> 200 OK");
+    println!("  GET  /users/missing      -> 404 (UserError::NotFound)");
+    println!("  GET  /users/invalid      -> 400 (UserError::InvalidId)");
+    println!("  POST /users (existing)   -> 409 (UserError::EmailTaken)");
+    println!("  GET  /users/-/teapot     -> 418 (HttpError::Custom)\n");
+    println!("AppError with custom envelope override:");
+    println!("  POST /billing/charge     -> 422 + Retry-After + custom JSON\n");
+    println!("Chain on framework-generated error (guard rejection):");
+    println!("  GET  /admin/dashboard         -> 403 reshaped by #[catch(HttpError)]");
+    println!("  GET  /admin/dashboard with x-auth-token: any -> 200 OK\n");
 
-    println!("Guard errors:");
-    println!("  GET  http://localhost:3000/api/protected       → 403 (no X-Auth-Token)\n");
-
-    println!("HttpError examples:");
-    println!("  GET  http://localhost:3000/users/1             → 200 (success)");
-    println!("  GET  http://localhost:3000/users/999           → 404 (not found)");
-    println!("  GET  http://localhost:3000/users/invalid       → 400 (bad request)");
-    println!("  GET  http://localhost:3000/users/me            → 401 (unauthorized)");
-    println!("  GET  http://localhost:3000/users/me -H 'Authorization: valid-token'");
-    println!("  POST http://localhost:3000/users -d '{{\"email\":\"test@example.com\"}}'");
-    println!(
-        "  POST http://localhost:3000/users -d '{{\"email\":\"existing@example.com\"}}' → 409"
-    );
-    println!("  GET  http://localhost:3000/users/special       → 418 (I'm a teapot)");
-    println!("  GET  http://localhost:3000/api/server-error    → 500\n");
-
-    println!("Error Handler Levels (Chain-of-Responsibility):");
-    println!("  Method-level:");
-    println!("    - POST /users uses ValidationErrorHandler → DatabaseErrorHandler");
-    println!("  Controller-level:");
-    println!("    - UserController uses UserControllerErrorHandler");
-    println!("  Global-level:");
-    println!("    - GlobalErrorHandler (via factory.use_global_error_handler)\n");
-
-    println!("Execution order for POST /users errors:");
-    println!("  1. ValidationErrorHandler (checks for 400/422)");
-    println!("  2. DatabaseErrorHandler (checks for 409)");
-    println!("  3. UserControllerErrorHandler (catches other user errors)");
-    println!("  4. GlobalErrorHandler (final fallback)\n");
-
-    println!("Test the chain-of-responsibility:");
-    println!("  POST /users -d '{{\"email\":\"\"}}' → ValidationErrorHandler (400)");
-    println!(
-        "  POST /users -d '{{\"email\":\"existing@example.com\"}}' → DatabaseErrorHandler (409)"
-    );
-    println!("  GET /users/404 → UserControllerErrorHandler (404)");
-    println!("  GET /api/server-error → GlobalErrorHandler (500)\n");
-
-    println!("DI-based error handlers:");
-    println!("  ProductController uses NotFoundErrorHandler (resolved from DI container)");
-    println!("  GET  http://localhost:3000/products/1      → 200 (success)");
-    println!("  GET  http://localhost:3000/products/999    → 404 (NotFoundErrorHandler via DI)");
-    println!("  GET  http://localhost:3000/products        → 200 (list all)\n");
-
-    println!("Two approaches to error handlers:");
-    println!("  1. Direct instantiation: #[use_error_handlers(Handler{{}})]");
-    println!("     - Used by UserController, ApiController");
-    println!("  2. DI resolution: #[use_error_handlers(Handler)]");
-    println!("     - Requires #[error_handler] marker attribute");
-    println!("     - Registered in module providers");
-    println!("     - Used by ProductController\n");
-
-    let mut factory = ToniFactory::new();
-    factory.use_global_http_error_handler(Arc::new(GlobalErrorHandler));
-
-    let mut app = factory.create_with(AppModule).await;
-
-    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
-        .unwrap();
-
-    app.start().await?;
+    let factory = ToniFactory::new();
+    let mut app = factory.create_with(AppModule::module_definition()).await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")?;
+    app.run().await;
     Ok(())
 }

@@ -348,7 +348,22 @@ async fn ws_method_level_enhancers_work() {
         .await
         .unwrap();
         let reply = ws.next().await.unwrap().unwrap();
-        assert_eq!(reply.to_text().unwrap(), "recovered");
+        // User-handler `Err(WsError::Internal)` renders via `WsError`'s
+        // `AppError::into_ws_message` (canonical envelope). The registered
+        // `RecoveryErrorHandler` does not fire — chain only runs on
+        // framework-generated errors.
+        let json: serde_json::Value =
+            serde_json::from_str(reply.to_text().unwrap()).unwrap();
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["kind"], "Internal");
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("intentional"),
+            "expected canonical envelope to carry the user error message, got: {json}",
+        );
+        assert_ne!(reply.to_text().unwrap(), "recovered");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             r#"{"event":"plain"}"#.to_string().into(),
@@ -395,7 +410,8 @@ async fn ws_method_level_enhancers_work() {
 ///   - `{}`             → guard blocks → Forbidden
 ///
 /// "rpc.piped"      → pipe aborts → err frame
-/// "rpc.recovering" → error handler recovers → "recovered"
+/// "rpc.recovering" → handler errors; AppError renders canonical envelope
+///                    (RecoveryErrorHandler does NOT fire — chain bypassed)
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
 #[tokio_localset_test::localset_test]
 async fn rpc_method_level_enhancers_work() {
@@ -410,8 +426,22 @@ async fn rpc_method_level_enhancers_work() {
     let resp = tcp_rpc(port, "rpc.piped", serde_json::json!({})).await;
     assert!(resp.get("err").is_some(), "pipe should have aborted");
 
+    // User-handler `Err(RpcError::Internal)` renders via `RpcError`'s
+    // `AppError::into_rpc_data` — the registered `RecoveryErrorHandler`
+    // does not fire because the chain only runs on framework-generated
+    // errors.
     let resp = tcp_rpc(port, "rpc.recovering", serde_json::json!({})).await;
-    assert_eq!(resp["response"], "recovered");
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("intentional"),
+        "expected canonical envelope to carry the user error message, got: {resp}",
+    );
+    assert_ne!(payload, "recovered");
 
     let resp = tcp_rpc(port, "rpc.plain", serde_json::json!({})).await;
     assert_eq!(resp["response"], "plain-ok");

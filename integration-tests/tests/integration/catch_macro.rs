@@ -1,19 +1,21 @@
-//! `#[catch(T)]` — function-style ErrorHandler escape hatch for cases
-//! `AppError` doesn't reach (typically re-shaping framework-synthesised
-//! errors per route/controller).
+//! `#[catch(T)]` — function-style ErrorHandler escape hatch.
 //!
 //! Verifies the macro lowers a free async fn into a unit struct whose
 //! `ErrorHandler<C, R>` impl downcasts to `T` and short-circuits with
 //! `None` for non-matching types so the chain advances.
+//!
+//! Because the chain only runs on framework-generated errors (per the
+//! AppError redesign), these tests exercise `#[catch]` against
+//! guard-rejection responses — that's where the chain still fires.
 
 use std::sync::Arc;
 
 use toni::{
     Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
-    errors::HttpError, get, module, toni_factory::ToniFactory,
+    errors::HttpError, get, module, toni_factory::ToniFactory, traits_helpers::Guard,
 };
 use toni_axum::AxumAdapter;
-use toni_macros::use_error_handlers;
+use toni_macros::use_guards;
 
 #[catch(HttpError)]
 async fn http_catcher(err: &HttpError, _ctx: &HttpContext) -> HttpResponse {
@@ -53,7 +55,18 @@ fn catch_struct_implements_error_handler_trait() {
     assert_impls::<other_catcher>();
 }
 
-async fn start_with_catcher(
+// Guard that always rejects — produces the framework-generated 403 the
+// chain will fire on.
+struct DenyGuard;
+
+#[async_trait]
+impl Guard<HttpContext> for DenyGuard {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
+        false
+    }
+}
+
+async fn start_with_catchers(
     module: toni::module_helpers::module_enum::ModuleDefinition,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
@@ -61,9 +74,10 @@ async fn start_with_catcher(
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut factory = ToniFactory::new();
-        // Register both — `other_catcher` is consulted first (later registration =
-        // higher priority via reverse iteration in the dispatcher) and must
-        // fall through because the boxed error is HttpError, not OtherError.
+        // Both registered. `other_catcher` is consulted first (later
+        // registration → higher priority via reverse iteration). It must
+        // return None because the boxed error is HttpError, not OtherError;
+        // then `http_catcher` claims it.
         factory.use_global_http_error_handler(Arc::new(http_catcher));
         factory.use_global_http_error_handler(Arc::new(other_catcher));
         let mut app = factory.create_with(module).await;
@@ -82,59 +96,65 @@ async fn start_with_catcher(
 }
 
 #[tokio_localset_test::localset_test]
-async fn catch_handler_intercepts_matching_type() {
+async fn catch_handler_intercepts_framework_error() {
+    // Guard rejection produces a framework-generated 403 → chain runs →
+    // http_catcher claims it.
     #[controller("/api", pub struct CatchTestController {})]
     impl CatchTestController {
-        #[get("/missing")]
-        fn missing(&self) -> Result<ToniBody, HttpError> {
-            Err(HttpError::not_found("gone"))
+        #[get("/protected")]
+        #[use_guards(DenyGuard {})]
+        fn protected(&self) -> Result<ToniBody, HttpError> {
+            Ok(ToniBody::text("should not reach"))
         }
     }
 
     #[module(controllers: [CatchTestController], providers: [])]
     impl CatchTestModule {}
 
-    let addr = start_with_catcher(CatchTestModule::module_definition()).await;
+    let addr = start_with_catchers(CatchTestModule::module_definition()).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("http://{}/api/missing", addr))
+        .get(format!("http://{}/api/protected", addr))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status().as_u16(), 404);
+    assert_eq!(resp.status().as_u16(), 403);
     let body = resp.text().await.unwrap();
-    assert_eq!(body, "catch:gone");
+    assert!(body.starts_with("catch:"), "expected catch envelope, got: {body}");
 }
 
 #[tokio_localset_test::localset_test]
 async fn non_matching_catch_falls_through() {
     // Sanity: a catcher whose target type doesn't match the boxed error must
-    // return None so the chain advances. If our downcast were buggy and always
-    // matched, this would render OTHER-CAUGHT instead.
+    // return None so the chain advances. If our downcast were buggy and
+    // always matched, this would render "OTHER-CAUGHT" instead of catching.
     #[controller("/api", pub struct FallthroughController {})]
     impl FallthroughController {
-        #[get("/conflict")]
-        fn conflict(&self) -> Result<ToniBody, HttpError> {
-            Err(HttpError::conflict("dup"))
+        #[get("/protected")]
+        #[use_guards(DenyGuard {})]
+        fn protected(&self) -> Result<ToniBody, HttpError> {
+            Ok(ToniBody::text("should not reach"))
         }
     }
 
     #[module(controllers: [FallthroughController], providers: [])]
     impl FallthroughModule {}
 
-    let addr = start_with_catcher(FallthroughModule::module_definition()).await;
+    let addr = start_with_catchers(FallthroughModule::module_definition()).await;
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("http://{}/api/conflict", addr))
+        .get(format!("http://{}/api/protected", addr))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status().as_u16(), 409);
+    assert_eq!(resp.status().as_u16(), 403);
     let body = resp.text().await.unwrap();
-    // http_catcher is the one that matched; other_catcher returned None.
-    assert_eq!(body, "catch:dup");
+    // http_catcher matched; other_catcher returned None and the chain
+    // advanced past it.
+    assert!(body.starts_with("catch:"), "expected http_catcher to claim, got: {body}");
+    assert_ne!(body, "OTHER-CAUGHT");
 }

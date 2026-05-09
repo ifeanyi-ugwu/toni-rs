@@ -166,7 +166,10 @@ fn generate_gateway_impl(
         }
     }
 
-    // Generate handle_event implementation
+    // User errors render at the macro boundary via `AppError::into_ws_message`,
+    // so the trait method observes them as `Ok(WsHandlerOutput::Single(...))`
+    // and the dispatcher's error chain isn't involved. The chain only fires
+    // for framework-generated errors (guard rejection, event-not-found).
     let match_arms: Vec<_> = message_handlers
         .iter()
         .map(|(event, method)| {
@@ -174,7 +177,12 @@ fn generate_gateway_impl(
 
             quote! {
                 #event => {
-                    self.#method_name(client, message).await
+                    match self.#method_name(client, message).await {
+                        Ok(__output) => Ok(__output),
+                        Err(__err) => Ok(toni::WsHandlerOutput::Single(
+                            ::toni::AppError::into_ws_message(&__err),
+                        )),
+                    }
                 }
             }
         })
