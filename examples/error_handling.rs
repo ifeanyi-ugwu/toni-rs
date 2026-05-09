@@ -7,9 +7,9 @@
 //! 3. Overriding `into_http_response()` per error type for custom envelopes
 //! 4. `HttpError` as a user-convenience type (for trivial cases that don't
 //!    warrant a dedicated error)
-//! 5. `#[catch(HttpError)]` as the escape hatch for re-shaping framework-
-//!    generated errors (guard rejections, missing routes) — chain dispatch
-//!    only fires for these, not for user errors
+//! 5. `#[catch(GuardRejection)]` as the escape hatch for re-shaping
+//!    framework-generated events — chain dispatch only fires for those,
+//!    not for user errors
 //!
 //! Run with:
 //! ```bash
@@ -145,14 +145,17 @@ impl Guard<HttpContext> for AuthGuard {
 // ---- #[catch] escape hatch: reshape guard-rejection 4xx --------------------
 //
 // AppError handles user errors directly. The chain only fires for framework-
-// generated errors — guard rejections, missing routes, middleware failures.
-// `#[catch(HttpError)]` registered on a controller intercepts those and
-// re-shapes the response.
+// generated events — `GuardRejection`, `MiddlewareFailure`, etc. A `#[catch]`
+// registered on a controller dispatches on the typed event and reshapes the
+// response.
 
-#[catch(HttpError)]
-async fn auth_failure(err: &HttpError, _ctx: &HttpContext) -> HttpResponse {
+#[catch(toni::errors::GuardRejection)]
+async fn auth_failure(
+    err: &toni::errors::GuardRejection,
+    _ctx: &HttpContext,
+) -> HttpResponse {
     HttpResponse::builder()
-        .status(err.status_code())
+        .status(err.kind().http_status())
         .json(json!({
             "error": "auth_required",
             "hint": "Send `x-auth-token: <token>`",
@@ -254,7 +257,7 @@ async fn main() -> anyhow::Result<()> {
     println!("AppError with custom envelope override:");
     println!("  POST /billing/charge     -> 422 + Retry-After + custom JSON\n");
     println!("Chain on framework-generated error (guard rejection):");
-    println!("  GET  /admin/dashboard         -> 403 reshaped by #[catch(HttpError)]");
+    println!("  GET  /admin/dashboard         -> 403 reshaped by #[catch(GuardRejection)]");
     println!("  GET  /admin/dashboard with x-auth-token: any -> 200 OK\n");
 
     let factory = ToniFactory::new();

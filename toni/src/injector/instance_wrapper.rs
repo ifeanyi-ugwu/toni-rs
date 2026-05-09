@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
+    errors::{AppError, GuardRejection, MiddlewareFailure},
     http_helpers::{HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
@@ -149,32 +150,27 @@ impl InstanceWrapper {
                 response
             }
             Err(e) => {
+                // If the middleware bubbled an `HttpError`, that's an
+                // `AppError`-implementing user value — render it directly
+                // without going through the chain.
                 if let Some(http_err) = e.downcast_ref::<crate::errors::HttpError>() {
-                    return http_err.to_response();
+                    return http_err.into_http_response();
                 }
 
-                let error_msg = e.to_string();
                 // Middleware failed before the request body could be split; we have no
                 // parts to thread through to the handler context. Construct a stub
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
-                let error =
-                    std::io::Error::new(std::io::ErrorKind::Other, error_msg.clone());
-                Self::fan_out_observers(&observers_for_middleware, &error, &error_ctx).await;
+                let event = MiddlewareFailure::new(e.to_string());
+                Self::fan_out_observers(&observers_for_middleware, &event, &error_ctx).await;
                 for handler in error_handlers_for_middleware.iter().rev() {
-                    if let Some(response) = handler.handle_error(&error, &error_ctx).await {
+                    if let Some(response) = handler.handle_error(&event, &error_ctx).await {
                         return response;
                     }
                 }
 
-                let mut error_response = HttpResponse::new();
-                error_response.status = 500;
-                error_response.body = Some(crate::http_helpers::Body::json(serde_json::json!({
-                    "error": "Internal Server Error",
-                    "message": "An error occurred while processing the request"
-                })));
-                error_response
+                event.into_http_response()
             }
         }
     }
@@ -246,15 +242,11 @@ impl InstanceWrapper {
         for (i, guard) in guards.iter().enumerate() {
             if !guard.can_activate(&context).await {
                 tracing::debug!(guard_index = i, "guard rejected request");
-                let guard_response = context.take_response().unwrap_or_else(|| {
-                    let mut forbidden = HttpResponse::new();
-                    forbidden.status = 403;
-                    forbidden.body = Some(crate::Body::text("Forbidden"));
-                    forbidden
-                });
-
-                return Self::handle_error_response(
-                    guard_response,
+                let event = GuardRejection::new(i);
+                let claimed_response = context.take_response();
+                return Self::handle_framework_event(
+                    event,
+                    claimed_response,
                     &error_handlers,
                     &observers,
                     &context,
@@ -278,28 +270,31 @@ impl InstanceWrapper {
         context.into_response()
     }
 
-    /// Route 4xx/5xx responses through error handlers. Most-specific
-    /// (method > controller > global) is consulted first. Observers fan
-    /// out before the chain so they see every framework-generated error
-    /// regardless of whether a handler claims it.
-    async fn handle_error_response(
-        response: HttpResponse,
+    /// Run the chain on a typed framework event. Observers fan out first so
+    /// they see every framework-generated error regardless of whether a chain
+    /// handler claims it; if no handler claims, the event renders itself
+    /// through its `AppError` impl. A `claimed_response` (for example, a
+    /// custom response set by the rejecting guard) takes precedence over the
+    /// canonical envelope.
+    async fn handle_framework_event<E>(
+        event: E,
+        claimed_response: Option<HttpResponse>,
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         ctx: &HttpContext,
-    ) -> HttpResponse {
-        if response.status >= 400 {
-            let http_error = Self::response_to_http_error(&response);
+    ) -> HttpResponse
+    where
+        E: AppError,
+    {
+        Self::fan_out_observers(observers, &event, ctx).await;
 
-            Self::fan_out_observers(observers, &http_error, ctx).await;
-
-            for handler in error_handlers.iter().rev() {
-                if let Some(handled) = handler.handle_error(&http_error, ctx).await {
-                    return handled;
-                }
+        for handler in error_handlers.iter().rev() {
+            if let Some(handled) = handler.handle_error(&event, ctx).await {
+                return handled;
             }
         }
-        response
+
+        claimed_response.unwrap_or_else(|| event.into_http_response())
     }
 
     async fn fan_out_observers(
@@ -391,35 +386,4 @@ impl InstanceWrapper {
         Self::execute_handler(context, instance, pipes).await;
     }
 
-    fn response_to_http_error(response: &HttpResponse) -> crate::errors::HttpError {
-        let message = if let Some(body) = &response.body {
-            if let Some(bytes) = body.try_bytes() {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
-                    v.get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("HTTP Error")
-                        .to_string()
-                } else {
-                    std::str::from_utf8(bytes)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|_| format!("HTTP {} Error", response.status))
-                }
-            } else {
-                format!("HTTP {} Error", response.status)
-            }
-        } else {
-            format!("HTTP {} Error", response.status)
-        };
-
-        match response.status {
-            400 => crate::errors::HttpError::bad_request(message),
-            401 => crate::errors::HttpError::unauthorized(message),
-            403 => crate::errors::HttpError::forbidden(message),
-            404 => crate::errors::HttpError::not_found(message),
-            409 => crate::errors::HttpError::conflict(message),
-            422 => crate::errors::HttpError::unprocessable_entity(message),
-            500 => crate::errors::HttpError::internal_server_error(message),
-            status => crate::errors::HttpError::custom(status, message),
-        }
-    }
 }

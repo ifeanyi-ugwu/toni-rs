@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use toni::{
     Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
-    errors::HttpError, get, module, toni_factory::ToniFactory,
+    errors::{GuardRejection, HttpError},
+    get, module, toni_factory::ToniFactory,
     traits_helpers::{ChainError, ErrorHandler, Guard},
 };
 use toni_axum::AxumAdapter;
@@ -142,9 +143,11 @@ impl ErrorHandler<HttpContext, HttpResponse> for MarkerHandler {
         error: ChainError<'_>,
         _ctx: &HttpContext,
     ) -> Option<HttpResponse> {
-        let e = error.downcast_ref::<HttpError>()?;
+        // Chain handlers downcast to the framework's typed event — there's
+        // no synthesized `HttpError` to dispatch on anymore.
+        error.downcast_ref::<GuardRejection>()?;
         let mut resp = HttpResponse::new();
-        resp.status = e.status_code();
+        resp.status = 403;
         resp.body = Some(ToniBody::text(self.marker));
         Some(resp)
     }

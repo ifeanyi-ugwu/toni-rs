@@ -93,32 +93,6 @@ impl ErrorHandler<WsContext, WsMessage> for DefaultWsErrorHandler {
     }
 }
 
-/// Wraps another HTTP error handler and logs each error before delegating.
-pub struct LoggingHttpErrorHandler<H: ErrorHandler<HttpContext, HttpResponse>> {
-    inner: H,
-}
-
-impl<H: ErrorHandler<HttpContext, HttpResponse>> LoggingHttpErrorHandler<H> {
-    pub fn new(inner: H) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait]
-impl<H: ErrorHandler<HttpContext, HttpResponse>> ErrorHandler<HttpContext, HttpResponse>
-    for LoggingHttpErrorHandler<H>
-{
-    async fn handle_error(
-        &self,
-        error: ChainError<'_>,
-        ctx: &HttpContext,
-    ) -> Option<HttpResponse> {
-        let req = ctx.request();
-        tracing::error!(method = %req.method, uri = %req.uri, error = %error);
-        self.inner.handle_error(error, ctx).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

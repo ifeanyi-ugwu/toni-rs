@@ -36,7 +36,7 @@ pub use self::validator::validate;
 pub mod error_handler;
 pub use self::error_handler::{
     ChainError, DefaultHttpErrorHandler, DefaultRpcErrorHandler, DefaultWsErrorHandler,
-    ErrorHandler, LoggingHttpErrorHandler,
+    ErrorHandler,
 };
 
 pub mod error_observer;

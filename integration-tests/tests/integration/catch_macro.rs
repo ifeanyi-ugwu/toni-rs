@@ -11,16 +11,18 @@
 use std::sync::Arc;
 
 use toni::{
-    Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
-    errors::HttpError, get, module, toni_factory::ToniFactory, traits_helpers::Guard,
+    AppError, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
+    errors::{GuardRejection, HttpError},
+    get, module, toni_factory::ToniFactory,
+    traits_helpers::Guard,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
 
-#[catch(HttpError)]
-async fn http_catcher(err: &HttpError, _ctx: &HttpContext) -> HttpResponse {
+#[catch(GuardRejection)]
+async fn guard_catcher(err: &GuardRejection, _ctx: &HttpContext) -> HttpResponse {
     let mut resp = HttpResponse::new();
-    resp.status = err.status_code();
+    resp.status = err.kind().http_status();
     resp.body = Some(ToniBody::text(format!("catch:{}", err.message())));
     resp
 }
@@ -51,7 +53,7 @@ async fn other_catcher(_err: &OtherError, _ctx: &HttpContext) -> HttpResponse {
 #[test]
 fn catch_struct_implements_error_handler_trait() {
     fn assert_impls<T: toni::traits_helpers::ErrorHandler<HttpContext, HttpResponse>>() {}
-    assert_impls::<http_catcher>();
+    assert_impls::<guard_catcher>();
     assert_impls::<other_catcher>();
 }
 
@@ -76,9 +78,9 @@ async fn start_with_catchers(
         let mut factory = ToniFactory::new();
         // Both registered. `other_catcher` is consulted first (later
         // registration → higher priority via reverse iteration). It must
-        // return None because the boxed error is HttpError, not OtherError;
-        // then `http_catcher` claims it.
-        factory.use_global_http_error_handler(Arc::new(http_catcher));
+        // return None because the boxed event is `GuardRejection`, not
+        // `OtherError`; then `guard_catcher` claims it.
+        factory.use_global_http_error_handler(Arc::new(guard_catcher));
         factory.use_global_http_error_handler(Arc::new(other_catcher));
         let mut app = factory.create_with(module).await;
         app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")

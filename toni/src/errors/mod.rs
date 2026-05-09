@@ -4,7 +4,9 @@
 //! Use Result<T, HttpError> in your handlers for automatic error conversion.
 
 pub mod app_error;
+pub mod framework;
 pub mod http_error;
 
 pub use app_error::{AppError, ErrorKind};
+pub use framework::{GuardRejection, MiddlewareFailure};
 pub use http_error::HttpError;
