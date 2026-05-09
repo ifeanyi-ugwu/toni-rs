@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 
 use crate::AppError;
 use crate::context::{HandlerContext, WsContext};
+use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
@@ -14,6 +15,8 @@ use crate::traits_helpers::{
 };
 
 use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsMessage};
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 struct WsChainNext {
     interceptors: Vec<Arc<dyn Interceptor<WsContext>>>,
@@ -408,7 +411,17 @@ impl GatewayWrapper {
         ctx: &WsContext,
     ) {
         for observer in observers {
-            observer.observe(error, ctx).await;
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            if let Err(payload) = observe.catch_unwind().await {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    *s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "<panic payload was not a string>"
+                };
+                tracing::error!(error = %error, panic = %msg, "error observer panicked");
+            }
         }
     }
 
@@ -429,7 +442,15 @@ impl GatewayWrapper {
 
         let client = context.client().clone();
         let message = context.message().clone();
-        gateway.handle_event(client, message, event).await
+        let result = AssertUnwindSafe(gateway.handle_event(client, message, event))
+            .catch_unwind()
+            .await;
+        match result {
+            Ok(exec) => exec,
+            Err(payload) => ExecutionResult::Err(Box::new(
+                PanicRecovered::from_panic_payload(PipelineSegment::HandlerBody, payload),
+            )),
+        }
     }
 
     pub async fn handle_disconnect(&self, client_id: String, reason: DisconnectReason) {

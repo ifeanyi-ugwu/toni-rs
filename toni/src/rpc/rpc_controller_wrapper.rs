@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 use crate::AppError;
 use crate::context::{HandlerContext, RpcContext};
+use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RouteMetadata};
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
@@ -12,6 +13,8 @@ use crate::traits_helpers::{
 };
 
 use super::{RpcControllerTrait, RpcData, RpcError};
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext>>>,
@@ -144,7 +147,17 @@ impl RpcControllerWrapper {
         ctx: &RpcContext,
     ) {
         for observer in observers {
-            observer.observe(error, ctx).await;
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            if let Err(payload) = observe.catch_unwind().await {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    *s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "<panic payload was not a string>"
+                };
+                tracing::error!(error = %error, panic = %msg, "error observer panicked");
+            }
         }
     }
 
@@ -278,7 +291,20 @@ impl RpcControllerWrapper {
             }
         }
 
-        match controller.handle_message(context).await {
+        let exec_result = AssertUnwindSafe(controller.handle_message(context))
+            .catch_unwind()
+            .await;
+        let exec_result = match exec_result {
+            Ok(result) => result,
+            Err(payload) => {
+                let event = PanicRecovered::from_panic_payload(
+                    PipelineSegment::HandlerBody,
+                    payload,
+                );
+                ExecutionResult::Err(Box::new(event))
+            }
+        };
+        match exec_result {
             ExecutionResult::Ok(data) => context.set_response(Ok(data)),
             ExecutionResult::Err(err) => {
                 Self::fan_out_observers(observers, &*err, context).await;

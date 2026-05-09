@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
-    errors::{AppError, GuardRejection, MiddlewareFailure},
+    errors::{AppError, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment},
     http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
@@ -12,6 +12,8 @@ use crate::{
         HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe,
     },
 };
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 /// The next step in the interceptor chain after factory entries are resolved.
 struct ChainNext {
@@ -309,7 +311,21 @@ impl InstanceWrapper {
         ctx: &dyn HandlerContext,
     ) {
         for observer in observers {
-            observer.observe(error, ctx).await;
+            // A panicking observer must not corrupt the dispatch path.
+            // Catch the unwind, log via tracing (the observer system itself
+            // is the thing that just failed, so we can't route it back
+            // through observers), and continue to the next observer.
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            if let Err(payload) = observe.catch_unwind().await {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    *s
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "<panic payload was not a string>"
+                };
+                tracing::error!(error = %error, panic = %msg, "error observer panicked");
+            }
         }
     }
 
@@ -388,7 +404,23 @@ impl InstanceWrapper {
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
         let req = context.take_request();
-        match instance.execute(req).await {
+        // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
+        // and adding `RefUnwindSafe` bounds to user code would be punitive.
+        // We trust the application to set its own state to a sane shape after
+        // a panic — this layer only ensures the panic doesn't escape the
+        // dispatcher.
+        let exec_result = AssertUnwindSafe(instance.execute(req)).catch_unwind().await;
+        let exec_result = match exec_result {
+            Ok(result) => result,
+            Err(payload) => {
+                let event = PanicRecovered::from_panic_payload(
+                    PipelineSegment::HandlerBody,
+                    payload,
+                );
+                ExecutionResult::Err(Box::new(event))
+            }
+        };
+        match exec_result {
             ExecutionResult::Ok(response) => context.set_response(response),
             ExecutionResult::Err(err) => {
                 Self::fan_out_observers(observers, &*err, context).await;

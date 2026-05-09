@@ -8,5 +8,5 @@ pub mod framework;
 pub mod http_error;
 
 pub use app_error::{AppError, ErrorKind};
-pub use framework::{GuardRejection, MiddlewareFailure};
+pub use framework::{Cancelled, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment};
 pub use http_error::HttpError;
