@@ -215,5 +215,8 @@ fn error_status(e: &RpcError) -> &'static str {
         RpcError::PatternNotFound(_) => "not_found",
         RpcError::Forbidden(_) => "forbidden",
         RpcError::Internal(_) => "error",
+        // User domain errors flow through `to_data` in the dispatcher's
+        // Ok+envelope path and don't reach this wire-Err framing.
+        RpcError::AppError(_) => "error",
     }
 }

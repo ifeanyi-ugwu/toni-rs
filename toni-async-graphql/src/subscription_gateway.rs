@@ -146,7 +146,7 @@ where
         client: WsClient,
         message: WsMessage,
         event: &str,
-    ) -> toni::http_helpers::ExecutionResult<WsHandlerOutput> {
+    ) -> toni::http_helpers::ExecutionResult<WsHandlerOutput, toni::WsError> {
         self.handle_event_inner(client, message, event).await.into()
     }
 

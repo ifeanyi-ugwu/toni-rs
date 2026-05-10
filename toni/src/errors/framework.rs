@@ -246,18 +246,19 @@ impl AppError for Cancelled {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::http_error::render_app_error;
 
     #[test]
     fn guard_rejection_renders_403_via_app_error() {
         let event = GuardRejection::with_reason(0, "missing token");
-        let resp = event.into_http_response();
+        let resp = render_app_error(&event);
         assert_eq!(resp.status, 403);
     }
 
     #[test]
     fn middleware_failure_renders_500_via_app_error() {
         let event = MiddlewareFailure::new("DB pool exhausted");
-        let resp = event.into_http_response();
+        let resp = render_app_error(&event);
         assert_eq!(resp.status, 500);
     }
 }

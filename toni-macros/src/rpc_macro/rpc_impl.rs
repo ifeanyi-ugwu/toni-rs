@@ -96,9 +96,9 @@ fn generate_rpc_controller_impl(
         .chain(event_handlers.iter().map(|(p, _)| p.as_str()))
         .collect();
 
-    // User errors are preserved past the macro boundary as `ExecutionResult::Err`
-    // so the dispatcher can fan observers + run the chain on the typed error
-    // before falling back to `AppError::into_rpc_data`.
+    // User errors flow through the dispatcher as `RpcError`. `Into::into`
+    // calls the `From<E: AppError> for RpcError` blanket so any domain
+    // error type implementing `AppError` lifts automatically.
     let message_arms: Vec<_> = message_handlers
         .iter()
         .map(|(pattern, method)| {
@@ -111,7 +111,7 @@ fn generate_rpc_controller_impl(
                         match self.#method_name(#payload_expr, ctx).await {
                             Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
                             Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                                ::std::boxed::Box::new(__err),
+                                ::std::convert::Into::<toni::rpc::RpcError>::into(__err),
                             ),
                         }
                     }
@@ -124,11 +124,11 @@ fn generate_rpc_controller_impl(
                             Ok(__result) => match toni::rpc::RpcData::from_serialize(&__result) {
                                 Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
                                 Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
-                                    ::std::boxed::Box::new(toni::rpc::RpcError::Internal(__e.to_string())),
+                                    toni::rpc::RpcError::Internal(__e.to_string()),
                                 ),
                             },
                             Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                                ::std::boxed::Box::new(__err),
+                                ::std::convert::Into::<toni::rpc::RpcError>::into(__err),
                             ),
                         }
                     }
@@ -148,7 +148,7 @@ fn generate_rpc_controller_impl(
                     match self.#method_name(#payload_expr, ctx).await {
                         Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
                         Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                            ::std::boxed::Box::new(__err),
+                            ::std::convert::Into::<toni::rpc::RpcError>::into(__err),
                         ),
                     }
                 }
@@ -405,16 +405,19 @@ fn generate_rpc_controller_impl(
             async fn handle_message(
                 &self,
                 ctx: &toni::context::RpcContext,
-            ) -> ::toni::http_helpers::ExecutionResult<Option<toni::rpc::RpcData>> {
+            ) -> ::toni::http_helpers::ExecutionResult<
+                Option<toni::rpc::RpcData>,
+                toni::rpc::RpcError,
+            > {
                 let data = ctx.data().clone();
                 let _ = &data;
                 match ctx.pattern() {
                     #(#message_arms)*
                     #(#event_arms)*
                     _ => ::toni::http_helpers::ExecutionResult::Err(
-                        ::std::boxed::Box::new(toni::rpc::RpcError::PatternNotFound(
+                        toni::rpc::RpcError::PatternNotFound(
                             format!("Unknown pattern: {}", ctx.pattern()),
-                        )),
+                        ),
                     ),
                 }
             }
@@ -517,9 +520,7 @@ fn typed_payload_expr(
                     Ok(__p) => __p,
                     Err(__e) => {
                         return ::toni::http_helpers::ExecutionResult::Err(
-                            ::std::boxed::Box::new(
-                                toni::rpc::RpcError::Internal(__e.to_string()),
-                            ),
+                            toni::rpc::RpcError::Internal(__e.to_string()),
                         );
                     }
                 };

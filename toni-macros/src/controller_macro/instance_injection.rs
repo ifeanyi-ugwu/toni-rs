@@ -899,7 +899,10 @@ fn generate_singleton_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
-            ) -> ::toni::http_helpers::ExecutionResult<::toni::http_helpers::HttpResponse> {
+            ) -> ::toni::http_helpers::ExecutionResult<
+                ::toni::http_helpers::HttpResponse,
+                ::toni::errors::HttpError,
+            > {
                 let (_req_parts, _req_body) = __req.0.into_parts();
 
                 #(#marker_params_extraction)*
@@ -1087,7 +1090,10 @@ fn generate_request_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
-            ) -> ::toni::http_helpers::ExecutionResult<::toni::http_helpers::HttpResponse> {
+            ) -> ::toni::http_helpers::ExecutionResult<
+                ::toni::http_helpers::HttpResponse,
+                ::toni::errors::HttpError,
+            > {
                 let (_req_parts, _req_body) = __req.0.into_parts();
                 let _req_cache = ::toni::RequestCache::new();
 
@@ -1640,10 +1646,11 @@ fn join_paths(prefix: &str, path: &str) -> String {
 
 /// Body of the wrapper's `execute` for a user method.
 ///
-/// `Result<T, E>` returns are pattern-matched so the typed `E` survives the
-/// macro boundary boxed as `dyn AppError`, ready for the dispatcher's
-/// observer + chain pipeline. Plain `T` returns just wrap in
-/// `ExecutionResult::Ok` — no typed error to preserve.
+/// `Result<T, E>` returns are pattern-matched so the typed `E` flows through
+/// the dispatcher as the transport's handler error type — `HttpError` here.
+/// `Into::into` calls the `From<E: AppError> for HttpError` blanket so the
+/// user's domain error is lifted automatically. Plain `T` returns wrap
+/// directly in `ExecutionResult::Ok`.
 fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream {
     if returns_result {
         quote! {
@@ -1652,7 +1659,7 @@ fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream
                     ::toni::http_helpers::IntoResponse::into_response(__t),
                 ),
                 ::std::result::Result::Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
-                    ::std::boxed::Box::new(__e),
+                    ::std::convert::Into::<::toni::errors::HttpError>::into(__e),
                 ),
             }
         }

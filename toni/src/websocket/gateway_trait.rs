@@ -63,13 +63,13 @@ pub trait GatewayTrait: Send + Sync {
     /// `Ok(WsHandlerOutput)` for the success path (Empty / Single / Stream);
     /// `Err` carries the user's typed error so the dispatcher can fan
     /// observers + run the chain on it before falling back to
-    /// `AppError::into_ws_message`.
+    /// `WsError::to_message`.
     async fn handle_event(
         &self,
         client: WsClient,
         message: WsMessage,
         event: &str,
-    ) -> ExecutionResult<WsHandlerOutput>;
+    ) -> ExecutionResult<WsHandlerOutput, WsError>;
 
     /// Get guard tokens for DI resolution
     fn get_guard_tokens(&self) -> Vec<String> {

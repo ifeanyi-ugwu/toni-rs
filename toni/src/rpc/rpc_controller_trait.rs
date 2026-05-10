@@ -25,7 +25,10 @@ pub trait RpcControllerTrait: Send + Sync {
     /// `Err` carrying the user's typed error so the dispatcher can fan
     /// observers + run the chain on it before falling back to
     /// `AppError::into_rpc_data`.
-    async fn handle_message(&self, ctx: &RpcContext) -> ExecutionResult<Option<RpcData>>;
+    async fn handle_message(
+        &self,
+        ctx: &RpcContext,
+    ) -> ExecutionResult<Option<RpcData>, super::RpcError>;
 
     fn get_guard_tokens(&self) -> Vec<String> {
         vec![]

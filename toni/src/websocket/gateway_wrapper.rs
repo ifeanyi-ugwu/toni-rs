@@ -392,15 +392,22 @@ impl GatewayWrapper {
             ExecutionResult::Ok(WsHandlerOutput::Empty) => {
                 context.set_response(Ok(None));
             }
-            ExecutionResult::Err(err) => {
-                Self::fan_out_observers(observers, &*err, context).await;
+            ExecutionResult::Err(ws_err) => {
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
+                    match &ws_err {
+                        WsError::AppError(e) => e.as_ref(),
+                        other => other,
+                    };
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(msg) = handler.handle_error(&*err, context).await {
+                    if let Some(msg) =
+                        handler.handle_error(observed_err, context).await
+                    {
                         context.set_response(Ok(Some(msg)));
                         return;
                     }
                 }
-                context.set_response(Ok(Some(err.into_ws_message())));
+                context.set_response(Ok(Some(ws_err.to_message())));
             }
         }
     }
@@ -430,13 +437,13 @@ impl GatewayWrapper {
         gateway: &Arc<Box<dyn GatewayTrait>>,
         event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
-    ) -> ExecutionResult<WsHandlerOutput> {
+    ) -> ExecutionResult<WsHandlerOutput, WsError> {
         for pipe in pipes {
             pipe.process(context);
             if context.should_abort() {
-                return ExecutionResult::Err(Box::new(WsError::Internal(
+                return ExecutionResult::Err(WsError::Internal(
                     "Request aborted by pipe".into(),
-                )));
+                ));
             }
         }
 
@@ -447,7 +454,7 @@ impl GatewayWrapper {
             .await;
         match result {
             Ok(exec) => exec,
-            Err(payload) => ExecutionResult::Err(Box::new(
+            Err(payload) => ExecutionResult::Err(WsError::from(
                 PanicRecovered::from_panic_payload(PipelineSegment::HandlerBody, payload),
             )),
         }
@@ -551,7 +558,7 @@ mod tests {
                 _client: WsClient,
                 _message: WsMessage,
                 _event: &str,
-            ) -> ExecutionResult<WsHandlerOutput> {
+            ) -> ExecutionResult<WsHandlerOutput, WsError> {
                 ExecutionResult::Ok(WsHandlerOutput::Empty)
             }
         }

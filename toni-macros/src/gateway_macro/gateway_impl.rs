@@ -167,9 +167,9 @@ fn generate_gateway_impl(
     }
 
     // User errors are preserved past the macro boundary as
-    // `ExecutionResult::Err` so the dispatcher can fan observers + run the
-    // chain on the typed error before falling back to
-    // `AppError::into_ws_message`.
+    // `ExecutionResult::Err` carrying the transport's `WsError`. `Into::into`
+    // calls the `From<E: AppError> for WsError` blanket so domain errors
+    // implementing `AppError` lift automatically.
     let match_arms: Vec<_> = message_handlers
         .iter()
         .map(|(event, method)| {
@@ -180,7 +180,7 @@ fn generate_gateway_impl(
                     match self.#method_name(client, message).await {
                         Ok(__output) => ::toni::http_helpers::ExecutionResult::Ok(__output),
                         Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
-                            ::std::boxed::Box::new(__err),
+                            ::std::convert::Into::<toni::WsError>::into(__err),
                         ),
                     }
                 }
@@ -530,13 +530,13 @@ fn generate_gateway_impl(
                 client: toni::WsClient,
                 message: toni::WsMessage,
                 event: &str,
-            ) -> ::toni::http_helpers::ExecutionResult<toni::WsHandlerOutput> {
+            ) -> ::toni::http_helpers::ExecutionResult<toni::WsHandlerOutput, toni::WsError> {
                 match event {
                     #(#match_arms)*
                     _ => ::toni::http_helpers::ExecutionResult::Err(
-                        ::std::boxed::Box::new(toni::WsError::EventNotFound(
+                        toni::WsError::EventNotFound(
                             format!("Unknown event: {}", event),
-                        )),
+                        ),
                     ),
                 }
             }

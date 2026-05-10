@@ -301,20 +301,27 @@ impl RpcControllerWrapper {
                     PipelineSegment::HandlerBody,
                     payload,
                 );
-                ExecutionResult::Err(Box::new(event))
+                ExecutionResult::Err(RpcError::from(event))
             }
         };
         match exec_result {
             ExecutionResult::Ok(data) => context.set_response(Ok(data)),
-            ExecutionResult::Err(err) => {
-                Self::fan_out_observers(observers, &*err, context).await;
+            ExecutionResult::Err(rpc_err) => {
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
+                    match &rpc_err {
+                        RpcError::AppError(e) => e.as_ref(),
+                        other => other,
+                    };
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                    if let Some(claimed) =
+                        handler.handle_error(observed_err, context).await
+                    {
                         context.set_response(Ok(Some(claimed)));
                         return;
                     }
                 }
-                context.set_response(Ok(Some(err.into_rpc_data())));
+                context.set_response(Ok(Some(rpc_err.to_data())));
             }
         }
     }
