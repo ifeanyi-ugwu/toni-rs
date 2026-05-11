@@ -1,16 +1,14 @@
-//! RPC handler error type — owns rendering, wraps domain `AppError`s.
+//! RPC handler error type.
 //!
-//! `RpcError` is the canonical error type the RPC dispatcher flows through
-//! its pipeline. Handlers don't have to return it directly: any type
-//! implementing [`AppError`](crate::errors::AppError) gets a free
-//! conversion via [`From<E: AppError> for RpcError`], so writing
-//! `Result<RpcData, MyDomainError>` from an RPC handler is fine — the
-//! framework lifts the domain error into [`RpcError::AppError`] at the
-//! dispatcher boundary and renders the canonical `RpcData` envelope.
+//! `RpcError` is the error carried across the RPC dispatcher and adapter
+//! boundary. Handlers may return any type implementing
+//! [`AppError`](crate::errors::AppError) from their function body — the
+//! [`From<E: AppError>`] blanket lifts it into [`RpcError::AppError`] at
+//! the macro boundary, and [`RpcError::to_data`] renders the canonical
+//! envelope.
 //!
-//! `RpcError` itself does **not** implement `AppError`. Same reason as
-//! [`HttpError`](crate::errors::HttpError): keeps the `From<E: AppError>`
-//! blanket from conflicting with std's reflexive `From<T> for T`.
+//! `RpcError` does not implement `AppError` itself; the `From` blanket
+//! requires source and target to be distinct types.
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,8 +18,14 @@ use serde_json::{Value, json};
 use crate::errors::AppError;
 use crate::rpc::RpcData;
 
-/// RPC error kinds plus the override slots: a fully-formed [`RpcData`]
-/// payload, and a wrapper around any [`AppError`].
+/// Variants the RPC dispatcher returns.
+///
+/// [`PatternNotFound`](Self::PatternNotFound), [`Forbidden`](Self::Forbidden),
+/// and [`Internal`](Self::Internal) are emitted by the framework and reach
+/// the adapter as wire-Err frames (`{"err":{"status":..., "message":...}}`).
+/// [`AppError`](Self::AppError) carries a user-domain error and reaches the
+/// adapter as a wire-Ok frame carrying the canonical envelope
+/// (`{"response":{"status":"error","kind":..., "message":...}}`).
 #[derive(Debug, Clone)]
 pub enum RpcError {
     /// No registered handler matched the inbound pattern.
@@ -33,21 +37,18 @@ pub enum RpcError {
     /// Generic server-side failure.
     Internal(String),
 
-    /// Wraps a domain error implementing [`AppError`]. Renders through
-    /// the canonical envelope derived from the error's
-    /// [`kind`](crate::errors::AppError::kind). Constructed automatically
-    /// via the [`From<E: AppError>`] blanket — handlers normally don't
-    /// build this variant directly.
+    /// Carries a user-domain error implementing [`AppError`]. Constructed
+    /// by the [`From<E: AppError>`] blanket; handlers don't build this
+    /// variant by hand.
     AppError(Arc<dyn AppError + Send + Sync>),
 }
 
 impl RpcError {
-    /// Render this error as an [`RpcData`] payload.
-    ///
-    /// Named variants produce `{"status":"error","kind":"...","message":...}`.
-    /// [`Self::Response`] returns its wrapped payload. [`Self::AppError`]
-    /// renders the wrapped error's `kind` / `message` / `details` through
-    /// the canonical shape.
+    /// Render as an [`RpcData`] payload using the canonical envelope:
+    /// `{"status":"error","kind":"...","message":...}`. For
+    /// [`AppError`](Self::AppError), reads `kind` / `message` / `details`
+    /// from the wrapped error; for the framework variants, uses a fixed
+    /// `kind` per variant.
     pub fn to_data(&self) -> RpcData {
         match self {
             Self::AppError(e) => render_app_error(e.as_ref()),
@@ -70,9 +71,8 @@ impl RpcError {
     }
 }
 
-/// Canonical RPC envelope rendering for an arbitrary [`AppError`]. Used by
-/// [`RpcError::AppError`] and by framework internals that need to render an
-/// `AppError` to RPC without going through the wrapper variant.
+/// Render an arbitrary [`AppError`] as the canonical RPC envelope.
+/// Merges `details()` into the payload when present.
 pub fn render_app_error(err: &dyn AppError) -> RpcData {
     let mut payload = json!({
         "status": "error",
@@ -107,9 +107,9 @@ impl std::error::Error for RpcError {
     }
 }
 
-/// Lift any [`AppError`] into [`RpcError::AppError`] so handlers returning
-/// `Result<T, MyDomainError>` work via `?` and the macro's auto-conversion
-/// at the dispatcher boundary.
+/// Lift any [`AppError`] into [`RpcError::AppError`]. Handlers returning
+/// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
+/// conversion at the dispatcher boundary.
 impl<E: AppError> From<E> for RpcError {
     fn from(e: E) -> Self {
         Self::AppError(Arc::new(e))

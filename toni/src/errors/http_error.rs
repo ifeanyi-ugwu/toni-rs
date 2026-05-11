@@ -1,14 +1,13 @@
-//! HTTP handler error type — owns rendering, wraps domain `AppError`s.
+//! HTTP handler error type.
 //!
-//! `HttpError` is the canonical error type the HTTP dispatcher flows through
-//! its pipeline. Handlers don't have to return it directly: any type
-//! implementing [`AppError`](crate::errors::AppError) gets a free conversion
-//! via [`From<E: AppError> for HttpError`], so writing
-//! `Result<Body, MyDomainError>` from a handler is fine — the framework
-//! lifts the domain error into [`HttpError::AppError`] at the dispatcher
-//! boundary and renders the canonical envelope.
+//! `HttpError` is the error carried across the HTTP dispatcher and adapter
+//! boundary. Handlers may return any type implementing
+//! [`AppError`](crate::errors::AppError) from their function body — the
+//! [`From<E: AppError>`] blanket lifts it into [`HttpError::AppError`] at
+//! the macro boundary, and [`HttpError::to_response`] renders the canonical
+//! envelope.
 //!
-//! Use the named variants for trivial cases:
+//! Named variants cover the trivial cases:
 //!
 //! ```ignore
 //! fn find_user(id: &str) -> Result<User, HttpError> {
@@ -16,19 +15,12 @@
 //! }
 //! ```
 //!
-//! Use [`HttpError::AppError`] (usually via `?` and the auto-`From` blanket)
-//! when bubbling a domain error up to the framework for canonical rendering.
+//! Custom rendering (headers like `Retry-After`, domain-specific body shapes)
+//! goes through a `#[catch(T)]` chain handler — it produces an `HttpResponse`
+//! directly and runs ahead of [`HttpError::to_response`]'s default rendering.
 //!
-//! For fully-custom rendering (a `Retry-After` header on a 429, an
-//! arbitrary domain envelope) register a chain handler with `#[catch(T)]`
-//! — it produces an `HttpResponse` directly, with full control over body
-//! and headers. The chain runs ahead of `to_response()`'s fallback.
-//!
-//! `HttpError` itself does **not** implement `AppError`. The split is
-//! deliberate: `AppError` is the domain-vocabulary trait (kind / message /
-//! details), `HttpError` is the transport's wire-rendering type. Mixing
-//! them would also break the `From<E: AppError>` blanket via std's
-//! reflexive `From<T> for T`.
+//! `HttpError` does not implement `AppError`; the `From` blanket requires
+//! source and target to be distinct types.
 
 use std::sync::Arc;
 use std::{borrow::Cow, fmt};
@@ -38,11 +30,8 @@ use serde_json::{Value, json};
 use crate::errors::AppError;
 use crate::http_helpers::{Body, HttpResponse, IntoResponse};
 
-/// HTTP error types that map to standard HTTP status codes.
-///
-/// Named variants are the convenience cases. The
-/// [`AppError`](Self::AppError) variant wraps a domain error implementing
-/// [`AppError`](crate::errors::AppError) for canonical-envelope rendering.
+/// HTTP error variants — convenience constructors plus a wrapper for
+/// user-domain [`AppError`](crate::errors::AppError) values.
 #[derive(Debug, Clone)]
 pub enum HttpError {
     /// 400 Bad Request - Client sent invalid data
@@ -69,13 +58,10 @@ pub enum HttpError {
     /// Custom error with any status code
     Custom { status: u16, message: String },
 
-    /// Wraps a domain error implementing [`AppError`](crate::errors::AppError).
-    /// Renders through the canonical envelope derived from the error's
-    /// [`kind`](crate::errors::AppError::kind). Constructed automatically
-    /// via the [`From<E: AppError>`] blanket — handlers normally don't build
-    /// this variant directly.
-    ///
-    /// `Arc` rather than `Box` so `HttpError` stays `Clone`.
+    /// Carries a user-domain error implementing
+    /// [`AppError`](crate::errors::AppError). Constructed by the
+    /// [`From<E: AppError>`] blanket; handlers don't build this variant by
+    /// hand. `Arc` rather than `Box` so the enum stays `Clone`.
     AppError(Arc<dyn AppError + Send + Sync>),
 }
 
@@ -168,14 +154,13 @@ impl HttpError {
         }
     }
 
-    /// Render this error as an [`HttpResponse`].
-    ///
-    /// Named variants and `Custom` produce the canonical envelope:
+    /// Render as an [`HttpResponse`] using the canonical envelope:
     /// ```json
     /// { "statusCode": 404, "message": "...", "error": "Not Found" }
     /// ```
-    /// [`Self::AppError`] renders the wrapped error's `kind` / `message` /
-    /// `details` through the same canonical shape.
+    /// For [`AppError`](Self::AppError), reads `kind` / `message` / `details`
+    /// from the wrapped error; the named variants use their fixed status
+    /// and reason phrase.
     pub fn to_response(&self) -> HttpResponse {
         match self {
             Self::AppError(e) => render_app_error(e.as_ref()),
@@ -192,9 +177,8 @@ impl HttpError {
     }
 }
 
-/// Canonical HTTP envelope rendering for an arbitrary [`AppError`]. Used by
-/// [`HttpError::AppError`] and by tests / framework internals that need to
-/// render an `AppError` to HTTP without going through the wrapper variant.
+/// Render an arbitrary [`AppError`] as the canonical HTTP envelope.
+/// Merges `details()` into the body when present.
 pub fn render_app_error(err: &dyn AppError) -> HttpResponse {
     let kind = err.kind();
     let mut body = json!({
@@ -226,10 +210,8 @@ impl fmt::Display for HttpError {
 impl std::error::Error for HttpError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            // Surface the wrapped domain error so chain handlers can
-            // downcast through `Error::source()` to the original type.
-            // `dyn AppError + Send + Sync` upcasts to `dyn Error + 'static`
-            // because `AppError: Error + 'static`.
+            // Expose the wrapped error so `Error::downcast_ref::<MyError>()`
+            // reaches the original type from `#[catch]` chain handlers.
             Self::AppError(e) => Some(e.as_ref()),
             _ => None,
         }
@@ -248,13 +230,9 @@ impl IntoResponse for HttpError {
     }
 }
 
-/// Lift any [`AppError`] into [`HttpError::AppError`] so handlers returning
-/// `Result<T, MyDomainError>` work via `?` and the macro's auto-conversion
-/// at the dispatcher boundary.
-///
-/// This is a blanket — it covers every type implementing [`AppError`].
-/// `HttpError` itself does not implement `AppError`, which keeps this from
-/// conflicting with std's reflexive `From<T> for T`.
+/// Lift any [`AppError`] into [`HttpError::AppError`]. Handlers returning
+/// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
+/// conversion at the dispatcher boundary.
 impl<E: AppError> From<E> for HttpError {
     fn from(e: E) -> Self {
         Self::AppError(Arc::new(e))
