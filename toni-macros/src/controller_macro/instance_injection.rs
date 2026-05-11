@@ -1648,7 +1648,7 @@ fn join_paths(prefix: &str, path: &str) -> String {
 ///
 /// `Result<T, E>` returns are pattern-matched so the typed `E` flows through
 /// the dispatcher as the transport's handler error type — `HttpError` here.
-/// `Into::into` calls the `From<E: AppError> for HttpError` blanket so the
+/// `Into::into` calls the `From<E: Error> for HttpError` blanket so the
 /// user's domain error is lifted automatically. Plain `T` returns wrap
 /// directly in `ExecutionResult::Ok`.
 fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream {

@@ -2,7 +2,7 @@
 //!
 //! Verifies the observer fires on framework-generated errors (guard
 //! rejection here) but **not** on user-handler errors (those render via
-//! `AppError::into_*` and bypass the chain entirely).
+//! the active transport rendering and bypass the chain entirely).
 
 use std::sync::{
     Arc,
@@ -106,7 +106,7 @@ async fn observer_fires_on_guard_rejection() {
 
 #[tokio_localset_test::localset_test]
 async fn observer_fires_on_user_error() {
-    // User errors render via `AppError::into_http_response`, but the
+    // User errors render via `HttpError::to_response`, but the
     // dispatcher preserves the typed error past that boundary so observers
     // can see it too. Symmetric semantics: observers fire on every error,
     // user-typed and framework-generated alike.

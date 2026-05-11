@@ -4,7 +4,7 @@ use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
     errors::{
-        AppError, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
+        Error, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
         PipelineSegment,
     },
     http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
@@ -284,7 +284,7 @@ impl InstanceWrapper {
     /// Run the chain on a typed framework event. Observers fan out first so
     /// they see every framework-generated error regardless of whether a chain
     /// handler claims it; if no handler claims, the event renders itself
-    /// through its `AppError` impl. A `claimed_response` (for example, a
+    /// through the active transport rendering. A `claimed_response` (for example, a
     /// custom response set by the rejecting guard) takes precedence over the
     /// canonical envelope.
     async fn handle_framework_event<E>(
@@ -295,7 +295,7 @@ impl InstanceWrapper {
         ctx: &HttpContext,
     ) -> HttpResponse
     where
-        E: AppError,
+        E: Error,
     {
         Self::fan_out_observers(observers, &event, ctx).await;
 
@@ -366,8 +366,8 @@ impl InstanceWrapper {
     ///
     /// On `ExecutionResult::Ok`, the response goes straight to the context.
     /// On `ExecutionResult::Err`, the user's typed error is preserved as a
-    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `AppError::into_http_response`
+    /// `Box<dyn Error>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `HttpError::to_response`
     /// is the fallback envelope when no handler claims.
     async fn execute_handler(
         context: &mut HttpContext,

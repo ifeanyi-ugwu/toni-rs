@@ -11,7 +11,7 @@
 //! `R` is the success type (per transport: `HttpResponse`,
 //! `Option<RpcData>`, `WsHandlerOutput`); `E` is the transport's handler
 //! error type. Domain errors flow into `E` via the transport-specific
-//! `From<X: AppError>` blanket — handlers return their own focused error
+//! `From<X: Error>` blanket — handlers return their own focused error
 //! types and the macro converts at the dispatcher boundary.
 
 /// Outcome of running a controller / handler at the macro boundary.

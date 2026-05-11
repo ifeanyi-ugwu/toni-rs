@@ -64,7 +64,7 @@ pub use traits_helpers::{HttpProviderContext, ProviderContext, RequestCache};
 
 pub use error::{BindError, InitResult};
 pub use errors::{
-    AppError, Cancelled, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
+    Cancelled, Error, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
     PipelineSegment,
 };
 

@@ -2,8 +2,8 @@
 //!
 //! `HttpError` is the error carried across the HTTP dispatcher and adapter
 //! boundary. Handlers may return any type implementing
-//! [`AppError`](crate::errors::AppError) from their function body — the
-//! [`From<E: AppError>`] blanket lifts it into [`HttpError::AppError`] at
+//! [`toni::Error`](crate::errors::Error) from their function body — the
+//! [`From<E: Error>`] blanket lifts it into [`HttpError::AppError`] at
 //! the macro boundary, and [`HttpError::to_response`] renders the canonical
 //! envelope.
 //!
@@ -19,19 +19,19 @@
 //! goes through a `#[catch(T)]` chain handler — it produces an `HttpResponse`
 //! directly and runs ahead of [`HttpError::to_response`]'s default rendering.
 //!
-//! `HttpError` does not implement `AppError`; the `From` blanket requires
-//! source and target to be distinct types.
+//! `HttpError` does not implement [`toni::Error`](crate::errors::Error); the
+//! `From` blanket requires source and target to be distinct types.
 
 use std::sync::Arc;
 use std::{borrow::Cow, fmt};
 
 use serde_json::{Value, json};
 
-use crate::errors::AppError;
+use crate::errors::Error;
 use crate::http_helpers::{Body, HttpResponse, IntoResponse};
 
 /// HTTP error variants — convenience constructors plus a wrapper for
-/// user-domain [`AppError`](crate::errors::AppError) values.
+/// user-domain [`toni::Error`](crate::errors::Error) values.
 #[derive(Debug, Clone)]
 pub enum HttpError {
     /// 400 Bad Request - Client sent invalid data
@@ -59,10 +59,10 @@ pub enum HttpError {
     Custom { status: u16, message: String },
 
     /// Carries a user-domain error implementing
-    /// [`AppError`](crate::errors::AppError). Constructed by the
-    /// [`From<E: AppError>`] blanket; handlers don't build this variant by
+    /// [`toni::Error`](crate::errors::Error). Constructed by the
+    /// [`From<E: Error>`] blanket; handlers don't build this variant by
     /// hand. `Arc` rather than `Box` so the enum stays `Clone`.
-    AppError(Arc<dyn AppError + Send + Sync>),
+    AppError(Arc<dyn Error + Send + Sync>),
 }
 
 impl HttpError {
@@ -177,9 +177,9 @@ impl HttpError {
     }
 }
 
-/// Render an arbitrary [`AppError`] as the canonical HTTP envelope.
-/// Merges `details()` into the body when present.
-pub fn render_app_error(err: &dyn AppError) -> HttpResponse {
+/// Render an arbitrary [`toni::Error`](crate::errors::Error) as the
+/// canonical HTTP envelope. Merges `details()` into the body when present.
+pub fn render_app_error(err: &dyn Error) -> HttpResponse {
     let kind = err.kind();
     let mut body = json!({
         "statusCode": kind.http_status(),
@@ -230,10 +230,11 @@ impl IntoResponse for HttpError {
     }
 }
 
-/// Lift any [`AppError`] into [`HttpError::AppError`]. Handlers returning
-/// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
-/// conversion at the dispatcher boundary.
-impl<E: AppError> From<E> for HttpError {
+/// Lift any [`toni::Error`](crate::errors::Error) into
+/// [`HttpError::AppError`]. Handlers returning `Result<T, MyDomainError>`
+/// use this via `?` and via the macro's auto-conversion at the dispatcher
+/// boundary.
+impl<E: Error> From<E> for HttpError {
     fn from(e: E) -> Self {
         Self::AppError(Arc::new(e))
     }
@@ -284,7 +285,7 @@ mod tests {
             }
         }
         impl std::error::Error for DomainErr {}
-        impl AppError for DomainErr {
+        impl Error for DomainErr {
             fn kind(&self) -> ErrorKind {
                 ErrorKind::NotFound
             }

@@ -1,6 +1,6 @@
 mod common;
 
-mod app_error_derive;
+mod error_derive;
 mod app_token_enhancers;
 mod catch_macro;
 mod error_observer;

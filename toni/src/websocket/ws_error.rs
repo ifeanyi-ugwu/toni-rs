@@ -2,12 +2,12 @@
 //!
 //! `WsError` is the error carried across the WebSocket dispatcher and
 //! adapter boundary. Handlers may return any type implementing
-//! [`AppError`](crate::errors::AppError) from their function body — the
-//! [`From<E: AppError>`] blanket lifts it into [`WsError::AppError`] at the
+//! [`toni::Error`](crate::errors::Error) from their function body — the
+//! [`From<E: Error>`] blanket lifts it into [`WsError::AppError`] at the
 //! macro boundary, and [`WsError::to_message`] renders the canonical
 //! text-frame envelope.
 //!
-//! `WsError` does not implement `AppError`; the `From` blanket requires
+//! `WsError` does not implement [`toni::Error`](crate::errors::Error); the `From` blanket requires
 //! source and target to be distinct types.
 
 use std::fmt;
@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::errors::AppError;
+use crate::errors::Error;
 use crate::websocket::WsMessage;
 
 /// WebSocket error variants — framework-emitted kinds plus a wrapper for
-/// user-domain [`AppError`](crate::errors::AppError) values.
+/// user-domain [`toni::Error`](crate::errors::Error) values.
 #[derive(Debug, Clone)]
 pub enum WsError {
     /// The connection closed before the handler could finish.
@@ -41,10 +41,10 @@ pub enum WsError {
     BroadcastError(String),
 
     /// Carries a user-domain error implementing
-    /// [`AppError`](crate::errors::AppError). Constructed by the
-    /// [`From<E: AppError>`] blanket; handlers don't build this variant by
+    /// [`toni::Error`](crate::errors::Error). Constructed by the
+    /// [`From<E: Error>`] blanket; handlers don't build this variant by
     /// hand.
-    AppError(Arc<dyn AppError + Send + Sync>),
+    AppError(Arc<dyn Error + Send + Sync>),
 }
 
 impl WsError {
@@ -76,9 +76,9 @@ impl WsError {
     }
 }
 
-/// Render an arbitrary [`AppError`] as the canonical WebSocket text-frame
+/// Render an arbitrary [`toni::Error`] as the canonical WebSocket text-frame
 /// envelope. Merges `details()` into the payload when present.
-pub fn render_app_error(err: &dyn AppError) -> WsMessage {
+pub fn render_app_error(err: &dyn Error) -> WsMessage {
     let mut payload = json!({
         "status": "error",
         "kind": err.kind().name(),
@@ -121,10 +121,10 @@ impl From<crate::websocket::BroadcastError> for WsError {
     }
 }
 
-/// Lift any [`AppError`] into [`WsError::AppError`]. Handlers returning
+/// Lift any [`toni::Error`] into [`WsError::AppError`]. Handlers returning
 /// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
 /// conversion at the dispatcher boundary.
-impl<E: AppError> From<E> for WsError {
+impl<E: Error> From<E> for WsError {
     fn from(e: E) -> Self {
         Self::AppError(Arc::new(e))
     }

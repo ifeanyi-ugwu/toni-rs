@@ -144,7 +144,7 @@ async fn udp_unknown_pattern_returns_error_frame() {
 
 /// A panicking RPC handler is caught by the dispatcher, surfaced as a
 /// `PanicRecovered` framework event, and rendered through
-/// `AppError::into_rpc_data`. The reply is a canonical-envelope success
+/// `RpcError::to_data`. The reply is a canonical-envelope success
 /// frame (not a wire-Err) and the server stays responsive on subsequent
 /// datagrams.
 ///

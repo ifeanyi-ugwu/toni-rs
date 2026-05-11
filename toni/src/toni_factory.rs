@@ -140,7 +140,7 @@ impl ToniFactory {
     /// missing routes, panic recovery). Observers are fire-and-forget
     /// — they don't shape the response.
     ///
-    /// User-handler errors render directly via `AppError::into_*` and
+    /// User-handler errors render directly through the active transport and
     /// don't pass through observers; if you need to log those, override
     /// the rendering method on your error type.
     pub fn use_global_error_observer(

@@ -1,15 +1,14 @@
-//! `AppError` — the semantic error contract.
+//! `toni::Error` — the framework's error contract.
 //!
-//! A type implementing `AppError` declares its semantic kind once via
-//! [`kind`](AppError::kind). Per-transport rendering belongs to the
-//! transport's handler error type — [`HttpError`](crate::errors::HttpError),
+//! A type implementing `Error` declares its semantic [`kind`](Error::kind);
+//! the transport's handler error type ([`HttpError`](crate::errors::HttpError),
 //! [`RpcError`](crate::errors::RpcError),
-//! [`WsError`](crate::errors::WsError) — each of which carries its own wire
-//! shape and provides a `From<E: AppError>` blanket so domain errors flow
-//! into the right transport via `?` at the handler boundary.
+//! [`WsError`](crate::errors::WsError)) carries the wire shape and provides
+//! a `From<E: Error>` blanket so a `toni::Error` returned by a handler flows
+//! into the right transport via `?`.
 //!
 //! ```ignore
-//! use toni::errors::{AppError, ErrorKind};
+//! use toni::{Error, ErrorKind};
 //!
 //! #[derive(Debug, thiserror::Error)]
 //! enum BillingError {
@@ -19,7 +18,7 @@
 //!     CardDeclined,
 //! }
 //!
-//! impl AppError for BillingError {
+//! impl Error for BillingError {
 //!     fn kind(&self) -> ErrorKind {
 //!         match self {
 //!             Self::InvoiceNotFound(_) => ErrorKind::NotFound,
@@ -30,9 +29,8 @@
 //! ```
 //!
 //! The handler returns `Result<T, BillingError>`; the macro converts the
-//! `Err` arm to the active transport's error type via `From<BillingError>
-//! for HttpError` (or `RpcError` / `WsError`), and the dispatcher renders
-//! the canonical envelope from `kind` / `message` / `details`.
+//! `Err` arm to the active transport's error type, and the dispatcher
+//! renders the canonical envelope from `kind` / `message` / `details`.
 
 use std::borrow::Cow;
 
@@ -42,7 +40,7 @@ use serde_json::Value;
 ///
 /// Each transport's default rendering reads from this taxonomy:
 /// HTTP maps to status codes, RPC and WebSocket to a stable status string.
-/// The kind layer means a single `AppError` impl produces the right shape
+/// The kind layer means a single [`Error`] impl produces the right shape
 /// on every transport without per-transport conversion code.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -126,16 +124,18 @@ impl ErrorKind {
     }
 }
 
-/// Domain-error contract — pure semantic info.
+/// The framework's error contract — `std::error::Error` plus the metadata
+/// the toni pipeline needs (`kind` for chain dispatch, observer routing,
+/// and rendering; `message`; `details`).
 ///
-/// Implementing `AppError` makes the type renderable on every transport
-/// via the framework's per-transport `From<E: AppError>` blankets — domain
-/// errors `?`-flow into [`HttpError`](crate::errors::HttpError),
+/// Implementing `Error` makes the type renderable on every transport via
+/// the per-transport `From<E: Error>` blankets — it `?`-flows into
+/// [`HttpError`](crate::errors::HttpError),
 /// [`RpcError`](crate::errors::RpcError), and
 /// [`WsError`](crate::errors::WsError) automatically. The transport's
 /// handler error type owns the rendering; this trait owns the semantic
 /// vocabulary.
-pub trait AppError: std::error::Error + Send + Sync + 'static {
+pub trait Error: std::error::Error + Send + Sync + 'static {
     /// Coarse classification — drives the canonical envelope on every transport.
     fn kind(&self) -> ErrorKind;
 

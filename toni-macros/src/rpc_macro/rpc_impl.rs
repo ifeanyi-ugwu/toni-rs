@@ -97,8 +97,8 @@ fn generate_rpc_controller_impl(
         .collect();
 
     // User errors flow through the dispatcher as `RpcError`. `Into::into`
-    // calls the `From<E: AppError> for RpcError` blanket so any domain
-    // error type implementing `AppError` lifts automatically.
+    // calls the `From<E: Error> for RpcError` blanket so any domain
+    // error type implementing `toni::Error` lifts automatically.
     let message_arms: Vec<_> = message_handlers
         .iter()
         .map(|(pattern, method)| {

@@ -168,8 +168,8 @@ fn generate_gateway_impl(
 
     // User errors are preserved past the macro boundary as
     // `ExecutionResult::Err` carrying the transport's `WsError`. `Into::into`
-    // calls the `From<E: AppError> for WsError` blanket so domain errors
-    // implementing `AppError` lift automatically.
+    // calls the `From<E: Error> for WsError` blanket so domain errors
+    // implementing `toni::Error` lift automatically.
     let match_arms: Vec<_> = message_handlers
         .iter()
         .map(|(event, method)| {

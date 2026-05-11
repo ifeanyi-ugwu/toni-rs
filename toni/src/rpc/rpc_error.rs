@@ -2,12 +2,12 @@
 //!
 //! `RpcError` is the error carried across the RPC dispatcher and adapter
 //! boundary. Handlers may return any type implementing
-//! [`AppError`](crate::errors::AppError) from their function body — the
-//! [`From<E: AppError>`] blanket lifts it into [`RpcError::AppError`] at
+//! [`toni::Error`](crate::errors::Error) from their function body — the
+//! [`From<E: Error>`] blanket lifts it into [`RpcError::AppError`] at
 //! the macro boundary, and [`RpcError::to_data`] renders the canonical
 //! envelope.
 //!
-//! `RpcError` does not implement `AppError` itself; the `From` blanket
+//! `RpcError` does not implement [`toni::Error`](crate::errors::Error) itself; the `From` blanket
 //! requires source and target to be distinct types.
 
 use std::fmt;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::errors::AppError;
+use crate::errors::Error;
 use crate::rpc::RpcData;
 
 /// Variants the RPC dispatcher returns.
@@ -37,10 +37,10 @@ pub enum RpcError {
     /// Generic server-side failure.
     Internal(String),
 
-    /// Carries a user-domain error implementing [`AppError`]. Constructed
-    /// by the [`From<E: AppError>`] blanket; handlers don't build this
+    /// Carries a user-domain error implementing [`toni::Error`](crate::errors::Error). Constructed
+    /// by the [`From<E: Error>`] blanket; handlers don't build this
     /// variant by hand.
-    AppError(Arc<dyn AppError + Send + Sync>),
+    AppError(Arc<dyn Error + Send + Sync>),
 }
 
 impl RpcError {
@@ -71,9 +71,9 @@ impl RpcError {
     }
 }
 
-/// Render an arbitrary [`AppError`] as the canonical RPC envelope.
+/// Render an arbitrary [`toni::Error`] as the canonical RPC envelope.
 /// Merges `details()` into the payload when present.
-pub fn render_app_error(err: &dyn AppError) -> RpcData {
+pub fn render_app_error(err: &dyn Error) -> RpcData {
     let mut payload = json!({
         "status": "error",
         "kind": err.kind().name(),
@@ -107,10 +107,10 @@ impl std::error::Error for RpcError {
     }
 }
 
-/// Lift any [`AppError`] into [`RpcError::AppError`]. Handlers returning
+/// Lift any [`toni::Error`] into [`RpcError::AppError`]. Handlers returning
 /// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
 /// conversion at the dispatcher boundary.
-impl<E: AppError> From<E> for RpcError {
+impl<E: Error> From<E> for RpcError {
     fn from(e: E) -> Self {
         Self::AppError(Arc::new(e))
     }

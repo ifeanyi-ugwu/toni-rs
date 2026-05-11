@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::AppError;
+use crate::Error;
 use crate::context::{HandlerContext, RpcContext};
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RouteMetadata};
@@ -266,8 +266,8 @@ impl RpcControllerWrapper {
     ///
     /// On `ExecutionResult::Ok`, the response goes straight to the context.
     /// On `ExecutionResult::Err`, the typed error is preserved as a
-    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `AppError::into_rpc_data`
+    /// `Box<dyn Error>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `RpcError::to_data`
     /// is the fallback envelope when no handler claims.
     async fn execute_handler(
         context: &mut RpcContext,

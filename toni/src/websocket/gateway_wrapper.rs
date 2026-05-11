@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use parking_lot::RwLock;
 
-use crate::AppError;
+use crate::Error;
 use crate::context::{HandlerContext, WsContext};
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};
@@ -366,8 +366,8 @@ impl GatewayWrapper {
     ///
     /// On `ExecutionResult::Ok`, the response goes straight to the context.
     /// On `ExecutionResult::Err`, the typed error is preserved as a
-    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `AppError::into_ws_message`
+    /// `Box<dyn Error>`: observers fan out on it, the chain's most-
+    /// specific handler gets first claim, and `WsError::to_message`
     /// is the fallback envelope when no handler claims.
     async fn execute_handler_with_error_handling(
         context: &mut WsContext,

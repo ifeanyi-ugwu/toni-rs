@@ -86,7 +86,7 @@ impl RpcPanicModule {}
 
 /// A panicking RPC handler is caught by the dispatcher, surfaced as a
 /// `PanicRecovered` framework event, and rendered through
-/// `AppError::into_rpc_data`. The reply is a canonical-envelope success
+/// `RpcError::to_data`. The reply is a canonical-envelope success
 /// frame (not a wire-Err) and the connection stays usable for subsequent
 /// messages.
 ///
@@ -433,7 +433,7 @@ async fn typed_payload_round_trip_succeeds() {
 #[tokio_localset_test::localset_test]
 async fn typed_payload_parse_failure_renders_canonical_envelope() {
     // Exercises the macro's typed-payload parse-error path: deserialise
-    // failure renders through `AppError::into_rpc_data` rather than
+    // failure renders through `RpcError::to_data` rather than
     // surfacing as a wire-level Err frame.
     let port = start_rpc_server(TypedPayloadModule::module_definition()).await;
     let resp = tcp_rpc_timeout(
