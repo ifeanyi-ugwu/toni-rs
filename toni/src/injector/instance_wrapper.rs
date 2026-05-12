@@ -179,7 +179,7 @@ impl InstanceWrapper {
                     }
                 }
 
-                crate::errors::http_error::render_app_error(&event)
+                crate::errors::http_error::render_error(&event)
             }
         }
     }
@@ -306,7 +306,7 @@ impl InstanceWrapper {
         }
 
         claimed_response
-            .unwrap_or_else(|| crate::errors::http_error::render_app_error(&event))
+            .unwrap_or_else(|| crate::errors::http_error::render_error(&event))
     }
 
     async fn fan_out_observers(
@@ -364,11 +364,9 @@ impl InstanceWrapper {
 
     /// Run pipes + handler, then route the result.
     ///
-    /// On `ExecutionResult::Ok`, the response goes straight to the context.
-    /// On `ExecutionResult::Err`, the user's typed error is preserved as a
-    /// `Box<dyn Error>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `HttpError::to_response`
-    /// is the fallback envelope when no handler claims.
+    /// `Ok` goes straight to the context. On `Err`, observers fan out on the
+    /// underlying error, the chain's most-specific handler gets first claim,
+    /// and `HttpError::to_response` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,

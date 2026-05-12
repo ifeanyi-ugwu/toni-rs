@@ -51,7 +51,7 @@ impl RpcError {
     /// `kind` per variant.
     pub fn to_data(&self) -> RpcData {
         match self {
-            Self::AppError(e) => render_app_error(e.as_ref()),
+            Self::AppError(e) => render_error(e.as_ref()),
             Self::PatternNotFound(m) => RpcData::json(json!({
                 "status": "error",
                 "kind": "NotFound",
@@ -73,7 +73,7 @@ impl RpcError {
 
 /// Render an arbitrary [`toni::Error`] as the canonical RPC envelope.
 /// Merges `details()` into the payload when present.
-pub fn render_app_error(err: &dyn Error) -> RpcData {
+pub fn render_error(err: &dyn Error) -> RpcData {
     let mut payload = json!({
         "status": "error",
         "kind": err.kind().name(),

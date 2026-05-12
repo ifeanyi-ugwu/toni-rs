@@ -198,7 +198,7 @@ impl HttpError {
     /// and reason phrase.
     pub fn to_response(&self) -> HttpResponse {
         match self {
-            Self::AppError(e) => render_app_error(e.as_ref()),
+            Self::AppError(e) => render_error(e.as_ref()),
             _ => HttpResponse {
                 status: self.status_code(),
                 body: Some(Body::json(json!({
@@ -214,7 +214,7 @@ impl HttpError {
 
 /// Render an arbitrary [`toni::Error`](crate::errors::Error) as the
 /// canonical HTTP envelope. Merges `details()` into the body when present.
-pub fn render_app_error(err: &dyn Error) -> HttpResponse {
+pub fn render_error(err: &dyn Error) -> HttpResponse {
     let kind = err.kind();
     let mut body = json!({
         "statusCode": http_status(kind),

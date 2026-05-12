@@ -268,7 +268,7 @@ pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// - **Constructor call** - Directly calls the constructor:
 ///   ```rust,ignore
-///   #[use_error_handlers(LoggingErrorHandler::new(log_level))]
+///   #[use_error_handlers(TracingErrorHandler::new(level))]
 ///   ```
 ///
 /// # Examples

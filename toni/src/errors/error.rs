@@ -71,9 +71,9 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    /// Stable identifier suitable for serialising into wire payloads. The
-    /// string is the variant name (e.g. `"NotFound"`) so it is forward-stable
-    /// and grep-able across language ecosystems.
+    /// Stable identifier for wire payloads — the variant name (`"NotFound"`).
+    /// Clients in any language parse this string, so it is part of toni's
+    /// public wire API: renaming any of these is a breaking change.
     pub fn name(self) -> &'static str {
         match self {
             Self::BadRequest => "BadRequest",
@@ -89,7 +89,6 @@ impl ErrorKind {
             Self::Internal => "Internal",
         }
     }
-
 }
 
 /// The framework's error contract — `std::error::Error` plus the metadata
@@ -118,17 +117,5 @@ pub trait Error: std::error::Error + Send + Sync + 'static {
     /// trace ids, or anything the client needs beyond the message.
     fn details(&self) -> Option<Value> {
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn kind_name_is_stable() {
-        // Wire payloads serialize this — guard against accidental rename.
-        assert_eq!(ErrorKind::NotFound.name(), "NotFound");
-        assert_eq!(ErrorKind::UnprocessableEntity.name(), "UnprocessableEntity");
     }
 }

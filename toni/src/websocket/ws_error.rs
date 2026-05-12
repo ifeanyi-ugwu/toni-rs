@@ -55,7 +55,7 @@ impl WsError {
     /// per variant.
     pub fn to_message(&self) -> WsMessage {
         match self {
-            Self::AppError(e) => render_app_error(e.as_ref()),
+            Self::AppError(e) => render_error(e.as_ref()),
             other => {
                 let (kind_name, message) = match other {
                     Self::ConnectionClosed(m) => ("Unavailable", m.as_str()),
@@ -78,7 +78,7 @@ impl WsError {
 
 /// Render an arbitrary [`toni::Error`] as the canonical WebSocket text-frame
 /// envelope. Merges `details()` into the payload when present.
-pub fn render_app_error(err: &dyn Error) -> WsMessage {
+pub fn render_error(err: &dyn Error) -> WsMessage {
     let mut payload = json!({
         "status": "error",
         "kind": err.kind().name(),

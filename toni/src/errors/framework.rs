@@ -1,16 +1,9 @@
-//! Typed events the HTTP dispatcher emits when *the framework itself* is the
-//! source of an error — guard rejections, middleware failures, and similar
-//! cases that don't originate from a user handler.
-//!
-//! These types replace the old pattern of synthesising a generic `HttpError`
-//! from the response status: instead of "the response is 4xx, reconstruct an
-//! error proxy from it," the dispatcher names what actually happened. Chain
-//! handlers and observers can downcast to the concrete event and react to
-//! the underlying cause.
-//!
-//! `HttpError` survives as a user-convenience type for trivial handler
-//! returns (`HttpError::not_found("user 42")`) — it is no longer load-bearing
-//! for framework-emitted events.
+//! Typed events the framework emits when it — not a user handler — is the
+//! source of an error: guard rejections, middleware failures, panic
+//! recovery, client give-up. They implement [`Error`](crate::errors::Error)
+//! and flow through the same observer + chain pipeline as user errors;
+//! chain handlers and observers can downcast to the concrete event to react
+//! to the underlying cause.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -67,10 +60,9 @@ impl Error for GuardRejection {
     }
 }
 
-/// Emitted when a middleware in the chain returned `Err` before the request
-/// reached the route handler. Carries the source error's message for the
-/// chain to inspect; the source itself is preserved on `source` so handlers
-/// can still downcast through it when they own the underlying type.
+/// Emitted when a middleware returned `Err` before the request reached the
+/// route handler. Carries the failing error's message; `kind()` is
+/// `Internal`.
 #[derive(Debug)]
 pub struct MiddlewareFailure {
     pub message: String,
@@ -246,19 +238,19 @@ impl Error for Cancelled {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errors::http_error::render_app_error;
+    use crate::errors::http_error::render_error;
 
     #[test]
-    fn guard_rejection_renders_403_via_app_error() {
+    fn guard_rejection_renders_403() {
         let event = GuardRejection::with_reason(0, "missing token");
-        let resp = render_app_error(&event);
+        let resp = render_error(&event);
         assert_eq!(resp.status, 403);
     }
 
     #[test]
-    fn middleware_failure_renders_500_via_app_error() {
+    fn middleware_failure_renders_500() {
         let event = MiddlewareFailure::new("DB pool exhausted");
-        let resp = render_app_error(&event);
+        let resp = render_error(&event);
         assert_eq!(resp.status, 500);
     }
 }

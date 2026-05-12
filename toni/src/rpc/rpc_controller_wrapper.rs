@@ -264,11 +264,9 @@ impl RpcControllerWrapper {
 
     /// Run pipes + handler, then route the result.
     ///
-    /// On `ExecutionResult::Ok`, the response goes straight to the context.
-    /// On `ExecutionResult::Err`, the typed error is preserved as a
-    /// `Box<dyn Error>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `RpcError::to_data`
-    /// is the fallback envelope when no handler claims.
+    /// `Ok` goes straight to the context. On `Err`, observers fan out on the
+    /// underlying error, the chain's most-specific handler gets first claim,
+    /// and `RpcError::to_data` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &mut RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
