@@ -22,7 +22,7 @@ use toni_macros::use_guards;
 #[catch(GuardRejection)]
 async fn guard_catcher(err: &GuardRejection, _ctx: &HttpContext) -> HttpResponse {
     let mut resp = HttpResponse::new();
-    resp.status = err.kind().http_status();
+    resp.status = toni::errors::http_status(err.kind());
     resp.body = Some(ToniBody::text(format!("catch:{}", err.message())));
     resp
 }

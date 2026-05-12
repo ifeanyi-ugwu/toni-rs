@@ -27,8 +27,43 @@ use std::{borrow::Cow, fmt};
 
 use serde_json::{Value, json};
 
-use crate::errors::Error;
+use crate::errors::{Error, ErrorKind};
 use crate::http_helpers::{Body, HttpResponse, IntoResponse};
+
+/// HTTP status code for an [`ErrorKind`]. The HTTP transport owns this
+/// mapping — `ErrorKind` itself is transport-independent.
+pub fn http_status(kind: ErrorKind) -> u16 {
+    match kind {
+        ErrorKind::BadRequest => 400,
+        ErrorKind::Unauthorized => 401,
+        ErrorKind::Forbidden => 403,
+        ErrorKind::NotFound => 404,
+        ErrorKind::Conflict => 409,
+        ErrorKind::UnprocessableEntity => 422,
+        ErrorKind::TooManyRequests => 429,
+        ErrorKind::Timeout => 504,
+        ErrorKind::Unavailable => 503,
+        ErrorKind::Unimplemented => 501,
+        ErrorKind::Internal => 500,
+    }
+}
+
+/// HTTP reason phrase for an [`ErrorKind`], used in the canonical envelope.
+pub fn http_reason(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::BadRequest => "Bad Request",
+        ErrorKind::Unauthorized => "Unauthorized",
+        ErrorKind::Forbidden => "Forbidden",
+        ErrorKind::NotFound => "Not Found",
+        ErrorKind::Conflict => "Conflict",
+        ErrorKind::UnprocessableEntity => "Unprocessable Entity",
+        ErrorKind::TooManyRequests => "Too Many Requests",
+        ErrorKind::Timeout => "Gateway Timeout",
+        ErrorKind::Unavailable => "Service Unavailable",
+        ErrorKind::Unimplemented => "Not Implemented",
+        ErrorKind::Internal => "Internal Server Error",
+    }
+}
 
 /// HTTP error variants — convenience constructors plus a wrapper for
 /// user-domain [`toni::Error`](crate::errors::Error) values.
@@ -120,7 +155,7 @@ impl HttpError {
             Self::UnprocessableEntity(_) => 422,
             Self::InternalServerError(_) => 500,
             Self::Custom { status, .. } => *status,
-            Self::AppError(e) => e.kind().http_status(),
+            Self::AppError(e) => http_status(e.kind()),
         }
     }
 
@@ -150,7 +185,7 @@ impl HttpError {
             Self::UnprocessableEntity(_) => "Unprocessable Entity",
             Self::InternalServerError(_) => "Internal Server Error",
             Self::Custom { .. } => "Error",
-            Self::AppError(e) => e.kind().http_reason(),
+            Self::AppError(e) => http_reason(e.kind()),
         }
     }
 
@@ -182,9 +217,9 @@ impl HttpError {
 pub fn render_app_error(err: &dyn Error) -> HttpResponse {
     let kind = err.kind();
     let mut body = json!({
-        "statusCode": kind.http_status(),
+        "statusCode": http_status(kind),
         "message": err.message(),
-        "error": kind.http_reason(),
+        "error": http_reason(kind),
     });
     if let Some(details) = err.details()
         && let Value::Object(map) = &mut body
@@ -192,7 +227,7 @@ pub fn render_app_error(err: &dyn Error) -> HttpResponse {
         map.insert("details".to_string(), details);
     }
     HttpResponse {
-        status: kind.http_status(),
+        status: http_status(kind),
         body: Some(Body::json(body)),
         headers: vec![],
     }

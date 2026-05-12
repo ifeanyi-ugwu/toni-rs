@@ -90,7 +90,7 @@ async fn render_payment_declined(
     _ctx: &HttpContext,
 ) -> HttpResponse {
     HttpResponse::builder()
-        .status(err.kind().http_status())
+        .status(toni::errors::http_status(err.kind()))
         .header("Retry-After", err.retry_after_secs.to_string())
         .json(json!({
             "type": "payment_declined",
@@ -164,7 +164,7 @@ async fn auth_failure(
     _ctx: &HttpContext,
 ) -> HttpResponse {
     HttpResponse::builder()
-        .status(err.kind().http_status())
+        .status(toni::errors::http_status(err.kind()))
         .json(json!({
             "error": "auth_required",
             "hint": "Send `x-auth-token: <token>`",

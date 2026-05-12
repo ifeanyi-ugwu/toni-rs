@@ -38,10 +38,11 @@ use serde_json::Value;
 
 /// Coarse classification of error semantics, transport-independent.
 ///
-/// Each transport's default rendering reads from this taxonomy:
-/// HTTP maps to status codes, RPC and WebSocket to a stable status string.
-/// The kind layer means a single [`Error`] impl produces the right shape
-/// on every transport without per-transport conversion code.
+/// Each transport's rendering layer maps a kind to its own wire form
+/// (HTTP status codes via [`http_status`](crate::errors::http_status),
+/// RPC/WS status strings via [`name`](Self::name)). The kind layer means
+/// a single [`Error`] impl produces the right shape on every transport
+/// without per-transport conversion code on the error type itself.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
@@ -89,39 +90,6 @@ impl ErrorKind {
         }
     }
 
-    /// HTTP status code this kind maps to.
-    pub fn http_status(self) -> u16 {
-        match self {
-            Self::BadRequest => 400,
-            Self::Unauthorized => 401,
-            Self::Forbidden => 403,
-            Self::NotFound => 404,
-            Self::Conflict => 409,
-            Self::UnprocessableEntity => 422,
-            Self::TooManyRequests => 429,
-            Self::Timeout => 504,
-            Self::Unavailable => 503,
-            Self::Unimplemented => 501,
-            Self::Internal => 500,
-        }
-    }
-
-    /// HTTP reason phrase for response envelopes.
-    pub fn http_reason(self) -> &'static str {
-        match self {
-            Self::BadRequest => "Bad Request",
-            Self::Unauthorized => "Unauthorized",
-            Self::Forbidden => "Forbidden",
-            Self::NotFound => "Not Found",
-            Self::Conflict => "Conflict",
-            Self::UnprocessableEntity => "Unprocessable Entity",
-            Self::TooManyRequests => "Too Many Requests",
-            Self::Timeout => "Gateway Timeout",
-            Self::Unavailable => "Service Unavailable",
-            Self::Unimplemented => "Not Implemented",
-            Self::Internal => "Internal Server Error",
-        }
-    }
 }
 
 /// The framework's error contract — `std::error::Error` plus the metadata
@@ -156,13 +124,6 @@ pub trait Error: std::error::Error + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn kind_http_status_round_trip() {
-        assert_eq!(ErrorKind::NotFound.http_status(), 404);
-        assert_eq!(ErrorKind::Timeout.http_status(), 504);
-        assert_eq!(ErrorKind::Unavailable.http_status(), 503);
-    }
 
     #[test]
     fn kind_name_is_stable() {
