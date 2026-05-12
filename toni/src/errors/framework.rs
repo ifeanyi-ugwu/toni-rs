@@ -1,21 +1,14 @@
-//! Typed events the HTTP dispatcher emits when *the framework itself* is the
-//! source of an error — guard rejections, middleware failures, and similar
-//! cases that don't originate from a user handler.
-//!
-//! These types replace the old pattern of synthesising a generic `HttpError`
-//! from the response status: instead of "the response is 4xx, reconstruct an
-//! error proxy from it," the dispatcher names what actually happened. Chain
-//! handlers and observers can downcast to the concrete event and react to
-//! the underlying cause.
-//!
-//! `HttpError` survives as a user-convenience type for trivial handler
-//! returns (`HttpError::not_found("user 42")`) — it is no longer load-bearing
-//! for framework-emitted events.
+//! Typed events the framework emits when it — not a user handler — is the
+//! source of an error: guard rejections, middleware failures, panic
+//! recovery, client give-up. They implement [`Error`](crate::errors::Error)
+//! and flow through the same observer + chain pipeline as user errors;
+//! chain handlers and observers can downcast to the concrete event to react
+//! to the underlying cause.
 
 use std::borrow::Cow;
 use std::fmt;
 
-use crate::errors::{AppError, ErrorKind};
+use crate::errors::{Error, ErrorKind};
 
 /// Emitted when an HTTP guard returns `false` (or aborts). The chain runs on
 /// this event before the framework's default 403 envelope is rendered.
@@ -54,7 +47,7 @@ impl fmt::Display for GuardRejection {
 
 impl std::error::Error for GuardRejection {}
 
-impl AppError for GuardRejection {
+impl Error for GuardRejection {
     fn kind(&self) -> ErrorKind {
         ErrorKind::Forbidden
     }
@@ -67,10 +60,9 @@ impl AppError for GuardRejection {
     }
 }
 
-/// Emitted when a middleware in the chain returned `Err` before the request
-/// reached the route handler. Carries the source error's message for the
-/// chain to inspect; the source itself is preserved on `source` so handlers
-/// can still downcast through it when they own the underlying type.
+/// Emitted when a middleware returned `Err` before the request reached the
+/// route handler. Carries the failing error's message; `kind()` is
+/// `Internal`.
 #[derive(Debug)]
 pub struct MiddlewareFailure {
     pub message: String,
@@ -92,7 +84,7 @@ impl fmt::Display for MiddlewareFailure {
 
 impl std::error::Error for MiddlewareFailure {}
 
-impl AppError for MiddlewareFailure {
+impl Error for MiddlewareFailure {
     fn kind(&self) -> ErrorKind {
         ErrorKind::Internal
     }
@@ -110,7 +102,7 @@ impl AppError for MiddlewareFailure {
 pub enum PipelineSegment {
     /// Inside the user handler's own body.
     HandlerBody,
-    /// Inside an `AppError::into_*_response` override.
+    /// Inside the active transport rendering an error to its wire shape.
     ResponseRendering,
     /// Inside an interceptor / middleware chain step.
     Middleware,
@@ -202,7 +194,7 @@ impl fmt::Display for PanicRecovered {
 
 impl std::error::Error for PanicRecovered {}
 
-impl AppError for PanicRecovered {
+impl Error for PanicRecovered {
     fn kind(&self) -> ErrorKind {
         ErrorKind::Internal
     }
@@ -233,7 +225,7 @@ impl fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-impl AppError for Cancelled {
+impl Error for Cancelled {
     fn kind(&self) -> ErrorKind {
         // Cancelled is observer-only by convention; if it ever does flow
         // through the chain and nothing claims, this is the most honest
@@ -246,18 +238,19 @@ impl AppError for Cancelled {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::http_error::render_error;
 
     #[test]
-    fn guard_rejection_renders_403_via_app_error() {
+    fn guard_rejection_renders_403() {
         let event = GuardRejection::with_reason(0, "missing token");
-        let resp = event.into_http_response();
+        let resp = render_error(&event);
         assert_eq!(resp.status, 403);
     }
 
     #[test]
-    fn middleware_failure_renders_500_via_app_error() {
+    fn middleware_failure_renders_500() {
         let event = MiddlewareFailure::new("DB pool exhausted");
-        let resp = event.into_http_response();
+        let resp = render_error(&event);
         assert_eq!(resp.status, 500);
     }
 }

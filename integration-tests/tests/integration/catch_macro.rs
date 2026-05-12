@@ -5,13 +5,13 @@
 //! `None` for non-matching types so the chain advances.
 //!
 //! Because the chain only runs on framework-generated errors (per the
-//! AppError redesign), these tests exercise `#[catch]` against
+//! error redesign), these tests exercise `#[catch]` against
 //! guard-rejection responses — that's where the chain still fires.
 
 use std::sync::Arc;
 
 use toni::{
-    AppError, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
+    Error, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
     errors::{GuardRejection, HttpError},
     get, module, toni_factory::ToniFactory,
     traits_helpers::Guard,
@@ -22,7 +22,7 @@ use toni_macros::use_guards;
 #[catch(GuardRejection)]
 async fn guard_catcher(err: &GuardRejection, _ctx: &HttpContext) -> HttpResponse {
     let mut resp = HttpResponse::new();
-    resp.status = err.kind().http_status();
+    resp.status = toni::errors::http_status(err.kind());
     resp.body = Some(ToniBody::text(format!("catch:{}", err.message())));
     resp
 }

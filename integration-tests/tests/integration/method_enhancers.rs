@@ -350,8 +350,8 @@ async fn ws_method_level_enhancers_work() {
         let reply = ws.next().await.unwrap().unwrap();
         // User-handler `Err(WsError::Internal)` flows through the chain;
         // the method-level `RecoveryErrorHandler` claims it and replaces
-        // the response with `"recovered"`. (Without that handler, AppError's
-        // `into_ws_message` would render the canonical envelope instead.)
+        // the response with `"recovered"`. (Without that handler,
+        // `WsError::to_message` would render the canonical envelope instead.)
         assert_eq!(reply.to_text().unwrap(), "recovered");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
@@ -417,8 +417,8 @@ async fn rpc_method_level_enhancers_work() {
 
     // User-handler `Err(RpcError::Internal)` flows through the chain;
     // the method-level `RecoveryErrorHandler` claims it and replaces the
-    // response with `"recovered"`. (Without that handler, AppError's
-    // `into_rpc_data` would render the canonical error envelope instead.)
+    // response with `"recovered"`. (Without that handler, `RpcError::to_data`
+    // would render the canonical error envelope instead.)
     let resp = tcp_rpc(port, "rpc.recovering", serde_json::json!({})).await;
     assert_eq!(resp["response"], "recovered");
 

@@ -1,9 +1,9 @@
 // The framework's error model has two distinct paths:
 //
 //   1. User-handler errors render at the macro boundary via
-//      `AppError::into_http_response()`. The error-handler chain does not
+//      `HttpError::to_response()`. The error-handler chain does not
 //      run on them — by the time anything else could see the response,
-//      the user has already shaped it through their own `AppError` impl.
+//      the user has already shaped it through their own `toni::Error` impl.
 //
 //   2. Framework-generated errors (guard rejection, missing route,
 //      middleware failure) run through the chain. The chain dispatches on
@@ -23,7 +23,7 @@ use toni::{
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
 
-// ---- AppError-rendered responses (no chain involvement) ---------------------
+// ---- Canonical-envelope responses (no chain involvement) ---------------------
 
 #[tokio_localset_test::localset_test]
 async fn http_error_renders_via_app_error_default() {
@@ -50,8 +50,8 @@ async fn http_error_renders_via_app_error_default() {
     assert_eq!(body["message"], "resource not found");
 }
 
-#[derive(Debug, toni::AppError)]
-#[app_error(NotFound)]
+#[derive(Debug, toni::Error)]
+#[error_kind(NotFound)]
 struct InvoiceMissing(String);
 
 impl std::fmt::Display for InvoiceMissing {
@@ -93,7 +93,7 @@ async fn unmatched_chain_handler_falls_through_to_app_error_default() {
     // The chain runs on user errors (symmetric with framework events), but
     // a handler that downcasts to a *different* type than the boxed user
     // error returns None and the chain advances. With no claim, the
-    // `AppError` default envelope is the response.
+    // canonical envelope is the response.
     #[controller("/api", pub struct UserErrController {})]
     impl UserErrController {
         #[get("/bad")]
@@ -107,7 +107,7 @@ async fn unmatched_chain_handler_falls_through_to_app_error_default() {
 
     // MarkerHandler downcasts to `GuardRejection` — it must NOT claim a
     // user `HttpError`. The boxed error is HttpError, downcast returns None,
-    // chain falls through, AppError default renders the canonical envelope.
+    // chain falls through, the canonical envelope renders the canonical envelope.
     let addr = start_app(
         UserErrModule::module_definition(),
         Some(Arc::new(MarkerHandler { marker: "REWRITTEN" })),
@@ -207,10 +207,10 @@ impl ErrorHandler<HttpContext, HttpResponse> for HttpErrorOverride {
 
 #[tokio_localset_test::localset_test]
 async fn scope_chain_overrides_app_error_default_on_user_error() {
-    // Stratification in action: `AppError` is the type-level default, the
+    // Stratification in action: `toni::Error` is the type-level default, the
     // chain is the scope-level override. A handler registered on this scope
     // that downcasts to the user error type wins; everywhere else, the
-    // type's `AppError` envelope is the response.
+    // type's canonical envelope is the response.
     #[controller("/api", pub struct UserErrController {})]
     impl UserErrController {
         #[get("/missing")]

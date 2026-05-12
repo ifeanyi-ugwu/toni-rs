@@ -4,7 +4,7 @@
 //!
 //! 1. A panicking handler doesn't tear down the dispatcher — the unwind is
 //!    caught, surfaced as `PanicRecovered`, fanned through observers + the
-//!    chain, and rendered through `AppError::into_http_response`.
+//!    chain, and rendered through `HttpError::to_response`.
 //! 2. A panicking observer doesn't propagate either — the dispatcher swallows
 //!    the unwind (logging it via tracing) and continues to subsequent
 //!    observers + the chain so one bad logger doesn't kill the request.
@@ -115,7 +115,7 @@ async fn panicking_handler_renders_500_via_panic_recovered() {
         .await
         .unwrap();
 
-    // Default `PanicRecovered` AppError kind is Internal → 500.
+    // Default `PanicRecovered` kind is Internal → 500.
     assert_eq!(resp.status().as_u16(), 500);
 
     // Observer fired exactly once with a `PanicRecovered` carrying the

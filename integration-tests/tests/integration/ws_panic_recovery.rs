@@ -1,6 +1,6 @@
 //! A panic inside a WebSocket handler is caught by the dispatcher,
 //! surfaced as a `PanicRecovered` framework event, and rendered through
-//! `AppError::into_ws_message` — the connection stays alive and the next
+//! `WsError::to_message` — the connection stays alive and the next
 //! message goes through normally. Sibling connections on the same gateway
 //! are unaffected.
 

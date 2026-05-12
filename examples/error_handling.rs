@@ -1,15 +1,17 @@
-//! Error handling — the AppError way.
+//! Error handling.
 //!
 //! Demonstrates:
-//! 1. Domain error types with `#[derive(AppError)]` — the 95% path
-//! 2. Returning `Result<T, MyError>` from handlers — auto-rendered to a
-//!    canonical JSON envelope by the framework
-//! 3. Overriding `into_http_response()` per error type for custom envelopes
+//! 1. Domain error types with `#[derive(toni::Error)]` — the 95% path
+//! 2. Returning `Result<T, MyError>` from handlers — auto-converted into
+//!    `HttpError` at the dispatcher boundary and rendered to a canonical
+//!    JSON envelope
+//! 3. Custom envelope rendering via a `#[catch(MyError)]` chain handler —
+//!    the override path for adding headers or restructuring the body
 //! 4. `HttpError` as a user-convenience type (for trivial cases that don't
 //!    warrant a dedicated error)
 //! 5. `#[catch(GuardRejection)]` as the escape hatch for re-shaping
-//!    framework-generated events — chain dispatch only fires for those,
-//!    not for user errors
+//!    framework-generated events — chain dispatch fires for both
+//!    framework events *and* user errors uniformly
 //!
 //! Run with:
 //! ```bash
@@ -19,27 +21,27 @@
 use serde::Serialize;
 use serde_json::json;
 use toni::{
-    AppError, HttpRequest, HttpResponse, async_trait, catch, context::HttpContext, controller,
+    Error, HttpRequest, HttpResponse, async_trait, catch, context::HttpContext, controller,
     errors::HttpError, get, http_helpers::Body, injectable, module, post,
     toni_factory::ToniFactory, traits_helpers::Guard,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
 
-// ---- Domain error: derived AppError, default canonical envelope -------------
+// ---- Domain error: derived toni::Error, default canonical envelope -------------
 
-#[derive(Debug, toni::AppError)]
+#[derive(Debug, toni::Error)]
 enum UserError {
-    #[app_error(NotFound)]
+    #[error_kind(NotFound)]
     NotFound(String),
 
-    #[app_error(BadRequest)]
+    #[error_kind(BadRequest)]
     InvalidId(String),
 
-    #[app_error(Conflict)]
+    #[error_kind(Conflict)]
     EmailTaken(String),
 
-    #[app_error(UnprocessableEntity)]
+    #[error_kind(UnprocessableEntity)]
     InvalidEmail(String),
 }
 
@@ -72,23 +74,30 @@ impl std::fmt::Display for PaymentDeclined {
 
 impl std::error::Error for PaymentDeclined {}
 
-impl AppError for PaymentDeclined {
+impl Error for PaymentDeclined {
     fn kind(&self) -> toni::ErrorKind {
         toni::ErrorKind::UnprocessableEntity
     }
+}
 
-    // Override the default envelope with payment-specific structure.
-    fn into_http_response(&self) -> HttpResponse {
-        HttpResponse::builder()
-            .status(self.kind().http_status())
-            .header("Retry-After", self.retry_after_secs.to_string())
-            .json(json!({
-                "type": "payment_declined",
-                "reason_code": self.reason_code,
-                "retry_after_secs": self.retry_after_secs,
-            }))
-            .build()
-    }
+// Override path: a `#[catch]` chain handler. Renders `PaymentDeclined`
+// with a Retry-After header and a domain-specific JSON shape. Without
+// this handler, the canonical envelope (status 422 + `{"statusCode":...}`)
+// would render via the `From<PaymentDeclined> for HttpError` blanket.
+#[catch(PaymentDeclined)]
+async fn render_payment_declined(
+    err: &PaymentDeclined,
+    _ctx: &HttpContext,
+) -> HttpResponse {
+    HttpResponse::builder()
+        .status(toni::errors::http_status(err.kind()))
+        .header("Retry-After", err.retry_after_secs.to_string())
+        .json(json!({
+            "type": "payment_declined",
+            "reason_code": err.reason_code,
+            "retry_after_secs": err.retry_after_secs,
+        }))
+        .build()
 }
 
 // ---- Service ----------------------------------------------------------------
@@ -144,7 +153,7 @@ impl Guard<HttpContext> for AuthGuard {
 
 // ---- #[catch] escape hatch: reshape guard-rejection 4xx --------------------
 //
-// AppError handles user errors directly. The chain only fires for framework-
+// User errors render directly through the active transport. The chain only fires for framework-
 // generated events — `GuardRejection`, `MiddlewareFailure`, etc. A `#[catch]`
 // registered on a controller dispatches on the typed event and reshapes the
 // response.
@@ -155,7 +164,7 @@ async fn auth_failure(
     _ctx: &HttpContext,
 ) -> HttpResponse {
     HttpResponse::builder()
-        .status(err.kind().http_status())
+        .status(toni::errors::http_status(err.kind()))
         .json(json!({
             "error": "auth_required",
             "hint": "Send `x-auth-token: <token>`",
@@ -171,8 +180,10 @@ async fn auth_failure(
     service: UserService,
 })]
 impl UserController {
-    /// Returning `Result<T, UserError>` — the framework calls
-    /// `UserError::into_http_response()` on Err, no chain involvement.
+    /// Returning `Result<T, UserError>` — the framework lifts UserError
+    /// into HttpError via the `From<E: Error>` blanket and renders the
+    /// canonical envelope. No chain handler registered for UserError, so
+    /// the dispatcher's fallback rendering applies.
     #[get("/:id")]
     fn get_user(&self, req: HttpRequest) -> Result<Body, UserError> {
         let id = req
@@ -204,8 +215,8 @@ impl UserController {
     }
 
     /// `HttpError` is a convenience type for trivial cases that don't
-    /// warrant a dedicated error type. It implements `AppError` so the same
-    /// rendering path applies.
+    /// warrant a dedicated error type — return it directly and the
+    /// dispatcher renders it via `HttpError::to_response`.
     #[get("/-/teapot")]
     fn teapot(&self) -> Result<Body, HttpError> {
         Err(HttpError::custom(418, "I'm a teapot"))
@@ -213,9 +224,11 @@ impl UserController {
 }
 
 #[controller("/billing", pub struct BillingController {})]
+#[toni_macros::use_error_handlers(render_payment_declined)]
 impl BillingController {
-    /// `PaymentDeclined` overrides `into_http_response()` for a domain-shaped
-    /// envelope (Retry-After header, custom JSON shape).
+    /// `PaymentDeclined` is a plain `toni::Error`; the registered
+    /// `#[catch(PaymentDeclined)]` handler reshapes it with a Retry-After
+    /// header and a domain-specific JSON body.
     #[post("/charge")]
     fn charge(&self) -> Result<Body, PaymentDeclined> {
         Err(PaymentDeclined {
@@ -248,13 +261,13 @@ pub struct AppModule;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("Server running on http://localhost:3000\n");
-    println!("AppError-rendered responses (auto, no chain):");
+    println!("Canonical-envelope responses (auto, no chain):");
     println!("  GET  /users/1            -> 200 OK");
     println!("  GET  /users/missing      -> 404 (UserError::NotFound)");
     println!("  GET  /users/invalid      -> 400 (UserError::InvalidId)");
     println!("  POST /users (existing)   -> 409 (UserError::EmailTaken)");
     println!("  GET  /users/-/teapot     -> 418 (HttpError::Custom)\n");
-    println!("AppError with custom envelope override:");
+    println!("Custom envelope override (via #[catch]):");
     println!("  POST /billing/charge     -> 422 + Retry-After + custom JSON\n");
     println!("Chain on framework-generated error (guard rejection):");
     println!("  GET  /admin/dashboard         -> 403 reshaped by #[catch(GuardRejection)]");

@@ -280,6 +280,10 @@ fn error_status(e: &RpcError) -> &'static str {
         RpcError::PatternNotFound(_) => "not_found",
         RpcError::Forbidden(_) => "forbidden",
         RpcError::Internal(_) => "error",
+        RpcError::AppError(_) => unreachable!(
+            "RpcError::AppError is routed to the Ok+envelope frame before \
+             reaching wire-Err framing"
+        ),
     }
 }
 
@@ -347,6 +351,14 @@ async fn handle_datagram(
                     // sent an id — send an explicit ack so the caller can close
                     // the pending request rather than timing out.
                     serde_json::json!({ "id": id, "response": null })
+                }
+                Err(RpcError::AppError(arc)) => {
+                    let v = match toni::rpc::RpcError::AppError(arc).to_data() {
+                        RpcData::Json(v) => v,
+                        RpcData::Text(s) => serde_json::Value::String(s),
+                        RpcData::Binary(_) => serde_json::Value::Null,
+                    };
+                    serde_json::json!({ "id": id, "response": v })
                 }
                 Err(e) => {
                     let status = error_status(&e);

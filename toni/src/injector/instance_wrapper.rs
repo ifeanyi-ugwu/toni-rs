@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
-    errors::{AppError, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment},
+    errors::{
+        Error, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
+        PipelineSegment,
+    },
     http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
@@ -156,11 +159,11 @@ impl InstanceWrapper {
                 response
             }
             Err(e) => {
-                // If the middleware bubbled an `HttpError`, that's an
-                // `AppError`-implementing user value — render it directly
-                // without going through the chain.
-                if let Some(http_err) = e.downcast_ref::<crate::errors::HttpError>() {
-                    return http_err.into_http_response();
+                // If the middleware bubbled an `HttpError`, render it directly
+                // without going through the chain — the user constructed the
+                // wire shape themselves.
+                if let Some(http_err) = e.downcast_ref::<HttpError>() {
+                    return http_err.to_response();
                 }
 
                 // Middleware failed before the request body could be split; we have no
@@ -176,7 +179,7 @@ impl InstanceWrapper {
                     }
                 }
 
-                event.into_http_response()
+                crate::errors::http_error::render_error(&event)
             }
         }
     }
@@ -281,7 +284,7 @@ impl InstanceWrapper {
     /// Run the chain on a typed framework event. Observers fan out first so
     /// they see every framework-generated error regardless of whether a chain
     /// handler claims it; if no handler claims, the event renders itself
-    /// through its `AppError` impl. A `claimed_response` (for example, a
+    /// through the active transport rendering. A `claimed_response` (for example, a
     /// custom response set by the rejecting guard) takes precedence over the
     /// canonical envelope.
     async fn handle_framework_event<E>(
@@ -292,7 +295,7 @@ impl InstanceWrapper {
         ctx: &HttpContext,
     ) -> HttpResponse
     where
-        E: AppError,
+        E: Error,
     {
         Self::fan_out_observers(observers, &event, ctx).await;
 
@@ -302,7 +305,8 @@ impl InstanceWrapper {
             }
         }
 
-        claimed_response.unwrap_or_else(|| event.into_http_response())
+        claimed_response
+            .unwrap_or_else(|| crate::errors::http_error::render_error(&event))
     }
 
     async fn fan_out_observers(
@@ -360,11 +364,9 @@ impl InstanceWrapper {
 
     /// Run pipes + handler, then route the result.
     ///
-    /// On `ExecutionResult::Ok`, the response goes straight to the context.
-    /// On `ExecutionResult::Err`, the user's typed error is preserved as a
-    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `AppError::into_http_response`
-    /// is the fallback envelope when no handler claims.
+    /// `Ok` goes straight to the context. On `Err`, observers fan out on the
+    /// underlying error, the chain's most-specific handler gets first claim,
+    /// and `HttpError::to_response` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &mut HttpContext,
         instance: &Arc<Box<dyn Controller>>,
@@ -417,20 +419,33 @@ impl InstanceWrapper {
                     PipelineSegment::HandlerBody,
                     payload,
                 );
-                ExecutionResult::Err(Box::new(event))
+                // Lift the framework event into HttpError via the From blanket.
+                ExecutionResult::Err(HttpError::from(event))
             }
         };
         match exec_result {
             ExecutionResult::Ok(response) => context.set_response(response),
-            ExecutionResult::Err(err) => {
-                Self::fan_out_observers(observers, &*err, context).await;
+            ExecutionResult::Err(http_err) => {
+                // For chain dispatch + observers, expose the underlying domain
+                // error (when wrapped) so downcasting against `MyError`
+                // continues to work the way `#[catch(MyError)]` expects. For
+                // non-`AppError` variants (named HttpError variants), pass the
+                // HttpError itself.
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
+                    match &http_err {
+                        HttpError::AppError(e) => e.as_ref(),
+                        other => other,
+                    };
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                    if let Some(claimed) =
+                        handler.handle_error(observed_err, context).await
+                    {
                         context.set_response(claimed);
                         return;
                     }
                 }
-                context.set_response(err.into_http_response());
+                context.set_response(http_err.to_response());
             }
         }
     }

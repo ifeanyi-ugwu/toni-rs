@@ -1,12 +1,13 @@
-//! Error handling types and traits for Toni
+//! Error handling types and traits for Toni.
 //!
-//! This module provides error handling that works seamlessly with HTTP responses.
-//! Use Result<T, HttpError> in your handlers for automatic error conversion.
+//! Handlers return `Result<T, E>` where `E` implements [`Error`] (or
+//! [`HttpError`], the convenience type). The framework lifts the error into
+//! the active transport's error type and renders the canonical envelope.
 
-pub mod app_error;
+pub mod error;
 pub mod framework;
 pub mod http_error;
 
-pub use app_error::{AppError, ErrorKind};
+pub use error::{Error, ErrorKind};
 pub use framework::{Cancelled, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment};
-pub use http_error::HttpError;
+pub use http_error::{HttpError, http_reason, http_status};

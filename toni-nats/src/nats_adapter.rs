@@ -185,6 +185,18 @@ impl RpcAdapter for NatsAdapter {
                                             serde_json::json!({ "response": null }).to_string(),
                                         )
                                     }
+                                    Err(RpcError::AppError(arc)) => {
+                                        let envelope = toni::rpc::RpcError::AppError(arc).to_data();
+                                        match envelope {
+                                            RpcData::Binary(b) => Bytes::from(b),
+                                            RpcData::Json(v) => Bytes::from(
+                                                serde_json::json!({ "response": v }).to_string(),
+                                            ),
+                                            RpcData::Text(s) => Bytes::from(
+                                                serde_json::json!({ "response": s }).to_string(),
+                                            ),
+                                        }
+                                    }
                                     Err(e) => {
                                         let status = error_status(&e);
                                         Bytes::from(
@@ -215,5 +227,9 @@ fn error_status(e: &RpcError) -> &'static str {
         RpcError::PatternNotFound(_) => "not_found",
         RpcError::Forbidden(_) => "forbidden",
         RpcError::Internal(_) => "error",
+        RpcError::AppError(_) => unreachable!(
+            "RpcError::AppError is routed to the Ok+envelope frame before \
+             reaching wire-Err framing"
+        ),
     }
 }

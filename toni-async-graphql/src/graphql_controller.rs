@@ -126,7 +126,7 @@ where
         format!("GraphQLPostController_{}", self.path)
     }
 
-    async fn execute(&self, req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse> {
+    async fn execute(&self, req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         self.execute_inner(req).await.into()
     }
 
@@ -231,7 +231,7 @@ impl Controller for GraphQLPlaygroundController {
         format!("GraphQLPlaygroundController_{}", self.path)
     }
 
-    async fn execute(&self, _req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse> {
+    async fn execute(&self, _req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         HttpResponse {
             status: 200,
             body: Some(Body::text(self.playground_html.clone())),

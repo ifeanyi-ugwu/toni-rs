@@ -268,7 +268,7 @@ pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// - **Constructor call** - Directly calls the constructor:
 ///   ```rust,ignore
-///   #[use_error_handlers(LoggingErrorHandler::new(log_level))]
+///   #[use_error_handlers(TracingErrorHandler::new(level))]
 ///   ```
 ///
 /// # Examples
@@ -362,29 +362,29 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
 }
 
-/// Derive `AppError` from an annotated error type.
+/// Derive [`toni::Error`] from an annotated error type.
 ///
-/// Tag the type (or each enum variant) with `#[app_error(KIND)]`, where
+/// Tag the type (or each enum variant) with `#[error_kind(KIND)]`, where
 /// `KIND` is a variant of `toni::ErrorKind`. Untagged variants fall back
-/// to a top-level `#[app_error(...)]` if present, otherwise to
+/// to a top-level `#[error_kind(...)]` if present, otherwise to
 /// `ErrorKind::Internal`.
 ///
 /// ```ignore
-/// use toni::AppError;
+/// use toni::Error;
 ///
-/// #[derive(Debug, thiserror::Error, AppError)]
+/// #[derive(Debug, thiserror::Error, Error)]
 /// enum BillingError {
 ///     #[error("invoice {0} not found")]
-///     #[app_error(NotFound)]
+///     #[error_kind(NotFound)]
 ///     InvoiceNotFound(String),
 ///
 ///     #[error("card declined")]
-///     #[app_error(UnprocessableEntity)]
+///     #[error_kind(UnprocessableEntity)]
 ///     CardDeclined,
 /// }
 /// ```
-#[proc_macro_derive(AppError, attributes(app_error))]
-pub fn derive_app_error(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Error, attributes(error_kind))]
+pub fn derive_error(input: TokenStream) -> TokenStream {
     app_error_macro::derive_app_error(input)
 }
 
@@ -456,12 +456,11 @@ pub fn error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// `#[catch(T)]` — escape hatch for runtime-selected error handling.
 ///
-/// The framework's primary error path is `AppError`: a domain error type
-/// implements `AppError` and renders itself for whichever transport is
-/// active. `#[catch]` is for the cases that path doesn't reach — typically
-/// re-shaping framework-synthesised errors (`HttpError`, etc.) per route or
-/// per controller, where one handler claims an error and the chain falls
-/// through otherwise.
+/// The framework's primary error path: a domain error type implements
+/// [`toni::Error`] and the active transport renders it. `#[catch]` is for
+/// cases that path doesn't reach — re-shaping framework events
+/// (`GuardRejection`, etc.) per route or per controller, where one handler
+/// claims an error and the chain falls through otherwise.
 ///
 /// Lowers a free `async fn` into a unit struct whose `ErrorHandler<C, R>`
 /// impl runs `error.downcast_ref::<T>()` and returns `None` on no match

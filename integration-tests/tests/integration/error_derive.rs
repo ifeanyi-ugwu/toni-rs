@@ -1,11 +1,11 @@
-//! `#[derive(AppError)]` exercises the codegen across struct, enum, and
+//! `#[derive(toni::Error)]` exercises the codegen across struct, enum, and
 //! default-fallback shapes.
 
 use std::fmt;
-use toni::{AppError, ErrorKind};
+use toni::{Error, ErrorKind};
 
-#[derive(toni::AppError)]
-#[app_error(NotFound)]
+#[derive(toni::Error)]
+#[error_kind(NotFound)]
 struct StructTagged(String);
 
 impl fmt::Debug for StructTagged {
@@ -22,7 +22,7 @@ impl fmt::Display for StructTagged {
 
 impl std::error::Error for StructTagged {}
 
-#[derive(toni::AppError)]
+#[derive(toni::Error)]
 struct StructUntagged(String);
 
 impl fmt::Debug for StructUntagged {
@@ -39,15 +39,15 @@ impl fmt::Display for StructUntagged {
 
 impl std::error::Error for StructUntagged {}
 
-#[derive(Debug, toni::AppError)]
+#[derive(Debug, toni::Error)]
 enum BillingError {
-    #[app_error(NotFound)]
+    #[error_kind(NotFound)]
     InvoiceMissing(String),
 
-    #[app_error(UnprocessableEntity)]
+    #[error_kind(UnprocessableEntity)]
     CardDeclined,
 
-    #[app_error(Unavailable)]
+    #[error_kind(Unavailable)]
     ServiceDown { retry_after: u32 },
 
     // Untagged → no enum-level default → falls all the way through to Internal.
@@ -67,11 +67,11 @@ impl fmt::Display for BillingError {
 
 impl std::error::Error for BillingError {}
 
-#[derive(Debug, toni::AppError)]
-#[app_error(Forbidden)]
+#[derive(Debug, toni::Error)]
+#[error_kind(Forbidden)]
 enum AuthError {
     BadToken,
-    #[app_error(Unauthorized)]
+    #[error_kind(Unauthorized)]
     Missing,
 }
 

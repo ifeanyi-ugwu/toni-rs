@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::AppError;
+use crate::Error;
 use crate::context::{HandlerContext, RpcContext};
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RouteMetadata};
@@ -264,11 +264,9 @@ impl RpcControllerWrapper {
 
     /// Run pipes + handler, then route the result.
     ///
-    /// On `ExecutionResult::Ok`, the response goes straight to the context.
-    /// On `ExecutionResult::Err`, the typed error is preserved as a
-    /// `Box<dyn AppError>`: observers fan out on it, the chain's most-
-    /// specific handler gets first claim, and `AppError::into_rpc_data`
-    /// is the fallback envelope when no handler claims.
+    /// `Ok` goes straight to the context. On `Err`, observers fan out on the
+    /// underlying error, the chain's most-specific handler gets first claim,
+    /// and `RpcError::to_data` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &mut RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
@@ -301,20 +299,27 @@ impl RpcControllerWrapper {
                     PipelineSegment::HandlerBody,
                     payload,
                 );
-                ExecutionResult::Err(Box::new(event))
+                ExecutionResult::Err(RpcError::from(event))
             }
         };
         match exec_result {
             ExecutionResult::Ok(data) => context.set_response(Ok(data)),
-            ExecutionResult::Err(err) => {
-                Self::fan_out_observers(observers, &*err, context).await;
+            ExecutionResult::Err(rpc_err) => {
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
+                    match &rpc_err {
+                        RpcError::AppError(e) => e.as_ref(),
+                        other => other,
+                    };
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(claimed) = handler.handle_error(&*err, context).await {
+                    if let Some(claimed) =
+                        handler.handle_error(observed_err, context).await
+                    {
                         context.set_response(Ok(Some(claimed)));
                         return;
                     }
                 }
-                context.set_response(Ok(Some(err.into_rpc_data())));
+                context.set_response(Ok(Some(rpc_err.to_data())));
             }
         }
     }

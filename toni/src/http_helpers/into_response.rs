@@ -84,12 +84,12 @@ impl IntoResponse for &'static str {
 impl<T, E> IntoResponse for Result<T, E>
 where
     T: IntoResponse,
-    E: crate::errors::AppError,
+    E: crate::errors::Error,
 {
     fn into_response(self) -> HttpResponse {
         match self {
             Ok(value) => value.into_response(),
-            Err(error) => error.into_http_response(),
+            Err(error) => crate::errors::http_error::render_error(&error),
         }
     }
 }
