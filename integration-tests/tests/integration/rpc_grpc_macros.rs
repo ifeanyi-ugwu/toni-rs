@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module};
+use toni::guard;
+use toni_macros::{grpc_methods, grpc_service, injectable, module, use_guards};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -138,6 +139,123 @@ impl Orders for OrdersGrpcService {
 
 #[module(providers: [OrdersCounter, OrdersGrpcService])]
 struct GrpcMacrosModule;
+
+// ── enhancer-coverage fixtures ──────────────────────────────────────────────
+//
+// A second service alongside `OrdersGrpcService` that exercises
+// `#[use_guards]` at both service- and method-level. Each guard test boots
+// `GuardedGrpcModule` (this module) on its own port, so the duplicate
+// `impl Orders for ...` blocks never coexist on a running server.
+
+#[injectable(pub struct AuthGuard {})]
+#[guard(grpc)]
+impl AuthGuard {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+        ctx.get_metadata("authorization").is_some()
+    }
+}
+
+#[injectable(pub struct AdminGuard {})]
+#[guard(grpc)]
+impl AdminGuard {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for AdminGuard {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+        ctx.get_metadata("x-role") == Some("admin")
+    }
+}
+
+#[grpc_service(pub struct GuardedOrdersGrpcService {
+    #[inject] counter: OrdersCounter,
+})]
+impl GuardedOrdersGrpcService {
+    pub fn new(counter: OrdersCounter) -> Self {
+        Self { counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_guards(AuthGuard)]
+impl Orders for GuardedOrdersGrpcService {
+    #[use_guards(AdminGuard)]
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let id = self.counter.next_id();
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id,
+            status: format!("created:{}", req.item),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let id = request.into_inner().id;
+        let stream = futures_util::stream::iter(["queued"].into_iter().map(move |status| {
+            Ok(orders_pb::ProgressEvent {
+                id,
+                status: status.to_string(),
+            })
+        }));
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let _ = request.into_inner();
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, AuthGuard, AdminGuard, GuardedOrdersGrpcService])]
+struct GuardedGrpcModule;
+
+async fn boot_guarded() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(GuardedGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
 
 /// Boots the gRPC server with the default drain timeout.
 async fn boot() -> (u16, toni::ShutdownHandle) {
@@ -352,6 +470,101 @@ async fn grpc_bidi_streaming_round_trip() {
     assert_eq!(texts, vec!["hello", "world"]);
     assert_eq!(ids.len(), 2);
     assert!(ids[0] >= 1000 && ids[1] == ids[0] + 1, "ids must come from the counter");
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+// ── enhancer tests ──────────────────────────────────────────────────────────
+
+/// Service-level `#[use_guards(AuthGuard)]` lets through a request that
+/// carries the `authorization` metadata the guard checks for.
+#[tokio_localset_test::localset_test]
+async fn grpc_guard_accepts_request() {
+    let (port, shutdown) = boot_guarded().await;
+    let mut client = connect(port).await;
+
+    let mut req = tonic::Request::new(orders_pb::WatchRequest { id: 7 });
+    req.metadata_mut()
+        .insert("authorization", "Bearer abc".parse().unwrap());
+
+    let mut stream = client
+        .watch_progress(req)
+        .await
+        .expect("guard with valid metadata must accept")
+        .into_inner();
+    let first = stream
+        .next()
+        .await
+        .expect("stream item present")
+        .expect("stream item ok");
+    assert_eq!(first.id, 7);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// A missing `authorization` header makes `AuthGuard` reject — the wire
+/// status is `PERMISSION_DENIED`, mirroring how guard rejections surface
+/// across the framework's other transports.
+#[tokio_localset_test::localset_test]
+async fn grpc_guard_rejects_with_permission_denied() {
+    let (port, shutdown) = boot_guarded().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .watch_progress(orders_pb::WatchRequest { id: 1 })
+        .await
+        .expect_err("missing metadata must be rejected");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// Method-level `#[use_guards]` stacks on top of service-level: `create`
+/// runs both `AuthGuard` *and* `AdminGuard`. The service-level guard alone
+/// (just `authorization`) is no longer enough; the request must also carry
+/// the admin role for `create` to dispatch.
+#[tokio_localset_test::localset_test]
+async fn grpc_guard_method_level_stacks_on_block_level() {
+    let (port, shutdown) = boot_guarded().await;
+    let mut client = connect(port).await;
+
+    // Auth header alone passes `watch_progress` but not `create`.
+    let mut auth_only = tonic::Request::new(orders_pb::CreateOrderRequest {
+        item: "shoes".into(),
+        qty: 1,
+    });
+    auth_only
+        .metadata_mut()
+        .insert("authorization", "Bearer abc".parse().unwrap());
+    let err = client
+        .create(auth_only)
+        .await
+        .expect_err("method-level AdminGuard must reject when x-role is missing");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+    // Both headers present → both guards accept → call dispatches.
+    let mut both = tonic::Request::new(orders_pb::CreateOrderRequest {
+        item: "shoes".into(),
+        qty: 1,
+    });
+    both.metadata_mut()
+        .insert("authorization", "Bearer abc".parse().unwrap());
+    both.metadata_mut().insert("x-role", "admin".parse().unwrap());
+    let resp = client
+        .create(both)
+        .await
+        .expect("both guards must accept when both headers are set")
+        .into_inner();
+    assert_eq!(resp.status, "created:shoes");
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
