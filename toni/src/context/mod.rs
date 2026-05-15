@@ -8,6 +8,7 @@
 
 mod cancellation;
 mod extensions;
+mod grpc;
 mod handler_context;
 mod http;
 mod rpc;
@@ -16,6 +17,7 @@ mod ws;
 
 pub use self::cancellation::CancellationToken;
 pub use self::extensions::Extensions;
+pub use self::grpc::GrpcContext;
 pub use self::handler_context::HandlerContext;
 pub use self::http::HttpContext;
 pub use self::rpc::RpcContext;
