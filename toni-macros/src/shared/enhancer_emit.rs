@@ -24,6 +24,7 @@ pub enum EnhancerKind {
     WsGuard,
     WsInterceptor,
     WsPipe,
+    GrpcGuard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +55,7 @@ pub struct ErrorHandlerSpec {
 }
 
 impl EnhancerKind {
-    pub fn all() -> [EnhancerKind; 9] {
+    pub fn all() -> [EnhancerKind; 10] {
         use EnhancerKind::*;
         [
             HttpGuard,
@@ -66,6 +67,7 @@ impl EnhancerKind {
             WsGuard,
             WsInterceptor,
             WsPipe,
+            GrpcGuard,
         ]
     }
 
@@ -133,6 +135,13 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsPipeFactory },
                 factory_suffix: "WsPipe",
+            },
+            EnhancerKind::GrpcGuard => EnhancerSpec {
+                role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcGuard },
+                entry_path: quote! { ::toni::traits_helpers::GrpcGuardEntry },
+                trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::GrpcContext> },
+                dyn_factory_trait: quote! { ::toni::traits_helpers::DynGrpcGuardFactory },
+                factory_suffix: "GrpcGuard",
             },
         }
     }
