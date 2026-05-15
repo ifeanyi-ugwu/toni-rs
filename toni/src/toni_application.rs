@@ -26,7 +26,7 @@ use crate::{
         server_lifecycle::ServerLifecycle,
     },
     application_context::ToniApplicationContext,
-    injector::{GatewayResolver, IntoToken, RpcControllerResolver, ToniContainer},
+    injector::{GatewayResolver, GrpcServiceResolver, IntoToken, RpcControllerResolver, ToniContainer},
     router::RoutesResolver,
     rpc::{RpcCallInfo, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
@@ -520,14 +520,8 @@ impl ToniApplication {
         // `add_service` builder before `use_grpc_adapter`.
         let mut grpc_addr: Option<SocketAddr> = None;
         if let Some(adapter) = self.grpc_adapter.take() {
-            let grpc_services: Vec<Arc<Box<dyn crate::adapter::GrpcServiceTrait>>> = self
-                .routes_resolver
-                .container
-                .borrow()
-                .get_grpc_services()
-                .values()
-                .cloned()
-                .collect();
+            let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
+            let grpc_services = grpc_resolver.resolve()?;
             match GrpcLifecycleHandle::bind(adapter, grpc_services) {
                 Ok(handle) => {
                     grpc_addr = handle.local_addr();

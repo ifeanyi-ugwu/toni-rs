@@ -84,7 +84,11 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                 #token.to_string()
             }
 
-            fn register_with(&self, registrar: &mut dyn ::std::any::Any) {
+            fn register_with(
+                &self,
+                registrar: &mut dyn ::std::any::Any,
+                _enhancers: ::std::sync::Arc<::toni::adapter::ResolvedGrpcEnhancers>,
+            ) {
                 if let ::std::option::Option::Some(builder) = registrar.downcast_mut::<
                     ::tonic::service::RoutesBuilder,
                 >() {

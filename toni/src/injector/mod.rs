@@ -29,3 +29,6 @@ pub use self::gateway_resolver::GatewayResolver;
 
 mod rpc_controller_resolver;
 pub use self::rpc_controller_resolver::RpcControllerResolver;
+
+mod grpc_service_resolver;
+pub use self::grpc_service_resolver::GrpcServiceResolver;

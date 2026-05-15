@@ -19,7 +19,7 @@ use async_trait::async_trait;
 
 use crate::adapter::adapter_context::AdapterContext;
 use crate::adapter::grpc_adapter::ErasedGrpcAdapter;
-use crate::adapter::grpc_service_trait::GrpcServiceTrait;
+use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 use crate::adapter::http_adapter::ErasedHttpAdapter;
 use crate::adapter::rpc_adapter::{ErasedRpcAdapter, RpcMessageCallbacks};
 use crate::adapter::server_lifecycle::ServerLifecycle;
@@ -181,7 +181,7 @@ pub(crate) struct GrpcLifecycleHandle {
 impl GrpcLifecycleHandle {
     pub(crate) fn bind(
         mut adapter: Box<dyn ErasedGrpcAdapter>,
-        services: Vec<Arc<Box<dyn GrpcServiceTrait>>>,
+        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<Self> {
         adapter.bind(services)?;
         let local_addr = adapter.local_addr();

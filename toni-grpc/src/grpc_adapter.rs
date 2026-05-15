@@ -15,7 +15,7 @@ use tonic::transport::Server;
 use tower::Service;
 
 use toni::async_trait;
-use toni::adapter::GrpcServiceTrait;
+use toni::adapter::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 
 use crate::tracing_layer::TracingLayer;
 
@@ -93,14 +93,20 @@ impl GrpcAdapter {
 
 #[async_trait]
 impl toni::GrpcAdapter for GrpcAdapter {
-    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()> {
+    fn bind(
+        &mut self,
+        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+    ) -> Result<()> {
         // Framework-discovered services (`#[grpc_service]` + `#[grpc_methods]`)
         // each know how to wrap themselves in their tonic `*Server` — hand
         // them the same `RoutesBuilder` already accumulating any
-        // user-`add_service`'d entries and let macro-generated code add
-        // itself.
-        for svc in &services {
-            svc.register_with(&mut self.routes_builder as &mut dyn std::any::Any);
+        // user-`add_service`'d entries, plus the resolved enhancer bundle so
+        // the macro-generated wrapper can fold it into per-call dispatch.
+        for (svc, enhancers) in &services {
+            svc.register_with(
+                &mut self.routes_builder as &mut dyn std::any::Any,
+                enhancers.clone(),
+            );
         }
 
         // Bind synchronously so port-in-use surfaces as `Err` from

@@ -12,7 +12,7 @@ pub(crate) mod request_handler;
 pub use adapter_context::AdapterContext;
 pub(crate) use grpc_adapter::ErasedGrpcAdapter;
 pub use grpc_adapter::GrpcAdapter;
-pub use grpc_service_trait::GrpcServiceTrait;
+pub use grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 pub(crate) use http_adapter::ErasedHttpAdapter;
 pub use http_adapter::HttpAdapter;
 pub(crate) use rpc_adapter::ErasedRpcAdapter;

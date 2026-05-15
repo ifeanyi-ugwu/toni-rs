@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::adapter::grpc_service_trait::GrpcServiceTrait;
+use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 
 /// Interface for gRPC transport adapters.
 ///
@@ -36,8 +36,13 @@ pub trait GrpcAdapter: Send + Sync + 'static {
     /// `RoutesBuilder` passed as `&mut dyn Any`.
     ///
     /// `services` may be empty when the user wires services directly via
-    /// adapter-specific `add_service` calls.
-    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()>;
+    /// adapter-specific `add_service` calls. Each entry is paired with its
+    /// resolved enhancer bundle; the adapter forwards both into
+    /// [`GrpcServiceTrait::register_with`].
+    fn bind(
+        &mut self,
+        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+    ) -> Result<()>;
 
     /// Return the future that drives the gRPC serve loop.
     ///
@@ -64,7 +69,10 @@ pub trait GrpcAdapter: Send + Sync + 'static {
 /// `ToniApplication`.
 #[async_trait]
 pub(crate) trait ErasedGrpcAdapter: Send + Sync + 'static {
-    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()>;
+    fn bind(
+        &mut self,
+        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+    ) -> Result<()>;
     fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
     fn local_addr(&self) -> Option<SocketAddr>;
     async fn close(&mut self) -> Result<()>;
@@ -72,7 +80,10 @@ pub(crate) trait ErasedGrpcAdapter: Send + Sync + 'static {
 
 #[async_trait]
 impl<G: GrpcAdapter> ErasedGrpcAdapter for G {
-    fn bind(&mut self, services: Vec<Arc<Box<dyn GrpcServiceTrait>>>) -> Result<()> {
+    fn bind(
+        &mut self,
+        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+    ) -> Result<()> {
         <G as GrpcAdapter>::bind(self, services)
     }
 
