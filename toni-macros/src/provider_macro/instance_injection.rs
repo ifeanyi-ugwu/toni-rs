@@ -50,6 +50,7 @@ pub struct EnhancerTraits {
     pub is_ws_error_handler: bool,
 
     pub is_grpc_guard: bool,
+    pub is_grpc_interceptor: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -281,12 +282,11 @@ fn detect_enhancer_traits(
     traits.is_ws_guard = g_w;
     traits.is_grpc_guard = g_g;
 
-    // Interceptors / pipes / error handlers don't have gRPC slots yet; the
-    // `_g` bit is dropped here and will be wired up alongside PRs #2 and #3.
-    let (i_h, i_r, i_w, _i_g) = resolve(interceptor);
+    let (i_h, i_r, i_w, i_g) = resolve(interceptor);
     traits.is_http_interceptor = i_h;
     traits.is_rpc_interceptor = i_r;
     traits.is_ws_interceptor = i_w;
+    traits.is_grpc_interceptor = i_g;
 
     let (p_h, p_r, p_w, _p_g) = resolve(pipe);
     traits.is_http_pipe = p_h;
@@ -487,6 +487,7 @@ fn enhancer_kind_active(
         EnhancerKind::WsInterceptor => traits.is_ws_interceptor,
         EnhancerKind::WsPipe => traits.is_ws_pipe,
         EnhancerKind::GrpcGuard => traits.is_grpc_guard,
+        EnhancerKind::GrpcInterceptor => traits.is_grpc_interceptor,
     }
 }
 

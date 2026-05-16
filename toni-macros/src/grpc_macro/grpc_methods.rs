@@ -103,11 +103,19 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         .filter(|i| !i.token_expr.is_empty())
         .map(|i| &i.token_expr)
         .collect();
+    let ctrl_interceptor_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("interceptors")
+        .unwrap_or(&empty_vec)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
 
-    // Per-method guard tokens, keyed by the method's identifier (lowercase
-    // matches what `get_handler_methods` returns and what the chain lookup
-    // uses at runtime).
-    let mut handler_guard_entries: Vec<(String, Vec<TokenStream>)> = Vec::new();
+    // One entry per method that carries any per-method enhancer attribute.
+    // `get_handler_methods` returns the names so the resolver knows which
+    // methods to query the per-handler getters for.
+    let mut handler_enhancer_entries: Vec<(String, Vec<TokenStream>, Vec<TokenStream>)> =
+        Vec::new();
     let mut method_idents: Vec<&syn::Ident> = Vec::new();
     let mut method_sigs_for_wrapper: Vec<&syn::ImplItemFn> = Vec::new();
     let mut assoc_types: Vec<&syn::ImplItemType> = Vec::new();
@@ -130,8 +138,15 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                         .filter(|i| !i.token_expr.is_empty())
                         .map(|i| i.token_expr.clone())
                         .collect();
-                    if !guards.is_empty() {
-                        handler_guard_entries.push((method_name, guards));
+                    let interceptors: Vec<TokenStream> = infos
+                        .get("interceptors")
+                        .unwrap_or(&empty_vec)
+                        .iter()
+                        .filter(|i| !i.token_expr.is_empty())
+                        .map(|i| i.token_expr.clone())
+                        .collect();
+                    if !guards.is_empty() || !interceptors.is_empty() {
+                        handler_enhancer_entries.push((method_name, guards, interceptors));
                     }
                 }
             }
@@ -161,8 +176,21 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         quote! {}
     };
 
-    let handler_methods_impl = if !handler_guard_entries.is_empty() {
-        let names: Vec<&str> = handler_guard_entries.iter().map(|(n, _)| n.as_str()).collect();
+    let ctrl_interceptor_tokens_impl = if !ctrl_interceptor_tokens.is_empty() {
+        quote! {
+            fn get_interceptor_tokens(&self) -> ::std::vec::Vec<::std::string::String> {
+                vec![#(#ctrl_interceptor_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let handler_methods_impl = if !handler_enhancer_entries.is_empty() {
+        let names: Vec<&str> = handler_enhancer_entries
+            .iter()
+            .map(|(n, _, _)| n.as_str())
+            .collect();
         quote! {
             fn get_handler_methods(&self) -> ::std::vec::Vec<::std::string::String> {
                 vec![#(#names.to_string()),*]
@@ -172,20 +200,44 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         quote! {}
     };
 
-    let handler_guard_tokens_impl = if !handler_guard_entries.is_empty() {
-        let arms = handler_guard_entries.iter().map(|(name, tokens)| {
-            quote! { #name => vec![#(#tokens),*], }
-        });
-        quote! {
-            fn get_handler_guard_tokens(&self, method: &str) -> ::std::vec::Vec<::std::string::String> {
-                match method {
-                    #(#arms)*
-                    _ => vec![],
+    let handler_guard_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, g, _)| !g.is_empty())
+            .map(|(name, guards, _)| quote! { #name => vec![#(#guards),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_guard_tokens(&self, method: &str) -> ::std::vec::Vec<::std::string::String> {
+                    match method {
+                        #(#arms)*
+                        _ => vec![],
+                    }
                 }
             }
+        } else {
+            quote! {}
         }
-    } else {
-        quote! {}
+    };
+
+    let handler_interceptor_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, i)| !i.is_empty())
+            .map(|(name, _, interceptors)| quote! { #name => vec![#(#interceptors),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_interceptor_tokens(&self, method: &str) -> ::std::vec::Vec<::std::string::String> {
+                    match method {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
     };
 
     // ── wrapper struct + Clone + proto-trait impl that delegates ────────────
@@ -246,8 +298,10 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
             }
 
             #ctrl_guard_tokens_impl
+            #ctrl_interceptor_tokens_impl
             #handler_methods_impl
             #handler_guard_tokens_impl
+            #handler_interceptor_tokens_impl
 
             fn register_with(
                 &self,
@@ -280,10 +334,17 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     })
 }
 
-/// Build the wrapper's proto-trait method body. Runs guards through
-/// `run_grpc_guards`, maps any [`GrpcStatus`] to `tonic::Status`, then
-/// delegates to the user's implementation via UFCS so the body's
-/// `self.<field>` and associated-type references resolve unchanged.
+/// Build the wrapper's proto-trait method body. Runs the full pipeline
+/// (guards → interceptors → user delegation) via `run_grpc_pipeline`,
+/// maps any short-circuit [`GrpcStatus`] to `tonic::Status`, and reads
+/// the user's typed reply back from a side-channel set inside the
+/// delegate closure (the chain runner can't be generic over the
+/// per-method response type).
+///
+/// Delegation uses UFCS — `<UserType as ProtoTrait>::method(&inner, ...)`
+/// — so the user's body's `self.<field>` accesses, `Self::SomeStream`
+/// associated-type references, and any inherent-helper calls resolve in
+/// the user's original impl context, unchanged by this rewrite.
 fn build_wrapper_method(
     method: &syn::ImplItemFn,
     self_ident: &syn::Ident,
@@ -310,9 +371,9 @@ fn build_wrapper_method(
         })
         .collect();
 
-    // The first non-receiver argument is the tonic Request — we only need
-    // its metadata + remote_addr, both of which take `&Request<_>` so we
-    // don't consume it before delegation.
+    // The first non-receiver argument is the tonic Request — its metadata
+    // and remote_addr come off a borrow, so we read both without
+    // consuming the request before handing it to the user delegate.
     let req_ident = match sig.inputs.iter().nth(1) {
         Some(syn::FnArg::Typed(pt)) => match pt.pat.as_ref() {
             syn::Pat::Ident(pi) => &pi.ident,
@@ -337,6 +398,15 @@ fn build_wrapper_method(
     let output = &sig.output;
     let generics = &sig.generics;
 
+    // The user's return type — used as the side-channel payload so the
+    // typed `Result<Response<_>, Status>` survives the trip through the
+    // chain runner (which can only thread `()` because the response shape
+    // varies per method).
+    let ret_ty = match output {
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
+        syn::ReturnType::Default => quote! { () },
+    };
+
     Ok(quote! {
         #asyncness fn #method_ident #generics (#inputs) #output {
             let __metadata = #req_ident.metadata().iter().filter_map(|kv| match kv {
@@ -352,13 +422,36 @@ fn build_wrapper_method(
                 #req_ident.remote_addr(),
                 ::std::option::Option::None,
             );
-            if let ::std::result::Result::Err(__status) =
-                ::toni::grpc_runtime::run_grpc_guards(&mut __ctx, &self.enhancers, #method_name_lit).await
-            {
+
+            let __outcome: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<#ret_ty>>>
+                = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
+            let __outcome_capture = __outcome.clone();
+            let __inner = self.inner.clone();
+
+            let __pipeline = ::toni::grpc_runtime::run_grpc_pipeline(
+                &mut __ctx,
+                &self.enhancers,
+                #method_name_lit,
+                move || async move {
+                    let __reply = <#self_ident as #trait_path>::#method_ident(
+                        &__inner, #(#forward_args),*
+                    ).await;
+                    *__outcome_capture.lock().expect("grpc pipeline outcome mutex poisoned") =
+                        ::std::option::Option::Some(__reply);
+                },
+            ).await;
+
+            if let ::std::result::Result::Err(__status) = __pipeline {
                 let __code = ::tonic::Code::from_i32(__status.code as i32);
                 return ::std::result::Result::Err(::tonic::Status::new(__code, __status.message));
             }
-            <#self_ident as #trait_path>::#method_ident(&self.inner, #(#forward_args),*).await
+
+            match __outcome.lock().expect("grpc pipeline outcome mutex poisoned").take() {
+                ::std::option::Option::Some(__reply) => __reply,
+                ::std::option::Option::None => ::std::result::Result::Err(::tonic::Status::internal(
+                    "interceptor short-circuited the call without producing a response"
+                )),
+            }
         }
     })
 }
