@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use crate::adapter::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::traits_helpers::GrpcGuardEntry;
+use crate::traits_helpers::{GrpcGuardEntry, GrpcInterceptorEntry};
 
 use super::ToniContainer;
 
@@ -42,12 +42,18 @@ impl GrpcServiceResolver {
 
     fn resolve_for(&self, svc: &dyn GrpcServiceTrait) -> Result<ResolvedGrpcEnhancers> {
         let guards = self.resolve_guards(svc.get_guard_tokens())?;
+        let interceptors = self.resolve_interceptors(svc.get_interceptor_tokens())?;
 
         let mut handler_guards: HashMap<String, Vec<GrpcGuardEntry>> = HashMap::new();
+        let mut handler_interceptors: HashMap<String, Vec<GrpcInterceptorEntry>> = HashMap::new();
         for method in svc.get_handler_methods() {
             handler_guards.insert(
                 method.clone(),
                 self.resolve_guards(svc.get_handler_guard_tokens(&method))?,
+            );
+            handler_interceptors.insert(
+                method.clone(),
+                self.resolve_interceptors(svc.get_handler_interceptor_tokens(&method))?,
             );
         }
 
@@ -56,6 +62,8 @@ impl GrpcServiceResolver {
         Ok(ResolvedGrpcEnhancers {
             guards,
             handler_guards,
+            interceptors,
+            handler_interceptors,
             error_observers,
         })
     }
@@ -92,6 +100,41 @@ impl GrpcServiceResolver {
                     "gRPC Guard '{}' not found in registry. \
                      Implement Guard<GrpcContext> and mark the provider with \
                      `#[guard(grpc)]` or a typed impl head.",
+                    token
+                )
+            })
+    }
+
+    fn resolve_interceptors(&self, tokens: Vec<String>) -> Result<Vec<GrpcInterceptorEntry>> {
+        let mut interceptors = self.container.borrow().get_global_grpc_interceptors();
+        for token in tokens {
+            let entry = self.resolve_interceptor_by_token(&token)?;
+            if let GrpcInterceptorEntry::Factory(ref f) = entry {
+                if f.requires_http_parts() {
+                    anyhow::bail!(
+                        "Interceptor '{}' has request-scoped dependencies and cannot be used on \
+                         a gRPC service — gRPC has no HTTP request context",
+                        token
+                    );
+                }
+            }
+            interceptors.push(entry);
+        }
+        Ok(interceptors)
+    }
+
+    fn resolve_interceptor_by_token(&self, token: &str) -> Result<GrpcInterceptorEntry> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .grpc_interceptors
+            .get(token)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "gRPC Interceptor '{}' not found in registry. \
+                     Implement Interceptor<GrpcContext> and mark the provider with \
+                     `#[interceptor(grpc)]` or a typed impl head.",
                     token
                 )
             })

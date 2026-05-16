@@ -8,10 +8,11 @@ use crate::{
     rpc::RpcControllerTrait,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, ErrorObserver, GrpcGuardEntry, HttpErrorHandlerArc,
-        HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ModuleMetadata, Provider,
-        ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
-        RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+        Controller, ControllerFactory, ErrorObserver, GrpcGuardEntry, GrpcInterceptorEntry,
+        HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ModuleMetadata,
+        Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
+        RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+        WsPipeEntry,
     },
     websocket::GatewayTrait,
 };
@@ -42,6 +43,7 @@ pub struct ToniContainer {
     global_ws_error_handlers: Vec<WsErrorHandlerArc>,
     /// Global enhancers - applied to every gRPC service's pipeline.
     global_grpc_guards: Vec<GrpcGuardEntry>,
+    global_grpc_interceptors: Vec<GrpcInterceptorEntry>,
     /// Universal error observers — fire on any framework-generated error
     /// across every transport.
     global_error_observers: Vec<Arc<dyn ErrorObserver>>,
@@ -87,6 +89,7 @@ impl ToniContainer {
             global_ws_pipes: Vec::new(),
             global_ws_error_handlers: Vec::new(),
             global_grpc_guards: Vec::new(),
+            global_grpc_interceptors: Vec::new(),
             global_error_observers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
@@ -183,6 +186,14 @@ impl ToniContainer {
 
     pub fn get_global_grpc_guards(&self) -> Vec<GrpcGuardEntry> {
         self.global_grpc_guards.clone()
+    }
+
+    pub fn add_global_grpc_interceptor(&mut self, interceptor: GrpcInterceptorEntry) {
+        self.global_grpc_interceptors.push(interceptor);
+    }
+
+    pub fn get_global_grpc_interceptors(&self) -> Vec<GrpcInterceptorEntry> {
+        self.global_grpc_interceptors.clone()
     }
 
     pub fn add_global_error_observer(&mut self, observer: Arc<dyn ErrorObserver>) {
@@ -302,6 +313,11 @@ impl ToniContainer {
                 }
                 ProviderRole::GrpcGuard(g) => {
                     self.role_registry.grpc_guards.insert(token.clone(), g);
+                }
+                ProviderRole::GrpcInterceptor(i) => {
+                    self.role_registry
+                        .grpc_interceptors
+                        .insert(token.clone(), i);
                 }
                 ProviderRole::Middleware(m) => {
                     self.role_registry.middleware.insert(token.clone(), m);

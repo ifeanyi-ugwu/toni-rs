@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use crate::traits_helpers::{ErrorObserver, GrpcGuardEntry};
+use crate::traits_helpers::{ErrorObserver, GrpcGuardEntry, GrpcInterceptorEntry};
 
 /// Per-service bundle of resolved enhancer instances. Built by the framework
 /// at bind time from the token getters on [`GrpcServiceTrait`] and handed to
@@ -27,6 +27,11 @@ pub struct ResolvedGrpcEnhancers {
     /// Method-level guards keyed by method name (the suffix after `Service/`,
     /// matching what `#[grpc_methods]` emits in `get_handler_methods`).
     pub handler_guards: std::collections::HashMap<String, Vec<GrpcGuardEntry>>,
+    /// Service-level interceptors; wrap every method's user delegation.
+    pub interceptors: Vec<GrpcInterceptorEntry>,
+    /// Method-level interceptors. Stack on top of service-level (controller-
+    /// level entries run first, method-level entries run inside).
+    pub handler_interceptors: std::collections::HashMap<String, Vec<GrpcInterceptorEntry>>,
     /// Universal error observers — fan out on guard rejections so logging /
     /// telemetry sees gRPC pipeline events the same way HTTP/RPC/WS do.
     pub error_observers: Vec<Arc<dyn ErrorObserver>>,
@@ -55,6 +60,10 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
         vec![]
     }
 
+    fn get_interceptor_tokens(&self) -> Vec<String> {
+        vec![]
+    }
+
     /// Methods carrying any per-method enhancer attribute. Used by the
     /// resolver to know which methods to query the per-handler getters for.
     fn get_handler_methods(&self) -> Vec<String> {
@@ -62,6 +71,10 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
     }
 
     fn get_handler_guard_tokens(&self, _method: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_interceptor_tokens(&self, _method: &str) -> Vec<String> {
         vec![]
     }
 }
