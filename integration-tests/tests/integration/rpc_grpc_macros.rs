@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
-use toni::guard;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, use_guards};
+use toni::{guard, interceptor};
+use toni_macros::{grpc_methods, grpc_service, injectable, module, use_guards, use_interceptors};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -246,6 +246,268 @@ async fn boot_guarded() -> (u16, toni::ShutdownHandle) {
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(GuardedGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+// ── interceptor-coverage fixtures ───────────────────────────────────────────
+//
+// Process-global event log so a test can assert on the order interceptors
+// fired around the user delegation. Each test calls `drain_interceptor_log()`
+// at the start to isolate from neighbours run earlier in the same process.
+
+static INTERCEPTOR_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Held for the duration of each interceptor test so the three of them
+/// don't race on the shared `INTERCEPTOR_LOG`. cargo runs integration
+/// tests in parallel by default.
+static INTERCEPTOR_TEST_SERIALIZE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn log_interceptor(msg: &str) {
+    INTERCEPTOR_LOG.lock().unwrap().push(msg.to_string());
+}
+
+fn drain_interceptor_log() -> Vec<String> {
+    let mut g = INTERCEPTOR_LOG.lock().unwrap();
+    let v = g.clone();
+    g.clear();
+    v
+}
+
+fn lock_interceptor_test() -> std::sync::MutexGuard<'static, ()> {
+    INTERCEPTOR_TEST_SERIALIZE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+#[injectable(pub struct ServiceInterceptor {})]
+#[interceptor(grpc)]
+impl ServiceInterceptor {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Interceptor<toni::GrpcContext> for ServiceInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut toni::GrpcContext,
+        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
+    ) {
+        log_interceptor("service:before");
+        next.run(ctx).await;
+        log_interceptor("service:after");
+    }
+}
+
+#[injectable(pub struct MethodInterceptor {})]
+#[interceptor(grpc)]
+impl MethodInterceptor {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Interceptor<toni::GrpcContext> for MethodInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut toni::GrpcContext,
+        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
+    ) {
+        log_interceptor("method:before");
+        next.run(ctx).await;
+        log_interceptor("method:after");
+    }
+}
+
+#[injectable(pub struct DenyInterceptor {})]
+#[interceptor(grpc)]
+impl DenyInterceptor {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Interceptor<toni::GrpcContext> for DenyInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut toni::GrpcContext,
+        _next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
+    ) {
+        log_interceptor("deny:short-circuit");
+        ctx.set_response(Err(toni::GrpcStatus::permission_denied(
+            "blocked by interceptor",
+        )));
+        // Deliberately skip `_next.run(ctx).await` to short-circuit.
+    }
+}
+
+#[grpc_service(pub struct InterceptedOrdersGrpcService {
+    #[inject] counter: OrdersCounter,
+})]
+impl InterceptedOrdersGrpcService {
+    pub fn new(counter: OrdersCounter) -> Self {
+        Self { counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_interceptors(ServiceInterceptor)]
+impl Orders for InterceptedOrdersGrpcService {
+    #[use_interceptors(MethodInterceptor)]
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        log_interceptor("handler:run");
+        let req = request.into_inner();
+        let id = self.counter.next_id();
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id,
+            status: format!("created:{}", req.item),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        log_interceptor("handler:run");
+        let id = request.into_inner().id;
+        let stream = futures_util::stream::iter(["queued"].into_iter().map(move |status| {
+            Ok(orders_pb::ProgressEvent {
+                id,
+                status: status.to_string(),
+            })
+        }));
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let _ = request.into_inner();
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [
+    OrdersCounter,
+    ServiceInterceptor,
+    MethodInterceptor,
+    InterceptedOrdersGrpcService,
+])]
+struct InterceptedGrpcModule;
+
+/// Same shape as the deny module below but with `MethodInterceptor` swapped
+/// for `DenyInterceptor` on the `create` method, so the short-circuit test
+/// has an isolated server.
+#[grpc_service(pub struct DenyOrdersGrpcService {
+    #[inject] counter: OrdersCounter,
+})]
+impl DenyOrdersGrpcService {
+    pub fn new(counter: OrdersCounter) -> Self {
+        Self { counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_interceptors(DenyInterceptor)]
+impl Orders for DenyOrdersGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        log_interceptor("handler:run");
+        let req = request.into_inner();
+        let id = self.counter.next_id();
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id,
+            status: format!("created:{}", req.item),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, DenyInterceptor, DenyOrdersGrpcService])]
+struct DenyGrpcModule;
+
+async fn boot_intercepted() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(InterceptedGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+async fn boot_deny() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(DenyGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
@@ -565,6 +827,109 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
         .expect("both guards must accept when both headers are set")
         .into_inner();
     assert_eq!(resp.status, "created:shoes");
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+// ── interceptor tests ───────────────────────────────────────────────────────
+
+/// A service-level interceptor wraps the user delegation: `before` runs,
+/// the handler runs in the middle, `after` runs as the chain unwinds.
+#[tokio_localset_test::localset_test]
+async fn grpc_interceptor_runs_around_handler() {
+    let _serial = lock_interceptor_test();
+    drain_interceptor_log();
+    let (port, shutdown) = boot_intercepted().await;
+    let mut client = connect(port).await;
+
+    let resp = client
+        .watch_progress(orders_pb::WatchRequest { id: 1 })
+        .await
+        .expect("call must succeed")
+        .into_inner();
+    drop(resp);
+
+    let log = drain_interceptor_log();
+    assert_eq!(
+        log,
+        vec!["service:before", "handler:run", "service:after"],
+        "interceptor must wrap the user delegation in before/after order",
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// An interceptor that calls `ctx.set_response(Err(...))` and skips
+/// `next.run` short-circuits the call. The user handler never runs and
+/// the wire status comes from the interceptor's `GrpcStatus`.
+#[tokio_localset_test::localset_test]
+async fn grpc_interceptor_short_circuits_with_error() {
+    let _serial = lock_interceptor_test();
+    drain_interceptor_log();
+    let (port, shutdown) = boot_deny().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "ignored".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("interceptor must short-circuit");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+
+    let log = drain_interceptor_log();
+    assert_eq!(log, vec!["deny:short-circuit"]);
+    assert!(
+        !log.iter().any(|m| m == "handler:run"),
+        "handler must not run when interceptor short-circuits",
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// Method-level interceptors stack inside service-level ones: the
+/// service-level `before` runs first, then the method-level `before`,
+/// the handler runs, then unwinds in reverse (method-level `after`,
+/// service-level `after`).
+#[tokio_localset_test::localset_test]
+async fn grpc_interceptor_method_level_stacks_inside_service_level() {
+    let _serial = lock_interceptor_test();
+    drain_interceptor_log();
+    let (port, shutdown) = boot_intercepted().await;
+    let mut client = connect(port).await;
+
+    let resp = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "shoes".into(),
+            qty: 1,
+        })
+        .await
+        .expect("call must succeed")
+        .into_inner();
+    assert_eq!(resp.status, "created:shoes");
+
+    let log = drain_interceptor_log();
+    assert_eq!(
+        log,
+        vec![
+            "service:before",
+            "method:before",
+            "handler:run",
+            "method:after",
+            "service:after",
+        ],
+        "method-level interceptor must nest inside the service-level one",
+    );
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
