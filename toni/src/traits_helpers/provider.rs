@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
 use crate::{
     ProviderScope,
-    context::{HttpContext, RpcContext, WsContext},
+    context::{GrpcContext, HttpContext, RpcContext, WsContext},
     http_helpers::{HttpResponse, RequestPart},
     rpc::RpcData,
     websocket::WsMessage,
@@ -118,9 +118,17 @@ transport_factory_types!(
     DynWsPipeFactory, WsPipeEntry
 );
 
+transport_factory_types!(
+    GrpcContext,
+    DynGrpcGuardFactory, GrpcGuardEntry,
+    DynGrpcInterceptorFactory, GrpcInterceptorEntry,
+    DynGrpcPipeFactory, GrpcPipeEntry
+);
+
 pub type HttpErrorHandlerArc = Arc<dyn ErrorHandler<HttpContext, HttpResponse>>;
 pub type RpcErrorHandlerArc = Arc<dyn ErrorHandler<RpcContext, RpcData>>;
 pub type WsErrorHandlerArc = Arc<dyn ErrorHandler<WsContext, WsMessage>>;
+pub type GrpcErrorHandlerArc = Arc<dyn ErrorHandler<GrpcContext, crate::grpc_status::GrpcStatus>>;
 
 /// Role trait-objects a provider may contribute to the registry.
 ///
@@ -144,6 +152,10 @@ pub enum ProviderRole {
     WsInterceptor(WsInterceptorEntry),
     WsPipe(WsPipeEntry),
     WsErrorHandler(WsErrorHandlerArc),
+
+    GrpcGuard(GrpcGuardEntry),
+    GrpcInterceptor(GrpcInterceptorEntry),
+    GrpcErrorHandler(GrpcErrorHandlerArc),
 
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),

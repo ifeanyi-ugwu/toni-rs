@@ -24,6 +24,8 @@ pub enum EnhancerKind {
     WsGuard,
     WsInterceptor,
     WsPipe,
+    GrpcGuard,
+    GrpcInterceptor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub enum ErrorHandlerKind {
     Http,
     Rpc,
     Ws,
+    Grpc,
 }
 
 pub struct EnhancerSpec {
@@ -54,7 +57,7 @@ pub struct ErrorHandlerSpec {
 }
 
 impl EnhancerKind {
-    pub fn all() -> [EnhancerKind; 9] {
+    pub fn all() -> [EnhancerKind; 11] {
         use EnhancerKind::*;
         [
             HttpGuard,
@@ -66,6 +69,8 @@ impl EnhancerKind {
             WsGuard,
             WsInterceptor,
             WsPipe,
+            GrpcGuard,
+            GrpcInterceptor,
         ]
     }
 
@@ -134,13 +139,32 @@ impl EnhancerKind {
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsPipeFactory },
                 factory_suffix: "WsPipe",
             },
+            EnhancerKind::GrpcGuard => EnhancerSpec {
+                role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcGuard },
+                entry_path: quote! { ::toni::traits_helpers::GrpcGuardEntry },
+                trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::GrpcContext> },
+                dyn_factory_trait: quote! { ::toni::traits_helpers::DynGrpcGuardFactory },
+                factory_suffix: "GrpcGuard",
+            },
+            EnhancerKind::GrpcInterceptor => EnhancerSpec {
+                role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcInterceptor },
+                entry_path: quote! { ::toni::traits_helpers::GrpcInterceptorEntry },
+                trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::GrpcContext> },
+                dyn_factory_trait: quote! { ::toni::traits_helpers::DynGrpcInterceptorFactory },
+                factory_suffix: "GrpcInterceptor",
+            },
         }
     }
 }
 
 impl ErrorHandlerKind {
-    pub fn all() -> [ErrorHandlerKind; 3] {
-        [ErrorHandlerKind::Http, ErrorHandlerKind::Rpc, ErrorHandlerKind::Ws]
+    pub fn all() -> [ErrorHandlerKind; 4] {
+        [
+            ErrorHandlerKind::Http,
+            ErrorHandlerKind::Rpc,
+            ErrorHandlerKind::Ws,
+            ErrorHandlerKind::Grpc,
+        ]
     }
 
     pub fn spec(self) -> ErrorHandlerSpec {
@@ -156,6 +180,10 @@ impl ErrorHandlerKind {
             ErrorHandlerKind::Ws => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsErrorHandler },
                 trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage> },
+            },
+            ErrorHandlerKind::Grpc => ErrorHandlerSpec {
+                role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcErrorHandler },
+                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::GrpcContext, ::toni::grpc_status::GrpcStatus> },
             },
         }
     }

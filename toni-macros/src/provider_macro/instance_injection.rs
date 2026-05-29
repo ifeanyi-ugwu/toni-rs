@@ -48,6 +48,10 @@ pub struct EnhancerTraits {
     pub is_ws_interceptor: bool,
     pub is_ws_pipe: bool,
     pub is_ws_error_handler: bool,
+
+    pub is_grpc_guard: bool,
+    pub is_grpc_interceptor: bool,
+    pub is_grpc_error_handler: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,21 +59,23 @@ struct TransportFlags {
     http: bool,
     rpc: bool,
     ws: bool,
+    grpc: bool,
     /// User declared a transport via a marker arg or typed impl head.
     /// When false and no transport matched, the resolver falls back to
-    /// "universal" (all three transports) so a blanket impl works.
+    /// "universal" (all transports) so a blanket impl works.
     explicit: bool,
 }
 
 impl TransportFlags {
     fn any(&self) -> bool {
-        self.http || self.rpc || self.ws
+        self.http || self.rpc || self.ws || self.grpc
     }
 
     fn merge(&mut self, other: TransportFlags) {
         self.http |= other.http;
         self.rpc |= other.rpc;
         self.ws |= other.ws;
+        self.grpc |= other.grpc;
         self.explicit |= other.explicit;
     }
 }
@@ -92,10 +98,12 @@ fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
             "http" => flags.http = true,
             "rpc" => flags.rpc = true,
             "ws" | "websocket" => flags.ws = true,
+            "grpc" => flags.grpc = true,
             "universal" | "all" => {
                 flags.http = true;
                 flags.rpc = true;
                 flags.ws = true;
+                flags.grpc = true;
             }
             _ => {}
         }
@@ -133,6 +141,7 @@ fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
         "HttpContext" => flags.http = true,
         "RpcContext" => flags.rpc = true,
         "WsContext" => flags.ws = true,
+        "GrpcContext" => flags.grpc = true,
         // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
         _ if impl_block
             .generics
@@ -143,6 +152,7 @@ fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
             flags.http = true;
             flags.rpc = true;
             flags.ws = true;
+            flags.grpc = true;
         }
         // Unknown concrete type — leave flags empty so the resolver doesn't
         // route it; it will fall back to universal if no other signal arrives.
@@ -254,38 +264,41 @@ fn detect_enhancer_traits(
     }
 
     // No transport signal at all (bare `#[guard]`, no typed impl head) → assume
-    // a universal blanket impl and route to all three transports.
-    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool) {
+    // a universal blanket impl and route to every transport that has a slot.
+    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool, bool) {
         if !slot.1 {
-            return (false, false, false);
+            return (false, false, false, false);
         }
         let f = slot.0;
         if f.any() {
-            (f.http, f.rpc, f.ws)
+            (f.http, f.rpc, f.ws, f.grpc)
         } else {
-            (true, true, true)
+            (true, true, true, true)
         }
     };
 
-    let (g_h, g_r, g_w) = resolve(guard);
+    let (g_h, g_r, g_w, g_g) = resolve(guard);
     traits.is_http_guard = g_h;
     traits.is_rpc_guard = g_r;
     traits.is_ws_guard = g_w;
+    traits.is_grpc_guard = g_g;
 
-    let (i_h, i_r, i_w) = resolve(interceptor);
+    let (i_h, i_r, i_w, i_g) = resolve(interceptor);
     traits.is_http_interceptor = i_h;
     traits.is_rpc_interceptor = i_r;
     traits.is_ws_interceptor = i_w;
+    traits.is_grpc_interceptor = i_g;
 
-    let (p_h, p_r, p_w) = resolve(pipe);
+    let (p_h, p_r, p_w, _p_g) = resolve(pipe);
     traits.is_http_pipe = p_h;
     traits.is_rpc_pipe = p_r;
     traits.is_ws_pipe = p_w;
 
-    let (e_h, e_r, e_w) = resolve(error_handler);
+    let (e_h, e_r, e_w, e_g) = resolve(error_handler);
     traits.is_http_error_handler = e_h;
     traits.is_rpc_error_handler = e_r;
     traits.is_ws_error_handler = e_w;
+    traits.is_grpc_error_handler = e_g;
 
     traits
 }
@@ -475,6 +488,8 @@ fn enhancer_kind_active(
         EnhancerKind::WsGuard => traits.is_ws_guard,
         EnhancerKind::WsInterceptor => traits.is_ws_interceptor,
         EnhancerKind::WsPipe => traits.is_ws_pipe,
+        EnhancerKind::GrpcGuard => traits.is_grpc_guard,
+        EnhancerKind::GrpcInterceptor => traits.is_grpc_interceptor,
     }
 }
 
@@ -487,6 +502,7 @@ fn error_handler_kind_active(
         ErrorHandlerKind::Http => traits.is_http_error_handler,
         ErrorHandlerKind::Rpc => traits.is_rpc_error_handler,
         ErrorHandlerKind::Ws => traits.is_ws_error_handler,
+        ErrorHandlerKind::Grpc => traits.is_grpc_error_handler,
     }
 }
 
