@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use crate::adapter::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::traits_helpers::{GrpcGuardEntry, GrpcInterceptorEntry};
+use crate::traits_helpers::{GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry};
 
 use super::ToniContainer;
 
@@ -43,9 +43,11 @@ impl GrpcServiceResolver {
     fn resolve_for(&self, svc: &dyn GrpcServiceTrait) -> Result<ResolvedGrpcEnhancers> {
         let guards = self.resolve_guards(svc.get_guard_tokens())?;
         let interceptors = self.resolve_interceptors(svc.get_interceptor_tokens())?;
+        let error_handlers = self.resolve_error_handlers(svc.get_error_handler_tokens())?;
 
         let mut handler_guards: HashMap<String, Vec<GrpcGuardEntry>> = HashMap::new();
         let mut handler_interceptors: HashMap<String, Vec<GrpcInterceptorEntry>> = HashMap::new();
+        let mut handler_error_handlers: HashMap<String, Vec<GrpcErrorHandlerArc>> = HashMap::new();
         for method in svc.get_handler_methods() {
             handler_guards.insert(
                 method.clone(),
@@ -54,6 +56,10 @@ impl GrpcServiceResolver {
             handler_interceptors.insert(
                 method.clone(),
                 self.resolve_interceptors(svc.get_handler_interceptor_tokens(&method))?,
+            );
+            handler_error_handlers.insert(
+                method.clone(),
+                self.resolve_error_handlers(svc.get_handler_error_handler_tokens(&method))?,
             );
         }
 
@@ -64,6 +70,8 @@ impl GrpcServiceResolver {
             handler_guards,
             interceptors,
             handler_interceptors,
+            error_handlers,
+            handler_error_handlers,
             error_observers,
         })
     }
@@ -135,6 +143,31 @@ impl GrpcServiceResolver {
                     "gRPC Interceptor '{}' not found in registry. \
                      Implement Interceptor<GrpcContext> and mark the provider with \
                      `#[interceptor(grpc)]` or a typed impl head.",
+                    token
+                )
+            })
+    }
+
+    fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<GrpcErrorHandlerArc>> {
+        let mut handlers = self.container.borrow().get_global_grpc_error_handlers();
+        for token in tokens {
+            handlers.push(self.resolve_error_handler_by_token(&token)?);
+        }
+        Ok(handlers)
+    }
+
+    fn resolve_error_handler_by_token(&self, token: &str) -> Result<GrpcErrorHandlerArc> {
+        self.container
+            .borrow()
+            .get_role_registry()
+            .grpc_error_handlers
+            .get(token)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "gRPC ErrorHandler '{}' not found in registry. \
+                     Implement ErrorHandler<GrpcContext, GrpcStatus> and mark the provider \
+                     with `#[error_handler(grpc)]` or a typed impl head.",
                     token
                 )
             })

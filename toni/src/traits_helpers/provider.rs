@@ -155,6 +155,7 @@ pub enum ProviderRole {
 
     GrpcGuard(GrpcGuardEntry),
     GrpcInterceptor(GrpcInterceptorEntry),
+    GrpcErrorHandler(GrpcErrorHandlerArc),
 
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
