@@ -110,12 +110,23 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         .filter(|i| !i.token_expr.is_empty())
         .map(|i| &i.token_expr)
         .collect();
+    let ctrl_error_handler_tokens: Vec<_> = ctrl_enhancer_infos
+        .get("error_handlers")
+        .unwrap_or(&empty_vec)
+        .iter()
+        .filter(|i| !i.token_expr.is_empty())
+        .map(|i| &i.token_expr)
+        .collect();
 
     // One entry per method that carries any per-method enhancer attribute.
     // `get_handler_methods` returns the names so the resolver knows which
     // methods to query the per-handler getters for.
-    let mut handler_enhancer_entries: Vec<(String, Vec<TokenStream>, Vec<TokenStream>)> =
-        Vec::new();
+    let mut handler_enhancer_entries: Vec<(
+        String,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+        Vec<TokenStream>,
+    )> = Vec::new();
     let mut method_idents: Vec<&syn::Ident> = Vec::new();
     let mut method_sigs_for_wrapper: Vec<&syn::ImplItemFn> = Vec::new();
     let mut assoc_types: Vec<&syn::ImplItemType> = Vec::new();
@@ -145,8 +156,23 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                         .filter(|i| !i.token_expr.is_empty())
                         .map(|i| i.token_expr.clone())
                         .collect();
-                    if !guards.is_empty() || !interceptors.is_empty() {
-                        handler_enhancer_entries.push((method_name, guards, interceptors));
+                    let error_handlers: Vec<TokenStream> = infos
+                        .get("error_handlers")
+                        .unwrap_or(&empty_vec)
+                        .iter()
+                        .filter(|i| !i.token_expr.is_empty())
+                        .map(|i| i.token_expr.clone())
+                        .collect();
+                    if !guards.is_empty()
+                        || !interceptors.is_empty()
+                        || !error_handlers.is_empty()
+                    {
+                        handler_enhancer_entries.push((
+                            method_name,
+                            guards,
+                            interceptors,
+                            error_handlers,
+                        ));
                     }
                 }
             }
@@ -186,10 +212,20 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         quote! {}
     };
 
+    let ctrl_error_handler_tokens_impl = if !ctrl_error_handler_tokens.is_empty() {
+        quote! {
+            fn get_error_handler_tokens(&self) -> ::std::vec::Vec<::std::string::String> {
+                vec![#(#ctrl_error_handler_tokens),*]
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let handler_methods_impl = if !handler_enhancer_entries.is_empty() {
         let names: Vec<&str> = handler_enhancer_entries
             .iter()
-            .map(|(n, _, _)| n.as_str())
+            .map(|(n, _, _, _)| n.as_str())
             .collect();
         quote! {
             fn get_handler_methods(&self) -> ::std::vec::Vec<::std::string::String> {
@@ -203,8 +239,8 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     let handler_guard_tokens_impl = {
         let arms: Vec<_> = handler_enhancer_entries
             .iter()
-            .filter(|(_, g, _)| !g.is_empty())
-            .map(|(name, guards, _)| quote! { #name => vec![#(#guards),*], })
+            .filter(|(_, g, _, _)| !g.is_empty())
+            .map(|(name, guards, _, _)| quote! { #name => vec![#(#guards),*], })
             .collect();
         if !arms.is_empty() {
             quote! {
@@ -223,12 +259,32 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     let handler_interceptor_tokens_impl = {
         let arms: Vec<_> = handler_enhancer_entries
             .iter()
-            .filter(|(_, _, i)| !i.is_empty())
-            .map(|(name, _, interceptors)| quote! { #name => vec![#(#interceptors),*], })
+            .filter(|(_, _, i, _)| !i.is_empty())
+            .map(|(name, _, interceptors, _)| quote! { #name => vec![#(#interceptors),*], })
             .collect();
         if !arms.is_empty() {
             quote! {
                 fn get_handler_interceptor_tokens(&self, method: &str) -> ::std::vec::Vec<::std::string::String> {
+                    match method {
+                        #(#arms)*
+                        _ => vec![],
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    };
+
+    let handler_error_handler_tokens_impl = {
+        let arms: Vec<_> = handler_enhancer_entries
+            .iter()
+            .filter(|(_, _, _, e)| !e.is_empty())
+            .map(|(name, _, _, handlers)| quote! { #name => vec![#(#handlers),*], })
+            .collect();
+        if !arms.is_empty() {
+            quote! {
+                fn get_handler_error_handler_tokens(&self, method: &str) -> ::std::vec::Vec<::std::string::String> {
                     match method {
                         #(#arms)*
                         _ => vec![],
@@ -299,9 +355,11 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
 
             #ctrl_guard_tokens_impl
             #ctrl_interceptor_tokens_impl
+            #ctrl_error_handler_tokens_impl
             #handler_methods_impl
             #handler_guard_tokens_impl
             #handler_interceptor_tokens_impl
+            #handler_error_handler_tokens_impl
 
             fn register_with(
                 &self,
@@ -423,9 +481,15 @@ fn build_wrapper_method(
                 ::std::option::Option::None,
             );
 
+            // Two slots so the macro can distinguish a returned reply
+            // (Ok or Err) from a caught panic, and feed the panic event
+            // (not its synthesized status) to observers + the error chain.
             let __outcome: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<#ret_ty>>>
                 = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
+            let __panic: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<::toni::PanicRecovered>>>
+                = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
             let __outcome_capture = __outcome.clone();
+            let __panic_capture = __panic.clone();
             let __inner = self.inner.clone();
 
             let __pipeline = ::toni::grpc_runtime::run_grpc_pipeline(
@@ -433,11 +497,21 @@ fn build_wrapper_method(
                 &self.enhancers,
                 #method_name_lit,
                 move || async move {
-                    let __reply = <#self_ident as #trait_path>::#method_ident(
-                        &__inner, #(#forward_args),*
+                    let __caught = ::toni::grpc_runtime::catch_handler_panic(
+                        <#self_ident as #trait_path>::#method_ident(
+                            &__inner, #(#forward_args),*
+                        )
                     ).await;
-                    *__outcome_capture.lock().expect("grpc pipeline outcome mutex poisoned") =
-                        ::std::option::Option::Some(__reply);
+                    match __caught {
+                        ::std::result::Result::Ok(__reply) => {
+                            *__outcome_capture.lock().expect("grpc pipeline outcome mutex poisoned") =
+                                ::std::option::Option::Some(__reply);
+                        }
+                        ::std::result::Result::Err(__panic_event) => {
+                            *__panic_capture.lock().expect("grpc pipeline panic mutex poisoned") =
+                                ::std::option::Option::Some(__panic_event);
+                        }
+                    }
                 },
             ).await;
 
@@ -446,8 +520,58 @@ fn build_wrapper_method(
                 return ::std::result::Result::Err(::tonic::Status::new(__code, __status.message));
             }
 
-            match __outcome.lock().expect("grpc pipeline outcome mutex poisoned").take() {
-                ::std::option::Option::Some(__reply) => __reply,
+            // Caught panic: route the typed `PanicRecovered` through the
+            // error chain so observers see it. Chain falls back to
+            // `Internal` carrying the panic message. The take is bound to
+            // a local so the `MutexGuard` is dropped before the `.await`
+            // — holding it across would make the wrapper future `!Send`.
+            let __taken_panic = __panic
+                .lock()
+                .expect("grpc pipeline panic mutex poisoned")
+                .take();
+            if let ::std::option::Option::Some(__panic_event) = __taken_panic {
+                let __mapped = ::toni::grpc_runtime::run_grpc_error_chain(
+                    &mut __ctx, &self.enhancers, #method_name_lit, &__panic_event,
+                ).await;
+                return ::std::result::Result::Err(match __mapped {
+                    ::std::option::Option::Some(__grpc) => {
+                        let __code = ::tonic::Code::from_i32(__grpc.code as i32);
+                        ::tonic::Status::new(__code, __grpc.message)
+                    }
+                    ::std::option::Option::None => ::tonic::Status::internal(format!(
+                        "handler panicked: {}", __panic_event
+                    )),
+                });
+            }
+
+            let __taken_outcome = __outcome
+                .lock()
+                .expect("grpc pipeline outcome mutex poisoned")
+                .take();
+            match __taken_outcome {
+                ::std::option::Option::Some(::std::result::Result::Ok(__reply)) => {
+                    ::std::result::Result::Ok(__reply)
+                }
+                ::std::option::Option::Some(::std::result::Result::Err(__status)) => {
+                    // User-returned `Err(Status)` is offered to the error
+                    // chain. If a handler claims it, the claimed
+                    // `GrpcStatus` becomes the wire reply; otherwise the
+                    // original status passes through unchanged.
+                    let __wrapped = ::toni::GrpcStatus {
+                        code: ::toni::GrpcCode::from_i32(__status.code() as i32),
+                        message: __status.message().to_string(),
+                    };
+                    let __mapped = ::toni::grpc_runtime::run_grpc_error_chain(
+                        &mut __ctx, &self.enhancers, #method_name_lit, &__wrapped,
+                    ).await;
+                    ::std::result::Result::Err(match __mapped {
+                        ::std::option::Option::Some(__grpc) => {
+                            let __code = ::tonic::Code::from_i32(__grpc.code as i32);
+                            ::tonic::Status::new(__code, __grpc.message)
+                        }
+                        ::std::option::Option::None => __status,
+                    })
+                }
                 ::std::option::Option::None => ::std::result::Result::Err(::tonic::Status::internal(
                     "interceptor short-circuited the call without producing a response"
                 )),

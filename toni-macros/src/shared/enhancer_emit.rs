@@ -33,6 +33,7 @@ pub enum ErrorHandlerKind {
     Http,
     Rpc,
     Ws,
+    Grpc,
 }
 
 pub struct EnhancerSpec {
@@ -157,8 +158,13 @@ impl EnhancerKind {
 }
 
 impl ErrorHandlerKind {
-    pub fn all() -> [ErrorHandlerKind; 3] {
-        [ErrorHandlerKind::Http, ErrorHandlerKind::Rpc, ErrorHandlerKind::Ws]
+    pub fn all() -> [ErrorHandlerKind; 4] {
+        [
+            ErrorHandlerKind::Http,
+            ErrorHandlerKind::Rpc,
+            ErrorHandlerKind::Ws,
+            ErrorHandlerKind::Grpc,
+        ]
     }
 
     pub fn spec(self) -> ErrorHandlerSpec {
@@ -174,6 +180,10 @@ impl ErrorHandlerKind {
             ErrorHandlerKind::Ws => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsErrorHandler },
                 trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage> },
+            },
+            ErrorHandlerKind::Grpc => ErrorHandlerSpec {
+                role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcErrorHandler },
+                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::GrpcContext, ::toni::grpc_status::GrpcStatus> },
             },
         }
     }

@@ -51,6 +51,7 @@ pub struct EnhancerTraits {
 
     pub is_grpc_guard: bool,
     pub is_grpc_interceptor: bool,
+    pub is_grpc_error_handler: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -293,10 +294,11 @@ fn detect_enhancer_traits(
     traits.is_rpc_pipe = p_r;
     traits.is_ws_pipe = p_w;
 
-    let (e_h, e_r, e_w, _e_g) = resolve(error_handler);
+    let (e_h, e_r, e_w, e_g) = resolve(error_handler);
     traits.is_http_error_handler = e_h;
     traits.is_rpc_error_handler = e_r;
     traits.is_ws_error_handler = e_w;
+    traits.is_grpc_error_handler = e_g;
 
     traits
 }
@@ -500,6 +502,7 @@ fn error_handler_kind_active(
         ErrorHandlerKind::Http => traits.is_http_error_handler,
         ErrorHandlerKind::Rpc => traits.is_rpc_error_handler,
         ErrorHandlerKind::Ws => traits.is_ws_error_handler,
+        ErrorHandlerKind::Grpc => traits.is_grpc_error_handler,
     }
 }
 
