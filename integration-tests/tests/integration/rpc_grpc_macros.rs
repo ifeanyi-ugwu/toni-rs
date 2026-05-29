@@ -19,8 +19,12 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
+use toni::enhancer::error_handler;
 use toni::{guard, interceptor};
-use toni_macros::{grpc_methods, grpc_service, injectable, module, use_guards, use_interceptors};
+use toni_macros::{
+    grpc_methods, grpc_service, injectable, module, use_error_handlers, use_guards,
+    use_interceptors,
+};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -834,6 +838,197 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
         .expect("shutdown must complete");
 }
 
+// ── error-handler fixtures ─────────────────────────────────────────────────
+
+/// Claims errors whose `to_string()` contains `"remap-me"`; everything else
+/// passes through unchanged. Lets one server cover both the claim path and
+/// the pass-through path in adjacent tests.
+#[injectable(pub struct ConditionalErrorHandler {})]
+#[error_handler(grpc)]
+impl ConditionalErrorHandler {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
+    for ConditionalErrorHandler
+{
+    async fn handle_error(
+        &self,
+        error: toni::traits_helpers::ChainError<'_>,
+        _ctx: &toni::GrpcContext,
+    ) -> ::std::option::Option<toni::GrpcStatus> {
+        let msg = error.to_string();
+        if msg.contains("remap-me") {
+            Some(toni::GrpcStatus::new(
+                toni::GrpcCode::FailedPrecondition,
+                "remapped by handler",
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+#[grpc_service(pub struct ErrorHandledOrdersGrpcService {
+    #[inject] _counter: OrdersCounter,
+})]
+impl ErrorHandledOrdersGrpcService {
+    pub fn new(_counter: OrdersCounter) -> Self {
+        Self { _counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_error_handlers(ConditionalErrorHandler)]
+impl Orders for ErrorHandledOrdersGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let req = request.into_inner();
+        // `item` is echoed into the Err message so the test can steer the
+        // handler's `to_string()` match without crafting a custom error type.
+        Err(tonic::Status::invalid_argument(format!(
+            "user-said: {}",
+            req.item
+        )))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [
+    OrdersCounter,
+    ConditionalErrorHandler,
+    ErrorHandledOrdersGrpcService,
+])]
+struct ErrorHandledGrpcModule;
+
+async fn boot_error_handled() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(ErrorHandledGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+/// `create` panics. No error handler registered, so the framework's
+/// default panic recovery is what produces the wire reply.
+#[grpc_service(pub struct PanickyOrdersGrpcService {
+    #[inject] _counter: OrdersCounter,
+})]
+impl PanickyOrdersGrpcService {
+    pub fn new(_counter: OrdersCounter) -> Self {
+        Self { _counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+impl Orders for PanickyOrdersGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        panic!("boom from handler")
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, PanickyOrdersGrpcService])]
+struct PanickyGrpcModule;
+
+async fn boot_panicky() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(PanickyGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
 // ── interceptor tests ───────────────────────────────────────────────────────
 
 /// A service-level interceptor wraps the user delegation: `before` runs,
@@ -930,6 +1125,106 @@ async fn grpc_interceptor_method_level_stacks_inside_service_level() {
         ],
         "method-level interceptor must nest inside the service-level one",
     );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+// ── error-handler tests ────────────────────────────────────────────────────
+
+/// A registered error handler whose `handle_error` returns `Some` claims
+/// the response: the wire status comes from the handler's `GrpcStatus`,
+/// not the user's original `Err(Status)`.
+#[tokio_localset_test::localset_test]
+async fn grpc_error_handler_claims_and_remaps_user_err() {
+    let (port, shutdown) = boot_error_handled().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            // The handler matches on this substring and remaps.
+            item: "remap-me".into(),
+            qty: 0,
+        })
+        .await
+        .expect_err("user method returns Err; handler must claim it");
+
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(err.message(), "remapped by handler");
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// When the registered handler returns `None`, the user's original
+/// `Err(Status)` passes through unchanged. Same server as the claim test
+/// — the only difference is the request payload, which the handler uses
+/// to decide whether to claim.
+#[tokio_localset_test::localset_test]
+async fn grpc_error_handler_passes_through_when_no_claim() {
+    let (port, shutdown) = boot_error_handled().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "leave-alone".into(),
+            qty: 0,
+        })
+        .await
+        .expect_err("user method returns Err");
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    assert!(
+        err.message().contains("leave-alone"),
+        "pass-through must preserve the user's original message; got {:?}",
+        err.message()
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// A panicking handler must not tear down the process or the connection
+/// — the framework catches the panic and surfaces it as `Internal` to
+/// the wire. The panic payload bubbles into the status message so an
+/// operator inspecting the response can correlate.
+#[tokio_localset_test::localset_test]
+async fn grpc_panic_in_handler_surfaces_as_internal() {
+    let (port, shutdown) = boot_panicky().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "ignored".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("panicking handler must produce an Err — not a connection drop");
+
+    assert_eq!(err.code(), tonic::Code::Internal);
+    assert!(
+        err.message().contains("boom from handler"),
+        "panic payload must propagate into the status message; got {:?}",
+        err.message()
+    );
+
+    // A second call on the same channel proves the server stayed up
+    // through the panic — the catch_unwind wraps each handler invocation,
+    // not the whole server.
+    let err2 = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "again".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("subsequent panicking call must also surface as Err");
+    assert_eq!(err2.code(), tonic::Code::Internal);
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
