@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use crate::traits_helpers::{ErrorObserver, GrpcGuardEntry, GrpcInterceptorEntry};
+use crate::traits_helpers::{
+    ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry,
+};
 
 /// Per-service bundle of resolved enhancer instances. Built by the framework
 /// at bind time from the token getters on [`GrpcServiceTrait`] and handed to
@@ -32,8 +34,16 @@ pub struct ResolvedGrpcEnhancers {
     /// Method-level interceptors. Stack on top of service-level (controller-
     /// level entries run first, method-level entries run inside).
     pub handler_interceptors: std::collections::HashMap<String, Vec<GrpcInterceptorEntry>>,
-    /// Universal error observers — fan out on guard rejections so logging /
-    /// telemetry sees gRPC pipeline events the same way HTTP/RPC/WS do.
+    /// Service-level error handlers; fire on user-returned `Err` or caught
+    /// handler panic. First handler to claim wins (chain runs in reverse
+    /// registration order, matching the RPC/HTTP convention).
+    pub error_handlers: Vec<GrpcErrorHandlerArc>,
+    /// Method-level error handlers. Composed with service-level into one
+    /// reverse-order chain per call.
+    pub handler_error_handlers: std::collections::HashMap<String, Vec<GrpcErrorHandlerArc>>,
+    /// Universal error observers — fan out on guard rejections, caught
+    /// panics, and user-returned errs so logging / telemetry sees gRPC
+    /// pipeline events the same way HTTP/RPC/WS do.
     pub error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
@@ -64,6 +74,10 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
         vec![]
     }
 
+    fn get_error_handler_tokens(&self) -> Vec<String> {
+        vec![]
+    }
+
     /// Methods carrying any per-method enhancer attribute. Used by the
     /// resolver to know which methods to query the per-handler getters for.
     fn get_handler_methods(&self) -> Vec<String> {
@@ -75,6 +89,10 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
     }
 
     fn get_handler_interceptor_tokens(&self, _method: &str) -> Vec<String> {
+        vec![]
+    }
+
+    fn get_handler_error_handler_tokens(&self, _method: &str) -> Vec<String> {
         vec![]
     }
 }

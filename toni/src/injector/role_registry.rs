@@ -6,10 +6,10 @@ use crate::{
     adapter::GrpcServiceTrait,
     rpc::RpcControllerTrait,
     traits_helpers::{
-        GrpcGuardEntry, GrpcInterceptorEntry, HttpErrorHandlerArc, HttpGuardEntry,
-        HttpInterceptorEntry, HttpPipeEntry, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
-        RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
-        WsPipeEntry, middleware::Middleware,
+        GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, HttpErrorHandlerArc,
+        HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ProviderRole, RpcErrorHandlerArc,
+        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
+        WsInterceptorEntry, WsPipeEntry, middleware::Middleware,
     },
     websocket::GatewayTrait,
 };
@@ -32,6 +32,7 @@ pub(crate) struct RoleRegistry {
 
     pub grpc_guards: FxHashMap<String, GrpcGuardEntry>,
     pub grpc_interceptors: FxHashMap<String, GrpcInterceptorEntry>,
+    pub grpc_error_handlers: FxHashMap<String, GrpcErrorHandlerArc>,
 
     pub middleware: FxHashMap<String, Arc<dyn Middleware>>,
     /// Keyed by WS path (e.g. "/chat"), not by provider token.
@@ -59,6 +60,7 @@ impl RoleRegistry {
             ws_error_handlers: FxHashMap::default(),
             grpc_guards: FxHashMap::default(),
             grpc_interceptors: FxHashMap::default(),
+            grpc_error_handlers: FxHashMap::default(),
             middleware: FxHashMap::default(),
             gateways: FxHashMap::default(),
             rpc_controllers: FxHashMap::default(),
@@ -117,6 +119,9 @@ impl RoleRegistry {
         }
         if let Some(i) = self.grpc_interceptors.get(token) {
             roles.push(ProviderRole::GrpcInterceptor(i.clone()));
+        }
+        if let Some(eh) = self.grpc_error_handlers.get(token) {
+            roles.push(ProviderRole::GrpcErrorHandler(eh.clone()));
         }
 
         if let Some(m) = self.middleware.get(token) {
