@@ -216,7 +216,7 @@ impl GatewayWrapper {
         }
 
         let guards = Self::resolve_guards(&all_guards, None).await;
-        for (index, guard) in guards.iter().enumerate() {
+        for guard in guards.iter() {
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
                 guard.can_activate(&context),
@@ -225,11 +225,24 @@ impl GatewayWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    Self::fan_out_observers(&self.error_observers, &event, &context).await;
-                    return Err(WsError::AuthFailed(format!(
-                        "guard {} panicked: {}",
-                        index, event.message
-                    )));
+                    // Guard panic is a developer error, not a rejection
+                    // verdict: route through the same path as other
+                    // pipeline panics so observers + chain run once and
+                    // the canonical envelope reaches the client. Without
+                    // this, `WsError::AuthFailed` would silently drop in
+                    // `ToniApplication`'s message callback and the only
+                    // signal would be observer-side.
+                    Self::record_pipeline_panic(
+                        &mut context,
+                        &all_error_handlers,
+                        &self.error_observers,
+                        event,
+                    )
+                    .await;
+                    return match context.take_response() {
+                        Some(Ok(Some(msg))) => Ok(WsHandlerOutput::Single(msg)),
+                        _ => Ok(WsHandlerOutput::Empty),
+                    };
                 }
             };
             if !activated {
