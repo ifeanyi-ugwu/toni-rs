@@ -424,7 +424,8 @@ impl GatewayWrapper {
             }
         }
         let ws_err = WsError::from(event);
-        context.set_response(Ok(Some(ws_err.to_message())));
+        let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
+        context.set_response(Ok(Some(msg)));
     }
 
     /// Run pipes + handler, then route the outcome.
@@ -470,7 +471,8 @@ impl GatewayWrapper {
                         return;
                     }
                 }
-                context.set_response(Ok(Some(ws_err.to_message())));
+                let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
+                context.set_response(Ok(Some(msg)));
             }
         }
     }
@@ -481,6 +483,36 @@ impl GatewayWrapper {
     /// handler. Without this, a single bad chain handler would kill the
     /// whole error-recovery path and the original error would never
     /// reach the fallback `to_message` rendering.
+    /// Drive `WsError::to_message` with panic recovery — a panic in the
+    /// renderer would close the connection without ever framing an
+    /// outbound error message. Policy: fan
+    /// `PanicRecovered { during: ResponseRendering }` to observers,
+    /// substitute a hardcoded text frame.
+    async fn safe_render<F>(
+        render: F,
+        observers: &[Arc<dyn ErrorObserver>],
+        ctx: &WsContext,
+    ) -> WsMessage
+    where
+        F: FnOnce() -> WsMessage,
+    {
+        match crate::panic_recovery::catch_sync(
+            crate::errors::PipelineSegment::ResponseRendering,
+            render,
+        ) {
+            Ok(msg) => msg,
+            Err(panic_event) => {
+                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                Self::fallback_internal_message()
+            }
+        }
+    }
+
+    /// Hardcoded fallback frame when the regular renderer panics.
+    fn fallback_internal_message() -> WsMessage {
+        WsMessage::text("Internal Server Error")
+    }
+
     async fn try_chain_handler(
         handler: &WsErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),

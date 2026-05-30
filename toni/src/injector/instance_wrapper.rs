@@ -163,7 +163,18 @@ impl InstanceWrapper {
                 // without going through the chain — the user constructed the
                 // wire shape themselves.
                 if let Some(http_err) = e.downcast_ref::<HttpError>() {
-                    return http_err.to_response();
+                    // Synthesize a stub context so observers still get a
+                    // typed `HandlerContext` if the render panics — we
+                    // haven't built the real one yet at this point in
+                    // the pipeline.
+                    let stub = http::Request::builder().body(()).unwrap();
+                    let stub_ctx = HttpContext::from_parts(stub.into_parts().0);
+                    return Self::safe_render(
+                        || http_err.to_response(),
+                        &observers_for_middleware,
+                        &stub_ctx,
+                    )
+                    .await;
                 }
 
                 // Middleware failed before the request body could be split; we have no
@@ -186,7 +197,12 @@ impl InstanceWrapper {
                     }
                 }
 
-                crate::errors::http_error::render_error(&event)
+                Self::safe_render(
+                    || crate::errors::http_error::render_error(&event),
+                    &observers_for_middleware,
+                    &error_ctx,
+                )
+                .await
             }
         }
     }
@@ -336,8 +352,15 @@ impl InstanceWrapper {
             }
         }
 
-        claimed_response
-            .unwrap_or_else(|| crate::errors::http_error::render_error(&event))
+        if let Some(claimed) = claimed_response {
+            return claimed;
+        }
+        Self::safe_render(
+            || crate::errors::http_error::render_error(&event),
+            observers,
+            ctx,
+        )
+        .await
     }
 
     /// Run one chain handler with panic recovery: a panicking
@@ -346,6 +369,43 @@ impl InstanceWrapper {
     /// handler. Without this, a single bad chain handler would kill the
     /// whole error-recovery path and the original error would never
     /// reach the fallback rendering.
+    /// Drive the transport's error renderer with panic recovery. A panic
+    /// inside `HttpError::to_response` (or the free-function
+    /// `render_error`) would otherwise tear the dispatcher down — the
+    /// renderer is the last thing standing between the framework and the
+    /// wire, so there's nothing left to remap if it fails. Policy: fan
+    /// `PanicRecovered { during: ResponseRendering }` to observers, then
+    /// substitute a minimal hardcoded 500 envelope so the client still
+    /// gets a structured reply.
+    async fn safe_render<F>(
+        render: F,
+        observers: &[Arc<dyn ErrorObserver>],
+        ctx: &HttpContext,
+    ) -> HttpResponse
+    where
+        F: FnOnce() -> HttpResponse,
+    {
+        match crate::panic_recovery::catch_sync(PipelineSegment::ResponseRendering, render) {
+            Ok(resp) => resp,
+            Err(panic_event) => {
+                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                Self::fallback_500_response()
+            }
+        }
+    }
+
+    /// Minimal hardcoded 500 used when the regular renderer panics.
+    /// Built with simple constructors that don't themselves render
+    /// user-supplied data, so a recursive panic here is structurally
+    /// impossible.
+    fn fallback_500_response() -> HttpResponse {
+        HttpResponse {
+            body: Some(crate::http_helpers::Body::text("Internal Server Error")),
+            status: 500,
+            headers: vec![],
+        }
+    }
+
     async fn try_chain_handler(
         handler: &HttpErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
@@ -447,7 +507,13 @@ impl InstanceWrapper {
                 return;
             }
         }
-        context.set_response(HttpError::from(event).to_response());
+        let rendered = Self::safe_render(
+            || HttpError::from(event).to_response(),
+            observers,
+            context,
+        )
+        .await;
+        context.set_response(rendered);
     }
 
     /// Run pipes + handler, then route the result.
@@ -542,7 +608,9 @@ impl InstanceWrapper {
                         return;
                     }
                 }
-                context.set_response(http_err.to_response());
+                let rendered =
+                    Self::safe_render(|| http_err.to_response(), observers, context).await;
+                context.set_response(rendered);
             }
         }
     }
