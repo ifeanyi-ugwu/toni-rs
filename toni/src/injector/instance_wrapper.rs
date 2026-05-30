@@ -389,17 +389,17 @@ impl InstanceWrapper {
         )
         .await
         {
-            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+            Self::record_pipeline_panic(context, error_handlers, observers, event).await;
         }
     }
 
-    /// Surface a panicking interceptor through the existing observer + chain
-    /// pipeline: lift `PanicRecovered` into an `HttpError`, run observers,
-    /// give error handlers first claim, and fall back to the default
-    /// rendering. A panicking interceptor never silently corrupts the
-    /// response — it either gets remapped by a chain handler or rendered
-    /// as a 500.
-    async fn record_interceptor_panic(
+    /// Surface a panicking pre-handler segment (interceptor or pipe)
+    /// through the existing observer + chain pipeline: lift
+    /// `PanicRecovered` into an `HttpError`, run observers, give error
+    /// handlers first claim, and fall back to the default rendering. The
+    /// panic never silently corrupts the response — it either gets
+    /// remapped by a chain handler or rendered as a 500.
+    async fn record_pipeline_panic(
         context: &mut HttpContext,
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
@@ -451,7 +451,16 @@ impl InstanceWrapper {
         }
 
         for pipe in pipes {
-            pipe.process(context);
+            // `pipe.process` is sync — `catch_sync` wraps it the same way
+            // `catch_async` wraps async segments. A panic here routes
+            // through the observer + chain pipeline; remaining pipes and
+            // the handler are skipped.
+            if let Err(event) =
+                crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
+            {
+                Self::record_pipeline_panic(context, error_handlers, observers, event).await;
+                return;
+            }
             if context.should_abort() {
                 return;
             }

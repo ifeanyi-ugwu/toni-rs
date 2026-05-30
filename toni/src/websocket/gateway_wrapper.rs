@@ -399,15 +399,16 @@ impl GatewayWrapper {
         )
         .await
         {
-            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+            Self::record_pipeline_panic(context, error_handlers, observers, event).await;
         }
     }
 
-    /// Surface a panicking interceptor through the existing observer + chain
-    /// pipeline so it cannot tear down the connection. Fan to observers,
-    /// give error handlers first claim, and fall back to a wire-`Err`
-    /// frame.
-    async fn record_interceptor_panic(
+    /// Surface a panicking pre-handler segment (interceptor; pipes flow
+    /// through `execute_handler`'s `ExecutionResult::Err` instead) through
+    /// the existing observer + chain pipeline so it cannot tear down the
+    /// connection. Fan to observers, give error handlers first claim,
+    /// and fall back to a wire-`Err` frame.
+    async fn record_pipeline_panic(
         context: &mut WsContext,
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
@@ -499,7 +500,17 @@ impl GatewayWrapper {
         pipes: &[Arc<dyn Pipe<WsContext>>],
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
         for pipe in pipes {
-            pipe.process(context);
+            // `pipe.process` is sync — `catch_sync` wraps it the same way
+            // `catch_async` wraps async segments. A panic returns as
+            // `ExecutionResult::Err(WsError::from(panic_event))`; the
+            // caller's chain fans observers, gives error handlers first
+            // claim, and falls back to the default frame.
+            if let Err(event) = crate::panic_recovery::catch_sync(
+                PipelineSegment::Pipe,
+                || pipe.process(context),
+            ) {
+                return ExecutionResult::Err(WsError::from(event));
+            }
             if context.should_abort() {
                 return ExecutionResult::Err(WsError::Internal(
                     "Request aborted by pipe".into(),
