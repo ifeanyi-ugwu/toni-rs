@@ -299,8 +299,21 @@ pub async fn run_grpc_error_chain(
         all.extend_from_slice(per_method);
     }
     for handler in all.iter().rev() {
-        if let Some(claimed) = handler.handle_error(err, ctx).await {
-            return Some(claimed);
+        // Wrap the chain handler so a panicking `handle_error` doesn't
+        // kill the rest of the chain (and lose the original error).
+        // Policy: fan `PanicRecovered { during: ErrorHandler }` to
+        // observers, treat as `None` claim, move on to the next handler.
+        let outcome = catch_async(
+            PipelineSegment::ErrorHandler,
+            handler.handle_error(err, ctx),
+        )
+        .await;
+        match outcome {
+            Ok(Some(claimed)) => return Some(claimed),
+            Ok(None) => continue,
+            Err(panic_event) => {
+                fan_out_observers(&enhancers.error_observers, &panic_event, ctx).await;
+            }
         }
     }
     None

@@ -174,7 +174,14 @@ impl InstanceWrapper {
                 let event = MiddlewareFailure::new(e.to_string());
                 Self::fan_out_observers(&observers_for_middleware, &event, &error_ctx).await;
                 for handler in error_handlers_for_middleware.iter().rev() {
-                    if let Some(response) = handler.handle_error(&event, &error_ctx).await {
+                    if let Some(response) = Self::try_chain_handler(
+                        handler,
+                        &event,
+                        &error_ctx,
+                        &observers_for_middleware,
+                    )
+                    .await
+                    {
                         return response;
                     }
                 }
@@ -324,13 +331,39 @@ impl InstanceWrapper {
         Self::fan_out_observers(observers, &event, ctx).await;
 
         for handler in error_handlers.iter().rev() {
-            if let Some(handled) = handler.handle_error(&event, ctx).await {
+            if let Some(handled) = Self::try_chain_handler(handler, &event, ctx, observers).await {
                 return handled;
             }
         }
 
         claimed_response
             .unwrap_or_else(|| crate::errors::http_error::render_error(&event))
+    }
+
+    /// Run one chain handler with panic recovery: a panicking
+    /// `handle_error` fans `PanicRecovered { during: ErrorHandler }` to
+    /// observers and returns `None` so the caller continues to the next
+    /// handler. Without this, a single bad chain handler would kill the
+    /// whole error-recovery path and the original error would never
+    /// reach the fallback rendering.
+    async fn try_chain_handler(
+        handler: &HttpErrorHandlerArc,
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &HttpContext,
+        observers: &[Arc<dyn ErrorObserver>],
+    ) -> Option<HttpResponse> {
+        match crate::panic_recovery::catch_async(
+            PipelineSegment::ErrorHandler,
+            handler.handle_error(error, ctx),
+        )
+        .await
+        {
+            Ok(opt) => opt,
+            Err(panic_event) => {
+                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                None
+            }
+        }
     }
 
     async fn fan_out_observers(
@@ -407,7 +440,9 @@ impl InstanceWrapper {
     ) {
         Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = handler.handle_error(&event, context).await {
+            if let Some(claimed) =
+                Self::try_chain_handler(handler, &event, context, observers).await
+            {
                 context.set_response(claimed);
                 return;
             }
@@ -501,7 +536,7 @@ impl InstanceWrapper {
                 Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        handler.handle_error(observed_err, context).await
+                        Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
                         context.set_response(claimed);
                         return;
