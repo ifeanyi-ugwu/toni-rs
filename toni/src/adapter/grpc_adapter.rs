@@ -44,24 +44,17 @@ pub trait GrpcAdapter: Send + Sync + 'static {
         services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()>;
 
-    /// Return the future that drives the gRPC serve loop.
+    /// Consume the adapter and return a self-contained lifecycle handle
+    /// driving the gRPC serve loop. The handle owns the serve future,
+    /// the local address, and a shutdown callback. The framework joins
+    /// the serve future alongside every other adapter's serve.
     ///
-    /// Called once after `bind`. The framework joins this future alongside
-    /// every other adapter's serve future. The future resolves when shutdown
-    /// has been signalled and the configured drain budget has elapsed.
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
-
-    /// Local listening address. Available after a successful `bind`.
-    fn local_addr(&self) -> Option<SocketAddr> {
-        None
-    }
-
-    /// Trigger graceful shutdown. Idempotent. The serve future returned by
-    /// `serve` will resolve once tonic's `serve_with_shutdown` completes —
-    /// adapter implementations are responsible for the drain-timeout policy
-    /// described in their own docs.
-    async fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
+    /// Implementations should bind synchronously in `bind` so port-in-use
+    /// surfaces as `Err` from `app.bind()`, and capture the shutdown
+    /// signal in the closure so the framework's `close()` flow flips it
+    /// without holding a reference back to the adapter.
+    async fn into_lifecycle(
+        self: Box<Self>,
+    ) -> Result<crate::adapter::lifecycle_handles::GrpcLifecycleHandle>;
 }
 

@@ -197,25 +197,27 @@ impl ServerLifecycle for RpcLifecycleHandle {
 
 // ─── gRPC ────────────────────────────────────────────────────────────────────
 
-pub(crate) struct GrpcLifecycleHandle {
-    adapter: Box<dyn GrpcAdapter>,
+pub struct GrpcLifecycleHandle {
     local_addr: Option<SocketAddr>,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl GrpcLifecycleHandle {
-    pub(crate) fn bind(
-        mut adapter: Box<dyn GrpcAdapter>,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
-    ) -> Result<Self> {
-        adapter.bind(services)?;
-        let local_addr = adapter.local_addr();
-        let serve = adapter.serve()?;
-        Ok(Self {
-            adapter,
+    pub fn new<F, Fut>(
+        local_addr: Option<SocketAddr>,
+        serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
             local_addr,
             serve: Some(serve),
-        })
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
+        }
     }
 }
 
@@ -234,6 +236,10 @@ impl ServerLifecycle for GrpcLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
+        } else {
+            Ok(())
+        }
     }
 }

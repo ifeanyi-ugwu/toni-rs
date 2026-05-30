@@ -511,18 +511,22 @@ impl ToniApplication {
         // also wire services directly on the adapter via its own
         // `add_service` builder before `use_grpc_adapter`.
         let mut grpc_addr: Option<SocketAddr> = None;
-        if let Some(adapter) = self.grpc_adapter.take() {
+        if let Some(mut adapter) = self.grpc_adapter.take() {
             let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
             let grpc_services = grpc_resolver.resolve()?;
-            match GrpcLifecycleHandle::bind(adapter, grpc_services) {
-                Ok(handle) => {
-                    grpc_addr = handle.local_addr();
-                    if let Some(addr) = grpc_addr {
-                        tracing::info!(addr = %addr, "gRPC listening");
+            if let Err(e) = adapter.bind(grpc_services) {
+                tracing::error!(error = %e, "Failed to bind gRPC services");
+            } else {
+                match adapter.into_lifecycle().await {
+                    Ok(handle) => {
+                        grpc_addr = handle.local_addr();
+                        if let Some(addr) = grpc_addr {
+                            tracing::info!(addr = %addr, "gRPC listening");
+                        }
+                        self.servers.push(Box::new(handle));
                     }
-                    self.servers.push(Box::new(handle));
+                    Err(e) => tracing::error!(error = %e, "Failed to bind gRPC adapter"),
                 }
-                Err(e) => tracing::error!(error = %e, "Failed to bind gRPC adapter"),
             }
         }
 
