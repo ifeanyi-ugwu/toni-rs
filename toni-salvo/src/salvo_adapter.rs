@@ -477,31 +477,28 @@ impl WebSocketAdapter for SalvoAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        let routes = match self.ws_ports.remove(&port) {
-            Some(r) => r,
-            None => {
-                return Box::pin(async move {
-                    Err(anyhow!("No routes registered for WS port {}", port))
-                });
+    async fn into_lifecycle_handles(
+        mut self: Box<Self>,
+        ports: Vec<(u16, String)>,
+    ) -> Result<Vec<toni::WsLifecycleHandle>> {
+        let mut handles = Vec::with_capacity(ports.len());
+        for (port, hostname) in ports {
+            let routes = match self.ws_ports.remove(&port) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let mut router = Router::new();
+            for (path, callbacks) in routes {
+                let salvo_path = to_salvo_path(&path);
+                let ws_handler = ToniWsHandler { callbacks };
+                router = router.push(Router::with_path(salvo_path).goal(ws_handler));
             }
-        };
 
-        let mut router = Router::new();
-        for (path, callbacks) in routes {
-            let salvo_path = to_salvo_path(&path);
-            let ws_handler = ToniWsHandler { callbacks };
-            router = router.push(Router::with_path(salvo_path).goal(ws_handler));
-        }
+            let addr = format!("{}:{}", hostname, port);
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            let shutdown_tx = self.shutdown_tx.clone();
 
-        let addr = format!("{}:{}", hostname, port);
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-        Box::pin(async move {
             let acceptor = TcpListener::new(addr.clone())
                 .try_bind()
                 .await
@@ -518,13 +515,20 @@ impl WebSocketAdapter for SalvoAdapter {
                 server_handle.stop_graceful(None);
             });
 
-            Ok(ServerHandle {
+            let serve = Box::pin(async move {
+                server.serve(router).await;
+            });
+
+            handles.push(toni::WsLifecycleHandle::new(
                 local_addr,
-                serve: Box::pin(async move {
-                    server.serve(router).await;
-                }),
-            })
-        })
+                serve,
+                move || async move {
+                    let _ = shutdown_tx.send(true);
+                    Ok(())
+                },
+            ));
+        }
+        Ok(handles)
     }
 }
 

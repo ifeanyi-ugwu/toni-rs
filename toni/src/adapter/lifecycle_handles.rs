@@ -88,34 +88,38 @@ impl ServerLifecycle for HttpLifecycleHandle {
 
 // ─── WebSocket (separate-port) ──────────────────────────────────────────────
 //
-// One handle per unique separate-port listener. A single `WebSocketAdapter`
-// instance can produce N handles when N gateways were registered against
-// distinct ports. The adapter itself is shared via
-// `Arc<parking_lot::Mutex<Option<…>>>`. The first `shutdown()` call
-// `Option::take`s the adapter out under the lock, releases the lock, then
-// awaits close() on the owned value. Subsequent handles see `None` and
-// no-op — this is how we get idempotent shutdown across siblings without
-// ever holding a sync lock across `.await`.
+// One handle per unique separate-port listener. A single adapter produces
+// N handles inside `WebSocketAdapter::into_lifecycle_handles`; each handle
+// gets a clone of the adapter's shutdown signal in its callback, so calling
+// `shutdown` on any handle flips the watch and every port wakes up to
+// drain. Idempotent by construction — `watch::Sender::send(true)` after
+// the value is already `true` is a no-op.
 
-pub(crate) type SharedWsAdapter = Arc<parking_lot::Mutex<Option<Box<dyn WebSocketAdapter>>>>;
-
-pub(crate) struct WsLifecycleHandle {
-    adapter: SharedWsAdapter,
+pub struct WsLifecycleHandle {
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl WsLifecycleHandle {
-    pub(crate) fn new(
-        adapter: SharedWsAdapter,
+    pub fn new<F, Fut>(
         local_addr: SocketAddr,
         serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
-    ) -> Self {
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
         Self {
-            adapter,
             local_addr,
             serve: Some(serve),
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
         }
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 }
 
@@ -134,9 +138,8 @@ impl ServerLifecycle for WsLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        let taken = self.adapter.lock().take();
-        if let Some(mut adapter) = taken {
-            adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
         } else {
             Ok(())
         }

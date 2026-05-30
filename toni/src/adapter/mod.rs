@@ -13,7 +13,7 @@ pub use adapter_context::AdapterContext;
 pub use grpc_adapter::GrpcAdapter;
 pub use grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 pub use http_adapter::HttpAdapter;
-pub use lifecycle_handles::HttpLifecycleHandle;
+pub use lifecycle_handles::{HttpLifecycleHandle, WsLifecycleHandle};
 pub use rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 pub use rpc_client_transport::RpcClientTransport;
 pub use server_handle::ServerHandle;

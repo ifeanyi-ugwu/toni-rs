@@ -465,30 +465,27 @@ impl WebSocketAdapter for PoemAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        let routes = match self.ws_ports.remove(&port) {
-            Some(r) => r,
-            None => {
-                return Box::pin(async move {
-                    Err(anyhow!("No routes registered for WS port {}", port))
-                });
+    async fn into_lifecycle_handles(
+        mut self: Box<Self>,
+        ports: Vec<(u16, String)>,
+    ) -> Result<Vec<toni::WsLifecycleHandle>> {
+        let mut handles = Vec::with_capacity(ports.len());
+        for (port, hostname) in ports {
+            let routes = match self.ws_ports.remove(&port) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let mut route = Route::new();
+            for (path, callbacks) in routes {
+                let ws_endpoint = ToniWsEndpoint { callbacks };
+                route = route.at(path, ws_endpoint);
             }
-        };
 
-        let mut route = Route::new();
-        for (path, callbacks) in routes {
-            let ws_endpoint = ToniWsEndpoint { callbacks };
-            route = route.at(path, ws_endpoint);
-        }
+            let addr = format!("{}:{}", hostname, port);
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            let shutdown_tx = self.shutdown_tx.clone();
 
-        let addr = format!("{}:{}", hostname, port);
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-        Box::pin(async move {
             let listener = TcpListener::bind(addr.clone());
             let acceptor = listener
                 .into_acceptor()
@@ -501,20 +498,27 @@ impl WebSocketAdapter for PoemAdapter {
                 .and_then(|la| la.0.as_socket_addr().copied())
                 .ok_or_else(|| anyhow!("Failed to read local address from acceptor"))?;
 
-            Ok(ServerHandle {
+            let serve = Box::pin(async move {
+                let signal = async move {
+                    let _ = shutdown_rx.wait_for(|v| *v).await;
+                };
+                if let Err(e) = Server::new_with_acceptor(acceptor)
+                    .run_with_graceful_shutdown(route, signal, None)
+                    .await
+                {
+                    tracing::error!(error = %e, "WebSocket server error");
+                }
+            });
+
+            handles.push(toni::WsLifecycleHandle::new(
                 local_addr,
-                serve: Box::pin(async move {
-                    let signal = async move {
-                        let _ = shutdown_rx.wait_for(|v| *v).await;
-                    };
-                    if let Err(e) = Server::new_with_acceptor(acceptor)
-                        .run_with_graceful_shutdown(route, signal, None)
-                        .await
-                    {
-                        tracing::error!(error = %e, "WebSocket server error");
-                    }
-                }),
-            })
-        })
+                serve,
+                move || async move {
+                    let _ = shutdown_tx.send(true);
+                    Ok(())
+                },
+            ));
+        }
+        Ok(handles)
     }
 }

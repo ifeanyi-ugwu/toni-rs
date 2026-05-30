@@ -442,40 +442,29 @@ impl ToniApplication {
                         }
                     }
 
-                    // Listen on each unique port while the adapter is still
-                    // exclusively owned. We collect ServerHandles and only then
-                    // wrap the adapter in a shared mutex for the lifecycle handles.
-                    let mut listened: Vec<crate::adapter::ServerHandle> = vec![];
+                    // Collect every unique port that has at least one
+                    // gateway, then consume the adapter to produce one
+                    // lifecycle handle per port.
                     let mut seen: HashSet<u16> = HashSet::new();
+                    let mut ports: Vec<(u16, String)> = vec![];
                     for (_, gw) in &separate_port {
                         if let Some(ws_port) = gw.get_port() {
                             if seen.insert(ws_port) {
-                                match ws.listen(ws_port, &hostname).await {
-                                    Ok(handle) => {
-                                        tracing::info!(addr = %handle.local_addr, "WebSocket listening");
-                                        listened.push(handle);
-                                    }
-                                    Err(e) => tracing::error!(
-                                        port = ws_port,
-                                        error = %e,
-                                        "Failed to bind WebSocket server"
-                                    ),
-                                }
+                                ports.push((ws_port, hostname.clone()));
                             }
                         }
                     }
-
-                    // Take the adapter out, share it, push one handle per port.
                     let adapter = self.ws_adapter.take().unwrap();
-                    let shared: crate::adapter::lifecycle_handles::SharedWsAdapter =
-                        Arc::new(parking_lot::Mutex::new(Some(adapter)));
-                    for handle in listened {
-                        ws_addrs.push(handle.local_addr);
-                        self.servers.push(Box::new(WsLifecycleHandle::new(
-                            shared.clone(),
-                            handle.local_addr,
-                            handle.serve,
-                        )));
+                    match adapter.into_lifecycle_handles(ports).await {
+                        Ok(handles) => {
+                            for handle in handles {
+                                let addr = handle.local_addr();
+                                tracing::info!(addr = %addr, "WebSocket listening");
+                                ws_addrs.push(addr);
+                                self.servers.push(Box::new(handle));
+                            }
+                        }
+                        Err(e) => tracing::error!(error = %e, "Failed to bind WebSocket servers"),
                     }
                 }
             }

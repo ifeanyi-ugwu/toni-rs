@@ -420,39 +420,40 @@ impl WebSocketAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        let router = self.ws_ports.remove(&port);
-        let router = match router {
-            Some(r) => r,
-            None => {
-                let port = port;
-                return Box::pin(async move {
-                    Err(anyhow!("No routes registered for WS port {}", port))
-                });
-            }
-        };
-        let addr = format!("{}:{}", hostname, port);
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-        Box::pin(async move {
+    async fn into_lifecycle_handles(
+        mut self: Box<Self>,
+        ports: Vec<(u16, String)>,
+    ) -> Result<Vec<toni::WsLifecycleHandle>> {
+        let mut handles = Vec::with_capacity(ports.len());
+        for (port, hostname) in ports {
+            let router = match self.ws_ports.remove(&port) {
+                Some(r) => r,
+                None => continue,
+            };
+            let addr = format!("{}:{}", hostname, port);
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            let shutdown_tx = self.shutdown_tx.clone();
             let listener = TcpListener::bind(&addr).await
                 .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
             let local_addr = listener.local_addr()
                 .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
-            Ok(ServerHandle {
+            let serve = Box::pin(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.wait_for(|v| *v).await;
+                    })
+                    .await
+                    .ok();
+            });
+            handles.push(toni::WsLifecycleHandle::new(
                 local_addr,
-                serve: Box::pin(async move {
-                    axum::serve(listener, router)
-                        .with_graceful_shutdown(async move {
-                            let _ = shutdown_rx.wait_for(|v| *v).await;
-                        })
-                        .await
-                        .ok();
-                }),
-            })
-        })
+                serve,
+                move || async move {
+                    let _ = shutdown_tx.send(true);
+                    Ok(())
+                },
+            ));
+        }
+        Ok(handles)
     }
 }
