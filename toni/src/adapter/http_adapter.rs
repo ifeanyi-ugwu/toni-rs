@@ -20,6 +20,32 @@ use crate::http_helpers::HttpMethod;
 /// and keeping them on the public trait made every adapter crate carry
 /// callback plumbing back from the lifecycle handle. The handle now owns
 /// its own state and the trait surface is config-only.
+///
+/// # Bounded in-flight on HTTP
+///
+/// Notable absence vs. [`RpcAdapter`](crate::adapter::RpcAdapter) and
+/// [`GrpcAdapter`](crate::adapter::GrpcAdapter): no `with_max_inflight`.
+/// HTTP adapters wrap five different framework crates (axum, actix, poem,
+/// rocket, salvo) each with their own middleware model, and the framework
+/// already owns a cross-adapter abstraction that solves this without
+/// touching the trait surface: the global middleware chain in
+/// [`AdapterContext`](crate::adapter::AdapterContext) runs pre-routing on
+/// every HTTP adapter.
+///
+/// Users wanting bounded concurrent in-flight on HTTP can:
+///
+/// 1. Add a semaphore-backed `Middleware` to the global chain via
+///    `app.use_global_middleware(...)` — works uniformly on every HTTP
+///    adapter without per-adapter wiring.
+/// 2. Reach for the framework-native answer when an adapter exposes it
+///    directly: a `tower::limit::GlobalConcurrencyLimitLayer` on axum/poem,
+///    actix-web middleware, a Rocket fairing, etc.
+/// 3. Place a reverse proxy (nginx, HAProxy) in front and let it handle
+///    rate-limiting at the network layer.
+///
+/// Folding this knob into the trait would mean five framework-specific
+/// integrations for one feature that the existing middleware path solves
+/// once — out of scope for the adapter trait.
 #[async_trait]
 pub trait HttpAdapter: Send + Sync + 'static {
     /// Register one HTTP route with the adapter.
