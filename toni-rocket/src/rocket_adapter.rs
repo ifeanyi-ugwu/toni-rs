@@ -21,8 +21,8 @@ use rocket_ws::WebSocket as RocketWs;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    MessageCallbackResult, RequestHandler, ServerHandle, WsConnectionCallbacks,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WsConnectionCallbacks,
     http_helpers::{PathParams, RequestBody, RequestPart},
 };
 
@@ -423,6 +423,7 @@ async fn run_ws_connection(
     callbacks.disconnect(client_id).await;
 }
 
+#[toni::async_trait]
 impl HttpAdapter for RocketAdapter {
     fn bind(
         &mut self,
@@ -439,16 +440,17 @@ impl HttpAdapter for RocketAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
         let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
 
         let mut rocket_routes: Vec<Route> = Vec::new();
         for (method, path, handler) in routes {
@@ -511,48 +513,40 @@ impl HttpAdapter for RocketAdapter {
             })
         });
 
-        Box::pin(async move {
-            // `shutdown()` is only available on `Rocket<Ignite>` (and Orbit),
-            // not `Build`, so ignite explicitly to grab the handle before
-            // launching.
-            let rocket = rocket::custom(figment)
-                .mount("/", rocket_routes)
-                .attach(liftoff)
-                .ignite()
-                .await
-                .map_err(|e| anyhow!("rocket failed to ignite: {}", e))?;
-            let shutdown_handle = rocket.shutdown();
+        // `shutdown()` is only available on `Rocket<Ignite>` (and Orbit),
+        // not `Build`, so ignite explicitly to grab the handle before
+        // launching.
+        let rocket = rocket::custom(figment)
+            .mount("/", rocket_routes)
+            .attach(liftoff)
+            .ignite()
+            .await
+            .map_err(|e| anyhow!("rocket failed to ignite: {}", e))?;
+        let shutdown_handle = rocket.shutdown();
 
-            // Forward toni's shutdown signal to rocket's notify().
-            tokio::spawn(async move {
-                let _ = shutdown_rx.wait_for(|v| *v).await;
-                shutdown_handle.notify();
-            });
+        // Forward toni's shutdown signal to rocket's notify().
+        tokio::spawn(async move {
+            let _ = shutdown_rx.wait_for(|v| *v).await;
+            shutdown_handle.notify();
+        });
 
-            let serve_task = tokio::spawn(async move {
-                if let Err(e) = rocket.launch().await {
-                    tracing::error!(error = %e, "rocket server error");
-                }
-            });
+        let serve_task = tokio::spawn(async move {
+            if let Err(e) = rocket.launch().await {
+                tracing::error!(error = %e, "rocket server error");
+            }
+        });
 
-            let local_addr = addr_rx
-                .await
-                .map_err(|_| anyhow!("rocket liftoff fairing did not fire — bind failed"))?;
+        let local_addr = addr_rx
+            .await
+            .map_err(|_| anyhow!("rocket liftoff fairing did not fire — bind failed"))?;
 
-            Ok(ServerHandle {
-                local_addr,
-                serve: Box::pin(async move {
-                    let _ = serve_task.await;
-                }),
-            })
-        })
-    }
+        let serve = Box::pin(async move {
+            let _ = serve_task.await;
+        });
 
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        let tx = self.shutdown_tx.clone();
-        async move {
-            let _ = tx.send(true);
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
             Ok(())
-        }
+        }))
     }
 }

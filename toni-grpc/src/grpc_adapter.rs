@@ -165,21 +165,22 @@ impl toni::GrpcAdapter for GrpcAdapter {
         Ok(())
     }
 
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::GrpcLifecycleHandle> {
         let listener = self
             .listener
             .take()
-            .expect("bind() must be called before serve()");
+            .expect("bind() must be called before into_lifecycle()");
         let routes: Routes = std::mem::take(&mut self.routes_builder).routes();
         let drain_timeout = self.drain_timeout;
         let addr = self.local_addr;
         let max_inflight = self.max_inflight;
         let max_per_connection = self.max_per_connection;
+        let local_addr = self.local_addr;
 
         let shutdown_tonic = self.shutdown_tx.subscribe();
         let shutdown_drain = self.shutdown_tx.subscribe();
 
-        Ok(Box::pin(async move {
+        let serve = Box::pin(async move {
             // Tonic's shutdown signal: fires when the watch flips to true.
             // From there tonic begins natural drain — completes once every
             // in-flight RPC finishes (or the deadline below abort-races it).
@@ -248,17 +249,14 @@ impl toni::GrpcAdapter for GrpcAdapter {
                     // task handle inside tonic gets dropped.
                 }
             }
+        });
+
+        let shutdown_tx = self.shutdown_tx.clone();
+        Ok(toni::GrpcLifecycleHandle::new(local_addr, serve, move || async move {
+            // Idempotent — the watch coalesces repeat sends into the same value.
+            let _ = shutdown_tx.send(true);
+            Ok(())
         }))
-    }
-
-    fn local_addr(&self) -> Option<SocketAddr> {
-        self.local_addr
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        // Idempotent — the watch coalesces repeat sends into the same value.
-        let _ = self.shutdown_tx.send(true);
-        Ok(())
     }
 }
 

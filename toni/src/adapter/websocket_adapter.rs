@@ -95,16 +95,22 @@ impl WsConnectionCallbacks {
 
 /// Interface for standalone (separate-port) WebSocket server adapters.
 ///
-/// Implement `bind`, `listen`, and `close`. The framework constructs
-/// [`WsConnectionCallbacks`] with all lifecycle logic embedded — the adapter never
-/// touches `GatewayWrapper` or `ConnectionManager` directly.
+/// The framework calls [`bind`](Self::bind) once per gateway path to
+/// register callbacks, then calls
+/// [`into_lifecycle_handles`](Self::into_lifecycle_handles) once with
+/// every unique port — the adapter consumes itself and returns one
+/// [`WsLifecycleHandle`] per port, each owning its concrete state. The
+/// trait carries no lifecycle method past that consuming call, and the
+/// framework's `*LifecycleHandle` types don't call back into the
+/// adapter to shut it down.
 ///
-/// Same-port (HTTP upgrade) gateways are handled by [`HttpAdapter::bind_ws`].
+/// Same-port (HTTP upgrade) gateways are handled by
+/// [`HttpAdapter::bind_ws`].
 #[async_trait]
 pub trait WebSocketAdapter: Send + Sync + 'static {
-    /// Register a gateway path for `port`, storing `callbacks` for each incoming connection.
+    /// Register a gateway path for `port`, storing `callbacks` for each
+    /// incoming connection.
     ///
-    /// Called once per gateway before `listen` is called for the same port.
     /// **Default:** returns error — implement for separate-port support.
     fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
         let _ = (port, path, callbacks);
@@ -113,59 +119,21 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Bind the listening socket for `port` and return a handle to the running server.
+    /// Consume the adapter, bind every requested port, and return one
+    /// [`WsLifecycleHandle`] per port. The handles share whatever
+    /// shutdown signal the adapter uses internally (a single
+    /// `send(true)` on a watch channel typically); calling `shutdown` on
+    /// any handle stops every port.
     ///
-    /// Called once per unique port after all `bind` calls for that port. The returned
-    /// future resolves once the socket is bound — `handle.local_addr` reflects the
-    /// actual bound address. Awaiting `handle.serve` runs the accept loop, which the
-    /// framework joins alongside the HTTP server future.
-    ///
-    /// **Default:** returns a future that immediately errors — implement for separate-port support.
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        let _ = (port, hostname);
-        Box::pin(async {
-            Err(anyhow::anyhow!(
-                "This WebSocket adapter does not support separate-port servers"
-            ))
-        })
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        Ok(())
+    /// **Default:** errors — implement for separate-port support.
+    async fn into_lifecycle_handles(
+        self: Box<Self>,
+        ports: Vec<(u16, String)>,
+    ) -> Result<Vec<crate::adapter::lifecycle_handles::WsLifecycleHandle>> {
+        let _ = ports;
+        Err(anyhow::anyhow!(
+            "This WebSocket adapter does not support separate-port servers"
+        ))
     }
 }
 
-/// Object-safe internal facade over [`WebSocketAdapter`] for storage in `ToniApplication`.
-#[async_trait]
-pub(crate) trait ErasedWebSocketAdapter: Send + Sync + 'static {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
-    async fn close(&mut self) -> Result<()>;
-}
-
-#[async_trait]
-impl<W: WebSocketAdapter> ErasedWebSocketAdapter for W {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
-        <W as WebSocketAdapter>::bind(self, port, path, callbacks)
-    }
-
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        <W as WebSocketAdapter>::listen(self, port, hostname)
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        <W as WebSocketAdapter>::close(self).await
-    }
-}

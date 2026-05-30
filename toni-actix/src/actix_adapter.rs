@@ -8,8 +8,8 @@ use actix_web::{
     HttpResponse as ActixHttpResponse, HttpServer,
 };
 use toni::{
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    RequestHandler, ServerHandle, http_helpers::{PathParams, RequestBody},
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, RequestHandler, http_helpers::{PathParams, RequestBody},
 };
 
 pub struct ActixAdapter {
@@ -136,24 +136,23 @@ impl ActixAdapter {
     }
 }
 
+#[toni::async_trait]
 impl HttpAdapter for ActixAdapter {
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
         self.routes.push((method, path.to_owned(), handler));
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let addr = format!("{}:{}", hostname, port);
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
 
-        // actix binds synchronously inside the future — no async bind needed.
-        Box::pin(async move {
         let bound = HttpServer::new(move || {
             let ctx = ctx.clone();
             let mut app = App::new();
@@ -226,17 +225,18 @@ impl HttpAdapter for ActixAdapter {
             .ok_or_else(|| anyhow!("No bound address for {}", addr))?;
 
         let running = bound.run();
+        let handle = running.handle();
+        let serve = Box::pin(async move {
+            if let Err(e) = running.await {
+                tracing::error!(error = %e, "Actix server error");
+                std::process::exit(1);
+            }
+        });
 
-        Ok(ServerHandle {
-            local_addr,
-            serve: Box::pin(async move {
-                if let Err(e) = running.await {
-                    tracing::error!(error = %e, "Actix server error");
-                    std::process::exit(1);
-                }
-            }),
-        })
-        }) // end Box::pin(async move {
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            handle.stop(true).await;
+            Ok(())
+        }))
     }
 }
 

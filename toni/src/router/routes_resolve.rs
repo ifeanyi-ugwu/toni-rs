@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::{cell::RefCell, pin::Pin, rc::Rc, sync::Arc};
 
 use crate::{
-    adapter::ErasedHttpAdapter,
+    adapter::HttpAdapter,
     adapter::request_handler::RequestHandler,
     http_helpers::{HttpRequest, HttpResponse},
     injector::{InstanceWrapper, ToniContainer},
@@ -37,7 +37,7 @@ impl RoutesResolver {
 
     /// Register all routes with the adapter and store the global chain for
     /// `take_global_chain` to hand to `start()` later.
-    pub fn resolve(&mut self, http_adapter: &mut dyn ErasedHttpAdapter) -> Result<()> {
+    pub fn resolve(&mut self, http_adapter: &mut dyn HttpAdapter) -> Result<()> {
         let modules_token = self.container.borrow().get_modules_token();
 
         for module_token in modules_token {
@@ -67,7 +67,7 @@ impl RoutesResolver {
     fn register_routes(
         &mut self,
         module_token: String,
-        http_adapter: &mut dyn ErasedHttpAdapter,
+        http_adapter: &mut dyn HttpAdapter,
     ) -> Result<()> {
         let controllers_vec: Vec<_> = {
             let mut container = self.container.borrow_mut();

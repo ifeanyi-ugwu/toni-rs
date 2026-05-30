@@ -17,36 +17,49 @@ use std::pin::Pin;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::adapter::adapter_context::AdapterContext;
-use crate::adapter::grpc_adapter::ErasedGrpcAdapter;
+use crate::adapter::grpc_adapter::GrpcAdapter;
 use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::adapter::http_adapter::ErasedHttpAdapter;
-use crate::adapter::rpc_adapter::{ErasedRpcAdapter, RpcMessageCallbacks};
+use crate::adapter::rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 use crate::adapter::server_lifecycle::ServerLifecycle;
-use crate::adapter::websocket_adapter::{ErasedWebSocketAdapter, WsConnectionCallbacks};
+use crate::adapter::websocket_adapter::{WebSocketAdapter, WsConnectionCallbacks};
 use std::sync::Arc;
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
-pub(crate) struct HttpLifecycleHandle {
-    adapter: Box<dyn ErasedHttpAdapter>,
+/// Boxed shutdown action the adapter produces alongside the serve future.
+/// Lets the lifecycle handle drive shutdown without holding a reference
+/// back to the adapter — the adapter's own state (channel sender, signal,
+/// etc.) is captured in the closure and the handle just calls it.
+pub type ShutdownCallback =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>> + Send + Sync>;
+
+/// Lifecycle handle for an HTTP adapter. Constructed by each adapter
+/// crate's `into_lifecycle` implementation; owns the concrete state
+/// needed to serve and shut down. The orchestrator only sees the
+/// [`ServerLifecycle`] surface.
+pub struct HttpLifecycleHandle {
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl HttpLifecycleHandle {
-    pub(crate) async fn bind(
-        mut adapter: Box<dyn ErasedHttpAdapter>,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Result<Self> {
-        let handle = adapter.listen(port, hostname, ctx).await?;
-        Ok(Self {
-            adapter,
-            local_addr: handle.local_addr,
-            serve: Some(handle.serve),
-        })
+    /// Build a handle from the local address, the long-running serve
+    /// future, and a callback that triggers graceful shutdown.
+    pub fn new<F, Fut>(
+        local_addr: SocketAddr,
+        serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
+            local_addr,
+            serve: Some(serve),
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
+        }
     }
 }
 
@@ -65,40 +78,48 @@ impl ServerLifecycle for HttpLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
+        } else {
+            Ok(())
+        }
     }
 }
 
 // ─── WebSocket (separate-port) ──────────────────────────────────────────────
 //
-// One handle per unique separate-port listener. A single `WebSocketAdapter`
-// instance can produce N handles when N gateways were registered against
-// distinct ports. The adapter itself is shared via
-// `Arc<parking_lot::Mutex<Option<…>>>`. The first `shutdown()` call
-// `Option::take`s the adapter out under the lock, releases the lock, then
-// awaits close() on the owned value. Subsequent handles see `None` and
-// no-op — this is how we get idempotent shutdown across siblings without
-// ever holding a sync lock across `.await`.
+// One handle per unique separate-port listener. A single adapter produces
+// N handles inside `WebSocketAdapter::into_lifecycle_handles`; each handle
+// gets a clone of the adapter's shutdown signal in its callback, so calling
+// `shutdown` on any handle flips the watch and every port wakes up to
+// drain. Idempotent by construction — `watch::Sender::send(true)` after
+// the value is already `true` is a no-op.
 
-pub(crate) type SharedWsAdapter = Arc<parking_lot::Mutex<Option<Box<dyn ErasedWebSocketAdapter>>>>;
-
-pub(crate) struct WsLifecycleHandle {
-    adapter: SharedWsAdapter,
+pub struct WsLifecycleHandle {
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl WsLifecycleHandle {
-    pub(crate) fn new(
-        adapter: SharedWsAdapter,
+    pub fn new<F, Fut>(
         local_addr: SocketAddr,
         serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
-    ) -> Self {
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
         Self {
-            adapter,
             local_addr,
             serve: Some(serve),
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
         }
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 }
 
@@ -117,9 +138,8 @@ impl ServerLifecycle for WsLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        let taken = self.adapter.lock().take();
-        if let Some(mut adapter) = taken {
-            adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
         } else {
             Ok(())
         }
@@ -128,26 +148,27 @@ impl ServerLifecycle for WsLifecycleHandle {
 
 // ─── RPC ─────────────────────────────────────────────────────────────────────
 
-pub(crate) struct RpcLifecycleHandle {
-    adapter: Box<dyn ErasedRpcAdapter>,
+pub struct RpcLifecycleHandle {
     local_addr: Option<SocketAddr>,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl RpcLifecycleHandle {
-    pub(crate) fn bind(
-        mut adapter: Box<dyn ErasedRpcAdapter>,
-        patterns: &[String],
-        callbacks: Arc<RpcMessageCallbacks>,
-    ) -> Result<Self> {
-        adapter.bind(patterns, callbacks)?;
-        let local_addr = adapter.local_addr();
-        let serve = adapter.serve()?;
-        Ok(Self {
-            adapter,
+    pub fn new<F, Fut>(
+        local_addr: Option<SocketAddr>,
+        serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
             local_addr,
             serve: Some(serve),
-        })
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
+        }
     }
 }
 
@@ -166,31 +187,37 @@ impl ServerLifecycle for RpcLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
+        } else {
+            Ok(())
+        }
     }
 }
 
 // ─── gRPC ────────────────────────────────────────────────────────────────────
 
-pub(crate) struct GrpcLifecycleHandle {
-    adapter: Box<dyn ErasedGrpcAdapter>,
+pub struct GrpcLifecycleHandle {
     local_addr: Option<SocketAddr>,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl GrpcLifecycleHandle {
-    pub(crate) fn bind(
-        mut adapter: Box<dyn ErasedGrpcAdapter>,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
-    ) -> Result<Self> {
-        adapter.bind(services)?;
-        let local_addr = adapter.local_addr();
-        let serve = adapter.serve()?;
-        Ok(Self {
-            adapter,
+    pub fn new<F, Fut>(
+        local_addr: Option<SocketAddr>,
+        serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
             local_addr,
             serve: Some(serve),
-        })
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
+        }
     }
 }
 
@@ -209,6 +236,10 @@ impl ServerLifecycle for GrpcLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
+        } else {
+            Ok(())
+        }
     }
 }

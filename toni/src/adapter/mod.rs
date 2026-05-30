@@ -10,15 +10,14 @@ pub(crate) mod server_lifecycle;
 pub(crate) mod websocket_adapter;
 pub(crate) mod request_handler;
 pub use adapter_context::AdapterContext;
-pub(crate) use grpc_adapter::ErasedGrpcAdapter;
 pub use grpc_adapter::GrpcAdapter;
 pub use grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-pub(crate) use http_adapter::ErasedHttpAdapter;
 pub use http_adapter::HttpAdapter;
-pub(crate) use rpc_adapter::ErasedRpcAdapter;
+pub use lifecycle_handles::{
+    GrpcLifecycleHandle, HttpLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
+};
 pub use rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 pub use rpc_client_transport::RpcClientTransport;
 pub use server_handle::ServerHandle;
-pub(crate) use websocket_adapter::ErasedWebSocketAdapter;
 pub use websocket_adapter::{MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks};
 pub use request_handler::RequestHandler;

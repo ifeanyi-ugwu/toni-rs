@@ -17,8 +17,9 @@ use salvo::{Depot, FlowCtrl, Handler, Server, async_trait as salvo_async_trait};
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
+    WsConnectionCallbacks,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
 };
@@ -386,6 +387,7 @@ async fn run_ws_connection(
     callbacks.disconnect(client_id).await;
 }
 
+#[toni::async_trait]
 impl HttpAdapter for SalvoAdapter {
     fn bind(
         &mut self,
@@ -402,16 +404,17 @@ impl HttpAdapter for SalvoAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
         let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
 
         let mut router = Router::new();
         for (method, path, handler) in routes {
@@ -432,38 +435,30 @@ impl HttpAdapter for SalvoAdapter {
         router = router.push(Router::with_path("{**rest}").goal(fallback));
 
         let addr = format!("{}:{}", hostname, port);
-        Box::pin(async move {
-            let acceptor = TcpListener::new(addr.clone())
-                .try_bind()
-                .await
-                .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
-            let local_addr = acceptor
-                .local_addr()
-                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
+        let acceptor = TcpListener::new(addr.clone())
+            .try_bind()
+            .await
+            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let local_addr = acceptor
+            .local_addr()
+            .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
 
-            let server = Server::new(acceptor);
-            let server_handle = server.handle();
+        let server = Server::new(acceptor);
+        let server_handle = server.handle();
 
-            tokio::spawn(async move {
-                let _ = shutdown_rx.wait_for(|v| *v).await;
-                server_handle.stop_graceful(None);
-            });
+        tokio::spawn(async move {
+            let _ = shutdown_rx.wait_for(|v| *v).await;
+            server_handle.stop_graceful(None);
+        });
 
-            Ok(ServerHandle {
-                local_addr,
-                serve: Box::pin(async move {
-                    server.serve(router).await;
-                }),
-            })
-        })
-    }
+        let serve = Box::pin(async move {
+            server.serve(router).await;
+        });
 
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        let tx = self.shutdown_tx.clone();
-        async move {
-            let _ = tx.send(true);
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
             Ok(())
-        }
+        }))
     }
 }
 
@@ -482,31 +477,28 @@ impl WebSocketAdapter for SalvoAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        let routes = match self.ws_ports.remove(&port) {
-            Some(r) => r,
-            None => {
-                return Box::pin(async move {
-                    Err(anyhow!("No routes registered for WS port {}", port))
-                });
+    async fn into_lifecycle_handles(
+        mut self: Box<Self>,
+        ports: Vec<(u16, String)>,
+    ) -> Result<Vec<toni::WsLifecycleHandle>> {
+        let mut handles = Vec::with_capacity(ports.len());
+        for (port, hostname) in ports {
+            let routes = match self.ws_ports.remove(&port) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let mut router = Router::new();
+            for (path, callbacks) in routes {
+                let salvo_path = to_salvo_path(&path);
+                let ws_handler = ToniWsHandler { callbacks };
+                router = router.push(Router::with_path(salvo_path).goal(ws_handler));
             }
-        };
 
-        let mut router = Router::new();
-        for (path, callbacks) in routes {
-            let salvo_path = to_salvo_path(&path);
-            let ws_handler = ToniWsHandler { callbacks };
-            router = router.push(Router::with_path(salvo_path).goal(ws_handler));
-        }
+            let addr = format!("{}:{}", hostname, port);
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+            let shutdown_tx = self.shutdown_tx.clone();
 
-        let addr = format!("{}:{}", hostname, port);
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
-
-        Box::pin(async move {
             let acceptor = TcpListener::new(addr.clone())
                 .try_bind()
                 .await
@@ -523,13 +515,20 @@ impl WebSocketAdapter for SalvoAdapter {
                 server_handle.stop_graceful(None);
             });
 
-            Ok(ServerHandle {
+            let serve = Box::pin(async move {
+                server.serve(router).await;
+            });
+
+            handles.push(toni::WsLifecycleHandle::new(
                 local_addr,
-                serve: Box::pin(async move {
-                    server.serve(router).await;
-                }),
-            })
-        })
+                serve,
+                move || async move {
+                    let _ = shutdown_tx.send(true);
+                    Ok(())
+                },
+            ));
+        }
+        Ok(handles)
     }
 }
 

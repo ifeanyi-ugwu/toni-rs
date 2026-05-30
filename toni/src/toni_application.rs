@@ -17,11 +17,10 @@ use event_listener::Event;
 
 use crate::{
     adapter::{
-        AdapterContext, ErasedGrpcAdapter, ErasedHttpAdapter, ErasedRpcAdapter,
-        ErasedWebSocketAdapter, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
+        AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
         lifecycle_handles::{
-            GrpcLifecycleHandle, HttpLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
+            GrpcLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
         },
         server_lifecycle::ServerLifecycle,
     },
@@ -142,16 +141,16 @@ pub struct ToniApplication {
     // Adapters live here in `Configuring` state, before `bind()` consumes
     // them into lifecycle handles. After `bind()` succeeds these are all
     // `None` and `servers` holds the live handles.
-    http_adapter: Option<Box<dyn ErasedHttpAdapter>>,
+    http_adapter: Option<Box<dyn HttpAdapter>>,
     http_port: Option<u16>,
     http_hostname: Option<String>,
     routes_resolver: RoutesResolver,
     context: ToniApplicationContext,
     ws_gateways: HashMap<String, Arc<GatewayWrapper>>,
-    ws_adapter: Option<Box<dyn ErasedWebSocketAdapter>>,
-    rpc_adapter: Option<Box<dyn ErasedRpcAdapter>>,
+    ws_adapter: Option<Box<dyn WebSocketAdapter>>,
+    rpc_adapter: Option<Box<dyn RpcAdapter>>,
     rpc_controllers: Vec<Arc<RpcControllerWrapper>>,
-    grpc_adapter: Option<Box<dyn ErasedGrpcAdapter>>,
+    grpc_adapter: Option<Box<dyn GrpcAdapter>>,
     /// Live lifecycle handles after `bind()`. Orchestration loops over this
     /// vector — the framework's startup/shutdown code never branches on
     /// adapter kind. Adding a new transport = pushing a new
@@ -200,7 +199,7 @@ impl ToniApplication {
         hostname: &str,
     ) -> Result<&mut Self> {
         self.require_state(AppState::Configuring, "use_http_adapter")?;
-        let mut boxed = Box::new(adapter) as Box<dyn ErasedHttpAdapter>;
+        let mut boxed = Box::new(adapter) as Box<dyn HttpAdapter>;
         self.routes_resolver.resolve(boxed.as_mut())?;
         self.http_adapter = Some(boxed);
         self.http_port = Some(port);
@@ -215,7 +214,7 @@ impl ToniApplication {
         A: WebSocketAdapter,
     {
         self.require_state(AppState::Configuring, "use_websocket_adapter")?;
-        self.ws_adapter = Some(Box::new(adapter) as Box<dyn ErasedWebSocketAdapter>);
+        self.ws_adapter = Some(Box::new(adapter) as Box<dyn WebSocketAdapter>);
         tracing::debug!("WebSocket adapter registered");
         Ok(self)
     }
@@ -225,7 +224,7 @@ impl ToniApplication {
         A: RpcAdapter,
     {
         self.require_state(AppState::Configuring, "use_rpc_adapter")?;
-        self.rpc_adapter = Some(Box::new(adapter) as Box<dyn ErasedRpcAdapter>);
+        self.rpc_adapter = Some(Box::new(adapter) as Box<dyn RpcAdapter>);
         tracing::debug!("RPC adapter registered");
         Ok(self)
     }
@@ -240,7 +239,7 @@ impl ToniApplication {
         A: GrpcAdapter,
     {
         self.require_state(AppState::Configuring, "use_grpc_adapter")?;
-        self.grpc_adapter = Some(Box::new(adapter) as Box<dyn ErasedGrpcAdapter>);
+        self.grpc_adapter = Some(Box::new(adapter) as Box<dyn GrpcAdapter>);
         tracing::debug!("gRPC adapter registered");
         Ok(self)
     }
@@ -443,40 +442,29 @@ impl ToniApplication {
                         }
                     }
 
-                    // Listen on each unique port while the adapter is still
-                    // exclusively owned. We collect ServerHandles and only then
-                    // wrap the adapter in a shared mutex for the lifecycle handles.
-                    let mut listened: Vec<crate::adapter::ServerHandle> = vec![];
+                    // Collect every unique port that has at least one
+                    // gateway, then consume the adapter to produce one
+                    // lifecycle handle per port.
                     let mut seen: HashSet<u16> = HashSet::new();
+                    let mut ports: Vec<(u16, String)> = vec![];
                     for (_, gw) in &separate_port {
                         if let Some(ws_port) = gw.get_port() {
                             if seen.insert(ws_port) {
-                                match ws.listen(ws_port, &hostname).await {
-                                    Ok(handle) => {
-                                        tracing::info!(addr = %handle.local_addr, "WebSocket listening");
-                                        listened.push(handle);
-                                    }
-                                    Err(e) => tracing::error!(
-                                        port = ws_port,
-                                        error = %e,
-                                        "Failed to bind WebSocket server"
-                                    ),
-                                }
+                                ports.push((ws_port, hostname.clone()));
                             }
                         }
                     }
-
-                    // Take the adapter out, share it, push one handle per port.
                     let adapter = self.ws_adapter.take().unwrap();
-                    let shared: crate::adapter::lifecycle_handles::SharedWsAdapter =
-                        Arc::new(parking_lot::Mutex::new(Some(adapter)));
-                    for handle in listened {
-                        ws_addrs.push(handle.local_addr);
-                        self.servers.push(Box::new(WsLifecycleHandle::new(
-                            shared.clone(),
-                            handle.local_addr,
-                            handle.serve,
-                        )));
+                    match adapter.into_lifecycle_handles(ports).await {
+                        Ok(handles) => {
+                            for handle in handles {
+                                let addr = handle.local_addr();
+                                tracing::info!(addr = %addr, "WebSocket listening");
+                                ws_addrs.push(addr);
+                                self.servers.push(Box::new(handle));
+                            }
+                        }
+                        Err(e) => tracing::error!(error = %e, "Failed to bind WebSocket servers"),
                     }
                 }
             }
@@ -503,13 +491,17 @@ impl ToniApplication {
                 }
 
                 let callbacks = Arc::new(make_rpc_callbacks(self.rpc_controllers.clone()));
-                let adapter = self.rpc_adapter.take().unwrap();
-                match RpcLifecycleHandle::bind(adapter, &all_patterns, callbacks) {
-                    Ok(handle) => {
-                        rpc_addr = handle.local_addr();
-                        self.servers.push(Box::new(handle));
+                let mut adapter = self.rpc_adapter.take().unwrap();
+                if let Err(e) = adapter.bind(&all_patterns, callbacks) {
+                    tracing::error!(error = %e, "Failed to bind RPC adapter patterns");
+                } else {
+                    match adapter.into_lifecycle().await {
+                        Ok(handle) => {
+                            rpc_addr = handle.local_addr();
+                            self.servers.push(Box::new(handle));
+                        }
+                        Err(e) => tracing::error!(error = %e, "Failed to bind RPC adapter"),
                     }
-                    Err(e) => tracing::error!(error = %e, "Failed to bind RPC adapter"),
                 }
             }
         }
@@ -519,18 +511,22 @@ impl ToniApplication {
         // also wire services directly on the adapter via its own
         // `add_service` builder before `use_grpc_adapter`.
         let mut grpc_addr: Option<SocketAddr> = None;
-        if let Some(adapter) = self.grpc_adapter.take() {
+        if let Some(mut adapter) = self.grpc_adapter.take() {
             let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
             let grpc_services = grpc_resolver.resolve()?;
-            match GrpcLifecycleHandle::bind(adapter, grpc_services) {
-                Ok(handle) => {
-                    grpc_addr = handle.local_addr();
-                    if let Some(addr) = grpc_addr {
-                        tracing::info!(addr = %addr, "gRPC listening");
+            if let Err(e) = adapter.bind(grpc_services) {
+                tracing::error!(error = %e, "Failed to bind gRPC services");
+            } else {
+                match adapter.into_lifecycle().await {
+                    Ok(handle) => {
+                        grpc_addr = handle.local_addr();
+                        if let Some(addr) = grpc_addr {
+                            tracing::info!(addr = %addr, "gRPC listening");
+                        }
+                        self.servers.push(Box::new(handle));
                     }
-                    self.servers.push(Box::new(handle));
+                    Err(e) => tracing::error!(error = %e, "Failed to bind gRPC adapter"),
                 }
-                Err(e) => tracing::error!(error = %e, "Failed to bind gRPC adapter"),
             }
         }
 
@@ -544,7 +540,7 @@ impl ToniApplication {
             };
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
-            let handle = HttpLifecycleHandle::bind(http_adapter, port, &hostname, ctx).await?;
+            let handle = http_adapter.into_lifecycle(port, &hostname, ctx).await?;
             let addr = handle.local_addr().expect("HTTP handle always has a bound address");
             tracing::info!(addr = %addr, server_type, "HTTP listening");
             self.servers.push(Box::new(handle));

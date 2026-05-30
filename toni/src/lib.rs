@@ -33,8 +33,10 @@ pub use tracing;
 
 // Re-exports for adapter crates
 pub use adapter::{
-    AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RequestHandler, RpcAdapter,
-    RpcClientTransport, RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,
+    MessageCallbackResult, RequestHandler, RpcAdapter, RpcClientTransport, RpcLifecycleHandle,
+    RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    WsLifecycleHandle,
 };
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,

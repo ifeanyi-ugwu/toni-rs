@@ -1,21 +1,38 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::adapter::WsConnectionCallbacks;
+use crate::adapter::adapter_context::AdapterContext;
+use crate::adapter::lifecycle_handles::HttpLifecycleHandle;
 use crate::adapter::request_handler::RequestHandler;
-use crate::adapter::server_handle::ServerHandle;
 use crate::http_helpers::HttpMethod;
 
-use crate::adapter::adapter_context::AdapterContext;
-
+/// Implemented by every HTTP transport adapter (axum, actix, poem, rocket,
+/// salvo). The framework calls [`bind`](Self::bind) and
+/// [`bind_ws`](Self::bind_ws) during route resolution to register routes,
+/// then calls [`into_lifecycle`](Self::into_lifecycle) once to consume the
+/// adapter and produce a self-contained lifecycle handle.
+///
+/// Lifecycle methods (`listen` + `close`) used to live on this trait. They
+/// were stripped: the framework's orchestrator never invoked them directly,
+/// and keeping them on the public trait made every adapter crate carry
+/// callback plumbing back from the lifecycle handle. The handle now owns
+/// its own state and the trait surface is config-only.
+#[async_trait]
 pub trait HttpAdapter: Send + Sync + 'static {
     /// Register one HTTP route with the adapter.
     ///
-    /// Called at bootstrap for every route the framework discovers.  The
+    /// Called at bootstrap for every route the framework discovers. The
     /// adapter stores the (method, path, handler) triple and uses it when
     /// building its native router.
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
+    fn bind(
+        &mut self,
+        method: HttpMethod,
+        path: &str,
+        handler: Arc<dyn RequestHandler>,
+    ) -> Result<()>;
 
     /// Register a WebSocket upgrade path on the same port as HTTP.
     ///
@@ -28,59 +45,26 @@ pub trait HttpAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Bind the listening socket and return a handle to the running server.
+    /// Consume the adapter, bind the listening socket, and return a fully
+    /// self-contained [`HttpLifecycleHandle`] the orchestrator can drive.
     ///
-    /// Called once after all `bind` and `bind_ws` calls. The returned future
-    /// resolves once the socket is bound — `handle.local_addr` reflects the
-    /// actual bound address (useful when `port` is 0). Awaiting `handle.serve`
-    /// runs the accept loop.
+    /// The implementation typically:
+    /// 1. Builds its framework-native router from the routes accumulated
+    ///    in `bind` / `bind_ws`.
+    /// 2. Binds the listener synchronously so port-in-use surfaces here
+    ///    rather than inside the spawned serve task.
+    /// 3. Captures its shutdown signal in a closure and hands the
+    ///    `local_addr`, the serve future, and the closure to
+    ///    [`HttpLifecycleHandle::new`].
     ///
-    /// `ctx` carries the global middleware chain and future runtime context.
-    /// The adapter is responsible for composing `ctx.global_chain` around its
-    /// own routing handler so that global middleware runs pre-routing.
-    fn listen(
-        &mut self,
+    /// `ctx` carries the global middleware chain and other adapter-shared
+    /// runtime context. The adapter is responsible for composing
+    /// `ctx.global_chain` around its own routing handler so global
+    /// middleware runs pre-routing.
+    async fn into_lifecycle(
+        self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
-
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        async { Ok(()) }
-    }
-}
-
-pub(crate) trait ErasedHttpAdapter: Send + Sync {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
-    fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
-}
-
-impl<A: HttpAdapter + 'static> ErasedHttpAdapter for A {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
-        HttpAdapter::bind(self, method, path, handler)
-    }
-
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
-        HttpAdapter::bind_ws(self, path, callbacks)
-    }
-
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        HttpAdapter::listen(self, port, hostname, ctx)
-    }
-
-    fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(HttpAdapter::close(self))
-    }
+    ) -> Result<HttpLifecycleHandle>;
 }
