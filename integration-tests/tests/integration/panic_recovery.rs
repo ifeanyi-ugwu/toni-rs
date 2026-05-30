@@ -16,7 +16,7 @@ use std::sync::{
 
 use toni::{
     Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
-    errors::{HttpError, PanicRecovered, PipelineSegment},
+    errors::{ErrorKind, HttpError, PanicRecovered, PipelineSegment},
     get, module, toni_factory::ToniFactory,
     traits_helpers::{
         ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
@@ -454,5 +454,79 @@ async fn panicking_error_handler_continues_chain() {
             .unwrap_or_default()
             .contains("handler kaboom"),
         "fallback render should preserve the original panic message; got: {body}",
+    );
+}
+
+/// Domain error whose `message()` panics — used to make
+/// `HttpError::to_response` itself panic, which exercises the
+/// `safe_render` wrapper.
+#[derive(Debug)]
+struct RenderBomb;
+
+impl std::fmt::Display for RenderBomb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RenderBomb")
+    }
+}
+
+impl std::error::Error for RenderBomb {}
+
+impl toni::Error for RenderBomb {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Internal
+    }
+    fn message(&self) -> std::borrow::Cow<'_, str> {
+        panic!("render kaboom");
+    }
+}
+
+/// A panicking renderer must not tear down the connection. Policy: fan
+/// `PanicRecovered { during: ResponseRendering }` to observers and
+/// substitute a hardcoded minimal 500 envelope. The fallback envelope
+/// is built from simple constructors that don't render user data, so a
+/// recursive panic here is structurally impossible.
+#[tokio_localset_test::localset_test]
+async fn panicking_renderer_falls_back_to_safe_envelope() {
+    #[controller("/api", pub struct RenderPanicController {})]
+    impl RenderPanicController {
+        #[get("/render-boom")]
+        fn render_boom(&self) -> Result<ToniBody, HttpError> {
+            Err(HttpError::from(RenderBomb))
+        }
+    }
+
+    #[module(controllers: [RenderPanicController], providers: [])]
+    impl RenderPanicModule {}
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(CountingObserver {
+        count: count.clone(),
+        captured_segment: captured.clone(),
+    });
+
+    let addr = start_app(RenderPanicModule::module_definition(), vec![observer]).await;
+
+    let resp = reqwest::get(format!("http://{}/api/render-boom", addr))
+        .await
+        .unwrap();
+
+    // Fallback envelope.
+    assert_eq!(resp.status().as_u16(), 500);
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "Internal Server Error",
+        "fallback envelope must be the hardcoded minimal body, got: {body}",
+    );
+
+    // Observer fired twice — once for the original `RenderBomb` user
+    // error, then once for the renderer's panic — in that order. The
+    // captured segment is the most recent `PanicRecovered` event (the
+    // `RenderBomb` isn't one), so it's `ResponseRendering`.
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::ResponseRendering),
     );
 }
