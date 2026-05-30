@@ -10,7 +10,7 @@ categories = ["network-programming"]
 [dependencies]
 toni = { path = "../toni" }
 tonic = "0.14"
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 http = "1"
