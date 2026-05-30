@@ -17,8 +17,9 @@ use salvo::{Depot, FlowCtrl, Handler, Server, async_trait as salvo_async_trait};
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
+    WsConnectionCallbacks,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
 };
@@ -403,16 +404,17 @@ impl HttpAdapter for SalvoAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
         let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
 
         let mut router = Router::new();
         for (method, path, handler) in routes {
@@ -433,35 +435,30 @@ impl HttpAdapter for SalvoAdapter {
         router = router.push(Router::with_path("{**rest}").goal(fallback));
 
         let addr = format!("{}:{}", hostname, port);
-        Box::pin(async move {
-            let acceptor = TcpListener::new(addr.clone())
-                .try_bind()
-                .await
-                .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
-            let local_addr = acceptor
-                .local_addr()
-                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
+        let acceptor = TcpListener::new(addr.clone())
+            .try_bind()
+            .await
+            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let local_addr = acceptor
+            .local_addr()
+            .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
 
-            let server = Server::new(acceptor);
-            let server_handle = server.handle();
+        let server = Server::new(acceptor);
+        let server_handle = server.handle();
 
-            tokio::spawn(async move {
-                let _ = shutdown_rx.wait_for(|v| *v).await;
-                server_handle.stop_graceful(None);
-            });
+        tokio::spawn(async move {
+            let _ = shutdown_rx.wait_for(|v| *v).await;
+            server_handle.stop_graceful(None);
+        });
 
-            Ok(ServerHandle {
-                local_addr,
-                serve: Box::pin(async move {
-                    server.serve(router).await;
-                }),
-            })
-        })
-    }
+        let serve = Box::pin(async move {
+            server.serve(router).await;
+        });
 
-    async fn close(&mut self) -> Result<()> {
-        let _ = self.shutdown_tx.send(true);
-        Ok(())
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
+            Ok(())
+        }))
     }
 }
 

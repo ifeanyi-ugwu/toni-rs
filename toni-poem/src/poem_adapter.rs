@@ -16,8 +16,9 @@ use poem::{Body as PoemBody, FromRequest, IntoResponse, Request as PoemRequest, 
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpMethod, HttpRequest, HttpResponse,
-    MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
+    WsConnectionCallbacks,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
 };
@@ -393,16 +394,17 @@ impl HttpAdapter for PoemAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
         let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
 
         let mut route = Route::new();
         for (path, route_method) in build_method_routes(routes, &ctx) {
@@ -417,39 +419,34 @@ impl HttpAdapter for PoemAdapter {
         let route = route.at("/*toni_fallback", fallback);
 
         let addr = format!("{}:{}", hostname, port);
-        Box::pin(async move {
-            let listener = TcpListener::bind(addr.clone());
-            let acceptor = listener
-                .into_acceptor()
+        let listener = TcpListener::bind(addr.clone());
+        let acceptor = listener
+            .into_acceptor()
+            .await
+            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let local_addr = acceptor
+            .local_addr()
+            .into_iter()
+            .next()
+            .and_then(|la| la.0.as_socket_addr().copied())
+            .ok_or_else(|| anyhow!("Failed to read local address from acceptor"))?;
+
+        let serve = Box::pin(async move {
+            let signal = async move {
+                let _ = shutdown_rx.wait_for(|v| *v).await;
+            };
+            if let Err(e) = Server::new_with_acceptor(acceptor)
+                .run_with_graceful_shutdown(route, signal, None)
                 .await
-                .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
-            let local_addr = acceptor
-                .local_addr()
-                .into_iter()
-                .next()
-                .and_then(|la| la.0.as_socket_addr().copied())
-                .ok_or_else(|| anyhow!("Failed to read local address from acceptor"))?;
+            {
+                tracing::error!(error = %e, "HTTP server error");
+            }
+        });
 
-            Ok(ServerHandle {
-                local_addr,
-                serve: Box::pin(async move {
-                    let signal = async move {
-                        let _ = shutdown_rx.wait_for(|v| *v).await;
-                    };
-                    if let Err(e) = Server::new_with_acceptor(acceptor)
-                        .run_with_graceful_shutdown(route, signal, None)
-                        .await
-                    {
-                        tracing::error!(error = %e, "HTTP server error");
-                    }
-                }),
-            })
-        })
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        let _ = self.shutdown_tx.send(true);
-        Ok(())
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
+            Ok(())
+        }))
     }
 }
 

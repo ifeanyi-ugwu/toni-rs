@@ -20,7 +20,7 @@ use crate::{
         AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
         lifecycle_handles::{
-            GrpcLifecycleHandle, HttpLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
+            GrpcLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
         },
         server_lifecycle::ServerLifecycle,
     },
@@ -543,7 +543,7 @@ impl ToniApplication {
             };
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
-            let handle = HttpLifecycleHandle::bind(http_adapter, port, &hostname, ctx).await?;
+            let handle = http_adapter.into_lifecycle(port, &hostname, ctx).await?;
             let addr = handle.local_addr().expect("HTTP handle always has a bound address");
             tracing::info!(addr = %addr, server_type, "HTTP listening");
             self.servers.push(Box::new(handle));

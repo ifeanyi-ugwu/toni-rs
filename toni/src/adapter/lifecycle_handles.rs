@@ -17,10 +17,8 @@ use std::pin::Pin;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::adapter::adapter_context::AdapterContext;
 use crate::adapter::grpc_adapter::GrpcAdapter;
 use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::adapter::http_adapter::HttpAdapter;
 use crate::adapter::rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 use crate::adapter::server_lifecycle::ServerLifecycle;
 use crate::adapter::websocket_adapter::{WebSocketAdapter, WsConnectionCallbacks};
@@ -28,25 +26,40 @@ use std::sync::Arc;
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
-pub(crate) struct HttpLifecycleHandle {
-    adapter: Box<dyn HttpAdapter>,
+/// Boxed shutdown action the adapter produces alongside the serve future.
+/// Lets the lifecycle handle drive shutdown without holding a reference
+/// back to the adapter — the adapter's own state (channel sender, signal,
+/// etc.) is captured in the closure and the handle just calls it.
+pub type ShutdownCallback =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>> + Send + Sync>;
+
+/// Lifecycle handle for an HTTP adapter. Constructed by each adapter
+/// crate's `into_lifecycle` implementation; owns the concrete state
+/// needed to serve and shut down. The orchestrator only sees the
+/// [`ServerLifecycle`] surface.
+pub struct HttpLifecycleHandle {
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    shutdown: Option<ShutdownCallback>,
 }
 
 impl HttpLifecycleHandle {
-    pub(crate) async fn bind(
-        mut adapter: Box<dyn HttpAdapter>,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Result<Self> {
-        let handle = adapter.listen(port, hostname, ctx).await?;
-        Ok(Self {
-            adapter,
-            local_addr: handle.local_addr,
-            serve: Some(handle.serve),
-        })
+    /// Build a handle from the local address, the long-running serve
+    /// future, and a callback that triggers graceful shutdown.
+    pub fn new<F, Fut>(
+        local_addr: SocketAddr,
+        serve: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        shutdown: F,
+    ) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
+            local_addr,
+            serve: Some(serve),
+            shutdown: Some(Box::new(move || Box::pin(shutdown()))),
+        }
     }
 }
 
@@ -65,7 +78,11 @@ impl ServerLifecycle for HttpLifecycleHandle {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        self.adapter.close().await
+        if let Some(cb) = self.shutdown.take() {
+            cb().await
+        } else {
+            Ok(())
+        }
     }
 }
 

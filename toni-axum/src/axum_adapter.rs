@@ -18,7 +18,7 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, MessageCallbackResult, ServerHandle,
+    AdapterContext, Body as ToniBody, HttpLifecycleHandle, MessageCallbackResult, ServerHandle,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
@@ -254,12 +254,12 @@ impl HttpAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn listen(
-        &mut self,
+    async fn into_lifecycle(
+        mut self: Box<Self>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
+    ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
 
@@ -384,35 +384,31 @@ impl HttpAdapter for AxumAdapter {
             }
         });
 
-        let hostname = hostname.to_string();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let shutdown_tx = self.shutdown_tx.clone();
 
-        Box::pin(async move {
-            let addr = format!("{}:{}", hostname, port);
-            let listener = TcpListener::bind(&addr).await
-                .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
-            let local_addr = listener.local_addr()
-                .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
-            Ok(ServerHandle {
-                local_addr,
-                serve: Box::pin(async move {
-                    if let Err(e) = axum::serve(listener, router)
-                        .with_graceful_shutdown(async move {
-                            let _ = shutdown_rx.wait_for(|v| *v).await;
-                        })
-                        .await
-                    {
-                        tracing::error!(error = %e, "HTTP server error");
-                        std::process::exit(1);
-                    }
-                }),
-            })
-        })
-    }
+        let addr = format!("{}:{}", hostname, port);
+        let listener = TcpListener::bind(&addr).await
+            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let local_addr = listener.local_addr()
+            .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
 
-    async fn close(&mut self) -> Result<()> {
-        let _ = self.shutdown_tx.send(true);
-        Ok(())
+        let serve = Box::pin(async move {
+            if let Err(e) = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.wait_for(|v| *v).await;
+                })
+                .await
+            {
+                tracing::error!(error = %e, "HTTP server error");
+                std::process::exit(1);
+            }
+        });
+
+        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
+            Ok(())
+        }))
     }
 }
 
