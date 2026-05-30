@@ -18,10 +18,10 @@ use toni::{
     Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
     errors::{HttpError, PanicRecovered, PipelineSegment},
     get, module, toni_factory::ToniFactory,
-    traits_helpers::{ErrorObserver, Guard, Interceptor, InterceptorNext},
+    traits_helpers::{ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe},
 };
 use toni_axum::AxumAdapter;
-use toni_macros::{use_guards, use_interceptors};
+use toni_macros::{use_guards, use_interceptors, use_pipes};
 
 struct CountingObserver {
     count: Arc<AtomicUsize>,
@@ -300,6 +300,61 @@ async fn panicking_interceptor_renders_500_via_panic_recovered() {
             .as_str()
             .unwrap_or_default()
             .contains("interceptor kaboom"),
+        "panic message should surface in the envelope, got: {body}",
+    );
+}
+
+struct PanickingPipe;
+
+impl Pipe<HttpContext> for PanickingPipe {
+    fn process(&self, _ctx: &mut HttpContext) {
+        panic!("pipe kaboom");
+    }
+}
+
+/// A panicking pipe surfaces as 500 via the standard `PanicRecovered`
+/// envelope. The observer sees the typed event tagged
+/// `PipelineSegment::Pipe`. Pipes are sync, so the dispatcher wraps via
+/// `panic_recovery::catch_sync` rather than `catch_async`; the
+/// downstream fan-out + chain pipeline is shared with interceptor
+/// panics.
+#[tokio_localset_test::localset_test]
+async fn panicking_pipe_renders_500_via_panic_recovered() {
+    #[controller("/api", pub struct PanicPipeController {})]
+    impl PanicPipeController {
+        #[get("/piped")]
+        #[use_pipes(PanickingPipe {})]
+        fn piped(&self) -> Result<ToniBody, HttpError> {
+            Ok(ToniBody::text("unreachable"))
+        }
+    }
+
+    #[module(controllers: [PanicPipeController], providers: [])]
+    impl PanicPipeModule {}
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(CountingObserver {
+        count: count.clone(),
+        captured_segment: captured.clone(),
+    });
+
+    let addr = start_app(PanicPipeModule::module_definition(), vec![observer]).await;
+
+    let resp = reqwest::get(format!("http://{}/api/piped", addr))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Pipe));
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pipe kaboom"),
         "panic message should surface in the envelope, got: {body}",
     );
 }
