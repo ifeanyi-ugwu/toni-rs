@@ -4,11 +4,71 @@
 //! message goes through normally. Sibling connections on the same gateway
 //! are unaffected.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use toni::async_trait;
+use toni::context::WsContext;
+use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
 use toni::module;
+use toni::traits_helpers::{
+    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
+};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
+use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
+
+/// Start an Axum-backed app with the supplied global error observers wired
+/// before bootstrap.
+async fn start_ws_server_with_observers(
+    module: toni::module_helpers::module_enum::ModuleDefinition,
+    observers: Vec<Arc<dyn ErrorObserver>>,
+) -> u16 {
+    use toni::toni_factory::ToniFactory;
+    use toni_axum::AxumAdapter;
+
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut factory = ToniFactory::new();
+        for o in observers {
+            factory.use_global_error_observer(o);
+        }
+        let mut app = factory.create_with(module).await;
+        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+            .unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(bound.http.expect("HTTP adapter not bound").port());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move {
+        local.await;
+    });
+    port_rx.await.unwrap()
+}
+
+/// Captures the most recent `PanicRecovered.during` seen by the global
+/// error observer chain.
+struct WsSegmentObserver {
+    count: Arc<AtomicUsize>,
+    captured: Arc<std::sync::Mutex<Option<PipelineSegment>>>,
+}
+
+#[async_trait]
+impl ErrorObserver for WsSegmentObserver {
+    async fn observe<'a>(
+        &'a self,
+        error: &'a (dyn std::error::Error + Send + Sync + 'static),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
+    ) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        if let Some(p) = error.downcast_ref::<PanicRecovered>() {
+            *self.captured.lock().unwrap() = Some(p.during);
+        }
+    }
+}
 
 #[websocket_gateway("/ws-panic-recovery", pub struct PanicGateway {})]
 impl PanicGateway {
@@ -81,5 +141,348 @@ async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
         reply.to_text().unwrap(),
         "safe-ok",
         "sibling connections must be unaffected by another client's handler panic"
+    );
+}
+
+#[injectable(pub struct PanickingWsGuard {})]
+#[guard(ws)]
+impl PanickingWsGuard {}
+
+#[async_trait]
+impl Guard<WsContext> for PanickingWsGuard {
+    async fn can_activate(&self, _ctx: &WsContext) -> bool {
+        panic!("ws guard kaboom");
+    }
+}
+
+#[websocket_gateway("/ws-guard-panic", pub struct WsGuardPanicGateway {})]
+impl WsGuardPanicGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("guarded")]
+    #[use_guards(PanickingWsGuard)]
+    async fn on_guarded(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("unreachable").into())
+    }
+
+    #[subscribe_message("safe")]
+    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("safe-ok").into())
+    }
+}
+
+#[module(providers: [PanickingWsGuard, WsGuardPanicGateway])]
+impl WsGuardPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(WsSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_ws_server_with_observers(
+        WsGuardPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let url = format!("ws://127.0.0.1:{}/ws-guard-panic", port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"event":"guarded"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let reply = ws.next().await.unwrap().unwrap();
+    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Guard));
+
+    ws.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
+        .await
+        .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert_eq!(reply.to_text().unwrap(), "safe-ok");
+}
+
+#[injectable(pub struct PanickingWsInterceptor {})]
+#[interceptor(ws)]
+impl PanickingWsInterceptor {}
+
+#[async_trait]
+impl Interceptor<WsContext> for PanickingWsInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut WsContext,
+        _next: Box<dyn InterceptorNext<WsContext>>,
+    ) {
+        panic!("ws interceptor kaboom");
+    }
+}
+
+#[websocket_gateway("/ws-interceptor-panic", pub struct WsInterceptorPanicGateway {})]
+impl WsInterceptorPanicGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("intercepted")]
+    #[use_interceptors(PanickingWsInterceptor)]
+    async fn on_intercepted(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("unreachable").into())
+    }
+
+    #[subscribe_message("safe")]
+    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("safe-ok").into())
+    }
+}
+
+#[module(providers: [PanickingWsInterceptor, WsInterceptorPanicGateway])]
+impl WsInterceptorPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(WsSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_ws_server_with_observers(
+        WsInterceptorPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let url = format!("ws://127.0.0.1:{}/ws-interceptor-panic", port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"event":"intercepted"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let reply = ws.next().await.unwrap().unwrap();
+    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Middleware));
+
+    ws.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
+        .await
+        .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert_eq!(reply.to_text().unwrap(), "safe-ok");
+}
+
+#[injectable(pub struct PanickingWsPipe {})]
+#[pipe(ws)]
+impl PanickingWsPipe {}
+
+impl Pipe<WsContext> for PanickingWsPipe {
+    fn process(&self, _ctx: &mut WsContext) {
+        panic!("ws pipe kaboom");
+    }
+}
+
+#[websocket_gateway("/ws-pipe-panic", pub struct WsPipePanicGateway {})]
+impl WsPipePanicGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("piped")]
+    #[use_pipes(PanickingWsPipe)]
+    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("unreachable").into())
+    }
+
+    #[subscribe_message("safe")]
+    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Ok(WsMessage::text("safe-ok").into())
+    }
+}
+
+#[module(providers: [PanickingWsPipe, WsPipePanicGateway])]
+impl WsPipePanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(WsSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_ws_server_with_observers(
+        WsPipePanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let url = format!("ws://127.0.0.1:{}/ws-pipe-panic", port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"event":"piped"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let reply = ws.next().await.unwrap().unwrap();
+    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Pipe));
+
+    ws.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
+        .await
+        .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert_eq!(reply.to_text().unwrap(), "safe-ok");
+}
+
+#[injectable(pub struct PanickingWsErrorHandler {})]
+#[error_handler(ws)]
+impl PanickingWsErrorHandler {}
+
+#[async_trait]
+impl ErrorHandler<WsContext, WsMessage> for PanickingWsErrorHandler {
+    async fn handle_error(
+        &self,
+        _error: ChainError<'_>,
+        _ctx: &WsContext,
+    ) -> Option<WsMessage> {
+        panic!("ws error-handler kaboom");
+    }
+}
+
+#[websocket_gateway("/ws-eh-panic", pub struct WsErrorHandlerPanicGateway {})]
+impl WsErrorHandlerPanicGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("eh")]
+    #[use_error_handlers(PanickingWsErrorHandler)]
+    async fn on_eh(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        panic!("handler kaboom");
+    }
+}
+
+#[module(providers: [PanickingWsErrorHandler, WsErrorHandlerPanicGateway])]
+impl WsErrorHandlerPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn ws_error_handler_panic_continues_chain_to_default_rendering() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(WsSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_ws_server_with_observers(
+        WsErrorHandlerPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let url = format!("ws://127.0.0.1:{}/ws-eh-panic", port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"event":"eh"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let reply = ws.next().await.unwrap().unwrap();
+    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    // Chain skipped the panicking handler and fell through to the
+    // default rendering, which surfaces the original handler panic.
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
+
+    // Observer fired for both the original HandlerBody panic and the
+    // chain ErrorHandler panic; the captured segment is the most recent.
+    assert!(count.load(Ordering::SeqCst) >= 2);
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::ErrorHandler));
+}
+
+/// Domain error whose `message()` panics — exercises the renderer-panic
+/// fallback path of the WebSocket dispatcher.
+#[derive(Debug)]
+struct WsRenderBomb;
+
+impl std::fmt::Display for WsRenderBomb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WsRenderBomb")
+    }
+}
+
+impl std::error::Error for WsRenderBomb {}
+
+impl toni::Error for WsRenderBomb {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Internal
+    }
+    fn message(&self) -> std::borrow::Cow<'_, str> {
+        panic!("ws render kaboom");
+    }
+}
+
+#[websocket_gateway("/ws-render-panic", pub struct WsRenderPanicGateway {})]
+impl WsRenderPanicGateway {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("render")]
+    async fn on_render(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+        Err(WsError::from(WsRenderBomb))
+    }
+}
+
+#[module(providers: [WsRenderPanicGateway])]
+impl WsRenderPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn ws_renderer_panic_falls_back_to_safe_envelope() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(WsSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_ws_server_with_observers(
+        WsRenderPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let url = format!("ws://127.0.0.1:{}/ws-render-panic", port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::Text(r#"{"event":"render"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let reply = ws.next().await.unwrap().unwrap();
+    // Fallback frame is the hardcoded `WsMessage::text("Internal Server Error")`.
+    assert_eq!(reply.to_text().unwrap(), "Internal Server Error");
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::ResponseRendering),
     );
 }
