@@ -18,10 +18,12 @@ use toni::{
     Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
     errors::{HttpError, PanicRecovered, PipelineSegment},
     get, module, toni_factory::ToniFactory,
-    traits_helpers::{ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe},
+    traits_helpers::{
+        ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
+    },
 };
 use toni_axum::AxumAdapter;
-use toni_macros::{use_guards, use_interceptors, use_pipes};
+use toni_macros::{use_error_handlers, use_guards, use_interceptors, use_pipes};
 
 struct CountingObserver {
     count: Arc<AtomicUsize>,
@@ -356,5 +358,101 @@ async fn panicking_pipe_renders_500_via_panic_recovered() {
             .unwrap_or_default()
             .contains("pipe kaboom"),
         "panic message should surface in the envelope, got: {body}",
+    );
+}
+
+struct PanickingErrorHandler;
+
+#[async_trait]
+impl ErrorHandler<HttpContext, HttpResponse> for PanickingErrorHandler {
+    async fn handle_error(
+        &self,
+        _error: ChainError<'_>,
+        _ctx: &HttpContext,
+    ) -> Option<HttpResponse> {
+        panic!("error-handler kaboom");
+    }
+}
+
+/// A panicking error handler must not break the chain. Policy: fan
+/// `PanicRecovered { during: ErrorHandler }` to observers, treat as
+/// `None` claim, continue to the next handler. With only this one
+/// handler registered, the fallback `HttpError::to_response` fires and
+/// the user gets the original-error envelope (500 here, since the
+/// handler runs against a `HandlerBody` panic).
+///
+/// The observer ends up seeing two events: the original `PanicRecovered`
+/// (HandlerBody) when the user handler panics, and the error-handler's
+/// own `PanicRecovered` (ErrorHandler) when it then panics.
+#[tokio_localset_test::localset_test]
+async fn panicking_error_handler_continues_chain() {
+    #[controller("/api", pub struct PanicEhController {})]
+    impl PanicEhController {
+        #[get("/eh")]
+        #[use_error_handlers(PanickingErrorHandler {})]
+        fn eh(&self) -> Result<ToniBody, HttpError> {
+            panic!("handler kaboom");
+        }
+    }
+
+    #[module(controllers: [PanicEhController], providers: [])]
+    impl PanicEhModule {}
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let segments: Arc<std::sync::Mutex<Vec<PipelineSegment>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    struct SegmentCollector {
+        count: Arc<AtomicUsize>,
+        segments: Arc<std::sync::Mutex<Vec<PipelineSegment>>>,
+    }
+
+    #[async_trait]
+    impl ErrorObserver for SegmentCollector {
+        async fn observe<'a>(
+            &'a self,
+            error: &'a (dyn std::error::Error + Send + Sync + 'static),
+            _ctx: &'a (dyn toni::context::HandlerContext + 'a),
+        ) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            if let Some(p) = error.downcast_ref::<PanicRecovered>() {
+                self.segments.lock().unwrap().push(p.during);
+            }
+        }
+    }
+
+    let observer = Arc::new(SegmentCollector {
+        count: count.clone(),
+        segments: segments.clone(),
+    });
+
+    let addr = start_app(PanicEhModule::module_definition(), vec![observer]).await;
+
+    let resp = reqwest::get(format!("http://{}/api/eh", addr))
+        .await
+        .unwrap();
+
+    // Fallback rendering still produces a 500 — the chain didn't claim,
+    // the original `HandlerBody` panic fell through to
+    // `HttpError::to_response`.
+    assert_eq!(resp.status().as_u16(), 500);
+
+    // Observer fired twice — once for the original handler panic, once
+    // for the chain-handler panic — in that order.
+    let captured = segments.lock().unwrap().clone();
+    assert_eq!(
+        captured,
+        vec![PipelineSegment::HandlerBody, PipelineSegment::ErrorHandler],
+        "observer should see both panics with the right segments; got {:?}",
+        captured,
+    );
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("handler kaboom"),
+        "fallback render should preserve the original panic message; got: {body}",
     );
 }

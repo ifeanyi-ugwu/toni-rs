@@ -416,7 +416,9 @@ impl GatewayWrapper {
     ) {
         Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = handler.handle_error(&event, context).await {
+            if let Some(claimed) =
+                Self::try_chain_handler(handler, &event, context, observers).await
+            {
                 context.set_response(Ok(Some(claimed)));
                 return;
             }
@@ -462,13 +464,39 @@ impl GatewayWrapper {
                 Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(msg) =
-                        handler.handle_error(observed_err, context).await
+                        Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
                         context.set_response(Ok(Some(msg)));
                         return;
                     }
                 }
                 context.set_response(Ok(Some(ws_err.to_message())));
+            }
+        }
+    }
+
+    /// Run one chain handler with panic recovery: a panicking
+    /// `handle_error` fans `PanicRecovered { during: ErrorHandler }` to
+    /// observers and returns `None` so the caller continues to the next
+    /// handler. Without this, a single bad chain handler would kill the
+    /// whole error-recovery path and the original error would never
+    /// reach the fallback `to_message` rendering.
+    async fn try_chain_handler(
+        handler: &WsErrorHandlerArc,
+        error: &(dyn std::error::Error + Send + Sync + 'static),
+        ctx: &WsContext,
+        observers: &[Arc<dyn ErrorObserver>],
+    ) -> Option<WsMessage> {
+        match crate::panic_recovery::catch_async(
+            crate::errors::PipelineSegment::ErrorHandler,
+            handler.handle_error(error, ctx),
+        )
+        .await
+        {
+            Ok(opt) => opt,
+            Err(panic_event) => {
+                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                None
             }
         }
     }
