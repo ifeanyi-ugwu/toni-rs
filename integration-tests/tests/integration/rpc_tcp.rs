@@ -10,23 +10,44 @@
 //!   with an `"overloaded"` frame and the slot is released when the
 //!   in-flight handler completes
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use toni::async_trait;
 use toni::context::RpcContext;
+use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
-use toni_macros::rpc_controller;
+use toni::traits_helpers::{
+    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
+};
+use toni::{error_handler, guard, injectable, interceptor, pipe};
+use toni_macros::{rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
 /// The caller is guaranteed the listener is live by the time it gets the port.
 async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
+    start_rpc_server_with_observers(module, vec![]).await
+}
+
+/// Spawn an app with the TCP RPC adapter on an OS-assigned port and
+/// register the supplied global error observers before bootstrap.
+async fn start_rpc_server_with_observers(
+    module: toni::module_helpers::module_enum::ModuleDefinition,
+    observers: Vec<Arc<dyn ErrorObserver>>,
+) -> u16 {
     use toni::toni_factory::ToniFactory;
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut factory = ToniFactory::new();
+        for o in observers {
+            factory.use_global_error_observer(o);
+        }
+        let mut app = factory.create_with(module).await;
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -35,6 +56,27 @@ async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefin
     });
     tokio::task::spawn_local(async move { local.await });
     port_rx.await.expect("RPC server failed to bind")
+}
+
+/// Captures the most recent `PanicRecovered.during` seen by the global
+/// error observer chain.
+struct RpcSegmentObserver {
+    count: Arc<AtomicUsize>,
+    captured: Arc<std::sync::Mutex<Option<PipelineSegment>>>,
+}
+
+#[async_trait]
+impl ErrorObserver for RpcSegmentObserver {
+    async fn observe<'a>(
+        &'a self,
+        error: &'a (dyn std::error::Error + Send + Sync + 'static),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
+    ) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        if let Some(p) = error.downcast_ref::<PanicRecovered>() {
+            *self.captured.lock().unwrap() = Some(p.during);
+        }
+    }
 }
 
 /// Sends one request over a raw TCP connection with a timeout.
@@ -447,4 +489,345 @@ async fn typed_payload_parse_failure_renders_canonical_envelope() {
     let payload = &resp["response"];
     assert_eq!(payload["status"], "error");
     assert_eq!(payload["kind"], "Internal");
+}
+
+#[injectable(pub struct PanickingRpcGuard {})]
+#[guard(rpc)]
+impl PanickingRpcGuard {}
+
+#[async_trait]
+impl Guard<RpcContext> for PanickingRpcGuard {
+    async fn can_activate(&self, _ctx: &RpcContext) -> bool {
+        panic!("rpc guard kaboom");
+    }
+}
+
+#[rpc_controller(pub struct RpcGuardPanicController {})]
+impl RpcGuardPanicController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.guarded")]
+    #[use_guards(PanickingRpcGuard)]
+    async fn guarded(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("unreachable")))
+    }
+
+    #[message_pattern("rpc.safe")]
+    async fn safe(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("safe-ok")))
+    }
+}
+
+#[module(providers: [PanickingRpcGuard, RpcGuardPanicController])]
+impl RpcGuardPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(RpcSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port =
+        start_rpc_server_with_observers(RpcGuardPanicModule::module_definition(), vec![observer])
+            .await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.guarded",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("guard panic must produce a reply, not hang");
+    assert_eq!(resp["err"]["status"], "forbidden");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Guard));
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.safe",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("safe handler should reply");
+    assert_eq!(resp["response"], "safe-ok");
+}
+
+#[injectable(pub struct PanickingRpcInterceptor {})]
+#[interceptor(rpc)]
+impl PanickingRpcInterceptor {}
+
+#[async_trait]
+impl Interceptor<RpcContext> for PanickingRpcInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut RpcContext,
+        _next: Box<dyn InterceptorNext<RpcContext>>,
+    ) {
+        panic!("rpc interceptor kaboom");
+    }
+}
+
+#[rpc_controller(pub struct RpcInterceptorPanicController {})]
+impl RpcInterceptorPanicController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.intercepted")]
+    #[use_interceptors(PanickingRpcInterceptor)]
+    async fn intercepted(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("unreachable")))
+    }
+
+    #[message_pattern("rpc.safe")]
+    async fn safe(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("safe-ok")))
+    }
+}
+
+#[module(providers: [PanickingRpcInterceptor, RpcInterceptorPanicController])]
+impl RpcInterceptorPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(RpcSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_rpc_server_with_observers(
+        RpcInterceptorPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.intercepted",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("interceptor panic must produce a reply, not hang");
+    // Interceptor panic stashes `Err(RpcError::Internal)` on the context;
+    // adapter renders it as a wire-error frame.
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Middleware));
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.safe",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("safe handler should reply");
+    assert_eq!(resp["response"], "safe-ok");
+}
+
+#[injectable(pub struct PanickingRpcPipe {})]
+#[pipe(rpc)]
+impl PanickingRpcPipe {}
+
+impl Pipe<RpcContext> for PanickingRpcPipe {
+    fn process(&self, _ctx: &mut RpcContext) {
+        panic!("rpc pipe kaboom");
+    }
+}
+
+#[rpc_controller(pub struct RpcPipePanicController {})]
+impl RpcPipePanicController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.piped")]
+    #[use_pipes(PanickingRpcPipe)]
+    async fn piped(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("unreachable")))
+    }
+
+    #[message_pattern("rpc.safe")]
+    async fn safe(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!("safe-ok")))
+    }
+}
+
+#[module(providers: [PanickingRpcPipe, RpcPipePanicController])]
+impl RpcPipePanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_pipe_panic_surfaces_as_envelope_and_keeps_connection_alive() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(RpcSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port =
+        start_rpc_server_with_observers(RpcPipePanicModule::module_definition(), vec![observer])
+            .await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.piped",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("pipe panic must produce a reply, not hang");
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Pipe));
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.safe",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("safe handler should reply");
+    assert_eq!(resp["response"], "safe-ok");
+}
+
+#[injectable(pub struct PanickingRpcErrorHandler {})]
+#[error_handler(rpc)]
+impl PanickingRpcErrorHandler {}
+
+#[async_trait]
+impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
+    async fn handle_error(
+        &self,
+        _error: ChainError<'_>,
+        _ctx: &RpcContext,
+    ) -> Option<RpcData> {
+        panic!("rpc error-handler kaboom");
+    }
+}
+
+#[rpc_controller(pub struct RpcErrorHandlerPanicController {})]
+impl RpcErrorHandlerPanicController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.eh")]
+    #[use_error_handlers(PanickingRpcErrorHandler)]
+    async fn eh(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        panic!("handler kaboom");
+    }
+}
+
+#[module(providers: [PanickingRpcErrorHandler, RpcErrorHandlerPanicController])]
+impl RpcErrorHandlerPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_error_handler_panic_continues_chain_to_default_rendering() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(RpcSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_rpc_server_with_observers(
+        RpcErrorHandlerPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.eh",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("error-handler panic must not break the chain");
+    // The chain skipped the panicking handler and fell through to the
+    // default rendering — which surfaces the original handler panic.
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+
+    // Observer fired twice (HandlerBody first, then ErrorHandler); the
+    // captured segment is the most recent `PanicRecovered`.
+    assert!(count.load(Ordering::SeqCst) >= 2);
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::ErrorHandler));
+}
+
+/// Domain error whose `message()` panics — exercises the renderer-panic
+/// fallback path of the RPC dispatcher.
+#[derive(Debug)]
+struct RpcRenderBomb;
+
+impl std::fmt::Display for RpcRenderBomb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RpcRenderBomb")
+    }
+}
+
+impl std::error::Error for RpcRenderBomb {}
+
+impl toni::Error for RpcRenderBomb {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Internal
+    }
+    fn message(&self) -> std::borrow::Cow<'_, str> {
+        panic!("rpc render kaboom");
+    }
+}
+
+#[rpc_controller(pub struct RpcRenderPanicController {})]
+impl RpcRenderPanicController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.render")]
+    async fn render(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Err(RpcError::from(RpcRenderBomb))
+    }
+}
+
+#[module(providers: [RpcRenderPanicController])]
+impl RpcRenderPanicModule {}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(RpcSegmentObserver {
+        count: count.clone(),
+        captured: captured.clone(),
+    });
+    let port = start_rpc_server_with_observers(
+        RpcRenderPanicModule::module_definition(),
+        vec![observer],
+    )
+    .await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.render",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("renderer panic must produce a fallback envelope, not hang");
+    // Fallback envelope is the hardcoded `RpcData::text("Internal Server Error")`.
+    assert_eq!(resp["response"], "Internal Server Error");
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::ResponseRendering),
+    );
 }
