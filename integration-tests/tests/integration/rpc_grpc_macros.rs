@@ -1482,3 +1482,155 @@ async fn grpc_panic_in_interceptor_surfaces_as_internal() {
         .await
         .expect("shutdown must complete");
 }
+
+// ── backpressure (with_max_inflight) ────────────────────────────────────────
+
+/// `create` parks long enough that the test's parallel calls overlap.
+/// No other method matters for the backpressure test — only this one
+/// is invoked.
+#[grpc_service(pub struct SlowOrdersGrpcService {
+    #[inject] _counter: OrdersCounter,
+})]
+impl SlowOrdersGrpcService {
+    pub fn new(_counter: OrdersCounter) -> Self {
+        Self { _counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+impl Orders for SlowOrdersGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        // Long enough for the test's parallel calls to overlap; the
+        // load-shed layer should reject the (n+1)th before this sleep
+        // finishes.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let req = request.into_inner();
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 1,
+            status: format!("slow:{}", req.item),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, SlowOrdersGrpcService])]
+struct SlowGrpcModule;
+
+async fn boot_slow_with<F>(configure: F) -> (u16, toni::ShutdownHandle)
+where
+    F: FnOnce(toni_grpc::GrpcAdapter) -> toni_grpc::GrpcAdapter + Send + 'static,
+{
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = configure(toni_grpc::GrpcAdapter::new(addr));
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(SlowGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+/// With `with_max_inflight(1)`, the second concurrent slow call must
+/// reject with `ResourceExhausted` rather than queue. Once the first
+/// call completes and releases the permit, a fresh call succeeds —
+/// proving the permit is released cleanly. Mirrors the TCP
+/// backpressure test
+/// (`tcp_backpressure_rejects_excess_and_releases_after_completion`).
+#[tokio_localset_test::localset_test]
+async fn grpc_backpressure_rejects_excess_and_releases_after_completion() {
+    let (port, shutdown) = boot_slow_with(|a| a.with_max_inflight(1)).await;
+
+    // Two parallel clients (one channel each) so a single connection's
+    // multiplexing doesn't perturb the global cap measurement.
+    let mut client_a = connect(port).await;
+    let mut client_b = connect(port).await;
+
+    // Fire call A first; give the server time to spawn the slow handler
+    // and acquire the only permit before issuing call B.
+    let call_a = tokio::task::spawn_local(async move {
+        client_a
+            .create(orders_pb::CreateOrderRequest {
+                item: "a".into(),
+                qty: 1,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Call B should be rejected immediately with ResourceExhausted.
+    let err_b = client_b
+        .create(orders_pb::CreateOrderRequest {
+            item: "b".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("second concurrent call must be rejected by load-shed");
+    assert_eq!(err_b.code(), tonic::Code::ResourceExhausted);
+
+    // Call A finishes — permit released.
+    let resp_a = call_a
+        .await
+        .expect("call A task should not panic")
+        .expect("call A must succeed")
+        .into_inner();
+    assert_eq!(resp_a.status, "slow:a");
+
+    // A fresh request on client_b now succeeds since the slot is free.
+    let resp_b = client_b
+        .create(orders_pb::CreateOrderRequest {
+            item: "b2".into(),
+            qty: 1,
+        })
+        .await
+        .expect("third call must succeed once the permit is released")
+        .into_inner();
+    assert_eq!(resp_b.status, "slow:b2");
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
