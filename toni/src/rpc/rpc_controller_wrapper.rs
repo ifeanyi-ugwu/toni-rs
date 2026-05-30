@@ -165,6 +165,36 @@ impl RpcControllerWrapper {
     /// handler. Without this, a single bad chain handler would kill the
     /// whole error-recovery path and the original error would never
     /// reach the fallback `to_data` rendering.
+    /// Drive `RpcError::to_data` with panic recovery — a panic in the
+    /// renderer is the last thing the framework can do for the caller,
+    /// so we substitute a hardcoded `Internal` envelope and fan
+    /// `PanicRecovered { during: ResponseRendering }` to observers.
+    async fn safe_render<F>(
+        render: F,
+        observers: &[Arc<dyn ErrorObserver>],
+        ctx: &RpcContext,
+    ) -> RpcData
+    where
+        F: FnOnce() -> RpcData,
+    {
+        match crate::panic_recovery::catch_sync(
+            crate::errors::PipelineSegment::ResponseRendering,
+            render,
+        ) {
+            Ok(data) => data,
+            Err(panic_event) => {
+                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                Self::fallback_internal_data()
+            }
+        }
+    }
+
+    /// Hardcoded fallback envelope when the regular renderer panics.
+    /// Uses [`RpcData::text`] so no user-supplied serialiser runs.
+    fn fallback_internal_data() -> RpcData {
+        RpcData::text("Internal Server Error")
+    }
+
     async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
@@ -333,7 +363,8 @@ impl RpcControllerWrapper {
             }
         }
         let rpc_err = RpcError::from(event);
-        context.set_response(Ok(Some(rpc_err.to_data())));
+        let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
+        context.set_response(Ok(Some(data)));
     }
 
     /// Run pipes + handler, then route the result.
@@ -403,7 +434,8 @@ impl RpcControllerWrapper {
                         return;
                     }
                 }
-                context.set_response(Ok(Some(rpc_err.to_data())));
+                let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
+                context.set_response(Ok(Some(data)));
             }
         }
     }
