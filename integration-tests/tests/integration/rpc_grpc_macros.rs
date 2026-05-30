@@ -1231,3 +1231,254 @@ async fn grpc_panic_in_handler_surfaces_as_internal() {
         .await
         .expect("shutdown must complete");
 }
+
+// ── pipeline-segment panic coverage (guard + interceptor) ──────────────────
+
+#[injectable(pub struct PanickingGrpcGuard {})]
+#[guard(grpc)]
+impl PanickingGrpcGuard {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for PanickingGrpcGuard {
+    async fn can_activate(&self, _ctx: &toni::GrpcContext) -> bool {
+        panic!("guard kaboom");
+    }
+}
+
+#[grpc_service(pub struct GuardPanicGrpcService {
+    #[inject] _counter: OrdersCounter,
+})]
+impl GuardPanicGrpcService {
+    pub fn new(_counter: OrdersCounter) -> Self {
+        Self { _counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_guards(PanickingGrpcGuard)]
+impl Orders for GuardPanicGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 0,
+            status: "unreachable".into(),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, PanickingGrpcGuard, GuardPanicGrpcService])]
+struct GuardPanicGrpcModule;
+
+#[injectable(pub struct PanickingGrpcInterceptor {})]
+#[interceptor(grpc)]
+impl PanickingGrpcInterceptor {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Interceptor<toni::GrpcContext> for PanickingGrpcInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut toni::GrpcContext,
+        _next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
+    ) {
+        panic!("interceptor kaboom");
+    }
+}
+
+#[grpc_service(pub struct InterceptorPanicGrpcService {
+    #[inject] _counter: OrdersCounter,
+})]
+impl InterceptorPanicGrpcService {
+    pub fn new(_counter: OrdersCounter) -> Self {
+        Self { _counter }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_interceptors(PanickingGrpcInterceptor)]
+impl Orders for InterceptorPanicGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 0,
+            status: "unreachable".into(),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        let stream = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        let outbound = futures_util::stream::iter(::std::iter::empty());
+        Ok(tonic::Response::new(Box::pin(outbound)))
+    }
+}
+
+#[module(providers: [OrdersCounter, PanickingGrpcInterceptor, InterceptorPanicGrpcService])]
+struct InterceptorPanicGrpcModule;
+
+async fn boot_guard_panic() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(GuardPanicGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+async fn boot_interceptor_panic() -> (u16, toni::ShutdownHandle) {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(InterceptorPanicGrpcModule::module_definition()).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let _ = port_tx.send(port);
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+/// A panicking guard surfaces as `PermissionDenied` rather than tearing
+/// down the connection — matching the "guard said no" semantic. A second
+/// call confirms the server stays up across the catch.
+#[tokio_localset_test::localset_test]
+async fn grpc_panic_in_guard_surfaces_as_permission_denied() {
+    let (port, shutdown) = boot_guard_panic().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "ignored".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("guard panic must produce an Err — not a connection drop");
+
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert!(
+        err.message().contains("panicked"),
+        "wire message should mention the panic; got {:?}",
+        err.message()
+    );
+
+    let err2 = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "again".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("subsequent guard panic must also surface as Err");
+    assert_eq!(err2.code(), tonic::Code::PermissionDenied);
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// A panicking interceptor surfaces as `Internal` rather than tearing
+/// down the connection. The chain runner sets a status on the context;
+/// the wrapper reads it and converts to `tonic::Status`.
+#[tokio_localset_test::localset_test]
+async fn grpc_panic_in_interceptor_surfaces_as_internal() {
+    let (port, shutdown) = boot_interceptor_panic().await;
+    let mut client = connect(port).await;
+
+    let err = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "ignored".into(),
+            qty: 1,
+        })
+        .await
+        .expect_err("interceptor panic must produce an Err — not a connection drop");
+
+    assert_eq!(err.code(), tonic::Code::Internal);
+    assert!(
+        err.message().contains("interceptor panicked"),
+        "wire message should mention the panic; got {:?}",
+        err.message()
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}

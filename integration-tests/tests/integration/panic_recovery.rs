@@ -18,10 +18,10 @@ use toni::{
     Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
     errors::{HttpError, PanicRecovered, PipelineSegment},
     get, module, toni_factory::ToniFactory,
-    traits_helpers::{ErrorObserver, Guard},
+    traits_helpers::{ErrorObserver, Guard, Interceptor, InterceptorNext},
 };
 use toni_axum::AxumAdapter;
-use toni_macros::use_guards;
+use toni_macros::{use_guards, use_interceptors};
 
 struct CountingObserver {
     count: Arc<AtomicUsize>,
@@ -190,4 +190,116 @@ async fn panicking_observer_does_not_break_dispatch() {
     // before panicking, the counting one ran after.
     assert_eq!(panicker_hits.load(Ordering::SeqCst), 1);
     assert_eq!(counter_hits.load(Ordering::SeqCst), 1);
+}
+
+struct PanickingGuard;
+
+#[async_trait]
+impl Guard<HttpContext> for PanickingGuard {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
+        panic!("guard kaboom");
+    }
+}
+
+/// A panicking guard surfaces as 500 via the standard `PanicRecovered`
+/// envelope. The observer sees the typed event tagged
+/// `PipelineSegment::Guard` so logging / telemetry can distinguish a
+/// guard panic from a handler panic.
+#[tokio_localset_test::localset_test]
+async fn panicking_guard_renders_500_via_panic_recovered() {
+    #[controller("/api", pub struct PanicGuardController {})]
+    impl PanicGuardController {
+        #[get("/guarded")]
+        #[use_guards(PanickingGuard {})]
+        fn guarded(&self) -> Result<ToniBody, HttpError> {
+            Ok(ToniBody::text("unreachable"))
+        }
+    }
+
+    #[module(controllers: [PanicGuardController], providers: [])]
+    impl PanicGuardModule {}
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(CountingObserver {
+        count: count.clone(),
+        captured_segment: captured.clone(),
+    });
+
+    let addr = start_app(PanicGuardModule::module_definition(), vec![observer]).await;
+
+    let resp = reqwest::get(format!("http://{}/api/guarded", addr))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Guard));
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("guard kaboom"),
+        "panic message should surface in the envelope, got: {body}",
+    );
+}
+
+struct PanickingInterceptor;
+
+#[async_trait]
+impl Interceptor<HttpContext> for PanickingInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut HttpContext,
+        _next: Box<dyn InterceptorNext<HttpContext>>,
+    ) {
+        panic!("interceptor kaboom");
+    }
+}
+
+/// A panicking interceptor surfaces as 500 via the standard
+/// `PanicRecovered` envelope. The observer sees the typed event tagged
+/// `PipelineSegment::Middleware` (the interceptor chain shares the
+/// middleware segment label) so a slow logger can sort logs by stage.
+#[tokio_localset_test::localset_test]
+async fn panicking_interceptor_renders_500_via_panic_recovered() {
+    #[controller("/api", pub struct PanicInterceptorController {})]
+    impl PanicInterceptorController {
+        #[get("/intercepted")]
+        #[use_interceptors(PanickingInterceptor {})]
+        fn intercepted(&self) -> Result<ToniBody, HttpError> {
+            Ok(ToniBody::text("unreachable"))
+        }
+    }
+
+    #[module(controllers: [PanicInterceptorController], providers: [])]
+    impl PanicInterceptorModule {}
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let observer = Arc::new(CountingObserver {
+        count: count.clone(),
+        captured_segment: captured.clone(),
+    });
+
+    let addr = start_app(PanicInterceptorModule::module_definition(), vec![observer]).await;
+
+    let resp = reqwest::get(format!("http://{}/api/intercepted", addr))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Middleware));
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("interceptor kaboom"),
+        "panic message should surface in the envelope, got: {body}",
+    );
 }
