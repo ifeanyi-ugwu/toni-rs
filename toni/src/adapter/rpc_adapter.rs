@@ -94,30 +94,3 @@ pub trait RpcAdapter: Send + Sync + 'static {
     }
 }
 
-/// Object-safe internal facade over [`RpcAdapter`] for storage in `ToniApplication`.
-#[async_trait]
-pub(crate) trait ErasedRpcAdapter: Send + Sync + 'static {
-    fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()>;
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
-    fn local_addr(&self) -> Option<SocketAddr>;
-    async fn close(&mut self) -> Result<()>;
-}
-
-#[async_trait]
-impl<R: RpcAdapter> ErasedRpcAdapter for R {
-    fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
-        <R as RpcAdapter>::bind(self, patterns, callbacks)
-    }
-
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        <R as RpcAdapter>::serve(self)
-    }
-
-    fn local_addr(&self) -> Option<SocketAddr> {
-        <R as RpcAdapter>::local_addr(self)
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        <R as RpcAdapter>::close(self).await
-    }
-}

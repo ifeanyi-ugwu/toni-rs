@@ -139,33 +139,3 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
     }
 }
 
-/// Object-safe internal facade over [`WebSocketAdapter`] for storage in `ToniApplication`.
-#[async_trait]
-pub(crate) trait ErasedWebSocketAdapter: Send + Sync + 'static {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
-    async fn close(&mut self) -> Result<()>;
-}
-
-#[async_trait]
-impl<W: WebSocketAdapter> ErasedWebSocketAdapter for W {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
-        <W as WebSocketAdapter>::bind(self, port, path, callbacks)
-    }
-
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        <W as WebSocketAdapter>::listen(self, port, hostname)
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        <W as WebSocketAdapter>::close(self).await
-    }
-}

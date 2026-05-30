@@ -242,6 +242,7 @@ impl AxumAdapter {
     }
 }
 
+#[toni::async_trait]
 impl HttpAdapter for AxumAdapter {
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
         self.routes.push((method, path.to_owned(), handler));
@@ -409,12 +410,9 @@ impl HttpAdapter for AxumAdapter {
         })
     }
 
-    fn close(&mut self) -> impl std::future::Future<Output = Result<()>> + Send {
-        let tx = self.shutdown_tx.clone();
-        async move {
-            let _ = tx.send(true);
-            Ok(())
-        }
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }
 

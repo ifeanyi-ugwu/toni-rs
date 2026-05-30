@@ -376,6 +376,7 @@ fn build_method_routes(
     by_path.into_iter().collect()
 }
 
+#[toni::async_trait]
 impl HttpAdapter for PoemAdapter {
     fn bind(
         &mut self,
@@ -446,12 +447,9 @@ impl HttpAdapter for PoemAdapter {
         })
     }
 
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        let tx = self.shutdown_tx.clone();
-        async move {
-            let _ = tx.send(true);
-            Ok(())
-        }
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }
 

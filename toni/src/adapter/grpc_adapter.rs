@@ -65,37 +65,3 @@ pub trait GrpcAdapter: Send + Sync + 'static {
     }
 }
 
-/// Object-safe internal facade over [`GrpcAdapter`] for storage in
-/// `ToniApplication`.
-#[async_trait]
-pub(crate) trait ErasedGrpcAdapter: Send + Sync + 'static {
-    fn bind(
-        &mut self,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
-    ) -> Result<()>;
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>;
-    fn local_addr(&self) -> Option<SocketAddr>;
-    async fn close(&mut self) -> Result<()>;
-}
-
-#[async_trait]
-impl<G: GrpcAdapter> ErasedGrpcAdapter for G {
-    fn bind(
-        &mut self,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
-    ) -> Result<()> {
-        <G as GrpcAdapter>::bind(self, services)
-    }
-
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        <G as GrpcAdapter>::serve(self)
-    }
-
-    fn local_addr(&self) -> Option<SocketAddr> {
-        <G as GrpcAdapter>::local_addr(self)
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        <G as GrpcAdapter>::close(self).await
-    }
-}

@@ -136,6 +136,7 @@ impl ActixAdapter {
     }
 }
 
+#[toni::async_trait]
 impl HttpAdapter for ActixAdapter {
     fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
         self.routes.push((method, path.to_owned(), handler));

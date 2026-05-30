@@ -17,8 +17,7 @@ use event_listener::Event;
 
 use crate::{
     adapter::{
-        AdapterContext, ErasedGrpcAdapter, ErasedHttpAdapter, ErasedRpcAdapter,
-        ErasedWebSocketAdapter, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
+        AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
         lifecycle_handles::{
             GrpcLifecycleHandle, HttpLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
@@ -142,16 +141,16 @@ pub struct ToniApplication {
     // Adapters live here in `Configuring` state, before `bind()` consumes
     // them into lifecycle handles. After `bind()` succeeds these are all
     // `None` and `servers` holds the live handles.
-    http_adapter: Option<Box<dyn ErasedHttpAdapter>>,
+    http_adapter: Option<Box<dyn HttpAdapter>>,
     http_port: Option<u16>,
     http_hostname: Option<String>,
     routes_resolver: RoutesResolver,
     context: ToniApplicationContext,
     ws_gateways: HashMap<String, Arc<GatewayWrapper>>,
-    ws_adapter: Option<Box<dyn ErasedWebSocketAdapter>>,
-    rpc_adapter: Option<Box<dyn ErasedRpcAdapter>>,
+    ws_adapter: Option<Box<dyn WebSocketAdapter>>,
+    rpc_adapter: Option<Box<dyn RpcAdapter>>,
     rpc_controllers: Vec<Arc<RpcControllerWrapper>>,
-    grpc_adapter: Option<Box<dyn ErasedGrpcAdapter>>,
+    grpc_adapter: Option<Box<dyn GrpcAdapter>>,
     /// Live lifecycle handles after `bind()`. Orchestration loops over this
     /// vector — the framework's startup/shutdown code never branches on
     /// adapter kind. Adding a new transport = pushing a new
@@ -200,7 +199,7 @@ impl ToniApplication {
         hostname: &str,
     ) -> Result<&mut Self> {
         self.require_state(AppState::Configuring, "use_http_adapter")?;
-        let mut boxed = Box::new(adapter) as Box<dyn ErasedHttpAdapter>;
+        let mut boxed = Box::new(adapter) as Box<dyn HttpAdapter>;
         self.routes_resolver.resolve(boxed.as_mut())?;
         self.http_adapter = Some(boxed);
         self.http_port = Some(port);
@@ -215,7 +214,7 @@ impl ToniApplication {
         A: WebSocketAdapter,
     {
         self.require_state(AppState::Configuring, "use_websocket_adapter")?;
-        self.ws_adapter = Some(Box::new(adapter) as Box<dyn ErasedWebSocketAdapter>);
+        self.ws_adapter = Some(Box::new(adapter) as Box<dyn WebSocketAdapter>);
         tracing::debug!("WebSocket adapter registered");
         Ok(self)
     }
@@ -225,7 +224,7 @@ impl ToniApplication {
         A: RpcAdapter,
     {
         self.require_state(AppState::Configuring, "use_rpc_adapter")?;
-        self.rpc_adapter = Some(Box::new(adapter) as Box<dyn ErasedRpcAdapter>);
+        self.rpc_adapter = Some(Box::new(adapter) as Box<dyn RpcAdapter>);
         tracing::debug!("RPC adapter registered");
         Ok(self)
     }
@@ -240,7 +239,7 @@ impl ToniApplication {
         A: GrpcAdapter,
     {
         self.require_state(AppState::Configuring, "use_grpc_adapter")?;
-        self.grpc_adapter = Some(Box::new(adapter) as Box<dyn ErasedGrpcAdapter>);
+        self.grpc_adapter = Some(Box::new(adapter) as Box<dyn GrpcAdapter>);
         tracing::debug!("gRPC adapter registered");
         Ok(self)
     }

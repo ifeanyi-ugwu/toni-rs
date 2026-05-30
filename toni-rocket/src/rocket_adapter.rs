@@ -423,6 +423,7 @@ async fn run_ws_connection(
     callbacks.disconnect(client_id).await;
 }
 
+#[toni::async_trait]
 impl HttpAdapter for RocketAdapter {
     fn bind(
         &mut self,
@@ -548,11 +549,8 @@ impl HttpAdapter for RocketAdapter {
         })
     }
 
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        let tx = self.shutdown_tx.clone();
-        async move {
-            let _ = tx.send(true);
-            Ok(())
-        }
+    async fn close(&mut self) -> Result<()> {
+        let _ = self.shutdown_tx.send(true);
+        Ok(())
     }
 }

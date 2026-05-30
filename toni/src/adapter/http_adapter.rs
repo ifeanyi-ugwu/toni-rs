@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::adapter::WsConnectionCallbacks;
 use crate::adapter::request_handler::RequestHandler;
@@ -9,13 +10,19 @@ use crate::http_helpers::HttpMethod;
 
 use crate::adapter::adapter_context::AdapterContext;
 
+#[async_trait]
 pub trait HttpAdapter: Send + Sync + 'static {
     /// Register one HTTP route with the adapter.
     ///
     /// Called at bootstrap for every route the framework discovers.  The
     /// adapter stores the (method, path, handler) triple and uses it when
     /// building its native router.
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
+    fn bind(
+        &mut self,
+        method: HttpMethod,
+        path: &str,
+        handler: Arc<dyn RequestHandler>,
+    ) -> Result<()>;
 
     /// Register a WebSocket upgrade path on the same port as HTTP.
     ///
@@ -45,42 +52,14 @@ pub trait HttpAdapter: Send + Sync + 'static {
         ctx: AdapterContext,
     ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
 
-    fn close(&mut self) -> impl Future<Output = Result<()>> + Send {
-        async { Ok(()) }
-    }
-}
-
-pub(crate) trait ErasedHttpAdapter: Send + Sync {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()>;
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()>;
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>>;
-    fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
-}
-
-impl<A: HttpAdapter + 'static> ErasedHttpAdapter for A {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
-        HttpAdapter::bind(self, method, path, handler)
-    }
-
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
-        HttpAdapter::bind_ws(self, path, callbacks)
-    }
-
-    fn listen(
-        &mut self,
-        port: u16,
-        hostname: &str,
-        ctx: AdapterContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ServerHandle>> + Send + 'static>> {
-        HttpAdapter::listen(self, port, hostname, ctx)
-    }
-
-    fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(HttpAdapter::close(self))
+    /// Trigger adapter shutdown. Default: no-op. Adapters that hold
+    /// background resources (sockets, channels, in-flight streams)
+    /// override to release them.
+    ///
+    /// `async_trait`'d so the trait stays object-safe — that's what lets
+    /// `ToniApplication` store the adapter as `Box<dyn HttpAdapter>`
+    /// without a parallel erased shim.
+    async fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }

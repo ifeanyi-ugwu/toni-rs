@@ -18,25 +18,25 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::adapter::adapter_context::AdapterContext;
-use crate::adapter::grpc_adapter::ErasedGrpcAdapter;
+use crate::adapter::grpc_adapter::GrpcAdapter;
 use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::adapter::http_adapter::ErasedHttpAdapter;
-use crate::adapter::rpc_adapter::{ErasedRpcAdapter, RpcMessageCallbacks};
+use crate::adapter::http_adapter::HttpAdapter;
+use crate::adapter::rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 use crate::adapter::server_lifecycle::ServerLifecycle;
-use crate::adapter::websocket_adapter::{ErasedWebSocketAdapter, WsConnectionCallbacks};
+use crate::adapter::websocket_adapter::{WebSocketAdapter, WsConnectionCallbacks};
 use std::sync::Arc;
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
 pub(crate) struct HttpLifecycleHandle {
-    adapter: Box<dyn ErasedHttpAdapter>,
+    adapter: Box<dyn HttpAdapter>,
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 
 impl HttpLifecycleHandle {
     pub(crate) async fn bind(
-        mut adapter: Box<dyn ErasedHttpAdapter>,
+        mut adapter: Box<dyn HttpAdapter>,
         port: u16,
         hostname: &str,
         ctx: AdapterContext,
@@ -80,7 +80,7 @@ impl ServerLifecycle for HttpLifecycleHandle {
 // no-op — this is how we get idempotent shutdown across siblings without
 // ever holding a sync lock across `.await`.
 
-pub(crate) type SharedWsAdapter = Arc<parking_lot::Mutex<Option<Box<dyn ErasedWebSocketAdapter>>>>;
+pub(crate) type SharedWsAdapter = Arc<parking_lot::Mutex<Option<Box<dyn WebSocketAdapter>>>>;
 
 pub(crate) struct WsLifecycleHandle {
     adapter: SharedWsAdapter,
@@ -129,14 +129,14 @@ impl ServerLifecycle for WsLifecycleHandle {
 // ─── RPC ─────────────────────────────────────────────────────────────────────
 
 pub(crate) struct RpcLifecycleHandle {
-    adapter: Box<dyn ErasedRpcAdapter>,
+    adapter: Box<dyn RpcAdapter>,
     local_addr: Option<SocketAddr>,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 
 impl RpcLifecycleHandle {
     pub(crate) fn bind(
-        mut adapter: Box<dyn ErasedRpcAdapter>,
+        mut adapter: Box<dyn RpcAdapter>,
         patterns: &[String],
         callbacks: Arc<RpcMessageCallbacks>,
     ) -> Result<Self> {
@@ -173,14 +173,14 @@ impl ServerLifecycle for RpcLifecycleHandle {
 // ─── gRPC ────────────────────────────────────────────────────────────────────
 
 pub(crate) struct GrpcLifecycleHandle {
-    adapter: Box<dyn ErasedGrpcAdapter>,
+    adapter: Box<dyn GrpcAdapter>,
     local_addr: Option<SocketAddr>,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 
 impl GrpcLifecycleHandle {
     pub(crate) fn bind(
-        mut adapter: Box<dyn ErasedGrpcAdapter>,
+        mut adapter: Box<dyn GrpcAdapter>,
         services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<Self> {
         adapter.bind(services)?;
