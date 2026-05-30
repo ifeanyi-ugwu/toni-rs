@@ -16,8 +16,9 @@ use futures::FutureExt;
 
 use crate::adapter::ResolvedGrpcEnhancers;
 use crate::context::{GrpcContext, HandlerContext};
-use crate::errors::GuardRejection;
+use crate::errors::{GuardRejection, PipelineSegment};
 use crate::grpc_status::GrpcStatus;
+use crate::panic_recovery::catch_async;
 use crate::traits_helpers::{
     ErrorObserver, GrpcGuardEntry, GrpcInterceptorEntry, Guard, Interceptor, InterceptorNext,
 };
@@ -54,7 +55,7 @@ where
     }
     let interceptors = resolve_interceptors(&all_interceptors).await;
 
-    execute_with_interceptors(ctx, &interceptors, delegate).await;
+    execute_with_interceptors(ctx, &interceptors, &enhancers.error_observers, delegate).await;
 
     if let Some(short_circuit) = ctx.take_response() {
         return short_circuit;
@@ -85,7 +86,21 @@ async fn run_grpc_guards_inline(
 
     let guards = resolve_guards(&all_guards).await;
     for (index, guard) in guards.iter().enumerate() {
-        if !guard.can_activate(ctx).await {
+        // A panic inside `can_activate` is treated as a hard rejection:
+        // observers see the typed `PanicRecovered { during: Guard }` event
+        // and the wire response is `PermissionDenied`, matching the
+        // semantic of "guard said no" rather than tearing the request down.
+        let activated = match catch_async(PipelineSegment::Guard, guard.can_activate(ctx)).await {
+            Ok(b) => b,
+            Err(event) => {
+                fan_out_observers(&enhancers.error_observers, &event, ctx).await;
+                return Err(GrpcStatus::permission_denied(format!(
+                    "guard {} panicked: {}",
+                    index, event.message
+                )));
+            }
+        };
+        if !activated {
             let event = GuardRejection::new(index);
             fan_out_observers(&enhancers.error_observers, &event, ctx).await;
             return Err(GrpcStatus::permission_denied(format!(
@@ -112,6 +127,7 @@ async fn run_grpc_guards_inline(
 async fn execute_with_interceptors<D, Fut>(
     ctx: &mut GrpcContext,
     interceptors: &[Arc<dyn Interceptor<GrpcContext>>],
+    observers: &[Arc<dyn ErrorObserver>],
     delegate: D,
 ) where
     D: FnOnce() -> Fut + Send + 'static,
@@ -122,12 +138,17 @@ async fn execute_with_interceptors<D, Fut>(
         return;
     }
 
-    let next = build_next(&interceptors[1..], delegate);
-    interceptors[0].intercept(ctx, next).await;
+    let next = build_next(&interceptors[1..], observers.to_vec(), delegate);
+    if let Err(event) =
+        catch_async(PipelineSegment::Middleware, interceptors[0].intercept(ctx, next)).await
+    {
+        record_interceptor_panic(ctx, observers, event).await;
+    }
 }
 
 fn build_next<D, Fut>(
     rest: &[Arc<dyn Interceptor<GrpcContext>>],
+    observers: Vec<Arc<dyn ErrorObserver>>,
     delegate: D,
 ) -> Box<dyn InterceptorNext<GrpcContext>>
 where
@@ -142,9 +163,22 @@ where
         Box::new(LinkNext {
             head: rest[0].clone(),
             rest: rest[1..].to_vec(),
+            observers,
             delegate: Some(delegate),
         })
     }
+}
+
+async fn record_interceptor_panic(
+    ctx: &mut GrpcContext,
+    observers: &[Arc<dyn ErrorObserver>],
+    event: crate::errors::PanicRecovered,
+) {
+    fan_out_observers(observers, &event, ctx).await;
+    ctx.set_response(Err(GrpcStatus::new(
+        crate::grpc_status::GrpcCode::Internal,
+        format!("interceptor panicked: {}", event.message),
+    )));
 }
 
 /// Innermost link: invokes the user delegate.
@@ -169,6 +203,7 @@ where
 struct LinkNext<D> {
     head: Arc<dyn Interceptor<GrpcContext>>,
     rest: Vec<Arc<dyn Interceptor<GrpcContext>>>,
+    observers: Vec<Arc<dyn ErrorObserver>>,
     delegate: Option<D>,
 }
 
@@ -180,8 +215,12 @@ where
 {
     async fn run(mut self: Box<Self>, ctx: &mut GrpcContext) {
         if let Some(delegate) = self.delegate.take() {
-            let next = build_next(&self.rest, delegate);
-            self.head.intercept(ctx, next).await;
+            let next = build_next(&self.rest, self.observers.clone(), delegate);
+            if let Err(event) =
+                catch_async(PipelineSegment::Middleware, self.head.intercept(ctx, next)).await
+            {
+                record_interceptor_panic(ctx, &self.observers, event).await;
+            }
         }
     }
 }
@@ -271,19 +310,17 @@ pub async fn run_grpc_error_chain(
 /// the panic payload as a [`PanicRecovered`] event scoped to the
 /// `HandlerBody` segment. Used by the macro around the user delegation
 /// inside a `#[grpc_methods]` proto method.
+///
+/// Thin wrapper around [`crate::panic_recovery::catch_async`] so the
+/// macro can keep a stable, transport-specific entry point even as the
+/// shared helper evolves.
 pub async fn catch_handler_panic<Fut, T>(
     fut: Fut,
 ) -> Result<T, crate::errors::PanicRecovered>
 where
     Fut: Future<Output = T>,
 {
-    match AssertUnwindSafe(fut).catch_unwind().await {
-        Ok(v) => Ok(v),
-        Err(payload) => Err(crate::errors::PanicRecovered::from_panic_payload(
-            crate::errors::PipelineSegment::HandlerBody,
-            payload,
-        )),
-    }
+    crate::panic_recovery::catch_async(crate::errors::PipelineSegment::HandlerBody, fut).await
 }
 
 /// Empty bundle helper — used by the gRPC adapter when a service hasn't

@@ -115,8 +115,26 @@ impl RpcControllerWrapper {
         let observers = self.error_observers.clone();
 
         let guards = Self::resolve_guards(&all_guards).await;
-        for guard in &guards {
-            if !guard.can_activate(&ctx).await {
+        for (index, guard) in guards.iter().enumerate() {
+            // Treat a panic in `can_activate` as a hard rejection: observers
+            // see `PanicRecovered { during: Guard }` and the caller gets
+            // `RpcError::Forbidden` instead of a torn-down dispatcher.
+            let activated = match crate::panic_recovery::catch_async(
+                crate::errors::PipelineSegment::Guard,
+                guard.can_activate(&ctx),
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(event) => {
+                    Self::fan_out_observers(&observers, &event, &ctx).await;
+                    return Err(RpcError::Forbidden(format!(
+                        "guard {} panicked: {}",
+                        index, event.message
+                    )));
+                }
+            };
+            if !activated {
                 let err = RpcError::Forbidden("Guard rejected message".into());
                 Self::fan_out_observers(&observers, &err, &ctx).await;
                 return Err(err);
@@ -259,7 +277,34 @@ impl RpcControllerWrapper {
             observers: observers.to_vec(),
         };
 
-        first.intercept(context, Box::new(next)).await;
+        if let Err(event) = crate::panic_recovery::catch_async(
+            crate::errors::PipelineSegment::Middleware,
+            first.intercept(context, Box::new(next)),
+        )
+        .await
+        {
+            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+        }
+    }
+
+    /// Surface a panicking interceptor through the existing observer + chain
+    /// pipeline: fan to observers, give error handlers first claim, and
+    /// fall back to a wire-`Err` Internal envelope.
+    async fn record_interceptor_panic(
+        context: &mut RpcContext,
+        error_handlers: &[RpcErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
+        event: PanicRecovered,
+    ) {
+        Self::fan_out_observers(observers, &event, context).await;
+        for handler in error_handlers.iter().rev() {
+            if let Some(claimed) = handler.handle_error(&event, context).await {
+                context.set_response(Ok(Some(claimed)));
+                return;
+            }
+        }
+        let rpc_err = RpcError::from(event);
+        context.set_response(Ok(Some(rpc_err.to_data())));
     }
 
     /// Run pipes + handler, then route the result.
