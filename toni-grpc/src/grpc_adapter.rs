@@ -41,6 +41,16 @@ pub struct GrpcAdapter {
     addr: SocketAddr,
     routes_builder: RoutesBuilder,
     drain_timeout: Option<Duration>,
+    /// Global concurrency cap across all connections. `None` = unbounded.
+    /// Implemented via [`tower::limit::GlobalConcurrencyLimitLayer`] + tonic's
+    /// load-shed flag so excess requests reject with `ResourceExhausted`
+    /// instead of queueing.
+    max_inflight: Option<usize>,
+    /// Per-connection concurrency cap. `None` = unbounded. Implemented via
+    /// tonic's built-in `concurrency_limit_per_connection` + load-shed; lets
+    /// one slow client monopolise its own connection without starving
+    /// others even when the global cap isn't hit.
+    max_per_connection: Option<usize>,
     listener: Option<TcpListener>,
     local_addr: Option<SocketAddr>,
     /// Two consumers subscribe: tonic's `serve_with_incoming_shutdown` (so
@@ -56,6 +66,8 @@ impl GrpcAdapter {
             addr,
             routes_builder: RoutesBuilder::default(),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
+            max_inflight: None,
+            max_per_connection: None,
             listener: None,
             local_addr: None,
             shutdown_tx: Arc::new(tx),
@@ -87,6 +99,32 @@ impl GrpcAdapter {
     /// to finish before aborting them. Pass `None` to wait without bound.
     pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.drain_timeout = timeout.into();
+        self
+    }
+
+    /// Bound concurrent in-flight handlers across the whole server. When
+    /// the cap is reached, additional requests are rejected with
+    /// `Status::resource_exhausted` rather than queued, so a misbehaving
+    /// client can't pin server memory by spawning unlimited calls. Pass
+    /// `None` to remove the cap (default).
+    ///
+    /// Sibling of [`with_max_per_connection`](Self::with_max_per_connection),
+    /// which bounds *per-connection* concurrency for the same reason at
+    /// a different granularity — the two stack.
+    pub fn with_max_inflight(mut self, max: impl Into<Option<usize>>) -> Self {
+        self.max_inflight = max.into();
+        self
+    }
+
+    /// Bound concurrent in-flight handlers *per connection*. When a
+    /// single client opens many parallel streams, this prevents that
+    /// client from monopolising the server even when the global cap
+    /// isn't hit. Pass `None` to remove the cap (default).
+    ///
+    /// Sibling of [`with_max_inflight`](Self::with_max_inflight). Reaching
+    /// either limit surfaces as `Status::resource_exhausted`.
+    pub fn with_max_per_connection(mut self, max: impl Into<Option<usize>>) -> Self {
+        self.max_per_connection = max.into();
         self
     }
 }
@@ -135,6 +173,8 @@ impl toni::GrpcAdapter for GrpcAdapter {
         let routes: Routes = std::mem::take(&mut self.routes_builder).routes();
         let drain_timeout = self.drain_timeout;
         let addr = self.local_addr;
+        let max_inflight = self.max_inflight;
+        let max_per_connection = self.max_per_connection;
 
         let shutdown_tonic = self.shutdown_tx.subscribe();
         let shutdown_drain = self.shutdown_tx.subscribe();
@@ -156,8 +196,31 @@ impl toni::GrpcAdapter for GrpcAdapter {
                 }
             };
 
-            let server_fut = Server::builder()
+            // Backpressure stack:
+            //   - `GlobalConcurrencyLimitLayer` caps in-flight requests
+            //     across all connections. `tower::util::option_layer`
+            //     keeps the builder's type constant whether or not the
+            //     cap is set (would otherwise vary with each `.layer()`
+            //     call, breaking the conditional builder).
+            //   - tonic's `concurrency_limit_per_connection` adds a
+            //     per-connection cap (returns `Self`, so chainable).
+            //   - `load_shed(true)` flips at-cap `NotReady` into an
+            //     immediate `ResourceExhausted` reject; without it,
+            //     callers would queue indefinitely and defeat the
+            //     OOM-protection point.
+            let mut builder = Server::builder()
                 .layer(TracingLayer::new())
+                .layer(tower::util::option_layer(
+                    max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
+                ));
+            if let Some(n) = max_per_connection {
+                builder = builder.concurrency_limit_per_connection(n);
+            }
+            if max_inflight.is_some() || max_per_connection.is_some() {
+                builder = builder.load_shed(true);
+            }
+
+            let server_fut = builder
                 .add_routes(routes)
                 .serve_with_incoming_shutdown(
                     TcpListenerStream::new(listener),
