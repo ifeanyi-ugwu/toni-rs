@@ -491,13 +491,17 @@ impl ToniApplication {
                 }
 
                 let callbacks = Arc::new(make_rpc_callbacks(self.rpc_controllers.clone()));
-                let adapter = self.rpc_adapter.take().unwrap();
-                match RpcLifecycleHandle::bind(adapter, &all_patterns, callbacks) {
-                    Ok(handle) => {
-                        rpc_addr = handle.local_addr();
-                        self.servers.push(Box::new(handle));
+                let mut adapter = self.rpc_adapter.take().unwrap();
+                if let Err(e) = adapter.bind(&all_patterns, callbacks) {
+                    tracing::error!(error = %e, "Failed to bind RPC adapter patterns");
+                } else {
+                    match adapter.into_lifecycle().await {
+                        Ok(handle) => {
+                            rpc_addr = handle.local_addr();
+                            self.servers.push(Box::new(handle));
+                        }
+                        Err(e) => tracing::error!(error = %e, "Failed to bind RPC adapter"),
                     }
-                    Err(e) => tracing::error!(error = %e, "Failed to bind RPC adapter"),
                 }
             }
         }

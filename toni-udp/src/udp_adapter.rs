@@ -125,20 +125,21 @@ impl RpcAdapter for UdpAdapter {
         Ok(())
     }
 
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::RpcLifecycleHandle> {
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before serve()");
+            .expect("bind() must be called before into_lifecycle()");
         let socket = self
             .socket
             .take()
-            .expect("bind() must be called before serve()");
+            .expect("bind() must be called before into_lifecycle()");
+        let local_addr = self.local_addr;
         let drain_timeout = self.drain_timeout;
         let inflight = self.inflight.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        Ok(Box::pin(async move {
+        let serve = Box::pin(async move {
             let addr = socket
                 .local_addr()
                 .map(|a| a.to_string())
@@ -196,16 +197,13 @@ impl RpcAdapter for UdpAdapter {
             }
 
             drain_tasks(tasks, drain_timeout, &addr).await;
+        });
+
+        let shutdown_tx = self.shutdown_tx.clone();
+        Ok(toni::RpcLifecycleHandle::new(local_addr, serve, move || async move {
+            let _ = shutdown_tx.send(true);
+            Ok(())
         }))
-    }
-
-    fn local_addr(&self) -> Option<SocketAddr> {
-        self.local_addr
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        let _ = self.shutdown_tx.send(true);
-        Ok(())
     }
 }
 

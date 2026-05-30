@@ -55,6 +55,7 @@ impl NatsAdapter {
     }
 }
 
+#[toni::async_trait]
 impl RpcAdapter for NatsAdapter {
     fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
         self.patterns = patterns.to_vec();
@@ -62,15 +63,15 @@ impl RpcAdapter for NatsAdapter {
         Ok(())
     }
 
-    fn serve(&mut self) -> Result<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
+    async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::RpcLifecycleHandle> {
         let servers = self.servers.clone();
         let patterns = std::mem::take(&mut self.patterns);
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before serve()");
+            .expect("bind() must be called before into_lifecycle()");
 
-        Ok(Box::pin(async move {
+        let serve = Box::pin(async move {
             let servers_for_log = servers.join(", ");
             // Retry until the server is reachable so a slow-starting NATS
             // container doesn't kill the whole process on startup.
@@ -218,7 +219,12 @@ impl RpcAdapter for NatsAdapter {
             }
 
             futures::future::join_all(handles).await;
-        }))
+        });
+
+        // NATS has no listener — no local_addr — and no graceful shutdown
+        // signal in the current implementation; the close callback is a
+        // no-op.
+        Ok(toni::RpcLifecycleHandle::new(None, serve, || async { Ok(()) }))
     }
 }
 
