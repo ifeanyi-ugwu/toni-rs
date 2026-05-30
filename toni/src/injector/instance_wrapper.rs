@@ -249,7 +249,31 @@ impl InstanceWrapper {
         let mut context = HttpContext::new(req, route_metadata.clone());
 
         for (i, guard) in guards.iter().enumerate() {
-            if !guard.can_activate(&context).await {
+            // `can_activate` is user code — catch panics so the request
+            // doesn't tear down. A panicking guard is treated as a hard
+            // rejection: observers see `PanicRecovered { during: Guard }`,
+            // the chain renders the normal forbidden envelope.
+            let activated = match crate::panic_recovery::catch_async(
+                PipelineSegment::Guard,
+                guard.can_activate(&context),
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(event) => {
+                    tracing::debug!(guard_index = i, "guard panicked");
+                    let claimed_response = context.take_response();
+                    return Self::handle_framework_event(
+                        event,
+                        claimed_response,
+                        &error_handlers,
+                        &observers,
+                        &context,
+                    )
+                    .await;
+                }
+            };
+            if !activated {
                 tracing::debug!(guard_index = i, "guard rejected request");
                 let event = GuardRejection::new(i);
                 let claimed_response = context.take_response();
@@ -359,7 +383,36 @@ impl InstanceWrapper {
             route_metadata: route_metadata.clone(),
         };
 
-        first.intercept(context, Box::new(next)).await;
+        if let Err(event) = crate::panic_recovery::catch_async(
+            PipelineSegment::Middleware,
+            first.intercept(context, Box::new(next)),
+        )
+        .await
+        {
+            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+        }
+    }
+
+    /// Surface a panicking interceptor through the existing observer + chain
+    /// pipeline: lift `PanicRecovered` into an `HttpError`, run observers,
+    /// give error handlers first claim, and fall back to the default
+    /// rendering. A panicking interceptor never silently corrupts the
+    /// response — it either gets remapped by a chain handler or rendered
+    /// as a 500.
+    async fn record_interceptor_panic(
+        context: &mut HttpContext,
+        error_handlers: &[HttpErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
+        event: PanicRecovered,
+    ) {
+        Self::fan_out_observers(observers, &event, context).await;
+        for handler in error_handlers.iter().rev() {
+            if let Some(claimed) = handler.handle_error(&event, context).await {
+                context.set_response(claimed);
+                return;
+            }
+        }
+        context.set_response(HttpError::from(event).to_response());
     }
 
     /// Run pipes + handler, then route the result.

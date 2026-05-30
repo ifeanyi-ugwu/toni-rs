@@ -11,6 +11,7 @@ pub mod extractors;
 pub mod grpc_status;
 pub use grpc_status::{GrpcCode, GrpcStatus};
 pub mod grpc_runtime;
+pub mod panic_recovery;
 pub mod http_helpers;
 pub mod injector;
 pub mod middleware;

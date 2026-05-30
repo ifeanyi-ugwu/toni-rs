@@ -108,7 +108,26 @@ impl GatewayWrapper {
 
         let guards = Self::resolve_guards(&self.guards, Some(parts)).await;
         for (i, guard) in guards.iter().enumerate() {
-            if !guard.can_activate(&context).await {
+            // A panic in `can_activate` is treated as a hard rejection so the
+            // dispatcher doesn't tear down. Observers see
+            // `PanicRecovered { during: Guard }`; the connection is refused.
+            let activated = match crate::panic_recovery::catch_async(
+                crate::errors::PipelineSegment::Guard,
+                guard.can_activate(&context),
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(event) => {
+                    tracing::debug!(client_id = %client.id, guard_index = i, "guard panicked during connect");
+                    Self::fan_out_observers(&self.error_observers, &event, &context).await;
+                    return Err(WsError::AuthFailed(format!(
+                        "guard {} panicked: {}",
+                        i, event.message
+                    )));
+                }
+            };
+            if !activated {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
                 let err = WsError::AuthFailed("Guard rejected connection".into());
                 Self::fan_out_observers(&self.error_observers, &err, &context).await;
@@ -197,8 +216,23 @@ impl GatewayWrapper {
         }
 
         let guards = Self::resolve_guards(&all_guards, None).await;
-        for guard in &guards {
-            if !guard.can_activate(&context).await {
+        for (index, guard) in guards.iter().enumerate() {
+            let activated = match crate::panic_recovery::catch_async(
+                crate::errors::PipelineSegment::Guard,
+                guard.can_activate(&context),
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(event) => {
+                    Self::fan_out_observers(&self.error_observers, &event, &context).await;
+                    return Err(WsError::AuthFailed(format!(
+                        "guard {} panicked: {}",
+                        index, event.message
+                    )));
+                }
+            };
+            if !activated {
                 let err = WsError::AuthFailed("Guard rejected message".into());
                 Self::fan_out_observers(&self.error_observers, &err, &context).await;
                 return Err(err);
@@ -359,7 +393,35 @@ impl GatewayWrapper {
             stream_slot,
         };
 
-        first.intercept(context, Box::new(next)).await;
+        if let Err(event) = crate::panic_recovery::catch_async(
+            crate::errors::PipelineSegment::Middleware,
+            first.intercept(context, Box::new(next)),
+        )
+        .await
+        {
+            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+        }
+    }
+
+    /// Surface a panicking interceptor through the existing observer + chain
+    /// pipeline so it cannot tear down the connection. Fan to observers,
+    /// give error handlers first claim, and fall back to a wire-`Err`
+    /// frame.
+    async fn record_interceptor_panic(
+        context: &mut WsContext,
+        error_handlers: &[WsErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
+        event: PanicRecovered,
+    ) {
+        Self::fan_out_observers(observers, &event, context).await;
+        for handler in error_handlers.iter().rev() {
+            if let Some(claimed) = handler.handle_error(&event, context).await {
+                context.set_response(Ok(Some(claimed)));
+                return;
+            }
+        }
+        let ws_err = WsError::from(event);
+        context.set_response(Ok(Some(ws_err.to_message())));
     }
 
     /// Run pipes + handler, then route the outcome.
