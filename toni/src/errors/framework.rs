@@ -106,6 +106,8 @@ pub enum PipelineSegment {
     ResponseRendering,
     /// Inside an interceptor / middleware chain step.
     Middleware,
+    /// Inside a pipe's `process(&mut C)`.
+    Pipe,
     /// Inside a guard's `can_activate`.
     Guard,
     /// Inside a registered chain handler.
@@ -120,6 +122,7 @@ impl PipelineSegment {
             Self::HandlerBody => "handler",
             Self::ResponseRendering => "response_rendering",
             Self::Middleware => "middleware",
+            Self::Pipe => "pipe",
             Self::Guard => "guard",
             Self::ErrorHandler => "error_handler",
             Self::Other => "other",

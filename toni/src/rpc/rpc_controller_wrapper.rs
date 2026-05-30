@@ -283,14 +283,15 @@ impl RpcControllerWrapper {
         )
         .await
         {
-            Self::record_interceptor_panic(context, error_handlers, observers, event).await;
+            Self::record_pipeline_panic(context, error_handlers, observers, event).await;
         }
     }
 
-    /// Surface a panicking interceptor through the existing observer + chain
-    /// pipeline: fan to observers, give error handlers first claim, and
-    /// fall back to a wire-`Err` Internal envelope.
-    async fn record_interceptor_panic(
+    /// Surface a panicking pre-handler segment (interceptor or pipe)
+    /// through the existing observer + chain pipeline: fan to observers,
+    /// give error handlers first claim, and fall back to a wire-`Err`
+    /// Internal envelope.
+    async fn record_pipeline_panic(
         context: &mut RpcContext,
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
@@ -320,7 +321,17 @@ impl RpcControllerWrapper {
         observers: &[Arc<dyn ErrorObserver>],
     ) {
         for pipe in pipes {
-            pipe.process(context);
+            // `pipe.process` is sync — `catch_sync` wraps it the same way
+            // `catch_async` wraps async segments. A panic routes through
+            // the observer + chain pipeline; remaining pipes and the
+            // handler are skipped.
+            if let Err(event) = crate::panic_recovery::catch_sync(
+                crate::errors::PipelineSegment::Pipe,
+                || pipe.process(context),
+            ) {
+                Self::record_pipeline_panic(context, error_handlers, observers, event).await;
+                return;
+            }
             if context.should_abort() {
                 // Pipe abort blocks the handler from running — surface as a
                 // wire-level Err so adapters can frame it as an "the
