@@ -19,7 +19,9 @@ use crate::{
         },
         scope_parser::ProviderScope,
     },
-    utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
+    utils::extracts::{
+        extract_struct_dependencies, extract_vec_arc_dyn_inner, normalize_trait_send_sync,
+    },
 };
 
 /// Detected enhancer traits that a struct implements.
@@ -366,6 +368,50 @@ pub fn generate_instance_provider_system(
     })
 }
 
+/// Emit the provider + factory + accessor for `struct_def` without re-emitting the struct
+/// or any impl block — the `#[derive(Injectable)]` path. The struct already exists and the
+/// user owns their `impl`, so the derive contributes only the DI wiring.
+///
+/// Dependencies are declared as `#[inject]` fields. By default the instance is assembled as
+/// a struct literal (`#[default(...)]` for owned state). With `init = "new"`, construction is
+/// redirected through `Self::new(deps…)` instead — the resolved `#[inject]` fields are passed
+/// in declaration order. The derive never sees the constructor, so a missing or mis-typed
+/// `new` surfaces as an ordinary compile error at the generated call.
+///
+/// Lifecycle hooks still require the attribute form: they're impl methods, invisible to a derive.
+pub fn generate_provider_from_struct(
+    struct_def: &ItemStruct,
+    scope: ProviderScope,
+    init_method: Option<String>,
+) -> Result<TokenStream> {
+    let struct_name = struct_def.ident.clone();
+    let mut dependencies = extract_struct_dependencies(struct_def)?;
+    if let Some(init) = init_method {
+        dependencies.init_method = Some(init);
+    }
+
+    // A derive sees only the struct: no enhancer-trait detection from an impl head and no
+    // lifecycle hooks. Both live on the attribute form.
+    let enhancer_traits = EnhancerTraits::default();
+    let lifecycle_hooks = LifecycleHooks::default();
+
+    let provider_wrapper = generate_provider_wrapper(
+        &struct_name,
+        &dependencies,
+        scope,
+        &enhancer_traits,
+        &lifecycle_hooks,
+    );
+    let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
+    let factory_accessor = generate_provider_factory_accessor(&struct_name);
+
+    Ok(quote! {
+        #provider_wrapper
+        #factory
+        #factory_accessor
+    })
+}
+
 /// Adds Clone and Injectable derives to struct if needed
 ///
 /// # Clone Detection
@@ -400,16 +446,15 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     });
 
     if !has_clone {
-        // Add both Clone and Injectable derives
-        // Injectable registers #[inject] and #[default] as valid attributes
+        // Clone is needed for the provider wrapper; InjectFields keeps the
+        // #[inject]/#[default] field attributes valid on the re-emitted struct.
         let derives: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone, ::toni::Injectable)]
+            #[derive(Clone, ::toni::InjectFields)]
         };
         struct_def.attrs.push(derives);
     } else {
-        // Just add Injectable
         let injectable_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(::toni::Injectable)]
+            #[derive(::toni::InjectFields)]
         };
         struct_def.attrs.push(injectable_derive);
     }

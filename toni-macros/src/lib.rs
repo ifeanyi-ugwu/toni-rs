@@ -349,12 +349,32 @@ pub fn set_metadata(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-// Helper derive to register #[inject] and #[default] as valid attributes
-// This allows them to be used on struct fields in injectable/controller_struct
-#[proc_macro_derive(Injectable, attributes(inject, default))]
-pub fn derive_injectable(_input: TokenStream) -> TokenStream {
-    // This derive does nothing - it just registers the attributes
+/// Keeps `#[inject]` / `#[default]` valid as inert field attributes on structs that the
+/// attribute-form macros (`#[injectable(struct …)]`, `#[controller(…)]`, gateways, rpc/grpc)
+/// re-emit. Those macros run their own provider codegen and only need the field attributes
+/// to stay parseable, so this derive emits nothing.
+#[proc_macro_derive(InjectFields, attributes(inject, default))]
+pub fn derive_inject_fields(_input: TokenStream) -> TokenStream {
     TokenStream::new()
+}
+
+/// Field-injection provider derive — the clean path for a struct whose dependencies are
+/// declared as `#[inject]` fields. Generates the provider + factory from the struct alone
+/// and leaves your own `impl` block untouched.
+///
+/// A companion `#[provider(...)]` attribute is optional and only needed to override defaults:
+/// - `#[provider(scope = "request")]` / `"transient"` — default is singleton.
+/// - `#[provider(init = "new")]` — assemble via `Self::new(deps…)` (resolved `#[inject]` fields
+///   in declaration order) instead of a struct literal. A missing/mis-typed `new` is a loud
+///   compile error at the generated call.
+///
+/// Lifecycle hooks still live on the `#[injectable] impl Foo { … }` attribute form — they're
+/// impl methods, which a derive cannot see.
+#[proc_macro_derive(Injectable, attributes(inject, default, provider))]
+pub fn derive_injectable(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    let output = provider_macro::derive::handle_derive_injectable(input);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
 #[proc_macro_derive(Config, attributes(env, default, nested))]

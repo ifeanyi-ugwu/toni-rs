@@ -198,16 +198,15 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     });
 
     if !has_clone {
-        // Add both Clone and Injectable derives
-        // Injectable registers #[inject] and #[default] as valid attributes
+        // Clone is needed for the controller instance; InjectFields keeps the
+        // #[inject]/#[default] field attributes valid on the re-emitted struct.
         let derives: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone, ::toni::Injectable)]
+            #[derive(Clone, ::toni::InjectFields)]
         };
         struct_def.attrs.push(derives);
     } else {
-        // Just add Injectable
         let injectable_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(::toni::Injectable)]
+            #[derive(::toni::InjectFields)]
         };
         struct_def.attrs.push(injectable_derive);
     }
