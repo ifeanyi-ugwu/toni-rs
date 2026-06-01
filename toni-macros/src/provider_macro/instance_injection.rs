@@ -538,47 +538,63 @@ fn enhancer_kind_active(
     }
 }
 
-fn error_handler_kind_active(
-    traits: &EnhancerTraits,
-    kind: crate::shared::enhancer_emit::ErrorHandlerKind,
-) -> bool {
-    use crate::shared::enhancer_emit::ErrorHandlerKind;
-    match kind {
-        ErrorHandlerKind::Http => traits.is_http_error_handler,
-        ErrorHandlerKind::Rpc => traits.is_rpc_error_handler,
-        ErrorHandlerKind::Ws => traits.is_ws_error_handler,
-        ErrorHandlerKind::Grpc => traits.is_grpc_error_handler,
-    }
-}
 
 /// Generate role-push statements to embed inside `build()`, before the concrete
 /// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
 /// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
+///
+/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are detected from the
+/// type itself via `toni::__detect` probes — the `impl Guard<HttpContext> for T` is the declaration,
+/// no marker required. Structural roles (gateway / rpc-controller / grpc-service) stay flag-driven:
+/// they come from the structural macros that also generate the trait impls and routing.
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
-    use crate::shared::enhancer_emit::{
-        EnhancerKind, ErrorHandlerKind, ready_error_handler_push, ready_role_push,
-    };
+    use crate::shared::enhancer_emit::{EnhancerKind, ErrorHandlerKind};
 
-    let mut pushes = Vec::new();
+    // Each probe call must sit where `instance`'s type is concrete (here, in `build()`); a generic
+    // wrapper fn would erase the bound and always miss. `__r` is scoped to each `if let` body.
+    let mut detects = Vec::new();
 
-    if traits.is_middleware {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::middleware::Middleware>
-            ));
+    detects.push(quote! {
+        if let Some(__r) = ::toni::__detect::MiddlewareProbe(instance.clone()).detect() {
+            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(__r));
+        }
+    });
+
+    for kind in EnhancerKind::all() {
+        let spec = kind.spec();
+        let probe = Ident::new(&format!("{}Probe", spec.factory_suffix), proc_macro2::Span::call_site());
+        let role_variant = &spec.role_variant;
+        let entry_path = &spec.entry_path;
+        detects.push(quote! {
+            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
+                __roles.push(#role_variant(#entry_path::Ready(__r)));
+            }
+        });
+    }
+    for kind in ErrorHandlerKind::all() {
+        let spec = kind.spec();
+        let probe_name = match kind {
+            ErrorHandlerKind::Http => "HttpErrorHandlerProbe",
+            ErrorHandlerKind::Rpc => "RpcErrorHandlerProbe",
+            ErrorHandlerKind::Ws => "WsErrorHandlerProbe",
+            ErrorHandlerKind::Grpc => "GrpcErrorHandlerProbe",
+        };
+        let probe = Ident::new(probe_name, proc_macro2::Span::call_site());
+        let role_variant = &spec.role_variant;
+        detects.push(quote! {
+            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
+                __roles.push(#role_variant(__r));
+            }
         });
     }
 
-    for kind in EnhancerKind::all() {
-        if enhancer_kind_active(traits, kind) {
-            pushes.push(ready_role_push(&kind.spec()));
+    let mut pushes = Vec::new();
+    pushes.push(quote! {
+        {
+            use ::toni::__detect::prelude::*;
+            #(#detects)*
         }
-    }
-    for kind in ErrorHandlerKind::all() {
-        if error_handler_kind_active(traits, kind) {
-            pushes.push(ready_error_handler_push(&kind.spec()));
-        }
-    }
+    });
 
     if traits.is_gateway {
         pushes.push(quote! {

@@ -5,6 +5,8 @@ mod error;
 pub mod builtin_module;
 pub mod context;
 pub use context::{CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, WsContext};
+#[doc(hidden)]
+pub mod __detect;
 pub mod di;
 pub mod errors;
 pub mod extractors;

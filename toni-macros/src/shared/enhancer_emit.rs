@@ -52,8 +52,6 @@ pub struct EnhancerSpec {
 pub struct ErrorHandlerSpec {
     /// `::toni::traits_helpers::ProviderRole::HttpErrorHandler` etc.
     pub role_variant: TokenStream,
-    /// `::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse>` etc.
-    pub trait_path: TokenStream,
 }
 
 impl EnhancerKind {
@@ -171,19 +169,15 @@ impl ErrorHandlerKind {
         match self {
             ErrorHandlerKind::Http => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::HttpErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse> },
             },
             ErrorHandlerKind::Rpc => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::RpcContext, ::toni::rpc::RpcData> },
             },
             ErrorHandlerKind::Ws => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage> },
             },
             ErrorHandlerKind::Grpc => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::GrpcContext, ::toni::grpc_status::GrpcStatus> },
             },
         }
     }
@@ -191,6 +185,10 @@ impl ErrorHandlerKind {
 
 /// Emit a `__roles.push(Role::X(Entry::Ready(instance.clone() as Arc<dyn …>)))`
 /// statement. `instance` must be in scope at the call site.
+///
+/// Used by the `provider_factory!` path, where the enhancer set is declared explicitly rather
+/// than detected from trait impls. The `#[injectable]`/`#[derive(Injectable)]` factory instead
+/// auto-detects roles via `toni::__detect` probes.
 pub fn ready_role_push(spec: &EnhancerSpec) -> TokenStream {
     let role = &spec.role_variant;
     let entry = &spec.entry_path;
@@ -200,18 +198,6 @@ pub fn ready_role_push(spec: &EnhancerSpec) -> TokenStream {
             #entry::Ready(
                 instance.clone() as ::std::sync::Arc<dyn #trait_path>
             )
-        ));
-    }
-}
-
-/// Emit a `__roles.push(Role::HttpErrorHandler(instance.clone() as Arc<dyn …>))`
-/// statement. ErrorHandlers don't have entry wrapping.
-pub fn ready_error_handler_push(spec: &ErrorHandlerSpec) -> TokenStream {
-    let role = &spec.role_variant;
-    let trait_path = &spec.trait_path;
-    quote! {
-        __roles.push(#role(
-            instance.clone() as ::std::sync::Arc<dyn #trait_path>
         ));
     }
 }
