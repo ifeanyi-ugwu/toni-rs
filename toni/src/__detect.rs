@@ -16,6 +16,7 @@
 
 #![doc(hidden)]
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::context::{GrpcContext, HttpContext, RpcContext, WsContext};
@@ -73,16 +74,60 @@ probe!(GrpcErrorHandlerProbe, GrpcErrorHandlerProbeFallback, ErrorHandler<GrpcCo
 
 probe!(MiddlewareProbe, MiddlewareProbeFallback, Middleware, dyn Middleware);
 
-/// Brings every fallback trait into scope so the inline `detect()` calls resolve. Glob-import this
-/// once where the probe calls are emitted; method resolution is by receiver type, so the many
-/// same-named `detect` methods never collide.
+/// Define a type-level probe: `is()` returns `true` when `T: $bound`, `false` otherwise, with no
+/// instance. The request/transient path needs this to decide — in the factory's `build()`, where
+/// `T` is concrete — whether to register a per-request enhancer factory before any instance exists.
+macro_rules! type_probe {
+    ($probe:ident, $fallback:ident, $bound:path) => {
+        pub struct $probe<T>(pub PhantomData<T>);
+
+        impl<T: $bound + 'static> $probe<T> {
+            #[inline]
+            pub fn is(&self) -> bool {
+                true
+            }
+        }
+
+        pub trait $fallback {
+            fn is(&self) -> bool;
+        }
+
+        impl<T> $fallback for $probe<T> {
+            #[inline]
+            fn is(&self) -> bool {
+                false
+            }
+        }
+    };
+}
+
+type_probe!(HttpGuardTypeProbe, HttpGuardTypeProbeFallback, Guard<HttpContext>);
+type_probe!(RpcGuardTypeProbe, RpcGuardTypeProbeFallback, Guard<RpcContext>);
+type_probe!(WsGuardTypeProbe, WsGuardTypeProbeFallback, Guard<WsContext>);
+type_probe!(GrpcGuardTypeProbe, GrpcGuardTypeProbeFallback, Guard<GrpcContext>);
+
+type_probe!(HttpInterceptorTypeProbe, HttpInterceptorTypeProbeFallback, Interceptor<HttpContext>);
+type_probe!(RpcInterceptorTypeProbe, RpcInterceptorTypeProbeFallback, Interceptor<RpcContext>);
+type_probe!(WsInterceptorTypeProbe, WsInterceptorTypeProbeFallback, Interceptor<WsContext>);
+type_probe!(GrpcInterceptorTypeProbe, GrpcInterceptorTypeProbeFallback, Interceptor<GrpcContext>);
+
+type_probe!(HttpPipeTypeProbe, HttpPipeTypeProbeFallback, Pipe<HttpContext>);
+type_probe!(RpcPipeTypeProbe, RpcPipeTypeProbeFallback, Pipe<RpcContext>);
+type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext>);
+
+/// Brings every fallback trait into scope so the inline `detect()` / `is()` calls resolve.
+/// Glob-import this once where the probe calls are emitted; method resolution is by receiver type,
+/// so the many same-named methods never collide.
 pub mod prelude {
     pub use super::{
-        GrpcErrorHandlerProbeFallback, GrpcGuardProbeFallback, GrpcInterceptorProbeFallback,
-        HttpErrorHandlerProbeFallback, HttpGuardProbeFallback, HttpInterceptorProbeFallback,
-        HttpPipeProbeFallback, MiddlewareProbeFallback, RpcErrorHandlerProbeFallback,
-        RpcGuardProbeFallback, RpcInterceptorProbeFallback, RpcPipeProbeFallback,
-        WsErrorHandlerProbeFallback, WsGuardProbeFallback, WsInterceptorProbeFallback,
-        WsPipeProbeFallback,
+        GrpcErrorHandlerProbeFallback, GrpcGuardProbeFallback, GrpcGuardTypeProbeFallback,
+        GrpcInterceptorProbeFallback, GrpcInterceptorTypeProbeFallback, HttpErrorHandlerProbeFallback,
+        HttpGuardProbeFallback, HttpGuardTypeProbeFallback, HttpInterceptorProbeFallback,
+        HttpInterceptorTypeProbeFallback, HttpPipeProbeFallback, HttpPipeTypeProbeFallback,
+        MiddlewareProbeFallback, RpcErrorHandlerProbeFallback, RpcGuardProbeFallback,
+        RpcGuardTypeProbeFallback, RpcInterceptorProbeFallback, RpcInterceptorTypeProbeFallback,
+        RpcPipeProbeFallback, RpcPipeTypeProbeFallback, WsErrorHandlerProbeFallback,
+        WsGuardProbeFallback, WsGuardTypeProbeFallback, WsInterceptorProbeFallback,
+        WsInterceptorTypeProbeFallback, WsPipeProbeFallback, WsPipeTypeProbeFallback,
     };
 }

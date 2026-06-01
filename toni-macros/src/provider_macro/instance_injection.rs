@@ -1703,8 +1703,15 @@ fn generate_create_field_resolutions(
     (resolutions, field_names)
 }
 
-/// Generates the `DynGuardFactory`, `DynInterceptorFactory`, and/or `DynPipeFactory`
-/// implementor structs for request/transient-scoped providers that are also enhancers.
+/// Generates the per-request enhancer-factory structs (`Dyn*Factory` implementors) for a
+/// request/transient-scoped provider, and the role pushes that register them.
+///
+/// Roles are detected from the type, not a marker: a `Dyn*Factory` is emitted for every enhancer
+/// kind (the `toni::__detect` value-probe inside `create()` compiles for any `T` — it yields the
+/// coerced trait object for an implementor and never runs otherwise), and each role push is gated
+/// by a `toni::__detect` type-level probe over the concrete struct so only the kinds the type
+/// actually implements register. `enhancer_traits` no longer drives this — only structural roles
+/// (gateway/rpc-controller/grpc-service) remain flag-driven elsewhere.
 ///
 /// Returns `(struct_defs, role_pushes)`:
 /// - `struct_defs`: emitted before the provider factory struct
@@ -1712,18 +1719,11 @@ fn generate_create_field_resolutions(
 fn generate_dyn_factories(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
-    enhancer_traits: &EnhancerTraits,
+    _enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
     use crate::shared::enhancer_emit::EnhancerKind;
 
-    let active_kinds: Vec<EnhancerKind> = EnhancerKind::all()
-        .into_iter()
-        .filter(|k| enhancer_kind_active(enhancer_traits, *k))
-        .collect();
-
-    if active_kinds.is_empty() {
-        return (quote! {}, quote! {});
-    }
+    let active_kinds: Vec<EnhancerKind> = EnhancerKind::all().into_iter().collect();
 
     let (field_resolutions, field_names) = generate_create_field_resolutions(dependencies);
 
@@ -1767,27 +1767,52 @@ fn generate_dyn_factories(
         >>
     };
 
-    let mut struct_defs = Vec::new();
+    // One shared builder per provider: it owns the (heavy) dependency-resolution + construction
+    // logic once. Each `Dyn*Factory` impl is a thin shim that builds via this and value-probes the
+    // result to its role trait object — so the field-resolution code isn't duplicated 11 times.
+    let builder_struct_name = Ident::new(
+        &format!("__Toni{}EnhancerBuilder", struct_name),
+        struct_name.span(),
+    );
+
+    let builder_def = quote! {
+        struct #builder_struct_name {
+            all_deps: #deps_arc_ty,
+            has_request_deps: bool,
+        }
+
+        impl #builder_struct_name {
+            async fn __build_instance<'a>(
+                &'a self,
+                request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+            ) -> #struct_name {
+                let all_deps = self.all_deps.clone();
+                let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                #(#field_resolutions)*
+                #struct_instantiation
+            }
+        }
+    };
+
+    let mut impl_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
     for kind in active_kinds {
         let spec = kind.spec();
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}{}DynFactory", struct_name, spec.factory_suffix),
-            struct_name.span(),
-        );
         let trait_path = &spec.trait_path;
         let factory_trait_path = &spec.dyn_factory_trait;
         let role_variant = &spec.role_variant;
         let entry_path = &spec.entry_path;
+        let value_probe = Ident::new(&format!("{}Probe", spec.factory_suffix), struct_name.span());
+        let type_probe =
+            Ident::new(&format!("{}TypeProbe", spec.factory_suffix), struct_name.span());
 
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
-
-            impl #factory_trait_path for #factory_struct_name {
+        // `create()` builds via the shared builder, then value-probes the instance to the role
+        // trait object. The probe compiles for any `T` (fallback returns `None`); this impl's role
+        // is only ever registered when the type-probe below confirms `T` implements the trait, so
+        // the `expect` cannot fire.
+        impl_defs.push(quote! {
+            impl #factory_trait_path for #builder_struct_name {
                 fn requires_http_parts(&self) -> bool {
                     self.has_request_deps
                 }
@@ -1798,27 +1823,44 @@ fn generate_dyn_factories(
                 ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
                     Output = ::std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
                     ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn #trait_path + Send + Sync>
+                        use ::toni::__detect::prelude::*;
+                        let instance = self.__build_instance(request_parts).await;
+                        ::toni::__detect::#value_probe(::std::sync::Arc::new(instance))
+                            .detect()
+                            .expect("enhancer factory registered only when the type implements the role")
+                            as ::std::sync::Arc<dyn #trait_path + Send + Sync>
                     })
                 }
             }
         });
+        // Gate registration on the type-level probe over the concrete struct: only kinds the type
+        // actually implements get a factory pushed. `.is()` resolves to the inherent method (true)
+        // when `#struct_name` implements the trait, else the in-scope fallback (false).
         role_push_stmts.push(quote! {
-            __roles.push(#role_variant(
-                #entry_path::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
+            if ::toni::__detect::#type_probe::<#struct_name>(::std::marker::PhantomData).is() {
+                __roles.push(#role_variant(
+                    #entry_path::Factory(
+                        ::std::sync::Arc::new(#builder_struct_name {
+                            all_deps: __all_deps.clone(),
+                            has_request_deps: __has_request_deps,
+                        })
+                    )
+                ));
+            }
         });
     }
 
-    (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })
+    let struct_defs = quote! {
+        #builder_def
+        #(#impl_defs)*
+    };
+    let role_pushes = quote! {
+        {
+            use ::toni::__detect::prelude::*;
+            #(#role_push_stmts)*
+        }
+    };
+
+    (struct_defs, role_pushes)
 }
