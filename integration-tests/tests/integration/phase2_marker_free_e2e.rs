@@ -1,0 +1,86 @@
+//! End-to-end proof that a guard needs no marker: `#[derive(Injectable)]` + `impl Guard<HttpContext>`,
+//! applied with `#[use_guards(AdminGuard)]`, blocks/admits real HTTP requests.
+//!
+//! The provider factory auto-detects the `Guard<HttpContext>` impl (via `toni::__detect`) and
+//! registers the role; `#[use_guards]` and the role registry resolve it unchanged. Contrast
+//! `enhancers_di.rs`, where the equivalent guard still carries `#[injectable(struct …)]` +
+//! `#[guard(http)]`.
+
+use toni::async_trait;
+use toni::context::HttpContext;
+use toni::traits_helpers::Guard;
+use toni::{Body as ToniBody, Injectable, RequestPart, controller, get, module, use_guards};
+
+use crate::common::TestServer;
+use serial_test::serial;
+
+#[derive(Clone, Injectable)]
+pub struct AuthService {
+    #[default(true)]
+    require_token: bool,
+}
+
+impl AuthService {
+    fn is_admin(&self, req: &RequestPart) -> bool {
+        !self.require_token || req.headers.contains_key("x-admin-token")
+    }
+}
+
+// No `#[guard(http)]`. The `impl Guard<HttpContext>` below is the only declaration.
+#[derive(Clone, Injectable)]
+pub struct AdminGuard {
+    #[inject]
+    auth: AuthService,
+}
+
+#[async_trait]
+impl Guard<HttpContext> for AdminGuard {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+        self.auth.is_admin(ctx.request())
+    }
+}
+
+#[derive(Clone)]
+pub struct ApiController;
+
+#[controller("/api")]
+impl ApiController {
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[get("/admin")]
+    #[use_guards(AdminGuard)]
+    fn admin(&self) -> ToniBody {
+        ToniBody::text("admin ok".to_string())
+    }
+}
+
+#[module(controllers: [ApiController], providers: [AuthService, AdminGuard])]
+struct MarkerFreeModule {}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn marker_free_guard_blocks_and_admits_over_http() {
+    let server = TestServer::start(MarkerFreeModule::module_definition()).await;
+
+    // No token: the marker-free guard rejects.
+    let resp = server
+        .client()
+        .get(server.url("/api/admin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "guard must block without x-admin-token");
+
+    // With token: the guard admits and the handler runs.
+    let resp = server
+        .client()
+        .get(server.url("/api/admin"))
+        .header("X-Admin-Token", "valid")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "guard must admit with x-admin-token");
+    assert_eq!(resp.text().await.unwrap(), "admin ok");
+}
