@@ -10,7 +10,6 @@ use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
     controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
 };
-use toni::{guard, interceptor};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -18,7 +17,6 @@ use crate::common::TestServer;
 // ---- request-scoped guard, no injected deps ----------------------------------
 
 #[injectable(scope = "request", pub struct RequestGuard {})]
-#[guard(http)]
 impl RequestGuard {}
 
 #[async_trait]
@@ -34,7 +32,6 @@ impl Guard<HttpContext> for RequestGuard {
     #[inject]
     request: Request,
 })]
-#[guard(http)]
 impl HeaderGuard {}
 
 #[async_trait]
@@ -49,7 +46,6 @@ impl Guard<HttpContext> for HeaderGuard {
 // ---- transient-scoped interceptor --------------------------------------------
 
 #[injectable(scope = "transient", pub struct TransientInterceptor {})]
-#[interceptor(http)]
 impl TransientInterceptor {}
 
 #[async_trait]
@@ -125,7 +121,6 @@ impl TransientInterceptorModule {}
 // works identically at connect time and per-message, with no HTTP Request injection.
 
 #[injectable(pub struct WsHandshakeGuard {})]
-#[guard(ws)]
 impl WsHandshakeGuard {}
 
 #[async_trait]

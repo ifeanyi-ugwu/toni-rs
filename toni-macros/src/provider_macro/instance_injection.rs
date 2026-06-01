@@ -13,7 +13,6 @@ use syn::{Ident, ItemImpl, ItemStruct, Result, Type};
 use crate::{
     shared::{
         dependency_info::DependencyInfo,
-        enhancer_markers::EnhancerMarkers,
         lifecycle_hooks::{
             LifecycleHooks, detect_lifecycle_hooks, reject_lifecycle_hooks, strip_lifecycle_attrs,
         },
@@ -24,285 +23,18 @@ use crate::{
     },
 };
 
-/// Detected enhancer traits that a struct implements.
+/// Structural roles the surrounding macro assigns to a provider.
 ///
-/// Multiple flags may be set on the same struct (e.g. a guard with separate
-/// impl blocks for `HttpContext` and `RpcContext`, or a universal blanket
-/// impl marked `#[guard(http, rpc, ws)]`).
+/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are NOT here — those
+/// are detected from the type's trait impls via `toni::__detect` at the factory. These three are
+/// driven by the structural macros (`#[websocket_gateway]` / `#[rpc_controller]` / `#[grpc_service]`),
+/// which generate the corresponding trait impl and routing, so the macro that emits them already
+/// knows the role.
 #[derive(Debug, Clone, Default)]
 pub struct EnhancerTraits {
-    pub is_middleware: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
-
-    pub is_http_guard: bool,
-    pub is_http_interceptor: bool,
-    pub is_http_pipe: bool,
-    pub is_http_error_handler: bool,
-
-    pub is_rpc_guard: bool,
-    pub is_rpc_interceptor: bool,
-    pub is_rpc_pipe: bool,
-    pub is_rpc_error_handler: bool,
-
-    pub is_ws_guard: bool,
-    pub is_ws_interceptor: bool,
-    pub is_ws_pipe: bool,
-    pub is_ws_error_handler: bool,
-
-    pub is_grpc_guard: bool,
-    pub is_grpc_interceptor: bool,
-    pub is_grpc_error_handler: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct TransportFlags {
-    http: bool,
-    rpc: bool,
-    ws: bool,
-    grpc: bool,
-    /// User declared a transport via a marker arg or typed impl head.
-    /// When false and no transport matched, the resolver falls back to
-    /// "universal" (all transports) so a blanket impl works.
-    explicit: bool,
-}
-
-impl TransportFlags {
-    fn any(&self) -> bool {
-        self.http || self.rpc || self.ws || self.grpc
-    }
-
-    fn merge(&mut self, other: TransportFlags) {
-        self.http |= other.http;
-        self.rpc |= other.rpc;
-        self.ws |= other.ws;
-        self.grpc |= other.grpc;
-        self.explicit |= other.explicit;
-    }
-}
-
-/// Parse `#[guard(http, rpc, ws)]` style transport args from a marker attribute.
-fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
-    let mut flags = TransportFlags::default();
-    if matches!(attr.meta, syn::Meta::Path(_)) {
-        return flags;
-    }
-    let parsed = attr.parse_args_with(
-        syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-    );
-    let Ok(idents) = parsed else {
-        return flags;
-    };
-    for ident in idents {
-        flags.explicit = true;
-        match ident.to_string().as_str() {
-            "http" => flags.http = true,
-            "rpc" => flags.rpc = true,
-            "ws" | "websocket" => flags.ws = true,
-            "grpc" => flags.grpc = true,
-            "universal" | "all" => {
-                flags.http = true;
-                flags.rpc = true;
-                flags.ws = true;
-                flags.grpc = true;
-            }
-            _ => {}
-        }
-    }
-    flags
-}
-
-/// Inspect a typed enhancer impl head (`Guard<...>` etc.) to decide which
-/// transport(s) it serves. The first generic argument is the context type.
-fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
-    let mut flags = TransportFlags::default();
-    let Some((_, path, _)) = &impl_block.trait_ else {
-        return flags;
-    };
-    let Some(last) = path.segments.last() else {
-        return flags;
-    };
-
-    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-        // Bare `Guard` — defaults to `Context`. Legacy.
-        return flags;
-    };
-    let Some(syn::GenericArgument::Type(ctx_ty)) = args.args.first() else {
-        return flags;
-    };
-    let syn::Type::Path(type_path) = ctx_ty else {
-        return flags;
-    };
-    let Some(last_seg) = type_path.path.segments.last() else {
-        return flags;
-    };
-
-    flags.explicit = true;
-    match last_seg.ident.to_string().as_str() {
-        "HttpContext" => flags.http = true,
-        "RpcContext" => flags.rpc = true,
-        "WsContext" => flags.ws = true,
-        "GrpcContext" => flags.grpc = true,
-        // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
-        _ if impl_block
-            .generics
-            .params
-            .iter()
-            .any(|p| matches!(p, syn::GenericParam::Type(t) if t.ident == last_seg.ident)) =>
-        {
-            flags.http = true;
-            flags.rpc = true;
-            flags.ws = true;
-            flags.grpc = true;
-        }
-        // Unknown concrete type — leave flags empty so the resolver doesn't
-        // route it; it will fall back to universal if no other signal arrives.
-        _ => {}
-    }
-
-    flags
-}
-
-/// Detect which enhancer traits a struct implements.
-///
-/// Checks marker attributes on the struct (`#[guard]`, `#[interceptor]`, etc.) and on the
-/// impl block, as well as trait impl blocks for backwards compatibility.
-fn detect_enhancer_traits(
-    struct_def: Option<&ItemStruct>,
-    impl_block: &ItemImpl,
-) -> EnhancerTraits {
-    let mut traits = EnhancerTraits::default();
-
-    let struct_markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
-    traits.is_middleware = struct_markers.is_middleware;
-
-    // (transport_flags, signal_seen) — `signal_seen` gates whether the resolver
-    // fires anything at all. Without a signal (no marker, no trait header match),
-    // an unrelated struct (gateway, plain service) must not be cast as Guard.
-    let mut guard = (TransportFlags::default(), false);
-    let mut interceptor = (TransportFlags::default(), false);
-    let mut pipe = (TransportFlags::default(), false);
-    let mut error_handler = (TransportFlags::default(), false);
-
-    let typed_impl_flags = detect_typed_impl_transport(impl_block);
-
-    let merge_marker = |slot: &mut (TransportFlags, bool), attr: &syn::Attribute| {
-        let mut f = parse_marker_transport_args(attr);
-        if !f.explicit {
-            f.merge(typed_impl_flags);
-        }
-        slot.0.merge(f);
-        slot.1 = true;
-    };
-
-    let scan_attrs = |attrs: &[syn::Attribute],
-                      guard: &mut (TransportFlags, bool),
-                      interceptor: &mut (TransportFlags, bool),
-                      pipe: &mut (TransportFlags, bool),
-                      error_handler: &mut (TransportFlags, bool),
-                      traits: &mut EnhancerTraits| {
-        for attr in attrs {
-            let Some(ident) = attr.path().get_ident() else {
-                continue;
-            };
-            match ident.to_string().as_str() {
-                "guard" => merge_marker(guard, attr),
-                "interceptor" => merge_marker(interceptor, attr),
-                "pipe" => merge_marker(pipe, attr),
-                "error_handler" => merge_marker(error_handler, attr),
-                "middleware" => traits.is_middleware = true,
-                _ => {}
-            }
-        }
-    };
-
-    if let Some(s) = struct_def {
-        scan_attrs(
-            &s.attrs,
-            &mut guard,
-            &mut interceptor,
-            &mut pipe,
-            &mut error_handler,
-            &mut traits,
-        );
-    }
-    scan_attrs(
-        &impl_block.attrs,
-        &mut guard,
-        &mut interceptor,
-        &mut pipe,
-        &mut error_handler,
-        &mut traits,
-    );
-
-    if let Some((_, path, _)) = &impl_block.trait_ {
-        let trait_name = path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
-            .unwrap_or_default();
-
-        match trait_name.as_str() {
-            "Guard" => {
-                guard.0.merge(typed_impl_flags);
-                guard.1 = true;
-            }
-            "Interceptor" => {
-                interceptor.0.merge(typed_impl_flags);
-                interceptor.1 = true;
-            }
-            "Pipe" => {
-                pipe.0.merge(typed_impl_flags);
-                pipe.1 = true;
-            }
-            "ErrorHandler" => {
-                error_handler.0.merge(typed_impl_flags);
-                error_handler.1 = true;
-            }
-            "Middleware" => traits.is_middleware = true,
-            _ => {}
-        }
-    }
-
-    // No transport signal at all (bare `#[guard]`, no typed impl head) → assume
-    // a universal blanket impl and route to every transport that has a slot.
-    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool, bool) {
-        if !slot.1 {
-            return (false, false, false, false);
-        }
-        let f = slot.0;
-        if f.any() {
-            (f.http, f.rpc, f.ws, f.grpc)
-        } else {
-            (true, true, true, true)
-        }
-    };
-
-    let (g_h, g_r, g_w, g_g) = resolve(guard);
-    traits.is_http_guard = g_h;
-    traits.is_rpc_guard = g_r;
-    traits.is_ws_guard = g_w;
-    traits.is_grpc_guard = g_g;
-
-    let (i_h, i_r, i_w, i_g) = resolve(interceptor);
-    traits.is_http_interceptor = i_h;
-    traits.is_rpc_interceptor = i_r;
-    traits.is_ws_interceptor = i_w;
-    traits.is_grpc_interceptor = i_g;
-
-    let (p_h, p_r, p_w, _p_g) = resolve(pipe);
-    traits.is_http_pipe = p_h;
-    traits.is_rpc_pipe = p_r;
-    traits.is_ws_pipe = p_w;
-
-    let (e_h, e_r, e_w, e_g) = resolve(error_handler);
-    traits.is_http_error_handler = e_h;
-    traits.is_rpc_error_handler = e_r;
-    traits.is_ws_error_handler = e_w;
-    traits.is_grpc_error_handler = e_g;
-
-    traits
 }
 
 /// Detect lifecycle hooks by scanning for method-level attributes in the impl block.
@@ -339,11 +71,12 @@ pub fn generate_instance_provider_system(
     }
     let impl_def = strip_lifecycle_attrs(&impl_def);
 
-    let mut enhancer_traits = detect_enhancer_traits(struct_def, impl_block);
     let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
-    enhancer_traits.is_gateway = is_gateway;
-    enhancer_traits.is_rpc_controller = is_rpc_controller;
-    enhancer_traits.is_grpc_service = is_grpc_service;
+    let enhancer_traits = EnhancerTraits {
+        is_gateway,
+        is_rpc_controller,
+        is_grpc_service,
+    };
 
     let provider_wrapper = generate_provider_wrapper(
         &struct_name,
@@ -515,26 +248,6 @@ fn generate_provider_wrapper(
         ProviderScope::Transient => {
             generate_transient_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
         }
-    }
-}
-
-fn enhancer_kind_active(
-    traits: &EnhancerTraits,
-    kind: crate::shared::enhancer_emit::EnhancerKind,
-) -> bool {
-    use crate::shared::enhancer_emit::EnhancerKind;
-    match kind {
-        EnhancerKind::HttpGuard => traits.is_http_guard,
-        EnhancerKind::HttpInterceptor => traits.is_http_interceptor,
-        EnhancerKind::HttpPipe => traits.is_http_pipe,
-        EnhancerKind::RpcGuard => traits.is_rpc_guard,
-        EnhancerKind::RpcInterceptor => traits.is_rpc_interceptor,
-        EnhancerKind::RpcPipe => traits.is_rpc_pipe,
-        EnhancerKind::WsGuard => traits.is_ws_guard,
-        EnhancerKind::WsInterceptor => traits.is_ws_interceptor,
-        EnhancerKind::WsPipe => traits.is_ws_pipe,
-        EnhancerKind::GrpcGuard => traits.is_grpc_guard,
-        EnhancerKind::GrpcInterceptor => traits.is_grpc_interceptor,
     }
 }
 

@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
 use toni::di::{APP_GUARD, APP_INTERCEPTOR};
-use toni::enhancer::{guard, interceptor};
 use toni::context::HttpContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::{controller, get, injectable, module, provider_token, provider_value, Body as ToniBody};
@@ -61,7 +60,6 @@ impl MockService {
     service: MockService,
     tracker: ExecutionTracker,
 })]
-#[guard(http)]
 impl AppGuardWithDI {
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
@@ -81,7 +79,6 @@ impl Guard<HttpContext> for AppGuardWithDI {
     service: MockService,
     tracker: ExecutionTracker,
 })]
-#[interceptor(http)]
 impl AppInterceptorWithDI {
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }

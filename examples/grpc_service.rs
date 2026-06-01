@@ -41,7 +41,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use toni::ToniFactory;
-use toni::enhancer::{error_handler, guard, interceptor};
 use toni_macros::{grpc_methods, grpc_service, injectable, module};
 
 mod orders_pb {
@@ -72,13 +71,12 @@ impl OrdersCounter {
 
 // ─── Guard ──────────────────────────────────────────────────────────────────
 //
-// `#[guard(grpc)]` registers this as a `Guard<GrpcContext>`. The guard
-// inspects `ctx.metadata()` — for gRPC that's the ASCII metadata map the
-// macro builds from the inbound `tonic::Request::metadata()`. Returning
-// `false` short-circuits the call with `PermissionDenied`.
+// The `impl Guard<GrpcContext>` below is the registration — the framework
+// detects it. The guard inspects `ctx.metadata()` — for gRPC that's the ASCII
+// metadata map the macro builds from the inbound `tonic::Request::metadata()`.
+// Returning `false` short-circuits the call with `PermissionDenied`.
 
 #[injectable(pub struct AuthGuard {})]
-#[guard(grpc)]
 impl AuthGuard {}
 
 #[toni::async_trait]
@@ -96,7 +94,6 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 // user method); not calling it short-circuits the call.
 
 #[injectable(pub struct LoggingInterceptor {})]
-#[interceptor(grpc)]
 impl LoggingInterceptor {}
 
 #[toni::async_trait]
@@ -123,7 +120,6 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor
 // to the original status if none claims.
 
 #[injectable(pub struct QtyErrorHandler {})]
-#[error_handler(grpc)]
 impl QtyErrorHandler {}
 
 #[toni::async_trait]

@@ -82,11 +82,6 @@ pub use extractors::{BodyStream, FromRequest, FromRequestParts};
 // Re-export macros
 pub use toni_macros::*;
 
-// Re-export enhancer marker macros with better namespacing to avoid conflicts
-pub mod enhancer {
-    pub use toni_macros::{error_handler, guard, interceptor, middleware, pipe};
-}
-
 pub use module_helpers::DynamicModule;
 pub use toni_application::{BoundAdapters, ShutdownHandle, ToniApplication};
 pub use toni_factory::ToniFactory;

@@ -13,7 +13,6 @@ use toni::*;
 use toni_macros::{injectable, module, websocket_gateway};
 
 #[injectable]
-#[guard(ws)]
 pub struct WsAuthGuard;
 
 #[async_trait]
@@ -30,7 +29,6 @@ impl Guard<WsContext> for WsAuthGuard {
 }
 
 #[injectable]
-#[interceptor(ws)]
 pub struct WsLoggingInterceptor;
 
 #[async_trait]

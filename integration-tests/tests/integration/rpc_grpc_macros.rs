@@ -19,8 +19,6 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
-use toni::enhancer::error_handler;
-use toni::{guard, interceptor};
 use toni_macros::{
     grpc_methods, grpc_service, injectable, module, use_error_handlers, use_guards,
     use_interceptors,
@@ -152,7 +150,6 @@ struct GrpcMacrosModule;
 // `impl Orders for ...` blocks never coexist on a running server.
 
 #[injectable(pub struct AuthGuard {})]
-#[guard(grpc)]
 impl AuthGuard {}
 
 #[toni::async_trait]
@@ -163,7 +160,6 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 }
 
 #[injectable(pub struct AdminGuard {})]
-#[guard(grpc)]
 impl AdminGuard {}
 
 #[toni::async_trait]
@@ -292,7 +288,6 @@ fn lock_interceptor_test() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[injectable(pub struct ServiceInterceptor {})]
-#[interceptor(grpc)]
 impl ServiceInterceptor {}
 
 #[toni::async_trait]
@@ -309,7 +304,6 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for ServiceInterceptor
 }
 
 #[injectable(pub struct MethodInterceptor {})]
-#[interceptor(grpc)]
 impl MethodInterceptor {}
 
 #[toni::async_trait]
@@ -326,7 +320,6 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for MethodInterceptor 
 }
 
 #[injectable(pub struct DenyInterceptor {})]
-#[interceptor(grpc)]
 impl DenyInterceptor {}
 
 #[toni::async_trait]
@@ -844,7 +837,6 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
 /// passes through unchanged. Lets one server cover both the claim path and
 /// the pass-through path in adjacent tests.
 #[injectable(pub struct ConditionalErrorHandler {})]
-#[error_handler(grpc)]
 impl ConditionalErrorHandler {}
 
 #[toni::async_trait]
@@ -1235,7 +1227,6 @@ async fn grpc_panic_in_handler_surfaces_as_internal() {
 // ── pipeline-segment panic coverage (guard + interceptor) ──────────────────
 
 #[injectable(pub struct PanickingGrpcGuard {})]
-#[guard(grpc)]
 impl PanickingGrpcGuard {}
 
 #[toni::async_trait]
@@ -1305,7 +1296,6 @@ impl Orders for GuardPanicGrpcService {
 struct GuardPanicGrpcModule;
 
 #[injectable(pub struct PanickingGrpcInterceptor {})]
-#[interceptor(grpc)]
 impl PanickingGrpcInterceptor {}
 
 #[toni::async_trait]
@@ -1484,7 +1474,6 @@ async fn grpc_panic_in_interceptor_surfaces_as_internal() {
 }
 
 #[injectable(pub struct PanickingGrpcErrorHandler {})]
-#[error_handler(grpc)]
 impl PanickingGrpcErrorHandler {}
 
 #[toni::async_trait]

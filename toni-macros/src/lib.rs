@@ -443,37 +443,6 @@ pub fn provide(input: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
-// ============================================================================
-// ENHANCER MARKER ATTRIBUTES
-// ============================================================================
-// These attributes mark structs as specific enhancer types (Guard, Interceptor, etc.)
-// Usage: #[injectable(pub struct Foo {})] #[guard] impl Foo { ... }
-
-#[proc_macro_attribute]
-pub fn guard(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn interceptor(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn middleware(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
 /// `#[catch(T)]` — escape hatch for runtime-selected error handling.
 ///
 /// The framework's primary error path: a domain error type implements

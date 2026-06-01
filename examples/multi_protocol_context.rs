@@ -3,8 +3,9 @@
 //! `Guard<C>` and `Interceptor<C>` take the per-request context type as a
 //! parameter, so a struct can implement them three times — once per
 //! transport — with reading code shaped for that transport's data source.
-//! The DI marker `#[guard(http, rpc, ws)]` registers the same struct for all
-//! three; a guard implemented only for `Guard<HttpContext>` cannot be
+//! Each `impl` is the registration: the framework detects which transports a
+//! provider serves from the contexts it implements, so the same struct runs on
+//! all three. A guard implemented only for `Guard<HttpContext>` cannot be
 //! attached to a gRPC method because the type system rejects the cast.
 //!
 //! Run with:  cargo run --example multi_protocol_context
@@ -36,7 +37,6 @@ use toni_macros::{injectable, module, rpc_controller, websocket_gateway};
 // ---- one guard, three transport-shaped impls --------------------------------
 
 #[injectable(pub struct UniversalAuthGuard {})]
-#[guard(http, rpc, ws)]
 impl UniversalAuthGuard {}
 
 #[async_trait]
@@ -75,7 +75,6 @@ impl Guard<WsContext> for UniversalAuthGuard {
 // ---- one logging interceptor, three transport-shaped impls ------------------
 
 #[injectable(pub struct LoggingInterceptor {})]
-#[interceptor(http, rpc, ws)]
 impl LoggingInterceptor {}
 
 #[async_trait]

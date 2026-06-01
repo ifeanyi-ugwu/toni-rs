@@ -15,7 +15,7 @@ use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
-use toni::{error_handler, guard, injectable, interceptor, pipe};
+use toni::injectable;
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -145,7 +145,6 @@ async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingWsGuard {})]
-#[guard(ws)]
 impl PanickingWsGuard {}
 
 #[async_trait]
@@ -213,7 +212,6 @@ async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingWsInterceptor {})]
-#[interceptor(ws)]
 impl PanickingWsInterceptor {}
 
 #[async_trait]
@@ -285,7 +283,6 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingWsPipe {})]
-#[pipe(ws)]
 impl PanickingWsPipe {}
 
 impl Pipe<WsContext> for PanickingWsPipe {
@@ -352,7 +349,6 @@ async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingWsErrorHandler {})]
-#[error_handler(ws)]
 impl PanickingWsErrorHandler {}
 
 #[async_trait]

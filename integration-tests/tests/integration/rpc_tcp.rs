@@ -23,7 +23,7 @@ use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni::{error_handler, guard, injectable, interceptor, pipe};
+use toni::injectable;
 use toni_macros::{rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
@@ -492,7 +492,6 @@ async fn typed_payload_parse_failure_renders_canonical_envelope() {
 }
 
 #[injectable(pub struct PanickingRpcGuard {})]
-#[guard(rpc)]
 impl PanickingRpcGuard {}
 
 #[async_trait]
@@ -558,7 +557,6 @@ async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingRpcInterceptor {})]
-#[interceptor(rpc)]
 impl PanickingRpcInterceptor {}
 
 #[async_trait]
@@ -634,7 +632,6 @@ async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive()
 }
 
 #[injectable(pub struct PanickingRpcPipe {})]
-#[pipe(rpc)]
 impl PanickingRpcPipe {}
 
 impl Pipe<RpcContext> for PanickingRpcPipe {
@@ -701,7 +698,6 @@ async fn rpc_pipe_panic_surfaces_as_envelope_and_keeps_connection_alive() {
 }
 
 #[injectable(pub struct PanickingRpcErrorHandler {})]
-#[error_handler(rpc)]
 impl PanickingRpcErrorHandler {}
 
 #[async_trait]

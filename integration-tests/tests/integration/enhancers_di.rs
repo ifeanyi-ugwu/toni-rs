@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
-use toni::enhancer::{guard, interceptor, middleware};
 use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
@@ -73,7 +72,6 @@ impl AuthService {
 #[injectable(pub struct RequestTrackingMiddleware {
     tracker: ExecutionTracker,
 })]
-#[middleware]
 impl RequestTrackingMiddleware {
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
@@ -95,7 +93,6 @@ impl Middleware for RequestTrackingMiddleware {
 #[injectable(pub struct HeaderValidationMiddleware {
     auth_service: AuthService,
 })]
-#[middleware]
 impl HeaderValidationMiddleware {
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
@@ -123,7 +120,6 @@ impl Middleware for HeaderValidationMiddleware {
 #[injectable(pub struct AdminGuard {
     auth_service: AuthService,
 })]
-#[guard(http)]
 impl AdminGuard {
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
@@ -141,7 +137,6 @@ impl Guard<HttpContext> for AdminGuard {
 #[injectable(pub struct UserGuard {
     auth_service: AuthService,
 })]
-#[guard(http)]
 impl UserGuard {
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
@@ -161,7 +156,6 @@ impl Guard<HttpContext> for UserGuard {
 #[injectable(pub struct LoggingInterceptor {
     tracker: ExecutionTracker,
 })]
-#[interceptor(http)]
 impl LoggingInterceptor {
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
@@ -184,7 +178,6 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
 #[injectable(pub struct TimingInterceptor {
     tracker: ExecutionTracker,
 })]
-#[interceptor(http)]
 impl TimingInterceptor {
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
