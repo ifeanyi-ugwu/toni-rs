@@ -16,6 +16,7 @@ mod di_providers;
 mod di_validation;
 mod enhancers;
 mod enhancers_di;
+mod phase2_autoref_probe;
 mod phase2_use_site_coercion;
 mod error_handler;
 mod extensions_and_from_request;
