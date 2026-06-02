@@ -2,12 +2,13 @@
 //!
 //! Every provider here is a plain struct with a normal `impl`. Dependencies are declared
 //! as `#[inject]` fields; owned state uses `#[default(...)]`; scope is set with a companion
-//! `#[provider(scope = "...")]` attribute. Compare with `provider_patterns.rs`, which threads
-//! the struct definition through the `#[injectable(pub struct ... { ... })]` attribute.
+//! `#[provider(scope = "...")]` attribute; a `#[new]` constructor injects dependencies that need
+//! not be stored as fields. Compare with `provider_patterns.rs`, which threads the struct
+//! definition through the `#[injectable(pub struct ... { ... })]` attribute.
 //!
 //! Run with:  cargo run --example derive_injectable
 
-use toni::{Injectable, module, toni_factory::ToniFactory};
+use toni::{Injectable, module, new, toni_factory::ToniFactory};
 
 #[derive(Clone, Injectable)]
 pub struct Config {
@@ -53,21 +54,20 @@ impl Greeter {
     }
 }
 
-// `init = "new"` redirects construction through `Self::new(deps…)`: the resolved `#[inject]`
-// fields are passed in declaration order. `new` owns assembly, so it can derive extra state
-// (here `prefix`) without a `#[default]` field. A missing/mis-typed `new` fails loudly.
+// `#[new]` marks a DI constructor: each parameter is resolved from the container and passed in.
+// Here `config` is injected and used, but NOT stored — only the derived `prefix` is a field, which
+// plain field injection can't express. Without `#[new]`, the derive builds by field injection.
 #[derive(Clone, Injectable)]
-#[provider(init = "new")]
 pub struct Banner {
-    #[inject]
-    config: Config,
     prefix: String,
 }
 
 impl Banner {
-    pub fn new(config: Config) -> Self {
-        let prefix = format!("<{}>", config.env());
-        Self { config, prefix }
+    #[new]
+    fn new(config: Config) -> Self {
+        Self {
+            prefix: format!("<{}>", config.env()),
+        }
     }
 
     pub fn render(&self) -> String {
@@ -96,8 +96,8 @@ async fn main() {
     let banner = app
         .get::<Banner>()
         .await
-        .expect("Banner resolves via Self::new(config)");
+        .expect("Banner resolves via its #[new] constructor");
     println!("  {}", banner.render());
 
-    println!("\n✅ resolved field-injection + init=\"new\" from plain structs + derives");
+    println!("\n✅ resolved field injection + a #[new] constructor (non-stored dep) from plain structs");
 }

@@ -451,7 +451,11 @@ fn generate_request_provider(
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
+    //
+    // Build via the `#[new]` constructor when one exists (inherent fn shadows the blanket
+    // `CtorBridge` default), else by field injection — same dispatch as the singleton factory.
     let execute_body = quote! {
+        use ::toni::__construct::CtorBridge as _;
         let ::toni::ProviderContext::Http(__http_ctx) = _ctx else {
             panic!(
                 "Request-scoped provider '{}' requires an HTTP execution context. \
@@ -462,8 +466,13 @@ fn generate_request_provider(
         if let Some(__cached) = __http_ctx.cache.get::<#struct_name>() {
             return Box::new(__cached);
         }
-        #(#field_resolutions)*
-        let instance = #struct_instantiation;
+        let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies) {
+            ::std::option::Option::Some(__fut) => __fut.await,
+            ::std::option::Option::None => {
+                #(#field_resolutions)*
+                #struct_instantiation
+            }
+        };
         __http_ctx.cache.insert(instance.clone());
         Box::new(instance)
     };
@@ -565,10 +574,15 @@ fn generate_transient_provider(
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
                 _ctx: ::toni::ProviderContext<'_>,
             ) -> Box<dyn ::std::any::Any + Send> {
-                #(#field_resolutions)*
-
-                let instance = #struct_instantiation;
-
+                // Build via the `#[new]` constructor when one exists, else by field injection.
+                use ::toni::__construct::CtorBridge as _;
+                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies) {
+                    ::std::option::Option::Some(__fut) => __fut.await,
+                    ::std::option::Option::None => {
+                        #(#field_resolutions)*
+                        #struct_instantiation
+                    }
+                };
                 Box::new(instance)
             }
 
@@ -1182,7 +1196,10 @@ fn generate_request_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
+                // field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1265,7 +1282,10 @@ fn generate_transient_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
+                // field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1459,6 +1479,15 @@ fn generate_dyn_factories(
                 &'a self,
                 request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
             ) -> #struct_name {
+                // A `#[new]` constructor takes over construction (its params resolve with a
+                // non-request context); otherwise fall back to field injection, which threads
+                // `request_parts` for request-scoped sub-dependencies.
+                use ::toni::__construct::CtorBridge as _;
+                if let ::std::option::Option::Some(__fut) =
+                    <#struct_name>::__toni_ctor_build(&*self.all_deps)
+                {
+                    return __fut.await;
+                }
                 let all_deps = self.all_deps.clone();
                 let __request_cache = ::toni::traits_helpers::RequestCache::new();
                 #(#field_resolutions)*

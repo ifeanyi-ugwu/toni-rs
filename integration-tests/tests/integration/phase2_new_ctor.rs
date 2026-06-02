@@ -78,6 +78,46 @@ impl Guard<HttpContext> for PortGuard {
     }
 }
 
+// Request-scoped #[new]: built fresh per request, ConfigService injected, not stored.
+#[derive(Clone, Injectable)]
+#[provider(scope = "request")]
+pub struct ReqServer {
+    port: u16,
+}
+
+impl ReqServer {
+    #[new]
+    fn new(config: ConfigService) -> Self {
+        Self {
+            port: config.port(),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+// Transient-scoped #[new]: built per resolution.
+#[derive(Clone, Injectable)]
+#[provider(scope = "transient")]
+pub struct TransientServer {
+    port: u16,
+}
+
+impl TransientServer {
+    #[new]
+    fn new(config: ConfigService) -> Self {
+        Self {
+            port: config.port(),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiController;
 
@@ -94,7 +134,23 @@ impl ApiController {
     }
 }
 
-#[module(controllers: [ApiController], providers: [ConfigService, Server, PortGuard])]
+// Injects the request-scoped #[new] provider as a field (the request-scoped DI path) and echoes its
+// derived port — proving the constructor ran per request, not that a defaulted field was used.
+#[controller("/req", pub struct ReqController {
+    #[inject]
+    server: ReqServer,
+})]
+impl ReqController {
+    #[get("/port")]
+    fn port(&self) -> ToniBody {
+        ToniBody::text(self.server.port().to_string())
+    }
+}
+
+#[module(
+    controllers: [ApiController, ReqController],
+    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer],
+)]
 struct NewCtorModule {}
 
 #[tokio_localset_test::localset_test]
@@ -128,6 +184,35 @@ async fn new_ctor_built_guard_still_auto_detects_role() {
         .unwrap();
     assert_eq!(resp.status(), 200, "guard admits when x-port matches configured port");
     assert_eq!(resp.text().await.unwrap(), "ok");
+}
+
+#[tokio_localset_test::localset_test]
+async fn new_ctor_transient_scope_resolves() {
+    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    // Transient is resolvable through the application context; the constructor must have run.
+    let t: TransientServer = app
+        .get::<TransientServer>()
+        .await
+        .expect("TransientServer resolves via #[new]");
+    assert_eq!(t.port(), 8080);
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn new_ctor_request_scope_resolves_per_request() {
+    let server = TestServer::start(NewCtorModule::module_definition()).await;
+    let resp = server
+        .client()
+        .get(server.url("/req/port"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "8080",
+        "request-scoped #[new] must run the constructor (injected port), not default the field"
+    );
 }
 
 // Keep Arc import meaningful even if unused in asserts.
