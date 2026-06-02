@@ -18,6 +18,7 @@ mod enhancers;
 mod enhancers_di;
 mod phase2_autoref_probe;
 mod phase2_marker_free_e2e;
+mod phase2_new_ctor;
 mod phase2_provider_macro_autoref;
 mod phase2_use_site_coercion;
 mod error_handler;
@@ -53,3 +54,4 @@ mod websocket_e2e;
 mod graphql_subscriptions;
 mod ws_handler_stream;
 mod ws_panic_recovery;
+

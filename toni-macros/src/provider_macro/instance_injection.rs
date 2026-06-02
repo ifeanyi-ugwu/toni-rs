@@ -1077,24 +1077,30 @@ fn generate_singleton_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens (inherent fn shadows the
+                // blanket `CtorBridge` default); otherwise fall back to the field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
                 &self,
                 __deps: ::toni::FxHashMap<String, ::toni::traits_helpers::Injectable>,
             ) -> ::toni::traits_helpers::Injectable {
+                use ::toni::__construct::CtorBridge as _;
                 let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
                     __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
 
                 #scope_validation
 
-                // Resolve all dependencies at startup
-                #(#field_resolutions)*
-
-                let instance = ::std::sync::Arc::new({
-                    #struct_instantiation
-                });
+                // Build via the `#[new]` constructor if one exists, else by field injection.
+                let instance = match <#struct_name>::__toni_ctor_build(&dependencies) {
+                    ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
+                    ::std::option::Option::None => ::std::sync::Arc::new({
+                        #(#field_resolutions)*
+                        #struct_instantiation
+                    }),
+                };
 
                 let mut __roles = ::std::vec::Vec::new();
                 #role_pushes

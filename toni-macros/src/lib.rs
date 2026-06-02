@@ -377,6 +377,31 @@ pub fn derive_injectable(input: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+/// Marks the dependency-injected constructor of a `#[derive(Injectable)]` provider.
+///
+/// Place it on a `fn name(deps…) -> Self` inside the struct's `impl`. Each parameter is resolved
+/// from the DI container (by type, or `#[inject("TOKEN")]`) and passed in — so a dependency can be
+/// a constructor argument without being a stored field, and the constructor can run real assembly
+/// logic. Without `#[new]`, the derive builds the struct by field injection instead.
+///
+/// ```ignore
+/// #[derive(Clone, Injectable)]
+/// pub struct Server { port: u16 }
+///
+/// impl Server {
+///     #[new]
+///     fn new(config: ConfigService) -> Self {   // config injected, not stored
+///         Self { port: config.port() }
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn new(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let output = provider_macro::new_ctor::handle_new(item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
