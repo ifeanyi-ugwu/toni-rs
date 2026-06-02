@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
+use crate::http_helpers::RequestPart;
 use crate::traits_helpers::Provider;
 
 /// The already-built dependency providers passed to a factory's `build`, keyed by token.
@@ -31,6 +32,10 @@ pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
 /// `__toni_ctor_tokens` returns the constructor's dependency tokens (so the factory can declare
 /// them); `__toni_ctor_build` resolves those dependencies and calls the constructor. `None` from
 /// either means "no `#[new]` — use field injection".
+///
+/// `request_parts` carries the active HTTP request parts when one exists (request-scoped
+/// construction), so a constructor parameter that is itself request-scoped can be resolved; it is
+/// `None` for singleton/transient construction, matching the field-injection paths.
 pub trait CtorBridge: Sized {
     fn __toni_ctor_tokens() -> Option<Vec<String>> {
         None
@@ -38,6 +43,7 @@ pub trait CtorBridge: Sized {
 
     fn __toni_ctor_build<'a>(
         _deps: &'a ResolvedDeps,
+        _request_parts: Option<&'a RequestPart>,
     ) -> Option<Pin<Box<dyn Future<Output = Self> + Send + 'a>>> {
         None
     }

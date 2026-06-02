@@ -466,7 +466,12 @@ fn generate_request_provider(
         if let Some(__cached) = __http_ctx.cache.get::<#struct_name>() {
             return Box::new(__cached);
         }
-        let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies) {
+        // Request scope: pass the active request parts so a request-scoped constructor parameter
+        // can itself be resolved.
+        let instance = match <#struct_name>::__toni_ctor_build(
+            &self.dependencies,
+            ::std::option::Option::Some(__http_ctx.parts),
+        ) {
             ::std::option::Option::Some(__fut) => __fut.await,
             ::std::option::Option::None => {
                 #(#field_resolutions)*
@@ -575,8 +580,10 @@ fn generate_transient_provider(
                 _ctx: ::toni::ProviderContext<'_>,
             ) -> Box<dyn ::std::any::Any + Send> {
                 // Build via the `#[new]` constructor when one exists, else by field injection.
+                // Transient construction carries no request context (a transient consumed in a
+                // request is rebuilt there; its own request-scoped params resolve via that path).
                 use ::toni::__construct::CtorBridge as _;
-                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies) {
+                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies, ::std::option::Option::None) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
@@ -1108,7 +1115,8 @@ fn generate_singleton_factory(
                 #scope_validation
 
                 // Build via the `#[new]` constructor if one exists, else by field injection.
-                let instance = match <#struct_name>::__toni_ctor_build(&dependencies) {
+                // Singletons are built at startup with no request context.
+                let instance = match <#struct_name>::__toni_ctor_build(&dependencies, ::std::option::Option::None) {
                     ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
                     ::std::option::Option::None => ::std::sync::Arc::new({
                         #(#field_resolutions)*
@@ -1479,12 +1487,11 @@ fn generate_dyn_factories(
                 &'a self,
                 request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
             ) -> #struct_name {
-                // A `#[new]` constructor takes over construction (its params resolve with a
-                // non-request context); otherwise fall back to field injection, which threads
-                // `request_parts` for request-scoped sub-dependencies.
+                // A `#[new]` constructor takes over construction; otherwise fall back to field
+                // injection. Both thread `request_parts` so request-scoped sub-dependencies resolve.
                 use ::toni::__construct::CtorBridge as _;
                 if let ::std::option::Option::Some(__fut) =
-                    <#struct_name>::__toni_ctor_build(&*self.all_deps)
+                    <#struct_name>::__toni_ctor_build(&*self.all_deps, request_parts)
                 {
                     return __fut.await;
                 }

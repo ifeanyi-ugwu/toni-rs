@@ -98,6 +98,28 @@ impl ReqServer {
     }
 }
 
+// The case the request-context fix unlocks: a request-scoped #[new] provider whose constructor
+// injects ANOTHER request-scoped provider (ReqServer). Before the fix this panicked, because the
+// constructor resolved its params with no request context.
+#[derive(Clone, Injectable)]
+#[provider(scope = "request")]
+pub struct ReqFacade {
+    port: u16,
+}
+
+impl ReqFacade {
+    #[new]
+    fn new(inner: ReqServer) -> Self {
+        Self {
+            port: inner.port(),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 // Transient-scoped #[new]: built per resolution.
 #[derive(Clone, Injectable)]
 #[provider(scope = "transient")]
@@ -139,17 +161,26 @@ impl ApiController {
 #[controller("/req", pub struct ReqController {
     #[inject]
     server: ReqServer,
+    #[inject]
+    facade: ReqFacade,
 })]
 impl ReqController {
     #[get("/port")]
     fn port(&self) -> ToniBody {
         ToniBody::text(self.server.port().to_string())
     }
+
+    // ReqFacade was built via #[new] injecting the request-scoped ReqServer — exercises the
+    // request-context threading through the constructor bridge.
+    #[get("/facade-port")]
+    fn facade_port(&self) -> ToniBody {
+        ToniBody::text(self.facade.port().to_string())
+    }
 }
 
 #[module(
     controllers: [ApiController, ReqController],
-    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer],
+    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer, ReqFacade],
 )]
 struct NewCtorModule {}
 
@@ -213,6 +244,22 @@ async fn new_ctor_request_scope_resolves_per_request() {
         "8080",
         "request-scoped #[new] must run the constructor (injected port), not default the field"
     );
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn new_ctor_can_inject_request_scoped_dependency() {
+    let server = TestServer::start(NewCtorModule::module_definition()).await;
+    // ReqFacade's #[new] injects the request-scoped ReqServer — resolves only because the
+    // constructor bridge threads the request context.
+    let resp = server
+        .client()
+        .get(server.url("/req/facade-port"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "8080");
 }
 
 // Keep Arc import meaningful even if unused in asserts.

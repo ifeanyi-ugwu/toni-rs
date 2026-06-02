@@ -50,10 +50,12 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         #[allow(unused_variables, non_snake_case)]
         fn __toni_ctor_build<'a>(
             deps: &'a ::toni::__construct::ResolvedDeps,
+            request_parts: ::std::option::Option<&'a ::toni::http_helpers::RequestPart>,
         ) -> ::std::option::Option<
             ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self> + Send + 'a>>
         > {
             ::std::option::Option::Some(::std::boxed::Box::pin(async move {
+                let __request_cache = ::toni::traits_helpers::RequestCache::new();
                 #(#resolutions)*
                 Self::#method_name(#(#arg_names),*)
             }))
@@ -99,8 +101,10 @@ fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStr
     Ok(None)
 }
 
-/// Resolve one constructor parameter from the dependency map. Uses `ProviderContext::None`, as the
-/// singleton/factory dep-resolution paths do; panics with a clear message on a missing dep.
+/// Resolve one constructor parameter from the dependency map, scope-aware: a request-scoped
+/// parameter is resolved with the active HTTP context (threaded via `request_parts` +
+/// `__request_cache`), anything else with `ProviderContext::None` — mirroring the field-injection
+/// paths. Panics with a clear message on a missing dep or absent request context.
 fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     let name_str = name.to_string();
     quote! {
@@ -112,8 +116,21 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
                     "Missing dependency '{}' for #[new] parameter '{}'",
                     __lookup_token, #name_str
                 ));
+            let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
+                ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
+                    parts: request_parts.unwrap_or_else(|| panic!(
+                        "#[new] parameter '{}' is request-scoped but no HTTP request context is \
+                         available; request-scoped dependencies can only be constructed within a \
+                         request",
+                        #name_str
+                    )),
+                    cache: &__request_cache,
+                })
+            } else {
+                ::toni::ProviderContext::None
+            };
             let __any = __provider
-                .execute(::std::vec::Vec::new(), ::toni::ProviderContext::None)
+                .execute(::std::vec::Vec::new(), __ctx)
                 .await;
             *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
                 "Failed to downcast '{}' to {} for #[new] parameter '{}'",
