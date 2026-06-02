@@ -357,7 +357,7 @@ async fn guard_authorization() {
         controllers: [TestController],
         providers: [
             provider_value!(ExecutionOrder, get_tracker()),
-            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker), AuthGuard, guard(http)),
+            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker)),
         ],
     )]
     impl TestModule {}

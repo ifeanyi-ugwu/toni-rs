@@ -261,53 +261,7 @@ fn generate_provider_wrapper(
 /// no marker required. Structural roles (gateway / rpc-controller / grpc-service) stay flag-driven:
 /// they come from the structural macros that also generate the trait impls and routing.
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
-    use crate::shared::enhancer_emit::{EnhancerKind, ErrorHandlerKind};
-
-    // Each probe call must sit where `instance`'s type is concrete (here, in `build()`); a generic
-    // wrapper fn would erase the bound and always miss. `__r` is scoped to each `if let` body.
-    let mut detects = Vec::new();
-
-    detects.push(quote! {
-        if let Some(__r) = ::toni::__detect::MiddlewareProbe(instance.clone()).detect() {
-            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(__r));
-        }
-    });
-
-    for kind in EnhancerKind::all() {
-        let spec = kind.spec();
-        let probe = Ident::new(&format!("{}Probe", spec.factory_suffix), proc_macro2::Span::call_site());
-        let role_variant = &spec.role_variant;
-        let entry_path = &spec.entry_path;
-        detects.push(quote! {
-            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
-                __roles.push(#role_variant(#entry_path::Ready(__r)));
-            }
-        });
-    }
-    for kind in ErrorHandlerKind::all() {
-        let spec = kind.spec();
-        let probe_name = match kind {
-            ErrorHandlerKind::Http => "HttpErrorHandlerProbe",
-            ErrorHandlerKind::Rpc => "RpcErrorHandlerProbe",
-            ErrorHandlerKind::Ws => "WsErrorHandlerProbe",
-            ErrorHandlerKind::Grpc => "GrpcErrorHandlerProbe",
-        };
-        let probe = Ident::new(probe_name, proc_macro2::Span::call_site());
-        let role_variant = &spec.role_variant;
-        detects.push(quote! {
-            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
-                __roles.push(#role_variant(__r));
-            }
-        });
-    }
-
-    let mut pushes = Vec::new();
-    pushes.push(quote! {
-        {
-            use ::toni::__detect::prelude::*;
-            #(#detects)*
-        }
-    });
+    let mut pushes = vec![crate::shared::enhancer_emit::value_probe_detection()];
 
     if traits.is_gateway {
         pushes.push(quote! {

@@ -18,6 +18,7 @@ mod enhancers;
 mod enhancers_di;
 mod phase2_autoref_probe;
 mod phase2_marker_free_e2e;
+mod phase2_provider_macro_autoref;
 mod phase2_use_site_coercion;
 mod error_handler;
 mod extensions_and_from_request;
