@@ -78,12 +78,15 @@ pub fn generate_instance_provider_system(
         is_grpc_service,
     };
 
+    // Attribute form scans the impl for hooks and delegates by method name; it does not use the
+    // `#[on_*]` bridge.
     let provider_wrapper = generate_provider_wrapper(
         &struct_name,
         dependencies,
         scope,
         &enhancer_traits,
         &lifecycle_hooks,
+        false,
     );
 
     let factory = generate_factory(&struct_name, dependencies, scope, &enhancer_traits);
@@ -128,12 +131,14 @@ pub fn generate_provider_from_struct(
     let enhancer_traits = EnhancerTraits::default();
     let lifecycle_hooks = LifecycleHooks::default();
 
+    // Derive can't see the impl, so it dispatches lifecycle through the `#[on_*]` bridge.
     let provider_wrapper = generate_provider_wrapper(
         &struct_name,
         &dependencies,
         scope,
         &enhancer_traits,
         &lifecycle_hooks,
+        true,
     );
     let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
     let factory_accessor = generate_provider_factory_accessor(&struct_name);
@@ -239,9 +244,12 @@ fn generate_provider_wrapper(
     scope: ProviderScope,
     enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
+    lifecycle_via_bridge: bool,
 ) -> TokenStream {
     match scope {
-        ProviderScope::Singleton => generate_singleton_provider(struct_name, lifecycle_hooks),
+        ProviderScope::Singleton => {
+            generate_singleton_provider(struct_name, lifecycle_hooks, lifecycle_via_bridge)
+        }
         ProviderScope::Request => {
             generate_request_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
         }
@@ -340,12 +348,52 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
     quote! { #(#methods)* }
 }
 
+/// Generate the five `Provider` lifecycle overrides for the derive path, each forwarding to the
+/// `#[on_*]` bridge method on the instance. The inherent bridge method (emitted by a hook macro)
+/// runs the user hook when present, else the blanket `LifecycleBridge` no-op — so the derive
+/// dispatches uniformly without knowing which hooks exist.
+///
+/// Calls go through UFCS on the concrete type (`Struct::__toni_lc_*(&*self.instance)`) rather than
+/// method syntax on `self.instance`. The blanket `impl<T: ?Sized> LifecycleBridge for T` also covers
+/// `Arc<Struct>`, so `self.instance.__toni_lc_*()` binds the no-op at the `Arc` level and never
+/// derefs to the inherent forwarder on `Struct`. UFCS pins resolution to `Struct`, where the
+/// inherent method wins over the blanket when present.
+fn generate_bridge_lifecycle_methods(struct_name: &Ident) -> TokenStream {
+    quote! {
+        async fn on_module_init(&self) -> ::toni::InitResult {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_init(&*self.instance).await
+        }
+        async fn on_application_bootstrap(&self) -> ::toni::InitResult {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_bootstrap(&*self.instance).await
+        }
+        async fn on_module_destroy(&self) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_destroy(&*self.instance).await;
+        }
+        async fn before_application_shutdown(&self, signal: Option<String>) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_before_shutdown(&*self.instance, signal).await;
+        }
+        async fn on_application_shutdown(&self, signal: Option<String>) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_shutdown(&*self.instance, signal).await;
+        }
+    }
+}
+
 fn generate_singleton_provider(
     struct_name: &Ident,
     lifecycle_hooks: &LifecycleHooks,
+    lifecycle_via_bridge: bool,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-    let lifecycle_methods = generate_lifecycle_direct_methods(lifecycle_hooks);
+    let lifecycle_methods = if lifecycle_via_bridge {
+        generate_bridge_lifecycle_methods(struct_name)
+    } else {
+        generate_lifecycle_direct_methods(lifecycle_hooks)
+    };
 
     quote! {
         struct #provider_name {

@@ -402,6 +402,44 @@ pub fn new(_attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+macro_rules! lifecycle_hook_macro {
+    ($name:ident, $hook:expr, $doc:literal) => {
+        #[doc = $doc]
+        #[proc_macro_attribute]
+        pub fn $name(_attr: TokenStream, item: TokenStream) -> TokenStream {
+            let item = proc_macro2::TokenStream::from(item);
+            let output = provider_macro::lifecycle_attr::handle_hook($hook, item);
+            proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+        }
+    };
+}
+
+lifecycle_hook_macro!(
+    on_init,
+    provider_macro::lifecycle_attr::Hook::OnInit,
+    "Lifecycle hook on a `#[derive(Injectable)]` provider: `async fn(&self) -> toni::InitResult`, run after the DI container is built. Returning `Err` aborts startup."
+);
+lifecycle_hook_macro!(
+    on_bootstrap,
+    provider_macro::lifecycle_attr::Hook::OnBootstrap,
+    "Lifecycle hook: `async fn(&self) -> toni::InitResult`, run after all modules initialize, before the server accepts connections."
+);
+lifecycle_hook_macro!(
+    on_destroy,
+    provider_macro::lifecycle_attr::Hook::OnDestroy,
+    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown."
+);
+lifecycle_hook_macro!(
+    before_shutdown,
+    provider_macro::lifecycle_attr::Hook::BeforeShutdown,
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run before shutdown begins."
+);
+lifecycle_hook_macro!(
+    on_shutdown,
+    provider_macro::lifecycle_attr::Hook::OnShutdown,
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run as the application shuts down."
+);
+
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)

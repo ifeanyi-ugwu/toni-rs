@@ -9,6 +9,8 @@ pub use context::{CancellationToken, GrpcContext, HandlerContext, HttpContext, R
 pub mod __construct;
 #[doc(hidden)]
 pub mod __detect;
+#[doc(hidden)]
+pub mod __lifecycle;
 pub mod di;
 pub mod errors;
 pub mod extractors;
