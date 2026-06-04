@@ -1,4 +1,4 @@
-//! `#[new]` constructor injection on `#[derive(Injectable)]`: a dependency can be a constructor
+//! `#[new]` constructor injection on `#[provider]`: a dependency can be a constructor
 //! parameter without being a stored field, and the constructor can derive non-injected state.
 //!
 //! This is the one case field injection can't express — `Server` injects `ConfigService`, keeps
@@ -10,14 +10,14 @@ use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
 use toni::{
-    Body as ToniBody, Injectable, controller, get, module, new, toni_factory::ToniFactory,
+    Body as ToniBody, controller, get, module, new, provider, toni_factory::ToniFactory,
     use_guards,
 };
 
 use crate::common::TestServer;
 use serial_test::serial;
 
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct ConfigService {
     #[default(8080)]
     port: u16,
@@ -31,7 +31,7 @@ impl ConfigService {
 
 // `#[new]`: ConfigService is injected and used, but NOT a field. `port` is derived from it. The
 // struct has no DI field at all — impossible to express with field injection.
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct Server {
     port: u16,
 }
@@ -51,7 +51,7 @@ impl Server {
 
 // A guard built via #[new] with a non-stored dep — proves ctor-built providers still get their
 // roles auto-detected (the bridge feeds the same factory the probes run in).
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct PortGuard {
     threshold: u16,
 }
@@ -79,7 +79,6 @@ impl Guard<HttpContext> for PortGuard {
 }
 
 // Request-scoped #[new]: built fresh per request, ConfigService injected, not stored.
-#[derive(Clone, Injectable)]
 #[provider(scope = "request")]
 pub struct ReqServer {
     port: u16,
@@ -101,7 +100,6 @@ impl ReqServer {
 // The case the request-context fix unlocks: a request-scoped #[new] provider whose constructor
 // injects ANOTHER request-scoped provider (ReqServer). Before the fix this panicked, because the
 // constructor resolved its params with no request context.
-#[derive(Clone, Injectable)]
 #[provider(scope = "request")]
 pub struct ReqFacade {
     port: u16,
@@ -121,7 +119,6 @@ impl ReqFacade {
 }
 
 // Transient-scoped #[new]: built per resolution.
-#[derive(Clone, Injectable)]
 #[provider(scope = "transient")]
 pub struct TransientServer {
     port: u16,

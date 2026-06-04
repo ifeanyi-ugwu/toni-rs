@@ -1,4 +1,4 @@
-//! End-to-end proof that a guard needs no marker: `#[derive(Injectable)]` + `impl Guard<HttpContext>`,
+//! End-to-end proof that a guard needs no marker: `#[provider]` + `impl Guard<HttpContext>`,
 //! applied with `#[use_guards(AdminGuard)]`, blocks/admits real HTTP requests.
 //!
 //! The provider factory auto-detects the `Guard<HttpContext>` impl (via `toni::__detect`) and
@@ -9,12 +9,12 @@
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
-use toni::{Body as ToniBody, Injectable, RequestPart, controller, get, module, use_guards};
+use toni::{Body as ToniBody, RequestPart, controller, get, module, provider, use_guards};
 
 use crate::common::TestServer;
 use serial_test::serial;
 
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct AuthService {
     #[default(true)]
     require_token: bool,
@@ -27,7 +27,7 @@ impl AuthService {
 }
 
 // No `#[guard(http)]`. The `impl Guard<HttpContext>` below is the only declaration.
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct AdminGuard {
     #[inject]
     auth: AuthService,
@@ -40,10 +40,9 @@ impl Guard<HttpContext> for AdminGuard {
     }
 }
 
-// A request-scoped guard, also marker-free: `#[provider(scope = "request")]` on the derive sets the
+// A request-scoped guard, also marker-free: `#[provider(scope = "request")]` sets the
 // scope; the `impl Guard<HttpContext>` is detected per request through the dyn-factory path. This
 // exercises the type-level probe (registration decision) + value probe (per-request coercion).
-#[derive(Clone, Injectable)]
 #[provider(scope = "request")]
 pub struct RequestScopedGuard {
     #[default(false)]

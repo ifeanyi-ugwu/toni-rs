@@ -57,7 +57,7 @@ pub fn generate_instance_provider_system(
     };
 
     let struct_emit = struct_def.map(|s| {
-        let s = add_clone_derive(s);
+        let s = add_clone_and_inject_fields(s);
         quote! { #[allow(dead_code)] #s }
     });
 
@@ -104,17 +104,18 @@ pub fn generate_instance_provider_system(
     })
 }
 
-/// Emit the provider + factory + accessor for `struct_def` without re-emitting the struct
-/// or any impl block — the `#[derive(Injectable)]` path. The struct already exists and the
-/// user owns their `impl`, so the derive contributes only the DI wiring.
+/// Emit the provider + factory + accessor for `struct_def` — the `#[provider]` codegen. The caller
+/// (`provider_attr`) re-emits the struct itself; this contributes only the DI wiring beside it.
 ///
 /// Dependencies are declared as `#[inject]` fields. By default the instance is assembled as
 /// a struct literal (`#[default(...)]` for owned state). With `init = "new"`, construction is
 /// redirected through `Self::new(deps…)` instead — the resolved `#[inject]` fields are passed
-/// in declaration order. The derive never sees the constructor, so a missing or mis-typed
-/// `new` surfaces as an ordinary compile error at the generated call.
+/// in declaration order. This codegen never sees the impl, so a missing or mis-typed `new`
+/// surfaces as an ordinary compile error at the generated call.
 ///
-/// Lifecycle hooks still require the attribute form: they're impl methods, invisible to a derive.
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_init]`, …) live on the struct's `impl`
+/// and reach this path via the `toni::__construct` / `toni::__lifecycle` bridges — the provider
+/// wrapper dispatches to them without this codegen needing to see the methods.
 pub fn generate_provider_from_struct(
     struct_def: &ItemStruct,
     scope: ProviderScope,
@@ -171,7 +172,7 @@ pub fn generate_provider_from_struct(
 /// This is an acceptable limitation because:
 /// - Macros process attributes linearly and cannot look ahead to future impl blocks
 /// - Compile errors are clear when conflicts occur
-fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
+pub fn add_clone_and_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     let mut struct_def = struct_attrs.clone();
 
     let has_clone = struct_def.attrs.iter().any(|attr| {

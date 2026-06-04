@@ -1,16 +1,15 @@
-//! `#[derive(Injectable)]` — field-injection providers without the struct-in-macro form.
+//! `#[provider]` — field-injection providers as plain structs.
 //!
-//! Every provider here is a plain struct with a normal `impl`. Dependencies are declared
-//! as `#[inject]` fields; owned state uses `#[default(...)]`; scope is set with a companion
-//! `#[provider(scope = "...")]` attribute; a `#[new]` constructor injects dependencies that need
-//! not be stored as fields. Compare with `provider_patterns.rs`, which threads the struct
-//! definition through the `#[injectable(pub struct ... { ... })]` attribute.
+//! Each provider is a normal struct tagged `#[provider]`, with a normal `impl`. Dependencies are
+//! `#[inject]` fields; owned state uses `#[default(...)]`; scope is `#[provider(scope = "...")]`; a
+//! `#[new]` constructor injects dependencies that need not be stored as fields. No `Clone` derive,
+//! no struct threaded through a macro attribute.
 //!
 //! Run with:  cargo run --example derive_injectable
 
-use toni::{Injectable, module, new, toni_factory::ToniFactory};
+use toni::{module, new, provider, toni_factory::ToniFactory};
 
-#[derive(Clone, Injectable)]
+#[provider]
 pub struct Config {
     #[default("production".to_string())]
     env: String,
@@ -22,9 +21,7 @@ impl Config {
     }
 }
 
-// `#[provider(scope = "...")]` is the companion attribute that replaces the
-// `#[injectable(scope = "...")]` argument. A fresh Logger is built per resolution.
-#[derive(Clone, Injectable)]
+// A fresh Logger is built per resolution.
 #[provider(scope = "transient")]
 pub struct Logger {
     #[default("info".to_string())]
@@ -37,9 +34,9 @@ impl Logger {
     }
 }
 
-// Field injection: `config` and `logger` are resolved from the container and moved into
-// the fields at build time. No `new()`, no struct threaded through a macro attribute.
-#[derive(Clone, Injectable)]
+// Field injection: `config` and `logger` are resolved from the container and moved into the fields
+// at build time.
+#[provider]
 pub struct Greeter {
     #[inject]
     config: Config,
@@ -56,8 +53,8 @@ impl Greeter {
 
 // `#[new]` marks a DI constructor: each parameter is resolved from the container and passed in.
 // Here `config` is injected and used, but NOT stored — only the derived `prefix` is a field, which
-// plain field injection can't express. Without `#[new]`, the derive builds by field injection.
-#[derive(Clone, Injectable)]
+// plain field injection can't express.
+#[provider]
 pub struct Banner {
     prefix: String,
 }
@@ -80,7 +77,7 @@ struct AppModule {}
 
 #[tokio::main]
 async fn main() {
-    println!("🔧 #[derive(Injectable)] field injection\n");
+    println!("🔧 #[provider] field injection\n");
 
     let app = ToniFactory::new()
         .create_with(AppModule::module_definition())

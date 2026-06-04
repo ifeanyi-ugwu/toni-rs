@@ -1,4 +1,4 @@
-//! Bridge between a `#[derive(Injectable)]` provider and its optional lifecycle-hook methods.
+//! Bridge between a `#[provider]` provider and its optional lifecycle-hook methods.
 //!
 //! Lifecycle hooks (`#[on_init]`, `#[on_bootstrap]`, `#[on_destroy]`, `#[before_shutdown]`,
 //! `#[on_shutdown]`) live on the user's `impl`, which the derive can't see. Each hook macro emits an
