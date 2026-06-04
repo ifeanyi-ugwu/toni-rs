@@ -13,7 +13,7 @@
 
 use serde_json::json;
 use toni::toni_factory::ToniFactory;
-use toni::{controller, get, injectable, module, Body};
+use toni::{controller, get, module, provider, Body};
 use toni_axum::AxumAdapter;
 use toni_config::{Config, ConfigModule, ConfigService};
 
@@ -36,10 +36,11 @@ struct AppConfig {
     pub max_connections: u32,
 }
 
-#[injectable(pub struct AppService {
+#[provider]
+pub struct AppService {
     #[inject]
     config: ConfigService<AppConfig>,
-})]
+}
 impl AppService {
     pub fn get_config(&self) -> AppConfig {
         self.config.get()

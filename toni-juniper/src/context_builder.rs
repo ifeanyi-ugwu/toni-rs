@@ -23,12 +23,14 @@ use toni::RequestPart;
 ///
 /// impl JuniperContext for MyContext {}
 ///
-/// #[injectable(
-///     pub struct _MyContextBuilder {
-///         auth_service: _AuthService,
-///         db_service: _DatabaseService,
-///     }
-/// )]
+/// #[provider]
+/// pub struct _MyContextBuilder {
+///     #[inject]
+///     auth_service: _AuthService,
+///     #[inject]
+///     db_service: _DatabaseService,
+/// }
+///
 /// #[async_trait]
 /// impl ContextBuilder for _MyContextBuilder {
 ///     type Context = MyContext;

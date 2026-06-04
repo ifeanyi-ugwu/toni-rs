@@ -3,7 +3,7 @@
 //! New syntax: #[injectable] pub struct Foo { ... }
 //! Old syntax: #[injectable(pub struct Foo { ... })]
 
-use toni::{injectable, module};
+use toni::{module, new, provider};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -13,7 +13,7 @@ struct TestConfig {
 }
 
 // Test 1: New syntax - basic
-#[injectable]
+#[provider]
 pub struct SimpleService {
     #[inject]
     config: ConfigService<TestConfig>,
@@ -26,7 +26,7 @@ impl SimpleService {
 }
 
 // Test 2: New syntax with scope
-#[injectable(scope = "request")]
+#[provider(scope = "request")]
 pub struct RequestService {
     #[inject]
     config: ConfigService<TestConfig>,
@@ -39,7 +39,7 @@ impl RequestService {
 }
 
 // Test 3: New syntax with owned fields
-#[injectable]
+#[provider]
 pub struct MixedService {
     #[inject]
     config: ConfigService<TestConfig>,
@@ -55,7 +55,7 @@ impl MixedService {
 }
 
 // Test 4: New syntax with custom init
-#[injectable(init = "create")]
+#[provider]
 pub struct CustomInitService {
     #[inject]
     config: ConfigService<TestConfig>,
@@ -65,6 +65,7 @@ pub struct CustomInitService {
 }
 
 impl CustomInitService {
+    #[new]
     fn create(config: ConfigService<TestConfig>) -> Self {
         Self {
             config,

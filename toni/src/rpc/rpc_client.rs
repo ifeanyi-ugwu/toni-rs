@@ -31,9 +31,10 @@ use crate::traits_helpers::{Provider, ProviderContext};
 /// Inject into a service:
 ///
 /// ```ignore
-/// #[injectable(pub struct InventoryService {
+/// #[provider]
+/// pub struct InventoryService {
 ///     #[inject(token = "INVENTORY_CLIENT")] client: RpcClient,
-/// })]
+/// }
 /// impl InventoryService {
 ///     async fn notify_restock(&self, payload: serde_json::Value) -> Result<RpcData, RpcClientError> {
 ///         self.client.send("inventory.restock", RpcData::json(payload)).await

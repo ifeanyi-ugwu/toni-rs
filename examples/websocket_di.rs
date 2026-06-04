@@ -10,9 +10,9 @@ use toni::context::WsContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{BroadcastModule, BroadcastService};
 use toni::*;
-use toni_macros::{injectable, module, websocket_gateway};
+use toni_macros::{module, provider, websocket_gateway};
 
-#[injectable]
+#[provider]
 pub struct WsAuthGuard;
 
 #[async_trait]
@@ -28,7 +28,7 @@ impl Guard<WsContext> for WsAuthGuard {
     }
 }
 
-#[injectable]
+#[provider]
 pub struct WsLoggingInterceptor;
 
 #[async_trait]

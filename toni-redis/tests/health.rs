@@ -13,12 +13,11 @@ use toni_terminus::{HealthCheckService, HealthIndicator, TerminusModule};
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 
-#[injectable(
-    pub struct CacheService {
-        #[inject]
-        manager: ConnectionManager,
-    }
-)]
+#[provider]
+pub struct CacheService {
+    #[inject]
+    manager: ConnectionManager,
+}
 impl CacheService {
     async fn set(&self, key: &str, value: &str) {
         let mut conn = self.manager.clone();

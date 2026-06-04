@@ -20,13 +20,14 @@
 //   nats pub order.shipped '{"order_id":1001}'
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, rpc_controller};
+use toni_macros::{module, provider, rpc_controller};
 
 // ============================================================================
 // Service
 // ============================================================================
 
-#[injectable(pub struct OrdersService {})]
+#[provider]
+pub struct OrdersService {}
 impl OrdersService {
     pub fn create_order(&self, item: &str, qty: u32) -> serde_json::Value {
         println!("  [OrdersService] Creating order: {} x{}", item, qty);

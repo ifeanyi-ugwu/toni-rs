@@ -19,9 +19,11 @@ impl MongoModule {
     /// Then inject `Database` anywhere:
     ///
     /// ```ignore
-    /// #[injectable(pub struct UserService {
+    /// #[provider]
+    /// pub struct UserService {
+    ///     #[inject]
     ///     db: Database,
-    /// })]
+    /// }
     /// impl UserService {
     ///     pub async fn find_all(&self) -> Result<Vec<User>, mongodb::error::Error> {
     ///         let col = self.db.collection::<User>("users");

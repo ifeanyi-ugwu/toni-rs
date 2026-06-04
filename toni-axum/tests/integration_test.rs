@@ -1,12 +1,11 @@
 use toni::{
-    controller, extractors::Bytes, get, http_helpers::Body as ToniBody, injectable, module, post,
+    controller, extractors::Bytes, get, http_helpers::Body as ToniBody, module, post, provider,
 };
 use toni_axum::AxumAdapter;
 
 // Simple service for testing
-#[injectable(
-    pub struct TestService;
-)]
+#[provider]
+pub struct TestService;
 impl TestService {
     pub fn get_greeting(&self) -> String {
         "Hello from Axum!".to_string()

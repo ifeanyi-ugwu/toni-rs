@@ -13,12 +13,11 @@ use toni_terminus::{HealthCheckService, HealthIndicator, TerminusModule};
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 
-#[injectable(
-    pub struct ItemService {
-        #[inject]
-        pool: PgPool,
-    }
-)]
+#[provider]
+pub struct ItemService {
+    #[inject]
+    pool: PgPool,
+}
 impl ItemService {
     async fn setup(&self) {
         query("CREATE TABLE IF NOT EXISTS items (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")

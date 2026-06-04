@@ -15,8 +15,9 @@ pub enum ProviderScope {
     ///
     /// # Example
     /// ```ignore
-    /// #[injectable]  // Default is Singleton
+    /// #[provider]  // Default is Singleton
     /// pub struct AppService {
+    ///     #[inject]
     ///     config: ConfigService<AppConfig>
     /// }
     /// ```
@@ -29,7 +30,7 @@ pub enum ProviderScope {
     ///
     /// # Example
     /// ```ignore
-    /// #[injectable(scope = "request")]
+    /// #[provider(scope = "request")]
     /// pub struct RequestContext {
     ///     request_id: String,
     ///     user: Option<User>,
@@ -44,7 +45,7 @@ pub enum ProviderScope {
     ///
     /// # Example
     /// ```ignore
-    /// #[injectable(scope = "transient")]
+    /// #[provider(scope = "transient")]
     /// pub struct PasswordHasher {
     ///     salt: Vec<u8>,  // Unique per instance
     /// }

@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module};
+use toni_macros::{grpc_methods, grpc_service, module, new, provider};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -54,10 +54,12 @@ use orders_pb::orders_server::{Orders, OrdersServer};
 // Plain provider injected into the service via `#[inject]`. Nothing
 // gRPC-specific — works the same as it would on an HTTP controller.
 
-#[injectable(pub struct OrdersCounter {
+#[provider]
+pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
-})]
+}
 impl OrdersCounter {
+    #[new]
     pub fn new() -> Self {
         Self {
             seq: Arc::new(AtomicU64::new(1000)),
@@ -76,7 +78,8 @@ impl OrdersCounter {
 // metadata map the macro builds from the inbound `tonic::Request::metadata()`.
 // Returning `false` short-circuits the call with `PermissionDenied`.
 
-#[injectable(pub struct AuthGuard {})]
+#[provider]
+pub struct AuthGuard {}
 impl AuthGuard {}
 
 #[toni::async_trait]
@@ -93,7 +96,8 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 // `next.run(ctx).await` proceeds to the next link (and ultimately the
 // user method); not calling it short-circuits the call.
 
-#[injectable(pub struct LoggingInterceptor {})]
+#[provider]
+pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[toni::async_trait]
@@ -119,7 +123,8 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor
 // status; `None` lets the next handler in the chain decide, falling back
 // to the original status if none claims.
 
-#[injectable(pub struct QtyErrorHandler {})]
+#[provider]
+pub struct QtyErrorHandler {}
 impl QtyErrorHandler {}
 
 #[toni::async_trait]

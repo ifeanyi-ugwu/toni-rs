@@ -20,7 +20,7 @@ use std::time::Duration;
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
 use toni_macros::{
-    grpc_methods, grpc_service, injectable, module, use_error_handlers, use_guards,
+    grpc_methods, grpc_service, module, new, provider, use_error_handlers, use_guards,
     use_interceptors,
 };
 
@@ -31,10 +31,12 @@ mod orders_pb {
 use orders_pb::orders_client::OrdersClient;
 use orders_pb::orders_server::{Orders, OrdersServer};
 
-#[injectable(pub struct OrdersCounter {
+#[provider]
+pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
-})]
+}
 impl OrdersCounter {
+    #[new]
     pub fn new() -> Self {
         Self {
             seq: Arc::new(AtomicU64::new(1000)),
@@ -149,7 +151,8 @@ struct GrpcMacrosModule;
 // `GuardedGrpcModule` (this module) on its own port, so the duplicate
 // `impl Orders for ...` blocks never coexist on a running server.
 
-#[injectable(pub struct AuthGuard {})]
+#[provider]
+pub struct AuthGuard {}
 impl AuthGuard {}
 
 #[toni::async_trait]
@@ -159,7 +162,8 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
     }
 }
 
-#[injectable(pub struct AdminGuard {})]
+#[provider]
+pub struct AdminGuard {}
 impl AdminGuard {}
 
 #[toni::async_trait]
@@ -287,7 +291,8 @@ fn lock_interceptor_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
-#[injectable(pub struct ServiceInterceptor {})]
+#[provider]
+pub struct ServiceInterceptor {}
 impl ServiceInterceptor {}
 
 #[toni::async_trait]
@@ -303,7 +308,8 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for ServiceInterceptor
     }
 }
 
-#[injectable(pub struct MethodInterceptor {})]
+#[provider]
+pub struct MethodInterceptor {}
 impl MethodInterceptor {}
 
 #[toni::async_trait]
@@ -319,7 +325,8 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for MethodInterceptor 
     }
 }
 
-#[injectable(pub struct DenyInterceptor {})]
+#[provider]
+pub struct DenyInterceptor {}
 impl DenyInterceptor {}
 
 #[toni::async_trait]
@@ -836,7 +843,8 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
 /// Claims errors whose `to_string()` contains `"remap-me"`; everything else
 /// passes through unchanged. Lets one server cover both the claim path and
 /// the pass-through path in adjacent tests.
-#[injectable(pub struct ConditionalErrorHandler {})]
+#[provider]
+pub struct ConditionalErrorHandler {}
 impl ConditionalErrorHandler {}
 
 #[toni::async_trait]
@@ -1226,7 +1234,8 @@ async fn grpc_panic_in_handler_surfaces_as_internal() {
 
 // ── pipeline-segment panic coverage (guard + interceptor) ──────────────────
 
-#[injectable(pub struct PanickingGrpcGuard {})]
+#[provider]
+pub struct PanickingGrpcGuard {}
 impl PanickingGrpcGuard {}
 
 #[toni::async_trait]
@@ -1295,7 +1304,8 @@ impl Orders for GuardPanicGrpcService {
 #[module(providers: [OrdersCounter, PanickingGrpcGuard, GuardPanicGrpcService])]
 struct GuardPanicGrpcModule;
 
-#[injectable(pub struct PanickingGrpcInterceptor {})]
+#[provider]
+pub struct PanickingGrpcInterceptor {}
 impl PanickingGrpcInterceptor {}
 
 #[toni::async_trait]
@@ -1473,7 +1483,8 @@ async fn grpc_panic_in_interceptor_surfaces_as_internal() {
         .expect("shutdown must complete");
 }
 
-#[injectable(pub struct PanickingGrpcErrorHandler {})]
+#[provider]
+pub struct PanickingGrpcErrorHandler {}
 impl PanickingGrpcErrorHandler {}
 
 #[toni::async_trait]

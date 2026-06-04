@@ -14,15 +14,16 @@ use toni::context::{HandlerContext, RpcContext, WsContext};
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
-use toni::injectable;
 use toni::module;
+use toni::provider;
 use toni_macros::{rpc_controller, websocket_gateway};
 
 use crate::common::TestServer;
 
 // ---- shared (protocol-agnostic) enhancers ------------------------------------
 
-#[injectable(pub struct AbortPipe {})]
+#[provider]
+pub struct AbortPipe {}
 impl AbortPipe {}
 
 impl Pipe<RpcContext> for AbortPipe {
@@ -37,7 +38,8 @@ impl Pipe<WsContext> for AbortPipe {
     }
 }
 
-#[injectable(pub struct RecoveryErrorHandler {})]
+#[provider]
+pub struct RecoveryErrorHandler {}
 impl RecoveryErrorHandler {}
 
 #[async_trait]
@@ -65,7 +67,8 @@ impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
 // ---- WS enhancers ------------------------------------------------------------
 
 /// Passes when the WS handshake contains `x-allow: ok`.
-#[injectable(pub struct WsAllowGuard {})]
+#[provider]
+pub struct WsAllowGuard {}
 impl WsAllowGuard {}
 
 #[async_trait]
@@ -81,7 +84,8 @@ impl Guard<WsContext> for WsAllowGuard {
 }
 
 /// Prefixes the WS text response with "prefixed:".
-#[injectable(pub struct WsPrefixInterceptor {})]
+#[provider]
+pub struct WsPrefixInterceptor {}
 impl WsPrefixInterceptor {}
 
 #[async_trait]
@@ -148,7 +152,8 @@ impl WsMethodEnhancersModule {}
 // ---- RPC enhancers -----------------------------------------------------------
 
 /// Passes when the RPC payload contains `{"allow": "ok"}`.
-#[injectable(pub struct RpcAllowGuard {})]
+#[provider]
+pub struct RpcAllowGuard {}
 impl RpcAllowGuard {}
 
 #[async_trait]
@@ -163,7 +168,8 @@ impl Guard<RpcContext> for RpcAllowGuard {
 }
 
 /// Prefixes the RPC string response with "prefixed:".
-#[injectable(pub struct RpcPrefixInterceptor {})]
+#[provider]
+pub struct RpcPrefixInterceptor {}
 impl RpcPrefixInterceptor {}
 
 #[async_trait]

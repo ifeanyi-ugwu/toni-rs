@@ -19,9 +19,11 @@ impl SeaOrmModule {
     /// Then inject `DatabaseConnection` anywhere:
     ///
     /// ```ignore
-    /// #[injectable(pub struct UserService {
+    /// #[provider]
+    /// pub struct UserService {
+    ///     #[inject]
     ///     db: DatabaseConnection,
-    /// })]
+    /// }
     /// impl UserService {
     ///     pub async fn find_all(&self) -> Result<Vec<user::Model>, DbErr> {
     ///         user::Entity::find().all(&self.db).await

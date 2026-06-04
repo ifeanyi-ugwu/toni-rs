@@ -1,13 +1,15 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, get, injectable, module, provide, Body as ToniBody};
+use toni::{controller, get, module, new, provide, provider, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn provider_constructor_patterns() {
-    #[injectable(pub struct BaseService {
+    #[provider]
+    pub struct BaseService {
         value: String,
-    })]
+    }
     impl BaseService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 value: "base".to_string(),
@@ -19,10 +21,12 @@ async fn provider_constructor_patterns() {
         }
     }
 
-    #[injectable(pub struct AutoNewService {
+    #[provider]
+    pub struct AutoNewService {
         base_value: String,
-    })]
+    }
     impl AutoNewService {
+        #[new]
         pub fn new(base: BaseService) -> Self {
             Self {
                 base_value: base.get_value(),
@@ -34,10 +38,12 @@ async fn provider_constructor_patterns() {
         }
     }
 
-    #[injectable(init = "create", pub struct CustomInitService {
+    #[provider]
+    pub struct CustomInitService {
         combined: String,
-    })]
+    }
     impl CustomInitService {
+        #[new]
         fn create(base: BaseService) -> Self {
             Self {
                 combined: format!("custom:{}", base.get_value()),
@@ -49,15 +55,14 @@ async fn provider_constructor_patterns() {
         }
     }
 
-    #[injectable(
-        init = "build",
-        pub struct ComplexInitService {
-            base_value: String,
-            settings: Vec<String>,
-            timeout: Duration,
-        }
-    )]
+    #[provider]
+    pub struct ComplexInitService {
+        base_value: String,
+        settings: Vec<String>,
+        timeout: Duration,
+    }
     impl ComplexInitService {
+        #[new]
         fn build(base: BaseService) -> Self {
             let mut settings = Vec::new();
             settings.push(format!("setting:{}", base.get_value()));
@@ -75,7 +80,7 @@ async fn provider_constructor_patterns() {
         }
     }
 
-    #[injectable]
+    #[provider]
     pub struct DefaultFallbackService {
         name: String,
         count: i32,
@@ -133,10 +138,12 @@ async fn provider_constructor_patterns() {
 
 #[tokio_localset_test::localset_test]
 async fn controller_constructor_patterns() {
-    #[injectable(pub struct DataService {
+    #[provider]
+    pub struct DataService {
         value: String,
-    })]
+    }
     impl DataService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 value: "data".to_string(),
@@ -228,21 +235,24 @@ async fn controller_constructor_patterns() {
 async fn constructor_param_injection_patterns() {
     const DB_TOKEN: &str = "CustomDatabase";
 
-    #[injectable(pub struct DatabaseService {})]
+    #[provider]
+    pub struct DatabaseService {}
     impl DatabaseService {
         pub fn query(&self) -> String {
             "data".to_string()
         }
     }
 
-    #[injectable(pub struct ConfigService {})]
+    #[provider]
+    pub struct ConfigService {}
     impl ConfigService {
         pub fn get_config(&self) -> String {
             "config".to_string()
         }
     }
 
-    #[injectable(pub struct CacheService {})]
+    #[provider]
+    pub struct CacheService {}
     impl CacheService {
         pub fn get_cache(&self) -> String {
             "cache".to_string()
@@ -250,8 +260,10 @@ async fn constructor_param_injection_patterns() {
     }
 
     // #[inject] on params is redundant but supported for explicitness
-    #[injectable(pub struct BasicParamService {})]
+    #[provider]
+    pub struct BasicParamService {}
     impl BasicParamService {
+        #[new]
         fn new(#[inject] _db: DatabaseService) -> Self {
             Self {}
         }
@@ -261,8 +273,10 @@ async fn constructor_param_injection_patterns() {
         }
     }
 
-    #[injectable(pub struct TokenParamService {})]
+    #[provider]
+    pub struct TokenParamService {}
     impl TokenParamService {
+        #[new]
         fn new(#[inject(DB_TOKEN)] _db: DatabaseService) -> Self {
             Self {}
         }
@@ -272,8 +286,10 @@ async fn constructor_param_injection_patterns() {
         }
     }
 
-    #[injectable(pub struct MixedParamService {})]
+    #[provider]
+    pub struct MixedParamService {}
     impl MixedParamService {
+        #[new]
         fn new(
             #[inject] _config: ConfigService,
             _cache: CacheService, // No #[inject], still works via type token

@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use toni::{injectable, module};
+use toni::{module, provider};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -17,18 +17,17 @@ struct TestConfig {
 }
 
 // Test 1: Provider with only owned fields (no DI)
-#[injectable(
-    pub struct StandaloneService {
-        #[default(Duration::from_secs(300))]
-        cache_ttl: Duration,
+#[provider]
+pub struct StandaloneService {
+    #[default(Duration::from_secs(300))]
+    cache_ttl: Duration,
 
-        #[default(1024)]
-        buffer_size: usize,
+    #[default(1024)]
+    buffer_size: usize,
 
-        #[default("cache:".to_string())]
-        prefix: String,
-    }
-)]
+    #[default("cache:".to_string())]
+    prefix: String,
+}
 impl StandaloneService {
     pub fn get_cache_ttl(&self) -> Duration {
         self.cache_ttl
@@ -44,18 +43,17 @@ impl StandaloneService {
 }
 
 // Test 2: Provider with mixed DI and owned fields
-#[injectable(
-    pub struct MixedService {
-        #[inject]
-        config: ConfigService<TestConfig>,
+#[provider]
+pub struct MixedService {
+    #[inject]
+    config: ConfigService<TestConfig>,
 
-        #[default(Duration::from_secs(600))]
-        timeout: Duration,
+    #[default(Duration::from_secs(600))]
+    timeout: Duration,
 
-        #[default(100)]
-        max_retries: usize,
-    }
-)]
+    #[default(100)]
+    max_retries: usize,
+}
 impl MixedService {
     pub fn get_app_name(&self) -> String {
         self.config.get().app_name
@@ -77,18 +75,17 @@ pub struct CacheStats {
     pub misses: u64,
 }
 
-#[injectable(
-    pub struct CacheService {
-        #[inject]
-        config: ConfigService<TestConfig>,
+#[provider]
+pub struct CacheService {
+    #[inject]
+    config: ConfigService<TestConfig>,
 
-        // No #[default], will use Default::default()
-        stats: CacheStats,
+    // No #[default], will use Default::default()
+    stats: CacheStats,
 
-        #[default("redis://localhost".to_string())]
-        connection_string: String,
-    }
-)]
+    #[default("redis://localhost".to_string())]
+    connection_string: String,
+}
 impl CacheService {
     pub fn get_stats(&self) -> CacheStats {
         self.stats.clone()
@@ -123,18 +120,17 @@ impl Counter {
     }
 }
 
-#[injectable(
-    pub struct MetricsService {
-        #[inject]
-        config: ConfigService<TestConfig>,
+#[provider]
+pub struct MetricsService {
+    #[inject]
+    config: ConfigService<TestConfig>,
 
-        #[default(Counter::new(0))]
-        request_count: Counter,
+    #[default(Counter::new(0))]
+    request_count: Counter,
 
-        #[default(Counter::new(0))]
-        error_count: Counter,
-    }
-)]
+    #[default(Counter::new(0))]
+    error_count: Counter,
+}
 impl MetricsService {
     pub fn increment_requests(&self) {
         self.request_count.increment();
@@ -154,21 +150,20 @@ impl MetricsService {
 }
 
 // Test 5: Complex default expressions
-#[injectable(
-    pub struct ComplexService {
-        #[default({
-            let mut v = Vec::new();
-            v.push(1);
-            v.push(2);
-            v.push(3);
-            v
-        })]
-        default_values: Vec<i32>,
+#[provider]
+pub struct ComplexService {
+    #[default({
+        let mut v = Vec::new();
+        v.push(1);
+        v.push(2);
+        v.push(3);
+        v
+    })]
+    default_values: Vec<i32>,
 
-        #[default(format!("service_{}", "v1"))]
-        service_version: String,
-    }
-)]
+    #[default(format!("service_{}", "v1"))]
+    service_version: String,
+}
 impl ComplexService {
     pub fn get_default_values(&self) -> Vec<i32> {
         self.default_values.clone()

@@ -6,7 +6,7 @@
 //! 3. Controllers using request context without manual extraction
 
 use toni::{
-    Body as ToniBody, FromRequestParts, Request, controller, get, injectable, module, new, provider,
+    Body as ToniBody, FromRequestParts, Request, controller, get, module, new, provider,
     toni_factory::ToniFactory,
 };
 
@@ -73,7 +73,7 @@ impl RequestContext {
 
 // ===== 3. Singleton service (business logic) =====
 
-#[injectable]
+#[provider]
 pub struct UserService {}
 
 impl UserService {

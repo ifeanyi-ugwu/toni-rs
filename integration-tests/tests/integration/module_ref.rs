@@ -1,11 +1,13 @@
 use toni::*;
 
 // Test providers
-#[injectable(pub struct DatabaseService {
+#[provider]
+pub struct DatabaseService {
     pub connection_string: String,
-})]
+}
 
 impl DatabaseService {
+    #[new]
     pub fn new() -> Self {
         Self {
             connection_string: "postgres://localhost:5432".to_string(),
@@ -13,11 +15,13 @@ impl DatabaseService {
     }
 }
 
-#[injectable(pub struct CacheService {
+#[provider]
+pub struct CacheService {
     pub host: String,
-})]
+}
 
 impl CacheService {
+    #[new]
     pub fn new() -> Self {
         Self {
             host: "redis://localhost:6379".to_string(),
@@ -26,10 +30,11 @@ impl CacheService {
 }
 
 // Test service that uses ModuleRef for dynamic resolution
-#[injectable(pub struct PluginLoader {
+#[provider]
+pub struct PluginLoader {
     #[inject]
     module_ref: ModuleRef,
-})]
+}
 
 impl PluginLoader {
     /// Test strict mode (default) - only searches current module

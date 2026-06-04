@@ -4,7 +4,7 @@ use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
-    controller, get, injectable, module, provider_value, use_guards, use_interceptors,
+    controller, get, module, new, provider, provider_value, use_guards, use_interceptors,
     Body as ToniBody, RequestPart,
 };
 
@@ -48,10 +48,12 @@ impl ExecutionTracker {
 
 // ---- injectable service used by enhancers ------------------------------------
 
-#[injectable(pub struct AuthService {
+#[provider]
+pub struct AuthService {
     tracker: ExecutionTracker,
-})]
+}
 impl AuthService {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }
@@ -69,10 +71,12 @@ impl AuthService {
 
 // ---- DI-registered middleware ------------------------------------------------
 
-#[injectable(pub struct RequestTrackingMiddleware {
+#[provider]
+pub struct RequestTrackingMiddleware {
     tracker: ExecutionTracker,
-})]
+}
 impl RequestTrackingMiddleware {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }
@@ -90,10 +94,12 @@ impl Middleware for RequestTrackingMiddleware {
     }
 }
 
-#[injectable(pub struct HeaderValidationMiddleware {
+#[provider]
+pub struct HeaderValidationMiddleware {
     auth_service: AuthService,
-})]
+}
 impl HeaderValidationMiddleware {
+    #[new]
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
     }
@@ -117,10 +123,12 @@ impl Middleware for HeaderValidationMiddleware {
 
 // ---- DI-registered guards ----------------------------------------------------
 
-#[injectable(pub struct AdminGuard {
+#[provider]
+pub struct AdminGuard {
     auth_service: AuthService,
-})]
+}
 impl AdminGuard {
+    #[new]
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
     }
@@ -134,10 +142,12 @@ impl Guard<HttpContext> for AdminGuard {
     }
 }
 
-#[injectable(pub struct UserGuard {
+#[provider]
+pub struct UserGuard {
     auth_service: AuthService,
-})]
+}
 impl UserGuard {
+    #[new]
     pub fn new(auth_service: AuthService) -> Self {
         Self { auth_service }
     }
@@ -153,10 +163,12 @@ impl Guard<HttpContext> for UserGuard {
 
 // ---- DI-registered interceptors ----------------------------------------------
 
-#[injectable(pub struct LoggingInterceptor {
+#[provider]
+pub struct LoggingInterceptor {
     tracker: ExecutionTracker,
-})]
+}
 impl LoggingInterceptor {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }
@@ -175,10 +187,12 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
     }
 }
 
-#[injectable(pub struct TimingInterceptor {
+#[provider]
+pub struct TimingInterceptor {
     tracker: ExecutionTracker,
-})]
+}
 impl TimingInterceptor {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }

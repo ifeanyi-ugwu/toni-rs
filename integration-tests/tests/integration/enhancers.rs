@@ -4,7 +4,7 @@ use toni::context::{HandlerContext, HttpContext};
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
 use toni::{
-    controller, get, injectable, module, post, provider_factory, provider_token, provider_value,
+    controller, get, module, post, provider, provider_factory, provider_token, provider_value,
     use_guards, use_interceptors, use_pipes, Body as ToniBody, HttpResponse,
 };
 
@@ -206,10 +206,11 @@ async fn enhancers_execution_order() {
         TRACKER.get().unwrap().clone()
     }
 
-    #[injectable(pub struct TestService {
+    #[provider]
+    pub struct TestService {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
     impl TestService {
         pub fn process(&self, message: &str) -> String {
             self.tracker.track("service:process");
@@ -393,7 +394,8 @@ async fn guard_authorization() {
 
 #[tokio_localset_test::localset_test]
 async fn di_in_enhancers() {
-    #[injectable(pub struct AuthService {})]
+    #[provider]
+    pub struct AuthService {}
     impl AuthService {
         pub fn validate(&self, token: &str) -> bool {
             token == "valid"
@@ -461,10 +463,11 @@ async fn app_token_global_enhancers() {
         TRACKER.get().unwrap().clone()
     }
 
-    #[injectable(pub struct GlobalGuard {
+    #[provider]
+    pub struct GlobalGuard {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
     #[async_trait]
     impl Guard<HttpContext> for GlobalGuard {
         async fn can_activate(&self, _context: &HttpContext) -> bool {

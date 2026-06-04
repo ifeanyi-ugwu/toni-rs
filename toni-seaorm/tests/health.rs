@@ -14,12 +14,11 @@ use toni_terminus::{HealthCheckService, HealthIndicator, TerminusModule};
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 
-#[injectable(
-    pub struct ItemService {
-        #[inject]
-        db: DatabaseConnection,
-    }
-)]
+#[provider]
+pub struct ItemService {
+    #[inject]
+    db: DatabaseConnection,
+}
 impl ItemService {
     async fn setup(&self) {
         self.db

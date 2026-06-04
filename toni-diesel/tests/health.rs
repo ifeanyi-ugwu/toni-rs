@@ -20,12 +20,11 @@ struct ItemRow {
     name: String,
 }
 
-#[injectable(
-    pub struct ItemService {
-        #[inject]
-        pool: PgPool,
-    }
-)]
+#[provider]
+pub struct ItemService {
+    #[inject]
+    pool: PgPool,
+}
 impl ItemService {
     async fn setup(&self) {
         use toni_diesel::RunQueryDsl;

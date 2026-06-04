@@ -32,11 +32,12 @@ use toni::context::{HttpContext, RpcContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::*;
-use toni_macros::{injectable, module, rpc_controller, websocket_gateway};
+use toni_macros::{module, provider, rpc_controller, websocket_gateway};
 
 // ---- one guard, three transport-shaped impls --------------------------------
 
-#[injectable(pub struct UniversalAuthGuard {})]
+#[provider]
+pub struct UniversalAuthGuard {}
 impl UniversalAuthGuard {}
 
 #[async_trait]
@@ -74,7 +75,8 @@ impl Guard<WsContext> for UniversalAuthGuard {
 
 // ---- one logging interceptor, three transport-shaped impls ------------------
 
-#[injectable(pub struct LoggingInterceptor {})]
+#[provider]
+pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[async_trait]

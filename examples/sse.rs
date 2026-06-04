@@ -30,15 +30,17 @@ use futures::stream;
 use toni::extractors::Bytes;
 use toni::*;
 use toni_axum::AxumAdapter;
-use toni_macros::injectable;
+use toni_macros::{new, provider};
 use tokio::sync::broadcast;
 
 // ── Service ──────────────────────────────────────────────────────────────────
 
-#[injectable(pub struct EventsService {
+#[provider]
+pub struct EventsService {
     tx: broadcast::Sender<String>,
-})]
+}
 impl EventsService {
+    #[new]
     pub fn new() -> Self {
         // The initial receiver is discarded; senders can still accept messages
         // and new receivers are created via `subscribe()` on each connection.

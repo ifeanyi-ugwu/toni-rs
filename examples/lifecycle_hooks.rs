@@ -20,16 +20,20 @@
 //! Run with: cargo run --example lifecycle_hooks
 
 use toni::*;
-use toni_macros::{injectable, module};
+use toni_macros::{
+    before_shutdown, module, new, on_bootstrap, on_destroy, on_init, on_shutdown, provider,
+};
 
 // ============================================================================
 // Service with Lifecycle Hooks
 // ============================================================================
 
-#[injectable(pub struct DatabaseService {
+#[provider]
+pub struct DatabaseService {
     name: String,
-})]
+}
 impl DatabaseService {
+    #[new]
     pub fn new() -> Self {
         println!("DatabaseService::new() - Constructor called");
         Self {
@@ -41,7 +45,7 @@ impl DatabaseService {
         println!("Executing query: {}", sql);
     }
 
-    #[on_module_init]
+    #[on_init]
     async fn connect(&self) -> toni::InitResult {
         println!(
             "DatabaseService::on_module_init() - Connecting to {}",
@@ -52,13 +56,13 @@ impl DatabaseService {
         Ok(())
     }
 
-    #[on_application_bootstrap]
+    #[on_bootstrap]
     async fn on_ready(&self) -> toni::InitResult {
         println!("DatabaseService::on_application_bootstrap() - Ready to serve requests");
         Ok(())
     }
 
-    #[before_application_shutdown]
+    #[before_shutdown]
     async fn prepare_shutdown(&self, signal: Option<String>) {
         println!(
             "DatabaseService::before_application_shutdown({:?}) - Stop accepting queries",
@@ -66,12 +70,12 @@ impl DatabaseService {
         );
     }
 
-    #[on_module_destroy]
+    #[on_destroy]
     async fn cleanup(&self) {
         println!("DatabaseService::on_module_destroy() - Closing connections");
     }
 
-    #[on_application_shutdown]
+    #[on_shutdown]
     async fn finalize(&self, signal: Option<String>) {
         println!(
             "DatabaseService::on_application_shutdown({:?}) - Final cleanup",
@@ -84,8 +88,10 @@ impl DatabaseService {
 // Service without Lifecycle Hooks (for comparison)
 // ============================================================================
 
-#[injectable(pub struct LoggerService;)]
+#[provider]
+pub struct LoggerService;
 impl LoggerService {
+    #[new]
     pub fn new() -> Self {
         println!("LoggerService::new() - Constructor called");
         Self
@@ -100,12 +106,13 @@ impl LoggerService {
 // Service that depends on another service
 // ============================================================================
 
-#[injectable(
-    pub struct UserService {
-        db: DatabaseService,
-        logger: LoggerService,
-})]
+#[provider]
+pub struct UserService {
+    db: DatabaseService,
+    logger: LoggerService,
+}
 impl UserService {
+    #[new]
     pub fn new(db: DatabaseService, logger: LoggerService) -> Self {
         println!("UserService::new() - Constructor called");
         Self { db, logger }
@@ -118,13 +125,13 @@ impl UserService {
             .await;
     }
 
-    #[on_module_init]
+    #[on_init]
     async fn warm_cache(&self) -> toni::InitResult {
         println!("UserService::on_module_init() - Warming cache");
         Ok(())
     }
 
-    #[on_module_destroy]
+    #[on_destroy]
     async fn flush_cache(&self) {
         println!("UserService::on_module_destroy() - Flushing cache");
     }

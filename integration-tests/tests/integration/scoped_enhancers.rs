@@ -8,7 +8,7 @@ use toni::context::{HttpContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
-    controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
+    controller, get, module, provider, use_guards, use_interceptors, Body as ToniBody, Request,
 };
 use toni_macros::websocket_gateway;
 
@@ -16,7 +16,8 @@ use crate::common::TestServer;
 
 // ---- request-scoped guard, no injected deps ----------------------------------
 
-#[injectable(scope = "request", pub struct RequestGuard {})]
+#[provider(scope = "request")]
+pub struct RequestGuard {}
 impl RequestGuard {}
 
 #[async_trait]
@@ -28,10 +29,11 @@ impl Guard<HttpContext> for RequestGuard {
 
 // ---- request-scoped guard that injects Request -------------------------------
 
-#[injectable(scope = "request", pub struct HeaderGuard {
+#[provider(scope = "request")]
+pub struct HeaderGuard {
     #[inject]
     request: Request,
-})]
+}
 impl HeaderGuard {}
 
 #[async_trait]
@@ -45,7 +47,8 @@ impl Guard<HttpContext> for HeaderGuard {
 
 // ---- transient-scoped interceptor --------------------------------------------
 
-#[injectable(scope = "transient", pub struct TransientInterceptor {})]
+#[provider(scope = "transient")]
+pub struct TransientInterceptor {}
 impl TransientInterceptor {}
 
 #[async_trait]
@@ -120,7 +123,8 @@ impl TransientInterceptorModule {}
 // This is the correct multi-context guard pattern: it reads from WsClient so it
 // works identically at connect time and per-message, with no HTTP Request injection.
 
-#[injectable(pub struct WsHandshakeGuard {})]
+#[provider]
+pub struct WsHandshakeGuard {}
 impl WsHandshakeGuard {}
 
 #[async_trait]

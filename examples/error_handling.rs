@@ -22,7 +22,7 @@ use serde::Serialize;
 use serde_json::json;
 use toni::{
     Error, HttpRequest, HttpResponse, async_trait, catch, context::HttpContext, controller,
-    errors::HttpError, get, http_helpers::Body, injectable, module, post,
+    errors::HttpError, get, http_helpers::Body, module, post, provider,
     toni_factory::ToniFactory, traits_helpers::Guard,
 };
 use toni_axum::AxumAdapter;
@@ -109,7 +109,8 @@ struct User {
     email: String,
 }
 
-#[injectable(pub struct UserService {})]
+#[provider]
+pub struct UserService {}
 impl UserService {
     fn find_user(&self, id: &str) -> Result<User, UserError> {
         if id == "1" {

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use juniper::{graphql_object, EmptySubscription, FieldResult, RootNode};
 use std::sync::Arc;
-use toni::{injectable, module, toni_factory::ToniFactory, HttpAdapter};
+use toni::{module, provider, toni_factory::ToniFactory, HttpAdapter};
 use toni_axum::AxumAdapter;
 use toni_juniper::{ContextBuilder, GraphQLModule};
 
@@ -36,7 +36,8 @@ impl User {
 // ============================================================================
 
 /// Authentication service (injectable via Toni DI)
-#[injectable(pub struct _AuthService;)]
+#[provider]
+pub struct _AuthService;
 impl _AuthService {
     fn verify_token(&self, req: &toni::RequestPart) -> Option<User> {
         // In a real app, verify JWT token from headers
@@ -58,7 +59,8 @@ impl _AuthService {
 }
 
 /// Database service (injectable via Toni DI)
-#[injectable(pub struct _DatabaseService;)]
+#[provider]
+pub struct _DatabaseService;
 impl _DatabaseService {
     fn find_user(&self, id: i32) -> Option<User> {
         // In a real app, query the database
@@ -100,14 +102,14 @@ pub struct GraphQLContext {
 impl juniper::Context for GraphQLContext {}
 
 /// Context builder that injects Toni services!
-#[injectable(
-    pub struct _GraphQLContextBuilder {
-        #[inject]
-        auth_service: _AuthService,
-        #[inject]
-        database_service: _DatabaseService,
-    }
-)]
+#[provider]
+pub struct _GraphQLContextBuilder {
+    #[inject]
+    auth_service: _AuthService,
+    #[inject]
+    database_service: _DatabaseService,
+}
+
 #[async_trait]
 impl ContextBuilder for _GraphQLContextBuilder {
     type Context = GraphQLContext;

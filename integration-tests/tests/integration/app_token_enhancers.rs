@@ -3,7 +3,7 @@ use toni::async_trait;
 use toni::di::{APP_GUARD, APP_INTERCEPTOR};
 use toni::context::HttpContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
-use toni::{controller, get, injectable, module, provider_token, provider_value, Body as ToniBody};
+use toni::{controller, get, module, new, provider, provider_token, provider_value, Body as ToniBody};
 
 use crate::common::TestServer;
 use serial_test::serial;
@@ -39,12 +39,12 @@ impl ExecutionTracker {
     }
 }
 
-#[injectable(
-    pub struct MockService {
-        name: String,
-    }
-)]
+#[provider]
+pub struct MockService {
+    name: String,
+}
 impl MockService {
+    #[new]
     pub fn new() -> Self {
         Self {
             name: "MockService".to_string(),
@@ -56,11 +56,13 @@ impl MockService {
     }
 }
 
-#[injectable(pub struct AppGuardWithDI {
+#[provider]
+pub struct AppGuardWithDI {
     service: MockService,
     tracker: ExecutionTracker,
-})]
+}
 impl AppGuardWithDI {
+    #[new]
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
     }
@@ -75,11 +77,13 @@ impl Guard<HttpContext> for AppGuardWithDI {
     }
 }
 
-#[injectable(pub struct AppInterceptorWithDI {
+#[provider]
+pub struct AppInterceptorWithDI {
     service: MockService,
     tracker: ExecutionTracker,
-})]
+}
 impl AppInterceptorWithDI {
+    #[new]
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
     }

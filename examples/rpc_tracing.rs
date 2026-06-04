@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, rpc_controller};
+use toni_macros::{grpc_methods, grpc_service, module, new, provider, rpc_controller};
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod orders_pb {
@@ -95,10 +95,12 @@ struct PatternModule;
 
 // ─── gRPC — contract-first ──────────────────────────────────────────────────
 
-#[injectable(pub struct OrdersCounter {
+#[provider]
+pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
-})]
+}
 impl OrdersCounter {
+    #[new]
     pub fn new() -> Self {
         Self {
             seq: Arc::new(AtomicU64::new(2000)),

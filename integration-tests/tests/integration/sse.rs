@@ -9,15 +9,17 @@ use toni::{
     extractors::Bytes,
     HttpResponse,
 };
-use toni_macros::injectable;
+use toni_macros::{new, provider};
 use tokio::sync::broadcast;
 
 // ── Service ──────────────────────────────────────────────────────────────────
 
-#[injectable(pub struct EventsService {
+#[provider]
+pub struct EventsService {
     tx: broadcast::Sender<String>,
-})]
+}
 impl EventsService {
+    #[new]
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(64);
         Self { tx }

@@ -1,10 +1,11 @@
 use crate::common::TestServer;
 use toni::injector::ModuleRef;
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, module, provider, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn global_modules_attribute_syntax() {
-    #[injectable(pub struct GlobalService {})]
+    #[provider]
+    pub struct GlobalService {}
     impl GlobalService {
         pub fn message(&self) -> String {
             "global".to_string()
@@ -18,10 +19,11 @@ async fn global_modules_attribute_syntax() {
     )]
     impl GlobalModule {}
 
-    #[injectable(pub struct LocalService {
+    #[provider]
+    pub struct LocalService {
         #[inject]
         global: GlobalService,
-    })]
+    }
     impl LocalService {
         pub fn get_message(&self) -> String {
             self.global.message()
@@ -59,7 +61,8 @@ async fn global_modules_attribute_syntax() {
 
 #[tokio_localset_test::localset_test]
 async fn module_ref_runtime_provider_access() {
-    #[injectable(pub struct RuntimeService {})]
+    #[provider]
+    pub struct RuntimeService {}
     impl RuntimeService {
         pub fn value(&self) -> i32 {
             42
@@ -97,7 +100,8 @@ async fn module_ref_runtime_provider_access() {
 
 #[tokio_localset_test::localset_test]
 async fn nested_module_imports() {
-    #[injectable(pub struct DatabaseService {})]
+    #[provider]
+    pub struct DatabaseService {}
     impl DatabaseService {
         pub fn query(&self) -> String {
             "data".to_string()
@@ -110,10 +114,11 @@ async fn nested_module_imports() {
     )]
     impl DatabaseModule {}
 
-    #[injectable(pub struct FeatureService {
+    #[provider]
+    pub struct FeatureService {
         #[inject]
         db: DatabaseService,
-    })]
+    }
     impl FeatureService {
         pub fn get_data(&self) -> String {
             self.db.query()
@@ -157,14 +162,16 @@ async fn nested_module_imports() {
 
 #[tokio_localset_test::localset_test]
 async fn module_exports_selective_providers() {
-    #[injectable(pub struct PublicService {})]
+    #[provider]
+    pub struct PublicService {}
     impl PublicService {
         pub fn data(&self) -> String {
             "public".to_string()
         }
     }
 
-    #[injectable(pub struct PrivateService {})]
+    #[provider]
+    pub struct PrivateService {}
     impl PrivateService {}
 
     #[module(
@@ -173,10 +180,11 @@ async fn module_exports_selective_providers() {
     )]
     impl SourceModule {}
 
-    #[injectable(pub struct ConsumerService {
+    #[provider]
+    pub struct ConsumerService {
         #[inject]
         public: PublicService,
-    })]
+    }
     impl ConsumerService {
         pub fn get_data(&self) -> String {
             self.public.data()
@@ -214,7 +222,8 @@ async fn module_exports_selective_providers() {
 
 #[tokio_localset_test::localset_test]
 async fn module_struct_syntax() {
-    #[injectable(pub struct TestService {})]
+    #[provider]
+    pub struct TestService {}
     impl TestService {
         pub fn message(&self) -> String {
             "struct-syntax".to_string()

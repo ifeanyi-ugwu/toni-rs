@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use std::time::Duration;
 use toni::{
-    controller, get, injectable, module, provider_alias, provider_factory, provider_token,
+    controller, get, module, new, provider, provider_alias, provider_factory, provider_token,
     provider_value, Body as ToniBody,
 };
 
@@ -70,10 +70,12 @@ async fn provider_factory_sync_without_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_factory_sync_with_deps() {
-    #[injectable(pub struct ConfigService {
+    #[provider]
+    pub struct ConfigService {
         env: String,
-    })]
+    }
     impl ConfigService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 env: "production".to_string(),
@@ -116,10 +118,12 @@ async fn provider_factory_sync_with_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_factory_async_with_deps() {
-    #[injectable(pub struct LoggerService {
+    #[provider]
+    pub struct LoggerService {
         level: String,
-    })]
+    }
     impl LoggerService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 level: "info".to_string(),
@@ -163,10 +167,12 @@ async fn provider_factory_async_with_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_alias_creates_alternate_token() {
-    #[injectable(pub struct ConfigService {
+    #[provider]
+    pub struct ConfigService {
         env: String,
-    })]
+    }
     impl ConfigService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 env: "production".to_string(),
@@ -180,12 +186,13 @@ async fn provider_alias_creates_alternate_token() {
     // Injects ConfigService twice: once by type, once through the "Config" alias.
     // If the alias registration doesn't create a working resolution path,
     // DI startup panics and the test never reaches the HTTP assertion.
-    #[injectable(pub struct VerifyService {
+    #[provider]
+    pub struct VerifyService {
         #[inject]
         by_type: ConfigService,
         #[inject("Config")]
         by_alias: ConfigService,
-    })]
+    }
     impl VerifyService {
         pub fn report(&self) -> String {
             format!("{}|{}", self.by_type.get_env(), self.by_alias.get_env())
@@ -225,10 +232,12 @@ async fn provider_alias_creates_alternate_token() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_token_for_custom_types() {
-    #[injectable(pub struct DatabaseService {
+    #[provider]
+    pub struct DatabaseService {
         host: String,
-    })]
+    }
     impl DatabaseService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 host: "localhost:5432".to_string(),
@@ -241,10 +250,11 @@ async fn provider_token_for_custom_types() {
 
     // Injects DatabaseService by its "PRIMARY_DB" token.
     // If token registration doesn't wire the resolution path, startup panics.
-    #[injectable(pub struct AppService {
+    #[provider]
+    pub struct AppService {
         #[inject("PRIMARY_DB")]
         primary: DatabaseService,
-    })]
+    }
     impl AppService {
         pub fn get_info(&self) -> String {
             self.primary.get_host().to_string()
@@ -284,10 +294,12 @@ async fn provider_token_for_custom_types() {
 
 #[tokio_localset_test::localset_test]
 async fn all_provider_variants_work_together() {
-    #[injectable(pub struct ConfigService {
+    #[provider]
+    pub struct ConfigService {
         env: String,
-    })]
+    }
     impl ConfigService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 env: "production".to_string(),
@@ -299,10 +311,12 @@ async fn all_provider_variants_work_together() {
         }
     }
 
-    #[injectable(pub struct LoggerService {
+    #[provider]
+    pub struct LoggerService {
         level: String,
-    })]
+    }
     impl LoggerService {
+        #[new]
         pub fn new() -> Self {
             Self {
                 level: "info".to_string(),
@@ -316,12 +330,13 @@ async fn all_provider_variants_work_together() {
 
     // Consumes one alias and one token to prove they're injectable alongside
     // value/factory providers in the same module.
-    #[injectable(pub struct AliasTokenConsumer {
+    #[provider]
+    pub struct AliasTokenConsumer {
         #[inject("Config")]
         config_via_alias: ConfigService,
         #[inject("PRIMARY_CONFIG")]
         config_via_token: ConfigService,
-    })]
+    }
     impl AliasTokenConsumer {
         pub fn report(&self) -> String {
             format!(

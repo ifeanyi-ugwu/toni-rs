@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use serial_test::serial;
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, module, provider, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -22,12 +22,11 @@ struct AppConfig {
     pub max_connections: u32,
 }
 
-#[injectable(
-     pub struct AppService {
-        #[inject]
-        config: ConfigService<AppConfig>
-    }
-)]
+#[provider]
+pub struct AppService {
+    #[inject]
+    config: ConfigService<AppConfig>,
+}
 impl AppService {
     pub fn get_app_info(&self) -> String {
         let cfg: AppConfig = self.config.get();
