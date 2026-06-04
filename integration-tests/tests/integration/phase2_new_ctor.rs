@@ -162,6 +162,26 @@ impl ConnHolder {
     }
 }
 
+// `#[inject]` on a `#[new]` parameter: read for the lookup token, then stripped from the re-emitted
+// constructor. Left in place, rustc rejects `#[inject]` as an unknown attribute on a fn parameter.
+#[provider]
+pub struct ExplicitInjectServer {
+    port: u16,
+}
+
+impl ExplicitInjectServer {
+    #[new]
+    fn new(#[inject] config: ConfigService) -> Self {
+        Self {
+            port: config.port(),
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiController;
 
@@ -202,7 +222,16 @@ impl ReqController {
 
 #[module(
     controllers: [ApiController, ReqController],
-    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer, ReqFacade, ConnHolder],
+    providers: [
+        ConfigService,
+        Server,
+        PortGuard,
+        ReqServer,
+        TransientServer,
+        ReqFacade,
+        ConnHolder,
+        ExplicitInjectServer,
+    ],
 )]
 struct NewCtorModule {}
 
@@ -294,6 +323,16 @@ async fn new_ctor_builds_non_default_field() {
         .await
         .expect("ConnHolder resolves via #[new] despite a non-Default field");
     assert_eq!(holder.handle(), "conn:8080");
+}
+
+#[tokio_localset_test::localset_test]
+async fn new_ctor_strips_inject_attr_from_params() {
+    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    let server: ExplicitInjectServer = app
+        .get::<ExplicitInjectServer>()
+        .await
+        .expect("ExplicitInjectServer resolves via #[new] with an #[inject] parameter");
+    assert_eq!(server.port(), 8080);
 }
 
 // Keep Arc import meaningful even if unused in asserts.

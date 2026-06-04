@@ -37,8 +37,17 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
     let resolutions = params.iter().map(|(name, ty, tok)| resolve_param(name, ty, tok));
     let arg_names: Vec<&Ident> = params.iter().map(|(name, _, _)| name).collect();
 
+    // `#[inject]` on a parameter is read above to pick the lookup token; it is not a real attribute,
+    // so it must be stripped before the method is re-emitted or rustc rejects it.
+    let mut emitted_method = method.clone();
+    for input in &mut emitted_method.sig.inputs {
+        if let FnArg::Typed(pat_type) = input {
+            pat_type.attrs.retain(|attr| !attr.path().is_ident("inject"));
+        }
+    }
+
     Ok(quote! {
-        #method
+        #emitted_method
 
         #[doc(hidden)]
         #[allow(unused_variables, non_snake_case)]
