@@ -6,8 +6,8 @@
 //! 3. Controllers using request context without manual extraction
 
 use toni::{
-    controller, get, http_helpers::RequestPart, injectable, module, toni_factory::ToniFactory,
-    Body as ToniBody,
+    Body as ToniBody, FromRequestParts, Request, controller, get, injectable, module, new, provider,
+    toni_factory::ToniFactory,
 };
 
 // ===== 1. Define types to store in extensions =====
@@ -20,7 +20,7 @@ pub struct RequestId(String);
 
 // ===== 2. Request-scoped provider using from_request =====
 
-#[injectable(scope = "request", init = "from_request")]
+#[provider(scope = "request")]
 pub struct RequestContext {
     user_id: String,
     request_id: String,
@@ -28,16 +28,19 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    /// Special method called by framework with the request parts.
-    pub fn from_request(req: &RequestPart) -> Self {
+    /// Built per request from the injected `Request` — the modern replacement for the old
+    /// `init = "from_request"` magic: `Request` is a request-scoped provider, so `#[new]` resolves
+    /// it and the constructor reads the same request extensions.
+    #[new]
+    fn new(req: Request) -> Self {
         let user_id = req
-            .extensions
+            .extensions()
             .get::<UserId>()
             .map(|u| u.0.clone())
             .unwrap_or_else(|| "anonymous".to_string());
 
         let request_id = req
-            .extensions
+            .extensions()
             .get::<RequestId>()
             .map(|r| r.0.clone())
             .unwrap_or_else(|| "no-request-id".to_string());
@@ -139,8 +142,8 @@ mod tests {
         req.extensions.insert(UserId("alice".to_string()));
         req.extensions.insert(RequestId("req-123".to_string()));
 
-        // Call from_request
-        let context = RequestContext::from_request(&req);
+        // Build the injected Request from the parts, then run the constructor.
+        let context = RequestContext::new(Request::from_request_parts(&req).unwrap());
 
         assert_eq!(context.get_user_id(), "alice");
         assert_eq!(context.get_request_id(), "req-123");
@@ -157,7 +160,7 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        let context = RequestContext::from_request(&req);
+        let context = RequestContext::new(Request::from_request_parts(&req).unwrap());
 
         assert_eq!(context.get_user_id(), "anonymous");
         assert!(!context.is_authenticated);
