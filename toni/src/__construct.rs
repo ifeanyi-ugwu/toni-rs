@@ -14,6 +14,7 @@
 #![doc(hidden)]
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -50,3 +51,52 @@ pub trait CtorBridge: Sized {
 }
 
 impl<T> CtorBridge for T {}
+
+/// Probe for defaulting an owned (unmarked / `#[default]`-less) field.
+///
+/// The factory always emits a field-injection construction path, even for a provider that builds
+/// itself through a `#[new]` constructor — the two macros can't see each other, so the path is
+/// present but dead whenever a constructor exists. A direct `<FieldTy>::default()` there would force
+/// every constructor-built field to implement `Default`, which the old constructor form never
+/// required. Routing through this probe defers that requirement: a `Default` type still defaults,
+/// and any other type compiles and only panics if the dead path is ever actually taken (no `#[new]`,
+/// no `#[default(...)]`, no `Default`).
+///
+/// Resolution is autoref-specialization: the inherent `field_default` on `OwnedFieldDefault<T>` wins
+/// for `T: Default` (zero autoref); otherwise the blanket [`OwnedFieldDefaultFallback`] on
+/// `&OwnedFieldDefault<T>` is reached by one autoref.
+pub struct OwnedFieldDefault<T>(pub PhantomData<T>);
+
+impl<T> OwnedFieldDefault<T> {
+    pub fn new() -> Self {
+        OwnedFieldDefault(PhantomData)
+    }
+}
+
+impl<T> Default for OwnedFieldDefault<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Default> OwnedFieldDefault<T> {
+    pub fn field_default(&self, _field: &'static str, _ty: &'static str) -> T {
+        T::default()
+    }
+}
+
+pub trait OwnedFieldDefaultFallback {
+    type Out;
+    fn field_default(&self, field: &'static str, ty: &'static str) -> Self::Out;
+}
+
+impl<T> OwnedFieldDefaultFallback for &OwnedFieldDefault<T> {
+    type Out = T;
+    fn field_default(&self, field: &'static str, ty: &'static str) -> T {
+        panic!(
+            "owned field `{field}: {ty}` has no `Default` impl and no `#[default(...)]`. \
+             Add `#[default(expr)]`, give `{ty}` a `Default` impl, or build the field in a \
+             `#[new]` constructor."
+        )
+    }
+}

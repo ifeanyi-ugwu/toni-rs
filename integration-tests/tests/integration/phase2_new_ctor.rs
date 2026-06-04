@@ -137,6 +137,31 @@ impl TransientServer {
     }
 }
 
+// A stored field whose type has NO `Default` impl, built entirely by `#[new]`. The factory always
+// emits a field-injection construction path even when a constructor exists (the macros can't see
+// each other), so this field would force `Default` if that dead path defaulted it directly. The
+// constructor builds it here; the field stays plain.
+#[derive(Clone)]
+pub struct Handle(String);
+
+#[provider]
+pub struct ConnHolder {
+    handle: Handle,
+}
+
+impl ConnHolder {
+    #[new]
+    fn new(config: ConfigService) -> Self {
+        Self {
+            handle: Handle(format!("conn:{}", config.port())),
+        }
+    }
+
+    pub fn handle(&self) -> &str {
+        &self.handle.0
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiController;
 
@@ -177,7 +202,7 @@ impl ReqController {
 
 #[module(
     controllers: [ApiController, ReqController],
-    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer, ReqFacade],
+    providers: [ConfigService, Server, PortGuard, ReqServer, TransientServer, ReqFacade, ConnHolder],
 )]
 struct NewCtorModule {}
 
@@ -257,6 +282,18 @@ async fn new_ctor_can_inject_request_scoped_dependency() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "8080");
+}
+
+#[tokio_localset_test::localset_test]
+async fn new_ctor_builds_non_default_field() {
+    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    // `Handle` has no `Default`; the field is built solely by the constructor. Resolving proves the
+    // dead field-injection path compiles without a `Default` bound and the constructor runs.
+    let holder: ConnHolder = app
+        .get::<ConnHolder>()
+        .await
+        .expect("ConnHolder resolves via #[new] despite a non-Default field");
+    assert_eq!(holder.handle(), "conn:8080");
 }
 
 // Keep Arc import meaningful even if unused in asserts.

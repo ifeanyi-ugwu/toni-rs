@@ -477,7 +477,12 @@ fn generate_request_provider(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -590,7 +595,12 @@ fn generate_transient_provider(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -1037,7 +1047,12 @@ fn generate_singleton_factory(
                     quote! { #field_name: #expr }
                 } else {
                     // Fall back to Default trait
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -1498,7 +1513,12 @@ fn generate_dyn_factories(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
