@@ -2,7 +2,7 @@ use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use toni::{
-    controller, extractors::Json, get, module, post, provider, Body as ToniBody, Request,
+    controller, extractors::Json, get, injectable, module, post, Body as ToniBody, Request,
 };
 use toni_config::{Config, ConfigModule, ConfigService};
 
@@ -15,7 +15,7 @@ struct AppConfig {
 
 #[tokio_localset_test::localset_test]
 async fn async_controller_methods_with_http_server() {
-    #[provider]
+    #[injectable]
     pub struct AsyncService {}
     impl AsyncService {
         pub async fn process(&self) -> String {

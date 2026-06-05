@@ -1,6 +1,6 @@
-use toni_macros::provider;
+use toni_macros::injectable;
 
-#[provider]
+#[injectable]
 pub struct _RESOURCE_NAME_SERVICE;
 impl _RESOURCE_NAME_SERVICE {
     pub fn find_all(&self) -> String {

@@ -1,4 +1,4 @@
-//! `#[new]` constructor injection on `#[provider]`: a dependency can be a constructor
+//! `#[new]` constructor injection on `#[injectable]`: a dependency can be a constructor
 //! parameter without being a stored field, and the constructor can derive non-injected state.
 //!
 //! This is the one case field injection can't express — `Server` injects `ConfigService`, keeps
@@ -10,14 +10,14 @@ use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
 use toni::{
-    Body as ToniBody, controller, get, module, new, provider, toni_factory::ToniFactory,
-    use_guards,
+    controller, get, injectable, module, new, toni_factory::ToniFactory, use_guards,
+    Body as ToniBody,
 };
 
 use crate::common::TestServer;
 use serial_test::serial;
 
-#[provider]
+#[injectable]
 pub struct ConfigService {
     #[default(8080)]
     port: u16,
@@ -31,7 +31,7 @@ impl ConfigService {
 
 // `#[new]`: ConfigService is injected and used, but NOT a field. `port` is derived from it. The
 // struct has no DI field at all — impossible to express with field injection.
-#[provider]
+#[injectable]
 pub struct Server {
     port: u16,
 }
@@ -51,7 +51,7 @@ impl Server {
 
 // A guard built via #[new] with a non-stored dep — proves ctor-built providers still get their
 // roles auto-detected (the bridge feeds the same factory the probes run in).
-#[provider]
+#[injectable]
 pub struct PortGuard {
     threshold: u16,
 }
@@ -79,7 +79,7 @@ impl Guard<HttpContext> for PortGuard {
 }
 
 // Request-scoped #[new]: built fresh per request, ConfigService injected, not stored.
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct ReqServer {
     port: u16,
 }
@@ -100,7 +100,7 @@ impl ReqServer {
 // The case the request-context fix unlocks: a request-scoped #[new] provider whose constructor
 // injects ANOTHER request-scoped provider (ReqServer). Before the fix this panicked, because the
 // constructor resolved its params with no request context.
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct ReqFacade {
     port: u16,
 }
@@ -108,9 +108,7 @@ pub struct ReqFacade {
 impl ReqFacade {
     #[new]
     fn new(inner: ReqServer) -> Self {
-        Self {
-            port: inner.port(),
-        }
+        Self { port: inner.port() }
     }
 
     pub fn port(&self) -> u16 {
@@ -119,7 +117,7 @@ impl ReqFacade {
 }
 
 // Transient-scoped #[new]: built per resolution.
-#[provider(scope = "transient")]
+#[injectable(scope = "transient")]
 pub struct TransientServer {
     port: u16,
 }
@@ -144,7 +142,7 @@ impl TransientServer {
 #[derive(Clone)]
 pub struct Handle(String);
 
-#[provider]
+#[injectable]
 pub struct ConnHolder {
     handle: Handle,
 }
@@ -164,7 +162,7 @@ impl ConnHolder {
 
 // `#[inject]` on a `#[new]` parameter: read for the lookup token, then stripped from the re-emitted
 // constructor. Left in place, rustc rejects `#[inject]` as an unknown attribute on a fn parameter.
-#[provider]
+#[injectable]
 pub struct ExplicitInjectServer {
     port: u16,
 }
@@ -240,7 +238,10 @@ async fn new_ctor_injects_without_storing() {
     let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
 
     // Server was built via Self::new(config) — config injected, only port kept.
-    let server: Server = app.get::<Server>().await.expect("Server resolves via #[new]");
+    let server: Server = app
+        .get::<Server>()
+        .await
+        .expect("Server resolves via #[new]");
     assert_eq!(server.port(), 8080);
 }
 
@@ -264,7 +265,11 @@ async fn new_ctor_built_guard_still_auto_detects_role() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "guard admits when x-port matches configured port");
+    assert_eq!(
+        resp.status(),
+        200,
+        "guard admits when x-port matches configured port"
+    );
     assert_eq!(resp.text().await.unwrap(), "ok");
 }
 

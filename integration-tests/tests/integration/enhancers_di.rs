@@ -4,7 +4,7 @@ use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
-    controller, get, module, new, provider, provider_value, use_guards, use_interceptors,
+    controller, get, injectable, module, new, provider_value, use_guards, use_interceptors,
     Body as ToniBody, RequestPart,
 };
 
@@ -48,7 +48,7 @@ impl ExecutionTracker {
 
 // ---- injectable service used by enhancers ------------------------------------
 
-#[provider]
+#[injectable]
 pub struct AuthService {
     tracker: ExecutionTracker,
 }
@@ -71,7 +71,7 @@ impl AuthService {
 
 // ---- DI-registered middleware ------------------------------------------------
 
-#[provider]
+#[injectable]
 pub struct RequestTrackingMiddleware {
     tracker: ExecutionTracker,
 }
@@ -94,7 +94,7 @@ impl Middleware for RequestTrackingMiddleware {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct HeaderValidationMiddleware {
     auth_service: AuthService,
 }
@@ -123,7 +123,7 @@ impl Middleware for HeaderValidationMiddleware {
 
 // ---- DI-registered guards ----------------------------------------------------
 
-#[provider]
+#[injectable]
 pub struct AdminGuard {
     auth_service: AuthService,
 }
@@ -142,7 +142,7 @@ impl Guard<HttpContext> for AdminGuard {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct UserGuard {
     auth_service: AuthService,
 }
@@ -163,7 +163,7 @@ impl Guard<HttpContext> for UserGuard {
 
 // ---- DI-registered interceptors ----------------------------------------------
 
-#[provider]
+#[injectable]
 pub struct LoggingInterceptor {
     tracker: ExecutionTracker,
 }
@@ -187,7 +187,7 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct TimingInterceptor {
     tracker: ExecutionTracker,
 }

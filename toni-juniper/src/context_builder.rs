@@ -23,7 +23,7 @@ use toni::RequestPart;
 ///
 /// impl JuniperContext for MyContext {}
 ///
-/// #[provider]
+/// #[injectable]
 /// pub struct _MyContextBuilder {
 ///     #[inject]
 ///     auth_service: _AuthService,

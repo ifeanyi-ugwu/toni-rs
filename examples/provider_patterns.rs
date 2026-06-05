@@ -8,13 +8,13 @@
 
 use std::time::Duration;
 use toni::{
-    module, new, provider, provider_alias, provider_factory, provider_token, provider_value,
+    injectable, module, new, provider_alias, provider_factory, provider_token, provider_value,
     toni_factory::ToniFactory,
 };
 
 // ---- providers ---------------------------------------------------------------
 
-#[provider]
+#[injectable]
 pub struct ConfigService {
     env: String,
 }
@@ -31,7 +31,7 @@ impl ConfigService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct LoggerService {
     level: String,
 }
@@ -52,7 +52,7 @@ impl LoggerService {
 //
 // Injects values from each provider macro so the resolved output is observable.
 
-#[provider]
+#[injectable]
 pub struct AppInfo {
     // provider_value! — constant injected under a string token
     #[inject("APP_NAME")]

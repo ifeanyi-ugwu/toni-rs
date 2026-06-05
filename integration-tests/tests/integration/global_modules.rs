@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use serial_test::serial;
-use toni::{controller, get, module, provider, Body as ToniBody};
+use toni::{controller, get, injectable, module, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -14,7 +14,7 @@ struct GlobalTestConfig {
     pub count: u32,
 }
 
-#[provider]
+#[injectable]
 pub struct LoggerService {
     #[inject]
     config: ConfigService<GlobalTestConfig>,
@@ -30,7 +30,7 @@ impl LoggerService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct DatabaseService {
     #[inject]
     config: ConfigService<GlobalTestConfig>,
@@ -50,7 +50,7 @@ impl DatabaseService {
 )]
 impl GlobalInfraModule {}
 
-#[provider]
+#[injectable]
 pub struct UserService {
     #[inject]
     logger: LoggerService,
@@ -98,7 +98,7 @@ impl UserController {
 )]
 impl UserModule {}
 
-#[provider]
+#[injectable]
 pub struct OrderService {
     #[inject]
     logger: LoggerService,
@@ -198,7 +198,7 @@ async fn global_module_providers_accessible_across_feature_modules() {
 
 // ---- builder method: .global() ----
 
-#[provider]
+#[injectable]
 pub struct CacheService {}
 
 impl CacheService {
@@ -219,7 +219,7 @@ impl Default for CacheService {
 )]
 impl CacheModule {}
 
-#[provider]
+#[injectable]
 pub struct ProductService {
     #[inject]
     cache: CacheService,

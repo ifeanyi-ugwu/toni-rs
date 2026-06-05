@@ -19,7 +19,7 @@ pub type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provide
 /// # Examples
 ///
 /// ```ignore
-/// #[provider]
+/// #[injectable]
 /// pub struct PluginLoader {
 ///     #[inject]
 ///     module_ref: ModuleRef,

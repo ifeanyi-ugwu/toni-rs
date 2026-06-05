@@ -1,4 +1,4 @@
-//! Bridge between a `#[provider]` provider and an optional `#[new]` constructor.
+//! Bridge between a `#[injectable]` provider and an optional `#[new]` constructor.
 //!
 //! The derive generates the provider factory from the struct's fields and cannot see a `#[new]`
 //! method on a separate `impl`. Rather than *detect* the constructor, the derive simply *calls* it:

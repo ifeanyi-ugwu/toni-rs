@@ -1,5 +1,5 @@
 //! The `#[on_init]` / `#[on_bootstrap]` / `#[on_destroy]` / `#[before_shutdown]` / `#[on_shutdown]`
-//! hook macros for `#[provider]` providers.
+//! hook macros for `#[injectable]` providers.
 //!
 //! The derive generates the provider from the struct and can't see these methods. Each macro emits
 //! the user's method unchanged plus an inherent `__toni_lc_*` forwarder that shadows the blanket

@@ -104,7 +104,7 @@ pub fn generate_instance_provider_system(
     })
 }
 
-/// Emit the provider + factory + accessor for `struct_def` — the `#[provider]` codegen. The caller
+/// Emit the provider + factory + accessor for `struct_def` — the `#[injectable]` codegen. The caller
 /// (`provider_attr`) re-emits the struct itself; this contributes only the DI wiring beside it.
 ///
 /// Dependencies are declared as `#[inject]` fields. By default the instance is assembled as
@@ -160,8 +160,8 @@ pub fn generate_provider_from_struct(
 /// This macro **cannot detect** manual `impl Clone` blocks that come after the macro invocation:
 ///
 /// ```rust,ignore
-/// #[injectable(pub struct Foo { field: String })]
-/// impl Foo { /* ... */ }
+/// #[injectable]
+/// pub struct Foo { field: String }
 ///
 /// // ❌ Macro cannot see this - will add #[derive(Clone)] and cause conflict
 /// impl Clone for Foo {

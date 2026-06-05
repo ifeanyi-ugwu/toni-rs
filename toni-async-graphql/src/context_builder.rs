@@ -30,10 +30,10 @@ use toni::RequestPart;
 ///
 /// ```ignore
 /// use toni_async_graphql::{ContextBuilder, async_graphql::Data};
-/// use toni::{RequestPart, provider};
+/// use toni::{RequestPart, injectable};
 /// use async_trait::async_trait;
 ///
-/// #[provider]
+/// #[injectable]
 /// pub struct MyContextBuilder {
 ///     #[inject]
 ///     auth_service: AuthService,

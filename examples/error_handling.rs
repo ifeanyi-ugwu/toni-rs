@@ -21,9 +21,9 @@
 use serde::Serialize;
 use serde_json::json;
 use toni::{
-    Error, HttpRequest, HttpResponse, async_trait, catch, context::HttpContext, controller,
-    errors::HttpError, get, http_helpers::Body, module, post, provider,
-    toni_factory::ToniFactory, traits_helpers::Guard,
+    async_trait, catch, context::HttpContext, controller, errors::HttpError, get,
+    http_helpers::Body, injectable, module, post, toni_factory::ToniFactory, traits_helpers::Guard,
+    Error, HttpRequest, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
@@ -85,10 +85,7 @@ impl Error for PaymentDeclined {
 // this handler, the canonical envelope (status 422 + `{"statusCode":...}`)
 // would render via the `From<PaymentDeclined> for HttpError` blanket.
 #[catch(PaymentDeclined)]
-async fn render_payment_declined(
-    err: &PaymentDeclined,
-    _ctx: &HttpContext,
-) -> HttpResponse {
+async fn render_payment_declined(err: &PaymentDeclined, _ctx: &HttpContext) -> HttpResponse {
     HttpResponse::builder()
         .status(toni::errors::http_status(err.kind()))
         .header("Retry-After", err.retry_after_secs.to_string())
@@ -109,7 +106,7 @@ struct User {
     email: String,
 }
 
-#[provider]
+#[injectable]
 pub struct UserService {}
 impl UserService {
     fn find_user(&self, id: &str) -> Result<User, UserError> {
@@ -160,10 +157,7 @@ impl Guard<HttpContext> for AuthGuard {
 // response.
 
 #[catch(toni::errors::GuardRejection)]
-async fn auth_failure(
-    err: &toni::errors::GuardRejection,
-    _ctx: &HttpContext,
-) -> HttpResponse {
+async fn auth_failure(err: &toni::errors::GuardRejection, _ctx: &HttpContext) -> HttpResponse {
     HttpResponse::builder()
         .status(toni::errors::http_status(err.kind()))
         .json(json!({

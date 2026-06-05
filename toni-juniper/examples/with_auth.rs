@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use juniper::{graphql_object, EmptySubscription, FieldResult, RootNode};
 use std::sync::Arc;
-use toni::{module, provider, toni_factory::ToniFactory, HttpAdapter};
+use toni::{injectable, module, toni_factory::ToniFactory, HttpAdapter};
 use toni_axum::AxumAdapter;
 use toni_juniper::{ContextBuilder, GraphQLModule};
 
@@ -36,7 +36,7 @@ impl User {
 // ============================================================================
 
 /// Authentication service (injectable via Toni DI)
-#[provider]
+#[injectable]
 pub struct _AuthService;
 impl _AuthService {
     fn verify_token(&self, req: &toni::RequestPart) -> Option<User> {
@@ -59,7 +59,7 @@ impl _AuthService {
 }
 
 /// Database service (injectable via Toni DI)
-#[provider]
+#[injectable]
 pub struct _DatabaseService;
 impl _DatabaseService {
     fn find_user(&self, id: i32) -> Option<User> {
@@ -102,7 +102,7 @@ pub struct GraphQLContext {
 impl juniper::Context for GraphQLContext {}
 
 /// Context builder that injects Toni services!
-#[provider]
+#[injectable]
 pub struct _GraphQLContextBuilder {
     #[inject]
     auth_service: _AuthService,

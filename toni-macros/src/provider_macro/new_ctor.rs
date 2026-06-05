@@ -1,4 +1,4 @@
-//! `#[new]` — marks the DI constructor of a `#[provider]` provider.
+//! `#[new]` — marks the DI constructor of a `#[injectable]` provider.
 //!
 //! Lives on the constructor method. The derive generates the factory from the struct's fields and
 //! cannot see this method, so `#[new]` emits two inherent associated fns next to it —

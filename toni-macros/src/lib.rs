@@ -3,7 +3,6 @@ extern crate proc_macro2;
 use controller_macro::controller_struct::handle_controller_struct;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
 mod app_error_macro;
@@ -36,19 +35,30 @@ pub fn controller_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+/// Field-injection provider — the way to declare a DI provider. Place it on the struct:
+/// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state. The macro adds
+/// the `Clone` impl the container needs, so the struct carries no derive ceremony.
+///
+/// Arguments override defaults:
+/// - `#[injectable(scope = "request")]` / `"transient"` — default is singleton.
+/// - `#[injectable(init = "new")]` — assemble via `Self::new(inject_fields…)` instead of a struct
+///   literal. (Usually unnecessary — prefer `#[new]` on the constructor method, which also injects
+///   parameters that aren't stored fields.)
+///
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_init]`, …) live on the struct's `impl`.
+///
+/// ```ignore
+/// #[injectable(scope = "request")]
+/// pub struct UserService {
+///     #[inject] repo: UserRepo,
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    let trait_name = Ident::new("Provider", Span::call_site());
-    let output = handle_provider_struct(attr, item, trait_name);
+    let output = provider_macro::provider_attr::handle_provider(attr, item);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-#[proc_macro_attribute]
-#[deprecated(since = "0.2.0", note = "Use #[injectable] instead")]
-pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
-    injectable(attr, item)
 }
 
 #[proc_macro_attribute]
@@ -350,41 +360,15 @@ pub fn set_metadata(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Keeps `#[inject]` / `#[default]` valid as inert field attributes on structs that the
-/// attribute-form macros (`#[injectable(struct …)]`, `#[controller(…)]`, gateways, rpc/grpc)
-/// re-emit. Those macros run their own provider codegen and only need the field attributes
-/// to stay parseable, so this derive emits nothing.
+/// attribute-form macros (`#[injectable]`, `#[controller(…)]`, gateways, rpc/grpc) re-emit. Those
+/// macros run their own provider codegen and only need the field attributes to stay parseable, so
+/// this derive emits nothing.
 #[proc_macro_derive(InjectFields, attributes(inject, default))]
 pub fn derive_inject_fields(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }
 
-/// Field-injection provider — the clean way to declare a DI provider. Place it on the struct:
-/// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state. The macro adds
-/// the `Clone` impl the container needs, so the struct carries no derive ceremony.
-///
-/// Arguments override defaults:
-/// - `#[provider(scope = "request")]` / `"transient"` — default is singleton.
-/// - `#[provider(init = "new")]` — assemble via `Self::new(inject_fields…)` instead of a struct
-///   literal. (Usually unnecessary — prefer `#[new]` on the constructor method, which also injects
-///   parameters that aren't stored fields.)
-///
-/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_init]`, …) live on the struct's `impl`.
-///
-/// ```ignore
-/// #[provider(scope = "request")]
-/// pub struct UserService {
-///     #[inject] repo: UserRepo,
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn provider(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = proc_macro2::TokenStream::from(attr);
-    let item = proc_macro2::TokenStream::from(item);
-    let output = provider_macro::provider_attr::handle_provider(attr, item);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-/// Marks the dependency-injected constructor of a `#[provider]` struct.
+/// Marks the dependency-injected constructor of a `#[injectable]` struct.
 ///
 /// Place it on a `fn name(deps…) -> Self` inside the struct's `impl`. Each parameter is resolved
 /// from the DI container (by type, or `#[inject("TOKEN")]`) and passed in — so a dependency can be
@@ -392,7 +376,7 @@ pub fn provider(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// logic. Without `#[new]`, the provider builds the struct by field injection instead.
 ///
 /// ```ignore
-/// #[provider]
+/// #[injectable]
 /// pub struct Server { port: u16 }
 ///
 /// impl Server {
@@ -424,7 +408,7 @@ macro_rules! lifecycle_hook_macro {
 lifecycle_hook_macro!(
     on_init,
     provider_macro::lifecycle_attr::Hook::OnInit,
-    "Lifecycle hook on a `#[provider]` struct: `async fn(&self) -> toni::InitResult`, run after the DI container is built. Returning `Err` aborts startup."
+    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> toni::InitResult`, run after the DI container is built. Returning `Err` aborts startup."
 );
 lifecycle_hook_macro!(
     on_bootstrap,

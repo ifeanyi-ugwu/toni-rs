@@ -13,7 +13,7 @@ use toni_terminus::{HealthCheckService, HealthIndicator, TerminusModule};
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 
-#[provider]
+#[injectable]
 pub struct CacheService {
     #[inject]
     manager: ConnectionManager,
@@ -104,14 +104,22 @@ async fn full_integration() {
             }
 
             // Write a key
-            let r = client.post(&base).body("greeting=hello").send().await.unwrap();
+            let r = client
+                .post(&base)
+                .body("greeting=hello")
+                .send()
+                .await
+                .unwrap();
             assert_eq!(r.status().as_u16(), 200);
 
             // Read it back
             let r = client.get(format!("{base}/greeting")).send().await.unwrap();
             let status = r.status().as_u16();
             let body_text = r.text().await.unwrap();
-            assert_eq!(status, 200, "GET /cache/greeting failed ({status}): {body_text}");
+            assert_eq!(
+                status, 200,
+                "GET /cache/greeting failed ({status}): {body_text}"
+            );
 
             // Health check
             let r = client.get(format!("{base}/health")).send().await.unwrap();

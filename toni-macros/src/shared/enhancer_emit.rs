@@ -189,8 +189,8 @@ impl ErrorHandlerKind {
 /// `toni::__detect` autoref probes resolve (a generic wrapper would erase the bound and detect
 /// nothing — see the `__detect` module docs).
 ///
-/// Shared by every singleton role-registration site: the `#[injectable]` / `#[provider]`
-/// factory and the caching `provider_factory!` factory. Middleware, the nine guard/interceptor/pipe
+/// Shared by every singleton role-registration site: the `#[injectable]` factory and the caching
+/// `provider_factory!` factory. Middleware, the nine guard/interceptor/pipe
 /// kinds, and the four error-handler kinds are each probed; only implemented ones register.
 pub fn value_probe_detection() -> TokenStream {
     let mut detects = vec![quote! {

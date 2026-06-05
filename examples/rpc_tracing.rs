@@ -43,12 +43,12 @@
 //! attached to `tracing::info!` calls inside the handler — the user
 //! handler never had to mention them.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, module, new, provider, rpc_controller};
-use tracing_subscriber::{EnvFilter, fmt};
+use toni_macros::{grpc_methods, grpc_service, injectable, module, new, rpc_controller};
+use tracing_subscriber::{fmt, EnvFilter};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -95,7 +95,7 @@ struct PatternModule;
 
 // ─── gRPC — contract-first ──────────────────────────────────────────────────
 
-#[provider]
+#[injectable]
 pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
 }
@@ -155,11 +155,9 @@ struct GrpcModule;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                EnvFilter::new("info,toni_tcp=debug,toni_udp=debug,toni_grpc=debug")
-            }),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            EnvFilter::new("info,toni_tcp=debug,toni_udp=debug,toni_grpc=debug")
+        }))
         .with_target(true)
         .init();
 

@@ -6,8 +6,8 @@
 //! 3. Controllers using request context without manual extraction
 
 use toni::{
-    Body as ToniBody, FromRequestParts, Request, controller, get, module, new, provider,
-    toni_factory::ToniFactory,
+    controller, get, injectable, module, new, toni_factory::ToniFactory, Body as ToniBody,
+    FromRequestParts, Request,
 };
 
 // ===== 1. Define types to store in extensions =====
@@ -20,7 +20,7 @@ pub struct RequestId(String);
 
 // ===== 2. Request-scoped provider using from_request =====
 
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct RequestContext {
     user_id: String,
     request_id: String,
@@ -29,7 +29,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// Built per request from the injected `Request` — the modern replacement for the old
-    /// `init = "from_request"` magic: `Request` is a request-scoped provider, so `#[new]` resolves
+    /// `init = "from_request"` magic: `Request` is a request-scoped injectable, so `#[new]` resolves
     /// it and the constructor reads the same request extensions.
     #[new]
     fn new(req: Request) -> Self {
@@ -73,7 +73,7 @@ impl RequestContext {
 
 // ===== 3. Singleton service (business logic) =====
 
-#[provider]
+#[injectable]
 pub struct UserService {}
 
 impl UserService {

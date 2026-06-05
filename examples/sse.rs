@@ -25,17 +25,17 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use futures::Stream;
 use futures::stream;
+use futures::Stream;
+use tokio::sync::broadcast;
 use toni::extractors::Bytes;
 use toni::*;
 use toni_axum::AxumAdapter;
-use toni_macros::{new, provider};
-use tokio::sync::broadcast;
+use toni_macros::{injectable, new};
 
 // ── Service ──────────────────────────────────────────────────────────────────
 
-#[provider]
+#[injectable]
 pub struct EventsService {
     tx: broadcast::Sender<String>,
 }
@@ -82,7 +82,10 @@ impl SseController {
     async fn counter(&self) -> impl IntoResponse {
         let s = stream::unfold(0u32, |n: u32| async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            Some((SseEvent::data(format!("count: {n}")).id(n.to_string()), n + 1))
+            Some((
+                SseEvent::data(format!("count: {n}")).id(n.to_string()),
+                n + 1,
+            ))
         });
         sse(s)
     }
@@ -112,14 +115,19 @@ impl SseController {
         tokio::spawn(async move {
             for i in 0..5u32 {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                let _ = tx.send(SseEvent::data(format!("push event {i}")).id(i.to_string())).await;
+                let _ = tx
+                    .send(SseEvent::data(format!("push event {i}")).id(i.to_string()))
+                    .await;
             }
             // tx dropped here — stream ends
         });
 
-        let s = stream::unfold(rx, |mut rx: tokio::sync::mpsc::Receiver<SseEvent>| async move {
-            rx.recv().await.map(|event| (event, rx))
-        });
+        let s = stream::unfold(
+            rx,
+            |mut rx: tokio::sync::mpsc::Receiver<SseEvent>| async move {
+                rx.recv().await.map(|event| (event, rx))
+            },
+        );
         sse(s)
     }
 
@@ -133,7 +141,8 @@ impl SseController {
     /// Emit: push a message to all current /sse/live subscribers.
     #[post("/emit")]
     async fn emit_event(&self, Bytes(data): Bytes) -> impl IntoResponse {
-        self.events.emit(String::from_utf8_lossy(&data).into_owned());
+        self.events
+            .emit(String::from_utf8_lossy(&data).into_owned());
         HttpResponse::no_content().build()
     }
 }

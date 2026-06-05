@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, get, module, new, provider, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -12,7 +12,7 @@ struct TestConfig {
 
 static SINGLETON_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[provider]
+#[injectable]
 pub struct SingletonService {}
 impl SingletonService {
     #[new]
@@ -54,8 +54,10 @@ async fn singleton_providers_created_once_across_requests() {
 
 static TRANSIENT_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[provider(scope = "transient")]
-pub struct TransientService { id: u32 }
+#[injectable(scope = "transient")]
+pub struct TransientService {
+    id: u32,
+}
 impl TransientService {
     #[new]
     pub fn new() -> Self {
@@ -73,10 +75,12 @@ impl TransientService {
 async fn transient_providers_create_unique_instances_per_injection() {
     TRANSIENT_COUNTER.store(0, Ordering::SeqCst);
 
-    #[provider]
+    #[injectable]
     pub struct MultiService {
-        #[inject] t1: TransientService,
-        #[inject] t2: TransientService,
+        #[inject]
+        t1: TransientService,
+        #[inject]
+        t2: TransientService,
     }
     impl MultiService {
         pub fn ids(&self) -> (u32, u32) {
@@ -118,7 +122,7 @@ async fn transient_providers_create_unique_instances_per_injection() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn field_injection_with_inject_attribute() {
-    #[provider]
+    #[injectable]
     pub struct DependencyService {}
     impl DependencyService {
         pub fn value(&self) -> i32 {
@@ -126,7 +130,7 @@ async fn field_injection_with_inject_attribute() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct ServiceWithDeps {
         #[inject]
         dep: DependencyService,
@@ -162,7 +166,7 @@ async fn field_injection_with_inject_attribute() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn field_injection_with_default_fallback() {
-    #[provider]
+    #[injectable]
     pub struct ServiceWithDefault {
         #[default(100)]
         value: i32,
@@ -198,7 +202,7 @@ async fn field_injection_with_default_fallback() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn config_service_injection_in_providers() {
-    #[provider]
+    #[injectable]
     pub struct ServiceWithConfig {
         #[inject]
         config: ConfigService<TestConfig>,
@@ -238,7 +242,7 @@ async fn config_service_injection_in_providers() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn new_attribute_syntax() {
-    #[provider]
+    #[injectable]
     pub struct NewSyntaxService {}
 
     impl NewSyntaxService {

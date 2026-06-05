@@ -13,14 +13,14 @@
 //!   just hands tonic an instance of the trait impl, and tonic dispatches.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
 use toni_macros::{
-    grpc_methods, grpc_service, module, new, provider, use_error_handlers, use_guards,
+    grpc_methods, grpc_service, injectable, module, new, use_error_handlers, use_guards,
     use_interceptors,
 };
 
@@ -31,7 +31,7 @@ mod orders_pb {
 use orders_pb::orders_client::OrdersClient;
 use orders_pb::orders_server::{Orders, OrdersServer};
 
-#[provider]
+#[injectable]
 pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
 }
@@ -83,16 +83,14 @@ impl Orders for OrdersGrpcService {
         request: tonic::Request<orders_pb::WatchRequest>,
     ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
         let id = request.into_inner().id;
-        let stream = futures_util::stream::iter(
-            ["queued", "picked", "shipped"]
-                .into_iter()
-                .map(move |status| {
-                    Ok(orders_pb::ProgressEvent {
-                        id,
-                        status: status.to_string(),
-                    })
-                }),
-        );
+        let stream = futures_util::stream::iter(["queued", "picked", "shipped"].into_iter().map(
+            move |status| {
+                Ok(orders_pb::ProgressEvent {
+                    id,
+                    status: status.to_string(),
+                })
+            },
+        ));
         Ok(tonic::Response::new(Box::pin(stream)))
     }
 
@@ -151,7 +149,7 @@ struct GrpcMacrosModule;
 // `GuardedGrpcModule` (this module) on its own port, so the duplicate
 // `impl Orders for ...` blocks never coexist on a running server.
 
-#[provider]
+#[injectable]
 pub struct AuthGuard {}
 impl AuthGuard {}
 
@@ -162,7 +160,7 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct AdminGuard {}
 impl AdminGuard {}
 
@@ -252,7 +250,10 @@ async fn boot_guarded() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(GuardedGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -291,7 +292,7 @@ fn lock_interceptor_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
-#[provider]
+#[injectable]
 pub struct ServiceInterceptor {}
 impl ServiceInterceptor {}
 
@@ -308,7 +309,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for ServiceInterceptor
     }
 }
 
-#[provider]
+#[injectable]
 pub struct MethodInterceptor {}
 impl MethodInterceptor {}
 
@@ -325,7 +326,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for MethodInterceptor 
     }
 }
 
-#[provider]
+#[injectable]
 pub struct DenyInterceptor {}
 impl DenyInterceptor {}
 
@@ -495,7 +496,10 @@ async fn boot_intercepted() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(InterceptedGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -514,7 +518,10 @@ async fn boot_deny() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(DenyGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -582,7 +589,11 @@ async fn grpc_service_macro_di_round_trip() {
     .expect("call must succeed")
     .into_inner();
 
-    assert!(resp.id >= 1000, "id should come from the injected counter, got {}", resp.id);
+    assert!(
+        resp.id >= 1000,
+        "id should come from the injected counter, got {}",
+        resp.id
+    );
     assert_eq!(resp.status, "created:keyboard");
 
     let err = client
@@ -614,7 +625,10 @@ async fn grpc_server_streaming_round_trip() {
     let mut statuses = Vec::new();
     while let Some(item) = stream.next().await {
         let evt = item.expect("stream item must be Ok");
-        assert_eq!(evt.id, 42, "server-streaming events must echo the request id");
+        assert_eq!(
+            evt.id, 42,
+            "server-streaming events must echo the request id"
+        );
         statuses.push(evt.status);
     }
     assert_eq!(statuses, vec!["queued", "picked", "shipped"]);
@@ -631,9 +645,18 @@ async fn grpc_client_streaming_round_trip() {
     let mut client = connect(port).await;
 
     let outbound = futures_util::stream::iter(vec![
-        orders_pb::CreateOrderRequest { item: "a".into(), qty: 1 },
-        orders_pb::CreateOrderRequest { item: "b".into(), qty: 2 },
-        orders_pb::CreateOrderRequest { item: "c".into(), qty: 3 },
+        orders_pb::CreateOrderRequest {
+            item: "a".into(),
+            qty: 1,
+        },
+        orders_pb::CreateOrderRequest {
+            item: "b".into(),
+            qty: 2,
+        },
+        orders_pb::CreateOrderRequest {
+            item: "c".into(),
+            qty: 3,
+        },
     ]);
 
     let resp = client
@@ -716,8 +739,14 @@ async fn grpc_bidi_streaming_round_trip() {
     let mut client = connect(port).await;
 
     let outbound = futures_util::stream::iter(vec![
-        orders_pb::ChatMessage { text: "hello".into(), id: 0 },
-        orders_pb::ChatMessage { text: "world".into(), id: 0 },
+        orders_pb::ChatMessage {
+            text: "hello".into(),
+            id: 0,
+        },
+        orders_pb::ChatMessage {
+            text: "world".into(),
+            id: 0,
+        },
     ]);
 
     let mut inbound = client
@@ -735,7 +764,10 @@ async fn grpc_bidi_streaming_round_trip() {
     }
     assert_eq!(texts, vec!["hello", "world"]);
     assert_eq!(ids.len(), 2);
-    assert!(ids[0] >= 1000 && ids[1] == ids[0] + 1, "ids must come from the counter");
+    assert!(
+        ids[0] >= 1000 && ids[1] == ids[0] + 1,
+        "ids must come from the counter"
+    );
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
@@ -824,7 +856,8 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
     });
     both.metadata_mut()
         .insert("authorization", "Bearer abc".parse().unwrap());
-    both.metadata_mut().insert("x-role", "admin".parse().unwrap());
+    both.metadata_mut()
+        .insert("x-role", "admin".parse().unwrap());
     let resp = client
         .create(both)
         .await
@@ -843,7 +876,7 @@ async fn grpc_guard_method_level_stacks_on_block_level() {
 /// Claims errors whose `to_string()` contains `"remap-me"`; everything else
 /// passes through unchanged. Lets one server cover both the claim path and
 /// the pass-through path in adjacent tests.
-#[provider]
+#[injectable]
 pub struct ConditionalErrorHandler {}
 impl ConditionalErrorHandler {}
 
@@ -944,7 +977,10 @@ async fn boot_error_handled() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(ErrorHandledGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -1020,7 +1056,10 @@ async fn boot_panicky() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(PanickyGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -1234,7 +1273,7 @@ async fn grpc_panic_in_handler_surfaces_as_internal() {
 
 // ── pipeline-segment panic coverage (guard + interceptor) ──────────────────
 
-#[provider]
+#[injectable]
 pub struct PanickingGrpcGuard {}
 impl PanickingGrpcGuard {}
 
@@ -1304,7 +1343,7 @@ impl Orders for GuardPanicGrpcService {
 #[module(providers: [OrdersCounter, PanickingGrpcGuard, GuardPanicGrpcService])]
 struct GuardPanicGrpcModule;
 
-#[provider]
+#[injectable]
 pub struct PanickingGrpcInterceptor {}
 impl PanickingGrpcInterceptor {}
 
@@ -1388,7 +1427,10 @@ async fn boot_guard_panic() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(GuardPanicGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -1407,7 +1449,10 @@ async fn boot_interceptor_panic() -> (u16, toni::ShutdownHandle) {
         let mut app = ToniFactory::create(InterceptorPanicGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -1483,7 +1528,7 @@ async fn grpc_panic_in_interceptor_surfaces_as_internal() {
         .expect("shutdown must complete");
 }
 
-#[provider]
+#[injectable]
 pub struct PanickingGrpcErrorHandler {}
 impl PanickingGrpcErrorHandler {}
 
@@ -1563,11 +1608,13 @@ async fn boot_error_handler_panic() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app =
-            ToniFactory::create(ErrorHandlerPanicGrpcModule::module_definition()).await;
+        let mut app = ToniFactory::create(ErrorHandlerPanicGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -1683,7 +1730,10 @@ where
         let mut app = ToniFactory::create(SlowGrpcModule::module_definition()).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let port = bound.grpc.expect("BoundAdapters.grpc must be populated").port();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
         let _ = port_tx.send(port);
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;

@@ -14,7 +14,7 @@ use toni_terminus::{HealthCheckService, HealthIndicator, TerminusModule};
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 
-#[provider]
+#[injectable]
 pub struct ItemService {
     #[inject]
     db: DatabaseConnection,
@@ -88,7 +88,9 @@ impl ItemController {
 
     #[get("/health")]
     async fn health(&self) -> impl IntoResponse {
-        self.health.check(vec![self.indicator.check("database")]).await
+        self.health
+            .check(vec![self.indicator.check("database")])
+            .await
     }
 }
 

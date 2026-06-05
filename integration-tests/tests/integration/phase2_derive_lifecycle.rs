@@ -1,15 +1,15 @@
-//! Lifecycle hooks on `#[provider]` structs via the `#[on_*]` bridge.
+//! Lifecycle hooks on `#[injectable]` structs via the `#[on_*]` bridge.
 //!
 //! The macro can't see the impl, so it dispatches every `Provider` lifecycle method through an
 //! inherent bridge fn the `#[on_init]` / `#[on_bootstrap]` / `#[on_destroy]` macros emit. A provider
 //! with no hooks gets the blanket no-op; one with hooks runs them. Mirrors `lifecycle_hooks.rs`
-//! (the older attribute form), but every provider here is a plain `#[provider]` struct.
+//! (the older attribute form), but every provider here is a plain `#[injectable]` struct.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
 use toni::{
-    before_shutdown, module, on_bootstrap, on_destroy, on_init, on_shutdown, provider,
+    before_shutdown, injectable, module, on_bootstrap, on_destroy, on_init, on_shutdown,
     toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
@@ -22,7 +22,7 @@ fn get_log() -> Arc<Mutex<Vec<&'static str>>> {
         .clone()
 }
 
-#[provider]
+#[injectable]
 pub struct HookedService {
     #[default(0)]
     _marker: u8,
@@ -58,7 +58,7 @@ impl HookedService {
 }
 
 // A derived provider with NO lifecycle hooks — must build and run fine (blanket no-op bridge).
-#[provider]
+#[injectable]
 pub struct PlainService {
     #[default(0)]
     _marker: u8,
@@ -115,6 +115,14 @@ async fn derive_shutdown_hooks_fire() {
         "before_shutdown must fire on shutdown; got {:?}",
         log
     );
-    assert!(log.contains(&"destroy"), "on_destroy must fire on shutdown; got {:?}", log);
-    assert!(log.contains(&"shutdown"), "on_shutdown must fire on shutdown; got {:?}", log);
+    assert!(
+        log.contains(&"destroy"),
+        "on_destroy must fire on shutdown; got {:?}",
+        log
+    );
+    assert!(
+        log.contains(&"shutdown"),
+        "on_shutdown must fire on shutdown; got {:?}",
+        log
+    );
 }

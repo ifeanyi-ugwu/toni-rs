@@ -68,7 +68,7 @@ Build GraphQL context with access to Toni's dependency injection:
 
 ```ignore
 use toni_juniper::{ContextBuilder, juniper};
-use toni::{HttpRequest, provider};
+use toni::{HttpRequest, injectable};
 use async_trait::async_trait;
 
 // Define your context type
@@ -81,7 +81,7 @@ struct MyContext {
 impl juniper::Context for MyContext {}
 
 // Define your context builder as a Toni provider
-#[provider]
+#[injectable]
 pub struct _MyContextBuilder {
     #[inject]
     auth_service: _AuthService,      // Injected by Toni!

@@ -4,7 +4,7 @@
 //! This is the mechanism `#[use_guards(X)]` will generate once the controller macro threads
 //! it through (the remaining plumbing). It proves the three load-bearing claims independently
 //! of that plumbing:
-//!   1. a `#[provider]` guard with its own injected dependency resolves by type;
+//!   1. a `#[injectable]` guard with its own injected dependency resolves by type;
 //!   2. `Arc<Guard> as Arc<dyn Guard<HttpContext>>` compiles — i.e. the coercion is valid and a
 //!      missing `Guard` impl would be a loud compile error at this site, not a runtime registry miss;
 //!   3. the coerced trait object runs against a real `HttpContext`.
@@ -17,10 +17,10 @@ use std::sync::Arc;
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
-use toni::{module, provider, toni_factory::ToniFactory};
+use toni::{injectable, module, toni_factory::ToniFactory};
 
 // A plain dependency — field injection, no struct-in-macro.
-#[provider]
+#[injectable]
 pub struct AuthPolicy {
     #[default(true)]
     enabled: bool,
@@ -32,9 +32,9 @@ impl AuthPolicy {
     }
 }
 
-// The guard: `#[provider]` + a normal `impl Guard<HttpContext>`. No `#[guard]` marker,
+// The guard: `#[injectable]` + a normal `impl Guard<HttpContext>`. No `#[guard]` marker,
 // no struct-in-macro, no transport restated. The trait impl is the whole declaration.
-#[provider]
+#[injectable]
 pub struct AdminGuard {
     #[inject]
     policy: AuthPolicy,

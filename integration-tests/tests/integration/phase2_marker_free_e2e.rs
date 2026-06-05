@@ -1,4 +1,4 @@
-//! End-to-end proof that a guard needs no marker: `#[provider]` + `impl Guard<HttpContext>`,
+//! End-to-end proof that a guard needs no marker: `#[injectable]` + `impl Guard<HttpContext>`,
 //! applied with `#[use_guards(AdminGuard)]`, blocks/admits real HTTP requests.
 //!
 //! The provider factory auto-detects the `Guard<HttpContext>` impl (via `toni::__detect`) and
@@ -9,12 +9,12 @@
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
-use toni::{Body as ToniBody, RequestPart, controller, get, module, provider, use_guards};
+use toni::{controller, get, injectable, module, use_guards, Body as ToniBody, RequestPart};
 
 use crate::common::TestServer;
 use serial_test::serial;
 
-#[provider]
+#[injectable]
 pub struct AuthService {
     #[default(true)]
     require_token: bool,
@@ -27,7 +27,7 @@ impl AuthService {
 }
 
 // No `#[guard(http)]`. The `impl Guard<HttpContext>` below is the only declaration.
-#[provider]
+#[injectable]
 pub struct AdminGuard {
     #[inject]
     auth: AuthService,
@@ -40,10 +40,10 @@ impl Guard<HttpContext> for AdminGuard {
     }
 }
 
-// A request-scoped guard, also marker-free: `#[provider(scope = "request")]` sets the
+// A request-scoped guard, also marker-free: `#[injectable(scope = "request")]` sets the
 // scope; the `impl Guard<HttpContext>` is detected per request through the dyn-factory path. This
 // exercises the type-level probe (registration decision) + value probe (per-request coercion).
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct RequestScopedGuard {
     #[default(false)]
     _per_request: bool,
@@ -121,7 +121,11 @@ async fn marker_free_request_scoped_guard_blocks_and_admits() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403, "request-scoped guard must block without x-allow");
+    assert_eq!(
+        resp.status(),
+        403,
+        "request-scoped guard must block without x-allow"
+    );
 
     let resp = server
         .client()
@@ -130,6 +134,10 @@ async fn marker_free_request_scoped_guard_blocks_and_admits() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "request-scoped guard must admit with x-allow");
+    assert_eq!(
+        resp.status(),
+        200,
+        "request-scoped guard must admit with x-allow"
+    );
     assert_eq!(resp.text().await.unwrap(), "scoped ok");
 }

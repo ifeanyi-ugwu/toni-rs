@@ -1,8 +1,8 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, get, module, new, provide, provider, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, provide, Body as ToniBody};
 
-#[provider]
+#[injectable]
 pub struct ConfigService {
     env: String,
 }
@@ -15,7 +15,7 @@ impl ConfigService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct DatabaseService {
     host: String,
 }
@@ -28,7 +28,7 @@ impl DatabaseService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct CacheService {
     url: String,
 }
@@ -43,7 +43,7 @@ impl CacheService {
 
 #[tokio_localset_test::localset_test]
 async fn provide_macro_patterns() {
-    #[provider]
+    #[injectable]
     pub struct AppService {
         #[inject("API_KEY")]
         api_key: String,

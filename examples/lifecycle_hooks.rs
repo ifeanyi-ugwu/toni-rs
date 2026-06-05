@@ -21,14 +21,14 @@
 
 use toni::*;
 use toni_macros::{
-    before_shutdown, module, new, on_bootstrap, on_destroy, on_init, on_shutdown, provider,
+    before_shutdown, injectable, module, new, on_bootstrap, on_destroy, on_init, on_shutdown,
 };
 
 // ============================================================================
 // Service with Lifecycle Hooks
 // ============================================================================
 
-#[provider]
+#[injectable]
 pub struct DatabaseService {
     name: String,
 }
@@ -88,7 +88,7 @@ impl DatabaseService {
 // Service without Lifecycle Hooks (for comparison)
 // ============================================================================
 
-#[provider]
+#[injectable]
 pub struct LoggerService;
 impl LoggerService {
     #[new]
@@ -106,7 +106,7 @@ impl LoggerService {
 // Service that depends on another service
 // ============================================================================
 
-#[provider]
+#[injectable]
 pub struct UserService {
     db: DatabaseService,
     logger: LoggerService,

@@ -28,7 +28,7 @@ use serde_json::json;
 use toni::{
     controller,
     extractors::{Json, Query},
-    get, module, post, provider, Body as ToniBody, RpcClient, ToniFactory,
+    get, injectable, module, post, Body as ToniBody, RpcClient, ToniFactory,
 };
 use toni_macros::{provider_value, rpc_controller};
 
@@ -59,7 +59,7 @@ struct ShipOrderDto {
 // Service — shared business logic
 // ============================================================================
 
-#[provider]
+#[injectable]
 pub struct OrdersService {}
 impl OrdersService {
     fn create_order(&self, item: &str, qty: u32) -> OrderDto {

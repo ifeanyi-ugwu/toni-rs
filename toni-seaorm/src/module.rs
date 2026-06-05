@@ -19,7 +19,7 @@ impl SeaOrmModule {
     /// Then inject `DatabaseConnection` anywhere:
     ///
     /// ```ignore
-    /// #[provider]
+    /// #[injectable]
     /// pub struct UserService {
     ///     #[inject]
     ///     db: DatabaseConnection,

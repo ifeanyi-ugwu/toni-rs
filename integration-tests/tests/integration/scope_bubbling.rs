@@ -1,11 +1,11 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, get, module, provider, Body as ToniBody};
+use toni::{controller, get, injectable, module, Body as ToniBody};
 
 // ---- Test 1: Singleton controller + singleton provider ----------------------
 
-#[provider]
+#[injectable]
 pub struct SingletonProvider {}
 impl SingletonProvider {
     fn get_data(&self) -> String {
@@ -28,7 +28,7 @@ impl OkModule {}
 
 static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct RequestScopedProvider {}
 impl RequestScopedProvider {
     fn get_request_id(&self) -> u32 {
@@ -50,7 +50,7 @@ impl ProblematicModule {}
 
 // ---- Test 3: Request controller + request provider (valid) ------------------
 
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct AnotherRequestProvider {}
 impl AnotherRequestProvider {
     fn get_data(&self) -> String {
@@ -71,7 +71,7 @@ impl CorrectModule {}
 
 // ---- Test 4: Mixed singleton + request deps (scope promotion) ---------------
 
-#[provider]
+#[injectable]
 pub struct CacheProvider {}
 impl CacheProvider {
     fn get_cached(&self) -> String {
@@ -79,7 +79,7 @@ impl CacheProvider {
     }
 }
 
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct SessionProvider {}
 impl SessionProvider {
     fn get_session(&self) -> String {
@@ -107,7 +107,7 @@ impl MixedModule {}
 
 // ---- Test 5: Explicit singleton + request dep (contradiction, still promotes) -----
 
-#[provider(scope = "request")]
+#[injectable(scope = "request")]
 pub struct ContradictoryRequestProvider {}
 impl ContradictoryRequestProvider {
     fn get_id(&self) -> String {

@@ -3,18 +3,13 @@ use std::time::Duration;
 
 use crate::common::TestServer;
 use futures_util::{stream, StreamExt};
-use toni::{
-    controller, get, module, post,
-    sse, Sse, SseEvent,
-    extractors::Bytes,
-    HttpResponse,
-};
-use toni_macros::{new, provider};
 use tokio::sync::broadcast;
+use toni::{controller, extractors::Bytes, get, module, post, sse, HttpResponse, Sse, SseEvent};
+use toni_macros::{injectable, new};
 
 // ── Service ──────────────────────────────────────────────────────────────────
 
-#[provider]
+#[injectable]
 pub struct EventsService {
     tx: broadcast::Sender<String>,
 }
@@ -75,9 +70,9 @@ impl SseController {
 
     #[get("/fallible")]
     async fn fallible(&self) -> impl toni::IntoResponse {
-        Sse::new(stream::iter([Ok::<SseEvent, std::io::Error>(SseEvent::data(
-            "ok-event",
-        ))]))
+        Sse::new(stream::iter([Ok::<SseEvent, std::io::Error>(
+            SseEvent::data("ok-event"),
+        )]))
     }
 
     // Bounded to 2 events so the test connection closes after receiving them
@@ -88,7 +83,8 @@ impl SseController {
 
     #[post("/emit")]
     async fn emit_event(&self, Bytes(data): Bytes) -> impl toni::IntoResponse {
-        self.events.emit(String::from_utf8_lossy(&data).into_owned());
+        self.events
+            .emit(String::from_utf8_lossy(&data).into_owned());
         HttpResponse::no_content().build()
     }
 }
@@ -101,17 +97,38 @@ impl SseModule {}
 #[tokio_localset_test::localset_test]
 async fn test_sse_headers() {
     let server = TestServer::start(SseModule::module_definition()).await;
-    let resp = server.client().get(server.url("/sse/basic")).send().await.unwrap();
+    let resp = server
+        .client()
+        .get(server.url("/sse/basic"))
+        .send()
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
-    assert!(ct.contains("text/event-stream"), "expected text/event-stream, got {ct}");
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        ct.contains("text/event-stream"),
+        "expected text/event-stream, got {ct}"
+    );
     assert_eq!(
-        resp.headers().get("cache-control").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "no-cache"
     );
     assert_eq!(
-        resp.headers().get("x-accel-buffering").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("x-accel-buffering")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "no"
     );
 }
@@ -195,7 +212,16 @@ async fn test_sse_broadcaster_delivers_to_subscriber() {
     // Subscribe first, then emit concurrently. The /live handler takes 2 events
     // and closes, so the text() call completes once both events arrive.
     let (body, _, _) = tokio::join!(
-        async { client.get(&live_url).send().await.unwrap().text().await.unwrap() },
+        async {
+            client
+                .get(&live_url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        },
         async {
             // Allow the subscription request to reach the server before emitting
             tokio::time::sleep(Duration::from_millis(100)).await;

@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
-use toni::di::{APP_GUARD, APP_INTERCEPTOR};
 use toni::context::HttpContext;
+use toni::di::{APP_GUARD, APP_INTERCEPTOR};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
-use toni::{controller, get, module, new, provider, provider_token, provider_value, Body as ToniBody};
+use toni::{
+    controller, get, injectable, module, new, provider_token, provider_value, Body as ToniBody,
+};
 
 use crate::common::TestServer;
 use serial_test::serial;
@@ -39,7 +41,7 @@ impl ExecutionTracker {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct MockService {
     name: String,
 }
@@ -56,7 +58,7 @@ impl MockService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct AppGuardWithDI {
     service: MockService,
     tracker: ExecutionTracker,
@@ -77,7 +79,7 @@ impl Guard<HttpContext> for AppGuardWithDI {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct AppInterceptorWithDI {
     service: MockService,
     tracker: ExecutionTracker,

@@ -32,11 +32,11 @@ use toni::context::{HttpContext, RpcContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::*;
-use toni_macros::{module, provider, rpc_controller, websocket_gateway};
+use toni_macros::{injectable, module, rpc_controller, websocket_gateway};
 
 // ---- one guard, three transport-shaped impls --------------------------------
 
-#[provider]
+#[injectable]
 pub struct UniversalAuthGuard {}
 impl UniversalAuthGuard {}
 
@@ -75,17 +75,13 @@ impl Guard<WsContext> for UniversalAuthGuard {
 
 // ---- one logging interceptor, three transport-shaped impls ------------------
 
-#[provider]
+#[injectable]
 pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[async_trait]
 impl Interceptor<HttpContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut HttpContext, next: Box<dyn InterceptorNext<HttpContext>>) {
         let req = ctx.request();
         println!(
             "[HTTP]      {} {} (agent: {:?})",
@@ -99,11 +95,7 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
 
 #[async_trait]
 impl Interceptor<RpcContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut RpcContext,
-        next: Box<dyn InterceptorNext<RpcContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut RpcContext, next: Box<dyn InterceptorNext<RpcContext>>) {
         println!(
             "[RPC]       pattern='{}' data={:?}",
             ctx.pattern(),
@@ -115,11 +107,7 @@ impl Interceptor<RpcContext> for LoggingInterceptor {
 
 #[async_trait]
 impl Interceptor<WsContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut WsContext,
-        next: Box<dyn InterceptorNext<WsContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
         println!(
             "[WebSocket] event='{}' client={} message={:?}",
             ctx.event(),
@@ -149,11 +137,7 @@ impl OrdersHttp {
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersRpc {
     #[message_pattern("order.create")]
-    async fn create(
-        &self,
-        data: RpcData,
-        _ctx: &context::RpcContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn create(&self, data: RpcData, _ctx: &context::RpcContext) -> Result<RpcData, RpcError> {
         let payload = data
             .as_json()
             .ok_or_else(|| RpcError::Internal("expected JSON payload".into()))?;
@@ -172,17 +156,16 @@ impl OrdersRpc {
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersWs {
     #[subscribe_message("echo")]
-    async fn echo(
-        &self,
-        _client: WsClient,
-        msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn echo(&self, _client: WsClient, msg: WsMessage) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("expected text frame".into()))?;
         let payload: serde_json::Value =
             serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-        let data = payload.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        let data = payload
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         Ok(WsMessage::text(json!({ "echo": data }).to_string()).into())
     }
 }

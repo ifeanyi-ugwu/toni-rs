@@ -1,12 +1,12 @@
-use toni::{module, provider, toni_factory::ToniFactory};
+use toni::{injectable, module, toni_factory::ToniFactory};
 
 #[tokio::test]
 async fn valid_singleton_injects_singleton() {
-    #[provider]
+    #[injectable]
     pub struct ServiceA {}
     impl ServiceA {}
 
-    #[provider]
+    #[injectable]
     pub struct ServiceB {
         #[inject]
         dep: ServiceA,
@@ -24,11 +24,11 @@ async fn valid_singleton_injects_singleton() {
 
 #[tokio::test]
 async fn valid_request_injects_singleton() {
-    #[provider]
+    #[injectable]
     pub struct SingletonService {}
     impl SingletonService {}
 
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct RequestService {
         #[inject]
         dep: SingletonService,
@@ -47,15 +47,15 @@ async fn valid_request_injects_singleton() {
 
 #[tokio::test]
 async fn valid_transient_injects_any_scope() {
-    #[provider]
+    #[injectable]
     pub struct SingletonService {}
     impl SingletonService {}
 
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct RequestService {}
     impl RequestService {}
 
-    #[provider(scope = "transient")]
+    #[injectable(scope = "transient")]
     pub struct TransientService {
         #[inject]
         singleton: SingletonService,
@@ -77,11 +77,11 @@ async fn valid_transient_injects_any_scope() {
 #[tokio::test]
 #[should_panic(expected = "Scope validation error")]
 async fn singleton_cannot_inject_request_scoped() {
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct RequestService {}
     impl RequestService {}
 
-    #[provider]
+    #[injectable]
     pub struct SingletonService {
         #[inject]
         request_dep: RequestService,
@@ -96,11 +96,11 @@ async fn singleton_cannot_inject_request_scoped() {
 
 #[tokio::test]
 async fn singleton_can_inject_transient() {
-    #[provider(scope = "transient")]
+    #[injectable(scope = "transient")]
     pub struct TransientService {}
     impl TransientService {}
 
-    #[provider]
+    #[injectable]
     pub struct SingletonService {
         #[inject]
         transient_dep: TransientService,
@@ -118,11 +118,11 @@ async fn singleton_can_inject_transient() {
 
 #[tokio::test]
 async fn request_can_inject_transient() {
-    #[provider(scope = "transient")]
+    #[injectable(scope = "transient")]
     pub struct TransientService {}
     impl TransientService {}
 
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct RequestService {
         #[inject]
         transient_dep: TransientService,
@@ -141,18 +141,18 @@ async fn request_can_inject_transient() {
 
 #[tokio::test]
 async fn complex_valid_hierarchy() {
-    #[provider]
+    #[injectable]
     pub struct BaseService {}
     impl BaseService {}
 
-    #[provider]
+    #[injectable]
     pub struct MiddleService {
         #[inject]
         base: BaseService,
     }
     impl MiddleService {}
 
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct TopService {
         #[inject]
         middle: MiddleService,
@@ -174,11 +174,11 @@ async fn complex_valid_hierarchy() {
 #[tokio::test]
 #[should_panic(expected = "Scope validation error")]
 async fn explicit_singleton_with_request_fails() {
-    #[provider(scope = "request")]
+    #[injectable(scope = "request")]
     pub struct RequestService {}
     impl RequestService {}
 
-    #[provider(scope = "singleton")]
+    #[injectable(scope = "singleton")]
     pub struct ExplicitSingleton {
         #[inject]
         request_dep: RequestService,

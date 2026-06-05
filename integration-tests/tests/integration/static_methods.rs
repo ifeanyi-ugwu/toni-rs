@@ -1,5 +1,5 @@
 use crate::common::TestServer;
-use toni::{controller, get, module, provider, Body as ToniBody, HttpRequest};
+use toni::{controller, get, injectable, module, Body as ToniBody, HttpRequest};
 
 #[controller("/static", pub struct StaticController {})]
 impl StaticController {
@@ -40,7 +40,7 @@ async fn static_method_controller() {
     assert_eq!(resp.text().await.unwrap(), "World from static method");
 }
 
-#[provider]
+#[injectable]
 pub struct MixedService {}
 impl MixedService {
     pub fn get_instance_message(&self) -> String {

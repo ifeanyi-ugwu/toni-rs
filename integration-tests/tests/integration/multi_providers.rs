@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::sync::Arc;
-use toni::{controller, get, module, provide, provider, Body as ToniBody};
+use toni::{controller, get, injectable, module, provide, Body as ToniBody};
 
 // Shared plugin trait used across all tests in this file
 trait Plugin: Send + Sync {
@@ -11,7 +11,7 @@ trait Plugin: Send + Sync {
 
 #[tokio_localset_test::localset_test]
 async fn multi_type_path_collects_all_contributions() {
-    #[provider]
+    #[injectable]
     pub struct PluginA {}
     impl PluginA {}
 
@@ -21,7 +21,7 @@ async fn multi_type_path_collects_all_contributions() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct PluginB {}
     impl PluginB {}
 
@@ -31,7 +31,7 @@ async fn multi_type_path_collects_all_contributions() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct PluginRegistry {
         #[inject("PLUGINS")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -91,7 +91,7 @@ async fn multi_factory_closure_collects_contributions() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct GreeterRegistry {
         #[inject("GREETERS")]
         greeters: Vec<Arc<dyn Plugin>>,
@@ -139,7 +139,7 @@ async fn multi_factory_closure_collects_contributions() {
 
 #[tokio_localset_test::localset_test]
 async fn multi_empty_when_no_contributions() {
-    #[provider]
+    #[injectable]
     pub struct EmptyRegistry {
         #[inject("NO_PLUGINS")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -177,7 +177,7 @@ async fn multi_single_contribution_is_vec_of_one() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct SingleRegistry {
         #[inject("SINGLE")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -232,7 +232,7 @@ async fn multi_raw_value_contributes_to_collection() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct NamedRegistry {
         #[inject("NAMED")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -279,7 +279,7 @@ async fn multi_raw_value_contributes_to_collection() {
 
 #[tokio_localset_test::localset_test]
 async fn multi_existing_reuses_registered_singleton() {
-    #[provider]
+    #[injectable]
     pub struct Alpha {}
     impl Alpha {}
 
@@ -289,7 +289,7 @@ async fn multi_existing_reuses_registered_singleton() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct Beta {}
     impl Beta {}
 
@@ -299,7 +299,7 @@ async fn multi_existing_reuses_registered_singleton() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct ExistingRegistry {
         #[inject("EX_PLUGINS")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -351,7 +351,7 @@ async fn multi_existing_reuses_registered_singleton() {
 
 #[tokio_localset_test::localset_test]
 async fn multi_existing_string_token_with_explicit_type() {
-    #[provider]
+    #[injectable]
     pub struct Gamma {}
     impl Gamma {}
 
@@ -361,7 +361,7 @@ async fn multi_existing_string_token_with_explicit_type() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct Delta {}
     impl Delta {}
 
@@ -371,7 +371,7 @@ async fn multi_existing_string_token_with_explicit_type() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct StringTokenRegistry {
         #[inject("STR_PLUGINS")]
         plugins: Vec<Arc<dyn Plugin>>,
@@ -421,7 +421,7 @@ async fn multi_existing_string_token_with_explicit_type() {
 
 #[tokio_localset_test::localset_test]
 async fn multi_provider_useclass_collects_contributions() {
-    #[provider]
+    #[injectable]
     pub struct Echo {}
     impl Echo {}
 
@@ -431,7 +431,7 @@ async fn multi_provider_useclass_collects_contributions() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct Foxtrot {}
     impl Foxtrot {}
 
@@ -441,7 +441,7 @@ async fn multi_provider_useclass_collects_contributions() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct UseClassRegistry {
         #[inject("UC_PLUGINS")]
         plugins: Vec<Arc<dyn Plugin>>,

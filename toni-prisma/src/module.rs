@@ -24,7 +24,7 @@ impl PrismaModule {
     /// Then inject the generated client anywhere:
     ///
     /// ```ignore
-    /// #[provider]
+    /// #[injectable]
     /// pub struct UserService {
     ///     #[inject]
     ///     db: db::PrismaClient,

@@ -19,7 +19,7 @@ impl MongoModule {
     /// Then inject `Database` anywhere:
     ///
     /// ```ignore
-    /// #[provider]
+    /// #[injectable]
     /// pub struct UserService {
     ///     #[inject]
     ///     db: Database,

@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use std::time::Duration;
 use toni::{
-    controller, get, module, new, provider, provider_alias, provider_factory, provider_token,
+    controller, get, injectable, module, new, provider_alias, provider_factory, provider_token,
     provider_value, Body as ToniBody,
 };
 
@@ -70,7 +70,7 @@ async fn provider_factory_sync_without_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_factory_sync_with_deps() {
-    #[provider]
+    #[injectable]
     pub struct ConfigService {
         env: String,
     }
@@ -118,7 +118,7 @@ async fn provider_factory_sync_with_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_factory_async_with_deps() {
-    #[provider]
+    #[injectable]
     pub struct LoggerService {
         level: String,
     }
@@ -167,7 +167,7 @@ async fn provider_factory_async_with_deps() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_alias_creates_alternate_token() {
-    #[provider]
+    #[injectable]
     pub struct ConfigService {
         env: String,
     }
@@ -186,7 +186,7 @@ async fn provider_alias_creates_alternate_token() {
     // Injects ConfigService twice: once by type, once through the "Config" alias.
     // If the alias registration doesn't create a working resolution path,
     // DI startup panics and the test never reaches the HTTP assertion.
-    #[provider]
+    #[injectable]
     pub struct VerifyService {
         #[inject]
         by_type: ConfigService,
@@ -232,7 +232,7 @@ async fn provider_alias_creates_alternate_token() {
 
 #[tokio_localset_test::localset_test]
 async fn provider_token_for_custom_types() {
-    #[provider]
+    #[injectable]
     pub struct DatabaseService {
         host: String,
     }
@@ -250,7 +250,7 @@ async fn provider_token_for_custom_types() {
 
     // Injects DatabaseService by its "PRIMARY_DB" token.
     // If token registration doesn't wire the resolution path, startup panics.
-    #[provider]
+    #[injectable]
     pub struct AppService {
         #[inject("PRIMARY_DB")]
         primary: DatabaseService,
@@ -294,7 +294,7 @@ async fn provider_token_for_custom_types() {
 
 #[tokio_localset_test::localset_test]
 async fn all_provider_variants_work_together() {
-    #[provider]
+    #[injectable]
     pub struct ConfigService {
         env: String,
     }
@@ -311,7 +311,7 @@ async fn all_provider_variants_work_together() {
         }
     }
 
-    #[provider]
+    #[injectable]
     pub struct LoggerService {
         level: String,
     }
@@ -330,7 +330,7 @@ async fn all_provider_variants_work_together() {
 
     // Consumes one alias and one token to prove they're injectable alongside
     // value/factory providers in the same module.
-    #[provider]
+    #[injectable]
     pub struct AliasTokenConsumer {
         #[inject("Config")]
         config_via_alias: ConfigService,

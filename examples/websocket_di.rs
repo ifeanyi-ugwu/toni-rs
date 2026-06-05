@@ -10,9 +10,9 @@ use toni::context::WsContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{BroadcastModule, BroadcastService};
 use toni::*;
-use toni_macros::{module, provider, websocket_gateway};
+use toni_macros::{injectable, module, websocket_gateway};
 
-#[provider]
+#[injectable]
 pub struct WsAuthGuard;
 
 #[async_trait]
@@ -28,16 +28,12 @@ impl Guard<WsContext> for WsAuthGuard {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct WsLoggingInterceptor;
 
 #[async_trait]
 impl Interceptor<WsContext> for WsLoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut WsContext,
-        next: Box<dyn InterceptorNext<WsContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
         println!("[WsLoggingInterceptor] 📥 Incoming message");
         println!("  Client: {}", ctx.client().id);
         println!("  Event: {}", ctx.event());

@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
-use toni::{module, on_bootstrap, on_init, provider, toni_factory::ToniFactory};
+use toni::{injectable, module, on_bootstrap, on_init, toni_factory::ToniFactory};
 use toni_axum::AxumAdapter;
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
@@ -22,7 +22,7 @@ fn get_log() -> Arc<Mutex<Vec<&'static str>>> {
         .clone()
 }
 
-#[provider]
+#[injectable]
 pub struct HookedService {}
 impl HookedService {
     #[on_init]

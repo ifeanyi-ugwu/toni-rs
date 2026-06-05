@@ -1,7 +1,7 @@
 use toni::*;
 
 // Test providers
-#[provider]
+#[injectable]
 pub struct DatabaseService {
     pub connection_string: String,
 }
@@ -15,7 +15,7 @@ impl DatabaseService {
     }
 }
 
-#[provider]
+#[injectable]
 pub struct CacheService {
     pub host: String,
 }
@@ -30,7 +30,7 @@ impl CacheService {
 }
 
 // Test service that uses ModuleRef for dynamic resolution
-#[provider]
+#[injectable]
 pub struct PluginLoader {
     #[inject]
     module_ref: ModuleRef,

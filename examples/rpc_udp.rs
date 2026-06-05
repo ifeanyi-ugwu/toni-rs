@@ -20,9 +20,9 @@
 //     | nc -u -w1 127.0.0.1 4000
 
 use toni::ToniFactory;
-use toni_macros::{module, provider, rpc_controller};
+use toni_macros::{injectable, module, rpc_controller};
 
-#[provider]
+#[injectable]
 pub struct OrdersService {}
 impl OrdersService {
     pub fn create_order(&self, item: &str, qty: u32) -> serde_json::Value {

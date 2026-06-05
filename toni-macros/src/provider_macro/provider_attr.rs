@@ -1,7 +1,7 @@
-//! `#[provider]` — the attribute form of a field-injection provider.
+//! `#[injectable]` — the attribute form of a field-injection provider.
 //!
 //! Placed directly on a struct, it registers the struct as a DI provider: `#[inject]` fields are
-//! dependencies, `#[default(expr)]` fields are owned state, and `#[provider(scope = "…")]` sets the
+//! dependencies, `#[default(expr)]` fields are owned state, and `#[injectable(scope = "…")]` sets the
 //! scope (default singleton). Unlike a derive, an attribute macro re-emits the struct, so it adds
 //! the `Clone` impl the provider wrapper needs when the user hasn't — the struct declaration carries
 //! no `#[derive(Clone, …)]` ceremony.
@@ -36,7 +36,7 @@ pub fn handle_provider(attr: TokenStream, item: TokenStream) -> Result<TokenStre
     })
 }
 
-/// Parse `scope = "…"` and `init = "…"` from the attribute arguments (`#[provider(scope = "…")]`).
+/// Parse `scope = "…"` and `init = "…"` from the attribute arguments (`#[injectable(scope = "…")]`).
 fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
     let mut scope = ProviderScope::default();
     let mut init: Option<String> = None;
@@ -70,7 +70,7 @@ fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
             other => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    format!("Unknown #[provider] key: '{}'. Expected 'scope' or 'init'", other),
+                    format!("Unknown #[injectable] key: '{}'. Expected 'scope' or 'init'", other),
                 ));
             }
         }
