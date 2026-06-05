@@ -45,7 +45,7 @@ pub fn controller_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   literal. (Usually unnecessary — prefer `#[new]` on the constructor method, which also injects
 ///   parameters that aren't stored fields.)
 ///
-/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_init]`, …) live on the struct's `impl`.
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`.
 ///
 /// ```ignore
 /// #[injectable(scope = "request")]
@@ -406,27 +406,27 @@ macro_rules! lifecycle_hook_macro {
 }
 
 lifecycle_hook_macro!(
-    on_init,
+    on_module_init,
     provider_macro::lifecycle_attr::Hook::OnInit,
     "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> toni::InitResult`, run after the DI container is built. Returning `Err` aborts startup."
 );
 lifecycle_hook_macro!(
-    on_bootstrap,
+    on_application_bootstrap,
     provider_macro::lifecycle_attr::Hook::OnBootstrap,
     "Lifecycle hook: `async fn(&self) -> toni::InitResult`, run after all modules initialize, before the server accepts connections."
 );
 lifecycle_hook_macro!(
-    on_destroy,
+    on_module_destroy,
     provider_macro::lifecycle_attr::Hook::OnDestroy,
     "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown."
 );
 lifecycle_hook_macro!(
-    before_shutdown,
+    before_application_shutdown,
     provider_macro::lifecycle_attr::Hook::BeforeShutdown,
     "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run before shutdown begins."
 );
 lifecycle_hook_macro!(
-    on_shutdown,
+    on_application_shutdown,
     provider_macro::lifecycle_attr::Hook::OnShutdown,
     "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run as the application shuts down."
 );

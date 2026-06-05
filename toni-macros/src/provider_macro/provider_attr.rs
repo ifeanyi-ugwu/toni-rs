@@ -6,7 +6,7 @@
 //! the `Clone` impl the provider wrapper needs when the user hasn't — the struct declaration carries
 //! no `#[derive(Clone, …)]` ceremony.
 //!
-//! Construction logic and lifecycle hooks live on the struct's `impl` via `#[new]` / `#[on_init]`
+//! Construction logic and lifecycle hooks live on the struct's `impl` via `#[new]` / `#[on_module_init]`
 //! and friends, exactly as with the struct alone.
 
 use proc_macro2::TokenStream;

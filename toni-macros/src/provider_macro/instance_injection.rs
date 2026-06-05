@@ -113,7 +113,7 @@ pub fn generate_instance_provider_system(
 /// in declaration order. This codegen never sees the impl, so a missing or mis-typed `new`
 /// surfaces as an ordinary compile error at the generated call.
 ///
-/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_init]`, …) live on the struct's `impl`
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`
 /// and reach this path via the `toni::__construct` / `toni::__lifecycle` bridges — the provider
 /// wrapper dispatches to them without this codegen needing to see the methods.
 pub fn generate_provider_from_struct(

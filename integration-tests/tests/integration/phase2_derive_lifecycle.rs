@@ -1,7 +1,7 @@
 //! Lifecycle hooks on `#[injectable]` structs via the `#[on_*]` bridge.
 //!
 //! The macro can't see the impl, so it dispatches every `Provider` lifecycle method through an
-//! inherent bridge fn the `#[on_init]` / `#[on_bootstrap]` / `#[on_destroy]` macros emit. A provider
+//! inherent bridge fn the `#[on_module_init]` / `#[on_application_bootstrap]` / `#[on_module_destroy]` macros emit. A provider
 //! with no hooks gets the blanket no-op; one with hooks runs them. Mirrors `lifecycle_hooks.rs`
 //! (the older attribute form), but every provider here is a plain `#[injectable]` struct.
 
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
 use toni::{
-    before_shutdown, injectable, module, on_bootstrap, on_destroy, on_init, on_shutdown,
+    before_application_shutdown, injectable, module, on_application_bootstrap, on_module_destroy, on_module_init, on_application_shutdown,
     toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
@@ -29,29 +29,29 @@ pub struct HookedService {
 }
 
 impl HookedService {
-    #[on_init]
+    #[on_module_init]
     async fn init(&self) -> toni::InitResult {
         get_log().lock().unwrap().push("init");
         Ok(())
     }
 
-    #[on_bootstrap]
+    #[on_application_bootstrap]
     async fn bootstrap(&self) -> toni::InitResult {
         get_log().lock().unwrap().push("bootstrap");
         Ok(())
     }
 
-    #[on_destroy]
+    #[on_module_destroy]
     async fn destroy(&self) {
         get_log().lock().unwrap().push("destroy");
     }
 
-    #[before_shutdown]
-    async fn before_shutdown(&self, _signal: Option<String>) {
-        get_log().lock().unwrap().push("before_shutdown");
+    #[before_application_shutdown]
+    async fn before_application_shutdown(&self, _signal: Option<String>) {
+        get_log().lock().unwrap().push("before_application_shutdown");
     }
 
-    #[on_shutdown]
+    #[on_application_shutdown]
     async fn shutdown(&self, _signal: Option<String>) {
         get_log().lock().unwrap().push("shutdown");
     }
@@ -81,7 +81,7 @@ async fn derive_startup_hooks_fire() {
     assert_eq!(
         log,
         vec!["init", "bootstrap"],
-        "derive provider's #[on_init] then #[on_bootstrap] must fire during create()/bind()"
+        "derive provider's #[on_module_init] then #[on_application_bootstrap] must fire during create()/bind()"
     );
 }
 
@@ -109,20 +109,20 @@ async fn derive_shutdown_hooks_fire() {
 
     let log = get_log().lock().unwrap().clone();
     // The shutdown sequence (the framework's documented teardown order is
-    // before_shutdown → destroy → shutdown).
+    // before_application_shutdown → destroy → shutdown).
     assert!(
-        log.contains(&"before_shutdown"),
-        "before_shutdown must fire on shutdown; got {:?}",
+        log.contains(&"before_application_shutdown"),
+        "before_application_shutdown must fire on shutdown; got {:?}",
         log
     );
     assert!(
         log.contains(&"destroy"),
-        "on_destroy must fire on shutdown; got {:?}",
+        "on_module_destroy must fire on shutdown; got {:?}",
         log
     );
     assert!(
         log.contains(&"shutdown"),
-        "on_shutdown must fire on shutdown; got {:?}",
+        "on_application_shutdown must fire on shutdown; got {:?}",
         log
     );
 }

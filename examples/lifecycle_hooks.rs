@@ -21,7 +21,7 @@
 
 use toni::*;
 use toni_macros::{
-    before_shutdown, injectable, module, new, on_bootstrap, on_destroy, on_init, on_shutdown,
+    before_application_shutdown, injectable, module, new, on_application_bootstrap, on_module_destroy, on_module_init, on_application_shutdown,
 };
 
 // ============================================================================
@@ -45,7 +45,7 @@ impl DatabaseService {
         println!("Executing query: {}", sql);
     }
 
-    #[on_init]
+    #[on_module_init]
     async fn connect(&self) -> toni::InitResult {
         println!(
             "DatabaseService::on_module_init() - Connecting to {}",
@@ -56,13 +56,13 @@ impl DatabaseService {
         Ok(())
     }
 
-    #[on_bootstrap]
+    #[on_application_bootstrap]
     async fn on_ready(&self) -> toni::InitResult {
         println!("DatabaseService::on_application_bootstrap() - Ready to serve requests");
         Ok(())
     }
 
-    #[before_shutdown]
+    #[before_application_shutdown]
     async fn prepare_shutdown(&self, signal: Option<String>) {
         println!(
             "DatabaseService::before_application_shutdown({:?}) - Stop accepting queries",
@@ -70,12 +70,12 @@ impl DatabaseService {
         );
     }
 
-    #[on_destroy]
+    #[on_module_destroy]
     async fn cleanup(&self) {
         println!("DatabaseService::on_module_destroy() - Closing connections");
     }
 
-    #[on_shutdown]
+    #[on_application_shutdown]
     async fn finalize(&self, signal: Option<String>) {
         println!(
             "DatabaseService::on_application_shutdown({:?}) - Final cleanup",
@@ -125,13 +125,13 @@ impl UserService {
             .await;
     }
 
-    #[on_init]
+    #[on_module_init]
     async fn warm_cache(&self) -> toni::InitResult {
         println!("UserService::on_module_init() - Warming cache");
         Ok(())
     }
 
-    #[on_destroy]
+    #[on_module_destroy]
     async fn flush_cache(&self) {
         println!("UserService::on_module_destroy() - Flushing cache");
     }
@@ -148,17 +148,17 @@ impl UserService {
 #[module(providers: [DatabaseService, LoggerService, UserService])]
 impl AppModule {
     #[on_module_init]
-    fn on_init(&self) {
+    fn on_module_init(&self) {
         println!("AppModule::on_module_init() - Module initializing");
     }
 
     #[on_application_bootstrap]
-    fn on_bootstrap(&self) {
+    fn on_application_bootstrap(&self) {
         println!("AppModule::on_application_bootstrap() - Application bootstrapped");
     }
 
     #[on_module_destroy]
-    fn on_destroy(&self) {
+    fn on_module_destroy(&self) {
         println!("AppModule::on_module_destroy() - Module destroying");
     }
 }

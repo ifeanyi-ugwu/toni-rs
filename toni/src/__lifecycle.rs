@@ -1,7 +1,7 @@
 //! Bridge between a `#[injectable]` provider and its optional lifecycle-hook methods.
 //!
-//! Lifecycle hooks (`#[on_init]`, `#[on_bootstrap]`, `#[on_destroy]`, `#[before_shutdown]`,
-//! `#[on_shutdown]`) live on the user's `impl`, which the derive can't see. Each hook macro emits an
+//! Lifecycle hooks (`#[on_module_init]`, `#[on_application_bootstrap]`, `#[on_module_destroy]`, `#[before_application_shutdown]`,
+//! `#[on_application_shutdown]`) live on the user's `impl`, which the derive can't see. Each hook macro emits an
 //! inherent `__toni_lc_*` method forwarding to the user's; the derive's generated `Provider` impl
 //! always calls `self.instance.__toni_lc_*(..)`. Method resolution picks the inherent hook when
 //! present, else the blanket no-op default below — so the derive needs no knowledge of which hooks

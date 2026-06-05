@@ -1,13 +1,14 @@
-//! The `#[on_init]` / `#[on_bootstrap]` / `#[on_destroy]` / `#[before_shutdown]` / `#[on_shutdown]`
-//! hook macros for `#[injectable]` providers.
+//! The `#[on_module_init]` / `#[on_application_bootstrap]` / `#[on_module_destroy]` /
+//! `#[before_application_shutdown]` / `#[on_application_shutdown]` hook macros for `#[injectable]`
+//! providers.
 //!
 //! The derive generates the provider from the struct and can't see these methods. Each macro emits
 //! the user's method unchanged plus an inherent `__toni_lc_*` forwarder that shadows the blanket
 //! `toni::__lifecycle::LifecycleBridge` no-op of the same name. The derive's `Provider` impl always
 //! calls the `__toni_lc_*` methods, so the user hook runs when present and the no-op otherwise.
 //!
-//! Hooks are `async fn(&self)`. `on_init`/`on_bootstrap` return `toni::InitResult`; the three
-//! shutdown/destroy hooks return `()`, and `before_shutdown`/`on_shutdown` receive
+//! Hooks are `async fn(&self)`. `on_module_init`/`on_application_bootstrap` return `toni::InitResult`; the three
+//! shutdown/destroy hooks return `()`, and `before_application_shutdown`/`on_application_shutdown` receive
 //! `signal: Option<String>`.
 
 use proc_macro2::TokenStream;
@@ -46,11 +47,11 @@ impl Hook {
 
     fn attr_name(self) -> &'static str {
         match self {
-            Hook::OnInit => "on_init",
-            Hook::OnBootstrap => "on_bootstrap",
-            Hook::OnDestroy => "on_destroy",
-            Hook::BeforeShutdown => "before_shutdown",
-            Hook::OnShutdown => "on_shutdown",
+            Hook::OnInit => "on_module_init",
+            Hook::OnBootstrap => "on_application_bootstrap",
+            Hook::OnDestroy => "on_module_destroy",
+            Hook::BeforeShutdown => "before_application_shutdown",
+            Hook::OnShutdown => "on_application_shutdown",
         }
     }
 }
