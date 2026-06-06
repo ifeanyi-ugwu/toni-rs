@@ -41,13 +41,15 @@ impl HookedService {
 #[module(providers: [HookedService])]
 impl HookModule {
     #[on_module_init]
-    fn on_module_init(&self) {
+    async fn on_module_init(&self) -> toni::InitResult {
         get_log().lock().unwrap().push("module:init");
+        Ok(())
     }
 
     #[on_application_bootstrap]
-    fn on_module_bootstrap(&self) {
+    async fn on_module_bootstrap(&self) -> toni::InitResult {
         get_log().lock().unwrap().push("module:bootstrap");
+        Ok(())
     }
 }
 

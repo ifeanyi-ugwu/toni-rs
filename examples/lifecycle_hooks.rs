@@ -148,17 +148,19 @@ impl UserService {
 #[module(providers: [DatabaseService, LoggerService, UserService])]
 impl AppModule {
     #[on_module_init]
-    fn on_module_init(&self) {
+    async fn on_module_init(&self) -> toni::InitResult {
         println!("AppModule::on_module_init() - Module initializing");
+        Ok(())
     }
 
     #[on_application_bootstrap]
-    fn on_application_bootstrap(&self) {
+    async fn on_application_bootstrap(&self) -> toni::InitResult {
         println!("AppModule::on_application_bootstrap() - Application bootstrapped");
+        Ok(())
     }
 
     #[on_module_destroy]
-    fn on_module_destroy(&self) {
+    async fn on_module_destroy(&self) {
         println!("AppModule::on_module_destroy() - Module destroying");
     }
 }

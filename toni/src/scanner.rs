@@ -271,7 +271,7 @@ impl ToniDependenciesScanner {
             tracing::debug!(module = %module_token, hook = "on_application_bootstrap", "lifecycle hook");
             module_ref
                 .get_metadata()
-                .on_application_bootstrap(self.container.clone())
+                .on_application_bootstrap()
                 .await
                 .map_err(|source| BindError::HookFailed {
                     module: module_token.to_string(),
@@ -339,7 +339,7 @@ impl ToniDependenciesScanner {
             tracing::debug!(module = %module_token, hook = "on_module_init", "lifecycle hook");
             module_ref
                 .get_metadata()
-                .on_module_init(self.container.clone())
+                .on_module_init()
                 .await
                 .map_err(|source| BindError::HookFailed {
                     module: module_token.to_string(),
