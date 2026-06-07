@@ -3,8 +3,9 @@
 //! `Guard<C>` and `Interceptor<C>` take the per-request context type as a
 //! parameter, so a struct can implement them three times — once per
 //! transport — with reading code shaped for that transport's data source.
-//! The DI marker `#[guard(http, rpc, ws)]` registers the same struct for all
-//! three; a guard implemented only for `Guard<HttpContext>` cannot be
+//! Each `impl` is the registration: the framework detects which transports a
+//! provider serves from the contexts it implements, so the same struct runs on
+//! all three. A guard implemented only for `Guard<HttpContext>` cannot be
 //! attached to a gRPC method because the type system rejects the cast.
 //!
 //! Run with:  cargo run --example multi_protocol_context
@@ -35,8 +36,8 @@ use toni_macros::{injectable, module, rpc_controller, websocket_gateway};
 
 // ---- one guard, three transport-shaped impls --------------------------------
 
-#[injectable(pub struct UniversalAuthGuard {})]
-#[guard(http, rpc, ws)]
+#[injectable]
+pub struct UniversalAuthGuard {}
 impl UniversalAuthGuard {}
 
 #[async_trait]
@@ -74,17 +75,13 @@ impl Guard<WsContext> for UniversalAuthGuard {
 
 // ---- one logging interceptor, three transport-shaped impls ------------------
 
-#[injectable(pub struct LoggingInterceptor {})]
-#[interceptor(http, rpc, ws)]
+#[injectable]
+pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[async_trait]
 impl Interceptor<HttpContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut HttpContext, next: Box<dyn InterceptorNext<HttpContext>>) {
         let req = ctx.request();
         println!(
             "[HTTP]      {} {} (agent: {:?})",
@@ -98,11 +95,7 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
 
 #[async_trait]
 impl Interceptor<RpcContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut RpcContext,
-        next: Box<dyn InterceptorNext<RpcContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut RpcContext, next: Box<dyn InterceptorNext<RpcContext>>) {
         println!(
             "[RPC]       pattern='{}' data={:?}",
             ctx.pattern(),
@@ -114,11 +107,7 @@ impl Interceptor<RpcContext> for LoggingInterceptor {
 
 #[async_trait]
 impl Interceptor<WsContext> for LoggingInterceptor {
-    async fn intercept(
-        &self,
-        ctx: &mut WsContext,
-        next: Box<dyn InterceptorNext<WsContext>>,
-    ) {
+    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
         println!(
             "[WebSocket] event='{}' client={} message={:?}",
             ctx.event(),
@@ -148,11 +137,7 @@ impl OrdersHttp {
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersRpc {
     #[message_pattern("order.create")]
-    async fn create(
-        &self,
-        data: RpcData,
-        _ctx: &context::RpcContext,
-    ) -> Result<RpcData, RpcError> {
+    async fn create(&self, data: RpcData, _ctx: &context::RpcContext) -> Result<RpcData, RpcError> {
         let payload = data
             .as_json()
             .ok_or_else(|| RpcError::Internal("expected JSON payload".into()))?;
@@ -171,17 +156,16 @@ impl OrdersRpc {
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersWs {
     #[subscribe_message("echo")]
-    async fn echo(
-        &self,
-        _client: WsClient,
-        msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn echo(&self, _client: WsClient, msg: WsMessage) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("expected text frame".into()))?;
         let payload: serde_json::Value =
             serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-        let data = payload.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        let data = payload
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         Ok(WsMessage::text(json!({ "echo": data }).to_string()).into())
     }
 }

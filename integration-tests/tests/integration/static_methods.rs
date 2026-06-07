@@ -40,7 +40,8 @@ async fn static_method_controller() {
     assert_eq!(resp.text().await.unwrap(), "World from static method");
 }
 
-#[injectable(pub struct MixedService {})]
+#[injectable]
+pub struct MixedService {}
 impl MixedService {
     pub fn get_instance_message(&self) -> String {
         "From instance method".to_string()

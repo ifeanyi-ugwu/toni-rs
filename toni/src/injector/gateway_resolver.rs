@@ -223,9 +223,11 @@ impl GatewayResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "WS Guard '{}' not found in registry. \
-                     Implement Guard<WsContext> and mark the provider \
-                     with `#[guard(ws)]` or a typed impl head.",
+                    "WS Guard '{}' not found in registry. A guard registers automatically by \
+                     implementing Guard<WsContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyGuard`) or pass a type hint.",
                     token
                 )
             })
@@ -240,9 +242,11 @@ impl GatewayResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "WS Interceptor '{}' not found in registry. \
-                     Implement Interceptor<WsContext> and mark the provider \
-                     with `#[interceptor(ws)]` or a typed impl head.",
+                    "WS Interceptor '{}' not found in registry. An interceptor registers \
+                     automatically by implementing Interceptor<WsContext>; make sure the provider \
+                     is in the module's `providers` list. For `provider_factory!` under a \
+                     string/const token, name the produced type so it can be detected — annotate \
+                     the closure's return type (`|| -> MyInterceptor`) or pass a type hint.",
                     token
                 )
             })
@@ -257,9 +261,11 @@ impl GatewayResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "WS Pipe '{}' not found in registry. \
-                     Implement Pipe<WsContext> and mark the provider \
-                     with `#[pipe(ws)]` or a typed impl head.",
+                    "WS Pipe '{}' not found in registry. A pipe registers automatically by \
+                     implementing Pipe<WsContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyPipe`) or pass a type hint.",
                     token
                 )
             })
@@ -274,9 +280,11 @@ impl GatewayResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "WS ErrorHandler '{}' not found in registry. \
-                     Implement ErrorHandler<WsContext, WsMessage> and mark the provider \
-                     with `#[error_handler(ws)]` or a typed impl head.",
+                    "WS ErrorHandler '{}' not found in registry. An error handler registers \
+                     automatically by implementing ErrorHandler<WsContext, WsMessage>; make sure \
+                     the provider is in the module's `providers` list. For `provider_factory!` \
+                     under a string/const token, name the produced type so it can be detected — \
+                     annotate the closure's return type or pass a type hint.",
                     token
                 )
             })

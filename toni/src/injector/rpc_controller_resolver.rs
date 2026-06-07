@@ -157,9 +157,11 @@ impl RpcControllerResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "RPC Guard '{}' not found in registry. \
-                     Implement Guard<RpcContext> and mark the provider \
-                     with `#[guard(rpc)]` or a typed impl head.",
+                    "RPC Guard '{}' not found in registry. A guard registers automatically by \
+                     implementing Guard<RpcContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyGuard`) or pass a type hint.",
                     token
                 )
             })
@@ -174,9 +176,11 @@ impl RpcControllerResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "RPC Interceptor '{}' not found in registry. \
-                     Implement Interceptor<RpcContext> and mark the provider \
-                     with `#[interceptor(rpc)]` or a typed impl head.",
+                    "RPC Interceptor '{}' not found in registry. An interceptor registers \
+                     automatically by implementing Interceptor<RpcContext>; make sure the provider \
+                     is in the module's `providers` list. For `provider_factory!` under a \
+                     string/const token, name the produced type so it can be detected — annotate \
+                     the closure's return type (`|| -> MyInterceptor`) or pass a type hint.",
                     token
                 )
             })
@@ -191,9 +195,11 @@ impl RpcControllerResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "RPC Pipe '{}' not found in registry. \
-                     Implement Pipe<RpcContext> and mark the provider \
-                     with `#[pipe(rpc)]` or a typed impl head.",
+                    "RPC Pipe '{}' not found in registry. A pipe registers automatically by \
+                     implementing Pipe<RpcContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyPipe`) or pass a type hint.",
                     token
                 )
             })
@@ -208,9 +214,11 @@ impl RpcControllerResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "RPC ErrorHandler '{}' not found in registry. \
-                     Implement ErrorHandler<RpcContext, RpcData> and mark \
-                     the provider with `#[error_handler(rpc)]` or a typed impl head.",
+                    "RPC ErrorHandler '{}' not found in registry. An error handler registers \
+                     automatically by implementing ErrorHandler<RpcContext, RpcData>; make sure \
+                     the provider is in the module's `providers` list. For `provider_factory!` \
+                     under a string/const token, name the produced type so it can be detected — \
+                     annotate the closure's return type or pass a type hint.",
                     token
                 )
             })

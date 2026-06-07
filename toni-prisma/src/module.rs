@@ -24,9 +24,11 @@ impl PrismaModule {
     /// Then inject the generated client anywhere:
     ///
     /// ```ignore
-    /// #[injectable(pub struct UserService {
+    /// #[injectable]
+    /// pub struct UserService {
+    ///     #[inject]
     ///     db: db::PrismaClient,
-    /// })]
+    /// }
     /// impl UserService {
     ///     pub async fn find_all(&self) -> Vec<db::user::Data> {
     ///         self.db.user().find_many(vec![]).exec().await.unwrap()

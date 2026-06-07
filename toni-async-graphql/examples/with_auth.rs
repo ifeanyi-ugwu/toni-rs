@@ -20,7 +20,8 @@ struct User {
 // ============================================================================
 
 /// Authentication service (injectable via Toni DI)
-#[injectable(pub struct _AuthService;)]
+#[injectable]
+pub struct _AuthService;
 impl _AuthService {
     fn verify_token(&self, req: &toni::RequestPart) -> Option<User> {
         // In a real app, verify JWT token from headers
@@ -42,7 +43,8 @@ impl _AuthService {
 }
 
 /// Database service (injectable via Toni DI)
-#[injectable(pub struct _DatabaseService;)]
+#[injectable]
+pub struct _DatabaseService;
 impl _DatabaseService {
     async fn find_user(&self, id: i32) -> Option<User> {
         // In a real app, query the database
@@ -75,14 +77,14 @@ impl _DatabaseService {
 // ============================================================================
 
 /// Context builder that injects Toni services!
-#[injectable(
-    pub struct _GraphQLContextBuilder {
-        #[inject]
-        auth_service: _AuthService,
-        #[inject]
-        database_service: _DatabaseService,
-    }
-)]
+#[injectable]
+pub struct _GraphQLContextBuilder {
+    #[inject]
+    auth_service: _AuthService,
+    #[inject]
+    database_service: _DatabaseService,
+}
+
 #[async_trait]
 impl ContextBuilder for _GraphQLContextBuilder {
     async fn build(&self, req: &toni::RequestPart) -> Data {

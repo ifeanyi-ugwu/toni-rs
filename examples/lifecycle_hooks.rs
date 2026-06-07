@@ -20,16 +20,20 @@
 //! Run with: cargo run --example lifecycle_hooks
 
 use toni::*;
-use toni_macros::{injectable, module};
+use toni_macros::{
+    before_application_shutdown, injectable, module, new, on_application_bootstrap, on_module_destroy, on_module_init, on_application_shutdown,
+};
 
 // ============================================================================
 // Service with Lifecycle Hooks
 // ============================================================================
 
-#[injectable(pub struct DatabaseService {
+#[injectable]
+pub struct DatabaseService {
     name: String,
-})]
+}
 impl DatabaseService {
+    #[new]
     pub fn new() -> Self {
         println!("DatabaseService::new() - Constructor called");
         Self {
@@ -84,8 +88,10 @@ impl DatabaseService {
 // Service without Lifecycle Hooks (for comparison)
 // ============================================================================
 
-#[injectable(pub struct LoggerService;)]
+#[injectable]
+pub struct LoggerService;
 impl LoggerService {
+    #[new]
     pub fn new() -> Self {
         println!("LoggerService::new() - Constructor called");
         Self
@@ -100,12 +106,13 @@ impl LoggerService {
 // Service that depends on another service
 // ============================================================================
 
-#[injectable(
-    pub struct UserService {
-        db: DatabaseService,
-        logger: LoggerService,
-})]
+#[injectable]
+pub struct UserService {
+    db: DatabaseService,
+    logger: LoggerService,
+}
 impl UserService {
+    #[new]
     pub fn new(db: DatabaseService, logger: LoggerService) -> Self {
         println!("UserService::new() - Constructor called");
         Self { db, logger }
@@ -141,17 +148,19 @@ impl UserService {
 #[module(providers: [DatabaseService, LoggerService, UserService])]
 impl AppModule {
     #[on_module_init]
-    fn on_init(&self) {
+    async fn on_module_init(&self) -> toni::InitResult {
         println!("AppModule::on_module_init() - Module initializing");
+        Ok(())
     }
 
     #[on_application_bootstrap]
-    fn on_bootstrap(&self) {
+    async fn on_application_bootstrap(&self) -> toni::InitResult {
         println!("AppModule::on_application_bootstrap() - Application bootstrapped");
+        Ok(())
     }
 
     #[on_module_destroy]
-    fn on_destroy(&self) {
+    async fn on_module_destroy(&self) {
         println!("AppModule::on_module_destroy() - Module destroying");
     }
 }

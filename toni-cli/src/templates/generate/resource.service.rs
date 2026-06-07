@@ -1,8 +1,7 @@
 use toni_macros::injectable;
 
-#[injectable(
-	pub struct _RESOURCE_NAME_SERVICE;
-)]
+#[injectable]
+pub struct _RESOURCE_NAME_SERVICE;
 impl _RESOURCE_NAME_SERVICE {
     pub fn find_all(&self) -> String {
         "find_all".to_string()

@@ -20,12 +20,11 @@ struct ItemRow {
     name: String,
 }
 
-#[injectable(
-    pub struct ItemService {
-        #[inject]
-        pool: PgPool,
-    }
-)]
+#[injectable]
+pub struct ItemService {
+    #[inject]
+    pool: PgPool,
+}
 impl ItemService {
     async fn setup(&self) {
         use toni_diesel::RunQueryDsl;
@@ -93,7 +92,9 @@ impl ItemController {
 
     #[get("/health")]
     async fn health(&self) -> impl IntoResponse {
-        self.health.check(vec![self.indicator.check("database")]).await
+        self.health
+            .check(vec![self.indicator.check("database")])
+            .await
     }
 }
 

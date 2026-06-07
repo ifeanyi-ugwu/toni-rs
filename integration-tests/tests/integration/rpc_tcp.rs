@@ -10,20 +10,20 @@
 //!   with an `"overloaded"` frame and the slot is released when the
 //!   in-flight handler completes
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use toni::async_trait;
 use toni::context::RpcContext;
 use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
+use toni::injectable;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni_macros::{rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
@@ -51,7 +51,12 @@ async fn start_rpc_server_with_observers(
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
-        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        let _ = port_tx.send(
+            bound
+                .rpc
+                .expect("RPC adapter must report its address")
+                .port(),
+        );
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
@@ -193,7 +198,12 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
-        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        let _ = port_tx.send(
+            bound
+                .rpc
+                .expect("RPC adapter must report its address")
+                .port(),
+        );
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
@@ -265,7 +275,12 @@ async fn tcp_in_flight_request_completes_during_drain() {
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
-        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        let _ = port_tx.send(
+            bound
+                .rpc
+                .expect("RPC adapter must report its address")
+                .port(),
+        );
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
@@ -313,11 +328,16 @@ async fn tcp_drain_aborts_after_timeout() {
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
-        let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", 0)
-            .with_drain_timeout(Duration::from_millis(50));
+        let adapter =
+            toni_tcp::TcpAdapter::new("127.0.0.1", 0).with_drain_timeout(Duration::from_millis(50));
         app.use_rpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        let _ = port_tx.send(
+            bound
+                .rpc
+                .expect("RPC adapter must report its address")
+                .port(),
+        );
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
     });
@@ -359,7 +379,12 @@ async fn tcp_backpressure_rejects_excess_and_releases_after_completion() {
         let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", 0).with_max_inflight(1);
         app.use_rpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
-        let _ = port_tx.send(bound.rpc.expect("RPC adapter must report its address").port());
+        let _ = port_tx.send(
+            bound
+                .rpc
+                .expect("RPC adapter must report its address")
+                .port(),
+        );
         app.run().await;
     });
     tokio::task::spawn_local(async move { local.await });
@@ -444,11 +469,7 @@ impl TypedPayloadController {
     }
 
     #[message_pattern("typed.echo")]
-    async fn echo(
-        &self,
-        payload: EchoDto,
-        _ctx: &RpcContext,
-    ) -> Result<EchoReply, RpcError> {
+    async fn echo(&self, payload: EchoDto, _ctx: &RpcContext) -> Result<EchoReply, RpcError> {
         Ok(EchoReply {
             repeated: payload.text.repeat(payload.count as usize),
         })
@@ -491,8 +512,8 @@ async fn typed_payload_parse_failure_renders_canonical_envelope() {
     assert_eq!(payload["kind"], "Internal");
 }
 
-#[injectable(pub struct PanickingRpcGuard {})]
-#[guard(rpc)]
+#[injectable]
+pub struct PanickingRpcGuard {}
 impl PanickingRpcGuard {}
 
 #[async_trait]
@@ -557,17 +578,13 @@ async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
     assert_eq!(resp["response"], "safe-ok");
 }
 
-#[injectable(pub struct PanickingRpcInterceptor {})]
-#[interceptor(rpc)]
+#[injectable]
+pub struct PanickingRpcInterceptor {}
 impl PanickingRpcInterceptor {}
 
 #[async_trait]
 impl Interceptor<RpcContext> for PanickingRpcInterceptor {
-    async fn intercept(
-        &self,
-        _ctx: &mut RpcContext,
-        _next: Box<dyn InterceptorNext<RpcContext>>,
-    ) {
+    async fn intercept(&self, _ctx: &mut RpcContext, _next: Box<dyn InterceptorNext<RpcContext>>) {
         panic!("rpc interceptor kaboom");
     }
 }
@@ -633,8 +650,8 @@ async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive()
     assert_eq!(resp["response"], "safe-ok");
 }
 
-#[injectable(pub struct PanickingRpcPipe {})]
-#[pipe(rpc)]
+#[injectable]
+pub struct PanickingRpcPipe {}
 impl PanickingRpcPipe {}
 
 impl Pipe<RpcContext> for PanickingRpcPipe {
@@ -700,17 +717,13 @@ async fn rpc_pipe_panic_surfaces_as_envelope_and_keeps_connection_alive() {
     assert_eq!(resp["response"], "safe-ok");
 }
 
-#[injectable(pub struct PanickingRpcErrorHandler {})]
-#[error_handler(rpc)]
+#[injectable]
+pub struct PanickingRpcErrorHandler {}
 impl PanickingRpcErrorHandler {}
 
 #[async_trait]
 impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
-    async fn handle_error(
-        &self,
-        _error: ChainError<'_>,
-        _ctx: &RpcContext,
-    ) -> Option<RpcData> {
+    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &RpcContext) -> Option<RpcData> {
         panic!("rpc error-handler kaboom");
     }
 }
@@ -762,7 +775,10 @@ async fn rpc_error_handler_panic_continues_chain_to_default_rendering() {
     // Observer fired twice (HandlerBody first, then ErrorHandler); the
     // captured segment is the most recent `PanicRecovered`.
     assert!(count.load(Ordering::SeqCst) >= 2);
-    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::ErrorHandler));
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::ErrorHandler)
+    );
 }
 
 /// Domain error whose `message()` panics — exercises the renderer-panic
@@ -810,11 +826,9 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_rpc_server_with_observers(
-        RpcRenderPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port =
+        start_rpc_server_with_observers(RpcRenderPanicModule::module_definition(), vec![observer])
+            .await;
 
     let resp = tcp_rpc_timeout(
         port,

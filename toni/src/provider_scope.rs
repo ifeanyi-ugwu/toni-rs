@@ -17,6 +17,7 @@ pub enum ProviderScope {
     /// ```ignore
     /// #[injectable]  // Default is Singleton
     /// pub struct AppService {
+    ///     #[inject]
     ///     config: ConfigService<AppConfig>
     /// }
     /// ```

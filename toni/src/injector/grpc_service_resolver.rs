@@ -105,9 +105,11 @@ impl GrpcServiceResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "gRPC Guard '{}' not found in registry. \
-                     Implement Guard<GrpcContext> and mark the provider with \
-                     `#[guard(grpc)]` or a typed impl head.",
+                    "gRPC Guard '{}' not found in registry. A guard registers automatically by \
+                     implementing Guard<GrpcContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyGuard`) or pass a type hint.",
                     token
                 )
             })
@@ -140,9 +142,11 @@ impl GrpcServiceResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "gRPC Interceptor '{}' not found in registry. \
-                     Implement Interceptor<GrpcContext> and mark the provider with \
-                     `#[interceptor(grpc)]` or a typed impl head.",
+                    "gRPC Interceptor '{}' not found in registry. An interceptor registers \
+                     automatically by implementing Interceptor<GrpcContext>; make sure the \
+                     provider is in the module's `providers` list. For `provider_factory!` under a \
+                     string/const token, name the produced type so it can be detected — annotate \
+                     the closure's return type (`|| -> MyInterceptor`) or pass a type hint.",
                     token
                 )
             })
@@ -165,9 +169,11 @@ impl GrpcServiceResolver {
             .cloned()
             .ok_or_else(|| {
                 anyhow!(
-                    "gRPC ErrorHandler '{}' not found in registry. \
-                     Implement ErrorHandler<GrpcContext, GrpcStatus> and mark the provider \
-                     with `#[error_handler(grpc)]` or a typed impl head.",
+                    "gRPC ErrorHandler '{}' not found in registry. An error handler registers \
+                     automatically by implementing ErrorHandler<GrpcContext, GrpcStatus>; make \
+                     sure the provider is in the module's `providers` list. For `provider_factory!` \
+                     under a string/const token, name the produced type so it can be detected — \
+                     annotate the closure's return type or pass a type hint.",
                     token
                 )
             })

@@ -22,12 +22,11 @@ struct AppConfig {
     pub max_connections: u32,
 }
 
-#[injectable(
-     pub struct AppService {
-        #[inject]
-        config: ConfigService<AppConfig>
-    }
-)]
+#[injectable]
+pub struct AppService {
+    #[inject]
+    config: ConfigService<AppConfig>,
+}
 impl AppService {
     pub fn get_app_info(&self) -> String {
         let cfg: AppConfig = self.config.get();

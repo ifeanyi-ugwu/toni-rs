@@ -3,7 +3,7 @@
 //! New syntax: #[injectable] pub struct Foo { ... }
 //! Old syntax: #[injectable(pub struct Foo { ... })]
 
-use toni::{injectable, module};
+use toni::{injectable, module, new};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -55,7 +55,7 @@ impl MixedService {
 }
 
 // Test 4: New syntax with custom init
-#[injectable(init = "create")]
+#[injectable]
 pub struct CustomInitService {
     #[inject]
     config: ConfigService<TestConfig>,
@@ -65,6 +65,7 @@ pub struct CustomInitService {
 }
 
 impl CustomInitService {
+    #[new]
     fn create(config: ConfigService<TestConfig>) -> Self {
         Self {
             config,

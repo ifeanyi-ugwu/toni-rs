@@ -19,10 +19,11 @@ pub type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provide
 /// # Examples
 ///
 /// ```ignore
-/// #[injectable(pub struct PluginLoader {
+/// #[injectable]
+/// pub struct PluginLoader {
 ///     #[inject]
 ///     module_ref: ModuleRef,
-/// })]
+/// }
 /// impl PluginLoader {
 ///     pub async fn load_plugin(&self, name: &str) {
 ///         // Strict mode (default): only search current module

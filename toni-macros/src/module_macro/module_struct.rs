@@ -235,46 +235,45 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         middleware_impl
     };
 
-    // Detect lifecycle hooks from impl items and generate ModuleMetadata overrides.
-    // Module hooks are sync (unlike provider/controller hooks which are async).
+    // Detect lifecycle hooks from impl items and generate ModuleMetadata overrides. Module hooks
+    // share the provider hook shape: uniformly async, no container argument. The user method is
+    // awaited; init/bootstrap forward its `InitResult`, the others return `()`.
     let module_lifecycle_impl = if let ModuleInput::Impl(impl_block) = &input {
         let hooks = detect_lifecycle_hooks(impl_block);
         let mut methods = Vec::new();
 
         if let Some(method) = hooks.on_module_init {
             methods.push(quote! {
-                async fn on_module_init(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
-                    self.#method();
-                    Ok(())
+                async fn on_module_init(&self) -> ::toni::InitResult {
+                    self.#method().await
                 }
             });
         }
         if let Some(method) = hooks.on_application_bootstrap {
             methods.push(quote! {
-                async fn on_application_bootstrap(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) -> ::toni::InitResult {
-                    self.#method();
-                    Ok(())
+                async fn on_application_bootstrap(&self) -> ::toni::InitResult {
+                    self.#method().await
                 }
             });
         }
         if let Some(method) = hooks.on_module_destroy {
             methods.push(quote! {
-                fn on_module_destroy(&self, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
-                    self.#method();
+                async fn on_module_destroy(&self) {
+                    self.#method().await
                 }
             });
         }
         if let Some(method) = hooks.before_application_shutdown {
             methods.push(quote! {
-                fn before_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
-                    self.#method(signal);
+                async fn before_application_shutdown(&self, signal: Option<String>) {
+                    self.#method(signal).await
                 }
             });
         }
         if let Some(method) = hooks.on_application_shutdown {
             methods.push(quote! {
-                fn on_application_shutdown(&self, signal: Option<String>, _container: ::std::rc::Rc<::std::cell::RefCell<::toni::injector::ToniContainer>>) {
-                    self.#method(signal);
+                async fn on_application_shutdown(&self, signal: Option<String>) {
+                    self.#method(signal).await
                 }
             });
         }

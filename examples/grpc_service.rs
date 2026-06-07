@@ -37,12 +37,11 @@
 //! ```
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use toni::ToniFactory;
-use toni::enhancer::{error_handler, guard, interceptor};
-use toni_macros::{grpc_methods, grpc_service, injectable, module};
+use toni_macros::{grpc_methods, grpc_service, injectable, module, new};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -55,10 +54,12 @@ use orders_pb::orders_server::{Orders, OrdersServer};
 // Plain provider injected into the service via `#[inject]`. Nothing
 // gRPC-specific — works the same as it would on an HTTP controller.
 
-#[injectable(pub struct OrdersCounter {
+#[injectable]
+pub struct OrdersCounter {
     seq: Arc<AtomicU64>,
-})]
+}
 impl OrdersCounter {
+    #[new]
     pub fn new() -> Self {
         Self {
             seq: Arc::new(AtomicU64::new(1000)),
@@ -72,19 +73,22 @@ impl OrdersCounter {
 
 // ─── Guard ──────────────────────────────────────────────────────────────────
 //
-// `#[guard(grpc)]` registers this as a `Guard<GrpcContext>`. The guard
-// inspects `ctx.metadata()` — for gRPC that's the ASCII metadata map the
-// macro builds from the inbound `tonic::Request::metadata()`. Returning
-// `false` short-circuits the call with `PermissionDenied`.
+// The `impl Guard<GrpcContext>` below is the registration — the framework
+// detects it. The guard inspects `ctx.metadata()` — for gRPC that's the ASCII
+// metadata map the macro builds from the inbound `tonic::Request::metadata()`.
+// Returning `false` short-circuits the call with `PermissionDenied`.
 
-#[injectable(pub struct AuthGuard {})]
-#[guard(grpc)]
+#[injectable]
+pub struct AuthGuard {}
 impl AuthGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
     async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
-        matches!(ctx.get_metadata("authorization"), Some("Bearer secret-token"))
+        matches!(
+            ctx.get_metadata("authorization"),
+            Some("Bearer secret-token")
+        )
     }
 }
 
@@ -95,8 +99,8 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 // `next.run(ctx).await` proceeds to the next link (and ultimately the
 // user method); not calling it short-circuits the call.
 
-#[injectable(pub struct LoggingInterceptor {})]
-#[interceptor(grpc)]
+#[injectable]
+pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[toni::async_trait]
@@ -122,8 +126,8 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor
 // status; `None` lets the next handler in the chain decide, falling back
 // to the original status if none claims.
 
-#[injectable(pub struct QtyErrorHandler {})]
-#[error_handler(grpc)]
+#[injectable]
+pub struct QtyErrorHandler {}
 impl QtyErrorHandler {}
 
 #[toni::async_trait]
@@ -146,7 +150,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
 
 // ─── Service ────────────────────────────────────────────────────────────────
 //
-// `#[grpc_service]` registers the struct as a singleton DI provider; the
+// `#[grpc_service]` registers the struct as a singleton DI injectable; the
 // `#[inject]`-annotated fields are resolved from the module's providers
 // list. `#[grpc_methods]` wraps the proto-trait impl with the enhancer
 // pipeline declared via the `#[use_*]` attributes — at bind time the

@@ -1,7 +1,8 @@
 use crate::common::TestServer;
 use toni::{controller, get, injectable, module, Body as ToniBody};
 
-#[injectable(pub struct AsyncService;)]
+#[injectable]
+pub struct AsyncService;
 impl AsyncService {
     pub async fn fetch_data(&self) -> String {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;

@@ -5,7 +5,8 @@ use toni::{controller, get, injectable, module, Body as ToniBody};
 
 // ---- Test 1: Singleton controller + singleton provider ----------------------
 
-#[injectable(pub struct SingletonProvider {})]
+#[injectable]
+pub struct SingletonProvider {}
 impl SingletonProvider {
     fn get_data(&self) -> String {
         "Singleton data".to_string()
@@ -27,7 +28,8 @@ impl OkModule {}
 
 static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[injectable(scope = "request", pub struct RequestScopedProvider {})]
+#[injectable(scope = "request")]
+pub struct RequestScopedProvider {}
 impl RequestScopedProvider {
     fn get_request_id(&self) -> u32 {
         REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst)
@@ -48,7 +50,8 @@ impl ProblematicModule {}
 
 // ---- Test 3: Request controller + request provider (valid) ------------------
 
-#[injectable(scope = "request", pub struct AnotherRequestProvider {})]
+#[injectable(scope = "request")]
+pub struct AnotherRequestProvider {}
 impl AnotherRequestProvider {
     fn get_data(&self) -> String {
         "Request data".to_string()
@@ -68,14 +71,16 @@ impl CorrectModule {}
 
 // ---- Test 4: Mixed singleton + request deps (scope promotion) ---------------
 
-#[injectable(pub struct CacheProvider {})]
+#[injectable]
+pub struct CacheProvider {}
 impl CacheProvider {
     fn get_cached(&self) -> String {
         "Cached".to_string()
     }
 }
 
-#[injectable(scope = "request", pub struct SessionProvider {})]
+#[injectable(scope = "request")]
+pub struct SessionProvider {}
 impl SessionProvider {
     fn get_session(&self) -> String {
         "Session".to_string()
@@ -102,7 +107,8 @@ impl MixedModule {}
 
 // ---- Test 5: Explicit singleton + request dep (contradiction, still promotes) -----
 
-#[injectable(scope = "request", pub struct ContradictoryRequestProvider {})]
+#[injectable(scope = "request")]
+pub struct ContradictoryRequestProvider {}
 impl ContradictoryRequestProvider {
     fn get_id(&self) -> String {
         "contradictory".to_string()

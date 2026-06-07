@@ -36,10 +36,11 @@ struct AppConfig {
     pub max_connections: u32,
 }
 
-#[injectable(pub struct AppService {
+#[injectable]
+pub struct AppService {
     #[inject]
     config: ConfigService<AppConfig>,
-})]
+}
 impl AppService {
     pub fn get_config(&self) -> AppConfig {
         self.config.get()

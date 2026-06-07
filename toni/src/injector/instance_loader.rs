@@ -407,9 +407,11 @@ impl ToniInstanceLoader {
         for token in declared.guard_tokens {
             let guard = registry.http_guards.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
-                    "HTTP Guard '{}' not found in registry. \
-                     Implement Guard<HttpContext> (or a universal blanket impl) and \
-                     mark the provider with `#[guard(http)]` or a Guard<HttpContext> impl head.",
+                    "HTTP Guard '{}' not found in registry. A guard registers automatically by \
+                     implementing Guard<HttpContext> (or a universal blanket impl); make sure the \
+                     provider is in the module's `providers` list. For `provider_factory!` under a \
+                     string/const token, name the produced type so it can be detected — annotate \
+                     the closure's return type (`|| -> MyGuard`) or pass a type hint.",
                     token
                 )
             })?;
@@ -425,9 +427,12 @@ impl ToniInstanceLoader {
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "HTTP Interceptor '{}' not found in registry. \
-                         Implement Interceptor<HttpContext> and mark the provider \
-                         with `#[interceptor(http)]` or a typed impl head.",
+                        "HTTP Interceptor '{}' not found in registry. An interceptor registers \
+                         automatically by implementing Interceptor<HttpContext>; make sure the \
+                         provider is in the module's `providers` list. For `provider_factory!` \
+                         under a string/const token, name the produced type so it can be detected \
+                         — annotate the closure's return type (`|| -> MyInterceptor`) or pass a \
+                         type hint.",
                         token
                     )
                 })?;
@@ -444,9 +449,11 @@ impl ToniInstanceLoader {
         for token in declared.pipe_tokens {
             let pipe = registry.http_pipes.get(&token).cloned().ok_or_else(|| {
                 anyhow!(
-                    "HTTP Pipe '{}' not found in registry. \
-                     Implement Pipe<HttpContext> and mark the provider \
-                     with `#[pipe(http)]` or a typed impl head.",
+                    "HTTP Pipe '{}' not found in registry. A pipe registers automatically by \
+                     implementing Pipe<HttpContext>; make sure the provider is in the module's \
+                     `providers` list. For `provider_factory!` under a string/const token, name \
+                     the produced type so it can be detected — annotate the closure's return type \
+                     (`|| -> MyPipe`) or pass a type hint.",
                     token
                 )
             })?;
@@ -462,9 +469,11 @@ impl ToniInstanceLoader {
                 .cloned()
                 .ok_or_else(|| {
                     anyhow!(
-                        "HTTP ErrorHandler '{}' not found in registry. \
-                         Implement ErrorHandler<HttpContext, HttpResponse> and mark \
-                         the provider with `#[error_handler(http)]` or a typed impl head.",
+                        "HTTP ErrorHandler '{}' not found in registry. An error handler registers \
+                         automatically by implementing ErrorHandler<HttpContext, HttpResponse>; \
+                         make sure the provider is in the module's `providers` list. For \
+                         `provider_factory!` under a string/const token, name the produced type so \
+                         it can be detected — annotate the closure's return type or pass a type hint.",
                         token
                     )
                 })?;

@@ -52,8 +52,6 @@ pub struct EnhancerSpec {
 pub struct ErrorHandlerSpec {
     /// `::toni::traits_helpers::ProviderRole::HttpErrorHandler` etc.
     pub role_variant: TokenStream,
-    /// `::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse>` etc.
-    pub trait_path: TokenStream,
 }
 
 impl EnhancerKind {
@@ -171,47 +169,67 @@ impl ErrorHandlerKind {
         match self {
             ErrorHandlerKind::Http => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::HttpErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse> },
             },
             ErrorHandlerKind::Rpc => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::RpcContext, ::toni::rpc::RpcData> },
             },
             ErrorHandlerKind::Ws => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::WsContext, ::toni::websocket::WsMessage> },
             },
             ErrorHandlerKind::Grpc => ErrorHandlerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcErrorHandler },
-                trait_path: quote! { ::toni::traits_helpers::ErrorHandler<::toni::context::GrpcContext, ::toni::grpc_status::GrpcStatus> },
             },
         }
     }
 }
 
-/// Emit a `__roles.push(Role::X(Entry::Ready(instance.clone() as Arc<dyn …>)))`
-/// statement. `instance` must be in scope at the call site.
-pub fn ready_role_push(spec: &EnhancerSpec) -> TokenStream {
-    let role = &spec.role_variant;
-    let entry = &spec.entry_path;
-    let trait_path = &spec.trait_path;
-    quote! {
-        __roles.push(#role(
-            #entry::Ready(
-                instance.clone() as ::std::sync::Arc<dyn #trait_path>
-            )
-        ));
-    }
-}
+/// Emit the value-probe detection block that pushes a `ProviderRole` for every enhancer trait the
+/// already-built `instance` implements. `instance` (an `Arc<ConcreteType>`) and `__roles`
+/// (`Vec<ProviderRole>`) must be in scope; the concrete type must be statically known here, so the
+/// `toni::__detect` autoref probes resolve (a generic wrapper would erase the bound and detect
+/// nothing — see the `__detect` module docs).
+///
+/// Shared by every singleton role-registration site: the `#[injectable]` factory and the caching
+/// `provider_factory!` factory. Middleware, the nine guard/interceptor/pipe
+/// kinds, and the four error-handler kinds are each probed; only implemented ones register.
+pub fn value_probe_detection() -> TokenStream {
+    let mut detects = vec![quote! {
+        if let Some(__r) = ::toni::__detect::MiddlewareProbe(instance.clone()).detect() {
+            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(__r));
+        }
+    }];
 
-/// Emit a `__roles.push(Role::HttpErrorHandler(instance.clone() as Arc<dyn …>))`
-/// statement. ErrorHandlers don't have entry wrapping.
-pub fn ready_error_handler_push(spec: &ErrorHandlerSpec) -> TokenStream {
-    let role = &spec.role_variant;
-    let trait_path = &spec.trait_path;
+    for kind in EnhancerKind::all() {
+        let spec = kind.spec();
+        let probe = quote::format_ident!("{}Probe", spec.factory_suffix);
+        let role_variant = &spec.role_variant;
+        let entry_path = &spec.entry_path;
+        detects.push(quote! {
+            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
+                __roles.push(#role_variant(#entry_path::Ready(__r)));
+            }
+        });
+    }
+    for kind in ErrorHandlerKind::all() {
+        let spec = kind.spec();
+        let probe = match kind {
+            ErrorHandlerKind::Http => quote::format_ident!("HttpErrorHandlerProbe"),
+            ErrorHandlerKind::Rpc => quote::format_ident!("RpcErrorHandlerProbe"),
+            ErrorHandlerKind::Ws => quote::format_ident!("WsErrorHandlerProbe"),
+            ErrorHandlerKind::Grpc => quote::format_ident!("GrpcErrorHandlerProbe"),
+        };
+        let role_variant = &spec.role_variant;
+        detects.push(quote! {
+            if let Some(__r) = ::toni::__detect::#probe(instance.clone()).detect() {
+                __roles.push(#role_variant(__r));
+            }
+        });
+    }
+
     quote! {
-        __roles.push(#role(
-            instance.clone() as ::std::sync::Arc<dyn #trait_path>
-        ));
+        {
+            use ::toni::__detect::prelude::*;
+            #(#detects)*
+        }
     }
 }

@@ -3,7 +3,6 @@ extern crate proc_macro2;
 use controller_macro::controller_struct::handle_controller_struct;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use provider_macro::provider_struct::handle_provider_struct;
 use syn::Ident;
 
 mod app_error_macro;
@@ -36,19 +35,30 @@ pub fn controller_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+/// Field-injection provider — the way to declare a DI provider. Place it on the struct:
+/// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state. The macro adds
+/// the `Clone` impl the container needs, so the struct carries no derive ceremony.
+///
+/// Arguments override defaults:
+/// - `#[injectable(scope = "request")]` / `"transient"` — default is singleton.
+/// - `#[injectable(init = "new")]` — assemble via `Self::new(inject_fields…)` instead of a struct
+///   literal. (Usually unnecessary — prefer `#[new]` on the constructor method, which also injects
+///   parameters that aren't stored fields.)
+///
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`.
+///
+/// ```ignore
+/// #[injectable(scope = "request")]
+/// pub struct UserService {
+///     #[inject] repo: UserRepo,
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    let trait_name = Ident::new("Provider", Span::call_site());
-    let output = handle_provider_struct(attr, item, trait_name);
+    let output = provider_macro::provider_attr::handle_provider(attr, item);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-#[proc_macro_attribute]
-#[deprecated(since = "0.2.0", note = "Use #[injectable] instead")]
-pub fn provider_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
-    injectable(attr, item)
 }
 
 #[proc_macro_attribute]
@@ -349,13 +359,77 @@ pub fn set_metadata(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-// Helper derive to register #[inject] and #[default] as valid attributes
-// This allows them to be used on struct fields in injectable/controller_struct
-#[proc_macro_derive(Injectable, attributes(inject, default))]
-pub fn derive_injectable(_input: TokenStream) -> TokenStream {
-    // This derive does nothing - it just registers the attributes
+/// Keeps `#[inject]` / `#[default]` valid as inert field attributes on structs that the
+/// attribute-form macros (`#[injectable]`, `#[controller(…)]`, gateways, rpc/grpc) re-emit. Those
+/// macros run their own provider codegen and only need the field attributes to stay parseable, so
+/// this derive emits nothing.
+#[proc_macro_derive(InjectFields, attributes(inject, default))]
+pub fn derive_inject_fields(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }
+
+/// Marks the dependency-injected constructor of a `#[injectable]` struct.
+///
+/// Place it on a `fn name(deps…) -> Self` inside the struct's `impl`. Each parameter is resolved
+/// from the DI container (by type, or `#[inject("TOKEN")]`) and passed in — so a dependency can be
+/// a constructor argument without being a stored field, and the constructor can run real assembly
+/// logic. Without `#[new]`, the provider builds the struct by field injection instead.
+///
+/// ```ignore
+/// #[injectable]
+/// pub struct Server { port: u16 }
+///
+/// impl Server {
+///     #[new]
+///     fn new(config: ConfigService) -> Self {   // config injected, not stored
+///         Self { port: config.port() }
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn new(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let output = provider_macro::new_ctor::handle_new(item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
+macro_rules! lifecycle_hook_macro {
+    ($name:ident, $hook:expr, $doc:literal) => {
+        #[doc = $doc]
+        #[proc_macro_attribute]
+        pub fn $name(_attr: TokenStream, item: TokenStream) -> TokenStream {
+            let item = proc_macro2::TokenStream::from(item);
+            let output = provider_macro::lifecycle_attr::handle_hook($hook, item);
+            proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+        }
+    };
+}
+
+lifecycle_hook_macro!(
+    on_module_init,
+    provider_macro::lifecycle_attr::Hook::OnInit,
+    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> toni::InitResult`, run after the DI container is built. Returning `Err` aborts startup."
+);
+lifecycle_hook_macro!(
+    on_application_bootstrap,
+    provider_macro::lifecycle_attr::Hook::OnBootstrap,
+    "Lifecycle hook: `async fn(&self) -> toni::InitResult`, run after all modules initialize, before the server accepts connections."
+);
+lifecycle_hook_macro!(
+    on_module_destroy,
+    provider_macro::lifecycle_attr::Hook::OnDestroy,
+    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown."
+);
+lifecycle_hook_macro!(
+    before_application_shutdown,
+    provider_macro::lifecycle_attr::Hook::BeforeShutdown,
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run before shutdown begins."
+);
+lifecycle_hook_macro!(
+    on_application_shutdown,
+    provider_macro::lifecycle_attr::Hook::OnShutdown,
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run as the application shuts down."
+);
 
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
@@ -421,37 +495,6 @@ pub fn provide(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
     let output = provider_variants::handle_provide(input);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-// ============================================================================
-// ENHANCER MARKER ATTRIBUTES
-// ============================================================================
-// These attributes mark structs as specific enhancer types (Guard, Interceptor, etc.)
-// Usage: #[injectable(pub struct Foo {})] #[guard] impl Foo { ... }
-
-#[proc_macro_attribute]
-pub fn guard(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn interceptor(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn middleware(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn pipe(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-#[proc_macro_attribute]
-pub fn error_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
 }
 
 /// `#[catch(T)]` — escape hatch for runtime-selected error handling.

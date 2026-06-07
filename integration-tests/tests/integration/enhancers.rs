@@ -206,10 +206,11 @@ async fn enhancers_execution_order() {
         TRACKER.get().unwrap().clone()
     }
 
-    #[injectable(pub struct TestService {
+    #[injectable]
+    pub struct TestService {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
     impl TestService {
         pub fn process(&self, message: &str) -> String {
             self.tracker.track("service:process");
@@ -357,7 +358,7 @@ async fn guard_authorization() {
         controllers: [TestController],
         providers: [
             provider_value!(ExecutionOrder, get_tracker()),
-            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker), AuthGuard, guard(http)),
+            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker)),
         ],
     )]
     impl TestModule {}
@@ -393,7 +394,8 @@ async fn guard_authorization() {
 
 #[tokio_localset_test::localset_test]
 async fn di_in_enhancers() {
-    #[injectable(pub struct AuthService {})]
+    #[injectable]
+    pub struct AuthService {}
     impl AuthService {
         pub fn validate(&self, token: &str) -> bool {
             token == "valid"
@@ -461,10 +463,11 @@ async fn app_token_global_enhancers() {
         TRACKER.get().unwrap().clone()
     }
 
-    #[injectable(pub struct GlobalGuard {
+    #[injectable]
+    pub struct GlobalGuard {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
     #[async_trait]
     impl Guard<HttpContext> for GlobalGuard {
         async fn can_activate(&self, _context: &HttpContext) -> bool {

@@ -59,7 +59,8 @@ struct ShipOrderDto {
 // Service — shared business logic
 // ============================================================================
 
-#[injectable(pub struct OrdersService {})]
+#[injectable]
+pub struct OrdersService {}
 impl OrdersService {
     fn create_order(&self, item: &str, qty: u32) -> OrderDto {
         println!("  [OrdersService] Creating order: {} x{}", item, qty);

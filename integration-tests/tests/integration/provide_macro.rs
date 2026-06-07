@@ -1,11 +1,13 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, get, injectable, module, provide, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, provide, Body as ToniBody};
 
-#[injectable(pub struct ConfigService {
+#[injectable]
+pub struct ConfigService {
     env: String,
-})]
+}
 impl ConfigService {
+    #[new]
     pub fn new() -> Self {
         Self {
             env: "prod".to_string(),
@@ -13,10 +15,12 @@ impl ConfigService {
     }
 }
 
-#[injectable(pub struct DatabaseService {
+#[injectable]
+pub struct DatabaseService {
     host: String,
-})]
+}
 impl DatabaseService {
+    #[new]
     pub fn new() -> Self {
         Self {
             host: "localhost:5432".to_string(),
@@ -24,10 +28,12 @@ impl DatabaseService {
     }
 }
 
-#[injectable(pub struct CacheService {
+#[injectable]
+pub struct CacheService {
     url: String,
-})]
+}
 impl CacheService {
+    #[new]
     pub fn new() -> Self {
         Self {
             url: "redis://localhost".to_string(),
@@ -37,7 +43,8 @@ impl CacheService {
 
 #[tokio_localset_test::localset_test]
 async fn provide_macro_patterns() {
-    #[injectable(pub struct AppService {
+    #[injectable]
+    pub struct AppService {
         #[inject("API_KEY")]
         api_key: String,
 
@@ -64,7 +71,7 @@ async fn provide_macro_patterns() {
 
         #[inject("EXPLICIT_FACTORY")]
         explicit_factory: String,
-    })]
+    }
     impl AppService {
         pub fn get_info(&self) -> String {
             format!(

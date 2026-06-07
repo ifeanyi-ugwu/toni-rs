@@ -31,9 +31,10 @@ use crate::traits_helpers::{Provider, ProviderContext};
 /// Inject into a service:
 ///
 /// ```ignore
-/// #[injectable(pub struct InventoryService {
+/// #[injectable]
+/// pub struct InventoryService {
 ///     #[inject(token = "INVENTORY_CLIENT")] client: RpcClient,
-/// })]
+/// }
 /// impl InventoryService {
 ///     async fn notify_restock(&self, payload: serde_json::Value) -> Result<RpcData, RpcClientError> {
 ///         self.client.send("inventory.restock", RpcData::json(payload)).await
@@ -150,7 +151,9 @@ impl Provider for RpcClient {
     }
 
     async fn on_application_bootstrap(&self) -> crate::InitResult {
-        self.connect().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        self.connect()
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {

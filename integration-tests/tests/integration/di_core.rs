@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -12,8 +12,10 @@ struct TestConfig {
 
 static SINGLETON_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[injectable(pub struct SingletonService {})]
+#[injectable]
+pub struct SingletonService {}
 impl SingletonService {
+    #[new]
     pub fn new() -> Self {
         SINGLETON_COUNTER.fetch_add(1, Ordering::SeqCst);
         Self {}
@@ -52,8 +54,12 @@ async fn singleton_providers_created_once_across_requests() {
 
 static TRANSIENT_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-#[injectable(scope = "transient", pub struct TransientService { id: u32 })]
+#[injectable(scope = "transient")]
+pub struct TransientService {
+    id: u32,
+}
 impl TransientService {
+    #[new]
     pub fn new() -> Self {
         let id = TRANSIENT_COUNTER.fetch_add(1, Ordering::SeqCst);
         Self { id }
@@ -69,10 +75,13 @@ impl TransientService {
 async fn transient_providers_create_unique_instances_per_injection() {
     TRANSIENT_COUNTER.store(0, Ordering::SeqCst);
 
-    #[injectable(pub struct MultiService {
-        #[inject] t1: TransientService,
-        #[inject] t2: TransientService,
-    })]
+    #[injectable]
+    pub struct MultiService {
+        #[inject]
+        t1: TransientService,
+        #[inject]
+        t2: TransientService,
+    }
     impl MultiService {
         pub fn ids(&self) -> (u32, u32) {
             (self.t1.id(), self.t2.id())
@@ -113,17 +122,19 @@ async fn transient_providers_create_unique_instances_per_injection() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn field_injection_with_inject_attribute() {
-    #[injectable(pub struct DependencyService {})]
+    #[injectable]
+    pub struct DependencyService {}
     impl DependencyService {
         pub fn value(&self) -> i32 {
             42
         }
     }
 
-    #[injectable(pub struct ServiceWithDeps {
+    #[injectable]
+    pub struct ServiceWithDeps {
         #[inject]
         dep: DependencyService,
-    })]
+    }
     impl ServiceWithDeps {
         pub fn get_value(&self) -> i32 {
             self.dep.value()
@@ -155,10 +166,11 @@ async fn field_injection_with_inject_attribute() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn field_injection_with_default_fallback() {
-    #[injectable(pub struct ServiceWithDefault {
+    #[injectable]
+    pub struct ServiceWithDefault {
         #[default(100)]
         value: i32,
-    })]
+    }
     impl ServiceWithDefault {
         pub fn get_value(&self) -> i32 {
             self.value
@@ -190,10 +202,11 @@ async fn field_injection_with_default_fallback() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn config_service_injection_in_providers() {
-    #[injectable(pub struct ServiceWithConfig {
+    #[injectable]
+    pub struct ServiceWithConfig {
         #[inject]
         config: ConfigService<TestConfig>,
-    })]
+    }
     impl ServiceWithConfig {
         pub fn get_value(&self) -> String {
             self.config.get_ref().value.clone()
@@ -233,6 +246,7 @@ async fn new_attribute_syntax() {
     pub struct NewSyntaxService {}
 
     impl NewSyntaxService {
+        #[new]
         pub fn new() -> Self {
             Self {}
         }

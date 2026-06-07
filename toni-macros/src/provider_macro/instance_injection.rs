@@ -13,294 +13,28 @@ use syn::{Ident, ItemImpl, ItemStruct, Result, Type};
 use crate::{
     shared::{
         dependency_info::DependencyInfo,
-        enhancer_markers::EnhancerMarkers,
         lifecycle_hooks::{
             LifecycleHooks, detect_lifecycle_hooks, reject_lifecycle_hooks, strip_lifecycle_attrs,
         },
         scope_parser::ProviderScope,
     },
-    utils::extracts::{extract_vec_arc_dyn_inner, normalize_trait_send_sync},
+    utils::extracts::{
+        extract_struct_dependencies, extract_vec_arc_dyn_inner, normalize_trait_send_sync,
+    },
 };
 
-/// Detected enhancer traits that a struct implements.
+/// Structural roles the surrounding macro assigns to a provider.
 ///
-/// Multiple flags may be set on the same struct (e.g. a guard with separate
-/// impl blocks for `HttpContext` and `RpcContext`, or a universal blanket
-/// impl marked `#[guard(http, rpc, ws)]`).
+/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are NOT here — those
+/// are detected from the type's trait impls via `toni::__detect` at the factory. These three are
+/// driven by the structural macros (`#[websocket_gateway]` / `#[rpc_controller]` / `#[grpc_service]`),
+/// which generate the corresponding trait impl and routing, so the macro that emits them already
+/// knows the role.
 #[derive(Debug, Clone, Default)]
 pub struct EnhancerTraits {
-    pub is_middleware: bool,
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
-
-    pub is_http_guard: bool,
-    pub is_http_interceptor: bool,
-    pub is_http_pipe: bool,
-    pub is_http_error_handler: bool,
-
-    pub is_rpc_guard: bool,
-    pub is_rpc_interceptor: bool,
-    pub is_rpc_pipe: bool,
-    pub is_rpc_error_handler: bool,
-
-    pub is_ws_guard: bool,
-    pub is_ws_interceptor: bool,
-    pub is_ws_pipe: bool,
-    pub is_ws_error_handler: bool,
-
-    pub is_grpc_guard: bool,
-    pub is_grpc_interceptor: bool,
-    pub is_grpc_error_handler: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct TransportFlags {
-    http: bool,
-    rpc: bool,
-    ws: bool,
-    grpc: bool,
-    /// User declared a transport via a marker arg or typed impl head.
-    /// When false and no transport matched, the resolver falls back to
-    /// "universal" (all transports) so a blanket impl works.
-    explicit: bool,
-}
-
-impl TransportFlags {
-    fn any(&self) -> bool {
-        self.http || self.rpc || self.ws || self.grpc
-    }
-
-    fn merge(&mut self, other: TransportFlags) {
-        self.http |= other.http;
-        self.rpc |= other.rpc;
-        self.ws |= other.ws;
-        self.grpc |= other.grpc;
-        self.explicit |= other.explicit;
-    }
-}
-
-/// Parse `#[guard(http, rpc, ws)]` style transport args from a marker attribute.
-fn parse_marker_transport_args(attr: &syn::Attribute) -> TransportFlags {
-    let mut flags = TransportFlags::default();
-    if matches!(attr.meta, syn::Meta::Path(_)) {
-        return flags;
-    }
-    let parsed = attr.parse_args_with(
-        syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-    );
-    let Ok(idents) = parsed else {
-        return flags;
-    };
-    for ident in idents {
-        flags.explicit = true;
-        match ident.to_string().as_str() {
-            "http" => flags.http = true,
-            "rpc" => flags.rpc = true,
-            "ws" | "websocket" => flags.ws = true,
-            "grpc" => flags.grpc = true,
-            "universal" | "all" => {
-                flags.http = true;
-                flags.rpc = true;
-                flags.ws = true;
-                flags.grpc = true;
-            }
-            _ => {}
-        }
-    }
-    flags
-}
-
-/// Inspect a typed enhancer impl head (`Guard<...>` etc.) to decide which
-/// transport(s) it serves. The first generic argument is the context type.
-fn detect_typed_impl_transport(impl_block: &ItemImpl) -> TransportFlags {
-    let mut flags = TransportFlags::default();
-    let Some((_, path, _)) = &impl_block.trait_ else {
-        return flags;
-    };
-    let Some(last) = path.segments.last() else {
-        return flags;
-    };
-
-    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-        // Bare `Guard` — defaults to `Context`. Legacy.
-        return flags;
-    };
-    let Some(syn::GenericArgument::Type(ctx_ty)) = args.args.first() else {
-        return flags;
-    };
-    let syn::Type::Path(type_path) = ctx_ty else {
-        return flags;
-    };
-    let Some(last_seg) = type_path.path.segments.last() else {
-        return flags;
-    };
-
-    flags.explicit = true;
-    match last_seg.ident.to_string().as_str() {
-        "HttpContext" => flags.http = true,
-        "RpcContext" => flags.rpc = true,
-        "WsContext" => flags.ws = true,
-        "GrpcContext" => flags.grpc = true,
-        // Generic type parameter like `C: HandlerContext + ?Sized` — universal.
-        _ if impl_block
-            .generics
-            .params
-            .iter()
-            .any(|p| matches!(p, syn::GenericParam::Type(t) if t.ident == last_seg.ident)) =>
-        {
-            flags.http = true;
-            flags.rpc = true;
-            flags.ws = true;
-            flags.grpc = true;
-        }
-        // Unknown concrete type — leave flags empty so the resolver doesn't
-        // route it; it will fall back to universal if no other signal arrives.
-        _ => {}
-    }
-
-    flags
-}
-
-/// Detect which enhancer traits a struct implements.
-///
-/// Checks marker attributes on the struct (`#[guard]`, `#[interceptor]`, etc.) and on the
-/// impl block, as well as trait impl blocks for backwards compatibility.
-fn detect_enhancer_traits(
-    struct_def: Option<&ItemStruct>,
-    impl_block: &ItemImpl,
-) -> EnhancerTraits {
-    let mut traits = EnhancerTraits::default();
-
-    let struct_markers = struct_def.map(EnhancerMarkers::detect).unwrap_or_default();
-    traits.is_middleware = struct_markers.is_middleware;
-
-    // (transport_flags, signal_seen) — `signal_seen` gates whether the resolver
-    // fires anything at all. Without a signal (no marker, no trait header match),
-    // an unrelated struct (gateway, plain service) must not be cast as Guard.
-    let mut guard = (TransportFlags::default(), false);
-    let mut interceptor = (TransportFlags::default(), false);
-    let mut pipe = (TransportFlags::default(), false);
-    let mut error_handler = (TransportFlags::default(), false);
-
-    let typed_impl_flags = detect_typed_impl_transport(impl_block);
-
-    let merge_marker = |slot: &mut (TransportFlags, bool), attr: &syn::Attribute| {
-        let mut f = parse_marker_transport_args(attr);
-        if !f.explicit {
-            f.merge(typed_impl_flags);
-        }
-        slot.0.merge(f);
-        slot.1 = true;
-    };
-
-    let scan_attrs = |attrs: &[syn::Attribute],
-                      guard: &mut (TransportFlags, bool),
-                      interceptor: &mut (TransportFlags, bool),
-                      pipe: &mut (TransportFlags, bool),
-                      error_handler: &mut (TransportFlags, bool),
-                      traits: &mut EnhancerTraits| {
-        for attr in attrs {
-            let Some(ident) = attr.path().get_ident() else {
-                continue;
-            };
-            match ident.to_string().as_str() {
-                "guard" => merge_marker(guard, attr),
-                "interceptor" => merge_marker(interceptor, attr),
-                "pipe" => merge_marker(pipe, attr),
-                "error_handler" => merge_marker(error_handler, attr),
-                "middleware" => traits.is_middleware = true,
-                _ => {}
-            }
-        }
-    };
-
-    if let Some(s) = struct_def {
-        scan_attrs(
-            &s.attrs,
-            &mut guard,
-            &mut interceptor,
-            &mut pipe,
-            &mut error_handler,
-            &mut traits,
-        );
-    }
-    scan_attrs(
-        &impl_block.attrs,
-        &mut guard,
-        &mut interceptor,
-        &mut pipe,
-        &mut error_handler,
-        &mut traits,
-    );
-
-    if let Some((_, path, _)) = &impl_block.trait_ {
-        let trait_name = path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
-            .unwrap_or_default();
-
-        match trait_name.as_str() {
-            "Guard" => {
-                guard.0.merge(typed_impl_flags);
-                guard.1 = true;
-            }
-            "Interceptor" => {
-                interceptor.0.merge(typed_impl_flags);
-                interceptor.1 = true;
-            }
-            "Pipe" => {
-                pipe.0.merge(typed_impl_flags);
-                pipe.1 = true;
-            }
-            "ErrorHandler" => {
-                error_handler.0.merge(typed_impl_flags);
-                error_handler.1 = true;
-            }
-            "Middleware" => traits.is_middleware = true,
-            _ => {}
-        }
-    }
-
-    // No transport signal at all (bare `#[guard]`, no typed impl head) → assume
-    // a universal blanket impl and route to every transport that has a slot.
-    let resolve = |slot: (TransportFlags, bool)| -> (bool, bool, bool, bool) {
-        if !slot.1 {
-            return (false, false, false, false);
-        }
-        let f = slot.0;
-        if f.any() {
-            (f.http, f.rpc, f.ws, f.grpc)
-        } else {
-            (true, true, true, true)
-        }
-    };
-
-    let (g_h, g_r, g_w, g_g) = resolve(guard);
-    traits.is_http_guard = g_h;
-    traits.is_rpc_guard = g_r;
-    traits.is_ws_guard = g_w;
-    traits.is_grpc_guard = g_g;
-
-    let (i_h, i_r, i_w, i_g) = resolve(interceptor);
-    traits.is_http_interceptor = i_h;
-    traits.is_rpc_interceptor = i_r;
-    traits.is_ws_interceptor = i_w;
-    traits.is_grpc_interceptor = i_g;
-
-    let (p_h, p_r, p_w, _p_g) = resolve(pipe);
-    traits.is_http_pipe = p_h;
-    traits.is_rpc_pipe = p_r;
-    traits.is_ws_pipe = p_w;
-
-    let (e_h, e_r, e_w, e_g) = resolve(error_handler);
-    traits.is_http_error_handler = e_h;
-    traits.is_rpc_error_handler = e_r;
-    traits.is_ws_error_handler = e_w;
-    traits.is_grpc_error_handler = e_g;
-
-    traits
 }
 
 /// Detect lifecycle hooks by scanning for method-level attributes in the impl block.
@@ -323,7 +57,7 @@ pub fn generate_instance_provider_system(
     };
 
     let struct_emit = struct_def.map(|s| {
-        let s = add_clone_derive(s);
+        let s = add_clone_and_inject_fields(s);
         quote! { #[allow(dead_code)] #s }
     });
 
@@ -337,18 +71,22 @@ pub fn generate_instance_provider_system(
     }
     let impl_def = strip_lifecycle_attrs(&impl_def);
 
-    let mut enhancer_traits = detect_enhancer_traits(struct_def, impl_block);
     let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
-    enhancer_traits.is_gateway = is_gateway;
-    enhancer_traits.is_rpc_controller = is_rpc_controller;
-    enhancer_traits.is_grpc_service = is_grpc_service;
+    let enhancer_traits = EnhancerTraits {
+        is_gateway,
+        is_rpc_controller,
+        is_grpc_service,
+    };
 
+    // Attribute form scans the impl for hooks and delegates by method name; it does not use the
+    // `#[on_*]` bridge.
     let provider_wrapper = generate_provider_wrapper(
         &struct_name,
         dependencies,
         scope,
         &enhancer_traits,
         &lifecycle_hooks,
+        false,
     );
 
     let factory = generate_factory(&struct_name, dependencies, scope, &enhancer_traits);
@@ -366,6 +104,53 @@ pub fn generate_instance_provider_system(
     })
 }
 
+/// Emit the provider + factory + accessor for `struct_def` — the `#[injectable]` codegen. The caller
+/// (`provider_attr`) re-emits the struct itself; this contributes only the DI wiring beside it.
+///
+/// Dependencies are declared as `#[inject]` fields. By default the instance is assembled as
+/// a struct literal (`#[default(...)]` for owned state). With `init = "new"`, construction is
+/// redirected through `Self::new(deps…)` instead — the resolved `#[inject]` fields are passed
+/// in declaration order. This codegen never sees the impl, so a missing or mis-typed `new`
+/// surfaces as an ordinary compile error at the generated call.
+///
+/// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`
+/// and reach this path via the `toni::__construct` / `toni::__lifecycle` bridges — the provider
+/// wrapper dispatches to them without this codegen needing to see the methods.
+pub fn generate_provider_from_struct(
+    struct_def: &ItemStruct,
+    scope: ProviderScope,
+    init_method: Option<String>,
+) -> Result<TokenStream> {
+    let struct_name = struct_def.ident.clone();
+    let mut dependencies = extract_struct_dependencies(struct_def)?;
+    if let Some(init) = init_method {
+        dependencies.init_method = Some(init);
+    }
+
+    // A derive sees only the struct: no enhancer-trait detection from an impl head and no
+    // lifecycle hooks. Both live on the attribute form.
+    let enhancer_traits = EnhancerTraits::default();
+    let lifecycle_hooks = LifecycleHooks::default();
+
+    // Derive can't see the impl, so it dispatches lifecycle through the `#[on_*]` bridge.
+    let provider_wrapper = generate_provider_wrapper(
+        &struct_name,
+        &dependencies,
+        scope,
+        &enhancer_traits,
+        &lifecycle_hooks,
+        true,
+    );
+    let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
+    let factory_accessor = generate_provider_factory_accessor(&struct_name);
+
+    Ok(quote! {
+        #provider_wrapper
+        #factory
+        #factory_accessor
+    })
+}
+
 /// Adds Clone and Injectable derives to struct if needed
 ///
 /// # Clone Detection
@@ -375,8 +160,8 @@ pub fn generate_instance_provider_system(
 /// This macro **cannot detect** manual `impl Clone` blocks that come after the macro invocation:
 ///
 /// ```rust,ignore
-/// #[injectable(pub struct Foo { field: String })]
-/// impl Foo { /* ... */ }
+/// #[injectable]
+/// pub struct Foo { field: String }
 ///
 /// // ❌ Macro cannot see this - will add #[derive(Clone)] and cause conflict
 /// impl Clone for Foo {
@@ -387,7 +172,7 @@ pub fn generate_instance_provider_system(
 /// This is an acceptable limitation because:
 /// - Macros process attributes linearly and cannot look ahead to future impl blocks
 /// - Compile errors are clear when conflicts occur
-fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
+pub fn add_clone_and_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     let mut struct_def = struct_attrs.clone();
 
     let has_clone = struct_def.attrs.iter().any(|attr| {
@@ -400,16 +185,15 @@ fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
     });
 
     if !has_clone {
-        // Add both Clone and Injectable derives
-        // Injectable registers #[inject] and #[default] as valid attributes
+        // Clone is needed for the provider wrapper; InjectFields keeps the
+        // #[inject]/#[default] field attributes valid on the re-emitted struct.
         let derives: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone, ::toni::Injectable)]
+            #[derive(Clone, ::toni::InjectFields)]
         };
         struct_def.attrs.push(derives);
     } else {
-        // Just add Injectable
         let injectable_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(::toni::Injectable)]
+            #[derive(::toni::InjectFields)]
         };
         struct_def.attrs.push(injectable_derive);
     }
@@ -461,9 +245,12 @@ fn generate_provider_wrapper(
     scope: ProviderScope,
     enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
+    lifecycle_via_bridge: bool,
 ) -> TokenStream {
     match scope {
-        ProviderScope::Singleton => generate_singleton_provider(struct_name, lifecycle_hooks),
+        ProviderScope::Singleton => {
+            generate_singleton_provider(struct_name, lifecycle_hooks, lifecycle_via_bridge)
+        }
         ProviderScope::Request => {
             generate_request_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
         }
@@ -473,67 +260,17 @@ fn generate_provider_wrapper(
     }
 }
 
-fn enhancer_kind_active(
-    traits: &EnhancerTraits,
-    kind: crate::shared::enhancer_emit::EnhancerKind,
-) -> bool {
-    use crate::shared::enhancer_emit::EnhancerKind;
-    match kind {
-        EnhancerKind::HttpGuard => traits.is_http_guard,
-        EnhancerKind::HttpInterceptor => traits.is_http_interceptor,
-        EnhancerKind::HttpPipe => traits.is_http_pipe,
-        EnhancerKind::RpcGuard => traits.is_rpc_guard,
-        EnhancerKind::RpcInterceptor => traits.is_rpc_interceptor,
-        EnhancerKind::RpcPipe => traits.is_rpc_pipe,
-        EnhancerKind::WsGuard => traits.is_ws_guard,
-        EnhancerKind::WsInterceptor => traits.is_ws_interceptor,
-        EnhancerKind::WsPipe => traits.is_ws_pipe,
-        EnhancerKind::GrpcGuard => traits.is_grpc_guard,
-        EnhancerKind::GrpcInterceptor => traits.is_grpc_interceptor,
-    }
-}
-
-fn error_handler_kind_active(
-    traits: &EnhancerTraits,
-    kind: crate::shared::enhancer_emit::ErrorHandlerKind,
-) -> bool {
-    use crate::shared::enhancer_emit::ErrorHandlerKind;
-    match kind {
-        ErrorHandlerKind::Http => traits.is_http_error_handler,
-        ErrorHandlerKind::Rpc => traits.is_rpc_error_handler,
-        ErrorHandlerKind::Ws => traits.is_ws_error_handler,
-        ErrorHandlerKind::Grpc => traits.is_grpc_error_handler,
-    }
-}
 
 /// Generate role-push statements to embed inside `build()`, before the concrete
 /// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
 /// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
+///
+/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are detected from the
+/// type itself via `toni::__detect` probes — the `impl Guard<HttpContext> for T` is the declaration,
+/// no marker required. Structural roles (gateway / rpc-controller / grpc-service) stay flag-driven:
+/// they come from the structural macros that also generate the trait impls and routing.
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
-    use crate::shared::enhancer_emit::{
-        EnhancerKind, ErrorHandlerKind, ready_error_handler_push, ready_role_push,
-    };
-
-    let mut pushes = Vec::new();
-
-    if traits.is_middleware {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::Middleware(
-                instance.clone() as ::std::sync::Arc<dyn ::toni::traits_helpers::middleware::Middleware>
-            ));
-        });
-    }
-
-    for kind in EnhancerKind::all() {
-        if enhancer_kind_active(traits, kind) {
-            pushes.push(ready_role_push(&kind.spec()));
-        }
-    }
-    for kind in ErrorHandlerKind::all() {
-        if error_handler_kind_active(traits, kind) {
-            pushes.push(ready_error_handler_push(&kind.spec()));
-        }
-    }
+    let mut pushes = vec![crate::shared::enhancer_emit::value_probe_detection()];
 
     if traits.is_gateway {
         pushes.push(quote! {
@@ -612,12 +349,52 @@ fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
     quote! { #(#methods)* }
 }
 
+/// Generate the five `Provider` lifecycle overrides for the derive path, each forwarding to the
+/// `#[on_*]` bridge method on the instance. The inherent bridge method (emitted by a hook macro)
+/// runs the user hook when present, else the blanket `LifecycleBridge` no-op — so the derive
+/// dispatches uniformly without knowing which hooks exist.
+///
+/// Calls go through UFCS on the concrete type (`Struct::__toni_lc_*(&*self.instance)`) rather than
+/// method syntax on `self.instance`. The blanket `impl<T: ?Sized> LifecycleBridge for T` also covers
+/// `Arc<Struct>`, so `self.instance.__toni_lc_*()` binds the no-op at the `Arc` level and never
+/// derefs to the inherent forwarder on `Struct`. UFCS pins resolution to `Struct`, where the
+/// inherent method wins over the blanket when present.
+fn generate_bridge_lifecycle_methods(struct_name: &Ident) -> TokenStream {
+    quote! {
+        async fn on_module_init(&self) -> ::toni::InitResult {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_init(&*self.instance).await
+        }
+        async fn on_application_bootstrap(&self) -> ::toni::InitResult {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_bootstrap(&*self.instance).await
+        }
+        async fn on_module_destroy(&self) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_destroy(&*self.instance).await;
+        }
+        async fn before_application_shutdown(&self, signal: Option<String>) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_before_shutdown(&*self.instance, signal).await;
+        }
+        async fn on_application_shutdown(&self, signal: Option<String>) {
+            use ::toni::__lifecycle::LifecycleBridge as _;
+            #struct_name::__toni_lc_on_shutdown(&*self.instance, signal).await;
+        }
+    }
+}
+
 fn generate_singleton_provider(
     struct_name: &Ident,
     lifecycle_hooks: &LifecycleHooks,
+    lifecycle_via_bridge: bool,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-    let lifecycle_methods = generate_lifecycle_direct_methods(lifecycle_hooks);
+    let lifecycle_methods = if lifecycle_via_bridge {
+        generate_bridge_lifecycle_methods(struct_name)
+    } else {
+        generate_lifecycle_direct_methods(lifecycle_hooks)
+    };
 
     quote! {
         struct #provider_name {
@@ -700,7 +477,12 @@ fn generate_request_provider(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -723,7 +505,11 @@ fn generate_request_provider(
 
     // Request-scoped providers require an active HTTP context. Constructing them
     // outside of a request would silently violate the declared scope contract.
+    //
+    // Build via the `#[new]` constructor when one exists (inherent fn shadows the blanket
+    // `CtorBridge` default), else by field injection — same dispatch as the singleton factory.
     let execute_body = quote! {
+        use ::toni::__construct::CtorBridge as _;
         let ::toni::ProviderContext::Http(__http_ctx) = _ctx else {
             panic!(
                 "Request-scoped provider '{}' requires an HTTP execution context. \
@@ -734,8 +520,18 @@ fn generate_request_provider(
         if let Some(__cached) = __http_ctx.cache.get::<#struct_name>() {
             return Box::new(__cached);
         }
-        #(#field_resolutions)*
-        let instance = #struct_instantiation;
+        // Request scope: pass the active request parts so a request-scoped constructor parameter
+        // can itself be resolved.
+        let instance = match <#struct_name>::__toni_ctor_build(
+            &self.dependencies,
+            ::std::option::Option::Some(__http_ctx.parts),
+        ) {
+            ::std::option::Option::Some(__fut) => __fut.await,
+            ::std::option::Option::None => {
+                #(#field_resolutions)*
+                #struct_instantiation
+            }
+        };
         __http_ctx.cache.insert(instance.clone());
         Box::new(instance)
     };
@@ -799,7 +595,12 @@ fn generate_transient_provider(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -837,10 +638,17 @@ fn generate_transient_provider(
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
                 _ctx: ::toni::ProviderContext<'_>,
             ) -> Box<dyn ::std::any::Any + Send> {
-                #(#field_resolutions)*
-
-                let instance = #struct_instantiation;
-
+                // Build via the `#[new]` constructor when one exists, else by field injection.
+                // Transient construction carries no request context (a transient consumed in a
+                // request is rebuilt there; its own request-scoped params resolve via that path).
+                use ::toni::__construct::CtorBridge as _;
+                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies, ::std::option::Option::None) {
+                    ::std::option::Option::Some(__fut) => __fut.await,
+                    ::std::option::Option::None => {
+                        #(#field_resolutions)*
+                        #struct_instantiation
+                    }
+                };
                 Box::new(instance)
             }
 
@@ -1239,7 +1047,12 @@ fn generate_singleton_factory(
                     quote! { #field_name: #expr }
                 } else {
                     // Fall back to Default trait
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -1349,24 +1162,31 @@ fn generate_singleton_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens (inherent fn shadows the
+                // blanket `CtorBridge` default); otherwise fall back to the field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
                 &self,
                 __deps: ::toni::FxHashMap<String, ::toni::traits_helpers::Injectable>,
             ) -> ::toni::traits_helpers::Injectable {
+                use ::toni::__construct::CtorBridge as _;
                 let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
                     __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
 
                 #scope_validation
 
-                // Resolve all dependencies at startup
-                #(#field_resolutions)*
-
-                let instance = ::std::sync::Arc::new({
-                    #struct_instantiation
-                });
+                // Build via the `#[new]` constructor if one exists, else by field injection.
+                // Singletons are built at startup with no request context.
+                let instance = match <#struct_name>::__toni_ctor_build(&dependencies, ::std::option::Option::None) {
+                    ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
+                    ::std::option::Option::None => ::std::sync::Arc::new({
+                        #(#field_resolutions)*
+                        #struct_instantiation
+                    }),
+                };
 
                 let mut __roles = ::std::vec::Vec::new();
                 #role_pushes
@@ -1448,7 +1268,10 @@ fn generate_request_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
+                // field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1531,7 +1354,10 @@ fn generate_transient_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#dependency_tokens),*]
+                // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
+                // field-injection tokens.
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1642,8 +1468,15 @@ fn generate_create_field_resolutions(
     (resolutions, field_names)
 }
 
-/// Generates the `DynGuardFactory`, `DynInterceptorFactory`, and/or `DynPipeFactory`
-/// implementor structs for request/transient-scoped providers that are also enhancers.
+/// Generates the per-request enhancer-factory structs (`Dyn*Factory` implementors) for a
+/// request/transient-scoped provider, and the role pushes that register them.
+///
+/// Roles are detected from the type, not a marker: a `Dyn*Factory` is emitted for every enhancer
+/// kind (the `toni::__detect` value-probe inside `create()` compiles for any `T` — it yields the
+/// coerced trait object for an implementor and never runs otherwise), and each role push is gated
+/// by a `toni::__detect` type-level probe over the concrete struct so only the kinds the type
+/// actually implements register. `enhancer_traits` no longer drives this — only structural roles
+/// (gateway/rpc-controller/grpc-service) remain flag-driven elsewhere.
 ///
 /// Returns `(struct_defs, role_pushes)`:
 /// - `struct_defs`: emitted before the provider factory struct
@@ -1651,18 +1484,11 @@ fn generate_create_field_resolutions(
 fn generate_dyn_factories(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
-    enhancer_traits: &EnhancerTraits,
+    _enhancer_traits: &EnhancerTraits,
 ) -> (TokenStream, TokenStream) {
     use crate::shared::enhancer_emit::EnhancerKind;
 
-    let active_kinds: Vec<EnhancerKind> = EnhancerKind::all()
-        .into_iter()
-        .filter(|k| enhancer_kind_active(enhancer_traits, *k))
-        .collect();
-
-    if active_kinds.is_empty() {
-        return (quote! {}, quote! {});
-    }
+    let active_kinds: Vec<EnhancerKind> = EnhancerKind::all().into_iter().collect();
 
     let (field_resolutions, field_names) = generate_create_field_resolutions(dependencies);
 
@@ -1687,7 +1513,12 @@ fn generate_dyn_factories(
                 if let Some(expr) = default_expr {
                     quote! { #field_name: #expr }
                 } else {
-                    quote! { #field_name: <#field_type>::default() }
+                    quote! { #field_name: {
+                        #[allow(unused_imports)]
+                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                            .field_default(stringify!(#field_name), stringify!(#field_type))
+                    } }
                 }
             })
             .collect();
@@ -1706,27 +1537,60 @@ fn generate_dyn_factories(
         >>
     };
 
-    let mut struct_defs = Vec::new();
+    // One shared builder per provider: it owns the (heavy) dependency-resolution + construction
+    // logic once. Each `Dyn*Factory` impl is a thin shim that builds via this and value-probes the
+    // result to its role trait object — so the field-resolution code isn't duplicated 11 times.
+    let builder_struct_name = Ident::new(
+        &format!("__Toni{}EnhancerBuilder", struct_name),
+        struct_name.span(),
+    );
+
+    let builder_def = quote! {
+        struct #builder_struct_name {
+            all_deps: #deps_arc_ty,
+            has_request_deps: bool,
+        }
+
+        impl #builder_struct_name {
+            async fn __build_instance<'a>(
+                &'a self,
+                request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+            ) -> #struct_name {
+                // A `#[new]` constructor takes over construction; otherwise fall back to field
+                // injection. Both thread `request_parts` so request-scoped sub-dependencies resolve.
+                use ::toni::__construct::CtorBridge as _;
+                if let ::std::option::Option::Some(__fut) =
+                    <#struct_name>::__toni_ctor_build(&*self.all_deps, request_parts)
+                {
+                    return __fut.await;
+                }
+                let all_deps = self.all_deps.clone();
+                let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                #(#field_resolutions)*
+                #struct_instantiation
+            }
+        }
+    };
+
+    let mut impl_defs = Vec::new();
     let mut role_push_stmts = Vec::new();
 
     for kind in active_kinds {
         let spec = kind.spec();
-        let factory_struct_name = Ident::new(
-            &format!("__Toni{}{}DynFactory", struct_name, spec.factory_suffix),
-            struct_name.span(),
-        );
         let trait_path = &spec.trait_path;
         let factory_trait_path = &spec.dyn_factory_trait;
         let role_variant = &spec.role_variant;
         let entry_path = &spec.entry_path;
+        let value_probe = Ident::new(&format!("{}Probe", spec.factory_suffix), struct_name.span());
+        let type_probe =
+            Ident::new(&format!("{}TypeProbe", spec.factory_suffix), struct_name.span());
 
-        struct_defs.push(quote! {
-            struct #factory_struct_name {
-                all_deps: #deps_arc_ty,
-                has_request_deps: bool,
-            }
-
-            impl #factory_trait_path for #factory_struct_name {
+        // `create()` builds via the shared builder, then value-probes the instance to the role
+        // trait object. The probe compiles for any `T` (fallback returns `None`); this impl's role
+        // is only ever registered when the type-probe below confirms `T` implements the trait, so
+        // the `expect` cannot fire.
+        impl_defs.push(quote! {
+            impl #factory_trait_path for #builder_struct_name {
                 fn requires_http_parts(&self) -> bool {
                     self.has_request_deps
                 }
@@ -1737,27 +1601,44 @@ fn generate_dyn_factories(
                 ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
                     Output = ::std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {
-                    let all_deps = self.all_deps.clone();
                     ::std::boxed::Box::pin(async move {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
-                        #(#field_resolutions)*
-                        let instance = #struct_instantiation;
-                        ::std::sync::Arc::new(instance) as ::std::sync::Arc<dyn #trait_path + Send + Sync>
+                        use ::toni::__detect::prelude::*;
+                        let instance = self.__build_instance(request_parts).await;
+                        ::toni::__detect::#value_probe(::std::sync::Arc::new(instance))
+                            .detect()
+                            .expect("enhancer factory registered only when the type implements the role")
+                            as ::std::sync::Arc<dyn #trait_path + Send + Sync>
                     })
                 }
             }
         });
+        // Gate registration on the type-level probe over the concrete struct: only kinds the type
+        // actually implements get a factory pushed. `.is()` resolves to the inherent method (true)
+        // when `#struct_name` implements the trait, else the in-scope fallback (false).
         role_push_stmts.push(quote! {
-            __roles.push(#role_variant(
-                #entry_path::Factory(
-                    ::std::sync::Arc::new(#factory_struct_name {
-                        all_deps: __all_deps.clone(),
-                        has_request_deps: __has_request_deps,
-                    })
-                )
-            ));
+            if ::toni::__detect::#type_probe::<#struct_name>(::std::marker::PhantomData).is() {
+                __roles.push(#role_variant(
+                    #entry_path::Factory(
+                        ::std::sync::Arc::new(#builder_struct_name {
+                            all_deps: __all_deps.clone(),
+                            has_request_deps: __has_request_deps,
+                        })
+                    )
+                ));
+            }
         });
     }
 
-    (quote! { #(#struct_defs)* }, quote! { #(#role_push_stmts)* })
+    let struct_defs = quote! {
+        #builder_def
+        #(#impl_defs)*
+    };
+    let role_pushes = quote! {
+        {
+            use ::toni::__detect::prelude::*;
+            #(#role_push_stmts)*
+        }
+    };
+
+    (struct_defs, role_pushes)
 }

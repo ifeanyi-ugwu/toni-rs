@@ -5,9 +5,8 @@ use toni::{
 use toni_actix::ActixAdapter;
 
 // Simple service for testing
-#[injectable(
-    pub struct TestService;
-)]
+#[injectable]
+pub struct TestService;
 impl TestService {
     pub fn get_greeting(&self) -> String {
         "Hello from Actix!".to_string()

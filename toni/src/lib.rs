@@ -5,6 +5,12 @@ mod error;
 pub mod builtin_module;
 pub mod context;
 pub use context::{CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, WsContext};
+#[doc(hidden)]
+pub mod __construct;
+#[doc(hidden)]
+pub mod __detect;
+#[doc(hidden)]
+pub mod __lifecycle;
 pub mod di;
 pub mod errors;
 pub mod extractors;
@@ -79,11 +85,6 @@ pub use extractors::{BodyStream, FromRequest, FromRequestParts};
 
 // Re-export macros
 pub use toni_macros::*;
-
-// Re-export enhancer marker macros with better namespacing to avoid conflicts
-pub mod enhancer {
-    pub use toni_macros::{error_handler, guard, interceptor, middleware, pipe};
-}
 
 pub use module_helpers::DynamicModule;
 pub use toni_application::{BoundAdapters, ShutdownHandle, ToniApplication};

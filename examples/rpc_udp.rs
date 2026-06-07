@@ -22,7 +22,8 @@
 use toni::ToniFactory;
 use toni_macros::{injectable, module, rpc_controller};
 
-#[injectable(pub struct OrdersService {})]
+#[injectable]
+pub struct OrdersService {}
 impl OrdersService {
     pub fn create_order(&self, item: &str, qty: u32) -> serde_json::Value {
         println!("[OrdersService] Creating order: {} x{}", item, qty);

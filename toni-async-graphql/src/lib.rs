@@ -64,12 +64,14 @@
 //! use toni::{HttpRequest, injectable};
 //! use async_trait::async_trait;
 //!
-//! #[injectable(
-//!     pub struct MyContextBuilder {
-//!         auth_service: AuthService,
-//!         db_pool: DatabasePool,
-//!     }
-//! )]
+//! #[injectable]
+//! pub struct MyContextBuilder {
+//!     #[inject]
+//!     auth_service: AuthService,
+//!     #[inject]
+//!     db_pool: DatabasePool,
+//! }
+//!
 //! #[async_trait]
 //! impl ContextBuilder for MyContextBuilder {
 //!     async fn build(&self, req: &HttpRequest) -> Data {

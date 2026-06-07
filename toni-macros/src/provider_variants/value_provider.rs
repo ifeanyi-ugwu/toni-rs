@@ -7,18 +7,18 @@ use syn::{
 
 use crate::shared::TokenType;
 
-pub use super::factory_provider::EnhancerType;
-
-/// Parse provider_value! macro input
-/// Syntax: provider_value!("TOKEN", value) or provider_value!(TOKEN, value)
-/// Optional enhancers: provider_value!(TOKEN, value, guard) or provider_value!(TOKEN, value, guard, interceptor)
-/// Optional type hint for string/const tokens with enhancers: provider_value!("TOKEN", value, Type, guard)
-/// Note: Scope is NOT supported (values are always singleton)
+/// Parse provider_value! macro input.
+///
+/// Syntax: `provider_value!("TOKEN", value)` or `provider_value!(TOKEN, value)`.
+///
+/// An optional type hint — `provider_value!("TOKEN", value, Type)` — stores the value as a
+/// concrete `Arc<Type>` rather than type-erased, which lets the framework auto-detect any enhancer
+/// roles the type implements (`Guard<C>`, etc.). For a `Type` token the hint is implicit. Values
+/// are always singleton; scope is not supported.
 pub struct ProviderValueInput {
     pub token: TokenType,
     pub value_expr: Expr,
     pub type_hint: Option<syn::Path>,
-    pub enhancers: Vec<EnhancerType>,
     pub lifecycle: bool,
 }
 
@@ -28,9 +28,7 @@ impl Parse for ProviderValueInput {
         let _: Token![,] = input.parse()?;
         let value_expr: Expr = input.parse()?;
 
-        // Parse optional type hint and enhancer flags
         let mut type_hint = None;
-        let mut enhancers = Vec::new();
         let mut lifecycle = false;
 
         while input.peek(Token![,]) {
@@ -39,89 +37,30 @@ impl Parse for ProviderValueInput {
                 break;
             }
 
-            // Peek to determine if this is an enhancer keyword or type hint
             let lookahead = input.lookahead1();
             if lookahead.peek(Ident) {
                 let ident: Ident = input.parse()?;
-                let ident_str = ident.to_string();
 
-                let parse_transport = |input: ParseStream| -> Result<Option<String>> {
-                    if input.peek(syn::token::Paren) {
-                        let content;
-                        syn::parenthesized!(content in input);
-                        let arg: Ident = content.parse()?;
-                        Ok(Some(arg.to_string()))
-                    } else {
-                        Ok(None)
+                if ident == "lifecycle" {
+                    lifecycle = true;
+                } else if type_hint.is_none() {
+                    // A path (possibly multi-segment, e.g. `my_mod::Type`) — the storage/probe type.
+                    let mut path_segments = syn::punctuated::Punctuated::new();
+                    path_segments.push(syn::PathSegment::from(ident));
+                    while input.peek(Token![::]) {
+                        input.parse::<Token![::]>()?;
+                        let segment: Ident = input.parse()?;
+                        path_segments.push(syn::PathSegment::from(segment));
                     }
-                };
-
-                match ident_str.as_str() {
-                    "guard" => match parse_transport(input)?.as_deref() {
-                        Some("http") | None => enhancers.push(EnhancerType::HttpGuard),
-                        Some("rpc") => enhancers.push(EnhancerType::RpcGuard),
-                        Some("ws") | Some("websocket") => {
-                            enhancers.push(EnhancerType::WsGuard)
-                        }
-                        Some(other) => {
-                            return Err(syn::Error::new(
-                                ident.span(),
-                                format!("unknown guard transport `{}`", other),
-                            ));
-                        }
-                    },
-                    "interceptor" => match parse_transport(input)?.as_deref() {
-                        Some("http") | None => enhancers.push(EnhancerType::HttpInterceptor),
-                        Some("rpc") => enhancers.push(EnhancerType::RpcInterceptor),
-                        Some("ws") | Some("websocket") => {
-                            enhancers.push(EnhancerType::WsInterceptor)
-                        }
-                        Some(other) => {
-                            return Err(syn::Error::new(
-                                ident.span(),
-                                format!("unknown interceptor transport `{}`", other),
-                            ));
-                        }
-                    },
-                    "pipe" => match parse_transport(input)?.as_deref() {
-                        Some("http") | None => enhancers.push(EnhancerType::HttpPipe),
-                        Some("rpc") => enhancers.push(EnhancerType::RpcPipe),
-                        Some("ws") | Some("websocket") => {
-                            enhancers.push(EnhancerType::WsPipe)
-                        }
-                        Some(other) => {
-                            return Err(syn::Error::new(
-                                ident.span(),
-                                format!("unknown pipe transport `{}`", other),
-                            ));
-                        }
-                    },
-                    "lifecycle" => lifecycle = true,
-                    _ => {
-                        // Not an enhancer keyword - could be start of a type hint
-                        if type_hint.is_none() && enhancers.is_empty() {
-                            // Parse as path (might be multi-segment like my_mod::Type)
-                            let mut path_segments = syn::punctuated::Punctuated::new();
-                            path_segments.push(syn::PathSegment::from(ident));
-
-                            // Check for additional path segments (::Type)
-                            while input.peek(Token![::]) {
-                                input.parse::<Token![::]>()?;
-                                let segment: Ident = input.parse()?;
-                                path_segments.push(syn::PathSegment::from(segment));
-                            }
-
-                            type_hint = Some(syn::Path {
-                                leading_colon: None,
-                                segments: path_segments,
-                            });
-                        } else {
-                            return Err(syn::Error::new_spanned(
-                                ident,
-                                "Type hint must come before enhancer flags, or expected 'guard', 'interceptor', or 'pipe'",
-                            ));
-                        }
-                    }
+                    type_hint = Some(syn::Path {
+                        leading_colon: None,
+                        segments: path_segments,
+                    });
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        ident,
+                        "expected a single type hint or `lifecycle`",
+                    ));
                 }
             } else {
                 return Err(lookahead.error());
@@ -132,34 +71,16 @@ impl Parse for ProviderValueInput {
             token,
             value_expr,
             type_hint,
-            enhancers,
             lifecycle,
         })
     }
 }
 
-/// Validate that enhancers can be used with the given token type.
-fn validate_enhancers(
-    token: &TokenType,
-    type_hint: &Option<syn::Path>,
-    enhancers: &[EnhancerType],
-) -> Result<()> {
-    if let TokenType::String(_) | TokenType::Const(_) = token {
-        if !enhancers.is_empty() && type_hint.is_none() {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Enhancer support (guard/interceptor/pipe) for String or Const tokens requires a type hint. Use: provider_value!(\"TOKEN\", value, Type, guard)",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Generate role-push statements to embed inside `build()` for value providers,
-/// before the concrete `instance: Arc<T>` is boxed. Reuses the typed role-push
-/// emission from `factory_provider`.
-fn generate_value_role_pushes(enhancers: &[EnhancerType]) -> TokenStream {
-    super::factory_provider::generate_factory_role_pushes_external(enhancers)
+/// Generate role-push statements to embed inside `build()` for value providers, before the
+/// concrete `instance: Arc<T>` is boxed. Roles are detected from the value's type via the shared
+/// autoref probes — same path the `#[injectable]` and `provider_factory!` singletons use.
+fn generate_value_role_pushes() -> TokenStream {
+    crate::shared::enhancer_emit::value_probe_detection()
 }
 
 pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
@@ -167,16 +88,8 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
         token,
         value_expr,
         type_hint,
-        enhancers,
         lifecycle,
     } = syn::parse2(input)?;
-
-    if lifecycle && !enhancers.is_empty() {
-        return Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "lifecycle cannot be combined with guard/interceptor/pipe enhancers",
-        ));
-    }
 
     // Generate token expression for runtime
     let token_expr = token.to_token_expr();
@@ -267,12 +180,10 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
         return Ok(expanded);
     }
 
-    validate_enhancers(&token, &type_hint, &enhancers)?;
-
     // Helper: emit a provider struct + factory that stores `instance: Arc<$instance_type>`.
     // Roles are built inside `build()` before boxing, so no downcast is needed.
     let make_concrete_provider = |instance_type: &TokenStream| {
-        let role_pushes = generate_value_role_pushes(&enhancers);
+        let role_pushes = generate_value_role_pushes();
         quote! {
             {
                 #[derive(Clone)]
@@ -329,8 +240,8 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
         }
 
         TokenType::String(_) | TokenType::Const(_) => {
-            if !enhancers.is_empty() {
-                let type_path = type_hint.as_ref().unwrap();
+            if let Some(type_path) = type_hint.as_ref() {
+                // A hint means "store concretely so roles can be auto-detected".
                 let instance_type = quote! { #type_path };
                 make_concrete_provider(&instance_type)
             } else {

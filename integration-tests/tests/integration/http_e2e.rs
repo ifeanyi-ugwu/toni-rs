@@ -15,7 +15,8 @@ struct AppConfig {
 
 #[tokio_localset_test::localset_test]
 async fn async_controller_methods_with_http_server() {
-    #[injectable(pub struct AsyncService {})]
+    #[injectable]
+    pub struct AsyncService {}
     impl AsyncService {
         pub async fn process(&self) -> String {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;

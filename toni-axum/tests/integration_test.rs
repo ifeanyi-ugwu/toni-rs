@@ -4,9 +4,8 @@ use toni::{
 use toni_axum::AxumAdapter;
 
 // Simple service for testing
-#[injectable(
-    pub struct TestService;
-)]
+#[injectable]
+pub struct TestService;
 impl TestService {
     pub fn get_greeting(&self) -> String {
         "Hello from Axum!".to_string()

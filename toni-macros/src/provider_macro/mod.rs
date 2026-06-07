@@ -1,2 +1,4 @@
 pub mod instance_injection;
-pub mod provider_struct;
+pub mod lifecycle_attr;
+pub mod new_ctor;
+pub mod provider_attr;

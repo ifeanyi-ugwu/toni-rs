@@ -2,8 +2,6 @@ use async_trait::async_trait;
 use super::{ControllerFactory, ProviderFactory};
 use crate::middleware::{IntoRoutePattern, RoutePattern};
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 #[async_trait(?Send)]
@@ -22,61 +20,39 @@ pub trait ModuleMetadata {
 
     fn configure_middleware(&self, _consumer: &mut MiddlewareConsumer) {}
 
-    /// Called after the DI container is fully initialized
-    ///
-    /// This hook allows modules to perform initialization logic that requires
-    /// access to the fully-built container (e.g., setting up event listeners, etc.)
-    async fn on_module_init(
-        &self,
-        _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> crate::InitResult {
+    /// Called after the DI container is fully initialized, before bootstrap. Returning `Err` aborts
+    /// startup. Mirrors a provider's `on_module_init`.
+    async fn on_module_init(&self) -> crate::InitResult {
         Ok(())
     }
 
-    /// Called after the application is fully initialized but before it starts listening
-    ///
-    /// This is the last hook before the server begins accepting connections.
-    /// Use this for final setup tasks that depend on all modules being initialized.
+    /// Called after all modules initialize, the last hook before the server accepts connections.
+    /// Returning `Err` aborts startup.
     ///
     /// # Example
     /// ```ignore
-    /// impl ModuleMetadata for MyModule {
-    ///     async fn on_application_bootstrap(
-    ///         &self,
-    ///         _container: Rc<RefCell<ToniContainer>>,
-    ///     ) -> toni::InitResult {
+    /// #[module(controllers: [MyController])]
+    /// impl MyModule {
+    ///     #[on_application_bootstrap]
+    ///     async fn on_application_bootstrap(&self) -> toni::InitResult {
     ///         println!("Application is ready to start");
     ///         Ok(())
     ///     }
     /// }
     /// ```
-    async fn on_application_bootstrap(
-        &self,
-        _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) -> crate::InitResult {
+    async fn on_application_bootstrap(&self) -> crate::InitResult {
         Ok(())
     }
 
     // Shutdown lifecycle hooks
 
     /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
-    fn before_application_shutdown(
-        &self,
-        _signal: Option<String>,
-        _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) {}
+    async fn before_application_shutdown(&self, _signal: Option<String>) {}
 
-    fn on_module_destroy(
-        &self,
-        _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) {}
+    async fn on_module_destroy(&self) {}
 
     /// `signal` is the OS signal name that triggered shutdown, if any (e.g. `"SIGTERM"`).
-    fn on_application_shutdown(
-        &self,
-        _signal: Option<String>,
-        _container: Rc<RefCell<crate::injector::ToniContainer>>,
-    ) {}
+    async fn on_application_shutdown(&self, _signal: Option<String>) {}
 
     /// Mark this module as global, making its exports available everywhere
     fn global(self) -> GlobalModuleWrapper<Self>
@@ -126,41 +102,24 @@ impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
         self.inner.configure_middleware(consumer)
     }
 
-    async fn on_module_init(
-        &self,
-        container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> crate::InitResult {
-        self.inner.on_module_init(container).await
+    async fn on_module_init(&self) -> crate::InitResult {
+        self.inner.on_module_init().await
     }
 
-    async fn on_application_bootstrap(
-        &self,
-        container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) -> crate::InitResult {
-        self.inner.on_application_bootstrap(container).await
+    async fn on_application_bootstrap(&self) -> crate::InitResult {
+        self.inner.on_application_bootstrap().await
     }
 
-    fn before_application_shutdown(
-        &self,
-        signal: Option<String>,
-        container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) {
-        self.inner.before_application_shutdown(signal, container)
+    async fn before_application_shutdown(&self, signal: Option<String>) {
+        self.inner.before_application_shutdown(signal).await
     }
 
-    fn on_module_destroy(
-        &self,
-        container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) {
-        self.inner.on_module_destroy(container)
+    async fn on_module_destroy(&self) {
+        self.inner.on_module_destroy().await
     }
 
-    fn on_application_shutdown(
-        &self,
-        signal: Option<String>,
-        container: std::rc::Rc<std::cell::RefCell<crate::injector::ToniContainer>>,
-    ) {
-        self.inner.on_application_shutdown(signal, container)
+    async fn on_application_shutdown(&self, signal: Option<String>) {
+        self.inner.on_application_shutdown(signal).await
     }
 }
 

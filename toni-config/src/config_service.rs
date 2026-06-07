@@ -13,11 +13,11 @@ use toni::FxHashMap;
 /// Inject it into your providers to access configuration:
 ///
 /// ```rust,ignore
-/// #[injectable(
-///     pub struct DatabaseService {
-///         config: ConfigService<AppConfig>
-///     }
-/// )]
+/// #[injectable]
+/// pub struct DatabaseService {
+///     #[inject]
+///     config: ConfigService<AppConfig>
+/// }
 /// impl DatabaseService {
 ///     pub fn connect(&self) -> String {
 ///         let cfg = self.config.get();

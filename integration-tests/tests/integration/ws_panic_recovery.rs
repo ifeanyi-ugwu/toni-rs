@@ -4,18 +4,18 @@
 //! message goes through normally. Sibling connections on the same gateway
 //! are unaffected.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use toni::async_trait;
 use toni::context::WsContext;
 use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
+use toni::injectable;
 use toni::module;
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
-use toni::{error_handler, guard, injectable, interceptor, pipe};
 use toni_macros::websocket_gateway;
 
 use crate::common::TestServer;
@@ -112,8 +112,7 @@ async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
         .unwrap();
 
     let reply = ws_a.next().await.unwrap().unwrap();
-    let json: serde_json::Value =
-        serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
     assert_eq!(json["status"], "error");
     assert_eq!(json["kind"], "Internal");
     assert!(
@@ -144,8 +143,8 @@ async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
     );
 }
 
-#[injectable(pub struct PanickingWsGuard {})]
-#[guard(ws)]
+#[injectable]
+pub struct PanickingWsGuard {}
 impl PanickingWsGuard {}
 
 #[async_trait]
@@ -187,11 +186,9 @@ async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(
-        WsGuardPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port =
+        start_ws_server_with_observers(WsGuardPanicModule::module_definition(), vec![observer])
+            .await;
 
     let url = format!("ws://127.0.0.1:{}/ws-guard-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -212,17 +209,13 @@ async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
     assert_eq!(reply.to_text().unwrap(), "safe-ok");
 }
 
-#[injectable(pub struct PanickingWsInterceptor {})]
-#[interceptor(ws)]
+#[injectable]
+pub struct PanickingWsInterceptor {}
 impl PanickingWsInterceptor {}
 
 #[async_trait]
 impl Interceptor<WsContext> for PanickingWsInterceptor {
-    async fn intercept(
-        &self,
-        _ctx: &mut WsContext,
-        _next: Box<dyn InterceptorNext<WsContext>>,
-    ) {
+    async fn intercept(&self, _ctx: &mut WsContext, _next: Box<dyn InterceptorNext<WsContext>>) {
         panic!("ws interceptor kaboom");
     }
 }
@@ -267,9 +260,11 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
 
     let url = format!("ws://127.0.0.1:{}/ws-interceptor-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    ws.send(Message::Text(r#"{"event":"intercepted"}"#.to_string().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        r#"{"event":"intercepted"}"#.to_string().into(),
+    ))
+    .await
+    .unwrap();
 
     let reply = ws.next().await.unwrap().unwrap();
     let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
@@ -284,8 +279,8 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
     assert_eq!(reply.to_text().unwrap(), "safe-ok");
 }
 
-#[injectable(pub struct PanickingWsPipe {})]
-#[pipe(ws)]
+#[injectable]
+pub struct PanickingWsPipe {}
 impl PanickingWsPipe {}
 
 impl Pipe<WsContext> for PanickingWsPipe {
@@ -326,11 +321,9 @@ async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(
-        WsPipePanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port =
+        start_ws_server_with_observers(WsPipePanicModule::module_definition(), vec![observer])
+            .await;
 
     let url = format!("ws://127.0.0.1:{}/ws-pipe-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -351,17 +344,13 @@ async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
     assert_eq!(reply.to_text().unwrap(), "safe-ok");
 }
 
-#[injectable(pub struct PanickingWsErrorHandler {})]
-#[error_handler(ws)]
+#[injectable]
+pub struct PanickingWsErrorHandler {}
 impl PanickingWsErrorHandler {}
 
 #[async_trait]
 impl ErrorHandler<WsContext, WsMessage> for PanickingWsErrorHandler {
-    async fn handle_error(
-        &self,
-        _error: ChainError<'_>,
-        _ctx: &WsContext,
-    ) -> Option<WsMessage> {
+    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &WsContext) -> Option<WsMessage> {
         panic!("ws error-handler kaboom");
     }
 }
@@ -415,7 +404,10 @@ async fn ws_error_handler_panic_continues_chain_to_default_rendering() {
     // Observer fired for both the original HandlerBody panic and the
     // chain ErrorHandler panic; the captured segment is the most recent.
     assert!(count.load(Ordering::SeqCst) >= 2);
-    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::ErrorHandler));
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::ErrorHandler)
+    );
 }
 
 /// Domain error whose `message()` panics — exercises the renderer-panic
@@ -466,11 +458,9 @@ async fn ws_renderer_panic_falls_back_to_safe_envelope() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(
-        WsRenderPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port =
+        start_ws_server_with_observers(WsRenderPanicModule::module_definition(), vec![observer])
+            .await;
 
     let url = format!("ws://127.0.0.1:{}/ws-render-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
