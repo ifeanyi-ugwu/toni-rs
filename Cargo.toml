@@ -20,6 +20,7 @@ members = [
     "toni-diesel",
     "toni-redis",
     "toni-redis-broadcast",
+    "toni-redis-rpc",
     "toni-sqlx",
     "toni-mongodb",
     "toni-async-graphql",
