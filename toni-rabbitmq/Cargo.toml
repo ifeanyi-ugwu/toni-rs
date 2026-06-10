@@ -1,0 +1,26 @@
+[package]
+name = "toni-rabbitmq"
+version = "0.1.0"
+edition = "2021"
+description = "RabbitMQ (AMQP) transport adapter for the Toni RPC gateway"
+license = "MIT"
+keywords = ["toni", "rabbitmq", "amqp", "rpc", "adapter"]
+categories = ["network-programming"]
+
+[features]
+# Gates tests that need a live RabbitMQ (via testcontainers + Docker).
+integration = []
+
+[dependencies]
+toni = { path = "../toni" }
+lapin = "4"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+futures = "0.3"
+
+[dev-dependencies]
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["rabbitmq"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
