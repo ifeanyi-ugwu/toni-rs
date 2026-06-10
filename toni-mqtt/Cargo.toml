@@ -1,0 +1,26 @@
+[package]
+name = "toni-mqtt"
+version = "0.1.0"
+edition = "2021"
+description = "MQTT v5 transport adapter for the Toni RPC gateway"
+license = "MIT"
+keywords = ["toni", "mqtt", "rpc", "framework", "adapter"]
+categories = ["network-programming"]
+
+[features]
+# Gates tests that need a live MQTT broker (via testcontainers + Docker).
+integration = []
+
+[dependencies]
+toni = { path = "../toni" }
+rumqttc = "0.25"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+futures = "0.3"
+
+[dev-dependencies]
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["mosquitto"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
