@@ -65,35 +65,51 @@ impl RpcAdapter for RedisAdapter {
 
             // Retry the initial connect so a slow-starting Redis (container,
             // sidecar) doesn't take down the process — mirrors the NATS
-            // adapter's retry-on-initial-connect posture.
+            // adapter's retry-on-initial-connect posture. The publisher is a
+            // ConnectionManager so reply publishes survive a reconnect on their
+            // own; only the pubsub side is reconnected by hand below.
             let (publisher, mut pubsub) = connect_with_retry(&client, &url).await;
 
-            for pattern in &patterns {
-                pubsub
-                    .subscribe(pattern)
-                    .await
-                    .unwrap_or_else(|e| panic!("[RedisAdapter] failed to subscribe to '{pattern}' — {e}"));
-                tracing::info!(pattern, "RedisAdapter subscribed");
-            }
+            'reconnect: loop {
+                for pattern in &patterns {
+                    if let Err(e) = pubsub.subscribe(pattern).await {
+                        tracing::error!(error = %e, pattern, "RedisAdapter failed to subscribe");
+                    } else {
+                        tracing::info!(pattern, "RedisAdapter subscribed");
+                    }
+                }
 
-            let mut stream = pubsub.on_message();
-
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            break;
+                let mut stream = pubsub.on_message();
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                break 'reconnect;
+                            }
+                        }
+                        msg = stream.next() => {
+                            match msg {
+                                Some(msg) => {
+                                    let callbacks = callbacks.clone();
+                                    let publisher = publisher.clone();
+                                    let channel = msg.get_channel_name().to_string();
+                                    let payload = msg.get_payload::<Vec<u8>>().unwrap_or_default();
+                                    tokio::spawn(handle_message(channel, payload, callbacks, publisher));
+                                }
+                                // The pubsub connection dropped — its stream ends.
+                                // Redis pubsub has no auto-recovery, so reconnect
+                                // and resubscribe by hand.
+                                None => break,
+                            }
                         }
                     }
-                    msg = stream.next() => {
-                        let Some(msg) = msg else { break };
-                        let callbacks = callbacks.clone();
-                        let publisher = publisher.clone();
-                        let channel = msg.get_channel_name().to_string();
-                        let payload = msg.get_payload::<Vec<u8>>().unwrap_or_default();
+                }
 
-                        tokio::spawn(handle_message(channel, payload, callbacks, publisher));
-                    }
+                drop(stream);
+                tracing::warn!("RedisAdapter pubsub disconnected; reconnecting");
+                match reconnect_pubsub(&client, &mut shutdown_rx).await {
+                    Some(ps) => pubsub = ps,
+                    None => break 'reconnect,
                 }
             }
         });
@@ -106,19 +122,22 @@ impl RpcAdapter for RedisAdapter {
 }
 
 /// Open the publish connection and the pubsub connection, retrying for ~10 s
-/// before giving up. Both share the same backoff so a transient outage on
-/// either is tolerated.
+/// before giving up. The publisher is a [`ConnectionManager`], which reconnects
+/// itself; the [`PubSub`] does not and is reconnected by [`reconnect_pubsub`].
+///
+/// [`ConnectionManager`]: redis::aio::ConnectionManager
+/// [`PubSub`]: redis::aio::PubSub
 async fn connect_with_retry(
     client: &redis::Client,
     url: &str,
 ) -> (
-    redis::aio::MultiplexedConnection,
+    redis::aio::ConnectionManager,
     redis::aio::PubSub,
 ) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match (
-            client.get_multiplexed_async_connection().await,
+            client.get_connection_manager().await,
             client.get_async_pubsub().await,
         ) {
             (Ok(publisher), Ok(pubsub)) => return (publisher, pubsub),
@@ -137,11 +156,34 @@ async fn connect_with_retry(
     }
 }
 
+/// Reopen a pubsub connection after the previous one dropped, retrying with
+/// backoff. Returns `None` if shutdown fires while waiting, so the serve loop
+/// can exit instead of reconnecting.
+async fn reconnect_pubsub(
+    client: &redis::Client,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> Option<redis::aio::PubSub> {
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    return None;
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+        }
+        match client.get_async_pubsub().await {
+            Ok(pubsub) => return Some(pubsub),
+            Err(e) => tracing::warn!(error = %e, "RedisAdapter pubsub reconnect failed; retrying"),
+        }
+    }
+}
+
 async fn handle_message(
     channel: String,
     payload: Vec<u8>,
     callbacks: Arc<RpcMessageCallbacks>,
-    mut publisher: redis::aio::MultiplexedConnection,
+    mut publisher: redis::aio::ConnectionManager,
 ) {
     // Our client always wraps the call in an envelope. A payload that doesn't
     // parse as one is a foreign publisher — treat it as fire-and-forget with
