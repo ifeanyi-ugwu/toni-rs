@@ -40,7 +40,7 @@ pub struct RedisClientTransport {
 }
 
 struct Shared {
-    publisher: redis::aio::MultiplexedConnection,
+    publisher: redis::aio::ConnectionManager,
     pending: Pending,
     client_id: String,
     counter: AtomicU64,
@@ -73,8 +73,10 @@ impl RedisClientTransport {
             .get_or_try_init(|| async {
                 let client = redis::Client::open(self.url.as_str())
                     .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+                // ConnectionManager reconnects publishes on its own; only the
+                // reply pubsub needs hand-rolled reconnect (see the router).
                 let publisher = client
-                    .get_multiplexed_async_connection()
+                    .get_connection_manager()
                     .await
                     .map_err(|e| RpcClientError::Transport(e.to_string()))?;
                 let mut pubsub = client
@@ -84,26 +86,47 @@ impl RedisClientTransport {
 
                 let client_id = make_client_id();
                 let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+                let reply_pattern = format!("toni:rpc:reply:{client_id}:*");
 
                 // Wildcard-subscribe before any send publishes, so a reply can
                 // never arrive ahead of the subscription that routes it.
                 pubsub
-                    .psubscribe(format!("toni:rpc:reply:{client_id}:*"))
+                    .psubscribe(&reply_pattern)
                     .await
                     .map_err(|e| RpcClientError::Transport(e.to_string()))?;
 
                 let router_pending = pending.clone();
+                let router_client = client.clone();
                 let router = tokio::spawn(async move {
-                    let mut stream = pubsub.on_message();
-                    while let Some(msg) = stream.next().await {
-                        let channel = msg.get_channel_name();
-                        let Some(corr_id) = channel.rsplit(':').next() else {
-                            continue;
-                        };
-                        let tx = router_pending.lock().unwrap().remove(corr_id);
-                        if let Some(tx) = tx {
-                            let _ = tx.send(msg.get_payload::<Vec<u8>>().unwrap_or_default());
+                    let mut pubsub = pubsub;
+                    loop {
+                        let mut stream = pubsub.on_message();
+                        while let Some(msg) = stream.next().await {
+                            let channel = msg.get_channel_name();
+                            let Some(corr_id) = channel.rsplit(':').next() else {
+                                continue;
+                            };
+                            let tx = router_pending.lock().unwrap().remove(corr_id);
+                            if let Some(tx) = tx {
+                                let _ = tx.send(msg.get_payload::<Vec<u8>>().unwrap_or_default());
+                            }
                         }
+
+                        // Reply connection dropped — Redis pubsub has no
+                        // auto-recovery, so reopen and re-psubscribe before
+                        // resuming, or replies would stop routing.
+                        drop(stream);
+                        tracing::warn!("RedisClientTransport reply stream ended; reconnecting");
+                        pubsub = loop {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            match router_client.get_async_pubsub().await {
+                                Ok(mut ps) => match ps.psubscribe(&reply_pattern).await {
+                                    Ok(()) => break ps,
+                                    Err(e) => tracing::warn!(error = %e, "reply re-psubscribe failed; retrying"),
+                                },
+                                Err(e) => tracing::warn!(error = %e, "reply reconnect failed; retrying"),
+                            }
+                        };
                     }
                 });
 
