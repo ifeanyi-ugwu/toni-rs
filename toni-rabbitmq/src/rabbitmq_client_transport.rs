@@ -71,10 +71,13 @@ impl RabbitMqClientTransport {
     async fn shared(&self) -> Result<&Shared, RpcClientError> {
         self.shared
             .get_or_try_init(|| async {
-                let conn =
-                    Connection::connect(&self.uri, lapin::ConnectionProperties::default())
-                        .await
-                        .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+                // enable_auto_recover: lapin reconnects after a drop and replays
+                // topology, re-establishing the direct reply-to consumer so
+                // replies resume without manual re-setup.
+                let props = lapin::ConnectionProperties::default().enable_auto_recover();
+                let conn = Connection::connect(&self.uri, props)
+                    .await
+                    .map_err(|e| RpcClientError::Transport(e.to_string()))?;
                 let channel = conn
                     .create_channel()
                     .await

@@ -186,10 +186,15 @@ async fn handle_delivery(
 /// Connect with bounded retry (~10 s) so a slow-starting broker doesn't take
 /// down the process — same posture as the NATS and Redis adapters. lapin's
 /// default `ConnectionProperties` wires the tokio runtime itself.
+///
+/// `enable_auto_recover` makes lapin transparently reconnect after a dropped
+/// connection and replay topology — re-declaring the queues and resuming the
+/// consumers — so the consume loops keep yielding without manual re-setup.
 async fn connect_with_retry(uri: &str) -> Connection {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        match Connection::connect(uri, lapin::ConnectionProperties::default()).await {
+        let props = lapin::ConnectionProperties::default().enable_auto_recover();
+        match Connection::connect(uri, props).await {
             Ok(conn) => return conn,
             Err(e) => {
                 if std::time::Instant::now() >= deadline {
