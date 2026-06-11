@@ -149,7 +149,12 @@ impl RpcClientTransport for RedisClientTransport {
         Ok(())
     }
 
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError> {
         let shared = self.shared().await?;
 
         let corr_id = shared.counter.fetch_add(1, Ordering::Relaxed).to_string();
@@ -161,7 +166,7 @@ impl RpcClientTransport for RedisClientTransport {
         let envelope = RequestEnvelope {
             data,
             reply_to: Some(reply_to),
-            metadata: HashMap::new(),
+            metadata,
         };
         let payload = serde_json::to_vec(&envelope)
             .map_err(|e| RpcClientError::Transport(e.to_string()))?;
@@ -190,13 +195,18 @@ impl RpcClientTransport for RedisClientTransport {
         }
     }
 
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError> {
         let shared = self.shared().await?;
 
         let envelope = RequestEnvelope {
             data,
             reply_to: None,
-            metadata: HashMap::new(),
+            metadata,
         };
         let payload = serde_json::to_vec(&envelope)
             .map_err(|e| RpcClientError::Transport(e.to_string()))?;

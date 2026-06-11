@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use crate::rpc::{RpcClientError, RpcData};
@@ -9,6 +11,11 @@ use crate::rpc::{RpcClientError, RpcData};
 ///
 /// - [`send`] — request-response: waits for a reply
 /// - [`emit`] — fire-and-forget: returns once the message is dispatched
+///
+/// Both carry per-call `metadata` — a flat string map the transport places on
+/// its native side channel (NATS/AMQP/MQTT headers, or the request envelope for
+/// Redis/TCP/UDP) and the server surfaces as `RpcContext` metadata. The map is
+/// empty for the plain `RpcClient::send`/`emit` shorthands.
 ///
 /// [`send`]: RpcClientTransport::send
 /// [`emit`]: RpcClientTransport::emit
@@ -38,8 +45,18 @@ pub trait RpcClientTransport: Send + Sync + 'static {
     }
 
     /// Send a message and wait for the remote reply (request-response).
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError>;
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError>;
 
     /// Send a message without waiting for a reply (fire-and-forget).
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError>;
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError>;
 }

@@ -300,7 +300,7 @@ async fn udp_client_retries_recover_from_packet_loss() {
     let no_retry = toni_udp::UdpClientTransport::new("127.0.0.1", port_no_retry)
         .with_timeout(Duration::from_millis(80));
     let err = no_retry
-        .send("noop", RpcData::Json(serde_json::json!("hi")))
+        .send("noop", RpcData::Json(serde_json::json!("hi")), Default::default())
         .await
         .expect_err("first datagram dropped, no retries → Timeout");
     assert!(matches!(err, toni::RpcClientError::Timeout));
@@ -312,7 +312,7 @@ async fn udp_client_retries_recover_from_packet_loss() {
         .with_retries(1)
         .with_retry_backoff(Duration::from_millis(20));
     let reply = retry
-        .send("noop", RpcData::Json(serde_json::json!("hi")))
+        .send("noop", RpcData::Json(serde_json::json!("hi")), Default::default())
         .await
         .expect("retry should recover");
     match reply {
@@ -331,7 +331,7 @@ async fn udp_client_transport_round_trips_and_rejects_oversized() {
         .with_timeout(Duration::from_millis(500));
 
     let reply = transport
-        .send("udp.echo", RpcData::Json(serde_json::json!({"x": 1})))
+        .send("udp.echo", RpcData::Json(serde_json::json!({"x": 1})), Default::default())
         .await
         .expect("UdpClientTransport.send should succeed");
     match reply {
@@ -342,7 +342,7 @@ async fn udp_client_transport_round_trips_and_rejects_oversized() {
     // Oversized payload: > 65 507 bytes should be rejected up-front.
     let huge = serde_json::Value::String("a".repeat(70_000));
     let err = transport
-        .send("udp.echo", RpcData::Json(huge))
+        .send("udp.echo", RpcData::Json(huge), Default::default())
         .await
         .expect_err("oversized payload should fail");
     match err {

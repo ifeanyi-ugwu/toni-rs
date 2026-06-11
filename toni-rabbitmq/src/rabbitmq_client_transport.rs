@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
-use lapin::types::FieldTable;
+use lapin::types::{AMQPValue, FieldTable};
 use lapin::{BasicProperties, Channel, Connection};
 use tokio::sync::{oneshot, OnceCell};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
@@ -132,7 +132,12 @@ impl RpcClientTransport for RabbitMqClientTransport {
         Ok(())
     }
 
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError> {
         let shared = self.shared().await?;
 
         let corr_id = shared.counter.fetch_add(1, Ordering::Relaxed).to_string();
@@ -141,7 +146,8 @@ impl RpcClientTransport for RabbitMqClientTransport {
 
         let props = BasicProperties::default()
             .with_reply_to(DIRECT_REPLY_TO.into())
-            .with_correlation_id(corr_id.clone().into());
+            .with_correlation_id(corr_id.clone().into())
+            .with_headers(metadata_to_headers(metadata));
 
         if let Err(e) = shared
             .channel
@@ -170,8 +176,14 @@ impl RpcClientTransport for RabbitMqClientTransport {
         }
     }
 
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError> {
         let shared = self.shared().await?;
+        let props = BasicProperties::default().with_headers(metadata_to_headers(metadata));
         shared
             .channel
             .basic_publish(
@@ -179,10 +191,18 @@ impl RpcClientTransport for RabbitMqClientTransport {
                 pattern.into(),
                 BasicPublishOptions::default(),
                 &data_to_bytes(data),
-                BasicProperties::default(),
+                props,
             )
             .await
             .map(|_| ())
             .map_err(|e| RpcClientError::Transport(e.to_string()))
     }
+}
+
+fn metadata_to_headers(metadata: HashMap<String, String>) -> FieldTable {
+    let mut headers = FieldTable::default();
+    for (key, value) in metadata {
+        headers.insert(key.into(), AMQPValue::LongString(value.into()));
+    }
+    headers
 }

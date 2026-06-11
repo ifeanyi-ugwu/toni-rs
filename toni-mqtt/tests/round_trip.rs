@@ -3,9 +3,8 @@
 //!
 //! - `send` round-trips a request via response_topic / correlation_data
 //! - `emit` reaches a fire-and-forget handler with no response topic
-//! - MQTT v5 user properties on a request reach the handler's `RpcContext`
-//!   metadata (a raw rumqttc publish stands in for a metadata-setting caller,
-//!   since the client `send` API doesn't expose user properties yet)
+//! - metadata set via `RpcClient::request().metadata(..)` rides v5 user
+//!   properties and reaches the handler's `RpcContext`
 #![cfg(feature = "integration")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,55 +111,16 @@ async fn mqtt_rpc_send_emit_and_metadata() {
             }
             assert!(fired, "emit should reach the fire-and-forget handler exactly once");
 
-            let trace = raw_request_with_user_property(&host, port, "meta.echo", "abc123").await;
-            assert_eq!(trace, "abc123", "v5 user property must reach the handler");
+            // Metadata set via the client builder rides v5 user properties and
+            // surfaces in the handler's RpcContext.
+            let resp = client
+                .request("meta.echo")
+                .metadata("trace", "abc123")
+                .send(RpcData::json(serde_json::json!({})))
+                .await
+                .expect("metadata request should round-trip");
+            let trace = resp.as_json().and_then(|v| v["trace"].as_str());
+            assert_eq!(trace, Some("abc123"), "client metadata must reach the handler");
         })
         .await;
-}
-
-/// Publishes a request carrying a v5 user property and response_topic/
-/// correlation_data, returning the handler's echoed `trace`.
-async fn raw_request_with_user_property(host: &str, port: u16, pattern: &str, trace: &str) -> String {
-    use rumqttc::v5::mqttbytes::v5::{Packet, PublishProperties};
-    use rumqttc::v5::mqttbytes::QoS;
-    use rumqttc::v5::{AsyncClient, Event, MqttOptions};
-
-    let mut opts = MqttOptions::new("toni-mqtt-raw-test", host, port);
-    opts.set_keep_alive(Duration::from_secs(5));
-    let (client, mut eventloop) = AsyncClient::new(opts, 16);
-
-    let reply_topic = "toni/rpc/reply/raw-test";
-    client.subscribe(reply_topic, QoS::AtLeastOnce).await.unwrap();
-
-    // Drive the loop until the subscription is acked before publishing.
-    loop {
-        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop.poll().await {
-            break;
-        }
-    }
-
-    let props = PublishProperties {
-        response_topic: Some(reply_topic.to_string()),
-        correlation_data: Some("raw-1".as_bytes().to_vec().into()),
-        user_properties: vec![("trace".to_string(), trace.to_string())],
-        ..Default::default()
-    };
-    client
-        .publish_with_properties(pattern, QoS::AtLeastOnce, false, b"{}".to_vec(), props)
-        .await
-        .unwrap();
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return "timeout".to_string();
-        }
-        if let Ok(Event::Incoming(Packet::Publish(p))) = eventloop.poll().await {
-            let v: serde_json::Value = serde_json::from_slice(&p.payload).unwrap();
-            return v["response"]["trace"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-        }
-    }
 }

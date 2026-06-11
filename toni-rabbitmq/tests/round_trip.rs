@@ -3,9 +3,8 @@
 //!
 //! - `send` round-trips a request via direct reply-to
 //! - `emit` reaches a fire-and-forget handler with no reply queue
-//! - AMQP headers on a request reach the handler's `RpcContext` metadata
-//!   (a raw lapin publish stands in for a metadata-setting caller, since the
-//!   client `send` API doesn't expose headers yet)
+//! - metadata set via `RpcClient::request().metadata(..)` rides AMQP headers
+//!   and reaches the handler's `RpcContext`
 #![cfg(feature = "integration")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,60 +106,16 @@ async fn rabbitmq_rpc_send_emit_and_metadata() {
             }
             assert!(fired, "emit should reach the fire-and-forget handler exactly once");
 
-            let trace = raw_request_with_header(&uri, "meta.echo", "abc123").await;
-            assert_eq!(trace, "abc123", "AMQP header metadata must reach the handler");
+            // Metadata set via the client builder rides AMQP headers and
+            // surfaces in the handler's RpcContext.
+            let resp = client
+                .request("meta.echo")
+                .metadata("trace", "abc123")
+                .send(RpcData::json(serde_json::json!({})))
+                .await
+                .expect("metadata request should round-trip");
+            let trace = resp.as_json().and_then(|v| v["trace"].as_str());
+            assert_eq!(trace, Some("abc123"), "client metadata must reach the handler");
         })
         .await;
-}
-
-/// Publishes a request carrying an AMQP header and direct reply-to, returning
-/// the handler's echoed `trace` header value.
-async fn raw_request_with_header(uri: &str, pattern: &str, trace: &str) -> String {
-    use futures::StreamExt;
-    use lapin::options::{BasicConsumeOptions, BasicPublishOptions};
-    use lapin::types::{AMQPValue, FieldTable};
-    use lapin::{BasicProperties, Connection, ConnectionProperties};
-
-    let conn = Connection::connect(uri, ConnectionProperties::default())
-        .await
-        .unwrap();
-    let channel = conn.create_channel().await.unwrap();
-
-    let mut consumer = channel
-        .basic_consume(
-            "amq.rabbitmq.reply-to".into(),
-            "raw-reply".into(),
-            BasicConsumeOptions {
-                no_ack: true,
-                ..Default::default()
-            },
-            FieldTable::default(),
-        )
-        .await
-        .unwrap();
-
-    let mut headers = FieldTable::default();
-    headers.insert("trace".into(), AMQPValue::LongString(trace.into()));
-
-    channel
-        .basic_publish(
-            "".into(),
-            pattern.into(),
-            BasicPublishOptions::default(),
-            b"{}",
-            BasicProperties::default()
-                .with_reply_to("amq.rabbitmq.reply-to".into())
-                .with_correlation_id("raw-1".into())
-                .with_headers(headers),
-        )
-        .await
-        .unwrap();
-
-    let delivery = tokio::time::timeout(Duration::from_secs(2), consumer.next())
-        .await
-        .expect("reply should arrive")
-        .expect("stream should yield")
-        .expect("delivery ok");
-    let v: serde_json::Value = serde_json::from_slice(&delivery.data).unwrap();
-    v["response"]["trace"].as_str().unwrap_or_default().to_string()
 }
