@@ -82,19 +82,28 @@ impl MqttClientTransport {
                 opts.set_keep_alive(Duration::from_secs(5));
                 let (client, mut eventloop) = AsyncClient::new(opts, 64);
 
-                client
-                    .subscribe(&reply_topic, QoS::AtLeastOnce)
-                    .await
-                    .map_err(|e| RpcClientError::Transport(e.to_string()))?;
-
                 let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
                 let router_pending = pending.clone();
+                let router_client = client.clone();
+                let router_reply_topic = reply_topic.clone();
                 let (ready_tx, ready_rx) = oneshot::channel::<()>();
 
                 let poll = tokio::spawn(async move {
                     let mut ready_tx = Some(ready_tx);
                     loop {
                         match eventloop.poll().await {
+                            // Subscribe on every connect: rumqttc reconnects the
+                            // socket after a drop but does not replay subscriptions,
+                            // so the reply route must be re-established or replies
+                            // stop arriving after a reconnect.
+                            Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                                if let Err(e) = router_client
+                                    .subscribe(&router_reply_topic, QoS::AtLeastOnce)
+                                    .await
+                                {
+                                    tracing::error!(error = %e, "MqttClientTransport failed to subscribe reply topic");
+                                }
+                            }
                             // Reply subscription is live — unblock the first send.
                             Ok(Event::Incoming(Packet::SubAck(_))) => {
                                 if let Some(tx) = ready_tx.take() {
