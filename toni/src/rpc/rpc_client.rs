@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapter::RpcClientTransport;
@@ -57,21 +58,51 @@ impl RpcClient {
     }
 
     /// Send a message and wait for the remote reply (request-response).
+    ///
+    /// Carries no metadata. Use [`request`](Self::request) to attach per-call
+    /// metadata.
     pub async fn send(
         &self,
         pattern: impl AsRef<str>,
         data: RpcData,
     ) -> Result<RpcData, RpcClientError> {
-        self.transport.send(pattern.as_ref(), data).await
+        self.transport
+            .send(pattern.as_ref(), data, HashMap::new())
+            .await
     }
 
     /// Send a message without waiting for a reply (fire-and-forget).
+    ///
+    /// Carries no metadata. Use [`request`](Self::request) to attach per-call
+    /// metadata.
     pub async fn emit(
         &self,
         pattern: impl AsRef<str>,
         data: RpcData,
     ) -> Result<(), RpcClientError> {
-        self.transport.emit(pattern.as_ref(), data).await
+        self.transport
+            .emit(pattern.as_ref(), data, HashMap::new())
+            .await
+    }
+
+    /// Begin a request with per-call metadata (auth tokens, trace ids, tenant,
+    /// etc.). Chain [`metadata`](RpcRequest::metadata), then finish with
+    /// [`send`](RpcRequest::send) / [`emit`](RpcRequest::emit) (or their typed
+    /// `_json` variants).
+    ///
+    /// ```ignore
+    /// client.request("inventory.restock")
+    ///     .metadata("trace-id", trace_id)
+    ///     .metadata("tenant", tenant)
+    ///     .send(RpcData::json(payload))
+    ///     .await?;
+    /// ```
+    pub fn request(&self, pattern: impl Into<String>) -> RpcRequest<'_> {
+        RpcRequest {
+            client: self,
+            pattern: pattern.into(),
+            metadata: HashMap::new(),
+        }
     }
 
     /// Typed request-response: serializes `data` to JSON, sends, and deserializes the reply.
@@ -88,7 +119,10 @@ impl RpcClient {
     {
         let payload =
             RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
-        let reply = self.transport.send(pattern.as_ref(), payload).await?;
+        let reply = self
+            .transport
+            .send(pattern.as_ref(), payload, HashMap::new())
+            .await?;
         reply
             .parse::<R>()
             .map_err(|e| RpcClientError::Transport(e.to_string()))
@@ -124,7 +158,74 @@ impl RpcClient {
     {
         let payload =
             RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
-        self.transport.emit(pattern.as_ref(), payload).await
+        self.transport
+            .emit(pattern.as_ref(), payload, HashMap::new())
+            .await
+    }
+}
+
+/// A pending RPC call accumulating per-call metadata before dispatch.
+///
+/// Built by [`RpcClient::request`]; finish with [`send`](Self::send) /
+/// [`emit`](Self::emit) or their typed `_json` variants.
+pub struct RpcRequest<'a> {
+    client: &'a RpcClient,
+    pattern: String,
+    metadata: HashMap<String, String>,
+}
+
+impl RpcRequest<'_> {
+    /// Attach one metadata entry. Chainable; a repeated key overwrites.
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Dispatch and await the remote reply (request-response).
+    pub async fn send(self, data: RpcData) -> Result<RpcData, RpcClientError> {
+        self.client
+            .transport
+            .send(&self.pattern, data, self.metadata)
+            .await
+    }
+
+    /// Dispatch without waiting for a reply (fire-and-forget).
+    pub async fn emit(self, data: RpcData) -> Result<(), RpcClientError> {
+        self.client
+            .transport
+            .emit(&self.pattern, data, self.metadata)
+            .await
+    }
+
+    /// Typed request-response: serializes `data`, sends, deserializes the reply.
+    pub async fn send_json<T, R>(self, data: &T) -> Result<R, RpcClientError>
+    where
+        T: serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        let payload =
+            RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let reply = self
+            .client
+            .transport
+            .send(&self.pattern, payload, self.metadata)
+            .await?;
+        reply
+            .parse::<R>()
+            .map_err(|e| RpcClientError::Transport(e.to_string()))
+    }
+
+    /// Typed fire-and-forget: serializes `data` and emits.
+    pub async fn emit_json<T>(self, data: &T) -> Result<(), RpcClientError>
+    where
+        T: serde::Serialize,
+    {
+        let payload =
+            RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        self.client
+            .transport
+            .emit(&self.pattern, payload, self.metadata)
+            .await
     }
 }
 

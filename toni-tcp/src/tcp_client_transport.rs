@@ -174,18 +174,26 @@ impl RpcClientTransport for TcpClientTransport {
         Ok(())
     }
 
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError> {
         let inner = self.get_or_connect().await?;
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed).to_string();
         let (tx, rx) = oneshot::channel();
 
         inner.pending.lock().await.insert(id.clone(), tx);
 
-        let msg = serde_json::json!({
+        let mut msg = serde_json::json!({
             "pattern": pattern,
             "data": data_to_json(data),
             "id": id,
         });
+        if !metadata.is_empty() {
+            msg["metadata"] = serde_json::json!(metadata);
+        }
         let mut frame = msg.to_string();
         frame.push('\n');
 
@@ -207,14 +215,22 @@ impl RpcClientTransport for TcpClientTransport {
         }
     }
 
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError> {
         let inner = self.get_or_connect().await?;
 
         // No id field — server sends no reply.
-        let msg = serde_json::json!({
+        let mut msg = serde_json::json!({
             "pattern": pattern,
             "data": data_to_json(data),
         });
+        if !metadata.is_empty() {
+            msg["metadata"] = serde_json::json!(metadata);
+        }
         let mut frame = msg.to_string();
         frame.push('\n');
 

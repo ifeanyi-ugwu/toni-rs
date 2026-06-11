@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -111,27 +112,57 @@ impl RpcClientTransport for NatsClientTransport {
         Ok(())
     }
 
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError> {
         let client = self.get_or_connect().await?;
         let subject = pattern.to_string();
         let payload = data_to_bytes(data);
 
-        let response = tokio::time::timeout(self.timeout, client.request(subject, payload))
+        let request = if metadata.is_empty() {
+            tokio::time::timeout(self.timeout, client.request(subject, payload)).await
+        } else {
+            tokio::time::timeout(
+                self.timeout,
+                client.request_with_headers(subject, to_headers(metadata), payload),
+            )
             .await
+        };
+        let response = request
             .map_err(|_| RpcClientError::Timeout)?
             .map_err(|e| RpcClientError::Transport(e.to_string()))?;
 
         parse_response(&response.payload)
     }
 
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError> {
         let client = self.get_or_connect().await?;
         let subject = pattern.to_string();
         let payload = data_to_bytes(data);
 
-        client
-            .publish(subject, payload)
-            .await
-            .map_err(|e| RpcClientError::Transport(e.to_string()))
+        let result = if metadata.is_empty() {
+            client.publish(subject, payload).await
+        } else {
+            client
+                .publish_with_headers(subject, to_headers(metadata), payload)
+                .await
+        };
+        result.map_err(|e| RpcClientError::Transport(e.to_string()))
     }
+}
+
+fn to_headers(metadata: HashMap<String, String>) -> async_nats::HeaderMap {
+    let mut headers = async_nats::HeaderMap::new();
+    for (key, value) in metadata {
+        headers.insert(key.as_str(), value.as_str());
+    }
+    headers
 }

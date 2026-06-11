@@ -152,7 +152,12 @@ impl RpcClientTransport for MqttClientTransport {
         Ok(())
     }
 
-    async fn send(&self, pattern: &str, data: RpcData) -> Result<RpcData, RpcClientError> {
+    async fn send(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcData, RpcClientError> {
         let shared = self.shared().await?;
 
         let corr_id = shared.counter.fetch_add(1, Ordering::Relaxed).to_string();
@@ -162,6 +167,7 @@ impl RpcClientTransport for MqttClientTransport {
         let props = PublishProperties {
             response_topic: Some(shared.reply_topic.clone()),
             correlation_data: Some(corr_id.clone().into_bytes().into()),
+            user_properties: metadata.into_iter().collect(),
             ..Default::default()
         };
 
@@ -186,11 +192,20 @@ impl RpcClientTransport for MqttClientTransport {
         }
     }
 
-    async fn emit(&self, pattern: &str, data: RpcData) -> Result<(), RpcClientError> {
+    async fn emit(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<(), RpcClientError> {
         let shared = self.shared().await?;
+        let props = PublishProperties {
+            user_properties: metadata.into_iter().collect(),
+            ..Default::default()
+        };
         shared
             .client
-            .publish(pattern, QoS::AtLeastOnce, false, data_to_bytes(data))
+            .publish_with_properties(pattern, QoS::AtLeastOnce, false, data_to_bytes(data), props)
             .await
             .map_err(|e| RpcClientError::Transport(e.to_string()))
     }
