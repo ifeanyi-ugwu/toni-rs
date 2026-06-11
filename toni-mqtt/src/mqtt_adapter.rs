@@ -65,14 +65,6 @@ impl RpcAdapter for MqttAdapter {
             opts.set_keep_alive(Duration::from_secs(5));
             let (client, mut eventloop) = AsyncClient::new(opts, 64);
 
-            // Queued before the loop polls; rumqttc sends them once connected.
-            for pattern in &patterns {
-                if let Err(e) = client.subscribe(pattern, QoS::AtLeastOnce).await {
-                    tracing::error!(error = %e, pattern, "MqttAdapter failed to enqueue subscribe");
-                }
-                tracing::info!(pattern, "MqttAdapter subscribing");
-            }
-
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -83,6 +75,18 @@ impl RpcAdapter for MqttAdapter {
                     }
                     event = eventloop.poll() => {
                         match event {
+                            // Subscribe on every connect, not once up front: rumqttc
+                            // reconnects the socket after a drop but does not replay
+                            // subscriptions, so a reconnect must re-issue them or the
+                            // handler topics go silent.
+                            Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                                for pattern in &patterns {
+                                    if let Err(e) = client.subscribe(pattern, QoS::AtLeastOnce).await {
+                                        tracing::error!(error = %e, pattern, "MqttAdapter failed to subscribe");
+                                    }
+                                    tracing::info!(pattern, "MqttAdapter subscribing");
+                                }
+                            }
                             Ok(Event::Incoming(Packet::Publish(publish))) => {
                                 tokio::spawn(handle_publish(publish, client.clone(), callbacks.clone()));
                             }
