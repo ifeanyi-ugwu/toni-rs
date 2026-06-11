@@ -4,9 +4,8 @@
 //!
 //! - `send` round-trips a request through the reply-router
 //! - `emit` reaches a fire-and-forget handler with no reply channel
-//! - metadata carried in the request envelope reaches the handler's
-//!   `RpcContext` (a raw publish stands in for a metadata-setting caller,
-//!   since the client `send` API doesn't expose metadata yet)
+//! - metadata set via `RpcClient::request().metadata(..)` rides the request
+//!   envelope and reaches the handler's `RpcContext`
 #![cfg(feature = "integration")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,44 +108,16 @@ async fn redis_rpc_send_emit_and_metadata() {
             }
             assert!(fired, "emit should reach the fire-and-forget handler exactly once");
 
-            // Metadata: a raw publish carrying envelope metadata must surface in
-            // the handler's RpcContext.
-            let trace = raw_request_with_metadata(&url, "meta.echo", "abc123").await;
-            assert_eq!(trace, "abc123", "envelope metadata must reach the handler");
+            // Metadata: set via the client builder must surface in the
+            // handler's RpcContext and round-trip back.
+            let resp = client
+                .request("meta.echo")
+                .metadata("trace", "abc123")
+                .send(RpcData::json(serde_json::json!({})))
+                .await
+                .expect("metadata request should round-trip");
+            let trace = resp.as_json().and_then(|v| v["trace"].as_str());
+            assert_eq!(trace, Some("abc123"), "client metadata must reach the handler");
         })
         .await;
-}
-
-/// Publishes a hand-built request envelope (with `metadata`) and waits for the
-/// reply on a one-off subscription, returning the handler's echoed `trace`.
-async fn raw_request_with_metadata(url: &str, pattern: &str, trace: &str) -> String {
-    use futures::StreamExt;
-
-    let client = redis::Client::open(url).unwrap();
-    let mut publisher = client.get_multiplexed_async_connection().await.unwrap();
-    let mut pubsub = client.get_async_pubsub().await.unwrap();
-
-    let reply_to = "test:raw:reply";
-    pubsub.subscribe(reply_to).await.unwrap();
-
-    let envelope = serde_json::json!({
-        "data": { "Json": {} },
-        "reply_to": reply_to,
-        "metadata": { "trace": trace },
-    });
-    redis::cmd("PUBLISH")
-        .arg(pattern)
-        .arg(envelope.to_string())
-        .query_async::<()>(&mut publisher)
-        .await
-        .unwrap();
-
-    let mut stream = pubsub.on_message();
-    let msg = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("reply should arrive")
-        .expect("stream should yield a message");
-    let payload = msg.get_payload::<String>().unwrap();
-    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-    v["response"]["trace"].as_str().unwrap_or_default().to_string()
 }
