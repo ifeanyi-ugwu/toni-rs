@@ -284,7 +284,8 @@ async fn handle_connection(
                     id = ?id,
                     peer = %addr,
                 );
-                let ctx = RpcCallInfo::new(pattern);
+                let mut ctx = RpcCallInfo::new(pattern);
+                ctx.metadata = extract_metadata(&msg);
 
                 // Backpressure: try to claim a permit before spawning. If
                 // the cap is full, reject inline (write is cheap) so the
@@ -397,4 +398,18 @@ async fn handle_connection(
             }
         }
     }
+}
+
+/// Pull the optional `metadata` object from an inbound frame into the flat
+/// string map surfaced as `RpcContext` metadata. Non-string values are skipped.
+fn extract_metadata(msg: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let mut metadata = std::collections::HashMap::new();
+    if let Some(map) = msg.get("metadata").and_then(|m| m.as_object()) {
+        for (key, value) in map {
+            if let Some(s) = value.as_str() {
+                metadata.insert(key.clone(), s.to_string());
+            }
+        }
+    }
+    metadata
 }
