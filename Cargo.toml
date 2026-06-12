@@ -23,6 +23,7 @@ members = [
     "toni-redis-rpc",
     "toni-rabbitmq",
     "toni-mqtt",
+    "toni-kafka",
     "toni-sqlx",
     "toni-mongodb",
     "toni-async-graphql",

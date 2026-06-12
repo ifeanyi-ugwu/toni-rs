@@ -1,0 +1,26 @@
+[package]
+name = "toni-kafka"
+version = "0.1.0"
+edition = "2021"
+description = "Apache Kafka transport adapter for the Toni RPC gateway"
+license = "MIT"
+keywords = ["toni", "kafka", "rpc", "framework", "adapter"]
+categories = ["network-programming"]
+
+[features]
+# Gates tests that need a live Kafka broker (via testcontainers + Docker).
+integration = []
+
+[dependencies]
+toni = { path = "../toni" }
+rdkafka = "0.39"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+futures = "0.3"
+
+[dev-dependencies]
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["kafka"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
