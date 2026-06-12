@@ -845,3 +845,44 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
         Some(PipelineSegment::ResponseRendering),
     );
 }
+
+// ---- Metadata round-trip -----------------------------------------------------
+//
+// Metadata set on the client builder must ride the TCP frame's `metadata`
+// field and surface in the handler's RpcContext.
+
+#[rpc_controller(pub struct TcpMetaController {})]
+impl TcpMetaController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("meta.echo")]
+    async fn meta_echo(&self, _d: RpcData, c: &RpcContext) -> Result<RpcData, RpcError> {
+        let trace = c.get_metadata("trace").unwrap_or("none").to_string();
+        Ok(RpcData::json(serde_json::json!({ "trace": trace })))
+    }
+}
+
+#[module(providers: [TcpMetaController])]
+impl TcpMetaModule {}
+
+#[tokio_localset_test::localset_test]
+async fn tcp_client_metadata_reaches_handler() {
+    use toni::RpcClient;
+
+    let port = start_rpc_server(TcpMetaModule::module_definition()).await;
+    let client = RpcClient::new(toni_tcp::TcpClientTransport::new("127.0.0.1", port));
+
+    let resp = client
+        .request("meta.echo")
+        .metadata("trace", "abc123")
+        .send(RpcData::json(serde_json::json!({})))
+        .await
+        .expect("metadata request should round-trip");
+    assert_eq!(
+        resp.as_json().and_then(|v| v["trace"].as_str()),
+        Some("abc123"),
+        "client metadata must reach the handler over TCP"
+    );
+}

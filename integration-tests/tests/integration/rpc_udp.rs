@@ -530,3 +530,47 @@ async fn udp_backpressure_rejects_excess_and_releases_after_completion() {
     let v: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
     assert_eq!(v["response"], "third");
 }
+
+// ---- Metadata round-trip -----------------------------------------------------
+//
+// Metadata set on the client builder must ride the UDP frame's `metadata`
+// field and surface in the handler's RpcContext.
+
+#[rpc_controller(pub struct UdpMetaController {})]
+impl UdpMetaController {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("meta.echo")]
+    async fn meta_echo(&self, _d: RpcData, c: &RpcContext) -> Result<RpcData, RpcError> {
+        let trace = c.get_metadata("trace").unwrap_or("none").to_string();
+        Ok(RpcData::json(serde_json::json!({ "trace": trace })))
+    }
+}
+
+#[module(providers: [UdpMetaController])]
+impl UdpMetaModule {}
+
+#[tokio_localset_test::localset_test]
+async fn udp_client_metadata_reaches_handler() {
+    use std::time::Duration;
+    use toni::RpcClient;
+
+    let port = start_rpc_server(UdpMetaModule::module_definition()).await;
+    let client = RpcClient::new(
+        toni_udp::UdpClientTransport::new("127.0.0.1", port).with_timeout(Duration::from_millis(500)),
+    );
+
+    let resp = client
+        .request("meta.echo")
+        .metadata("trace", "abc123")
+        .send(RpcData::json(serde_json::json!({})))
+        .await
+        .expect("metadata request should round-trip");
+    assert_eq!(
+        resp.as_json().and_then(|v| v["trace"].as_str()),
+        Some("abc123"),
+        "client metadata must reach the handler over UDP"
+    );
+}
