@@ -6,7 +6,7 @@ use juniper::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use toni::traits_helpers::{Controller, ControllerFactory, Provider};
+use toni::traits_helpers::{Controller, ControllerFactory, Provider, Route};
 use toni::{http_helpers::Body, FxHashMap, HttpMethod, HttpRequest, HttpResponse};
 
 /// GraphQL request payload
@@ -123,15 +123,15 @@ where
     async fn build(
         &self,
         dependencies: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Vec<Arc<Box<dyn Controller>>> {
-        let mut controllers = Vec::new();
-
+    ) -> Arc<dyn Controller> {
         let graphql_service = dependencies
             .get("GraphQLService")
             .expect("GraphQLService not found in dependencies")
             .clone();
 
-        controllers.push(Arc::new(Box::new(GraphQLPostController::<
+        let mut routes: Vec<Arc<dyn Route>> = Vec::new();
+
+        routes.push(Arc::new(GraphQLPostController::<
             Query,
             Mutation,
             Subscription,
@@ -139,18 +139,39 @@ where
             S,
         > {
             path: self.path.clone(),
-            graphql_service: graphql_service.clone(),
+            graphql_service,
             _phantom: std::marker::PhantomData,
-        }) as Box<dyn Controller>));
+        }));
 
         if self.playground_enabled {
-            controllers.push(Arc::new(Box::new(GraphQLPlaygroundController {
+            routes.push(Arc::new(GraphQLPlaygroundController {
                 path: self.path.clone(),
                 playground_html: include_str!("playground.html").to_string(),
-            }) as Box<dyn Controller>));
+            }));
         }
 
-        controllers
+        Arc::new(GraphQLController {
+            token: format!("GraphQLController_{}", self.path),
+            routes,
+        })
+    }
+}
+
+/// The single GraphQL controller: the POST query endpoint and, optionally, the
+/// GET playground endpoint.
+struct GraphQLController {
+    token: String,
+    routes: Vec<Arc<dyn Route>>,
+}
+
+#[async_trait]
+impl Controller for GraphQLController {
+    fn get_token(&self) -> String {
+        self.token.clone()
+    }
+
+    fn routes(&self) -> Vec<Arc<dyn Route>> {
+        self.routes.clone()
     }
 }
 
@@ -185,7 +206,7 @@ where
 }
 
 #[async_trait]
-impl<Query, Mutation, Subscription, Ctx, S> Controller
+impl<Query, Mutation, Subscription, Ctx, S> Route
     for GraphQLPostController<Query, Mutation, Subscription, Ctx, S>
 where
     Query: GraphQLType<S, Context = Ctx::Context>
@@ -210,11 +231,10 @@ where
     Mutation::TypeInfo: Send + Sync,
     Subscription::TypeInfo: Send + Sync,
 {
-    fn get_token(&self) -> String {
-        format!("GraphQLPostController_{}", self.path)
-    }
-
-    async fn execute(&self, req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
+    async fn execute(
+        &self,
+        req: HttpRequest,
+    ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         self.execute_inner(req).await.into()
     }
 
@@ -328,12 +348,11 @@ struct GraphQLPlaygroundController {
 }
 
 #[async_trait]
-impl Controller for GraphQLPlaygroundController {
-    fn get_token(&self) -> String {
-        format!("GraphQLPlaygroundController_{}", self.path)
-    }
-
-    async fn execute(&self, _req: HttpRequest) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
+impl Route for GraphQLPlaygroundController {
+    async fn execute(
+        &self,
+        _req: HttpRequest,
+    ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         HttpResponse {
             status: 200,
             body: Some(Body::text(self.playground_html.clone())),

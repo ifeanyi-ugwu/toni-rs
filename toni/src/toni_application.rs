@@ -666,9 +666,7 @@ impl ToniApplication {
         let modules = container.get_modules_token();
         for module_token in modules {
             if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
+                for controller in module.get_controller_objects() {
                     controller.before_application_shutdown(signal.clone()).await;
                 }
             }
@@ -682,9 +680,7 @@ impl ToniApplication {
         let modules = container.get_modules_token();
         for module_token in modules {
             if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
+                for controller in module.get_controller_objects() {
                     controller.on_module_destroy().await;
                 }
             }
@@ -698,9 +694,7 @@ impl ToniApplication {
         let modules = container.get_modules_token();
         for module_token in modules {
             if let Some(module) = container.get_module_by_token(&module_token) {
-                let controllers = module._get_controllers_instances();
-                for (_token, wrapper) in controllers.iter() {
-                    let controller = wrapper.get_instance();
+                for controller in module.get_controller_objects() {
                     controller.on_application_shutdown(signal.clone()).await;
                 }
             }

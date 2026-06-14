@@ -6,7 +6,9 @@ use super::InstanceWrapper;
 
 use crate::{
     structs_helpers::EnhancerMetadata,
-    traits_helpers::{Controller, ControllerFactory, ModuleMetadata, Provider, ProviderFactory},
+    traits_helpers::{
+        Controller, ControllerFactory, ModuleMetadata, Provider, ProviderFactory, Route,
+    },
 };
 pub struct Module {
     _token: String,
@@ -15,7 +17,10 @@ pub struct Module {
     providers: FxHashMap<String, Box<dyn ProviderFactory>>,
     imports: FxHashSet<String>,
     exports: FxHashSet<String>,
+    /// One per route, the dispatch units the router binds to the adapter.
     controllers_instances: FxHashMap<String, Arc<InstanceWrapper>>,
+    /// One per controller struct, kept for lifecycle hooks (fired once each).
+    controller_objects: Vec<Arc<dyn Controller>>,
     providers_instances: FxHashMap<String, Arc<Box<dyn Provider>>>,
     exports_instances: FxHashSet<String>,
     metadata: Box<dyn ModuleMetadata>,
@@ -31,6 +36,7 @@ impl Module {
             imports: FxHashSet::default(),
             exports: FxHashSet::default(),
             controllers_instances: FxHashMap::default(),
+            controller_objects: Vec::new(),
             providers_instances: FxHashMap::default(),
             exports_instances: FxHashSet::default(),
             metadata,
@@ -54,22 +60,31 @@ impl Module {
         self.exports.insert(provider_token);
     }
 
-    pub fn add_controller_instance(
+    /// Keep the controller instance for lifecycle-hook dispatch (one per struct).
+    pub fn add_controller_object(&mut self, controller: Arc<dyn Controller>) {
+        self.controller_objects.push(controller);
+    }
+
+    /// Register one route's dispatch unit. Keyed per controller + method + path so
+    /// routes from different controllers never collide in the map.
+    pub fn add_route_instance(
         &mut self,
-        controller: Arc<Box<dyn Controller>>,
+        controller_token: &str,
+        route: Arc<dyn Route>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
         error_observers: Vec<Arc<dyn crate::traits_helpers::ErrorObserver>>,
     ) {
-        let token = controller.get_token();
-        let instance_wrapper = InstanceWrapper::new(
-            controller,
-            enhancer_metadata,
-            global_enhancers,
-            error_observers,
+        let key = format!(
+            "{}::{} {}",
+            controller_token,
+            route.get_method().as_str(),
+            route.get_path()
         );
+        let instance_wrapper =
+            InstanceWrapper::new(route, enhancer_metadata, global_enhancers, error_observers);
         self.controllers_instances
-            .insert(token, Arc::new(instance_wrapper));
+            .insert(key, Arc::new(instance_wrapper));
     }
 
     pub fn add_provider_instance(&mut self, provider: Arc<Box<dyn Provider>>) {
@@ -148,5 +163,10 @@ impl Module {
 
     pub fn _take_controllers_instances(&mut self) -> FxHashMap<String, Arc<InstanceWrapper>> {
         std::mem::take(&mut self.controllers_instances)
+    }
+
+    /// The controller instances, one per struct, for lifecycle-hook dispatch.
+    pub fn get_controller_objects(&self) -> &[Arc<dyn Controller>] {
+        &self.controller_objects
     }
 }

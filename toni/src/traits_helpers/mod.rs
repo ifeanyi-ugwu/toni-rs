@@ -20,7 +20,9 @@ pub use self::provider::{
 };
 
 mod controller;
-pub use self::controller::{Controller, ControllerEnhancers, ControllerFactory};
+pub use self::controller::{
+    Controller, ControllerEnhancers, ControllerFactory, ControllerInstance, Route,
+};
 
 mod interceptor;
 pub use self::interceptor::{Interceptor, InterceptorNext};

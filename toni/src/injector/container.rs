@@ -396,10 +396,24 @@ impl ToniContainer {
         Ok(())
     }
 
-    pub fn add_controller_instance(
+    pub fn add_controller_object(
         &mut self,
         module_ref_token: &String,
-        controller_instance: Arc<Box<dyn Controller>>,
+        controller: Arc<dyn Controller>,
+    ) -> Result<()> {
+        let module_ref = self
+            .modules
+            .get_mut(module_ref_token)
+            .ok_or_else(|| anyhow!("Module not found"))?;
+        module_ref.add_controller_object(controller);
+        Ok(())
+    }
+
+    pub fn add_route_instance(
+        &mut self,
+        module_ref_token: &String,
+        controller_token: &str,
+        route: Arc<dyn crate::traits_helpers::Route>,
         enhancer_metadata: EnhancerMetadata,
     ) -> Result<()> {
         let global_enhancers = self.get_global_enhancers();
@@ -408,8 +422,9 @@ impl ToniContainer {
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_controller_instance(
-            controller_instance,
+        module_ref.add_route_instance(
+            controller_token,
+            route,
             enhancer_metadata,
             global_enhancers,
             error_observers,
