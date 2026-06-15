@@ -11,8 +11,8 @@ use crate::{
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry,
-        HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe,
+        ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry,
+        HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe, Route,
     },
 };
 use futures::FutureExt;
@@ -21,7 +21,7 @@ use std::panic::AssertUnwindSafe;
 /// The next step in the interceptor chain after factory entries are resolved.
 struct ChainNext {
     interceptors: Vec<Arc<dyn Interceptor<HttpContext>>>,
-    instance: Arc<Box<dyn Controller>>,
+    instance: Arc<dyn Route>,
     pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
     error_handlers: Vec<HttpErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
@@ -45,7 +45,7 @@ impl InterceptorNext<HttpContext> for ChainNext {
 }
 
 pub struct InstanceWrapper {
-    instance: Arc<Box<dyn Controller>>,
+    instance: Arc<dyn Route>,
     guards: Vec<HttpGuardEntry>,
     interceptors: Vec<HttpInterceptorEntry>,
     pipes: Vec<HttpPipeEntry>,
@@ -57,7 +57,7 @@ pub struct InstanceWrapper {
 
 impl InstanceWrapper {
     pub fn new(
-        instance: Arc<Box<dyn Controller>>,
+        instance: Arc<dyn Route>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
@@ -105,10 +105,6 @@ impl InstanceWrapper {
         for m in middleware {
             self.middleware_chain.use_middleware(m);
         }
-    }
-
-    pub fn get_instance(&self) -> Arc<Box<dyn Controller>> {
-        self.instance.clone()
     }
 
     pub async fn handle_request(&self, req: HttpRequest) -> HttpResponse {
@@ -254,7 +250,7 @@ impl InstanceWrapper {
 
     async fn execute_controller_logic(
         req: HttpRequest,
-        instance: Arc<Box<dyn Controller>>,
+        instance: Arc<dyn Route>,
         guards: Vec<HttpGuardEntry>,
         interceptors: Vec<HttpInterceptorEntry>,
         pipes: Vec<HttpPipeEntry>,
@@ -454,7 +450,7 @@ impl InstanceWrapper {
     async fn execute_with_interceptors(
         context: &mut HttpContext,
         interceptors: &[Arc<dyn Interceptor<HttpContext>>],
-        instance: &Arc<Box<dyn Controller>>,
+        instance: &Arc<dyn Route>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
@@ -523,7 +519,7 @@ impl InstanceWrapper {
     /// and `HttpError::to_response` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &mut HttpContext,
-        instance: &Arc<Box<dyn Controller>>,
+        instance: &Arc<dyn Route>,
         pipes: &[Arc<dyn Pipe<HttpContext>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -32,9 +33,22 @@ pub struct ControllerEnhancers {
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }
 
+/// How a controller's instance is held for the lifetime of its routes.
+///
+/// `Singleton` carries the instance built once at startup; every route shares it.
+/// `Request` carries the resolved dependency map and the controller is rebuilt on
+/// each request — used when an (implicit or explicit) singleton controller depends
+/// on request-scoped providers, or when the controller is explicitly request-scoped.
+pub enum ControllerInstance {
+    Singleton(Arc<dyn Any + Send + Sync>),
+    Request(FxHashMap<String, Arc<Box<dyn Provider>>>),
+}
+
+/// One dispatchable route: the handler plus the routing facts and enhancers the
+/// dispatcher needs to register and run it. A `Controller` yields one `Route` per
+/// handler method.
 #[async_trait]
-pub trait Controller: Send + Sync {
-    fn get_token(&self) -> String;
+pub trait Route: Send + Sync {
     /// Run the user handler and return either the rendered success response
     /// or the user's typed error preserved for the dispatcher's observer +
     /// chain pipeline.
@@ -52,30 +66,36 @@ pub trait Controller: Send + Sync {
     }
 
     fn get_body_dto(&self, _req: &RequestPart) -> Option<Box<dyn Validatable>>;
+}
+
+/// A controller: one DI instance exposing its routes and lifecycle hooks.
+///
+/// Built once per controller struct by its [`ControllerFactory`]. `routes()` yields
+/// one [`Route`] per handler method; the lifecycle hooks fire once per controller,
+/// not once per route.
+#[async_trait]
+pub trait Controller: Send + Sync {
+    fn get_token(&self) -> String;
+    fn routes(&self) -> Vec<Arc<dyn Route>>;
 
     // Lifecycle Hooks
 
-    /// Returns the controller struct's type name, used to deduplicate lifecycle hook calls
-    /// across per-route wrapper structs that share the same underlying controller instance.
-    /// Returns an empty string for wrappers that have no lifecycle hooks.
-    fn get_controller_type_name(&self) -> &'static str {
-        ""
+    async fn on_module_init(&self) -> crate::InitResult {
+        Ok(())
     }
-
-    async fn on_module_init(&self) -> crate::InitResult { Ok(()) }
-    async fn on_application_bootstrap(&self) -> crate::InitResult { Ok(()) }
+    async fn on_application_bootstrap(&self) -> crate::InitResult {
+        Ok(())
+    }
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_module_destroy(&self) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
 }
+
 #[async_trait]
 pub trait ControllerFactory {
     fn get_token(&self) -> String;
     fn get_dependencies(&self) -> Vec<String> {
         vec![]
     }
-    async fn build(
-        &self,
-        deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Vec<Arc<Box<dyn Controller>>>;
+    async fn build(&self, deps: FxHashMap<String, Arc<Box<dyn Provider>>>) -> Arc<dyn Controller>;
 }

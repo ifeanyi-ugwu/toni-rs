@@ -14,6 +14,7 @@ use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable, Provider,
+        Route,
     },
 };
 
@@ -344,8 +345,8 @@ impl ToniInstanceLoader {
                     .into_iter()
                     .map(|(k, inj)| (k, inj.instance))
                     .collect();
-                let mut built = controller_factory.build(resolved_dependencies).await;
-                instances.append(&mut built);
+                let built = controller_factory.build(resolved_dependencies).await;
+                instances.push(built);
             }
             instances
         };
@@ -356,25 +357,40 @@ impl ToniInstanceLoader {
     fn add_controllers_instances(
         &self,
         module_token: String,
-        controllers_instances: Vec<Arc<Box<dyn Controller>>>,
+        controllers: Vec<Arc<dyn Controller>>,
     ) -> Result<()> {
-        // Phase A: resolve enhancers under an immutable borrow.
-        let resolved: Vec<(Arc<Box<dyn Controller>>, EnhancerMetadata)> = controllers_instances
+        // Phase A: expand each controller into its routes and resolve per-route
+        // enhancers under an immutable borrow.
+        type ResolvedController = (Arc<dyn Controller>, Vec<(Arc<dyn Route>, EnhancerMetadata)>);
+        let resolved: Vec<ResolvedController> = controllers
             .into_iter()
-            .map(|ctrl| {
-                let meta = self.resolve_enhancers_from_tokens(&ctrl)?;
-                Ok((ctrl, meta))
+            .map(|controller| {
+                let routes = controller
+                    .routes()
+                    .into_iter()
+                    .map(|route| {
+                        let meta = self.resolve_enhancers_from_tokens(&route)?;
+                        Ok((route, meta))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((controller, routes))
             })
             .collect::<Result<_>>()?;
 
-        // Phase B: add instances under a mutable borrow.
+        // Phase B: store the controller (for lifecycle) and its route dispatch
+        // units under a mutable borrow.
         let mut container_mut = self.container.borrow_mut();
-        for (controller_instance, enhancer_metadata) in resolved {
-            container_mut.add_controller_instance(
-                &module_token,
-                controller_instance,
-                enhancer_metadata,
-            )?;
+        for (controller, routes) in resolved {
+            let token = controller.get_token();
+            container_mut.add_controller_object(&module_token, controller)?;
+            for (route, enhancer_metadata) in routes {
+                container_mut.add_route_instance(
+                    &module_token,
+                    &token,
+                    route,
+                    enhancer_metadata,
+                )?;
+            }
         }
         Ok(())
     }
@@ -395,13 +411,10 @@ impl ToniInstanceLoader {
     /// Both types are collected and combined in order:
     /// - First: DI-resolved enhancers (from tokens)
     /// - Then: Directly instantiated enhancers (from instances)
-    fn resolve_enhancers_from_tokens(
-        &self,
-        controller: &Arc<Box<dyn Controller>>,
-    ) -> Result<EnhancerMetadata> {
+    fn resolve_enhancers_from_tokens(&self, route: &Arc<dyn Route>) -> Result<EnhancerMetadata> {
         let registry = self.container.borrow();
         let registry = registry.get_role_registry();
-        let declared = controller.enhancers();
+        let declared = route.enhancers();
 
         let mut guards: Vec<HttpGuardEntry> = Vec::new();
         for token in declared.guard_tokens {
