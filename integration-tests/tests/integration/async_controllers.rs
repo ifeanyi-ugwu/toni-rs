@@ -1,5 +1,5 @@
 use crate::common::TestServer;
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, Body as ToniBody};
 
 #[injectable]
 pub struct AsyncService;
@@ -15,10 +15,13 @@ impl AsyncService {
     }
 }
 
-#[controller("/async", pub struct AsyncController {
+#[controller("/async")]
+pub struct AsyncController {
     #[inject]
     service: AsyncService,
-})]
+}
+
+#[routes]
 impl AsyncController {
     #[get("/data")]
     async fn get_data(&self) -> ToniBody {

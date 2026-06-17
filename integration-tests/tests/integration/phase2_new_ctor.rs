@@ -10,7 +10,7 @@ use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
 use toni::{
-    controller, get, injectable, module, new, toni_factory::ToniFactory, use_guards,
+    controller, routes, get, injectable, module, new, toni_factory::ToniFactory, use_guards,
     Body as ToniBody,
 };
 
@@ -180,15 +180,11 @@ impl ExplicitInjectServer {
     }
 }
 
-#[derive(Clone)]
+#[controller("/srv")]
 pub struct ApiController;
 
-#[controller("/srv")]
+#[routes]
 impl ApiController {
-    pub fn new() -> Self {
-        Self
-    }
-
     #[get("/guarded")]
     #[use_guards(PortGuard)]
     fn guarded(&self) -> ToniBody {
@@ -198,12 +194,15 @@ impl ApiController {
 
 // Injects the request-scoped #[new] provider as a field (the request-scoped DI path) and echoes its
 // derived port — proving the constructor ran per request, not that a defaulted field was used.
-#[controller("/req", pub struct ReqController {
+#[controller("/req")]
+pub struct ReqController {
     #[inject]
     server: ReqServer,
     #[inject]
     facade: ReqFacade,
-})]
+}
+
+#[routes]
 impl ReqController {
     #[get("/port")]
     fn port(&self) -> ToniBody {

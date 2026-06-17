@@ -62,7 +62,10 @@ impl Middleware for AuthMiddleware {
     }
 }
 
-#[controller("/api", pub struct ApiController;)]
+#[controller("/api")]
+pub struct ApiController;
+
+#[routes]
 impl ApiController {
     #[get("/public")]
     fn public(&self) -> Body {

@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, get, injectable, module, new, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, new, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -27,7 +27,10 @@ impl SingletonService {
 async fn singleton_providers_created_once_across_requests() {
     SINGLETON_COUNTER.store(0, Ordering::SeqCst);
 
-    #[controller("/", pub struct TestController { #[inject] service: SingletonService })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: SingletonService }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -88,7 +91,10 @@ async fn transient_providers_create_unique_instances_per_injection() {
         }
     }
 
-    #[controller("/", pub struct TestController { #[inject] service: MultiService })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: MultiService }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -141,7 +147,10 @@ async fn field_injection_with_inject_attribute() {
         }
     }
 
-    #[controller("/", pub struct TestController { #[inject] service: ServiceWithDeps })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: ServiceWithDeps }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -177,7 +186,10 @@ async fn field_injection_with_default_fallback() {
         }
     }
 
-    #[controller("/", pub struct TestController { #[inject] service: ServiceWithDefault })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: ServiceWithDefault }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -213,7 +225,10 @@ async fn config_service_injection_in_providers() {
         }
     }
 
-    #[controller("/", pub struct TestController { #[inject] service: ServiceWithConfig })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: ServiceWithConfig }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -252,7 +267,10 @@ async fn new_attribute_syntax() {
         }
     }
 
-    #[controller("/", pub struct TestController { #[inject] service: NewSyntaxService })]
+    #[controller("/")]
+    pub struct TestController { #[inject] service: NewSyntaxService }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {

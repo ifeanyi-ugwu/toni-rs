@@ -60,17 +60,17 @@ impl ItemService {
     }
 }
 
-#[controller(
-    "/items",
-    pub struct ItemController {
-        #[inject]
-        service: ItemService,
-        #[inject]
-        health: HealthCheckService,
-        #[inject]
-        indicator: PgHealthIndicator,
-    }
-)]
+#[controller("/items")]
+pub struct ItemController {
+    #[inject]
+    service: ItemService,
+    #[inject]
+    health: HealthCheckService,
+    #[inject]
+    indicator: PgHealthIndicator,
+}
+
+#[routes]
 impl ItemController {
     #[post("/setup")]
     async fn setup(&self) -> Body {

@@ -1,13 +1,16 @@
 use crate::common::TestServer;
 use serde::Deserialize;
-use toni::{controller, extractors::Json, get, module, post, Body as ToniBody, Request};
+use toni::{controller, routes, extractors::Json, get, module, post, Body as ToniBody, Request};
 
 #[derive(Debug, Deserialize)]
 struct CreateDto {
     name: String,
 }
 
-#[controller("/api", pub struct RequestExtractorController;)]
+#[controller("/api")]
+pub struct RequestExtractorController;
+
+#[routes]
 impl RequestExtractorController {
     #[get("/hello")]
     fn hello(&self) -> ToniBody {

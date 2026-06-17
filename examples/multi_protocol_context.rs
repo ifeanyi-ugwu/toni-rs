@@ -120,7 +120,10 @@ impl Interceptor<WsContext> for LoggingInterceptor {
 
 // ---- HTTP controller --------------------------------------------------------
 
-#[controller("/api", pub struct OrdersHttp {})]
+#[controller("/api")]
+pub struct OrdersHttp {}
+
+#[routes]
 #[use_guards(UniversalAuthGuard)]
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersHttp {

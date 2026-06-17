@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use serial_test::serial;
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -73,12 +73,13 @@ impl UserService {
 }
 
 #[controller(
-    "/users",
-    pub struct UserController {
+    "/users")]
+pub struct UserController {
         #[inject]
         user_service: UserService,
     }
-)]
+
+#[routes]
 impl UserController {
     #[get("/{id}")]
     fn get_user(&self) -> ToniBody {
@@ -121,12 +122,13 @@ impl OrderService {
 }
 
 #[controller(
-    "/orders",
-    pub struct OrderController {
+    "/orders")]
+pub struct OrderController {
         #[inject]
         order_service: OrderService,
     }
-)]
+
+#[routes]
 impl OrderController {
     #[get("/create")]
     fn create_order(&self) -> ToniBody {
@@ -232,12 +234,13 @@ impl ProductService {
 }
 
 #[controller(
-    "/products",
-    pub struct ProductController {
+    "/products")]
+pub struct ProductController {
         #[inject]
         product_service: ProductService,
     }
-)]
+
+#[routes]
 impl ProductController {
     #[get("/{id}")]
     fn get_product(&self) -> ToniBody {

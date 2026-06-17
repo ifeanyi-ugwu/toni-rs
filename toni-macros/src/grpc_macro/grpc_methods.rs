@@ -24,7 +24,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemImpl, Path, Result, Token, parse2};
 
-use crate::enhancer::enhancer::{create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute};
+use crate::enhancer::enhancer::{
+    create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
+};
 
 struct GrpcMethodsArgs {
     server: Option<Path>,
@@ -80,7 +82,9 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         }
     };
 
-    let server_path = args.server.unwrap_or_else(|| infer_server_path(&trait_path));
+    let server_path = args
+        .server
+        .unwrap_or_else(|| infer_server_path(&trait_path));
 
     let token = self_ident.to_string();
     let trait_short = trait_path
@@ -163,9 +167,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                         .filter(|i| !i.token_expr.is_empty())
                         .map(|i| i.token_expr.clone())
                         .collect();
-                    if !guards.is_empty()
-                        || !interceptors.is_empty()
-                        || !error_handlers.is_empty()
+                    if !guards.is_empty() || !interceptors.is_empty() || !error_handlers.is_empty()
                     {
                         handler_enhancer_entries.push((
                             method_name,
@@ -325,10 +327,8 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         })
         .collect();
 
-    let wrapper_other_items: Vec<TokenStream> = other_items
-        .iter()
-        .map(|item| quote! { #item })
-        .collect();
+    let wrapper_other_items: Vec<TokenStream> =
+        other_items.iter().map(|item| quote! { #item }).collect();
 
     let wrapper_def = quote! {
         #[doc(hidden)]
@@ -594,4 +594,3 @@ fn infer_server_path(trait_path: &Path) -> Path {
     }
     path
 }
-

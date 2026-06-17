@@ -2,7 +2,8 @@ use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use toni::{
-    controller, extractors::Json, get, injectable, module, post, Body as ToniBody, Request,
+    controller, routes, extractors::Json, get, injectable, module, new, post, Body as ToniBody,
+    Request,
 };
 use toni_config::{Config, ConfigModule, ConfigService};
 
@@ -24,10 +25,13 @@ async fn async_controller_methods_with_http_server() {
         }
     }
 
-    #[controller("/api", pub struct TestController {
+    #[controller("/api")]
+    pub struct TestController {
         #[inject]
         service: AsyncService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/async")]
         async fn async_endpoint(&self) -> ToniBody {
@@ -55,10 +59,13 @@ async fn async_controller_methods_with_http_server() {
 
 #[tokio_localset_test::localset_test]
 async fn config_service_injection_in_controllers() {
-    #[controller("/api", pub struct TestController {
+    #[controller("/api")]
+    pub struct TestController {
         #[inject]
         config: ConfigService<AppConfig>,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/env")]
         fn get_env(&self) -> ToniBody {
@@ -87,10 +94,14 @@ async fn config_service_injection_in_controllers() {
 async fn singleton_controllers_share_state() {
     static INSTANCE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    #[controller("/api", pub struct SingletonController {
+    #[controller("/api")]
+    pub struct SingletonController {
         instance_id: u32,
-    })]
+    }
+
+    #[routes]
     impl SingletonController {
+        #[new]
         pub fn new() -> Self {
             let id = INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
             Self { instance_id: id }
@@ -124,10 +135,14 @@ async fn singleton_controllers_share_state() {
 async fn request_scoped_controllers_create_per_request() {
     static REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    #[controller("/api", scope = "request", pub struct RequestController {
+    #[controller("/api", scope = "request")]
+    pub struct RequestController {
         request_id: u32,
-    })]
+    }
+
+    #[routes]
     impl RequestController {
+        #[new]
         pub fn new() -> Self {
             let id = REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
             Self { request_id: id }
@@ -166,7 +181,10 @@ async fn request_scoped_controllers_create_per_request() {
 
 #[tokio_localset_test::localset_test]
 async fn optional_request_extractor() {
-    #[controller("/api", pub struct TestController {})]
+    #[controller("/api")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/headers")]
         fn get_headers(&self, req: Request) -> ToniBody {
@@ -198,7 +216,10 @@ async fn json_body_and_request_extraction() {
         email: String,
     }
 
-    #[controller("/api", pub struct TestController {})]
+    #[controller("/api")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[post("/users")]
         fn create_user(&self, Json(user): Json<CreateUser>, req: Request) -> ToniBody {
@@ -251,7 +272,10 @@ async fn request_extensions_pattern() {
         }
     }
 
-    #[controller("/api", pub struct TestController {})]
+    #[controller("/api")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/user")]
         fn get_user(&self, req: Request) -> ToniBody {

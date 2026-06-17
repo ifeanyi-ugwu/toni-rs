@@ -1,13 +1,16 @@
 use crate::common::TestServer;
 use std::time::Duration;
 use toni::{
-    controller, get, injectable, module, new, provider_alias, provider_factory, provider_token,
+    controller, routes, get, injectable, module, new, provider_alias, provider_factory, provider_token,
     provider_value, Body as ToniBody,
 };
 
 #[tokio_localset_test::localset_test]
 async fn provider_value_injects_constant() {
-    #[controller(pub struct TestController {})]
+    #[controller()]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/port")]
         fn get_port(&self) -> ToniBody {
@@ -37,7 +40,10 @@ async fn provider_factory_sync_without_deps() {
 
     static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 
-    #[controller("", pub struct TestController {})]
+    #[controller("")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -87,7 +93,10 @@ async fn provider_factory_sync_with_deps() {
         }
     }
 
-    #[controller("", pub struct TestController {})]
+    #[controller("")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -135,7 +144,10 @@ async fn provider_factory_async_with_deps() {
         }
     }
 
-    #[controller("", pub struct TestController {})]
+    #[controller("")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -199,9 +211,12 @@ async fn provider_alias_creates_alternate_token() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject] verify: VerifyService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -261,9 +276,12 @@ async fn provider_token_for_custom_types() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject] app: AppService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -347,9 +365,12 @@ async fn all_provider_variants_work_together() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject] consumer: AliasTokenConsumer,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {

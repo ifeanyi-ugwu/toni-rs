@@ -103,7 +103,6 @@ fn is_async_expr(expr: &Expr) -> bool {
     }
 }
 
-
 /// Generates the caching provider struct definition and the build() body.
 /// Roles are built inside build() before boxing, so no downcast is ever needed.
 fn generate_caching_provider(

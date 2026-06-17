@@ -21,7 +21,7 @@
 use serde::Serialize;
 use serde_json::json;
 use toni::{
-    async_trait, catch, context::HttpContext, controller, errors::HttpError, get,
+    async_trait, catch, context::HttpContext, controller, routes, errors::HttpError, get,
     http_helpers::Body, injectable, module, post, toni_factory::ToniFactory, traits_helpers::Guard,
     Error, HttpRequest, HttpResponse,
 };
@@ -170,10 +170,13 @@ async fn auth_failure(err: &toni::errors::GuardRejection, _ctx: &HttpContext) ->
 
 // ---- Controllers ------------------------------------------------------------
 
-#[controller("/users", pub struct UserController {
+#[controller("/users")]
+pub struct UserController {
     #[inject]
     service: UserService,
-})]
+}
+
+#[routes]
 impl UserController {
     /// Returning `Result<T, UserError>` — the framework lifts UserError
     /// into HttpError via the `From<E: Error>` blanket and renders the
@@ -218,7 +221,10 @@ impl UserController {
     }
 }
 
-#[controller("/billing", pub struct BillingController {})]
+#[controller("/billing")]
+pub struct BillingController {}
+
+#[routes]
 #[toni_macros::use_error_handlers(render_payment_declined)]
 impl BillingController {
     /// `PaymentDeclined` is a plain `toni::Error`; the registered
@@ -233,7 +239,10 @@ impl BillingController {
     }
 }
 
-#[controller("/admin", pub struct AdminController {})]
+#[controller("/admin")]
+pub struct AdminController {}
+
+#[routes]
 #[use_guards(AuthGuard {})]
 #[toni_macros::use_error_handlers(auth_failure)]
 impl AdminController {

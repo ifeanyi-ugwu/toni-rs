@@ -25,12 +25,9 @@ pub fn derive_app_error(input: TokenStream) -> TokenStream {
             Err(e) => return e.to_compile_error().into(),
         },
         Data::Union(_) => {
-            return syn::Error::new_spanned(
-                &input,
-                "toni::Error cannot be derived on unions",
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new_spanned(&input, "toni::Error cannot be derived on unions")
+                .to_compile_error()
+                .into();
         }
     };
 

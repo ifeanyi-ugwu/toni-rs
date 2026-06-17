@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use toni::{
-    Error, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller,
+    Error, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller, routes,
     errors::{GuardRejection, HttpError},
     get, module, toni_factory::ToniFactory,
     traits_helpers::Guard,
@@ -101,7 +101,10 @@ async fn start_with_catchers(
 async fn catch_handler_intercepts_framework_error() {
     // Guard rejection produces a framework-generated 403 → chain runs →
     // http_catcher claims it.
-    #[controller("/api", pub struct CatchTestController {})]
+    #[controller("/api")]
+    pub struct CatchTestController {}
+
+    #[routes]
     impl CatchTestController {
         #[get("/protected")]
         #[use_guards(DenyGuard {})]
@@ -132,7 +135,10 @@ async fn non_matching_catch_falls_through() {
     // Sanity: a catcher whose target type doesn't match the boxed error must
     // return None so the chain advances. If our downcast were buggy and
     // always matched, this would render "OTHER-CAUGHT" instead of catching.
-    #[controller("/api", pub struct FallthroughController {})]
+    #[controller("/api")]
+    pub struct FallthroughController {}
+
+    #[routes]
     impl FallthroughController {
         #[get("/protected")]
         #[use_guards(DenyGuard {})]

@@ -5,7 +5,7 @@
 //! - Request: Same instance per HTTP request, fresh instance for each request
 //! - Transient: Fresh instance per injection point at construction time
 
-use toni::{controller, get, module, provider_factory, Body as ToniBody};
+use toni::{controller, routes, get, module, provider_factory, Body as ToniBody};
 use uuid::Uuid;
 
 use crate::common::TestServer;
@@ -37,7 +37,8 @@ async fn scope_behavior() {
         }
     }
 
-    #[controller("/request-scoped", scope = "request", pub struct RequestController {
+    #[controller("/request-scoped", scope = "request")]
+    pub struct RequestController {
         #[inject("SINGLETON")]
         singleton1: Counter,
         #[inject("SINGLETON")]
@@ -50,7 +51,9 @@ async fn scope_behavior() {
         transient1: Counter,
         #[inject("TRANSIENT")]
         transient2: Counter,
-    })]
+    }
+
+    #[routes]
     impl RequestController {
         #[get("/get")]
         fn get_value(&self) -> ToniBody {
@@ -66,12 +69,15 @@ async fn scope_behavior() {
         }
     }
 
-    #[controller("/singleton-scoped", pub struct SingletonController {
+    #[controller("/singleton-scoped")]
+    pub struct SingletonController {
         #[inject("TRANSIENT")]
         transient1: Counter,
         #[inject("TRANSIENT")]
         transient2: Counter,
-    })]
+    }
+
+    #[routes]
     impl SingletonController {
         #[get("/get")]
         fn get_value(&self) -> ToniBody {

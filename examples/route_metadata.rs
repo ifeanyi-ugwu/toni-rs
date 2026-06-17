@@ -15,7 +15,7 @@
 use toni::{
     async_trait,
     context::{HandlerContext, HttpContext},
-    controller, get, http_helpers::Body as ToniBody, module, set_metadata,
+    controller, get, http_helpers::Body as ToniBody, module, routes, set_metadata,
     traits_helpers::Guard, use_guards,
 };
 
@@ -97,7 +97,10 @@ impl Guard<HttpContext> for RateLimitGuard {
 // Controller With Metadata
 // ============================================================================
 
-#[controller("/api", pub struct ApiController {})]
+#[controller("/api")]
+pub struct ApiController {}
+
+#[routes]
 #[use_guards(RolesGuard{}, RateLimitGuard{})]
 impl ApiController {
     /// Public health check - no auth required

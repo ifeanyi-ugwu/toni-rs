@@ -1,59 +1,22 @@
-//! Controller Instance Injection Implementation
+//! `#[routes]` impl-side controller codegen.
 //!
-//! Architecture:
-//! 1. User struct with REAL fields (unchanged)
-//! 2. Controller wrapper per handler method that lazily creates instances with dependency resolution
-//! 3. `XControllerFactory` (implements `ControllerFactory`) — builds and returns all controller wrappers
+//! `#[controller("/p")]` on the struct ([controller_attr]) emits the DI bridges
+//! (`__toni_build_from_deps` / `__toni_dependencies` / `__toni_prefix` / `__toni_is_request_scoped`).
+//! `#[routes]` on the impl — this module — scans the handler methods and emits:
 //!
-//! Example transformation:
-//! ```rust,ignore
-//! // User code:
-//! #[controller("/api", pub struct AppController { service: AppService })]
-//! impl AppController {
-//!     #[get("/info")]
-//!     fn get_info(&self, req: HttpRequest) -> ToniBody {
-//!         self.service.get_app_info()
-//!     }
-//! }
+//! 1. one `Route` wrapper per handler method (singleton + request variants),
+//! 2. the `…ControllerObject` (`Controller`) whose `routes()` yields them and whose lifecycle hooks
+//!    delegate to the built instance,
+//! 3. the `…ControllerFactory` whose `build()` resolves scope/elevation at runtime and constructs the
+//!    instance through `Self::__toni_build_from_deps`.
 //!
-//! // Generated:
-//! #[derive(Clone)]
-//! pub struct AppController {
-//!     service: AppService
-//! }
-//!
-//! impl AppController {
-//!     fn get_info(&self, req: HttpRequest) -> ToniBody {
-//!         self.service.get_app_info()
-//!     }
-//! }
-//!
-//! struct GetInfoController {
-//!     dependencies: FxHashMap<String, Arc<Box<dyn Provider>>>
-//! }
-//!
-//! impl Controller for GetInfoController {
-//!     async fn handle(&self, req: HttpRequest) -> HttpResponse {
-//!         // Resolve dependencies
-//!         let service: AppService = *self.dependencies.get("AppService")
-//!             .unwrap().execute(vec![]).await.downcast().unwrap();
-//!
-//!         // Create controller instance with real fields
-//!         let controller = AppController { service };
-//!
-//!         // Call user's method on real struct
-//!         controller.get_info(req)
-//!     }
-//! }
-//! ```
+//! The two sides never see each other's item; they meet at the concrete type through those inherent
+//! bridge fns. A missing `#[controller]` struct surfaces as "no associated function `__toni_build_from_deps`".
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::collections::HashMap;
-use syn::{
-    Attribute, Error, Ident, ImplItemFn, ItemImpl, ItemStruct, LitStr, Result, Type,
-    spanned::Spanned,
-};
+use syn::{Attribute, Error, Ident, ImplItemFn, ItemImpl, LitStr, Result, spanned::Spanned};
 
 use crate::{
     controller_macro::extractor_params::{
@@ -69,38 +32,24 @@ use crate::{
     },
     shared::{
         attr_is,
-        dependency_info::DependencyInfo,
         lifecycle_hooks::{LifecycleHooks, detect_lifecycle_hooks, strip_lifecycle_attrs},
         metadata_info::MetadataInfo,
+        scope_parser::ControllerScope,
     },
     utils::controller_utils::attr_to_string,
 };
 
-/// `struct_def` is `None` when the struct is defined separately above the impl block.
-/// The macro does not re-emit or modify the struct in that case; the user must derive `Clone`.
-pub fn generate_instance_controller_system(
-    struct_def: Option<&ItemStruct>,
-    impl_block: &ItemImpl,
-    dependencies: &DependencyInfo,
-    route_prefix: &str,
-    scope: crate::shared::scope_parser::ControllerScope,
-    was_explicit: bool,
-) -> Result<TokenStream> {
-    let struct_name = match struct_def {
-        Some(s) => s.ident.clone(),
-        None => crate::utils::extracts::extract_impl_self_ident(impl_block)?,
-    };
+/// Entry for `#[routes] impl Foo { … }`. The struct (and its DI bridges) is declared separately via
+/// `#[controller]`; this never sees the struct's fields.
+pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
+    let struct_name = crate::utils::extracts::extract_impl_self_ident(impl_block)?;
     let struct_name = &struct_name;
 
-    let struct_emit = struct_def.map(|s| {
-        let s = add_clone_derive(s);
-        quote! { #[allow(dead_code)] #s }
-    });
-
-    // Detect lifecycle hooks before stripping attributes
+    // Lifecycle hooks are detected here (the impl is visible) and the `#[on_*]` attrs stripped so the
+    // re-emitted methods are plain; the object's hooks call those methods on the built instance.
+    // `#[new]` is left intact so its own macro expands into the `__toni_ctor_build` bridge.
     let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
 
-    // Clone impl block and remove marker attributes from all methods
     let mut impl_def = impl_block.clone();
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
@@ -109,60 +58,23 @@ pub fn generate_instance_controller_system(
             );
         }
     }
-    // Strip lifecycle attributes so the compiler doesn't reject them as unknown
     let impl_def = strip_lifecycle_attrs(&impl_def);
 
-    // OPTIMIZATION: Conditionally generate wrappers based on scope and dependencies
-    // Goal: Only generate wrappers that could actually be used
+    // Scope/elevation is decided at runtime from the struct bridges, so both wrapper sets are always
+    // generated; `__toni_routes` (via the factory's chosen state) selects which to build.
+    let (singleton_wrappers, singleton_metadata) = generate_controller_wrappers(
+        impl_block,
+        struct_name,
+        ControllerScope::Singleton,
+        &lifecycle_hooks,
+    )?;
+    let (request_wrappers, request_metadata) = generate_controller_wrappers(
+        impl_block,
+        struct_name,
+        ControllerScope::Request,
+        &lifecycle_hooks,
+    )?;
 
-    let (singleton_wrappers, singleton_metadata, request_wrappers, request_metadata) =
-        match (scope, was_explicit) {
-            // Case 1: Explicit Request scope - only generate Request wrappers
-            // No auto-elevation possible (already Request), so Singleton wrappers are dead code
-            (crate::shared::scope_parser::ControllerScope::Request, true) => {
-                let (req_wrappers, req_meta) = generate_controller_wrappers(
-                    impl_block,
-                    struct_name,
-                    dependencies,
-                    route_prefix,
-                    crate::shared::scope_parser::ControllerScope::Request,
-                    &lifecycle_hooks,
-                )?;
-                (vec![], vec![], req_wrappers, req_meta) // Skip Singleton wrappers!
-            }
-
-            // Case 2: Explicit or default Singleton - might need elevation
-            _ => {
-                let (sing_wrappers, sing_meta) = generate_controller_wrappers(
-                    impl_block,
-                    struct_name,
-                    dependencies,
-                    route_prefix,
-                    crate::shared::scope_parser::ControllerScope::Singleton,
-                    &lifecycle_hooks,
-                )?;
-
-                // Sub-optimization: Skip Request wrappers if no dependencies
-                let (req_wrappers, req_meta) = if dependencies.fields.is_empty() {
-                    (vec![], vec![]) // No deps = no elevation possible
-                } else {
-                    generate_controller_wrappers(
-                        impl_block,
-                        struct_name,
-                        dependencies,
-                        route_prefix,
-                        crate::shared::scope_parser::ControllerScope::Request,
-                        &lifecycle_hooks,
-                    )?
-                };
-
-                (sing_wrappers, sing_meta, req_wrappers, req_meta)
-            }
-        };
-
-    // Lifecycle hooks fire on the controller instance, which only exists for the
-    // singleton path. A controller with only static handlers never builds an
-    // instance, so its hooks (if any) never fire — same as before the collapse.
     let has_instance_method = singleton_metadata.iter().any(|m| !m.is_static)
         || request_metadata.iter().any(|m| !m.is_static);
 
@@ -173,18 +85,14 @@ pub fn generate_instance_controller_system(
         &lifecycle_hooks,
         has_instance_method,
     );
-
-    let factory = generate_factory(struct_name, dependencies, scope, was_explicit);
+    let factory = generate_factory(struct_name);
     let factory_accessor = generate_controller_factory_accessor(struct_name);
 
     Ok(quote! {
-        #struct_emit
-
         #[allow(dead_code)]
         #impl_def
 
         #(#singleton_wrappers)*
-
         #(#request_wrappers)*
 
         #object
@@ -200,9 +108,8 @@ fn controller_object_ident(struct_name: &Ident) -> Ident {
     )
 }
 
-/// The single `Controller` per struct: holds the built instance (or the resolved
-/// deps for the request path), yields one `Route` per handler method, and carries
-/// the lifecycle hooks — fired once, not once per route.
+/// The single `Controller` per struct: holds the built instance (or the resolved deps for the request
+/// path), yields one `Route` per handler method, and carries the lifecycle hooks — fired once.
 fn generate_controller_object(
     struct_name: &Ident,
     singleton_metadata: &[MetadataInfo],
@@ -274,9 +181,9 @@ fn generate_controller_object(
     }
 }
 
-/// Lifecycle-hook overrides that delegate to the singleton instance. The request
-/// path fires `on_module_init` / `on_application_bootstrap` per request inside the
-/// route handler instead (it has no persistent instance), so these no-op there.
+/// Lifecycle-hook overrides that delegate to the singleton instance. The request path fires
+/// `on_module_init` / `on_application_bootstrap` per request inside the route handler instead (it has
+/// no persistent instance), so these no-op there.
 fn generate_object_lifecycle_methods(
     struct_name: &Ident,
     lifecycle_hooks: &LifecycleHooks,
@@ -344,61 +251,26 @@ fn generate_object_lifecycle_methods(
     quote! { #(#methods)* }
 }
 
-fn add_clone_derive(struct_attrs: &ItemStruct) -> ItemStruct {
-    let mut struct_def = struct_attrs.clone();
-
-    let has_clone = struct_def.attrs.iter().any(|attr| {
-        if attr.path().is_ident("derive") {
-            // Would need to parse derive contents properly
-            false
-        } else {
-            false
-        }
-    });
-
-    if !has_clone {
-        // Clone is needed for the controller instance; InjectFields keeps the
-        // #[inject]/#[default] field attributes valid on the re-emitted struct.
-        let derives: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone, ::toni::InjectFields)]
-        };
-        struct_def.attrs.push(derives);
-    } else {
-        let injectable_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(::toni::InjectFields)]
-        };
-        struct_def.attrs.push(injectable_derive);
-    }
-
-    struct_def
-}
-
 fn generate_controller_wrappers(
     impl_block: &ItemImpl,
     struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    route_prefix: &str,
-    scope: crate::shared::scope_parser::ControllerScope,
+    scope: ControllerScope,
     lifecycle_hooks: &LifecycleHooks,
 ) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
     let mut wrappers = Vec::new();
     let mut metadata_list = Vec::new();
 
-    // Extract controller-level enhancers from impl block attributes
     let controller_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
 
     for item in &impl_block.items {
         if let syn::ImplItem::Fn(method) = item {
             if let Some(http_method_attr) = find_http_method_attr(&method.attrs) {
                 let method_enhancers_attr = get_enhancers_attr(&method.attrs)?;
-
                 let marker_params = get_marker_params(method)?;
 
                 let (wrapper, metadata) = generate_controller_wrapper(
                     method,
                     struct_name,
-                    dependencies,
-                    route_prefix,
                     http_method_attr,
                     controller_enhancers_attr.clone(),
                     method_enhancers_attr,
@@ -452,34 +324,30 @@ fn get_metadata_exprs(attrs: &[Attribute]) -> Result<Vec<TokenStream>> {
     Ok(metadata_exprs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_controller_wrapper(
     method: &ImplItemFn,
     struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    route_prefix: &str,
     http_method_attr: &Attribute,
     controller_enhancers_attr: HashMap<&Ident, &Attribute>,
     method_enhancers_attr: HashMap<&Ident, &Attribute>,
     marker_params: Vec<MarkerParam>,
-    scope: crate::shared::scope_parser::ControllerScope,
+    scope: ControllerScope,
     lifecycle_hooks: &LifecycleHooks,
 ) -> Result<(TokenStream, MetadataInfo)> {
     let http_method = attr_to_string(http_method_attr)
         .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
 
+    // Sub-path only; the controller's prefix is joined at runtime via `__toni_prefix`.
     let route_path = http_method_attr
         .parse_args::<LitStr>()
         .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?
         .value();
 
-    let full_route_path = join_paths(route_prefix, &route_path);
-
     let method_name = &method.sig.ident;
-    // Include struct name to avoid collisions between controllers with same method names
-    // Also include scope suffix to allow both Singleton and Request wrappers
     let scope_suffix = match scope {
-        crate::shared::scope_parser::ControllerScope::Singleton => "",
-        crate::shared::scope_parser::ControllerScope::Request => "Request",
+        ControllerScope::Singleton => "",
+        ControllerScope::Request => "Request",
     };
     let controller_name = Ident::new(
         &format!(
@@ -491,68 +359,18 @@ fn generate_controller_wrapper(
         method_name.span(),
     );
 
-    // Check if this is a static method (no self receiver)
     let is_static_method = !has_self_receiver(method);
 
-    // Only generate field resolutions and struct instantiation for instance methods
-    let (field_resolutions, _field_names, struct_instantiation) = if is_static_method {
-        // Static method - no need for instance creation
-        (vec![], vec![], quote! {})
-    } else {
-        let (resolutions, names) = generate_field_resolutions(dependencies);
-
-        // Generate struct instantiation based on DI source
-        let instantiation = if let Some(init_method_name) = &dependencies.init_method {
-            // Constructor-based DI: call the constructor with resolved parameters
-            let init_method = Ident::new(init_method_name, struct_name.span());
-            quote! {
-                let controller = #struct_name::#init_method(#(#names),*);
-            }
-        } else {
-            // Field-based DI: use struct literal
-            // Generate initializers for owned fields
-            let owned_field_inits: Vec<_> = dependencies
-                .owned_fields
-                .iter()
-                .map(|(field_name, field_type, default_expr)| {
-                    if let Some(expr) = default_expr {
-                        quote! { #field_name: #expr }
-                    } else {
-                        quote! { #field_name: <#field_type>::default() }
-                    }
-                })
-                .collect();
-
-            quote! {
-                let controller = #struct_name {
-                    #(#names,)*  // Injected dependencies
-                    #(#owned_field_inits),*  // Owned fields with defaults
-                };
-            }
-        };
-
-        (resolutions, names, instantiation)
-    };
-
-    // Get enhancer infos for DI resolution
     let enhancer_infos = create_enhancer_infos(controller_enhancers_attr, method_enhancers_attr)?;
-
-    // Extract #[set_metadata(...)] expressions
     let metadata_exprs = get_metadata_exprs(&method.attrs)?;
 
-    // Check if we're using extractors or marker params
     let extractor_params = get_extractor_params(method)?;
     let has_extractors = extractor_params
         .iter()
         .any(|p| !matches!(p.kind, ExtractorKind::HttpRequest | ExtractorKind::Unknown));
-
-    // Use extractor-based approach if:
-    // 1. There are any actual extractors (Path, Query, Json, Body, Validated, Request), OR
-    // 2. There are NO marker params (meaning user is not using legacy #param, #body, #query)
     let use_extractors = has_extractors || marker_params.is_empty();
 
     let (method_call, marker_params_extraction, body_dto_token_stream) = if use_extractors {
-        // Use extractor-based approach
         let (extractions, call_args) = generate_extractor_extractions(&extractor_params)?;
         let method_call = if is_static_method {
             generate_extractor_static_method_call(method, struct_name, &call_args)?
@@ -561,7 +379,6 @@ fn generate_controller_wrapper(
         };
         (method_call, extractions, None)
     } else {
-        // Use legacy marker-based approach
         let method_call =
             generate_method_call(method, &marker_params, struct_name, is_static_method)?;
         let (extractions, body_dto) = generate_marker_params_extraction(&marker_params)?;
@@ -572,165 +389,29 @@ fn generate_controller_wrapper(
 
     let wrapper = generate_controller_wrapper_code(
         &controller_name,
-        &full_route_path,
+        struct_name,
+        &route_path,
         &http_method,
-        &field_resolutions,
-        &struct_instantiation,
         &method_call,
         &enhancer_infos,
         &marker_params_extraction,
         &body_dto_token_stream,
         &metadata_exprs,
         scope,
-        struct_name,
         is_static_method,
         lifecycle_hooks,
         returns_result,
     );
 
-    let controller_dependencies: Vec<(Ident, TokenStream)> = dependencies
-        .fields
-        .iter()
-        .map(|(field_name, _full_type, lookup_token_expr)| {
-            let dep_field_name = Ident::new(&format!("{}_dep", field_name), field_name.span());
-            (dep_field_name, lookup_token_expr.clone())
-        })
-        .collect();
-
     Ok((
         wrapper,
         MetadataInfo {
             struct_name: controller_name,
-            dependencies: controller_dependencies,
+            dependencies: Vec::new(),
             is_static: is_static_method,
         },
     ))
 }
-
-fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
-    let mut resolutions = Vec::new();
-    let mut field_names = Vec::new();
-
-    // When a constructor is specified, resolve its parameters instead of struct fields
-    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
-        &dependencies.constructor_params
-    } else {
-        &dependencies.fields
-    };
-
-    // Group by token to deduplicate fields with same provider while preserving order
-    // IndexMap required to maintain declaration order for constructor parameters
-    use indexmap::IndexMap;
-    let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
-
-    for (field_name, full_type, lookup_token_expr) in deps_to_resolve {
-        // Group by token, not type - same type can map to different providers
-        let type_key = quote!(#lookup_token_expr).to_string();
-        type_groups.entry(type_key).or_insert_with(Vec::new).push((
-            field_name.clone(),
-            full_type.clone(),
-            lookup_token_expr.clone(),
-        ));
-    }
-
-    for (_type_key, fields_of_type) in type_groups {
-        let (first_field_name, full_type, lookup_token_expr) = &fields_of_type[0];
-
-        if fields_of_type.len() == 1 {
-            let field_name = first_field_name;
-            let resolution = quote! {
-                let #field_name: #full_type = {
-                    let __lookup_token = #lookup_token_expr;
-                    let provider = self.dependencies
-                        .get(&__lookup_token)
-                        .unwrap_or_else(|| panic!("Missing dependency '{}'", __lookup_token));
-
-                    let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
-
-                    *any_box.downcast::<#full_type>()
-                        .unwrap_or_else(|_| panic!(
-                            "Failed to downcast '{}' to {}",
-                            __lookup_token,
-                            stringify!(#full_type)
-                        ))
-                };
-            };
-
-            resolutions.push(resolution);
-            field_names.push(field_name.clone());
-        } else {
-            // Multiple fields with same token - apply scope-aware deduplication
-            let temp_var = syn::Ident::new(
-                &format!("__temp_instance_{}", first_field_name),
-                first_field_name.span(),
-            );
-
-            let field_idents: Vec<_> = fields_of_type.iter().map(|(name, _, _)| name).collect();
-
-            // Declare variables outside if/else to avoid scope issues
-            let field_declarations: Vec<TokenStream> = field_idents
-                .iter()
-                .map(|field_ident| {
-                    quote! {
-                        let #field_ident: #full_type;
-                    }
-                })
-                .collect();
-
-            let resolution = quote! {
-                #(#field_declarations)*
-
-                let __lookup_token = #lookup_token_expr;
-                let provider = self.dependencies
-                    .get(&__lookup_token)
-                    .unwrap_or_else(|| panic!("Missing dependency '{}'", __lookup_token));
-
-                if matches!(provider.get_scope(), ::toni::ProviderScope::Transient) {
-                    // Transient: fresh instance per field
-                    #(
-                        #field_idents = {
-                            let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
-                            *any_box.downcast::<#full_type>()
-                                .unwrap_or_else(|_| panic!(
-                                    "Failed to downcast '{}' to {}",
-                                    __lookup_token,
-                                    stringify!(#full_type)
-                                ))
-                        };
-                    )*
-                } else {
-                    // Singleton/Request: shared instance cloned to all fields
-                    let #temp_var: #full_type = {
-                        let any_box = provider.execute(vec![], ::toni::ProviderContext::Http(::toni::HttpProviderContext { parts: &_req_parts, cache: &_req_cache })).await;
-                        *any_box.downcast::<#full_type>()
-                            .unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}",
-                                __lookup_token,
-                                stringify!(#full_type)
-                            ))
-                    };
-                    #(
-                        #field_idents = #temp_var.clone();
-                    )*
-                }
-            };
-
-            resolutions.push(resolution);
-
-            // Add all field names to the list
-            for (field_name, _, _) in &fields_of_type {
-                field_names.push(field_name.clone());
-            }
-        }
-    }
-
-    (resolutions, field_names)
-}
-
-// NOTE: Deduplication is now implemented by grouping fields by their Type.
-// - For Singleton/Request scopes: Same instance shared across all fields of the same type
-// - For Transient scope: Each field gets a fresh instance (no deduplication)
-// This matches NestJS behavior where Request-scoped providers are shared within a request.
 
 fn generate_method_call(
     method: &ImplItemFn,
@@ -741,31 +422,20 @@ fn generate_method_call(
     let method_name = &method.sig.ident;
     let is_async = method.sig.asyncness.is_some();
 
-    // Check if method has any non-marker parameters (like HttpRequest)
     let mut call_args = Vec::new();
-
-    // Iterate through the method signature to build call args in order
     for input in method.sig.inputs.iter() {
         if let syn::FnArg::Typed(pat_type) = input {
             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                 let param_name = &pat_ident.ident;
-
-                // Check if this is a marker param
                 let is_marker = marker_params.iter().any(|mp| mp.param_name == *param_name);
-
                 if is_marker {
-                    // Use the extracted marker param value
                     call_args.push(quote! { #param_name });
-                } else {
-                    // Check if it's HttpRequest type
-                    if let syn::Type::Path(type_path) = &*pat_type.ty {
-                        if let Some(segment) = type_path.path.segments.last() {
-                            if segment.ident == "HttpRequest" {
-                                call_args.push(quote! { __req });
-                            } else {
-                                // Unknown non-marker parameter
-                                call_args.push(quote! { #param_name });
-                            }
+                } else if let syn::Type::Path(type_path) = &*pat_type.ty {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        if segment.ident == "HttpRequest" {
+                            call_args.push(quote! { __req });
+                        } else {
+                            call_args.push(quote! { #param_name });
                         }
                     }
                 }
@@ -794,16 +464,9 @@ fn generate_marker_params_extraction(
 
     for marker_param in marker_params {
         match marker_param.marker_name.as_str() {
-            "body" => {
-                // New extractor-based approach handles this internally
-                extractions.push(extract_body_from_param(marker_param)?);
-            }
-            "query" => {
-                extractions.push(extract_query_from_param(marker_param)?);
-            }
-            "param" => {
-                extractions.push(extract_path_param_from_param(marker_param)?);
-            }
+            "body" => extractions.push(extract_body_from_param(marker_param)?),
+            "query" => extractions.push(extract_query_from_param(marker_param)?),
+            "param" => extractions.push(extract_path_param_from_param(marker_param)?),
             _ => {}
         }
     }
@@ -811,45 +474,41 @@ fn generate_marker_params_extraction(
     Ok((extractions, body_dto_token_stream))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_controller_wrapper_code(
     controller_name: &Ident,
-    full_route_path: &str,
+    struct_name: &Ident,
+    route_path: &str,
     http_method: &str,
-    field_resolutions: &[TokenStream],
-    struct_instantiation: &TokenStream,
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
     body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
-    scope: crate::shared::scope_parser::ControllerScope,
-    struct_name: &Ident,
+    scope: ControllerScope,
     is_static_method: bool,
     lifecycle_hooks: &LifecycleHooks,
     returns_result: bool,
 ) -> TokenStream {
-    use crate::shared::scope_parser::ControllerScope;
-
     match scope {
         ControllerScope::Singleton => generate_singleton_controller_wrapper(
             controller_name,
-            full_route_path,
+            struct_name,
+            route_path,
             http_method,
             method_call,
             enhancer_infos,
             marker_params_extraction,
             body_dto_token_stream,
             metadata_exprs,
-            struct_name,
             is_static_method,
             returns_result,
         ),
         ControllerScope::Request => generate_request_controller_wrapper(
             controller_name,
-            full_route_path,
+            struct_name,
+            route_path,
             http_method,
-            field_resolutions,
-            struct_instantiation,
             method_call,
             enhancer_infos,
             marker_params_extraction,
@@ -862,97 +521,113 @@ fn generate_controller_wrapper_code(
     }
 }
 
+/// Pull a role's DI tokens and direct-instantiation expressions out of the manifest.
+fn enhancer_vecs(
+    enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
+    key: &str,
+) -> (Vec<TokenStream>, Vec<TokenStream>) {
+    let infos = enhancer_infos.get(key);
+    let tokens = infos
+        .map(|v| {
+            v.iter()
+                .filter(|i| !i.token_expr.is_empty())
+                .map(|i| i.token_expr.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let instances = infos
+        .map(|v| {
+            v.iter()
+                .filter(|i| !i.instance_expr.is_empty())
+                .map(|i| i.instance_expr.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    (tokens, instances)
+}
+
+fn enhancers_method(enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>) -> TokenStream {
+    let (guard_tokens, guard_instances) = enhancer_vecs(enhancer_infos, "guards");
+    let (interceptor_tokens, interceptor_instances) = enhancer_vecs(enhancer_infos, "interceptors");
+    let (pipe_tokens, pipe_instances) = enhancer_vecs(enhancer_infos, "pipes");
+    let (error_handler_tokens, error_handler_instances) =
+        enhancer_vecs(enhancer_infos, "error_handlers");
+
+    quote! {
+        fn enhancers(&self) -> ::toni::traits_helpers::ControllerEnhancers {
+            ::toni::traits_helpers::ControllerEnhancers {
+                guard_tokens: vec![#(#guard_tokens),*],
+                interceptor_tokens: vec![#(#interceptor_tokens),*],
+                pipe_tokens: vec![#(#pipe_tokens),*],
+                error_handler_tokens: vec![#(#error_handler_tokens),*],
+                guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
+                interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
+                pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
+                error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
+            }
+        }
+    }
+}
+
+/// `get_path` joins the controller's runtime prefix (`__toni_prefix`) with this route's sub-path.
+fn get_path_method(struct_name: &Ident, route_path: &str) -> TokenStream {
+    quote! {
+        fn get_path(&self) -> String {
+            ::toni::http_helpers::join_route(#struct_name::__toni_prefix(), #route_path)
+        }
+    }
+}
+
+fn route_common_methods(
+    struct_name: &Ident,
+    route_path: &str,
+    http_method: &str,
+    enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
+    metadata_exprs: &[TokenStream],
+    body_dto_token_stream: &Option<TokenStream>,
+) -> TokenStream {
+    let enhancers = enhancers_method(enhancer_infos);
+    let get_path = get_path_method(struct_name, route_path);
+    let body_dto_stream = body_dto_token_stream
+        .clone()
+        .unwrap_or_else(|| quote! { None });
+
+    quote! {
+        fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
+            ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
+        }
+
+        #get_path
+
+        #enhancers
+
+        fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
+            let mut metadata = ::toni::http_helpers::RouteMetadata::new();
+            #(metadata.insert(#metadata_exprs);)*
+            ::std::sync::Arc::new(metadata)
+        }
+
+        fn get_body_dto(&self, _req: &::toni::http_helpers::RequestPart) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
+            #body_dto_stream
+        }
+    }
+}
+
 // Singleton route wrapper — shares the controller instance built once at startup.
+#[allow(clippy::too_many_arguments)]
 fn generate_singleton_controller_wrapper(
     controller_name: &Ident,
-    full_route_path: &str,
+    struct_name: &Ident,
+    route_path: &str,
     http_method: &str,
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
     body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
-    struct_name: &Ident,
     is_static_method: bool,
     returns_result: bool,
 ) -> TokenStream {
-    let binding = Vec::new();
-
-    // Generate enhancer token expressions for DI resolution
-    // Filter out empty tokens (from direct instantiation syntax)
-    let guard_tokens: Vec<_> = enhancer_infos
-        .get("guards")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let interceptor_tokens: Vec<_> = enhancer_infos
-        .get("interceptors")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let pipe_tokens: Vec<_> = enhancer_infos
-        .get("pipes")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let error_handler_tokens: Vec<_> = enhancer_infos
-        .get("error_handlers")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    // Generate direct instantiation expressions for fallback (when not in DI)
-    // Only include enhancers with explicit constructor calls (instance_expr is non-empty)
-    let guard_instances: Vec<_> = enhancer_infos
-        .get("guards")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let interceptor_instances: Vec<_> = enhancer_infos
-        .get("interceptors")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let pipe_instances: Vec<_> = enhancer_infos
-        .get("pipes")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let error_handler_instances: Vec<_> = enhancer_infos
-        .get("error_handlers")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
-        token_stream.clone()
-    } else {
-        quote! { None }
-    };
-
-    // For static methods, we don't need to store or downcast the instance
     let (struct_fields, instance_downcast) = if is_static_method {
         (quote! {}, quote! {})
     } else {
@@ -969,6 +644,14 @@ fn generate_singleton_controller_wrapper(
     };
 
     let exec_body = exec_body_for(method_call, returns_result);
+    let common = route_common_methods(
+        struct_name,
+        route_path,
+        http_method,
+        enhancer_infos,
+        metadata_exprs,
+        body_dto_token_stream,
+    );
 
     quote! {
         struct #controller_name {
@@ -994,47 +677,18 @@ fn generate_singleton_controller_wrapper(
                 #exec_body
             }
 
-            fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
-                ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
-            }
-
-            fn get_path(&self) -> String {
-                #full_route_path.to_string()
-            }
-
-            fn enhancers(&self) -> ::toni::traits_helpers::ControllerEnhancers {
-                ::toni::traits_helpers::ControllerEnhancers {
-                    guard_tokens: vec![#(#guard_tokens),*],
-                    interceptor_tokens: vec![#(#interceptor_tokens),*],
-                    pipe_tokens: vec![#(#pipe_tokens),*],
-                    error_handler_tokens: vec![#(#error_handler_tokens),*],
-                    guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
-                    interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
-                    pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
-                    error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
-                }
-            }
-
-            fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
-                let mut metadata = ::toni::http_helpers::RouteMetadata::new();
-                #(metadata.insert(#metadata_exprs);)*
-                ::std::sync::Arc::new(metadata)
-            }
-
-            fn get_body_dto(&self, _req: &::toni::http_helpers::RequestPart) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
-                #body_dto_stream
-            }
+            #common
         }
     }
 }
 
-// Request-scoped route wrapper — rebuilds the controller instance per request.
+// Request-scoped route wrapper — rebuilds the controller instance per request via the struct bridge.
+#[allow(clippy::too_many_arguments)]
 fn generate_request_controller_wrapper(
     controller_name: &Ident,
-    full_route_path: &str,
+    struct_name: &Ident,
+    route_path: &str,
     http_method: &str,
-    field_resolutions: &[TokenStream],
-    struct_instantiation: &TokenStream,
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
@@ -1044,115 +698,44 @@ fn generate_request_controller_wrapper(
     lifecycle_hooks: &LifecycleHooks,
     returns_result: bool,
 ) -> TokenStream {
-    let binding = Vec::new();
-
-    // Generate enhancer token expressions for DI resolution
-    // Filter out empty tokens (from direct instantiation syntax)
-    let guard_tokens: Vec<_> = enhancer_infos
-        .get("guards")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let interceptor_tokens: Vec<_> = enhancer_infos
-        .get("interceptors")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let pipe_tokens: Vec<_> = enhancer_infos
-        .get("pipes")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    let error_handler_tokens: Vec<_> = enhancer_infos
-        .get("error_handlers")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.token_expr.is_empty())
-        .map(|info| &info.token_expr)
-        .collect();
-
-    // Generate direct instantiation expressions for fallback (when not in DI)
-    // Only include enhancers with explicit constructor calls (instance_expr is non-empty)
-    let guard_instances: Vec<_> = enhancer_infos
-        .get("guards")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let interceptor_instances: Vec<_> = enhancer_infos
-        .get("interceptors")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let pipe_instances: Vec<_> = enhancer_infos
-        .get("pipes")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let error_handler_instances: Vec<_> = enhancer_infos
-        .get("error_handlers")
-        .unwrap_or(&binding)
-        .iter()
-        .filter(|info| !info.instance_expr.is_empty())
-        .map(|info| &info.instance_expr)
-        .collect();
-
-    let body_dto_stream = if let Some(token_stream) = body_dto_token_stream {
-        token_stream.clone()
+    let (struct_fields, build_instance) = if is_static_method {
+        (quote! {}, quote! {})
     } else {
-        quote! { None }
-    };
-
-    let init_call = if !is_static_method {
-        lifecycle_hooks.on_module_init.as_ref().map(|method| {
-            quote! { controller.#method().await; }
-        })
-    } else {
-        None
-    };
-    let bootstrap_call = if !is_static_method {
-        lifecycle_hooks
+        let init_call = lifecycle_hooks
+            .on_module_init
+            .as_ref()
+            .map(|m| quote! { controller.#m().await; });
+        let bootstrap_call = lifecycle_hooks
             .on_application_bootstrap
             .as_ref()
-            .map(|method| {
-                quote! { controller.#method().await; }
-            })
-    } else {
-        None
-    };
-
-    // For static methods, we don't need dependencies field
-    let struct_fields = if is_static_method {
-        quote! {
-            // Static method: no dependencies needed
-        }
-    } else {
-        quote! {
-            dependencies: ::toni::FxHashMap<
-                String,
-                ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
-            >,
-        }
+            .map(|m| quote! { controller.#m().await; });
+        (
+            quote! {
+                dependencies: ::toni::FxHashMap<
+                    String,
+                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
+                >,
+            },
+            quote! {
+                let controller = #struct_name::__toni_build_from_deps(
+                    &self.dependencies,
+                    ::std::option::Option::Some(&_req_parts),
+                ).await;
+                #init_call
+                #bootstrap_call
+            },
+        )
     };
 
     let exec_body = exec_body_for(method_call, returns_result);
+    let common = route_common_methods(
+        struct_name,
+        route_path,
+        http_method,
+        enhancer_infos,
+        metadata_exprs,
+        body_dto_token_stream,
+    );
 
     quote! {
         struct #controller_name {
@@ -1169,48 +752,18 @@ fn generate_request_controller_wrapper(
                 ::toni::errors::HttpError,
             > {
                 let (_req_parts, _req_body) = __req.0.into_parts();
-                let _req_cache = ::toni::RequestCache::new();
 
-                #(#field_resolutions)*
+                // Build the instance before the extractors run: building only borrows `_req_parts`
+                // (for resolving a request-scoped dependency), while a body extractor may move it.
+                #build_instance
+
                 #(#marker_params_extraction)*
-                #struct_instantiation
-                #init_call
-                #bootstrap_call
 
                 use ::toni::http_helpers::IntoResponse;
                 #exec_body
             }
 
-            fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
-                ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
-            }
-
-            fn get_path(&self) -> String {
-                #full_route_path.to_string()
-            }
-
-            fn enhancers(&self) -> ::toni::traits_helpers::ControllerEnhancers {
-                ::toni::traits_helpers::ControllerEnhancers {
-                    guard_tokens: vec![#(#guard_tokens),*],
-                    interceptor_tokens: vec![#(#interceptor_tokens),*],
-                    pipe_tokens: vec![#(#pipe_tokens),*],
-                    error_handler_tokens: vec![#(#error_handler_tokens),*],
-                    guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
-                    interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
-                    pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
-                    error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
-                }
-            }
-
-            fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
-                let mut metadata = ::toni::http_helpers::RouteMetadata::new();
-                #(metadata.insert(#metadata_exprs);)*
-                ::std::sync::Arc::new(metadata)
-            }
-
-            fn get_body_dto(&self, _req: &::toni::http_helpers::RequestPart) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
-                #body_dto_stream
-            }
+            #common
         }
     }
 }
@@ -1230,277 +783,16 @@ fn generate_controller_factory_accessor(struct_name: &Ident) -> TokenStream {
     }
 }
 
-fn generate_factory(
-    struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    scope: crate::shared::scope_parser::ControllerScope,
-    was_explicit: bool,
-) -> TokenStream {
-    use crate::shared::scope_parser::ControllerScope;
-
-    match scope {
-        ControllerScope::Singleton => {
-            generate_singleton_factory(struct_name, dependencies, was_explicit)
-        }
-        ControllerScope::Request => {
-            // Request-scoped controllers don't need elevation logic
-            generate_request_factory(struct_name, dependencies)
-        }
-    }
-}
-
-/// Generate field resolutions for singleton controller factory
-/// Applies scope-aware deduplication matching NestJS:
-/// - Singleton/Request: fields with same token share one instance
-/// - Transient: each field gets fresh instance
-fn generate_controller_factory_field_resolutions(
-    dependencies: &DependencyInfo,
-) -> (Vec<TokenStream>, Vec<Ident>) {
-    let mut resolutions = Vec::new();
-    let mut field_names = Vec::new();
-
-    // When a constructor is specified, resolve its parameters instead of struct fields
-    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
-        &dependencies.constructor_params
-    } else {
-        &dependencies.fields
-    };
-
-    // Group by token for deduplication while preserving declaration order
-    // IndexMap required to maintain constructor parameter order
-    use indexmap::IndexMap;
-    let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
-
-    for (field_name, full_type, lookup_token_expr) in deps_to_resolve {
-        // Group by token, not type - same type can map to different providers
-        let type_key = quote!(#lookup_token_expr).to_string();
-        type_groups.entry(type_key).or_insert_with(Vec::new).push((
-            field_name.clone(),
-            full_type.clone(),
-            lookup_token_expr.clone(),
-        ));
-    }
-    for (_type_key, fields_of_type) in type_groups {
-        let (first_field_name, full_type, lookup_token_expr) = &fields_of_type[0];
-        let field_name_str = first_field_name.to_string();
-
-        if fields_of_type.len() == 1 {
-            let field_name = first_field_name;
-            let resolution = quote! {
-                let #field_name: #full_type = {
-                    let __lookup_token = #lookup_token_expr;
-                    let provider = dependencies
-                        .get(&__lookup_token)
-                        .unwrap_or_else(|| panic!(
-                            "Missing dependency '{}' for field '{}'",
-                            __lookup_token, #field_name_str
-                        ));
-
-                    let any_box = provider.execute(vec![], ::toni::ProviderContext::None).await;
-
-                    *any_box.downcast::<#full_type>()
-                        .unwrap_or_else(|_| panic!(
-                            "Failed to downcast '{}' to {}",
-                            __lookup_token,
-                            stringify!(#full_type)
-                        ))
-                };
-            };
-
-            resolutions.push(resolution);
-            field_names.push(field_name.clone());
-        } else {
-            // Multiple fields with same token - apply scope-aware deduplication
-            let temp_var = syn::Ident::new(
-                &format!("__temp_instance_{}", first_field_name),
-                first_field_name.span(),
-            );
-            let field_idents: Vec<_> = fields_of_type.iter().map(|(name, _, _)| name).collect();
-
-            // Declare variables outside if/else to avoid scope issues
-            let field_declarations: Vec<TokenStream> = field_idents
-                .iter()
-                .map(|field_ident| {
-                    quote! {
-                        let #field_ident: #full_type;
-                    }
-                })
-                .collect();
-
-            let resolution = quote! {
-                #(#field_declarations)*
-
-                let __lookup_token = #lookup_token_expr;
-                let provider = dependencies
-                    .get(&__lookup_token)
-                    .unwrap_or_else(|| panic!(
-                        "Missing dependency '{}' for field '{}'",
-                        __lookup_token, #field_name_str
-                    ));
-
-                if matches!(provider.get_scope(), ::toni::ProviderScope::Transient) {
-                    // Transient: fresh instance per field
-                    #(
-                        #field_idents = {
-                            let any_box = provider.execute(vec![], ::toni::ProviderContext::None).await;
-                            *any_box.downcast::<#full_type>()
-                                .unwrap_or_else(|_| panic!(
-                                    "Failed to downcast '{}' to {}",
-                                    __lookup_token,
-                                    stringify!(#full_type)
-                                ))
-                        };
-                    )*
-                } else {
-                    // Singleton/Request: shared instance cloned to all fields
-                    let #temp_var: #full_type = {
-                        let any_box = provider.execute(vec![], ::toni::ProviderContext::None).await;
-                        *any_box.downcast::<#full_type>()
-                            .unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}",
-                                __lookup_token,
-                                stringify!(#full_type)
-                            ))
-                    };
-                    #(
-                        #field_idents = #temp_var.clone();
-                    )*
-                }
-            };
-
-            resolutions.push(resolution);
-            for (field_name, _, _) in &fields_of_type {
-                field_names.push(field_name.clone());
-            }
-        }
-    }
-
-    (resolutions, field_names)
-}
-
-// Singleton factory - creates controller instance AT STARTUP
-// OR elevates to Request scope if dependencies require it
-fn generate_singleton_factory(
-    struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    was_explicit: bool,
-) -> TokenStream {
+/// One factory drives both scopes: it asks the struct bridges for the dependency tokens and declared
+/// scope at runtime, elevates an (implicit/explicit) singleton to request scope when any dependency is
+/// request-scoped, and otherwise builds the instance once via `__toni_build_from_deps`.
+fn generate_factory(struct_name: &Ident) -> TokenStream {
     let factory_name = Ident::new(
         &format!("{}ControllerFactory", struct_name),
         struct_name.span(),
     );
     let object_name = controller_object_ident(struct_name);
     let struct_token = struct_name.to_string();
-
-    // Collect dependency tokens from both constructor params and #[inject] fields
-    let constructor_token_exprs: Vec<&TokenStream> = dependencies
-        .constructor_params
-        .iter()
-        .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .collect();
-
-    let field_token_exprs: Vec<&TokenStream> = dependencies
-        .fields
-        .iter()
-        .map(|(_, _full_type, lookup_token_expr)| lookup_token_expr)
-        .collect();
-
-    let unique_tokens: Vec<_> = constructor_token_exprs
-        .iter()
-        .chain(field_token_exprs.iter())
-        .map(|token_expr| token_expr)
-        .collect();
-
-    // Generate field resolutions with scope-aware deduplication
-    let (field_resolutions, field_names) =
-        generate_controller_factory_field_resolutions(dependencies);
-    let struct_instantiation = if let Some(init_method_name) = &dependencies.init_method {
-        // Constructor-based DI: call the constructor with resolved parameters
-        let init_method = Ident::new(init_method_name, struct_name.span());
-        quote! { #struct_name::#init_method(#(#field_names),*) }
-    } else {
-        // Field-based DI: use struct literal
-        // Generate initializers for owned fields
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    quote! { #field_name: #expr }
-                } else {
-                    quote! { #field_name: <#field_type>::default() }
-                }
-            })
-            .collect();
-
-        quote! {
-            #struct_name {
-                #(#field_names,)*  // Injected dependencies
-                #(#owned_field_inits),*  // Owned fields with defaults
-            }
-        }
-    };
-
-    // Generate scope checking code to determine if we need to elevate to Request scope
-    let scope_check_code = if dependencies.fields.is_empty() {
-        // No dependencies - definitely Singleton
-        quote! {
-            let request_deps: Vec<String> = Vec::new();
-            let needs_elevation = false;
-        }
-    } else {
-        let dep_checks: Vec<_> = dependencies
-            .fields
-            .iter()
-            .map(|(_, _, lookup_token_expr)| {
-                quote! {
-                    {
-                        let __lookup_token = #lookup_token_expr;
-                        if let Some(provider) = dependencies.get(&__lookup_token) {
-                            if matches!(provider.get_scope(), ::toni::ProviderScope::Request) {
-                                request_deps.push(__lookup_token);
-                            }
-                        }
-                    }
-                }
-            })
-            .collect();
-
-        quote! {
-            // Check if any dependency is Request-scoped
-            let mut request_deps: Vec<String> = Vec::new();
-            #(#dep_checks)*
-            let needs_elevation = !request_deps.is_empty();
-        }
-    };
-
-    // Generate warning messages based on strategy
-    let warning_code = if was_explicit {
-        // Case 3: User explicitly set singleton, but we need to elevate
-        quote! {
-            if needs_elevation {
-                ::toni::tracing::warn!(
-                    controller = #struct_token,
-                    request_scoped_deps = ?request_deps,
-                    "Controller declared as singleton but depends on request-scoped providers; \
-                     it will be elevated to request scope. \
-                     Silence this by using #[controller_struct(scope = \"request\", ...)]"
-                );
-            }
-        }
-    } else {
-        // Case 1: Default scope (implicit singleton), elevating to request
-        quote! {
-            if needs_elevation {
-                ::toni::tracing::warn!(
-                    controller = #struct_token,
-                    request_scoped_deps = ?request_deps,
-                    "Controller automatically elevated to request scope due to request-scoped providers. \
-                     Silence this by using #[controller_struct(scope = \"request\", ...)]"
-                );
-            }
-        }
-    };
 
     quote! {
         pub struct #factory_name;
@@ -1512,7 +804,7 @@ fn generate_singleton_factory(
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#unique_tokens),*]
+                <#struct_name>::__toni_dependencies()
             }
 
             async fn build(
@@ -1522,76 +814,40 @@ fn generate_singleton_factory(
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
                 >,
             ) -> ::std::sync::Arc<dyn ::toni::traits_helpers::Controller> {
-                #scope_check_code
-                #warning_code
+                let force_request = <#struct_name>::__toni_is_request_scoped();
 
-                let state = if needs_elevation {
+                let mut request_deps: Vec<String> = Vec::new();
+                for __token in <#struct_name>::__toni_dependencies() {
+                    if let Some(__provider) = dependencies.get(&__token) {
+                        if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
+                            request_deps.push(__token);
+                        }
+                    }
+                }
+
+                if !force_request && !request_deps.is_empty() {
+                    ::toni::tracing::warn!(
+                        controller = #struct_token,
+                        request_scoped_deps = ?request_deps,
+                        "Controller automatically elevated to request scope due to request-scoped \
+                         providers. Silence this by declaring #[controller(scope = \"request\")]."
+                    );
+                }
+
+                let state = if force_request || !request_deps.is_empty() {
                     ::toni::traits_helpers::ControllerInstance::Request(dependencies)
                 } else {
-                    #(#field_resolutions)*
-
-                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> = ::std::sync::Arc::new(#struct_instantiation);
-
+                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> =
+                        ::std::sync::Arc::new(
+                            <#struct_name>::__toni_build_from_deps(
+                                &dependencies,
+                                ::std::option::Option::None,
+                            ).await,
+                        );
                     ::toni::traits_helpers::ControllerInstance::Singleton(controller_instance)
                 };
 
                 ::std::sync::Arc::new(#object_name { state })
-            }
-        }
-    }
-}
-
-// Request factory - stores dependencies, the controller is rebuilt per request
-fn generate_request_factory(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
-    let factory_name = Ident::new(
-        &format!("{}ControllerFactory", struct_name),
-        struct_name.span(),
-    );
-    let object_name = controller_object_ident(struct_name);
-    let struct_token = struct_name.to_string();
-
-    // Collect dependency tokens from both constructor params and #[inject] fields
-    let constructor_token_exprs: Vec<&TokenStream> = dependencies
-        .constructor_params
-        .iter()
-        .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .collect();
-
-    let field_token_exprs: Vec<&TokenStream> = dependencies
-        .fields
-        .iter()
-        .map(|(_, _full_type, lookup_token_expr)| lookup_token_expr)
-        .collect();
-
-    let unique_tokens: Vec<_> = constructor_token_exprs
-        .iter()
-        .chain(field_token_exprs.iter())
-        .map(|token_expr| token_expr)
-        .collect();
-
-    quote! {
-        pub struct #factory_name;
-
-        #[::toni::async_trait]
-        impl ::toni::traits_helpers::ControllerFactory for #factory_name {
-            fn get_token(&self) -> String {
-                #struct_token.to_string()
-            }
-
-            fn get_dependencies(&self) -> Vec<String> {
-                vec![#(#unique_tokens),*]
-            }
-
-            async fn build(
-                &self,
-                dependencies: ::toni::FxHashMap<
-                    String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
-                >,
-            ) -> ::std::sync::Arc<dyn ::toni::traits_helpers::Controller> {
-                ::std::sync::Arc::new(#object_name {
-                    state: ::toni::traits_helpers::ControllerInstance::Request(dependencies),
-                })
             }
         }
     }
@@ -1609,32 +865,11 @@ fn capitalize_first(s: String) -> String {
         .collect()
 }
 
-/// Smart path joining that normalizes slashes
-/// Examples:
-/// - "/" + "/test" = "/test"
-/// - "" + "/test" = "/test"
-/// - "/api" + "/users" = "/api/users"
-/// - "/api/" + "/users" = "/api/users"
-/// - "/api" + "users" = "/api/users"
-fn join_paths(prefix: &str, path: &str) -> String {
-    let prefix = prefix.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-
-    if prefix.is_empty() {
-        format!("/{}", path)
-    } else if path.is_empty() {
-        prefix.to_string()
-    } else {
-        format!("{}/{}", prefix, path)
-    }
-}
-
 /// Body of the wrapper's `execute` for a user method.
 ///
-/// `Result<T, E>` returns are pattern-matched so the typed `E` flows through
-/// the dispatcher as the transport's handler error type — `HttpError` here.
-/// `Into::into` calls the `From<E: Error> for HttpError` blanket so the
-/// user's domain error is lifted automatically. Plain `T` returns wrap
+/// `Result<T, E>` returns are pattern-matched so the typed `E` flows through the dispatcher as the
+/// transport's handler error type — `HttpError` here. `Into::into` calls the `From<E: Error> for
+/// HttpError` blanket so the user's domain error is lifted automatically. Plain `T` returns wrap
 /// directly in `ExecutionResult::Ok`.
 fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream {
     if returns_result {
@@ -1657,9 +892,7 @@ fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream
     }
 }
 
-/// `true` when the user method's return type is `Result<_, _>` — drives
-/// whether the controller wrapper emits a typed-error preservation arm or
-/// a straight `IntoResponse::into_response` call.
+/// `true` when the user method's return type is `Result<_, _>`.
 fn returns_result_type(output: &syn::ReturnType) -> bool {
     if let syn::ReturnType::Type(_, ty) = output
         && let syn::Type::Path(type_path) = ty.as_ref()

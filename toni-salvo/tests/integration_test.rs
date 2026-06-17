@@ -17,7 +17,10 @@ struct SearchParams {
     q: String,
 }
 
-#[controller("/api", pub struct ApiController;)]
+#[controller("/api")]
+pub struct ApiController;
+
+#[routes]
 impl ApiController {
     #[get("/hello")]
     fn hello(&self) -> Body {

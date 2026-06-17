@@ -103,7 +103,9 @@ impl<S> Sse<S> {
 ///     ]))
 /// }
 /// ```
-pub fn sse<S>(stream: S) -> Sse<futures::stream::Map<S, fn(SseEvent) -> Result<SseEvent, Infallible>>>
+pub fn sse<S>(
+    stream: S,
+) -> Sse<futures::stream::Map<S, fn(SseEvent) -> Result<SseEvent, Infallible>>>
 where
     S: Stream<Item = SseEvent>,
 {

@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
-use toni::{controller, extractors::Bytes, get, post, Body as ToniBody};
+use toni::{controller, routes, extractors::Bytes, get, post, Body as ToniBody};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CreateUserDto {
@@ -22,7 +22,10 @@ struct SearchParams {
 /// - `#[query("name")]`: Extract query string parameters
 ///
 /// The macro automatically transforms these into proper type-safe extractors behind the scenes.
-#[controller("/api", pub struct AttributeController {})]
+#[controller("/api")]
+pub struct AttributeController {}
+
+#[routes]
 impl AttributeController {
     /// Extract JSON body using #[body] attribute
     #[post("/users")]

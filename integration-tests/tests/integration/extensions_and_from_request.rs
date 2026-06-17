@@ -6,7 +6,7 @@
 //! 3. Controllers using request context without manual extraction
 
 use toni::{
-    controller, get, injectable, module, new, toni_factory::ToniFactory, Body as ToniBody,
+    controller, routes, get, injectable, module, new, toni_factory::ToniFactory, Body as ToniBody,
     FromRequestParts, Request,
 };
 
@@ -85,12 +85,15 @@ impl UserService {
 
 // ===== 4. Controller using request context =====
 
-#[controller("/users", pub struct UserController {
+#[controller("/users")]
+pub struct UserController {
     #[inject]
     context: RequestContext,  // Request-scoped context
     #[inject]
     user_service: UserService, // Singleton service
-})]
+}
+
+#[routes]
 impl UserController {
     #[get("/me")]
     fn get_current_user(&self) -> ToniBody {

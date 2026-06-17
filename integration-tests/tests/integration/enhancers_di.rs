@@ -4,7 +4,7 @@ use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
-    controller, get, injectable, module, new, provider_value, use_guards, use_interceptors,
+    controller, routes, get, injectable, module, new, provider_value, use_guards, use_interceptors,
     Body as ToniBody, RequestPart,
 };
 
@@ -213,10 +213,14 @@ impl Interceptor<HttpContext> for TimingInterceptor {
 
 // ---- controller --------------------------------------------------------------
 
-#[controller("/api", pub struct EnhancerTestController {
+#[controller("/api")]
+pub struct EnhancerTestController {
     tracker: ExecutionTracker,
-})]
+}
+
+#[routes]
 impl EnhancerTestController {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }

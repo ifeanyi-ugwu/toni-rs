@@ -30,7 +30,7 @@ use serial_test::serial;
 use futures_util::{SinkExt, StreamExt};
 use toni::toni_factory::ToniFactory;
 use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
-use toni::{controller, module, post, Body as ToniBody};
+use toni::{controller, routes, module, post, Body as ToniBody};
 use toni_axum::AxumAdapter;
 use toni_macros::websocket_gateway;
 use toni_tungstenite::TungsteniteAdapter;
@@ -227,9 +227,12 @@ impl EventGateway {
     }
 }
 
-#[controller("/trigger", pub struct TriggerController {
+#[controller("/trigger")]
+pub struct TriggerController {
     #[inject] gateway: EventGateway,
-})]
+}
+
+#[routes]
 impl TriggerController {
     #[post("/")]
     async fn trigger(&self) -> ToniBody {

@@ -63,9 +63,12 @@ struct NotifyPayload {
     message: String,
 }
 
-#[controller("/notify", pub struct NotifyController {
+#[controller("/notify")]
+pub struct NotifyController {
     #[inject] gateway: NotificationGateway,
-})]
+}
+
+#[routes]
 impl NotifyController {
     /// Accepts a JSON body and broadcasts the message to all WS clients.
     #[post("/")]

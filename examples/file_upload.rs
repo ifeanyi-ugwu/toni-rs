@@ -22,15 +22,11 @@ use toni::extractors::Multipart;
 use toni::*;
 use toni_axum::AxumAdapter;
 
-#[derive(Clone)]
+#[controller("/")]
 pub struct UploadController;
 
-#[controller("/")]
+#[routes]
 impl UploadController {
-    pub fn new() -> Self {
-        Self
-    }
-
     /// Accepts a multipart form with a `file` field and an optional
     /// `description` text field.
     #[post("/upload")]

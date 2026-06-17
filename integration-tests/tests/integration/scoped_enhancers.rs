@@ -8,7 +8,7 @@ use toni::context::{HttpContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
-    controller, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
+    controller, routes, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
 };
 use toni_macros::websocket_gateway;
 
@@ -69,7 +69,10 @@ impl Interceptor<HttpContext> for TransientInterceptor {
 
 // ---- controllers -------------------------------------------------------------
 
-#[controller("/gate", pub struct GateController {})]
+#[controller("/gate")]
+pub struct GateController {}
+
+#[routes]
 #[use_guards(RequestGuard)]
 impl GateController {
     #[get("/check")]
@@ -78,7 +81,10 @@ impl GateController {
     }
 }
 
-#[controller("/secret", pub struct SecretController {})]
+#[controller("/secret")]
+pub struct SecretController {}
+
+#[routes]
 #[use_guards(HeaderGuard)]
 impl SecretController {
     #[get("/unlock")]
@@ -87,7 +93,10 @@ impl SecretController {
     }
 }
 
-#[controller("/transient", pub struct TransientController {})]
+#[controller("/transient")]
+pub struct TransientController {}
+
+#[routes]
 #[use_interceptors(TransientInterceptor)]
 impl TransientController {
     #[get("/ping")]

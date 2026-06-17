@@ -9,7 +9,7 @@ use serde_json::json;
 use toni::async_trait;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::MiddlewareConsumer;
-use toni::{controller, get, module, post, Body as ToniBody, TowerLayer};
+use toni::{controller, routes, get, module, post, Body as ToniBody, TowerLayer};
 use tower::Layer;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -23,7 +23,10 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 #[tokio_localset_test::localset_test]
 async fn tower_layer_adds_response_header() {
-    #[controller("/", pub struct PingController {})]
+    #[controller("/")]
+    pub struct PingController {}
+
+    #[routes]
     impl PingController {
         #[get("/ping")]
         fn ping(&self) -> ToniBody {
@@ -68,7 +71,10 @@ async fn tower_layer_adds_response_header() {
 
 #[tokio_localset_test::localset_test]
 async fn tower_layer_cors_permissive() {
-    #[controller("/api", pub struct ApiController {})]
+    #[controller("/api")]
+    pub struct ApiController {}
+
+    #[routes]
     impl ApiController {
         #[get("/data")]
         fn get_data(&self) -> ToniBody {
@@ -110,7 +116,10 @@ async fn tower_layer_cors_permissive() {
 
 #[tokio_localset_test::localset_test]
 async fn tower_layer_request_body_round_trip() {
-    #[controller("/echo", pub struct EchoController {})]
+    #[controller("/echo")]
+    pub struct EchoController {}
+
+    #[routes]
     impl EchoController {
         #[post("/json")]
         async fn echo_json(
@@ -236,7 +245,10 @@ impl Middleware for StampRequestIdMiddleware {
 
 #[tokio_localset_test::localset_test]
 async fn tower_layer_reads_toni_extensions() {
-    #[controller("/", pub struct ExtController {})]
+    #[controller("/")]
+    pub struct ExtController {}
+
+    #[routes]
     impl ExtController {
         #[get("/ext")]
         fn ext(&self) -> ToniBody {
@@ -281,7 +293,10 @@ async fn tower_layer_reads_toni_extensions() {
 
 #[tokio_localset_test::localset_test]
 async fn tower_service_builder_composition() {
-    #[controller("/", pub struct ComposedController {})]
+    #[controller("/")]
+    pub struct ComposedController {}
+
+    #[routes]
     impl ComposedController {
         #[get("/composed")]
         fn composed(&self) -> ToniBody {
@@ -342,7 +357,10 @@ async fn tower_and_toni_middleware_interleaved() {
         }
     }
 
-    #[controller("/", pub struct InterleavedController {})]
+    #[controller("/")]
+    pub struct InterleavedController {}
+
+    #[routes]
     impl InterleavedController {
         #[get("/interleaved")]
         fn interleaved(&self) -> ToniBody {
@@ -393,7 +411,10 @@ async fn tower_compression_layer_transforms_body() {
     let large_body = "toni ".repeat(500);
     let expected = large_body.clone();
 
-    #[controller("/", pub struct CompressController {})]
+    #[controller("/")]
+    pub struct CompressController {}
+
+    #[routes]
     impl CompressController {
         #[get("/data")]
         fn data(&self) -> ToniBody {

@@ -1,12 +1,15 @@
 use crate::common::TestServer;
 use futures_util::stream;
 use toni::{
-    controller,
+    controller, routes,
     extractors::{BodyStream, Bytes},
     module, post, Body as ToniBody,
 };
 
-#[controller("/stream", pub struct StreamingController;)]
+#[controller("/stream")]
+pub struct StreamingController;
+
+#[routes]
 impl StreamingController {
     #[post("/echo")]
     async fn echo(&self, Bytes(body): Bytes) -> ToniBody {

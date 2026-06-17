@@ -25,15 +25,11 @@ use toni::*;
 use toni_axum::AxumAdapter;
 use tracing_subscriber::{fmt, EnvFilter};
 
-#[derive(Clone)]
+#[controller("/hello")]
 struct HelloController;
 
-#[controller("/hello")]
+#[routes]
 impl HelloController {
-    pub fn new() -> Self {
-        Self
-    }
-
     #[get("/")]
     fn hello(&self) -> Body {
         Body::text("Hello, toni!".to_string())

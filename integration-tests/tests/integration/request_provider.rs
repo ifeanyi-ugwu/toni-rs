@@ -1,10 +1,13 @@
 use crate::common::TestServer;
-use toni::{controller, get, module, Body as ToniBody, Request};
+use toni::{controller, routes, get, module, Body as ToniBody, Request};
 
-#[controller("/test", pub struct TestController {
+#[controller("/test")]
+pub struct TestController {
     #[inject]
     request: Request,
-})]
+}
+
+#[routes]
 impl TestController {
     #[get("/info")]
     fn get_info(&self) -> ToniBody {

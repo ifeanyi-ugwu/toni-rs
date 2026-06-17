@@ -4,7 +4,7 @@ use toni::context::HttpContext;
 use toni::di::{APP_GUARD, APP_INTERCEPTOR};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::{
-    controller, get, injectable, module, new, provider_token, provider_value, Body as ToniBody,
+    controller, routes, get, injectable, module, new, provider_token, provider_value, Body as ToniBody,
 };
 
 use crate::common::TestServer;
@@ -110,10 +110,14 @@ impl Interceptor<HttpContext> for AppInterceptorWithDI {
     }
 }
 
-#[controller("/api", pub struct TestController {
+#[controller("/api")]
+pub struct TestController {
     tracker: ExecutionTracker,
-})]
+}
+
+#[routes]
 impl TestController {
+    #[new]
     pub fn new(tracker: ExecutionTracker) -> Self {
         Self { tracker }
     }
