@@ -275,43 +275,6 @@ fn generate_gateway_impl(
         .map(|info| &info.token_expr)
         .collect();
 
-    let guard_tokens_impl = if !guard_tokens.is_empty() {
-        quote! {
-            fn get_guard_tokens(&self) -> Vec<String> {
-                vec![#(#guard_tokens),*]
-            }
-        }
-    } else {
-        quote! {}
-    };
-    let interceptor_tokens_impl = if !interceptor_tokens.is_empty() {
-        quote! {
-            fn get_interceptor_tokens(&self) -> Vec<String> {
-                vec![#(#interceptor_tokens),*]
-            }
-        }
-    } else {
-        quote! {}
-    };
-    let pipe_tokens_impl = if !pipe_tokens.is_empty() {
-        quote! {
-            fn get_pipe_tokens(&self) -> Vec<String> {
-                vec![#(#pipe_tokens),*]
-            }
-        }
-    } else {
-        quote! {}
-    };
-    let error_handler_tokens_impl = if !error_handler_tokens.is_empty() {
-        quote! {
-            fn get_error_handler_tokens(&self) -> Vec<String> {
-                vec![#(#error_handler_tokens),*]
-            }
-        }
-    } else {
-        quote! {}
-    };
-
     // Extract per-handler enhancer tokens from each #[subscribe_message] method.
     // Stored as (event, guard_tokens, interceptor_tokens, pipe_tokens, error_handler_tokens).
     let mut handler_enhancer_entries: Vec<(
@@ -363,101 +326,32 @@ fn generate_gateway_impl(
         }
     }
 
-    let handler_events_impl = if !handler_enhancer_entries.is_empty() {
-        let events: Vec<&str> = handler_enhancer_entries
-            .iter()
-            .map(|(e, _, _, _, _)| e.as_str())
-            .collect();
-        quote! {
-            fn get_handler_events(&self) -> Vec<String> {
-                vec![#(#events.to_string()),*]
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let handler_guard_tokens_impl = {
-        let arms: Vec<_> = handler_enhancer_entries
-            .iter()
-            .filter(|(_, g, _, _, _)| !g.is_empty())
-            .map(|(event, guards, _, _, _)| quote! { #event => vec![#(#guards),*], })
-            .collect();
-        if !arms.is_empty() {
+    // Collapse gateway-level + per-handler tokens into a single `enhancers()` descriptor (replacing
+    // a dozen accessor methods). The resolver reads it once at startup.
+    let handler_entries: Vec<TokenStream> = handler_enhancer_entries
+        .iter()
+        .map(|(event, hg, hi, hp, he)| {
             quote! {
-                fn get_handler_guard_tokens(&self, event: &str) -> Vec<String> {
-                    match event {
-                        #(#arms)*
-                        _ => vec![],
-                    }
+                ::toni::GatewayHandlerEnhancers {
+                    event: #event.to_string(),
+                    guard_tokens: vec![#(#hg),*],
+                    interceptor_tokens: vec![#(#hi),*],
+                    pipe_tokens: vec![#(#hp),*],
+                    error_handler_tokens: vec![#(#he),*],
                 }
             }
-        } else {
-            quote! {}
-        }
-    };
+        })
+        .collect();
 
-    let handler_interceptor_tokens_impl = {
-        let arms: Vec<_> = handler_enhancer_entries
-            .iter()
-            .filter(|(_, _, i, _, _)| !i.is_empty())
-            .map(|(event, _, interceptors, _, _)| {
-                quote! { #event => vec![#(#interceptors),*], }
-            })
-            .collect();
-        if !arms.is_empty() {
-            quote! {
-                fn get_handler_interceptor_tokens(&self, event: &str) -> Vec<String> {
-                    match event {
-                        #(#arms)*
-                        _ => vec![],
-                    }
-                }
+    let enhancers_impl = quote! {
+        fn enhancers(&self) -> ::toni::GatewayEnhancers {
+            ::toni::GatewayEnhancers {
+                guard_tokens: vec![#(#guard_tokens),*],
+                interceptor_tokens: vec![#(#interceptor_tokens),*],
+                pipe_tokens: vec![#(#pipe_tokens),*],
+                error_handler_tokens: vec![#(#error_handler_tokens),*],
+                handlers: vec![#(#handler_entries),*],
             }
-        } else {
-            quote! {}
-        }
-    };
-
-    let handler_pipe_tokens_impl = {
-        let arms: Vec<_> = handler_enhancer_entries
-            .iter()
-            .filter(|(_, _, _, p, _)| !p.is_empty())
-            .map(|(event, _, _, pipes, _)| quote! { #event => vec![#(#pipes),*], })
-            .collect();
-        if !arms.is_empty() {
-            quote! {
-                fn get_handler_pipe_tokens(&self, event: &str) -> Vec<String> {
-                    match event {
-                        #(#arms)*
-                        _ => vec![],
-                    }
-                }
-            }
-        } else {
-            quote! {}
-        }
-    };
-
-    let handler_error_handler_tokens_impl = {
-        let arms: Vec<_> = handler_enhancer_entries
-            .iter()
-            .filter(|(_, _, _, _, e)| !e.is_empty())
-            .map(|(event, _, _, _, handlers)| {
-                quote! { #event => vec![#(#handlers),*], }
-            })
-            .collect();
-        if !arms.is_empty() {
-            quote! {
-                fn get_handler_error_handler_tokens(&self, event: &str) -> Vec<String> {
-                    match event {
-                        #(#arms)*
-                        _ => vec![],
-                    }
-                }
-            }
-        } else {
-            quote! {}
         }
     };
 
@@ -507,23 +401,7 @@ fn generate_gateway_impl(
 
             #on_disconnect_impl
 
-            #guard_tokens_impl
-
-            #interceptor_tokens_impl
-
-            #pipe_tokens_impl
-
-            #error_handler_tokens_impl
-
-            #handler_events_impl
-
-            #handler_guard_tokens_impl
-
-            #handler_interceptor_tokens_impl
-
-            #handler_pipe_tokens_impl
-
-            #handler_error_handler_tokens_impl
+            #enhancers_impl
 
             async fn handle_event(
                 &self,

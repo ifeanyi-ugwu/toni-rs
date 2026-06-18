@@ -32,10 +32,11 @@ impl GatewayResolver {
     }
 
     fn wrap_gateway(&self, gateway: Arc<Box<dyn GatewayTrait>>) -> Result<GatewayWrapper> {
-        let guards = self.resolve_guards(gateway.get_guard_tokens())?;
-        let interceptors = self.resolve_interceptors(gateway.get_interceptor_tokens())?;
-        let pipes = self.resolve_pipes(gateway.get_pipe_tokens())?;
-        let error_handlers = self.resolve_error_handlers(gateway.get_error_handler_tokens())?;
+        let enhancers = gateway.enhancers();
+        let guards = self.resolve_guards(enhancers.guard_tokens)?;
+        let interceptors = self.resolve_interceptors(enhancers.interceptor_tokens)?;
+        let pipes = self.resolve_pipes(enhancers.pipe_tokens)?;
+        let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let route_metadata = gateway.get_route_metadata();
 
         let mut handler_guards: HashMap<String, Vec<WsGuardEntry>> = HashMap::new();
@@ -43,26 +44,23 @@ impl GatewayResolver {
         let mut handler_pipes: HashMap<String, Vec<WsPipeEntry>> = HashMap::new();
         let mut handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>> = HashMap::new();
 
-        for event in gateway.get_handler_events() {
+        for handler in enhancers.handlers {
+            let event = handler.event;
             handler_guards.insert(
                 event.clone(),
-                self.resolve_tokens_only(gateway.get_handler_guard_tokens(&event))?,
+                self.resolve_tokens_only(handler.guard_tokens)?,
             );
             handler_interceptors.insert(
                 event.clone(),
-                self.resolve_interceptor_tokens_only(
-                    gateway.get_handler_interceptor_tokens(&event),
-                )?,
+                self.resolve_interceptor_tokens_only(handler.interceptor_tokens)?,
             );
             handler_pipes.insert(
                 event.clone(),
-                self.resolve_pipe_tokens_only(gateway.get_handler_pipe_tokens(&event))?,
+                self.resolve_pipe_tokens_only(handler.pipe_tokens)?,
             );
             handler_error_handlers.insert(
                 event.clone(),
-                self.resolve_error_handler_tokens_only(
-                    gateway.get_handler_error_handler_tokens(&event),
-                )?,
+                self.resolve_error_handler_tokens_only(handler.error_handler_tokens)?,
             );
         }
 

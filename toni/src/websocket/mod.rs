@@ -20,7 +20,7 @@ pub use broadcast::{
     WsSink,
 };
 pub use broadcast_module::BroadcastModule;
-pub use gateway_trait::GatewayTrait;
+pub use gateway_trait::{GatewayEnhancers, GatewayHandlerEnhancers, GatewayTrait};
 pub use gateway_wrapper::GatewayWrapper;
 pub use ws_client::{WsClient, WsHandshake};
 pub(crate) use ws_client_map::WsClientMap;
