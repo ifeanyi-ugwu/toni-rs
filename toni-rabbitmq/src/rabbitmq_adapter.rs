@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use futures::{FutureExt, StreamExt};
-use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions};
+use lapin::options::{
+    BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, QueueDeclareOptions,
+};
 use lapin::types::FieldTable;
 use lapin::{BasicProperties, Channel, Connection};
 use toni::{RpcAdapter, RpcCallInfo, RpcMessageCallbacks};
@@ -107,10 +109,14 @@ impl RpcAdapter for RabbitMqAdapter {
             let _ = conn.close(200, "shutdown".into()).await;
         });
 
-        Ok(toni::RpcLifecycleHandle::new(None, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            None,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -121,7 +127,11 @@ async fn consume_loop(
 ) {
     while let Some(delivery) = consumer.next().await {
         let Ok(delivery) = delivery else { continue };
-        tokio::spawn(handle_delivery(delivery, channel.clone(), callbacks.clone()));
+        tokio::spawn(handle_delivery(
+            delivery,
+            channel.clone(),
+            callbacks.clone(),
+        ));
     }
 }
 

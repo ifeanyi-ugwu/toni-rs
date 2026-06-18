@@ -1,7 +1,7 @@
-mod module;
-mod pool;
 #[cfg(feature = "health")]
 pub mod health;
+mod module;
+mod pool;
 
 pub use module::DieselModule;
 
@@ -19,10 +19,9 @@ pub type MySqlPool =
 #[cfg(feature = "postgres")]
 pub use diesel_async::AsyncPgConnection;
 #[cfg(feature = "postgres")]
-pub type PgPool =
-    diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>;
+pub type PgPool = diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>;
 
-#[cfg(all(feature = "health", feature = "postgres"))]
-pub use health::PgHealthIndicator;
 #[cfg(all(feature = "health", feature = "mysql"))]
 pub use health::MySqlHealthIndicator;
+#[cfg(all(feature = "health", feature = "postgres"))]
+pub use health::PgHealthIndicator;

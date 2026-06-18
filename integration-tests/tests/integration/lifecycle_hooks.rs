@@ -11,7 +11,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
-use toni::{injectable, module, on_application_bootstrap, on_module_init, toni_factory::ToniFactory};
+use toni::{
+    injectable, module, on_application_bootstrap, on_module_init, toni_factory::ToniFactory,
+};
 use toni_axum::AxumAdapter;
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();

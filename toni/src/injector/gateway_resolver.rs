@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
-use crate::traits_helpers::{
-    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
-};
+use crate::traits_helpers::{WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry};
 use crate::websocket::{GatewayTrait, GatewayWrapper};
 
 use super::ToniContainer;

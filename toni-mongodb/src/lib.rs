@@ -1,11 +1,11 @@
 mod connection;
-mod module;
 #[cfg(feature = "health")]
 pub mod health;
+mod module;
 
-pub use module::MongoModule;
 #[cfg(feature = "health")]
 pub use health::MongoHealthIndicator;
+pub use module::MongoModule;
 
 pub use mongodb::{
     Collection, Database,

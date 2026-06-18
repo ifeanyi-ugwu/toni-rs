@@ -67,7 +67,7 @@ use std::fmt;
 use toni::extractors::Json;
 use toni::http_helpers::Body as ToniBody;
 use toni::http_helpers::RequestPart;
-use toni::{controller, routes, get, module, post, FromRequestParts};
+use toni::{controller, get, module, post, routes, FromRequestParts};
 
 // ============================================================================
 // SECTION 1: AUTHENTICATION EXTRACTORS
@@ -599,8 +599,7 @@ impl FromRequestParts for AuthContext {
 // ============================================================================
 
 /// Controller showing basic extractor usage
-#[controller(
-    "/auth")]
+#[controller("/auth")]
 pub struct AuthController {}
 
 #[routes]
@@ -643,8 +642,7 @@ impl AuthController {
 }
 
 /// Controller showing API key authentication
-#[controller(
-    "/api")]
+#[controller("/api")]
 pub struct ApiController {}
 
 #[routes]
@@ -668,8 +666,7 @@ impl ApiController {
 }
 
 /// Controller showing request metadata extraction
-#[controller(
-    "/metadata")]
+#[controller("/metadata")]
 pub struct MetadataController {}
 
 #[routes]
@@ -723,8 +720,7 @@ impl MetadataController {
 }
 
 /// Controller showing cookie extraction
-#[controller(
-    "/session")]
+#[controller("/session")]
 pub struct SessionController {}
 
 #[routes]
@@ -761,8 +757,7 @@ impl SessionController {
 }
 
 /// Controller showing optional extraction
-#[controller(
-    "/optional")]
+#[controller("/optional")]
 pub struct OptionalController {}
 
 #[routes]
@@ -810,8 +805,7 @@ impl OptionalController {
 }
 
 /// Controller showing composite extraction
-#[controller(
-    "/advanced")]
+#[controller("/advanced")]
 pub struct AdvancedController {}
 
 #[routes]

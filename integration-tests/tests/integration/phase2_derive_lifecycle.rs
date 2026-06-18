@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
 use toni::{
-    before_application_shutdown, injectable, module, on_application_bootstrap, on_module_destroy, on_module_init, on_application_shutdown,
-    toni_factory::ToniFactory,
+    before_application_shutdown, injectable, module, on_application_bootstrap,
+    on_application_shutdown, on_module_destroy, on_module_init, toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
 
@@ -48,7 +48,10 @@ impl HookedService {
 
     #[before_application_shutdown]
     async fn before_application_shutdown(&self, _signal: Option<String>) {
-        get_log().lock().unwrap().push("before_application_shutdown");
+        get_log()
+            .lock()
+            .unwrap()
+            .push("before_application_shutdown");
     }
 
     #[on_application_shutdown]

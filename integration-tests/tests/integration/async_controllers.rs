@@ -1,5 +1,5 @@
 use crate::common::TestServer;
-use toni::{controller, routes, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, injectable, module, routes, Body as ToniBody};
 
 #[injectable]
 pub struct AsyncService;

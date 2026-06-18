@@ -41,11 +41,7 @@ impl SimpleGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn handle_ping(
-        &self,
-        client: WsClient,
-        _message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_ping(&self, client: WsClient, _message: WsMessage) -> WsHandlerResult {
         println!("🏓 Ping from {}", client.id);
         Ok(WsMessage::text("pong").into())
     }

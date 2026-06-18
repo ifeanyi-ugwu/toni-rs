@@ -10,9 +10,9 @@ use crate::{
     traits_helpers::{
         Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
         GrpcInterceptorEntry, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole,
-        RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc,
-        WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
+        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
+        WsInterceptorEntry, WsPipeEntry,
     },
     websocket::GatewayTrait,
 };
@@ -283,7 +283,9 @@ impl ToniContainer {
                     self.role_registry.http_guards.insert(token.clone(), g);
                 }
                 ProviderRole::HttpInterceptor(i) => {
-                    self.role_registry.http_interceptors.insert(token.clone(), i);
+                    self.role_registry
+                        .http_interceptors
+                        .insert(token.clone(), i);
                 }
                 ProviderRole::HttpPipe(p) => {
                     self.role_registry.http_pipes.insert(token.clone(), p);

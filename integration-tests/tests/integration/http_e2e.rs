@@ -2,7 +2,7 @@ use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 use toni::{
-    controller, routes, extractors::Json, get, injectable, module, new, post, Body as ToniBody,
+    controller, extractors::Json, get, injectable, module, new, post, routes, Body as ToniBody,
     Request,
 };
 use toni_config::{Config, ConfigModule, ConfigService};

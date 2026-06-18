@@ -10,17 +10,21 @@
 //!    observers + the chain so one bad logger doesn't kill the request.
 
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
 use toni::{
-    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller, routes,
+    async_trait,
+    context::HttpContext,
+    controller,
     errors::{ErrorKind, HttpError, PanicRecovered, PipelineSegment},
-    get, module, toni_factory::ToniFactory,
+    get, module, routes,
+    toni_factory::ToniFactory,
     traits_helpers::{
         ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
     },
+    Body as ToniBody, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::{use_error_handlers, use_guards, use_interceptors, use_pipes};
@@ -126,7 +130,10 @@ async fn panicking_handler_renders_500_via_panic_recovered() {
     // Observer fired exactly once with a `PanicRecovered` carrying the
     // `HandlerBody` segment.
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::HandlerBody));
+    assert_eq!(
+        *captured.lock().unwrap(),
+        Some(PipelineSegment::HandlerBody)
+    );
 
     // Body carries the panic message in the canonical envelope.
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -180,11 +187,7 @@ async fn panicking_observer_does_not_break_dispatch() {
         captured_segment: Arc::new(std::sync::Mutex::new(None)),
     });
 
-    let addr = start_app(
-        GuardedModule::module_definition(),
-        vec![panicker, counter],
-    )
-    .await;
+    let addr = start_app(GuardedModule::module_definition(), vec![panicker, counter]).await;
 
     let resp = reqwest::get(format!("http://{}/api/protected", addr))
         .await

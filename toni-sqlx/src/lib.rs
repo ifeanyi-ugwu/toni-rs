@@ -1,8 +1,8 @@
+#[cfg(feature = "health")]
+pub mod health;
 mod module;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 mod pool;
-#[cfg(feature = "health")]
-pub mod health;
 
 pub use module::SqlxModule;
 

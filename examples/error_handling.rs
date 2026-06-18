@@ -21,9 +21,9 @@
 use serde::Serialize;
 use serde_json::json;
 use toni::{
-    async_trait, catch, context::HttpContext, controller, routes, errors::HttpError, get,
-    http_helpers::Body, injectable, module, post, toni_factory::ToniFactory, traits_helpers::Guard,
-    Error, HttpRequest, HttpResponse,
+    async_trait, catch, context::HttpContext, controller, errors::HttpError, get,
+    http_helpers::Body, injectable, module, post, routes, toni_factory::ToniFactory,
+    traits_helpers::Guard, Error, HttpRequest, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;

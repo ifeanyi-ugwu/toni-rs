@@ -59,9 +59,8 @@ impl Multipart {
 
 fn body_into_stream(
     body: RequestBoxBody,
-) -> impl futures::Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>>
-       + Send
-       + 'static {
+) -> impl futures::Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send + 'static
+{
     futures::stream::unfold(body, |mut body| async move {
         match body.frame().await {
             Some(Ok(frame)) => {

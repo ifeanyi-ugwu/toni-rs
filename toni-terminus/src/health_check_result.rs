@@ -93,7 +93,11 @@ impl HealthCheckResult {
         }
 
         let status = if error.is_empty() { "ok" } else { "error" };
-        Self { status, info, error }
+        Self {
+            status,
+            info,
+            error,
+        }
     }
 
     pub fn status(&self) -> &'static str {
@@ -144,12 +148,7 @@ mod tests {
     use super::*;
 
     fn parse_body(response: HttpResponse) -> Value {
-        let bytes = response
-            .body
-            .unwrap()
-            .try_bytes()
-            .unwrap()
-            .to_vec();
+        let bytes = response.body.unwrap().try_bytes().unwrap().to_vec();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -216,7 +215,10 @@ mod tests {
     fn json_shape_with_failure() {
         let result = HealthCheckResult::from_results(vec![
             Ok(HealthEntry::up("db")),
-            Err(HealthEntry::down_with("redis", json!({ "message": "connection refused" }))),
+            Err(HealthEntry::down_with(
+                "redis",
+                json!({ "message": "connection refused" }),
+            )),
         ]);
         let body = parse_body(result.into_response());
 

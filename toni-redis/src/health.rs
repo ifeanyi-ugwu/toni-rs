@@ -51,11 +51,12 @@ impl ProviderFactory for RedisHealthIndicatorFactory {
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
         let client = redis::Client::open(self.url.as_str())
             .unwrap_or_else(|e| panic!("toni-redis health: invalid URL '{}': {e}", self.url));
-        let manager = ConnectionManager::new(client)
-            .await
-            .unwrap_or_else(|e| {
-                panic!("toni-redis health: failed to connect to '{}': {e}", self.url)
-            });
+        let manager = ConnectionManager::new(client).await.unwrap_or_else(|e| {
+            panic!(
+                "toni-redis health: failed to connect to '{}': {e}",
+                self.url
+            )
+        });
         Injectable::new(
             Arc::new(Box::new(RedisHealthProvider {
                 indicator: RedisHealthIndicator { manager },

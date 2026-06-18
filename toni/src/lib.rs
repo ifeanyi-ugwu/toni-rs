@@ -1,10 +1,12 @@
 #[path = "adapter/mod.rs"]
 pub mod adapter;
 mod application_context;
-mod error;
 pub mod builtin_module;
 pub mod context;
-pub use context::{CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, WsContext};
+mod error;
+pub use context::{
+    CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, WsContext,
+};
 #[doc(hidden)]
 pub mod __construct;
 #[doc(hidden)]
@@ -19,11 +21,11 @@ pub mod extractors;
 pub mod grpc_status;
 pub use grpc_status::{GrpcCode, GrpcStatus};
 pub mod grpc_runtime;
-pub mod panic_recovery;
 pub mod http_helpers;
 pub mod injector;
 pub mod middleware;
 pub mod module_helpers;
+pub mod panic_recovery;
 pub mod provider_scope;
 mod request;
 mod router;
@@ -43,8 +45,7 @@ pub use tracing;
 pub use adapter::{
     AdapterContext, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,
     MessageCallbackResult, RequestHandler, RpcAdapter, RpcClientTransport, RpcLifecycleHandle,
-    RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks,
-    WsLifecycleHandle,
+    RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
 };
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,

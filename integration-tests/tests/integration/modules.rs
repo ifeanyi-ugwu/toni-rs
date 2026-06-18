@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use toni::injector::ModuleRef;
-use toni::{controller, routes, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, injectable, module, routes, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn global_modules_attribute_syntax() {

@@ -16,7 +16,10 @@ use crate::{
 struct InstanceHandler(Arc<InstanceWrapper>);
 
 impl RequestHandler for InstanceHandler {
-    fn handle(&self, req: HttpRequest) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>> {
+    fn handle(
+        &self,
+        req: HttpRequest,
+    ) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>> {
         let wrapper = self.0.clone();
         Box::pin(async move { wrapper.handle_request(req).await })
     }
@@ -82,11 +85,7 @@ impl RoutesResolver {
             let route_middleware = {
                 let container = self.container.borrow();
                 if let Some(mm) = container.get_middleware_manager() {
-                    mm.get_middleware_for_route(
-                        &module_token,
-                        &route_path,
-                        route_method.as_str(),
-                    )
+                    mm.get_middleware_for_route(&module_token, &route_path, route_method.as_str())
                 } else {
                     Vec::new()
                 }

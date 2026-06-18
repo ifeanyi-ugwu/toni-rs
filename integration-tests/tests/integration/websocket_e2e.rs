@@ -26,11 +26,14 @@
 //!    Verifies that the WS port refuses new connections after shutdown.
 
 use crate::common::TestServer;
-use serial_test::serial;
 use futures_util::{SinkExt, StreamExt};
+use serial_test::serial;
 use toni::toni_factory::ToniFactory;
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
-use toni::{controller, routes, module, post, Body as ToniBody};
+use toni::websocket::{
+    BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult,
+    WsMessage,
+};
+use toni::{controller, module, post, routes, Body as ToniBody};
 use toni_axum::AxumAdapter;
 use toni_macros::websocket_gateway;
 use toni_tungstenite::TungsteniteAdapter;
@@ -46,11 +49,7 @@ impl EchoGateway {
     }
 
     #[subscribe_message("message")]
-    async fn on_message(
-        &self,
-        _client: WsClient,
-        msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_message(&self, _client: WsClient, msg: WsMessage) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text".into()))?;
@@ -76,21 +75,13 @@ impl RoomGateway {
     /// Handshake: proves the client is fully registered in ConnectionManager.
     /// Response routes back to sender only (via CM.send_to_clients in broadcast mode).
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 
     /// Broadcast the raw message text to every connected client.
     #[subscribe_message("shout")]
-    async fn on_shout(
-        &self,
-        _client: WsClient,
-        msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_shout(&self, _client: WsClient, msg: WsMessage) -> WsHandlerResult {
         let text = msg
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text".into()))?;
@@ -117,11 +108,7 @@ impl PingGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }
@@ -218,18 +205,15 @@ impl EventGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }
 
 #[controller("/trigger")]
 pub struct TriggerController {
-    #[inject] gateway: EventGateway,
+    #[inject]
+    gateway: EventGateway,
 }
 
 #[routes]
@@ -313,7 +297,11 @@ async fn websocket_separate_port_end_to_end() {
         app.use_websocket_adapter(TungsteniteAdapter::new())
             .unwrap();
         let bound = app.bind().await.unwrap();
-        let ws_addr = bound.websocket.into_iter().next().expect("WS adapter not bound");
+        let ws_addr = bound
+            .websocket
+            .into_iter()
+            .next()
+            .expect("WS adapter not bound");
         let _ = addr_tx.send(ws_addr);
         app.run().await;
     });
@@ -345,7 +333,8 @@ async fn websocket_separate_port_end_to_end() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn separate_port_close_stops_ws_server() {
-    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();
+    let (addr_tx, addr_rx) =
+        tokio::sync::oneshot::channel::<(std::net::SocketAddr, std::net::SocketAddr)>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
 
     let local = tokio::task::LocalSet::new();
@@ -357,7 +346,11 @@ async fn separate_port_close_stops_ws_server() {
             .unwrap();
         let bound = app.bind().await.unwrap();
         let http_addr = bound.http.expect("HTTP adapter not bound");
-        let ws_addr = bound.websocket.into_iter().next().expect("WS adapter not bound");
+        let ws_addr = bound
+            .websocket
+            .into_iter()
+            .next()
+            .expect("WS adapter not bound");
         let _ = addr_tx.send((http_addr, ws_addr));
         let _ = shutdown_tx.send(app.shutdown_handle());
         app.run().await;
@@ -413,11 +406,7 @@ impl ZeroPortGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }

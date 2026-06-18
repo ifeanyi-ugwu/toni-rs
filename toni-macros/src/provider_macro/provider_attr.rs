@@ -47,7 +47,11 @@ fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
 
     let pairs = Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse2(attr)?;
     for nv in pairs {
-        let key = nv.path.get_ident().map(Ident::to_string).unwrap_or_default();
+        let key = nv
+            .path
+            .get_ident()
+            .map(Ident::to_string)
+            .unwrap_or_default();
         let value = str_lit_value(&nv.value)?;
         match key.as_str() {
             "scope" => {
@@ -70,7 +74,10 @@ fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
             other => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    format!("Unknown #[injectable] key: '{}'. Expected 'scope' or 'init'", other),
+                    format!(
+                        "Unknown #[injectable] key: '{}'. Expected 'scope' or 'init'",
+                        other
+                    ),
                 ));
             }
         }

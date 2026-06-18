@@ -109,12 +109,9 @@ async fn run_grpc_guards_inline(
             )));
         }
         if ctx.should_abort() {
-            let event =
-                GuardRejection::with_reason(index, "request aborted by guard");
+            let event = GuardRejection::with_reason(index, "request aborted by guard");
             fan_out_observers(&enhancers.error_observers, &event, ctx).await;
-            return Err(GrpcStatus::permission_denied(
-                "request aborted by guard",
-            ));
+            return Err(GrpcStatus::permission_denied("request aborted by guard"));
         }
     }
     Ok(())
@@ -139,8 +136,11 @@ async fn execute_with_interceptors<D, Fut>(
     }
 
     let next = build_next(&interceptors[1..], observers.to_vec(), delegate);
-    if let Err(event) =
-        catch_async(PipelineSegment::Middleware, interceptors[0].intercept(ctx, next)).await
+    if let Err(event) = catch_async(
+        PipelineSegment::Middleware,
+        interceptors[0].intercept(ctx, next),
+    )
+    .await
     {
         record_interceptor_panic(ctx, observers, event).await;
     }
@@ -327,9 +327,7 @@ pub async fn run_grpc_error_chain(
 /// Thin wrapper around [`crate::panic_recovery::catch_async`] so the
 /// macro can keep a stable, transport-specific entry point even as the
 /// shared helper evolves.
-pub async fn catch_handler_panic<Fut, T>(
-    fut: Fut,
-) -> Result<T, crate::errors::PanicRecovered>
+pub async fn catch_handler_panic<Fut, T>(fut: Fut) -> Result<T, crate::errors::PanicRecovered>
 where
     Fut: Future<Output = T>,
 {

@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
-use anyhow::{Result, anyhow};
 use crate::error::BindError;
+use anyhow::{Result, anyhow};
 
 use crate::{
     injector::ToniContainer,
@@ -266,7 +266,9 @@ impl ToniDependenciesScanner {
             let container = self.container.borrow();
             let module_ref = container
                 .get_module_by_token(&module_token.to_string())
-                .ok_or_else(|| BindError::from(anyhow::anyhow!("Module not found: {}", module_token)))?;
+                .ok_or_else(|| {
+                    BindError::from(anyhow::anyhow!("Module not found: {}", module_token))
+                })?;
 
             tracing::debug!(module = %module_token, hook = "on_application_bootstrap", "lifecycle hook");
             module_ref
@@ -283,7 +285,10 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    async fn call_provider_bootstrap_hooks(&self, modules_token: &[String]) -> Result<(), BindError> {
+    async fn call_provider_bootstrap_hooks(
+        &self,
+        modules_token: &[String],
+    ) -> Result<(), BindError> {
         for module_token in modules_token {
             {
                 let container = self.container.borrow();
@@ -295,11 +300,14 @@ impl ToniDependenciesScanner {
                         }
 
                         tracing::debug!(module = %module_token, provider = %token, hook = "on_application_bootstrap", "lifecycle hook");
-                        provider.on_application_bootstrap().await.map_err(|source| BindError::HookFailed {
-                            module: module_token.clone(),
-                            hook: "on_application_bootstrap",
-                            source,
-                        })?;
+                        provider
+                            .on_application_bootstrap()
+                            .await
+                            .map_err(|source| BindError::HookFailed {
+                                module: module_token.clone(),
+                                hook: "on_application_bootstrap",
+                                source,
+                            })?;
                     }
                 }
             }
@@ -308,11 +316,14 @@ impl ToniDependenciesScanner {
                 let container = self.container.borrow();
                 if let Some(module) = container.get_module_by_token(module_token) {
                     for controller in module.get_controller_objects() {
-                        controller.on_application_bootstrap().await.map_err(|source| BindError::HookFailed {
-                            module: module_token.clone(),
-                            hook: "on_application_bootstrap",
-                            source,
-                        })?;
+                        controller
+                            .on_application_bootstrap()
+                            .await
+                            .map_err(|source| BindError::HookFailed {
+                                module: module_token.clone(),
+                                hook: "on_application_bootstrap",
+                                source,
+                            })?;
                     }
                 }
             }
@@ -325,7 +336,9 @@ impl ToniDependenciesScanner {
             let container = self.container.borrow();
             let module_ref = container
                 .get_module_by_token(&module_token.to_string())
-                .ok_or_else(|| BindError::from(anyhow::anyhow!("Module not found: {}", module_token)))?;
+                .ok_or_else(|| {
+                    BindError::from(anyhow::anyhow!("Module not found: {}", module_token))
+                })?;
 
             tracing::debug!(module = %module_token, hook = "on_module_init", "lifecycle hook");
             module_ref
@@ -355,10 +368,12 @@ impl ToniDependenciesScanner {
                         }
 
                         tracing::debug!(module = %module_token, provider = %token, hook = "on_module_init", "lifecycle hook");
-                        provider.on_module_init().await.map_err(|source| BindError::HookFailed {
-                            module: module_token.clone(),
-                            hook: "on_module_init",
-                            source,
+                        provider.on_module_init().await.map_err(|source| {
+                            BindError::HookFailed {
+                                module: module_token.clone(),
+                                hook: "on_module_init",
+                                source,
+                            }
                         })?;
                     }
                 }
@@ -368,10 +383,12 @@ impl ToniDependenciesScanner {
                 let container = self.container.borrow();
                 if let Some(module) = container.get_module_by_token(module_token) {
                     for controller in module.get_controller_objects() {
-                        controller.on_module_init().await.map_err(|source| BindError::HookFailed {
-                            module: module_token.clone(),
-                            hook: "on_module_init",
-                            source,
+                        controller.on_module_init().await.map_err(|source| {
+                            BindError::HookFailed {
+                                module: module_token.clone(),
+                                hook: "on_module_init",
+                                source,
+                            }
                         })?;
                     }
                 }

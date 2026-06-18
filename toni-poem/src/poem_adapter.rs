@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use tokio::sync::watch;
@@ -12,15 +12,18 @@ use poem::endpoint::{BoxEndpoint, Endpoint, EndpointExt};
 use poem::http::StatusCode;
 use poem::listener::{Acceptor, Listener, TcpListener};
 use poem::web::websocket::WebSocket;
-use poem::{Body as PoemBody, FromRequest, IntoResponse, Request as PoemRequest, Response as PoemResponse, Route, RouteMethod, Server};
+use poem::{
+    Body as PoemBody, FromRequest, IntoResponse, Request as PoemRequest, Response as PoemResponse,
+    Route, RouteMethod, Server,
+};
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
+    async_trait,
+    http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
     HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
     WsConnectionCallbacks,
-    async_trait,
-    http_helpers::{PathParams, RequestBody, RequestPart},
 };
 
 use crate::poem_websocket_adapter::{poem_to_ws_message, ws_message_to_poem};
@@ -443,21 +446,20 @@ impl HttpAdapter for PoemAdapter {
             }
         });
 
-        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(HttpLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
 #[async_trait]
 impl WebSocketAdapter for PoemAdapter {
-    fn bind(
-        &mut self,
-        port: u16,
-        path: &str,
-        callbacks: Arc<WsConnectionCallbacks>,
-    ) -> Result<()> {
+    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
         self.ws_ports
             .entry(port)
             .or_default()

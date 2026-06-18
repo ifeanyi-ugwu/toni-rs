@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, routes, get, injectable, module, Body as ToniBody};
+use toni::{controller, get, injectable, module, routes, Body as ToniBody};
 
 // ---- Test 1: Singleton controller + singleton provider ----------------------
 
@@ -14,7 +14,10 @@ impl SingletonProvider {
 }
 
 #[controller("/ok")]
-pub struct OkController { #[inject] provider: SingletonProvider }
+pub struct OkController {
+    #[inject]
+    provider: SingletonProvider,
+}
 
 #[routes]
 impl OkController {
@@ -41,7 +44,10 @@ impl RequestScopedProvider {
 
 // Singleton controller with a request-scoped dep — framework promotes to request scope
 #[controller("/problematic")]
-pub struct ProblematicController { #[inject] provider: RequestScopedProvider }
+pub struct ProblematicController {
+    #[inject]
+    provider: RequestScopedProvider,
+}
 
 #[routes]
 impl ProblematicController {
@@ -65,7 +71,10 @@ impl AnotherRequestProvider {
 }
 
 #[controller("/correct", scope = "request")]
-pub struct CorrectController { #[inject] provider: AnotherRequestProvider }
+pub struct CorrectController {
+    #[inject]
+    provider: AnotherRequestProvider,
+}
 
 #[routes]
 impl CorrectController {
@@ -98,8 +107,10 @@ impl SessionProvider {
 
 #[controller("/mixed")]
 pub struct MixedController {
-    #[inject] cache: CacheProvider,
-    #[inject] session: SessionProvider,
+    #[inject]
+    cache: CacheProvider,
+    #[inject]
+    session: SessionProvider,
 }
 
 #[routes]
@@ -128,7 +139,10 @@ impl ContradictoryRequestProvider {
 }
 
 #[controller("/explicit", scope = "singleton")]
-pub struct ExplicitSingletonController { #[inject] provider: ContradictoryRequestProvider }
+pub struct ExplicitSingletonController {
+    #[inject]
+    provider: ContradictoryRequestProvider,
+}
 
 #[routes]
 impl ExplicitSingletonController {

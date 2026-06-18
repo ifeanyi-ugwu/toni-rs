@@ -109,9 +109,8 @@ fn type_level_probe_discriminates_without_an_instance() {
 #[tokio::test]
 async fn coerced_trait_object_runs() {
     let guard = Arc::new(RealGuard { allow: false });
-    let role: Arc<dyn Guard<HttpContext>> = GuardProbe(guard)
-        .http_guard_role()
-        .expect("guard detected");
+    let role: Arc<dyn Guard<HttpContext>> =
+        GuardProbe(guard).http_guard_role().expect("guard detected");
 
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     let ctx = HttpContext::from_parts(parts);

@@ -179,9 +179,7 @@ async fn reader_loop(socket: Arc<UdpSocket>, inner: Arc<Inner>, slot: Slot) {
     // Drain all pending requests so callers don't hang indefinitely.
     let mut pending = inner.pending.lock().await;
     for (_, tx) in pending.drain() {
-        let _ = tx.send(Err(RpcClientError::Transport(
-            "socket closed".to_string(),
-        )));
+        let _ = tx.send(Err(RpcClientError::Transport("socket closed".to_string())));
     }
 
     tracing::debug!("UdpClientTransport socket closed");
@@ -256,9 +254,7 @@ impl RpcClientTransport for UdpClientTransport {
 
             match tokio::time::timeout(self.timeout, rx).await {
                 Ok(Ok(result)) => return result,
-                Ok(Err(_)) => {
-                    return Err(RpcClientError::Transport("socket closed".to_string()))
-                }
+                Ok(Err(_)) => return Err(RpcClientError::Transport("socket closed".to_string())),
                 Err(_) => {
                     inner.pending.lock().await.remove(&id);
                     last_timeout = Some(RpcClientError::Timeout);

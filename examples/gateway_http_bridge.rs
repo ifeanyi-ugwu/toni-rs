@@ -47,11 +47,7 @@ impl NotificationGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }
@@ -65,7 +61,8 @@ struct NotifyPayload {
 
 #[controller("/notify")]
 pub struct NotifyController {
-    #[inject] gateway: NotificationGateway,
+    #[inject]
+    gateway: NotificationGateway,
 }
 
 #[routes]

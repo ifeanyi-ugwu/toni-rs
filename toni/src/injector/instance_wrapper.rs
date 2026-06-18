@@ -4,15 +4,14 @@ use crate::{
     async_trait,
     context::{HandlerContext, HttpContext},
     errors::{
-        Error, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
-        PipelineSegment,
+        Error, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered, PipelineSegment,
     },
     http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry,
-        HttpInterceptorEntry, HttpPipeEntry, Interceptor, InterceptorNext, Pipe, Route,
+        ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
+        HttpPipeEntry, Interceptor, InterceptorNext, Pipe, Route,
     },
 };
 use futures::FutureExt;
@@ -503,12 +502,8 @@ impl InstanceWrapper {
                 return;
             }
         }
-        let rendered = Self::safe_render(
-            || HttpError::from(event).to_response(),
-            observers,
-            context,
-        )
-        .await;
+        let rendered =
+            Self::safe_render(|| HttpError::from(event).to_response(), observers, context).await;
         context.set_response(rendered);
     }
 
@@ -574,10 +569,8 @@ impl InstanceWrapper {
         let exec_result = match exec_result {
             Ok(result) => result,
             Err(payload) => {
-                let event = PanicRecovered::from_panic_payload(
-                    PipelineSegment::HandlerBody,
-                    payload,
-                );
+                let event =
+                    PanicRecovered::from_panic_payload(PipelineSegment::HandlerBody, payload);
                 // Lift the framework event into HttpError via the From blanket.
                 ExecutionResult::Err(HttpError::from(event))
             }
@@ -590,11 +583,11 @@ impl InstanceWrapper {
                 // continues to work the way `#[catch(MyError)]` expects. For
                 // non-`AppError` variants (named HttpError variants), pass the
                 // HttpError itself.
-                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
-                    match &http_err {
-                        HttpError::AppError(e) => e.as_ref(),
-                        other => other,
-                    };
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) = match &http_err
+                {
+                    HttpError::AppError(e) => e.as_ref(),
+                    other => other,
+                };
                 Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =

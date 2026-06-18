@@ -1,5 +1,5 @@
 use crate::common::TestServer;
-use toni::{controller, routes, get, module, Body as ToniBody, Request};
+use toni::{controller, get, module, routes, Body as ToniBody, Request};
 
 #[controller("/test")]
 pub struct TestController {

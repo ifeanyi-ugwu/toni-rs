@@ -60,7 +60,11 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
     /// so toni core stays tonic-free. The macro-generated impl downcasts and
     /// adds itself, wrapping in an enhancer-aware shim built from
     /// `enhancers`.
-    fn register_with(&self, registrar: &mut dyn std::any::Any, enhancers: Arc<ResolvedGrpcEnhancers>);
+    fn register_with(
+        &self,
+        registrar: &mut dyn std::any::Any,
+        enhancers: Arc<ResolvedGrpcEnhancers>,
+    );
 
     // -- Enhancer token getters; default empty so manual `impl GrpcServiceTrait`
     //    users don't have to touch them. The macro overrides these with the

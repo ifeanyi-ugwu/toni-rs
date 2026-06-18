@@ -5,7 +5,7 @@
 //! - Request: Same instance per HTTP request, fresh instance for each request
 //! - Transient: Fresh instance per injection point at construction time
 
-use toni::{controller, routes, get, module, provider_factory, Body as ToniBody};
+use toni::{controller, get, module, provider_factory, routes, Body as ToniBody};
 use uuid::Uuid;
 
 use crate::common::TestServer;

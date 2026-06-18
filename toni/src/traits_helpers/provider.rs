@@ -37,8 +37,12 @@ pub trait Provider: Send + Sync {
 
     // Lifecycle hooks — overridden by the macro when the user annotates a method.
     // Default implementations are no-ops so providers without hooks incur no overhead.
-    async fn on_module_init(&self) -> crate::InitResult { Ok(()) }
-    async fn on_application_bootstrap(&self) -> crate::InitResult { Ok(()) }
+    async fn on_module_init(&self) -> crate::InitResult {
+        Ok(())
+    }
+    async fn on_application_bootstrap(&self) -> crate::InitResult {
+        Ok(())
+    }
     async fn on_module_destroy(&self) {}
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
@@ -72,7 +76,9 @@ macro_rules! transport_factory_types {
             fn create<'a>(
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
-            ) -> Pin<Box<dyn Future<Output = Arc<dyn Interceptor<$context> + Send + Sync>> + Send + 'a>>;
+            ) -> Pin<
+                Box<dyn Future<Output = Arc<dyn Interceptor<$context> + Send + Sync>> + Send + 'a>,
+            >;
         }
 
         #[derive(Clone)]
@@ -99,30 +105,42 @@ macro_rules! transport_factory_types {
 
 transport_factory_types!(
     HttpContext,
-    DynHttpGuardFactory, HttpGuardEntry,
-    DynHttpInterceptorFactory, HttpInterceptorEntry,
-    DynHttpPipeFactory, HttpPipeEntry
+    DynHttpGuardFactory,
+    HttpGuardEntry,
+    DynHttpInterceptorFactory,
+    HttpInterceptorEntry,
+    DynHttpPipeFactory,
+    HttpPipeEntry
 );
 
 transport_factory_types!(
     RpcContext,
-    DynRpcGuardFactory, RpcGuardEntry,
-    DynRpcInterceptorFactory, RpcInterceptorEntry,
-    DynRpcPipeFactory, RpcPipeEntry
+    DynRpcGuardFactory,
+    RpcGuardEntry,
+    DynRpcInterceptorFactory,
+    RpcInterceptorEntry,
+    DynRpcPipeFactory,
+    RpcPipeEntry
 );
 
 transport_factory_types!(
     WsContext,
-    DynWsGuardFactory, WsGuardEntry,
-    DynWsInterceptorFactory, WsInterceptorEntry,
-    DynWsPipeFactory, WsPipeEntry
+    DynWsGuardFactory,
+    WsGuardEntry,
+    DynWsInterceptorFactory,
+    WsInterceptorEntry,
+    DynWsPipeFactory,
+    WsPipeEntry
 );
 
 transport_factory_types!(
     GrpcContext,
-    DynGrpcGuardFactory, GrpcGuardEntry,
-    DynGrpcInterceptorFactory, GrpcInterceptorEntry,
-    DynGrpcPipeFactory, GrpcPipeEntry
+    DynGrpcGuardFactory,
+    GrpcGuardEntry,
+    DynGrpcInterceptorFactory,
+    GrpcInterceptorEntry,
+    DynGrpcPipeFactory,
+    GrpcPipeEntry
 );
 
 pub type HttpErrorHandlerArc = Arc<dyn ErrorHandler<HttpContext, HttpResponse>>;

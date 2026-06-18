@@ -19,7 +19,9 @@ unsafe impl<DB: Database> Sync for SqlxHealthIndicator<DB> {}
 
 impl<DB: Database> Clone for SqlxHealthIndicator<DB> {
     fn clone(&self) -> Self {
-        Self { pool: self.pool.clone() }
+        Self {
+            pool: self.pool.clone(),
+        }
     }
 }
 
@@ -80,9 +82,9 @@ where
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let pool = Pool::<DB>::connect(&self.url)
-            .await
-            .unwrap_or_else(|e| panic!("toni-sqlx health: failed to connect to '{}': {e}", self.url));
+        let pool = Pool::<DB>::connect(&self.url).await.unwrap_or_else(|e| {
+            panic!("toni-sqlx health: failed to connect to '{}': {e}", self.url)
+        });
         Injectable::new(
             Arc::new(Box::new(SqlxHealthProvider {
                 indicator: SqlxHealthIndicator { pool },

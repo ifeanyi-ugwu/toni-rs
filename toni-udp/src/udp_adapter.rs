@@ -9,8 +9,8 @@ use futures_util::FutureExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use tracing::Instrument;
 use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
+use tracing::Instrument;
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
 const MAX_DATAGRAM: usize = 65_507;
@@ -200,10 +200,14 @@ impl RpcAdapter for UdpAdapter {
         });
 
         let shutdown_tx = self.shutdown_tx.clone();
-        Ok(toni::RpcLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -215,11 +219,7 @@ async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await;
 }
 
-async fn drain_tasks(
-    tasks: Arc<Mutex<JoinSet<()>>>,
-    drain_timeout: Option<Duration>,
-    addr: &str,
-) {
+async fn drain_tasks(tasks: Arc<Mutex<JoinSet<()>>>, drain_timeout: Option<Duration>, addr: &str) {
     let drain = async {
         let mut js = tasks.lock().await;
         while js.join_next().await.is_some() {}
@@ -249,11 +249,7 @@ async fn drain_tasks(
 /// Send an `"overloaded"` error frame to the source if the inbound datagram
 /// has an `id` (request-response). Fire-and-forget messages are dropped with
 /// a log line — there's no caller waiting to be notified.
-async fn reject_overloaded(
-    socket: &UdpSocket,
-    src: std::net::SocketAddr,
-    payload: &[u8],
-) {
+async fn reject_overloaded(socket: &UdpSocket, src: std::net::SocketAddr, payload: &[u8]) {
     let id: Option<String> = serde_json::from_slice::<serde_json::Value>(payload)
         .ok()
         .and_then(|v| v["id"].as_str().map(|s| s.to_string()));

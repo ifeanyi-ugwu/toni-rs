@@ -1,8 +1,8 @@
 #![cfg(feature = "integration")]
 
 use std::sync::Arc;
-use testcontainers::{runners::AsyncRunner, ContainerAsync};
-use testcontainers_modules::redis::{Redis, REDIS_PORT};
+use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers_modules::redis::{REDIS_PORT, Redis};
 use tokio::sync::mpsc;
 use toni::{
     module_helpers::module_enum::ModuleDefinition,
@@ -18,9 +18,9 @@ fn make_client() -> (Arc<dyn WsSink>, mpsc::Receiver<WsMessage>) {
 }
 
 async fn boot(url: &str) -> (toni::ToniApplicationContext, RedisBroadcastService) {
-    let app = ToniFactory::create_application_context(ModuleDefinition::DefaultModule(
-        Box::new(RedisBroadcastModule::for_root(url)),
-    ))
+    let app = ToniFactory::create_application_context(ModuleDefinition::DefaultModule(Box::new(
+        RedisBroadcastModule::for_root(url),
+    )))
     .await;
     let rbs = app
         .get::<RedisBroadcastService>()
@@ -90,7 +90,8 @@ async fn to_room_delivers_only_to_members() {
     let (member_sink, mut member_rx) = make_client();
     let (outsider_sink, mut outsider_rx) = make_client();
     rbs.connect("member".to_string(), member_sink, None).await;
-    rbs.connect("outsider".to_string(), outsider_sink, None).await;
+    rbs.connect("outsider".to_string(), outsider_sink, None)
+        .await;
 
     rbs.join_room("member", "vip").await.unwrap();
 
@@ -115,7 +116,8 @@ async fn to_client_delivers_only_to_target() {
     let (target_sink, mut target_rx) = make_client();
     let (bystander_sink, mut bystander_rx) = make_client();
     rbs.connect("target".to_string(), target_sink, None).await;
-    rbs.connect("bystander".to_string(), bystander_sink, None).await;
+    rbs.connect("bystander".to_string(), bystander_sink, None)
+        .await;
 
     rbs.to_client("target")
         .send(WsMessage::text("private"))
@@ -194,7 +196,10 @@ async fn to_client_delivers_cross_process() {
 
     assert_eq!(recv(&mut alice_rx).await.as_text(), Some("hey alice"));
     // bob is on the publishing process but must not receive alice's message.
-    assert!(bob_rx.try_recv().is_err(), "bob should not receive alice's private message");
+    assert!(
+        bob_rx.try_recv().is_err(),
+        "bob should not receive alice's private message"
+    );
 }
 
 /// `get_room_clients` reflects joins from all instances — the cross-process

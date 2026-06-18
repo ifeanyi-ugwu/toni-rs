@@ -14,8 +14,8 @@ use tonic::service::{Routes, RoutesBuilder};
 use tonic::transport::Server;
 use tower::Service;
 
-use toni::async_trait;
 use toni::adapter::{GrpcServiceTrait, ResolvedGrpcEnhancers};
+use toni::async_trait;
 
 use crate::tracing_layer::TracingLayer;
 
@@ -209,11 +209,12 @@ impl toni::GrpcAdapter for GrpcAdapter {
             //     immediate `ResourceExhausted` reject; without it,
             //     callers would queue indefinitely and defeat the
             //     OOM-protection point.
-            let mut builder = Server::builder()
-                .layer(TracingLayer::new())
-                .layer(tower::util::option_layer(
-                    max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
-                ));
+            let mut builder =
+                Server::builder()
+                    .layer(TracingLayer::new())
+                    .layer(tower::util::option_layer(
+                        max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
+                    ));
             if let Some(n) = max_per_connection {
                 builder = builder.concurrency_limit_per_connection(n);
             }
@@ -223,10 +224,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
 
             let server_fut = builder
                 .add_routes(routes)
-                .serve_with_incoming_shutdown(
-                    TcpListenerStream::new(listener),
-                    shutdown_for_tonic,
-                );
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown_for_tonic);
 
             tokio::pin!(server_fut);
             tokio::pin!(drain_guard);
@@ -252,11 +250,15 @@ impl toni::GrpcAdapter for GrpcAdapter {
         });
 
         let shutdown_tx = self.shutdown_tx.clone();
-        Ok(toni::GrpcLifecycleHandle::new(local_addr, serve, move || async move {
-            // Idempotent — the watch coalesces repeat sends into the same value.
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::GrpcLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                // Idempotent — the watch coalesces repeat sends into the same value.
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -267,4 +269,3 @@ impl toni::GrpcAdapter for GrpcAdapter {
 async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await;
 }
-

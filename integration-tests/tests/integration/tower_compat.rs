@@ -9,7 +9,7 @@ use serde_json::json;
 use toni::async_trait;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::MiddlewareConsumer;
-use toni::{controller, routes, get, module, post, Body as ToniBody, TowerLayer};
+use toni::{controller, get, module, post, routes, Body as ToniBody, TowerLayer};
 use tower::Layer;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;

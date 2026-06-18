@@ -56,11 +56,7 @@ pub struct DefaultRpcErrorHandler;
 
 #[async_trait]
 impl ErrorHandler<RpcContext, RpcData> for DefaultRpcErrorHandler {
-    async fn handle_error(
-        &self,
-        error: ChainError<'_>,
-        _ctx: &RpcContext,
-    ) -> Option<RpcData> {
+    async fn handle_error(&self, error: ChainError<'_>, _ctx: &RpcContext) -> Option<RpcData> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
             http_error.message().to_string()
         } else {
@@ -77,11 +73,7 @@ pub struct DefaultWsErrorHandler;
 
 #[async_trait]
 impl ErrorHandler<WsContext, WsMessage> for DefaultWsErrorHandler {
-    async fn handle_error(
-        &self,
-        error: ChainError<'_>,
-        _ctx: &WsContext,
-    ) -> Option<WsMessage> {
+    async fn handle_error(&self, error: ChainError<'_>, _ctx: &WsContext) -> Option<WsMessage> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
             http_error.message().to_string()
         } else {

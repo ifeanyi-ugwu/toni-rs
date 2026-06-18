@@ -96,17 +96,15 @@ async fn run(builder: HealthCheckBuilder) -> HealthCheckResult {
     if let Some(dur) = builder.timeout {
         let wrapped = builder.checks.into_iter().map(|check| {
             Box::pin(async move {
-                tokio::time::timeout(dur, check)
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(HealthEntry::down_with(
-                            "timed_out",
-                            serde_json::json!({
-                                "message": "Health check timed out",
-                                "timeoutMs": dur.as_millis(),
-                            }),
-                        ))
-                    })
+                tokio::time::timeout(dur, check).await.unwrap_or_else(|_| {
+                    Err(HealthEntry::down_with(
+                        "timed_out",
+                        serde_json::json!({
+                            "message": "Health check timed out",
+                            "timeoutMs": dur.as_millis(),
+                        }),
+                    ))
+                })
             }) as BoxFuture<'static, HealthIndicatorResult>
         });
         let results = join_all(wrapped).await;

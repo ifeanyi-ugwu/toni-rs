@@ -111,8 +111,7 @@ impl KafkaClientTransport {
                                 else {
                                     continue;
                                 };
-                                let payload =
-                                    msg.payload().map(|p| p.to_vec()).unwrap_or_default();
+                                let payload = msg.payload().map(|p| p.to_vec()).unwrap_or_default();
                                 let tx = router_pending.lock().unwrap().remove(&corr_id);
                                 if let Some(tx) = tx {
                                     let _ = tx.send(payload);

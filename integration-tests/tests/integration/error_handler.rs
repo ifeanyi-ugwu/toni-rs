@@ -15,10 +15,14 @@
 use std::sync::Arc;
 
 use toni::{
-    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller, routes,
+    async_trait,
+    context::HttpContext,
+    controller,
     errors::{GuardRejection, HttpError},
-    get, module, toni_factory::ToniFactory,
+    get, module, routes,
+    toni_factory::ToniFactory,
     traits_helpers::{ChainError, ErrorHandler, Guard},
+    Body as ToniBody, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
@@ -119,7 +123,9 @@ async fn unmatched_chain_handler_falls_through_to_app_error_default() {
     // chain falls through, the canonical envelope renders the canonical envelope.
     let addr = start_app(
         UserErrModule::module_definition(),
-        Some(Arc::new(MarkerHandler { marker: "REWRITTEN" })),
+        Some(Arc::new(MarkerHandler {
+            marker: "REWRITTEN",
+        })),
     )
     .await;
 

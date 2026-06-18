@@ -11,9 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toni::traits_helpers::{Provider, ProviderContext};
 use toni::{
-    DisconnectReason, GatewayTrait, ProviderScope, WsClient, WsError, WsHandlerOutput,
-    context::WsContext,
-    WsMessage,
+    context::WsContext, DisconnectReason, GatewayTrait, ProviderScope, WsClient, WsError,
+    WsHandlerOutput, WsMessage,
 };
 
 use crate::subscription_context_builder::SubscriptionContextBuilder;

@@ -384,10 +384,11 @@ impl RpcControllerWrapper {
             // `catch_async` wraps async segments. A panic routes through
             // the observer + chain pipeline; remaining pipes and the
             // handler are skipped.
-            if let Err(event) = crate::panic_recovery::catch_sync(
-                crate::errors::PipelineSegment::Pipe,
-                || pipe.process(context),
-            ) {
+            if let Err(event) =
+                crate::panic_recovery::catch_sync(crate::errors::PipelineSegment::Pipe, || {
+                    pipe.process(context)
+                })
+            {
                 Self::record_pipeline_panic(context, error_handlers, observers, event).await;
                 return;
             }
@@ -397,9 +398,7 @@ impl RpcControllerWrapper {
                 // framework couldn't process this" outcome, parallel to
                 // guard rejection. User-error responses use the Ok+envelope
                 // path; this isn't a user error.
-                context.set_response(Err(RpcError::Internal(
-                    "Request aborted by pipe".into(),
-                )));
+                context.set_response(Err(RpcError::Internal("Request aborted by pipe".into())));
                 return;
             }
         }
@@ -410,21 +409,19 @@ impl RpcControllerWrapper {
         let exec_result = match exec_result {
             Ok(result) => result,
             Err(payload) => {
-                let event = PanicRecovered::from_panic_payload(
-                    PipelineSegment::HandlerBody,
-                    payload,
-                );
+                let event =
+                    PanicRecovered::from_panic_payload(PipelineSegment::HandlerBody, payload);
                 ExecutionResult::Err(RpcError::from(event))
             }
         };
         match exec_result {
             ExecutionResult::Ok(data) => context.set_response(Ok(data)),
             ExecutionResult::Err(rpc_err) => {
-                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
-                    match &rpc_err {
-                        RpcError::AppError(e) => e.as_ref(),
-                        other => other,
-                    };
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) = match &rpc_err
+                {
+                    RpcError::AppError(e) => e.as_ref(),
+                    other => other,
+                };
                 Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =

@@ -17,7 +17,7 @@
 //!        -F "username=alice" \
 //!        -F "avatar=@/path/to/avatar.png"
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use toni::extractors::Multipart;
 use toni::*;
 use toni_axum::AxumAdapter;
@@ -41,10 +41,7 @@ impl UploadController {
                     description = field.text().await.unwrap_or_default();
                 }
                 Some("file") => {
-                    file_name = field
-                        .file_name()
-                        .unwrap_or("unnamed")
-                        .to_string();
+                    file_name = field.file_name().unwrap_or("unnamed").to_string();
                     let data = field.bytes().await.unwrap_or_default();
                     file_size = data.len();
                     println!("📁 received file: {file_name} ({file_size} bytes)");

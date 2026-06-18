@@ -3,8 +3,7 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use toni::{
-    BroadcastService,
-    FxHashMap,
+    BroadcastService, FxHashMap,
     traits_helpers::{Injectable, Provider, ProviderContext, ProviderFactory},
 };
 
@@ -92,22 +91,29 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let client = redis::Client::open(self.url.as_str())
-            .unwrap_or_else(|e| panic!("toni-redis-broadcast: invalid Redis URL '{}': {e}", self.url));
+        let client = redis::Client::open(self.url.as_str()).unwrap_or_else(|e| {
+            panic!(
+                "toni-redis-broadcast: invalid Redis URL '{}': {e}",
+                self.url
+            )
+        });
 
         let publisher: redis::aio::MultiplexedConnection = client
             .get_multiplexed_async_connection()
             .await
             .unwrap_or_else(|e| {
-                panic!("toni-redis-broadcast: failed to connect to '{}': {e}", self.url)
+                panic!(
+                    "toni-redis-broadcast: failed to connect to '{}': {e}",
+                    self.url
+                )
             });
 
-        let mut pubsub = client
-            .get_async_pubsub()
-            .await
-            .unwrap_or_else(|e| {
-                panic!("toni-redis-broadcast: failed to open pubsub connection to '{}': {e}", self.url)
-            });
+        let mut pubsub = client.get_async_pubsub().await.unwrap_or_else(|e| {
+            panic!(
+                "toni-redis-broadcast: failed to open pubsub connection to '{}': {e}",
+                self.url
+            )
+        });
 
         let process_id = make_process_id();
 
@@ -151,7 +157,9 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
         );
 
         Injectable::new(
-            Arc::new(Box::new(RedisBroadcastServiceProvider { instance: service })),
+            Arc::new(Box::new(RedisBroadcastServiceProvider {
+                instance: service,
+            })),
             vec![],
         )
     }

@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, routes, get, injectable, module, new, provide, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, provide, routes, Body as ToniBody};
 
 #[injectable]
 pub struct ConfigService {

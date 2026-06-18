@@ -9,7 +9,7 @@ use toni::async_trait;
 use toni::errors::HttpError;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::MiddlewareConsumer;
-use toni::{controller, routes, get, module, Body as ToniBody};
+use toni::{controller, get, module, routes, Body as ToniBody};
 
 // ── Test 1: custom status code ────────────────────────────────────────────────
 

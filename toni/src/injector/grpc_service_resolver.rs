@@ -26,11 +26,7 @@ impl GrpcServiceResolver {
     pub fn resolve(
         &self,
     ) -> Result<Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>> {
-        let services = self
-            .container
-            .borrow()
-            .get_grpc_services()
-            .clone();
+        let services = self.container.borrow().get_grpc_services().clone();
         services
             .into_values()
             .map(|svc| {

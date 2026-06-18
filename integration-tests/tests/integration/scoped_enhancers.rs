@@ -8,7 +8,8 @@ use toni::context::{HttpContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::{
-    controller, routes, get, injectable, module, use_guards, use_interceptors, Body as ToniBody, Request,
+    controller, get, injectable, module, routes, use_guards, use_interceptors, Body as ToniBody,
+    Request,
 };
 use toni_macros::websocket_gateway;
 

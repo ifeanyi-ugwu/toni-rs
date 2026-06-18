@@ -24,11 +24,7 @@ impl EchoGateway {
     }
 
     #[subscribe_message("message")]
-    async fn handle_message(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_message(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -39,11 +35,7 @@ impl EchoGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn handle_ping(
-        &self,
-        _client: WsClient,
-        _message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_ping(&self, _client: WsClient, _message: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }

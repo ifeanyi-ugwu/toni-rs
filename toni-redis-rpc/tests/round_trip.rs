@@ -81,7 +81,10 @@ async fn redis_rpc_send_emit_and_metadata() {
             for _ in 0..20u8 {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 if let Ok(resp) = client
-                    .send("math.add", RpcData::json(serde_json::json!({"a": 2, "b": 3})))
+                    .send(
+                        "math.add",
+                        RpcData::json(serde_json::json!({"a": 2, "b": 3})),
+                    )
                     .await
                 {
                     sum = resp.as_json().and_then(|v| v["sum"].as_i64());
@@ -106,7 +109,10 @@ async fn redis_rpc_send_emit_and_metadata() {
                     break;
                 }
             }
-            assert!(fired, "emit should reach the fire-and-forget handler exactly once");
+            assert!(
+                fired,
+                "emit should reach the fire-and-forget handler exactly once"
+            );
 
             // Metadata: set via the client builder must surface in the
             // handler's RpcContext and round-trip back.
@@ -117,7 +123,11 @@ async fn redis_rpc_send_emit_and_metadata() {
                 .await
                 .expect("metadata request should round-trip");
             let trace = resp.as_json().and_then(|v| v["trace"].as_str());
-            assert_eq!(trace, Some("abc123"), "client metadata must reach the handler");
+            assert_eq!(
+                trace,
+                Some("abc123"),
+                "client metadata must reach the handler"
+            );
         })
         .await;
 }

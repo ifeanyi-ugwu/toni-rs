@@ -21,7 +21,8 @@
 
 use toni::*;
 use toni_macros::{
-    before_application_shutdown, injectable, module, new, on_application_bootstrap, on_module_destroy, on_module_init, on_application_shutdown,
+    before_application_shutdown, injectable, module, new, on_application_bootstrap,
+    on_application_shutdown, on_module_destroy, on_module_init,
 };
 
 // ============================================================================

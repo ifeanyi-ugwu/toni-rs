@@ -50,11 +50,12 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let options = ClientOptions::parse(&self.uri)
-            .await
-            .unwrap_or_else(|e| {
-                panic!("toni-mongodb health: failed to parse URI '{}': {e}", self.uri)
-            });
+        let options = ClientOptions::parse(&self.uri).await.unwrap_or_else(|e| {
+            panic!(
+                "toni-mongodb health: failed to parse URI '{}': {e}",
+                self.uri
+            )
+        });
         let client = Client::with_options(options)
             .unwrap_or_else(|e| panic!("toni-mongodb health: failed to create client: {e}"));
         let db = client.database(&self.db_name);
