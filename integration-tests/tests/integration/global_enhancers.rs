@@ -11,7 +11,7 @@ use serial_test::serial;
 use std::sync::{Arc, Mutex};
 use toni::async_trait;
 use toni::{
-    controller, get, module, use_guards, use_interceptors, use_pipes, Body as ToniBody, ToniFactory,
+    controller, routes, get, module, use_guards, use_interceptors, use_pipes, Body as ToniBody, ToniFactory,
 };
 use toni_axum::AxumAdapter;
 
@@ -225,9 +225,10 @@ impl Pipe<HttpContext> for MethodPipe {
 // ============================================================================
 
 #[controller(
-    "/api",
-    pub struct TestController {}
-)]
+    "/api")]
+pub struct TestController {}
+
+#[routes]
 #[use_guards(ControllerGuard{})]
 #[use_interceptors(ControllerInterceptor{})]
 #[use_pipes(ControllerPipe{})]

@@ -10,7 +10,7 @@ use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
 use toni::{
-    Body as ToniBody, controller, get, module, provider_factory, provider_value, use_guards,
+    Body as ToniBody, controller, routes, get, module, provider_factory, provider_value, use_guards,
 };
 
 use crate::common::TestServer;
@@ -39,15 +39,11 @@ impl Guard<HttpContext> for FactoryGuard {
     }
 }
 
-#[derive(Clone)]
+#[controller("/pf")]
 pub struct GuardedController;
 
-#[controller("/pf")]
+#[routes]
 impl GuardedController {
-    pub fn new() -> Self {
-        Self
-    }
-
     #[get("/value")]
     #[use_guards("VALUE_GUARD")]
     fn value_route(&self) -> ToniBody {

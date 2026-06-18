@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use toni::{
-    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
+    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller, routes,
     errors::{GuardRejection, HttpError},
     get, module, toni_factory::ToniFactory,
     traits_helpers::{ChainError, ErrorHandler, Guard},
@@ -27,7 +27,10 @@ use toni_macros::use_guards;
 
 #[tokio_localset_test::localset_test]
 async fn http_error_renders_via_app_error_default() {
-    #[controller("/api", pub struct HttpErrController {})]
+    #[controller("/api")]
+    pub struct HttpErrController {}
+
+    #[routes]
     impl HttpErrController {
         #[get("/missing")]
         fn missing(&self) -> Result<ToniBody, HttpError> {
@@ -64,7 +67,10 @@ impl std::error::Error for InvoiceMissing {}
 
 #[tokio_localset_test::localset_test]
 async fn custom_app_error_renders_canonical_envelope() {
-    #[controller("/api", pub struct CustomErrController {})]
+    #[controller("/api")]
+    pub struct CustomErrController {}
+
+    #[routes]
     impl CustomErrController {
         #[get("/invoice")]
         fn invoice(&self) -> Result<ToniBody, InvoiceMissing> {
@@ -94,7 +100,10 @@ async fn unmatched_chain_handler_falls_through_to_app_error_default() {
     // a handler that downcasts to a *different* type than the boxed user
     // error returns None and the chain advances. With no claim, the
     // canonical envelope is the response.
-    #[controller("/api", pub struct UserErrController {})]
+    #[controller("/api")]
+    pub struct UserErrController {}
+
+    #[routes]
     impl UserErrController {
         #[get("/bad")]
         fn bad(&self) -> Result<ToniBody, HttpError> {
@@ -158,7 +167,10 @@ impl ErrorHandler<HttpContext, HttpResponse> for MarkerHandler {
 
 #[tokio_localset_test::localset_test]
 async fn chain_fires_on_guard_rejection() {
-    #[controller("/api", pub struct GuardedController {})]
+    #[controller("/api")]
+    pub struct GuardedController {}
+
+    #[routes]
     impl GuardedController {
         #[get("/protected")]
         #[use_guards(AlwaysReject {})]
@@ -211,7 +223,10 @@ async fn scope_chain_overrides_app_error_default_on_user_error() {
     // chain is the scope-level override. A handler registered on this scope
     // that downcasts to the user error type wins; everywhere else, the
     // type's canonical envelope is the response.
-    #[controller("/api", pub struct UserErrController {})]
+    #[controller("/api")]
+    pub struct UserErrController {}
+
+    #[routes]
     impl UserErrController {
         #[get("/missing")]
         fn missing(&self) -> Result<ToniBody, HttpError> {

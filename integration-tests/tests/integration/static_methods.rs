@@ -1,7 +1,10 @@
 use crate::common::TestServer;
-use toni::{controller, get, injectable, module, Body as ToniBody, HttpRequest};
+use toni::{controller, routes, get, injectable, module, Body as ToniBody, HttpRequest};
 
-#[controller("/static", pub struct StaticController {})]
+#[controller("/static")]
+pub struct StaticController {}
+
+#[routes]
 impl StaticController {
     #[get("/hello")]
     fn hello(_req: HttpRequest) -> ToniBody {
@@ -48,10 +51,13 @@ impl MixedService {
     }
 }
 
-#[controller("/mixed", pub struct MixedController {
+#[controller("/mixed")]
+pub struct MixedController {
     #[inject]
     service: MixedService,
-})]
+}
+
+#[routes]
 impl MixedController {
     #[get("/instance")]
     fn instance_method(&self) -> ToniBody {
@@ -90,7 +96,10 @@ async fn mixed_static_and_instance_methods() {
     assert_eq!(resp.text().await.unwrap(), "From static method");
 }
 
-#[controller("/request-static", scope = "request", pub struct RequestScopedStaticController {})]
+#[controller("/request-static", scope = "request")]
+pub struct RequestScopedStaticController {}
+
+#[routes]
 impl RequestScopedStaticController {
     #[get("/test")]
     fn test(_req: HttpRequest) -> ToniBody {
@@ -118,7 +127,10 @@ async fn request_scoped_static_methods() {
     );
 }
 
-#[controller("/async-static", pub struct AsyncStaticController {})]
+#[controller("/async-static")]
+pub struct AsyncStaticController {}
+
+#[routes]
 impl AsyncStaticController {
     #[get("/test")]
     async fn test(_req: HttpRequest) -> ToniBody {

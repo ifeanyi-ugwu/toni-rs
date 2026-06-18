@@ -9,7 +9,7 @@ use toni::async_trait;
 use toni::errors::HttpError;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::MiddlewareConsumer;
-use toni::{controller, get, module, Body as ToniBody};
+use toni::{controller, routes, get, module, Body as ToniBody};
 
 // ── Test 1: custom status code ────────────────────────────────────────────────
 
@@ -24,7 +24,10 @@ impl Middleware for RejectWith {
 
 #[tokio_localset_test::localset_test]
 async fn middleware_http_error_preserves_status() {
-    #[controller("/", pub struct PingController {})]
+    #[controller("/")]
+    pub struct PingController {}
+
+    #[routes]
     impl PingController {
         #[get("/ping")]
         fn ping(&self) -> ToniBody {
@@ -63,7 +66,10 @@ async fn middleware_http_error_preserves_status() {
 
 #[tokio_localset_test::localset_test]
 async fn middleware_http_error_unauthorized() {
-    #[controller("/", pub struct AuthController {})]
+    #[controller("/")]
+    pub struct AuthController {}
+
+    #[routes]
     impl AuthController {
         #[get("/secret")]
         fn secret(&self) -> ToniBody {

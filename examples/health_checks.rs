@@ -57,12 +57,15 @@ impl HealthIndicator for UptimeIndicator {
 
 // ── Controller ────────────────────────────────────────────────────────────────
 
-#[controller("/health", pub struct HealthController {
+#[controller("/health")]
+pub struct HealthController {
     #[inject] health: HealthCheckService,
     #[inject] http:   HttpHealthIndicator,
     #[inject] memory: MemoryHealthIndicator,
     #[inject] disk:   DiskHealthIndicator,
-})]
+}
+
+#[routes]
 impl HealthController {
     /// Liveness probe — is the process alive?
     ///

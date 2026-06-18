@@ -118,7 +118,10 @@ fn pat_ident(pat: &Pat) -> syn::Result<&syn::Ident> {
 fn expect_shared_ref<'a>(ty: &'a Type, msg: &str) -> syn::Result<&'a Type> {
     if let Type::Reference(r) = ty {
         if r.mutability.is_some() {
-            return Err(syn::Error::new(r.span(), "#[catch(T)] arguments must be shared references (&T), not &mut"));
+            return Err(syn::Error::new(
+                r.span(),
+                "#[catch(T)] arguments must be shared references (&T), not &mut",
+            ));
         }
         Ok(&r.elem)
     } else {

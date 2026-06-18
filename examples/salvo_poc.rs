@@ -19,15 +19,11 @@ use toni::*;
 use toni_macros::{module, websocket_gateway};
 use toni_salvo::SalvoAdapter;
 
-#[derive(Clone)]
+#[controller("/hello")]
 pub struct HelloController;
 
-#[controller("/hello")]
+#[routes]
 impl HelloController {
-    pub fn new() -> Self {
-        Self
-    }
-
     #[get("/")]
     fn hello(&self) -> Body {
         Body::json(json!({ "message": "Hello from salvo!", "framework": "toni" }))

@@ -4,7 +4,7 @@ use toni::context::{HandlerContext, HttpContext};
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
 use toni::{
-    controller, get, injectable, module, post, provider_factory, provider_token, provider_value,
+    controller, routes, get, injectable, module, post, provider_factory, provider_token, provider_value,
     use_guards, use_interceptors, use_pipes, Body as ToniBody, HttpResponse,
 };
 
@@ -218,12 +218,15 @@ async fn enhancers_execution_order() {
         }
     }
 
-    #[controller("/api", pub struct EnhancerController {
+    #[controller("/api")]
+    pub struct EnhancerController {
         #[inject]
         service: TestService,
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
+
+    #[routes]
     #[use_interceptors(LoggingInterceptor::new("controller", get_tracker()))]
     impl EnhancerController {
         #[use_guards(AdminGuard::new(get_tracker()))]
@@ -341,10 +344,13 @@ async fn guard_authorization() {
         TRACKER.get().unwrap().clone()
     }
 
-    #[controller("/api", pub struct TestController {
+    #[controller("/api")]
+    pub struct TestController {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[use_guards("AUTH_GUARD")]
         #[get("/auth-only")]
@@ -425,7 +431,10 @@ async fn di_in_enhancers() {
         }
     }
 
-    #[controller("/api", pub struct TestController {})]
+    #[controller("/api")]
+    pub struct TestController {}
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -476,10 +485,13 @@ async fn app_token_global_enhancers() {
         }
     }
 
-    #[controller("/api", pub struct TestController {
+    #[controller("/api")]
+    pub struct TestController {
         #[inject]
         tracker: ExecutionOrder,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {

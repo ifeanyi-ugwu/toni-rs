@@ -32,7 +32,7 @@
 
 use serde::Deserialize;
 use toni::{
-    controller,
+    controller, routes,
     extractors::{Json, Path, Query, Validated},
     get,
     http_helpers::Body as ToniBody,
@@ -357,7 +357,10 @@ fn validate_tags(tags: &[String]) -> Result<(), validator::ValidationError> {
 // SECTION 8: CONTROLLER IMPLEMENTATION
 // ============================================================================
 
-#[controller("/api", pub struct ExamplesController;)]
+#[controller("/api")]
+pub struct ExamplesController;
+
+#[routes]
 impl ExamplesController {
     /// Example 1: Basic extraction (no validation)
     /// curl -X POST http://localhost:3000/api/users \

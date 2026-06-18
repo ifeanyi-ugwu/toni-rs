@@ -26,7 +26,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use toni::{
-    controller,
+    controller, routes,
     extractors::{Json, Query},
     get, injectable, module, post, Body as ToniBody, RpcClient, ToniFactory,
 };
@@ -117,13 +117,14 @@ impl OrdersRpcController {
 // ============================================================================
 
 #[controller(
-    "/order",
-    pub struct OrdersHttpController {
+    "/order")]
+pub struct OrdersHttpController {
         // Injected by the "ORDER_SERVICE_CLIENT" token registered in the module.
         #[inject("ORDER_SERVICE_CLIENT")]
         client: RpcClient,
     }
-)]
+
+#[routes]
 impl OrdersHttpController {
     #[get("/create")]
     async fn create_order(&self, Query(params): Query<CreateOrderDto>) -> ToniBody {

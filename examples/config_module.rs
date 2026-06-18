@@ -13,7 +13,7 @@
 
 use serde_json::json;
 use toni::toni_factory::ToniFactory;
-use toni::{controller, get, injectable, module, Body};
+use toni::{controller, routes, get, injectable, module, Body};
 use toni_axum::AxumAdapter;
 use toni_config::{Config, ConfigModule, ConfigService};
 
@@ -47,10 +47,13 @@ impl AppService {
     }
 }
 
-#[controller("/config", pub struct ConfigController {
+#[controller("/config")]
+pub struct ConfigController {
     #[inject]
     service: AppService,
-})]
+}
+
+#[routes]
 impl ConfigController {
     #[get("/")]
     fn get_config(&self) -> Body {

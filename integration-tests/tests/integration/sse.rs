@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::common::TestServer;
 use futures_util::{stream, StreamExt};
 use tokio::sync::broadcast;
-use toni::{controller, extractors::Bytes, get, module, post, sse, HttpResponse, Sse, SseEvent};
+use toni::{controller, routes, extractors::Bytes, get, module, post, sse, HttpResponse, Sse, SseEvent};
 use toni_macros::{injectable, new};
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -42,10 +42,13 @@ impl EventsService {
 
 // ── Controller ───────────────────────────────────────────────────────────────
 
-#[controller("/sse", pub struct SseController {
+#[controller("/sse")]
+pub struct SseController {
     #[inject]
     events: EventsService,
-})]
+}
+
+#[routes]
 impl SseController {
     #[get("/basic")]
     async fn basic(&self) -> impl toni::IntoResponse {

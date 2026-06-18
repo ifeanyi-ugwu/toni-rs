@@ -10,7 +10,7 @@ use std::sync::{
 };
 
 use toni::{
-    Body as ToniBody, async_trait, context::HttpContext, controller, errors::HttpError, get,
+    Body as ToniBody, async_trait, context::HttpContext, controller, routes, errors::HttpError, get,
     module, toni_factory::ToniFactory,
     traits_helpers::{ErrorObserver, Guard},
 };
@@ -70,7 +70,10 @@ async fn start_app(
 
 #[tokio_localset_test::localset_test]
 async fn observer_fires_on_guard_rejection() {
-    #[controller("/api", pub struct GuardedController {})]
+    #[controller("/api")]
+    pub struct GuardedController {}
+
+    #[routes]
     impl GuardedController {
         #[get("/protected")]
         #[use_guards(AlwaysReject {})]
@@ -110,7 +113,10 @@ async fn observer_fires_on_user_error() {
     // dispatcher preserves the typed error past that boundary so observers
     // can see it too. Symmetric semantics: observers fire on every error,
     // user-typed and framework-generated alike.
-    #[controller("/api", pub struct UserErrController {})]
+    #[controller("/api")]
+    pub struct UserErrController {}
+
+    #[routes]
     impl UserErrController {
         #[get("/missing")]
         fn missing(&self) -> Result<ToniBody, HttpError> {

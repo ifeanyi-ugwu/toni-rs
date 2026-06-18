@@ -72,10 +72,13 @@ impl EventsService {
 
 // ── Controller ───────────────────────────────────────────────────────────────
 
-#[controller("/sse", pub struct SseController {
+#[controller("/sse")]
+pub struct SseController {
     #[inject]
     events: EventsService,
-})]
+}
+
+#[routes]
 impl SseController {
     /// Emits a count every second, forever.
     #[get("/counter")]

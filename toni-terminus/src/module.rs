@@ -42,10 +42,13 @@ impl TerminusModule {
     /// Then inject any indicator you need:
     ///
     /// ```ignore
-    /// #[controller("/health", pub struct HealthController {
+    /// #[controller("/health")]
+    /// pub struct HealthController {
     ///     #[inject] health: HealthCheckService,
     ///     #[inject] http:   HttpHealthIndicator,
-    /// })]
+    /// }
+    ///
+    /// #[routes]
     /// impl HealthController {
     ///     #[get("/live")]
     ///     async fn liveness(&self) -> impl IntoResponse {

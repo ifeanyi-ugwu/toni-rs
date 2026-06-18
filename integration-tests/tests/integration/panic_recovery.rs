@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 use toni::{
-    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller,
+    Body as ToniBody, HttpResponse, async_trait, context::HttpContext, controller, routes,
     errors::{ErrorKind, HttpError, PanicRecovered, PipelineSegment},
     get, module, toni_factory::ToniFactory,
     traits_helpers::{
@@ -93,7 +93,10 @@ async fn start_app(
 
 #[tokio_localset_test::localset_test]
 async fn panicking_handler_renders_500_via_panic_recovered() {
-    #[controller("/api", pub struct PanicController {})]
+    #[controller("/api")]
+    pub struct PanicController {}
+
+    #[routes]
     impl PanicController {
         #[get("/boom")]
         fn boom(&self) -> Result<ToniBody, HttpError> {
@@ -152,7 +155,10 @@ async fn panicking_observer_does_not_break_dispatch() {
     // observers: a panicking one and a counter. The panicker fires first
     // (later registration → higher priority via reverse iteration), panics,
     // gets caught; the counter still observes the same error.
-    #[controller("/api", pub struct GuardedController {})]
+    #[controller("/api")]
+    pub struct GuardedController {}
+
+    #[routes]
     impl GuardedController {
         #[get("/protected")]
         #[use_guards(AlwaysReject {})]
@@ -209,7 +215,10 @@ impl Guard<HttpContext> for PanickingGuard {
 /// guard panic from a handler panic.
 #[tokio_localset_test::localset_test]
 async fn panicking_guard_renders_500_via_panic_recovered() {
-    #[controller("/api", pub struct PanicGuardController {})]
+    #[controller("/api")]
+    pub struct PanicGuardController {}
+
+    #[routes]
     impl PanicGuardController {
         #[get("/guarded")]
         #[use_guards(PanickingGuard {})]
@@ -267,7 +276,10 @@ impl Interceptor<HttpContext> for PanickingInterceptor {
 /// middleware segment label) so a slow logger can sort logs by stage.
 #[tokio_localset_test::localset_test]
 async fn panicking_interceptor_renders_500_via_panic_recovered() {
-    #[controller("/api", pub struct PanicInterceptorController {})]
+    #[controller("/api")]
+    pub struct PanicInterceptorController {}
+
+    #[routes]
     impl PanicInterceptorController {
         #[get("/intercepted")]
         #[use_interceptors(PanickingInterceptor {})]
@@ -322,7 +334,10 @@ impl Pipe<HttpContext> for PanickingPipe {
 /// panics.
 #[tokio_localset_test::localset_test]
 async fn panicking_pipe_renders_500_via_panic_recovered() {
-    #[controller("/api", pub struct PanicPipeController {})]
+    #[controller("/api")]
+    pub struct PanicPipeController {}
+
+    #[routes]
     impl PanicPipeController {
         #[get("/piped")]
         #[use_pipes(PanickingPipe {})]
@@ -386,7 +401,10 @@ impl ErrorHandler<HttpContext, HttpResponse> for PanickingErrorHandler {
 /// own `PanicRecovered` (ErrorHandler) when it then panics.
 #[tokio_localset_test::localset_test]
 async fn panicking_error_handler_continues_chain() {
-    #[controller("/api", pub struct PanicEhController {})]
+    #[controller("/api")]
+    pub struct PanicEhController {}
+
+    #[routes]
     impl PanicEhController {
         #[get("/eh")]
         #[use_error_handlers(PanickingErrorHandler {})]
@@ -487,7 +505,10 @@ impl toni::Error for RenderBomb {
 /// recursive panic here is structurally impossible.
 #[tokio_localset_test::localset_test]
 async fn panicking_renderer_falls_back_to_safe_envelope() {
-    #[controller("/api", pub struct RenderPanicController {})]
+    #[controller("/api")]
+    pub struct RenderPanicController {}
+
+    #[routes]
     impl RenderPanicController {
         #[get("/render-boom")]
         fn render_boom(&self) -> Result<ToniBody, HttpError> {

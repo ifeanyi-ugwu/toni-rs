@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, get, injectable, module, new, provide, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, new, provide, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn provider_constructor_patterns() {
@@ -92,13 +92,16 @@ async fn provider_constructor_patterns() {
         }
     }
 
-    #[controller("/providers", pub struct ProviderTestController {
+    #[controller("/providers")]
+    pub struct ProviderTestController {
         #[inject] base: BaseService,
         #[inject] auto: AutoNewService,
         #[inject] custom: CustomInitService,
         #[inject] complex: ComplexInitService,
         #[inject] fallback: DefaultFallbackService,
-    })]
+    }
+
+    #[routes]
     impl ProviderTestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -155,10 +158,14 @@ async fn controller_constructor_patterns() {
         }
     }
 
-    #[controller("/auto", pub struct AutoNewController {
+    #[controller("/auto")]
+    pub struct AutoNewController {
         data_value: String,
-    })]
+    }
+
+    #[routes]
     impl AutoNewController {
+        #[new]
         pub fn new(data: DataService) -> Self {
             Self {
                 data_value: data.get_value(),
@@ -171,10 +178,14 @@ async fn controller_constructor_patterns() {
         }
     }
 
-    #[controller("/custom", init = "create", pub struct CustomInitController {
+    #[controller("/custom")]
+    pub struct CustomInitController {
         combined: String,
-    })]
+    }
+
+    #[routes]
     impl CustomInitController {
+        #[new]
         fn create(data: DataService) -> Self {
             Self {
                 combined: format!("custom: {}", data.get_value()),
@@ -187,10 +198,13 @@ async fn controller_constructor_patterns() {
         }
     }
 
-    #[controller("/default", pub struct DefaultFallbackController {
+    #[controller("/default")]
+    pub struct DefaultFallbackController {
         name: String,
         count: i32,
-    })]
+    }
+
+    #[routes]
     impl DefaultFallbackController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -302,12 +316,15 @@ async fn constructor_param_injection_patterns() {
         }
     }
 
-    #[controller("/basic", pub struct BasicParamController {
+    #[controller("/basic")]
+    pub struct BasicParamController {
         #[inject]
         db: DatabaseService,
         #[inject]
         service: BasicParamService,
-    })]
+    }
+
+    #[routes]
     impl BasicParamController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -315,12 +332,15 @@ async fn constructor_param_injection_patterns() {
         }
     }
 
-    #[controller("/token", pub struct TokenParamController {
+    #[controller("/token")]
+    pub struct TokenParamController {
         #[inject(DB_TOKEN)]
         db: DatabaseService,
         #[inject]
         service: TokenParamService,
-    })]
+    }
+
+    #[routes]
     impl TokenParamController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -328,14 +348,17 @@ async fn constructor_param_injection_patterns() {
         }
     }
 
-    #[controller("/mixed", pub struct MixedParamController {
+    #[controller("/mixed")]
+    pub struct MixedParamController {
         #[inject]
         config: ConfigService,
         #[inject]
         cache: CacheService,
         #[inject]
         service: MixedParamService,
-    })]
+    }
+
+    #[routes]
     impl MixedParamController {
         #[get("/test")]
         fn test(&self) -> ToniBody {

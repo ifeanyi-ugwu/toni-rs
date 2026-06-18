@@ -36,3 +36,21 @@ pub use self::sse::{Sse, SseEvent, sse};
 
 mod execution_result;
 pub use self::execution_result::ExecutionResult;
+
+/// Join a controller's route prefix with a handler's sub-path, normalizing slashes.
+///
+/// The `#[controller]` prefix lives on the struct and the sub-path on the `#[routes]` handler, so the
+/// full path is composed at route-registration time rather than baked in by the macro.
+///
+/// `"/api" + "/users"` → `"/api/users"`; `"/" + "/x"` → `"/x"`; `"/api" + ""` → `"/api"`.
+pub fn join_route(prefix: &str, sub_path: &str) -> String {
+    let prefix = prefix.trim_end_matches('/');
+    let sub_path = sub_path.trim_start_matches('/');
+    if prefix.is_empty() {
+        format!("/{}", sub_path)
+    } else if sub_path.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{}/{}", prefix, sub_path)
+    }
+}

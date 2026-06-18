@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, get, injectable, module, new, provide, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, new, provide, Body as ToniBody};
 
 #[injectable]
 pub struct ConfigService {
@@ -89,10 +89,13 @@ async fn provide_macro_patterns() {
         }
     }
 
-    #[controller("/app", pub struct AppController {
+    #[controller("/app")]
+    pub struct AppController {
         #[inject]
         app: AppService,
-    })]
+    }
+
+    #[routes]
     impl AppController {
         #[get("/info")]
         fn info(&self) -> ToniBody {

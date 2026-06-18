@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use toni::injector::ModuleRef;
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn global_modules_attribute_syntax() {
@@ -30,10 +30,13 @@ async fn global_modules_attribute_syntax() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject]
         service: LocalService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -69,10 +72,13 @@ async fn module_ref_runtime_provider_access() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject]
         module_ref: ModuleRef,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         async fn test(&self) -> ToniBody {
@@ -132,10 +138,13 @@ async fn nested_module_imports() {
     )]
     impl FeatureModule {}
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject]
         feature: FeatureService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -191,10 +200,13 @@ async fn module_exports_selective_providers() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject]
         consumer: ConsumerService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {
@@ -230,10 +242,13 @@ async fn module_struct_syntax() {
         }
     }
 
-    #[controller("", pub struct TestController {
+    #[controller("")]
+    pub struct TestController {
         #[inject]
         service: TestService,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> ToniBody {

@@ -67,7 +67,7 @@ use std::fmt;
 use toni::extractors::Json;
 use toni::http_helpers::Body as ToniBody;
 use toni::http_helpers::RequestPart;
-use toni::{controller, get, module, post, FromRequestParts};
+use toni::{controller, routes, get, module, post, FromRequestParts};
 
 // ============================================================================
 // SECTION 1: AUTHENTICATION EXTRACTORS
@@ -600,9 +600,10 @@ impl FromRequestParts for AuthContext {
 
 /// Controller showing basic extractor usage
 #[controller(
-    "/auth",
-    pub struct AuthController {}
-)]
+    "/auth")]
+pub struct AuthController {}
+
+#[routes]
 impl AuthController {
     /// Example 1: Extract authenticated user
     ///
@@ -643,9 +644,10 @@ impl AuthController {
 
 /// Controller showing API key authentication
 #[controller(
-    "/api",
-    pub struct ApiController {}
-)]
+    "/api")]
+pub struct ApiController {}
+
+#[routes]
 impl ApiController {
     /// Example 3: Extract and validate API key
     ///
@@ -667,9 +669,10 @@ impl ApiController {
 
 /// Controller showing request metadata extraction
 #[controller(
-    "/metadata",
-    pub struct MetadataController {}
-)]
+    "/metadata")]
+pub struct MetadataController {}
+
+#[routes]
 impl MetadataController {
     /// Example 4: Extract client IP
     ///
@@ -721,9 +724,10 @@ impl MetadataController {
 
 /// Controller showing cookie extraction
 #[controller(
-    "/session",
-    pub struct SessionController {}
-)]
+    "/session")]
+pub struct SessionController {}
+
+#[routes]
 impl SessionController {
     /// Example 7: Extract all cookies
     ///
@@ -758,9 +762,10 @@ impl SessionController {
 
 /// Controller showing optional extraction
 #[controller(
-    "/optional",
-    pub struct OptionalController {}
-)]
+    "/optional")]
+pub struct OptionalController {}
+
+#[routes]
 impl OptionalController {
     /// Optional authentication - returns None when extraction fails instead of 400 error
     #[get("/feed")]
@@ -806,9 +811,10 @@ impl OptionalController {
 
 /// Controller showing composite extraction
 #[controller(
-    "/advanced",
-    pub struct AdvancedController {}
-)]
+    "/advanced")]
+pub struct AdvancedController {}
+
+#[routes]
 impl AdvancedController {
     /// Example 9: Multiple extractors in one handler
     ///

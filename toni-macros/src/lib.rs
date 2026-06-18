@@ -1,9 +1,6 @@
 extern crate proc_macro2;
 
-use controller_macro::controller_struct::handle_controller_struct;
 use proc_macro::TokenStream;
-use proc_macro2::Span;
-use syn::Ident;
 
 mod app_error_macro;
 mod catch_macro;
@@ -24,15 +21,6 @@ mod utils;
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_macro::module_struct::module(attr, item)
-}
-
-#[proc_macro_attribute]
-pub fn controller_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = proc_macro2::TokenStream::from(attr);
-    let item = proc_macro2::TokenStream::from(item);
-    let trait_name = Ident::new("Controller", Span::call_site());
-    let output = handle_controller_struct(attr, item, trait_name);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
 /// Field-injection provider — the way to declare a DI provider. Place it on the struct:
@@ -61,12 +49,33 @@ pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+/// HTTP controller — declared like `#[injectable]`, on the struct. `#[inject]` fields are
+/// dependencies, `#[default(expr)]` fields are owned state, `#[controller("/prefix", scope = "…")]`
+/// sets the route prefix and scope. The route handlers live in a sibling `#[routes] impl` block.
+///
+/// ```ignore
+/// #[controller("/users")]
+/// pub struct UsersController { #[inject] svc: UserService }
+///
+/// #[routes]
+/// impl UsersController {
+///     #[get("/")] async fn list(&self) -> impl IntoResponse { /* … */ }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn controller(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    let output =
-        controller_macro::controller_consolidated::handle_controller_consolidated(attr, item);
+    let output = controller_macro::controller_attr::handle_controller(attr, item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
+/// Route handlers for a `#[controller]` struct. Place it on the struct's `impl` block; `#[get]`,
+/// `#[post]`, … methods become routes. Pairs with `#[controller("/prefix")]` on the struct.
+#[proc_macro_attribute]
+pub fn routes(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let output = controller_macro::routes_attr::handle_routes(item);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 

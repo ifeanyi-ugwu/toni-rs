@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, get, injectable, module, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, Body as ToniBody};
 
 // ---- Test 1: Singleton controller + singleton provider ----------------------
 
@@ -13,7 +13,10 @@ impl SingletonProvider {
     }
 }
 
-#[controller("/ok", pub struct OkController { #[inject] provider: SingletonProvider })]
+#[controller("/ok")]
+pub struct OkController { #[inject] provider: SingletonProvider }
+
+#[routes]
 impl OkController {
     #[get("/test")]
     fn test(&self) -> ToniBody {
@@ -37,7 +40,10 @@ impl RequestScopedProvider {
 }
 
 // Singleton controller with a request-scoped dep — framework promotes to request scope
-#[controller("/problematic", pub struct ProblematicController { #[inject] provider: RequestScopedProvider })]
+#[controller("/problematic")]
+pub struct ProblematicController { #[inject] provider: RequestScopedProvider }
+
+#[routes]
 impl ProblematicController {
     #[get("/test")]
     fn test(&self) -> ToniBody {
@@ -58,7 +64,10 @@ impl AnotherRequestProvider {
     }
 }
 
-#[controller("/correct", scope = "request", pub struct CorrectController { #[inject] provider: AnotherRequestProvider })]
+#[controller("/correct", scope = "request")]
+pub struct CorrectController { #[inject] provider: AnotherRequestProvider }
+
+#[routes]
 impl CorrectController {
     #[get("/test")]
     fn test(&self) -> ToniBody {
@@ -87,10 +96,13 @@ impl SessionProvider {
     }
 }
 
-#[controller("/mixed", pub struct MixedController {
+#[controller("/mixed")]
+pub struct MixedController {
     #[inject] cache: CacheProvider,
     #[inject] session: SessionProvider,
-})]
+}
+
+#[routes]
 impl MixedController {
     #[get("/test")]
     fn test(&self) -> ToniBody {
@@ -115,7 +127,10 @@ impl ContradictoryRequestProvider {
     }
 }
 
-#[controller("/explicit", scope = "singleton", pub struct ExplicitSingletonController { #[inject] provider: ContradictoryRequestProvider })]
+#[controller("/explicit", scope = "singleton")]
+pub struct ExplicitSingletonController { #[inject] provider: ContradictoryRequestProvider }
+
+#[routes]
 impl ExplicitSingletonController {
     #[get("/test")]
     fn test(&self) -> ToniBody {

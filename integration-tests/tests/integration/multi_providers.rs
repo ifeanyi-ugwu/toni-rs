@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::sync::Arc;
-use toni::{controller, get, injectable, module, provide, Body as ToniBody};
+use toni::{controller, routes, get, injectable, module, provide, Body as ToniBody};
 
 // Shared plugin trait used across all tests in this file
 trait Plugin: Send + Sync {
@@ -38,10 +38,13 @@ async fn multi_type_path_collects_all_contributions() {
     }
     impl PluginRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: PluginRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/plugins")]
         fn list(&self) -> ToniBody {
@@ -98,10 +101,13 @@ async fn multi_factory_closure_collects_contributions() {
     }
     impl GreeterRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: GreeterRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/greeters")]
         fn list(&self) -> ToniBody {
@@ -146,10 +152,13 @@ async fn multi_empty_when_no_contributions() {
     }
     impl EmptyRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: EmptyRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/count")]
         fn count(&self) -> ToniBody {
@@ -184,10 +193,13 @@ async fn multi_single_contribution_is_vec_of_one() {
     }
     impl SingleRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: SingleRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/single")]
         fn get(&self) -> ToniBody {
@@ -239,10 +251,13 @@ async fn multi_raw_value_contributes_to_collection() {
     }
     impl NamedRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: NamedRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/named")]
         fn list(&self) -> ToniBody {
@@ -308,10 +323,13 @@ async fn multi_existing_reuses_registered_singleton() {
     }
     impl ExistingRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: ExistingRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/existing")]
         fn list(&self) -> ToniBody {
@@ -378,10 +396,13 @@ async fn multi_existing_string_token_with_explicit_type() {
     }
     impl StringTokenRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: StringTokenRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/str")]
         fn list(&self) -> ToniBody {
@@ -448,10 +469,13 @@ async fn multi_provider_useclass_collects_contributions() {
     }
     impl UseClassRegistry {}
 
-    #[controller(pub struct TestController {
+    #[controller()]
+    pub struct TestController {
         #[inject]
         registry: UseClassRegistry,
-    })]
+    }
+
+    #[routes]
     impl TestController {
         #[get("/uc")]
         fn list(&self) -> ToniBody {

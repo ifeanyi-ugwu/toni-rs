@@ -9,7 +9,7 @@
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
-use toni::{controller, get, injectable, module, use_guards, Body as ToniBody, RequestPart};
+use toni::{controller, routes, get, injectable, module, use_guards, Body as ToniBody, RequestPart};
 
 use crate::common::TestServer;
 use serial_test::serial;
@@ -56,15 +56,11 @@ impl Guard<HttpContext> for RequestScopedGuard {
     }
 }
 
-#[derive(Clone)]
+#[controller("/api")]
 pub struct ApiController;
 
-#[controller("/api")]
+#[routes]
 impl ApiController {
-    pub fn new() -> Self {
-        Self
-    }
-
     #[get("/admin")]
     #[use_guards(AdminGuard)]
     fn admin(&self) -> ToniBody {
