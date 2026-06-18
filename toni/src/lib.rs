@@ -11,6 +11,8 @@ pub mod __construct;
 pub mod __detect;
 #[doc(hidden)]
 pub mod __lifecycle;
+#[doc(hidden)]
+pub mod __route;
 pub mod di;
 pub mod errors;
 pub mod extractors;

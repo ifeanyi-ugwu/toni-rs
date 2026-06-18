@@ -304,3 +304,24 @@ async fn request_extensions_pattern() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "user123");
 }
+
+// A controller is a controller without any routes: `#[controller]` alone builds and registers it
+// (routes come from `#[routes]`, and its absence means zero routes), matching NestJS.
+#[tokio_localset_test::localset_test]
+async fn controller_without_routes_is_valid() {
+    #[controller("/empty")]
+    pub struct EmptyController;
+
+    #[module(controllers: [EmptyController])]
+    impl EmptyModule {}
+
+    // Builds and starts with no routes registered.
+    let server = TestServer::start(EmptyModule::module_definition()).await;
+    let resp = server
+        .client()
+        .get(server.url("/empty"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+}

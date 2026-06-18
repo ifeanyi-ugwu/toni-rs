@@ -30,12 +30,7 @@ use crate::{
         },
         get_marker_params::MarkerParam,
     },
-    shared::{
-        attr_is,
-        lifecycle_hooks::{LifecycleHooks, detect_lifecycle_hooks, strip_lifecycle_attrs},
-        metadata_info::MetadataInfo,
-        scope_parser::ControllerScope,
-    },
+    shared::{attr_is, metadata_info::MetadataInfo, scope_parser::ControllerScope},
     utils::controller_utils::attr_to_string,
 };
 
@@ -45,11 +40,9 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
     let struct_name = crate::utils::extracts::extract_impl_self_ident(impl_block)?;
     let struct_name = &struct_name;
 
-    // Lifecycle hooks are detected here (the impl is visible) and the `#[on_*]` attrs stripped so the
-    // re-emitted methods are plain; the object's hooks call those methods on the built instance.
-    // `#[new]` is left intact so its own macro expands into the `__toni_ctor_build` bridge.
-    let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
-
+    // Re-emit the impl with only the inert param markers stripped. `#[new]` and the `#[on_*]`
+    // lifecycle attrs are LEFT intact so their own macros expand into the `__toni_ctor_*` /
+    // `__toni_lc_*` bridges that `#[controller]`'s factory and object dispatch through.
     let mut impl_def = impl_block.clone();
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
@@ -58,35 +51,15 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
             );
         }
     }
-    let impl_def = strip_lifecycle_attrs(&impl_def);
 
-    // Scope/elevation is decided at runtime from the struct bridges, so both wrapper sets are always
-    // generated; `__toni_routes` (via the factory's chosen state) selects which to build.
-    let (singleton_wrappers, singleton_metadata) = generate_controller_wrappers(
-        impl_block,
-        struct_name,
-        ControllerScope::Singleton,
-        &lifecycle_hooks,
-    )?;
-    let (request_wrappers, request_metadata) = generate_controller_wrappers(
-        impl_block,
-        struct_name,
-        ControllerScope::Request,
-        &lifecycle_hooks,
-    )?;
+    // Both wrapper sets are generated; the factory picks the state at runtime and `__toni_routes`
+    // builds the matching set. Construction and the route prefix are delegated to the struct bridges.
+    let (singleton_wrappers, singleton_metadata) =
+        generate_controller_wrappers(impl_block, struct_name, ControllerScope::Singleton)?;
+    let (request_wrappers, request_metadata) =
+        generate_controller_wrappers(impl_block, struct_name, ControllerScope::Request)?;
 
-    let has_instance_method = singleton_metadata.iter().any(|m| !m.is_static)
-        || request_metadata.iter().any(|m| !m.is_static);
-
-    let object = generate_controller_object(
-        struct_name,
-        &singleton_metadata,
-        &request_metadata,
-        &lifecycle_hooks,
-        has_instance_method,
-    );
-    let factory = generate_factory(struct_name);
-    let factory_accessor = generate_controller_factory_accessor(struct_name);
+    let toni_routes = generate_toni_routes(struct_name, &singleton_metadata, &request_metadata);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -95,31 +68,18 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
         #(#singleton_wrappers)*
         #(#request_wrappers)*
 
-        #object
-        #factory
-        #factory_accessor
+        #toni_routes
     })
 }
 
-fn controller_object_ident(struct_name: &Ident) -> Ident {
-    Ident::new(
-        &format!("{}ControllerObject", struct_name),
-        struct_name.span(),
-    )
-}
-
-/// The single `Controller` per struct: holds the built instance (or the resolved deps for the request
-/// path), yields one `Route` per handler method, and carries the lifecycle hooks — fired once.
-fn generate_controller_object(
+/// Emit the controller's inherent `__toni_routes`, which shadows the `RoutesBridge` empty default.
+/// Builds the per-route wrappers for the resolved state — the shared singleton instance, or the
+/// dependency map for the per-request rebuild.
+fn generate_toni_routes(
     struct_name: &Ident,
     singleton_metadata: &[MetadataInfo],
     request_metadata: &[MetadataInfo],
-    lifecycle_hooks: &LifecycleHooks,
-    has_instance_method: bool,
 ) -> TokenStream {
-    let object_name = controller_object_ident(struct_name);
-    let struct_token = struct_name.to_string();
-
     let route_ty = quote! { ::std::sync::Arc<dyn ::toni::traits_helpers::Route> };
 
     let singleton_creations: Vec<_> = singleton_metadata
@@ -146,25 +106,14 @@ fn generate_controller_object(
         })
         .collect();
 
-    let lifecycle_methods = if has_instance_method && lifecycle_hooks.has_any() {
-        generate_object_lifecycle_methods(struct_name, lifecycle_hooks)
-    } else {
-        quote! {}
-    };
-
     quote! {
-        pub struct #object_name {
-            state: ::toni::traits_helpers::ControllerInstance,
-        }
-
-        #[::toni::async_trait]
-        impl ::toni::traits_helpers::Controller for #object_name {
-            fn get_token(&self) -> String {
-                #struct_token.to_string()
-            }
-
-            fn routes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Route>> {
-                match &self.state {
+        impl #struct_name {
+            #[doc(hidden)]
+            #[allow(non_snake_case, clippy::all)]
+            pub fn __toni_routes(
+                state: &::toni::traits_helpers::ControllerInstance,
+            ) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Route>> {
+                match state {
                     ::toni::traits_helpers::ControllerInstance::Singleton(inst) => {
                         let _ = inst;
                         vec![#(#singleton_creations),*]
@@ -175,87 +124,14 @@ fn generate_controller_object(
                     }
                 }
             }
-
-            #lifecycle_methods
         }
     }
-}
-
-/// Lifecycle-hook overrides that delegate to the singleton instance. The request path fires
-/// `on_module_init` / `on_application_bootstrap` per request inside the route handler instead (it has
-/// no persistent instance), so these no-op there.
-fn generate_object_lifecycle_methods(
-    struct_name: &Ident,
-    lifecycle_hooks: &LifecycleHooks,
-) -> TokenStream {
-    let mut methods = Vec::new();
-
-    if let Some(method) = &lifecycle_hooks.on_module_init {
-        methods.push(quote! {
-            async fn on_module_init(&self) -> ::toni::InitResult {
-                if let ::toni::traits_helpers::ControllerInstance::Singleton(inst) = &self.state {
-                    if let Some(controller) = inst.downcast_ref::<#struct_name>() {
-                        return controller.#method().await;
-                    }
-                }
-                Ok(())
-            }
-        });
-    }
-    if let Some(method) = &lifecycle_hooks.on_application_bootstrap {
-        methods.push(quote! {
-            async fn on_application_bootstrap(&self) -> ::toni::InitResult {
-                if let ::toni::traits_helpers::ControllerInstance::Singleton(inst) = &self.state {
-                    if let Some(controller) = inst.downcast_ref::<#struct_name>() {
-                        return controller.#method().await;
-                    }
-                }
-                Ok(())
-            }
-        });
-    }
-    if let Some(method) = &lifecycle_hooks.on_module_destroy {
-        methods.push(quote! {
-            async fn on_module_destroy(&self) {
-                if let ::toni::traits_helpers::ControllerInstance::Singleton(inst) = &self.state {
-                    if let Some(controller) = inst.downcast_ref::<#struct_name>() {
-                        controller.#method().await;
-                    }
-                }
-            }
-        });
-    }
-    if let Some(method) = &lifecycle_hooks.before_application_shutdown {
-        methods.push(quote! {
-            async fn before_application_shutdown(&self, signal: Option<String>) {
-                if let ::toni::traits_helpers::ControllerInstance::Singleton(inst) = &self.state {
-                    if let Some(controller) = inst.downcast_ref::<#struct_name>() {
-                        controller.#method(signal).await;
-                    }
-                }
-            }
-        });
-    }
-    if let Some(method) = &lifecycle_hooks.on_application_shutdown {
-        methods.push(quote! {
-            async fn on_application_shutdown(&self, signal: Option<String>) {
-                if let ::toni::traits_helpers::ControllerInstance::Singleton(inst) = &self.state {
-                    if let Some(controller) = inst.downcast_ref::<#struct_name>() {
-                        controller.#method(signal).await;
-                    }
-                }
-            }
-        });
-    }
-
-    quote! { #(#methods)* }
 }
 
 fn generate_controller_wrappers(
     impl_block: &ItemImpl,
     struct_name: &Ident,
     scope: ControllerScope,
-    lifecycle_hooks: &LifecycleHooks,
 ) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
     let mut wrappers = Vec::new();
     let mut metadata_list = Vec::new();
@@ -276,7 +152,6 @@ fn generate_controller_wrappers(
                     method_enhancers_attr,
                     marker_params,
                     scope,
-                    lifecycle_hooks,
                 )?;
 
                 wrappers.push(wrapper);
@@ -333,7 +208,6 @@ fn generate_controller_wrapper(
     method_enhancers_attr: HashMap<&Ident, &Attribute>,
     marker_params: Vec<MarkerParam>,
     scope: ControllerScope,
-    lifecycle_hooks: &LifecycleHooks,
 ) -> Result<(TokenStream, MetadataInfo)> {
     let http_method = attr_to_string(http_method_attr)
         .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
@@ -399,7 +273,6 @@ fn generate_controller_wrapper(
         &metadata_exprs,
         scope,
         is_static_method,
-        lifecycle_hooks,
         returns_result,
     );
 
@@ -487,7 +360,6 @@ fn generate_controller_wrapper_code(
     metadata_exprs: &[TokenStream],
     scope: ControllerScope,
     is_static_method: bool,
-    lifecycle_hooks: &LifecycleHooks,
     returns_result: bool,
 ) -> TokenStream {
     match scope {
@@ -515,7 +387,6 @@ fn generate_controller_wrapper_code(
             body_dto_token_stream,
             metadata_exprs,
             is_static_method,
-            lifecycle_hooks,
             returns_result,
         ),
     }
@@ -695,20 +566,11 @@ fn generate_request_controller_wrapper(
     body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
     is_static_method: bool,
-    lifecycle_hooks: &LifecycleHooks,
     returns_result: bool,
 ) -> TokenStream {
     let (struct_fields, build_instance) = if is_static_method {
         (quote! {}, quote! {})
     } else {
-        let init_call = lifecycle_hooks
-            .on_module_init
-            .as_ref()
-            .map(|m| quote! { controller.#m().await; });
-        let bootstrap_call = lifecycle_hooks
-            .on_application_bootstrap
-            .as_ref()
-            .map(|m| quote! { controller.#m().await; });
         (
             quote! {
                 dependencies: ::toni::FxHashMap<
@@ -716,13 +578,18 @@ fn generate_request_controller_wrapper(
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
                 >,
             },
+            // Rebuild per request, then fire init/bootstrap on the fresh instance through the
+            // lifecycle bridge (no-op when the controller declares no such hooks).
             quote! {
                 let controller = #struct_name::__toni_build_from_deps(
                     &self.dependencies,
                     ::std::option::Option::Some(&_req_parts),
                 ).await;
-                #init_call
-                #bootstrap_call
+                {
+                    use ::toni::__lifecycle::LifecycleBridge as _;
+                    let _ = #struct_name::__toni_lc_on_init(&controller).await;
+                    let _ = #struct_name::__toni_lc_on_bootstrap(&controller).await;
+                }
             },
         )
     };
@@ -764,91 +631,6 @@ fn generate_request_controller_wrapper(
             }
 
             #common
-        }
-    }
-}
-
-fn generate_controller_factory_accessor(struct_name: &Ident) -> TokenStream {
-    let factory_name = Ident::new(
-        &format!("{}ControllerFactory", struct_name),
-        struct_name.span(),
-    );
-    quote! {
-        impl #struct_name {
-            #[doc(hidden)]
-            pub fn __toni_controller_factory() -> impl ::toni::traits_helpers::ControllerFactory {
-                #factory_name
-            }
-        }
-    }
-}
-
-/// One factory drives both scopes: it asks the struct bridges for the dependency tokens and declared
-/// scope at runtime, elevates an (implicit/explicit) singleton to request scope when any dependency is
-/// request-scoped, and otherwise builds the instance once via `__toni_build_from_deps`.
-fn generate_factory(struct_name: &Ident) -> TokenStream {
-    let factory_name = Ident::new(
-        &format!("{}ControllerFactory", struct_name),
-        struct_name.span(),
-    );
-    let object_name = controller_object_ident(struct_name);
-    let struct_token = struct_name.to_string();
-
-    quote! {
-        pub struct #factory_name;
-
-        #[::toni::async_trait]
-        impl ::toni::traits_helpers::ControllerFactory for #factory_name {
-            fn get_token(&self) -> String {
-                #struct_token.to_string()
-            }
-
-            fn get_dependencies(&self) -> Vec<String> {
-                <#struct_name>::__toni_dependencies()
-            }
-
-            async fn build(
-                &self,
-                dependencies: ::toni::FxHashMap<
-                    String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
-                >,
-            ) -> ::std::sync::Arc<dyn ::toni::traits_helpers::Controller> {
-                let force_request = <#struct_name>::__toni_is_request_scoped();
-
-                let mut request_deps: Vec<String> = Vec::new();
-                for __token in <#struct_name>::__toni_dependencies() {
-                    if let Some(__provider) = dependencies.get(&__token) {
-                        if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                            request_deps.push(__token);
-                        }
-                    }
-                }
-
-                if !force_request && !request_deps.is_empty() {
-                    ::toni::tracing::warn!(
-                        controller = #struct_token,
-                        request_scoped_deps = ?request_deps,
-                        "Controller automatically elevated to request scope due to request-scoped \
-                         providers. Silence this by declaring #[controller(scope = \"request\")]."
-                    );
-                }
-
-                let state = if force_request || !request_deps.is_empty() {
-                    ::toni::traits_helpers::ControllerInstance::Request(dependencies)
-                } else {
-                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> =
-                        ::std::sync::Arc::new(
-                            <#struct_name>::__toni_build_from_deps(
-                                &dependencies,
-                                ::std::option::Option::None,
-                            ).await,
-                        );
-                    ::toni::traits_helpers::ControllerInstance::Singleton(controller_instance)
-                };
-
-                ::std::sync::Arc::new(#object_name { state })
-            }
         }
     }
 }

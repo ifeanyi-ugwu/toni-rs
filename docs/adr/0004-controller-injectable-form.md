@@ -36,15 +36,19 @@ impl UsersController {
 }
 ```
 
-- `#[controller("/p", scope = "…")]` is a **struct** attribute. It mirrors the `#[injectable]`-from-struct
-  path: it re-emits the struct with `Clone`/`InjectFields` and emits inherent bridge fns —
-  `__toni_build_from_deps` (field injection or the `#[new]` constructor, via the `__construct` bridge),
-  `__toni_dependencies`, `__toni_prefix`, `__toni_is_request_scoped`. Construction and lifecycle reuse
-  the same bridges providers use.
-- `#[routes]` is an **impl** attribute. It scans the `#[get]`/`#[post]`/… handlers and emits the per-route
-  `Route` wrappers, the `Controller` object, and the `ControllerFactory` — all delegating dependency
-  resolution, the route prefix, and scope to the struct's bridges. The full path is `__toni_prefix()`
-  joined with each handler's sub-path at registration time.
+- `#[controller("/p", scope = "…")]` is a **struct** attribute and produces a *complete* controller on
+  its own: it re-emits the struct with `Clone`/`InjectFields` and emits the `ControllerFactory`, the
+  `Controller` object, and inherent bridge fns — `__toni_build_from_deps` (field injection or the
+  `#[new]` constructor, via the `__construct` bridge), `__toni_dependencies`, `__toni_prefix`,
+  `__toni_is_request_scoped`. Construction and lifecycle reuse the bridges providers already use. The
+  object's `routes()` calls `Self::__toni_routes(&state)` through the `__route::RoutesBridge`, whose
+  default is **empty** — so a controller with no `#[routes]` impl is valid and registers zero routes
+  (matching NestJS, where a controller without route methods is fine).
+- `#[routes]` is an **impl** attribute and is *purely additive*: it scans the `#[get]`/`#[post]`/…
+  handlers, emits the per-route `Route` wrappers, and shadows the bridge with an inherent `__toni_routes`
+  that returns them. It delegates construction, the route prefix, and scope to the struct's bridges; the
+  full path is `__toni_prefix()` joined with each handler's sub-path at registration time. It leaves
+  `#[new]` and `#[on_*]` intact so their own macros form the `__construct` / `__lifecycle` bridges.
 
 The marker on the impl is **chosen over `inventory`** (the only marker-free alternative). For a
 module-scoped DI framework, an explicit, zero-dependency, debuggable impl scan is worth one attribute;
@@ -58,9 +62,10 @@ way.
 answered by "`#[inject]` field or `#[new]`," identical to a provider. The struct-in-attribute form is
 gone.
 
-**Failures move to the use site, loudly.** A `#[controller]` struct with no `#[routes]` impl fails to
-compile where the factory calls `Self::__toni_build_from_deps` ("no associated function"); a `#[routes]`
-impl with no `#[controller]` struct fails the same way. Neither silently does nothing.
+**A controller needs nothing but `#[controller]`.** `#[controller]` alone builds, registers, runs
+lifecycle, and serves zero routes; `#[routes]` only adds handlers. A `#[routes]` impl with no
+`#[controller]` struct fails to compile at the bridge call sites (`__toni_build_from_deps` etc.) —
+loudly, at the use site.
 
 **Breaking change.** The inline-struct form, bare-`new()` auto-detection, and `init = "…"` are removed —
 construction is `#[new]` or field injection, as with `#[injectable]`. Migration is mechanical (lift the
