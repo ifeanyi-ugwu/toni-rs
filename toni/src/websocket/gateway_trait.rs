@@ -7,6 +7,28 @@ use crate::http_helpers::{ExecutionResult, RouteMetadata};
 
 use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput, WsMessage};
 
+/// The enhancer tokens a gateway declares, resolved once at registration. Gateway-level tokens apply
+/// to every handler; each `handlers` entry adds tokens for one event. A flat descriptor instead of a
+/// dozen accessor methods — the gateway macro builds it, the resolver reads it once.
+#[derive(Default)]
+pub struct GatewayEnhancers {
+    pub guard_tokens: Vec<String>,
+    pub interceptor_tokens: Vec<String>,
+    pub pipe_tokens: Vec<String>,
+    pub error_handler_tokens: Vec<String>,
+    pub handlers: Vec<GatewayHandlerEnhancers>,
+}
+
+/// Per-handler (per-event) enhancer tokens, applied on top of the gateway-level ones.
+#[derive(Default)]
+pub struct GatewayHandlerEnhancers {
+    pub event: String,
+    pub guard_tokens: Vec<String>,
+    pub interceptor_tokens: Vec<String>,
+    pub pipe_tokens: Vec<String>,
+    pub error_handler_tokens: Vec<String>,
+}
+
 /// Core gateway trait for WebSocket handlers
 ///
 /// Gateways handle WebSocket connections and route messages to appropriate handlers.
@@ -71,51 +93,14 @@ pub trait GatewayTrait: Send + Sync {
         event: &str,
     ) -> ExecutionResult<WsHandlerOutput, WsError>;
 
-    /// Get guard tokens for DI resolution
-    fn get_guard_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    /// Get interceptor tokens for DI resolution
-    fn get_interceptor_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    /// Get pipe tokens for DI resolution
-    fn get_pipe_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
-    /// Get error handler tokens for DI resolution
-    fn get_error_handler_tokens(&self) -> Vec<String> {
-        vec![]
-    }
-
     /// Get route metadata (permissions, rate limits, etc.)
     fn get_route_metadata(&self) -> Arc<RouteMetadata> {
         Arc::new(RouteMetadata::new())
     }
 
-    /// All event names that have handler-level enhancers.
-    ///
-    /// Used by the resolver to pre-resolve per-handler enhancers at startup.
-    fn get_handler_events(&self) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_handler_guard_tokens(&self, _event: &str) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_handler_interceptor_tokens(&self, _event: &str) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_handler_pipe_tokens(&self, _event: &str) -> Vec<String> {
-        vec![]
-    }
-
-    fn get_handler_error_handler_tokens(&self, _event: &str) -> Vec<String> {
-        vec![]
+    /// All enhancer tokens for this gateway — gateway-level plus per-handler — resolved once at
+    /// startup. Default is empty (a gateway with no declared enhancers).
+    fn enhancers(&self) -> GatewayEnhancers {
+        GatewayEnhancers::default()
     }
 }
