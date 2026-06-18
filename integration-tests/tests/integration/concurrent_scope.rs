@@ -6,7 +6,7 @@
 
 use crate::common::TestServer;
 use futures_util::future::join_all;
-use toni::{controller, routes, get, module, provider_factory, Body as ToniBody};
+use toni::{controller, get, module, provider_factory, routes, Body as ToniBody};
 use uuid::Uuid;
 
 #[tokio_localset_test::localset_test]

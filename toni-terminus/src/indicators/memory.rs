@@ -121,10 +121,7 @@ impl ProviderFactory for MemoryHealthIndicatorFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(
-            Arc::new(Box::new(MemoryHealthIndicatorProvider)),
-            vec![],
-        )
+        Injectable::new(Arc::new(Box::new(MemoryHealthIndicatorProvider)), vec![])
     }
 }
 

@@ -1,7 +1,7 @@
-use async_trait::async_trait;
 use super::{ControllerFactory, ProviderFactory};
 use crate::middleware::{IntoRoutePattern, RoutePattern};
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
+use async_trait::async_trait;
 use std::sync::Arc;
 
 #[async_trait(?Send)]

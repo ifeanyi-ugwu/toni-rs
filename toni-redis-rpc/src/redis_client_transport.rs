@@ -168,8 +168,8 @@ impl RpcClientTransport for RedisClientTransport {
             reply_to: Some(reply_to),
             metadata,
         };
-        let payload = serde_json::to_vec(&envelope)
-            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let payload =
+            serde_json::to_vec(&envelope).map_err(|e| RpcClientError::Transport(e.to_string()))?;
 
         let mut conn = shared.publisher.clone();
         if let Err(e) = redis::cmd("PUBLISH")
@@ -208,8 +208,8 @@ impl RpcClientTransport for RedisClientTransport {
             reply_to: None,
             metadata,
         };
-        let payload = serde_json::to_vec(&envelope)
-            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let payload =
+            serde_json::to_vec(&envelope).map_err(|e| RpcClientError::Transport(e.to_string()))?;
 
         let mut conn = shared.publisher.clone();
         redis::cmd("PUBLISH")

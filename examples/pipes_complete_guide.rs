@@ -32,11 +32,11 @@
 
 use serde::Deserialize;
 use toni::{
-    controller, routes,
+    controller,
     extractors::{Json, Path, Query, Validated},
     get,
     http_helpers::Body as ToniBody,
-    module, post, HttpAdapter,
+    module, post, routes, HttpAdapter,
 };
 use validator::Validate;
 

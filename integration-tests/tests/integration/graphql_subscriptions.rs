@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio_tungstenite::tungstenite::Message;
 use toni::module;
 use toni::{async_trait, WsClient};
 use toni_async_graphql::{
     async_graphql::{self, Context, EmptyMutation, Object, Schema, Subscription},
     DefaultContextBuilder, GraphQLModule, SubscriptionContextBuilder,
 };
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::common::TestServer;
 
@@ -73,10 +73,7 @@ struct AuthSub;
 #[Subscription]
 impl AuthSub {
     /// Emits the token that was passed in connection_init's payload.
-    async fn auth_token(
-        &self,
-        ctx: &Context<'_>,
-    ) -> impl futures_util::Stream<Item = String> {
+    async fn auth_token(&self, ctx: &Context<'_>) -> impl futures_util::Stream<Item = String> {
         let token = ctx
             .data::<String>()
             .map(|s| s.clone())
@@ -89,11 +86,7 @@ struct TokenContextBuilder;
 
 #[async_trait]
 impl SubscriptionContextBuilder for TokenContextBuilder {
-    async fn build(
-        &self,
-        _client: &WsClient,
-        init_payload: Option<Value>,
-    ) -> async_graphql::Data {
+    async fn build(&self, _client: &WsClient, init_payload: Option<Value>) -> async_graphql::Data {
         let mut data = async_graphql::Data::default();
         if let Some(token) = init_payload
             .as_ref()
@@ -106,8 +99,7 @@ impl SubscriptionContextBuilder for TokenContextBuilder {
     }
 }
 
-fn build_auth_module(
-) -> GraphQLModule<AuthQuery, EmptyMutation, AuthSub, DefaultContextBuilder> {
+fn build_auth_module() -> GraphQLModule<AuthQuery, EmptyMutation, AuthSub, DefaultContextBuilder> {
     let schema = Schema::build(AuthQuery, EmptyMutation, AuthSub).finish();
     GraphQLModule::for_root(schema, DefaultContextBuilder)
         .with_path("/graphql")
@@ -120,9 +112,9 @@ impl AuthModule {}
 
 // ---- Helpers -------------------------------------------------------------
 
-async fn connect_ws(port: u16) -> tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-> {
+async fn connect_ws(
+    port: u16,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     connect_ws_with_protocol(port, Some("graphql-transport-ws")).await
 }
 
@@ -135,10 +127,8 @@ async fn connect_ws_with_protocol(
     let url = format!("ws://127.0.0.1:{}/graphql/ws", port);
     let mut req = url.into_client_request().unwrap();
     if let Some(p) = protocol {
-        req.headers_mut().insert(
-            "Sec-WebSocket-Protocol",
-            p.parse().unwrap(),
-        );
+        req.headers_mut()
+            .insert("Sec-WebSocket-Protocol", p.parse().unwrap());
     }
     let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
     ws
@@ -183,7 +173,9 @@ async fn graphql_ws_connection_ack() {
     let server = TestServer::start(GqlModule::module_definition()).await;
     let mut ws = connect_ws(server.port).await;
 
-    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"connection_init"}"#))
+        .await
+        .unwrap();
     let msgs = collect_n(&mut ws, 1, Duration::from_secs(2)).await;
 
     assert_eq!(msgs[0]["type"], "connection_ack");
@@ -196,7 +188,9 @@ async fn graphql_ws_subscription_delivers_items_and_complete() {
     let mut ws = connect_ws(server.port).await;
 
     // Handshake
-    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"connection_init"}"#))
+        .await
+        .unwrap();
     collect_n(&mut ws, 1, Duration::from_secs(2)).await; // consume ack
 
     // Subscribe: countdown from 3 → [3, 2, 1, 0] + complete = 5 frames
@@ -231,7 +225,9 @@ async fn graphql_ws_ping_pong() {
     let server = TestServer::start(GqlModule::module_definition()).await;
     let mut ws = connect_ws(server.port).await;
 
-    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"connection_init"}"#))
+        .await
+        .unwrap();
     collect_n(&mut ws, 1, Duration::from_secs(2)).await;
 
     ws.send(text(r#"{"type":"ping"}"#)).await.unwrap();
@@ -274,7 +270,9 @@ async fn graphql_ws_per_subscription_cancel_stops_stream() {
     let server = TestServer::start(GqlModule::module_definition()).await;
     let mut ws = connect_ws(server.port).await;
 
-    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"connection_init"}"#))
+        .await
+        .unwrap();
     collect_n(&mut ws, 1, Duration::from_secs(2)).await; // consume ack
 
     // Subscribe to the ticker (infinite, 50 ms per item)
@@ -289,14 +287,18 @@ async fn graphql_ws_per_subscription_cancel_stops_stream() {
     assert!(!started.is_empty(), "stream should have started");
 
     // Cancel the subscription
-    ws.send(text(r#"{"type":"complete","id":"1"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"complete","id":"1"}"#))
+        .await
+        .unwrap();
 
     // Collect any items that still arrive (at most a couple from the in-flight pipeline)
     let trailing = collect_n(&mut ws, 100, Duration::from_millis(300)).await;
 
     // Server must NOT send a server-side complete for a client-cancelled subscription
     assert!(
-        !trailing.iter().any(|f| f["type"] == "complete" && f["id"] == "1"),
+        !trailing
+            .iter()
+            .any(|f| f["type"] == "complete" && f["id"] == "1"),
         "server should not send complete for a client-cancelled subscription"
     );
     // A 50 ms ticker over 300 ms can produce at most ~6 items; allow a small buffer
@@ -313,7 +315,9 @@ async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
     let server = TestServer::start(GqlModule::module_definition()).await;
     let mut ws = connect_ws(server.port).await;
 
-    ws.send(text(r#"{"type":"connection_init"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"connection_init"}"#))
+        .await
+        .unwrap();
     collect_n(&mut ws, 1, Duration::from_secs(2)).await;
 
     // Start a slow infinite subscription
@@ -326,7 +330,9 @@ async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
     collect_n(&mut ws, 1, Duration::from_secs(5)).await;
 
     // Cancel the infinite subscription
-    ws.send(text(r#"{"type":"complete","id":"inf"}"#)).await.unwrap();
+    ws.send(text(r#"{"type":"complete","id":"inf"}"#))
+        .await
+        .unwrap();
 
     // Brief pause to let any in-flight "inf" frames drain
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -342,7 +348,11 @@ async fn graphql_ws_cancel_is_per_subscription_not_per_connection() {
     let all_frames = collect_n(&mut ws, 20, Duration::from_secs(5)).await;
     let short_frames: Vec<&Value> = all_frames.iter().filter(|f| f["id"] == "short").collect();
 
-    assert_eq!(short_frames.len(), 4, "expected 3 next + 1 complete for 'short'");
+    assert_eq!(
+        short_frames.len(),
+        4,
+        "expected 3 next + 1 complete for 'short'"
+    );
     let next_values: Vec<i64> = short_frames[..3]
         .iter()
         .map(|f| {

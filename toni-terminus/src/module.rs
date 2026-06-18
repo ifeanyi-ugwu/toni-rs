@@ -2,19 +2,19 @@ use toni::DynamicModule;
 
 use crate::health_check_service::HealthCheckServiceFactory;
 
+#[cfg(feature = "disk")]
+use crate::indicators::disk::DiskHealthIndicatorFactory;
 #[cfg(feature = "http")]
 use crate::indicators::http::HttpHealthIndicatorFactory;
 #[cfg(feature = "memory")]
 use crate::indicators::memory::MemoryHealthIndicatorFactory;
-#[cfg(feature = "disk")]
-use crate::indicators::disk::DiskHealthIndicatorFactory;
 
+#[cfg(feature = "disk")]
+use crate::indicators::DiskHealthIndicator;
 #[cfg(feature = "http")]
 use crate::indicators::HttpHealthIndicator;
 #[cfg(feature = "memory")]
 use crate::indicators::MemoryHealthIndicator;
-#[cfg(feature = "disk")]
-use crate::indicators::DiskHealthIndicator;
 
 use crate::health_check_service::HealthCheckService;
 

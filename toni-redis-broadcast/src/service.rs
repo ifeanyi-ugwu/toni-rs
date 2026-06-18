@@ -45,7 +45,10 @@ impl RedisBroadcastService {
     }
 
     pub fn to_room(&self, room: impl Into<String>) -> RedisBroadcastTarget {
-        RedisBroadcastTarget::new(self.publisher.clone(), BroadcastTargetKind::Room(room.into()))
+        RedisBroadcastTarget::new(
+            self.publisher.clone(),
+            BroadcastTargetKind::Room(room.into()),
+        )
     }
 
     /// Publishes directly to the channel of the process that owns `client_id`,
@@ -141,7 +144,12 @@ impl RedisBroadcastService {
     // Connection lifecycle
     // -------------------------------------------------------------------------
 
-    pub async fn connect(&self, client_id: ClientId, sink: Arc<dyn WsSink>, namespace: Option<String>) {
+    pub async fn connect(
+        &self,
+        client_id: ClientId,
+        sink: Arc<dyn WsSink>,
+        namespace: Option<String>,
+    ) {
         self.local.connect(client_id.clone(), sink, namespace);
         let mut conn = self.publisher.clone();
         if let Err(e) = redis::pipe()

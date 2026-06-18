@@ -260,7 +260,6 @@ fn generate_provider_wrapper(
     }
 }
 
-
 /// Generate role-push statements to embed inside `build()`, before the concrete
 /// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
 /// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
@@ -1582,8 +1581,10 @@ fn generate_dyn_factories(
         let role_variant = &spec.role_variant;
         let entry_path = &spec.entry_path;
         let value_probe = Ident::new(&format!("{}Probe", spec.factory_suffix), struct_name.span());
-        let type_probe =
-            Ident::new(&format!("{}TypeProbe", spec.factory_suffix), struct_name.span());
+        let type_probe = Ident::new(
+            &format!("{}TypeProbe", spec.factory_suffix),
+            struct_name.span(),
+        );
 
         // `create()` builds via the shared builder, then value-probes the instance to the role
         // trait object. The probe compiles for any `T` (fallback returns `None`); this impl's role

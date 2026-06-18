@@ -1,5 +1,5 @@
 use crate::common::TestServer;
-use toni::{controller, routes, get, injectable, module, Body as ToniBody, HttpRequest};
+use toni::{controller, get, injectable, module, routes, Body as ToniBody, HttpRequest};
 
 #[controller("/static")]
 pub struct StaticController {}

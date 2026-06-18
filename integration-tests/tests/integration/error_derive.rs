@@ -48,7 +48,9 @@ enum BillingError {
     CardDeclined,
 
     #[error_kind(Unavailable)]
-    ServiceDown { retry_after: u32 },
+    ServiceDown {
+        retry_after: u32,
+    },
 
     // Untagged → no enum-level default → falls all the way through to Internal.
     Other,

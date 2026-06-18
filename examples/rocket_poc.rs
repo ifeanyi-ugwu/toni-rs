@@ -13,8 +13,8 @@
 
 use std::time::Duration;
 
-use futures::StreamExt;
 use futures::stream;
+use futures::StreamExt;
 use serde_json::json;
 use toni::extractors::{BodyStream, Bytes, Path};
 use toni::*;
@@ -78,11 +78,7 @@ impl EchoGateway {
     }
 
     #[subscribe_message("message")]
-    async fn handle_message(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_message(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;

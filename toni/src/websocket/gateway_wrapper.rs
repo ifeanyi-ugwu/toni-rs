@@ -470,11 +470,10 @@ impl GatewayWrapper {
                 context.set_response(Ok(None));
             }
             ExecutionResult::Err(ws_err) => {
-                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) =
-                    match &ws_err {
-                        WsError::AppError(e) => e.as_ref(),
-                        other => other,
-                    };
+                let observed_err: &(dyn std::error::Error + Send + Sync + 'static) = match &ws_err {
+                    WsError::AppError(e) => e.as_ref(),
+                    other => other,
+                };
                 Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(msg) =
@@ -578,16 +577,13 @@ impl GatewayWrapper {
             // `ExecutionResult::Err(WsError::from(panic_event))`; the
             // caller's chain fans observers, gives error handlers first
             // claim, and falls back to the default frame.
-            if let Err(event) = crate::panic_recovery::catch_sync(
-                PipelineSegment::Pipe,
-                || pipe.process(context),
-            ) {
+            if let Err(event) =
+                crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
+            {
                 return ExecutionResult::Err(WsError::from(event));
             }
             if context.should_abort() {
-                return ExecutionResult::Err(WsError::Internal(
-                    "Request aborted by pipe".into(),
-                ));
+                return ExecutionResult::Err(WsError::Internal("Request aborted by pipe".into()));
             }
         }
 

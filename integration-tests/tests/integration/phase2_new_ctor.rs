@@ -10,7 +10,7 @@ use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
 use toni::{
-    controller, routes, get, injectable, module, new, toni_factory::ToniFactory, use_guards,
+    controller, get, injectable, module, new, routes, toni_factory::ToniFactory, use_guards,
     Body as ToniBody,
 };
 

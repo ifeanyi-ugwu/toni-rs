@@ -4,12 +4,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use actix_web::{
-    web, web::Bytes, App, HttpRequest as ActixHttpRequest,
-    HttpResponse as ActixHttpResponse, HttpServer,
+    web, web::Bytes, App, HttpRequest as ActixHttpRequest, HttpResponse as ActixHttpResponse,
+    HttpServer,
 };
 use toni::{
+    http_helpers::{PathParams, RequestBody},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, RequestHandler, http_helpers::{PathParams, RequestBody},
+    HttpResponse, RequestHandler,
 };
 
 pub struct ActixAdapter {
@@ -138,7 +139,12 @@ impl ActixAdapter {
 
 #[toni::async_trait]
 impl HttpAdapter for ActixAdapter {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+    fn bind(
+        &mut self,
+        method: HttpMethod,
+        path: &str,
+        handler: Arc<dyn RequestHandler>,
+    ) -> Result<()> {
         self.routes.push((method, path.to_owned(), handler));
         Ok(())
     }
@@ -233,10 +239,14 @@ impl HttpAdapter for ActixAdapter {
             }
         });
 
-        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
-            handle.stop(true).await;
-            Ok(())
-        }))
+        Ok(HttpLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                handle.stop(true).await;
+                Ok(())
+            },
+        ))
     }
 }
 

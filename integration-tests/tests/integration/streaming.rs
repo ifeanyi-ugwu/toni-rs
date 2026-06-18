@@ -1,9 +1,9 @@
 use crate::common::TestServer;
 use futures_util::stream;
 use toni::{
-    controller, routes,
+    controller,
     extractors::{BodyStream, Bytes},
-    module, post, Body as ToniBody,
+    module, post, routes, Body as ToniBody,
 };
 
 #[controller("/stream")]

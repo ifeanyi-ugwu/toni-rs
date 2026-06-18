@@ -26,9 +26,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use toni::{
-    controller, routes,
+    controller,
     extractors::{Json, Query},
-    get, injectable, module, post, Body as ToniBody, RpcClient, ToniFactory,
+    get, injectable, module, post, routes, Body as ToniBody, RpcClient, ToniFactory,
 };
 use toni_macros::{provider_value, rpc_controller};
 
@@ -116,13 +116,12 @@ impl OrdersRpcController {
 // HTTP controller — uses RpcClient to call the NATS handlers above
 // ============================================================================
 
-#[controller(
-    "/order")]
+#[controller("/order")]
 pub struct OrdersHttpController {
-        // Injected by the "ORDER_SERVICE_CLIENT" token registered in the module.
-        #[inject("ORDER_SERVICE_CLIENT")]
-        client: RpcClient,
-    }
+    // Injected by the "ORDER_SERVICE_CLIENT" token registered in the module.
+    #[inject("ORDER_SERVICE_CLIENT")]
+    client: RpcClient,
+}
 
 #[routes]
 impl OrdersHttpController {

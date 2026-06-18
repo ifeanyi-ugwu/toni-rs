@@ -57,4 +57,3 @@ pub trait GrpcAdapter: Send + Sync + 'static {
         self: Box<Self>,
     ) -> Result<crate::adapter::lifecycle_handles::GrpcLifecycleHandle>;
 }
-

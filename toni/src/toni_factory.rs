@@ -143,10 +143,7 @@ impl ToniFactory {
     /// User-handler errors render directly through the active transport and
     /// don't pass through observers; if you need to log those, override
     /// the rendering method on your error type.
-    pub fn use_global_error_observer(
-        &mut self,
-        observer: Arc<dyn ErrorObserver>,
-    ) -> &mut Self {
+    pub fn use_global_error_observer(&mut self, observer: Arc<dyn ErrorObserver>) -> &mut Self {
         self.global_error_observers.push(observer);
         self
     }

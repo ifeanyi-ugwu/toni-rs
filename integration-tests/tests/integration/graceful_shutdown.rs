@@ -12,7 +12,9 @@ use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use toni::module;
 use toni::toni_factory::ToniFactory;
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerResult, WsMessage};
+use toni::websocket::{
+    BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerResult, WsMessage,
+};
 use toni_axum::AxumAdapter;
 use toni_macros::websocket_gateway;
 
@@ -32,11 +34,7 @@ impl CloseGateway {
     }
 
     #[subscribe_message("ping")]
-    async fn on_ping(
-        &self,
-        _client: WsClient,
-        _msg: WsMessage,
-    ) -> WsHandlerResult {
+    async fn on_ping(&self, _client: WsClient, _msg: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("pong").into())
     }
 }

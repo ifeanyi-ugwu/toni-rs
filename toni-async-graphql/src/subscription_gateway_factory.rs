@@ -62,9 +62,8 @@ where
             )),
         };
 
-        let role = ProviderRole::Gateway(Arc::new(
-            Box::new(gateway.clone()) as Box<dyn GatewayTrait>
-        ));
+        let role =
+            ProviderRole::Gateway(Arc::new(Box::new(gateway.clone()) as Box<dyn GatewayTrait>));
         let instance = Arc::new(Box::new(gateway) as Box<dyn toni::traits_helpers::Provider>);
 
         Injectable::new(instance, vec![role])

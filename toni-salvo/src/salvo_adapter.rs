@@ -3,25 +3,25 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use tokio::sync::watch;
 
-use salvo::Router;
 use salvo::conn::{Listener, TcpListener};
-use salvo::http::{Request as SalvoRequest, Response as SalvoResponse};
 use salvo::http::body::ResBody;
+use salvo::http::{Request as SalvoRequest, Response as SalvoResponse};
 use salvo::websocket::WebSocketUpgrade;
-use salvo::{Depot, FlowCtrl, Handler, Server, async_trait as salvo_async_trait};
+use salvo::Router;
+use salvo::{async_trait as salvo_async_trait, Depot, FlowCtrl, Handler, Server};
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
+    async_trait,
+    http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
     HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
     WsConnectionCallbacks,
-    async_trait,
-    http_helpers::{PathParams, RequestBody, RequestPart},
 };
 
 use crate::salvo_websocket_adapter::{salvo_to_ws_message, ws_message_to_salvo};
@@ -455,21 +455,20 @@ impl HttpAdapter for SalvoAdapter {
             server.serve(router).await;
         });
 
-        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(HttpLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
 #[async_trait]
 impl WebSocketAdapter for SalvoAdapter {
-    fn bind(
-        &mut self,
-        port: u16,
-        path: &str,
-        callbacks: Arc<WsConnectionCallbacks>,
-    ) -> Result<()> {
+    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
         self.ws_ports
             .entry(port)
             .or_default()
@@ -561,7 +560,10 @@ mod tests {
     #[test]
     fn back_to_back_params_separated_by_slash() {
         assert_eq!(to_salvo_path("/:a/:b"), "/{a}/{b}");
-        assert_eq!(to_salvo_path("/users/:id/comments/:cid"), "/users/{id}/comments/{cid}");
+        assert_eq!(
+            to_salvo_path("/users/:id/comments/:cid"),
+            "/users/{id}/comments/{cid}"
+        );
     }
 
     #[test]

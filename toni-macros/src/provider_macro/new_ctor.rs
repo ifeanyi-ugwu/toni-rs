@@ -34,7 +34,9 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
     let params = extract_params(&method)?;
 
     let dep_tokens: Vec<&TokenStream> = params.iter().map(|(_, _, tok)| tok).collect();
-    let resolutions = params.iter().map(|(name, ty, tok)| resolve_param(name, ty, tok));
+    let resolutions = params
+        .iter()
+        .map(|(name, ty, tok)| resolve_param(name, ty, tok));
     let arg_names: Vec<&Ident> = params.iter().map(|(name, _, _)| name).collect();
 
     // `#[inject]` on a parameter is read above to pick the lookup token; it is not a real attribute,
@@ -42,7 +44,9 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
     let mut emitted_method = method.clone();
     for input in &mut emitted_method.sig.inputs {
         if let FnArg::Typed(pat_type) = input {
-            pat_type.attrs.retain(|attr| !attr.path().is_ident("inject"));
+            pat_type
+                .attrs
+                .retain(|attr| !attr.path().is_ident("inject"));
         }
     }
 

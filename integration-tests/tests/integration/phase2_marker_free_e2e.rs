@@ -9,7 +9,9 @@
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::traits_helpers::Guard;
-use toni::{controller, routes, get, injectable, module, use_guards, Body as ToniBody, RequestPart};
+use toni::{
+    controller, get, injectable, module, routes, use_guards, Body as ToniBody, RequestPart,
+};
 
 use crate::common::TestServer;
 use serial_test::serial;

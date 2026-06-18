@@ -136,4 +136,3 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
         ))
     }
 }
-

@@ -1,8 +1,8 @@
 use crate::common::TestServer;
 use std::time::Duration;
 use toni::{
-    controller, routes, get, injectable, module, new, provider_alias, provider_factory, provider_token,
-    provider_value, Body as ToniBody,
+    controller, get, injectable, module, new, provider_alias, provider_factory, provider_token,
+    provider_value, routes, Body as ToniBody,
 };
 
 #[tokio_localset_test::localset_test]
@@ -213,7 +213,8 @@ async fn provider_alias_creates_alternate_token() {
 
     #[controller("")]
     pub struct TestController {
-        #[inject] verify: VerifyService,
+        #[inject]
+        verify: VerifyService,
     }
 
     #[routes]
@@ -278,7 +279,8 @@ async fn provider_token_for_custom_types() {
 
     #[controller("")]
     pub struct TestController {
-        #[inject] app: AppService,
+        #[inject]
+        app: AppService,
     }
 
     #[routes]
@@ -367,7 +369,8 @@ async fn all_provider_variants_work_together() {
 
     #[controller("")]
     pub struct TestController {
-        #[inject] consumer: AliasTokenConsumer,
+        #[inject]
+        consumer: AliasTokenConsumer,
     }
 
     #[routes]

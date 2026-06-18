@@ -11,7 +11,9 @@
 //! Connect with: websocat ws://localhost:3000/chat
 
 use serde::{Deserialize, Serialize};
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsMessage};
+use toni::websocket::{
+    BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsMessage,
+};
 use toni::*;
 use toni_macros::{module, websocket_gateway};
 
@@ -121,11 +123,7 @@ impl ChatGateway {
     }
 
     #[subscribe_message("join")]
-    async fn handle_join(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_join(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -160,11 +158,7 @@ impl ChatGateway {
     }
 
     #[subscribe_message("leave")]
-    async fn handle_leave(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_leave(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -193,11 +187,7 @@ impl ChatGateway {
     }
 
     #[subscribe_message("message")]
-    async fn handle_message(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_message(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -229,11 +219,7 @@ impl ChatGateway {
     }
 
     #[subscribe_message("dm")]
-    async fn handle_dm(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_dm(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;
@@ -265,11 +251,7 @@ impl ChatGateway {
     }
 
     #[subscribe_message("typing")]
-    async fn handle_typing(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-    ) -> WsHandlerResult {
+    async fn handle_typing(&self, client: WsClient, message: WsMessage) -> WsHandlerResult {
         let text = message
             .as_text()
             .ok_or_else(|| WsError::InvalidMessage("Expected text message".into()))?;

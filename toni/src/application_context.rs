@@ -336,10 +336,7 @@ impl ToniApplicationContext {
 
         for module_token in modules.clone() {
             if let Some(module_ref) = container.get_module_by_token(&module_token) {
-                module_ref
-                    .get_metadata()
-                    .on_module_destroy()
-                    .await;
+                module_ref.get_metadata().on_module_destroy().await;
             }
         }
 

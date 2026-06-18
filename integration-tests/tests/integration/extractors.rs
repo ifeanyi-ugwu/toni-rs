@@ -1,9 +1,9 @@
 use crate::common::TestServer;
 use serde::Deserialize;
 use toni::{
-    controller, routes,
+    controller,
     extractors::{Bytes as RenamedBytes, Json, Query, Validated},
-    get, module, post, Body as ToniBody,
+    get, module, post, routes, Body as ToniBody,
 };
 use validator::Validate;
 
@@ -19,8 +19,7 @@ struct CreateUserDto {
     email: String,
 }
 
-#[controller(
-    "/api")]
+#[controller("/api")]
 pub struct ExtractorController;
 
 #[routes]
@@ -159,8 +158,7 @@ struct ValidatedUserDto {
     email: String,
 }
 
-#[controller(
-    "/validated")]
+#[controller("/validated")]
 pub struct ValidatedController;
 
 #[routes]

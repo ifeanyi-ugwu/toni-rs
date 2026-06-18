@@ -1,7 +1,7 @@
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
-use toni::{controller, routes, get, injectable, module, new, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, routes, Body as ToniBody};
 use toni_config::{Config, ConfigModule, ConfigService};
 
 #[derive(Config, Clone)]
@@ -28,7 +28,10 @@ async fn singleton_providers_created_once_across_requests() {
     SINGLETON_COUNTER.store(0, Ordering::SeqCst);
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: SingletonService }
+    pub struct TestController {
+        #[inject]
+        service: SingletonService,
+    }
 
     #[routes]
     impl TestController {
@@ -92,7 +95,10 @@ async fn transient_providers_create_unique_instances_per_injection() {
     }
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: MultiService }
+    pub struct TestController {
+        #[inject]
+        service: MultiService,
+    }
 
     #[routes]
     impl TestController {
@@ -148,7 +154,10 @@ async fn field_injection_with_inject_attribute() {
     }
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: ServiceWithDeps }
+    pub struct TestController {
+        #[inject]
+        service: ServiceWithDeps,
+    }
 
     #[routes]
     impl TestController {
@@ -187,7 +196,10 @@ async fn field_injection_with_default_fallback() {
     }
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: ServiceWithDefault }
+    pub struct TestController {
+        #[inject]
+        service: ServiceWithDefault,
+    }
 
     #[routes]
     impl TestController {
@@ -226,7 +238,10 @@ async fn config_service_injection_in_providers() {
     }
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: ServiceWithConfig }
+    pub struct TestController {
+        #[inject]
+        service: ServiceWithConfig,
+    }
 
     #[routes]
     impl TestController {
@@ -268,7 +283,10 @@ async fn new_attribute_syntax() {
     }
 
     #[controller("/")]
-    pub struct TestController { #[inject] service: NewSyntaxService }
+    pub struct TestController {
+        #[inject]
+        service: NewSyntaxService,
+    }
 
     #[routes]
     impl TestController {

@@ -4,8 +4,8 @@ use toni::context::{HandlerContext, HttpContext};
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
 use toni::{
-    controller, routes, get, injectable, module, post, provider_factory, provider_token, provider_value,
-    use_guards, use_interceptors, use_pipes, Body as ToniBody, HttpResponse,
+    controller, get, injectable, module, post, provider_factory, provider_token, provider_value,
+    routes, use_guards, use_interceptors, use_pipes, Body as ToniBody, HttpResponse,
 };
 
 pub struct OrderTrackerMiddleware {

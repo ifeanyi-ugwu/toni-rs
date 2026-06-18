@@ -46,10 +46,7 @@ impl HealthIndicator for UptimeIndicator {
     fn check(&self, key: &str) -> BoxFuture<'static, HealthIndicatorResult> {
         let key = key.to_string();
         Box::pin(async move {
-            let secs = APP_START
-                .get()
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
+            let secs = APP_START.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
             Ok(HealthEntry::up_with(key, json!({ "uptimeSecs": secs })))
         })
     }
@@ -59,10 +56,14 @@ impl HealthIndicator for UptimeIndicator {
 
 #[controller("/health")]
 pub struct HealthController {
-    #[inject] health: HealthCheckService,
-    #[inject] http:   HttpHealthIndicator,
-    #[inject] memory: MemoryHealthIndicator,
-    #[inject] disk:   DiskHealthIndicator,
+    #[inject]
+    health: HealthCheckService,
+    #[inject]
+    http: HttpHealthIndicator,
+    #[inject]
+    memory: MemoryHealthIndicator,
+    #[inject]
+    disk: DiskHealthIndicator,
 }
 
 #[routes]
@@ -92,14 +93,12 @@ impl HealthController {
         self.health
             .check(vec![
                 // ping_check: passes on any 2xx or 3xx response
-                self.http
-                    .ping_check("httpbin", "https://httpbin.org/get"),
+                self.http.ping_check("httpbin", "https://httpbin.org/get"),
                 // response_check: full control — inspect status, headers, or body
-                self.http.response_check(
-                    "httpbin_json",
-                    "https://httpbin.org/json",
-                    |resp| Box::pin(async move { resp.status().is_success() }),
-                ),
+                self.http
+                    .response_check("httpbin_json", "https://httpbin.org/json", |resp| {
+                        Box::pin(async move { resp.status().is_success() })
+                    }),
                 self.memory.check_rss("memory_rss", 512 * 1024 * 1024),
                 self.disk.check_storage("disk", "/", 5.0),
             ])

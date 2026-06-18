@@ -12,10 +12,10 @@
 
 use std::time::Duration;
 
-use tonic_health::ServingStatus;
-use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus as PbServingStatus;
 use tonic_health::pb::health_client::HealthClient;
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::ServingStatus;
 
 #[tokio_localset_test::localset_test]
 async fn grpc_adapter_seam_round_trip_and_shuts_down() {

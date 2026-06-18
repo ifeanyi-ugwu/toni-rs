@@ -87,13 +87,9 @@ impl<T: DeserializeOwned> FromRequestParts for Path<T> {
         if let serde_json::Value::Object(ref obj) = json_map {
             if obj.len() == 1 {
                 if let Some(single) = obj.values().next() {
-                    let deserialized: T =
-                        serde_json::from_value(single.clone()).map_err(|e| {
-                            PathError::ParseError(format!(
-                                "Failed to deserialize path params: {}",
-                                e
-                            ))
-                        })?;
+                    let deserialized: T = serde_json::from_value(single.clone()).map_err(|e| {
+                        PathError::ParseError(format!("Failed to deserialize path params: {}", e))
+                    })?;
                     return Ok(Path(deserialized));
                 }
             }

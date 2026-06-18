@@ -131,10 +131,14 @@ impl RpcAdapter for KafkaAdapter {
             }
         });
 
-        Ok(toni::RpcLifecycleHandle::new(None, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            None,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -178,7 +182,10 @@ async fn handle_message(
         .payload(&response)
         .headers(headers);
 
-    if let Err((e, _)) = producer.send(record, Timeout::After(Duration::from_secs(5))).await {
+    if let Err((e, _)) = producer
+        .send(record, Timeout::After(Duration::from_secs(5)))
+        .await
+    {
         tracing::error!(error = %e, reply_to, "KafkaAdapter failed to publish reply");
     }
 }

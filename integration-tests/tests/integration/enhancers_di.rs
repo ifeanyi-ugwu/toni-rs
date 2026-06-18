@@ -4,7 +4,7 @@ use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
-    controller, routes, get, injectable, module, new, provider_value, use_guards, use_interceptors,
+    controller, get, injectable, module, new, provider_value, routes, use_guards, use_interceptors,
     Body as ToniBody, RequestPart,
 };
 

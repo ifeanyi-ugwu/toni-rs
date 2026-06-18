@@ -53,26 +53,86 @@ macro_rules! probe {
     };
 }
 
-probe!(HttpGuardProbe, HttpGuardProbeFallback, Guard<HttpContext>, dyn Guard<HttpContext>);
-probe!(RpcGuardProbe, RpcGuardProbeFallback, Guard<RpcContext>, dyn Guard<RpcContext>);
-probe!(WsGuardProbe, WsGuardProbeFallback, Guard<WsContext>, dyn Guard<WsContext>);
-probe!(GrpcGuardProbe, GrpcGuardProbeFallback, Guard<GrpcContext>, dyn Guard<GrpcContext>);
+probe!(
+    HttpGuardProbe,
+    HttpGuardProbeFallback,
+    Guard<HttpContext>,
+    dyn Guard<HttpContext>
+);
+probe!(
+    RpcGuardProbe,
+    RpcGuardProbeFallback,
+    Guard<RpcContext>,
+    dyn Guard<RpcContext>
+);
+probe!(
+    WsGuardProbe,
+    WsGuardProbeFallback,
+    Guard<WsContext>,
+    dyn Guard<WsContext>
+);
+probe!(
+    GrpcGuardProbe,
+    GrpcGuardProbeFallback,
+    Guard<GrpcContext>,
+    dyn Guard<GrpcContext>
+);
 
-probe!(HttpInterceptorProbe, HttpInterceptorProbeFallback, Interceptor<HttpContext>, dyn Interceptor<HttpContext>);
-probe!(RpcInterceptorProbe, RpcInterceptorProbeFallback, Interceptor<RpcContext>, dyn Interceptor<RpcContext>);
-probe!(WsInterceptorProbe, WsInterceptorProbeFallback, Interceptor<WsContext>, dyn Interceptor<WsContext>);
-probe!(GrpcInterceptorProbe, GrpcInterceptorProbeFallback, Interceptor<GrpcContext>, dyn Interceptor<GrpcContext>);
+probe!(
+    HttpInterceptorProbe,
+    HttpInterceptorProbeFallback,
+    Interceptor<HttpContext>,
+    dyn Interceptor<HttpContext>
+);
+probe!(
+    RpcInterceptorProbe,
+    RpcInterceptorProbeFallback,
+    Interceptor<RpcContext>,
+    dyn Interceptor<RpcContext>
+);
+probe!(
+    WsInterceptorProbe,
+    WsInterceptorProbeFallback,
+    Interceptor<WsContext>,
+    dyn Interceptor<WsContext>
+);
+probe!(
+    GrpcInterceptorProbe,
+    GrpcInterceptorProbeFallback,
+    Interceptor<GrpcContext>,
+    dyn Interceptor<GrpcContext>
+);
 
-probe!(HttpPipeProbe, HttpPipeProbeFallback, Pipe<HttpContext>, dyn Pipe<HttpContext>);
-probe!(RpcPipeProbe, RpcPipeProbeFallback, Pipe<RpcContext>, dyn Pipe<RpcContext>);
-probe!(WsPipeProbe, WsPipeProbeFallback, Pipe<WsContext>, dyn Pipe<WsContext>);
+probe!(
+    HttpPipeProbe,
+    HttpPipeProbeFallback,
+    Pipe<HttpContext>,
+    dyn Pipe<HttpContext>
+);
+probe!(
+    RpcPipeProbe,
+    RpcPipeProbeFallback,
+    Pipe<RpcContext>,
+    dyn Pipe<RpcContext>
+);
+probe!(
+    WsPipeProbe,
+    WsPipeProbeFallback,
+    Pipe<WsContext>,
+    dyn Pipe<WsContext>
+);
 
 probe!(HttpErrorHandlerProbe, HttpErrorHandlerProbeFallback, ErrorHandler<HttpContext, HttpResponse>, dyn ErrorHandler<HttpContext, HttpResponse>);
 probe!(RpcErrorHandlerProbe, RpcErrorHandlerProbeFallback, ErrorHandler<RpcContext, RpcData>, dyn ErrorHandler<RpcContext, RpcData>);
 probe!(WsErrorHandlerProbe, WsErrorHandlerProbeFallback, ErrorHandler<WsContext, WsMessage>, dyn ErrorHandler<WsContext, WsMessage>);
 probe!(GrpcErrorHandlerProbe, GrpcErrorHandlerProbeFallback, ErrorHandler<GrpcContext, GrpcStatus>, dyn ErrorHandler<GrpcContext, GrpcStatus>);
 
-probe!(MiddlewareProbe, MiddlewareProbeFallback, Middleware, dyn Middleware);
+probe!(
+    MiddlewareProbe,
+    MiddlewareProbeFallback,
+    Middleware,
+    dyn Middleware
+);
 
 /// Define a type-level probe: `is()` returns `true` when `T: $bound`, `false` otherwise, with no
 /// instance. The request/transient path needs this to decide — in the factory's `build()`, where
@@ -101,17 +161,49 @@ macro_rules! type_probe {
     };
 }
 
-type_probe!(HttpGuardTypeProbe, HttpGuardTypeProbeFallback, Guard<HttpContext>);
-type_probe!(RpcGuardTypeProbe, RpcGuardTypeProbeFallback, Guard<RpcContext>);
+type_probe!(
+    HttpGuardTypeProbe,
+    HttpGuardTypeProbeFallback,
+    Guard<HttpContext>
+);
+type_probe!(
+    RpcGuardTypeProbe,
+    RpcGuardTypeProbeFallback,
+    Guard<RpcContext>
+);
 type_probe!(WsGuardTypeProbe, WsGuardTypeProbeFallback, Guard<WsContext>);
-type_probe!(GrpcGuardTypeProbe, GrpcGuardTypeProbeFallback, Guard<GrpcContext>);
+type_probe!(
+    GrpcGuardTypeProbe,
+    GrpcGuardTypeProbeFallback,
+    Guard<GrpcContext>
+);
 
-type_probe!(HttpInterceptorTypeProbe, HttpInterceptorTypeProbeFallback, Interceptor<HttpContext>);
-type_probe!(RpcInterceptorTypeProbe, RpcInterceptorTypeProbeFallback, Interceptor<RpcContext>);
-type_probe!(WsInterceptorTypeProbe, WsInterceptorTypeProbeFallback, Interceptor<WsContext>);
-type_probe!(GrpcInterceptorTypeProbe, GrpcInterceptorTypeProbeFallback, Interceptor<GrpcContext>);
+type_probe!(
+    HttpInterceptorTypeProbe,
+    HttpInterceptorTypeProbeFallback,
+    Interceptor<HttpContext>
+);
+type_probe!(
+    RpcInterceptorTypeProbe,
+    RpcInterceptorTypeProbeFallback,
+    Interceptor<RpcContext>
+);
+type_probe!(
+    WsInterceptorTypeProbe,
+    WsInterceptorTypeProbeFallback,
+    Interceptor<WsContext>
+);
+type_probe!(
+    GrpcInterceptorTypeProbe,
+    GrpcInterceptorTypeProbeFallback,
+    Interceptor<GrpcContext>
+);
 
-type_probe!(HttpPipeTypeProbe, HttpPipeTypeProbeFallback, Pipe<HttpContext>);
+type_probe!(
+    HttpPipeTypeProbe,
+    HttpPipeTypeProbeFallback,
+    Pipe<HttpContext>
+);
 type_probe!(RpcPipeTypeProbe, RpcPipeTypeProbeFallback, Pipe<RpcContext>);
 type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext>);
 
@@ -121,13 +213,14 @@ type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext>);
 pub mod prelude {
     pub use super::{
         GrpcErrorHandlerProbeFallback, GrpcGuardProbeFallback, GrpcGuardTypeProbeFallback,
-        GrpcInterceptorProbeFallback, GrpcInterceptorTypeProbeFallback, HttpErrorHandlerProbeFallback,
-        HttpGuardProbeFallback, HttpGuardTypeProbeFallback, HttpInterceptorProbeFallback,
-        HttpInterceptorTypeProbeFallback, HttpPipeProbeFallback, HttpPipeTypeProbeFallback,
-        MiddlewareProbeFallback, RpcErrorHandlerProbeFallback, RpcGuardProbeFallback,
-        RpcGuardTypeProbeFallback, RpcInterceptorProbeFallback, RpcInterceptorTypeProbeFallback,
-        RpcPipeProbeFallback, RpcPipeTypeProbeFallback, WsErrorHandlerProbeFallback,
-        WsGuardProbeFallback, WsGuardTypeProbeFallback, WsInterceptorProbeFallback,
-        WsInterceptorTypeProbeFallback, WsPipeProbeFallback, WsPipeTypeProbeFallback,
+        GrpcInterceptorProbeFallback, GrpcInterceptorTypeProbeFallback,
+        HttpErrorHandlerProbeFallback, HttpGuardProbeFallback, HttpGuardTypeProbeFallback,
+        HttpInterceptorProbeFallback, HttpInterceptorTypeProbeFallback, HttpPipeProbeFallback,
+        HttpPipeTypeProbeFallback, MiddlewareProbeFallback, RpcErrorHandlerProbeFallback,
+        RpcGuardProbeFallback, RpcGuardTypeProbeFallback, RpcInterceptorProbeFallback,
+        RpcInterceptorTypeProbeFallback, RpcPipeProbeFallback, RpcPipeTypeProbeFallback,
+        WsErrorHandlerProbeFallback, WsGuardProbeFallback, WsGuardTypeProbeFallback,
+        WsInterceptorProbeFallback, WsInterceptorTypeProbeFallback, WsPipeProbeFallback,
+        WsPipeTypeProbeFallback,
     };
 }

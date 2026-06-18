@@ -11,10 +11,14 @@
 use std::sync::Arc;
 
 use toni::{
-    Error, Body as ToniBody, HttpResponse, async_trait, catch, context::HttpContext, controller, routes,
+    async_trait, catch,
+    context::HttpContext,
+    controller,
     errors::{GuardRejection, HttpError},
-    get, module, toni_factory::ToniFactory,
+    get, module, routes,
+    toni_factory::ToniFactory,
     traits_helpers::Guard,
+    Body as ToniBody, Error, HttpResponse,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
@@ -127,7 +131,10 @@ async fn catch_handler_intercepts_framework_error() {
 
     assert_eq!(resp.status().as_u16(), 403);
     let body = resp.text().await.unwrap();
-    assert!(body.starts_with("catch:"), "expected catch envelope, got: {body}");
+    assert!(
+        body.starts_with("catch:"),
+        "expected catch envelope, got: {body}"
+    );
 }
 
 #[tokio_localset_test::localset_test]
@@ -163,6 +170,9 @@ async fn non_matching_catch_falls_through() {
     let body = resp.text().await.unwrap();
     // http_catcher matched; other_catcher returned None and the chain
     // advanced past it.
-    assert!(body.starts_with("catch:"), "expected http_catcher to claim, got: {body}");
+    assert!(
+        body.starts_with("catch:"),
+        "expected http_catcher to claim, got: {body}"
+    );
     assert_ne!(body, "OTHER-CAUGHT");
 }

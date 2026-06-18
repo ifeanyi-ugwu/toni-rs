@@ -114,10 +114,14 @@ impl RpcAdapter for RedisAdapter {
             }
         });
 
-        Ok(toni::RpcLifecycleHandle::new(None, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            None,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -130,10 +134,7 @@ impl RpcAdapter for RedisAdapter {
 async fn connect_with_retry(
     client: &redis::Client,
     url: &str,
-) -> (
-    redis::aio::ConnectionManager,
-    redis::aio::PubSub,
-) {
+) -> (redis::aio::ConnectionManager, redis::aio::PubSub) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match (

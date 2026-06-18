@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::watch;
@@ -21,9 +21,9 @@ use rocket_ws::WebSocket as RocketWs;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
+    http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
     HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WsConnectionCallbacks,
-    http_helpers::{PathParams, RequestBody, RequestPart},
 };
 
 use crate::rocket_websocket_adapter::{rocket_to_ws_message, ws_message_to_rocket};
@@ -140,8 +140,7 @@ fn dynamic_param_names(toni_path: &str) -> Vec<(String, usize)> {
 /// is `pub(crate)`, so we can't introspect it here) and indexed via
 /// `req.param::<&str>(idx)`.
 fn extract_parts(req: &RocketRequest<'_>, param_names: &[(String, usize)]) -> RequestPart {
-    let method = http::Method::try_from(req.method().as_str())
-        .unwrap_or(http::Method::GET);
+    let method = http::Method::try_from(req.method().as_str()).unwrap_or(http::Method::GET);
     let uri_str = req.uri().to_string();
     let uri: http::Uri = uri_str.parse().unwrap_or_else(|_| http::Uri::default());
 
@@ -544,9 +543,13 @@ impl HttpAdapter for RocketAdapter {
             let _ = serve_task.await;
         });
 
-        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(HttpLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }

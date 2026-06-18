@@ -196,7 +196,10 @@ mod tests {
     #[test]
     fn frame_then_parse_is_identity_for_json_response() {
         let bytes = frame_response(Ok(Some(RpcData::json(json!({"sum": 5})))));
-        assert_eq!(parse_response(&bytes).unwrap().as_json(), Some(&json!({"sum": 5})));
+        assert_eq!(
+            parse_response(&bytes).unwrap().as_json(),
+            Some(&json!({"sum": 5}))
+        );
     }
 
     #[test]
@@ -214,8 +217,14 @@ mod tests {
         md.insert("trace".to_string(), "abc".to_string());
         let headers = build_headers(Some("reply.topic"), Some("7"), &md);
 
-        assert_eq!(header_str(Some(&headers), HEADER_REPLY_TO).as_deref(), Some("reply.topic"));
-        assert_eq!(header_str(Some(&headers), HEADER_CORRELATION_ID).as_deref(), Some("7"));
+        assert_eq!(
+            header_str(Some(&headers), HEADER_REPLY_TO).as_deref(),
+            Some("reply.topic")
+        );
+        assert_eq!(
+            header_str(Some(&headers), HEADER_CORRELATION_ID).as_deref(),
+            Some("7")
+        );
         let back = metadata_from_headers(Some(&headers));
         assert_eq!(back.get("trace").map(String::as_str), Some("abc"));
         assert!(!back.contains_key(HEADER_REPLY_TO));

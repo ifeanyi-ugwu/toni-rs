@@ -103,14 +103,22 @@ impl RpcAdapter for MqttAdapter {
             }
         });
 
-        Ok(toni::RpcLifecycleHandle::new(None, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            None,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
-async fn handle_publish(publish: Publish, client: AsyncClient, callbacks: Arc<RpcMessageCallbacks>) {
+async fn handle_publish(
+    publish: Publish,
+    client: AsyncClient,
+    callbacks: Arc<RpcMessageCallbacks>,
+) {
     let topic = String::from_utf8_lossy(&publish.topic).to_string();
     let data = bytes_to_data(&publish.payload);
 

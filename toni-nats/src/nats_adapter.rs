@@ -224,7 +224,9 @@ impl RpcAdapter for NatsAdapter {
         // NATS has no listener — no local_addr — and no graceful shutdown
         // signal in the current implementation; the close callback is a
         // no-op.
-        Ok(toni::RpcLifecycleHandle::new(None, serve, || async { Ok(()) }))
+        Ok(toni::RpcLifecycleHandle::new(None, serve, || async {
+            Ok(())
+        }))
     }
 }
 

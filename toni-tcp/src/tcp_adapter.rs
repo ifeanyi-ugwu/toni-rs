@@ -10,8 +10,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use tracing::Instrument;
 use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
+use tracing::Instrument;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -172,10 +172,14 @@ impl RpcAdapter for TcpAdapter {
         });
 
         let shutdown_tx = self.shutdown_tx.clone();
-        Ok(toni::RpcLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(toni::RpcLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -187,11 +191,7 @@ async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await;
 }
 
-async fn drain_tasks(
-    tasks: Arc<Mutex<JoinSet<()>>>,
-    drain_timeout: Option<Duration>,
-    addr: &str,
-) {
+async fn drain_tasks(tasks: Arc<Mutex<JoinSet<()>>>, drain_timeout: Option<Duration>, addr: &str) {
     let drain = async {
         let mut js = tasks.lock().await;
         while js.join_next().await.is_some() {}

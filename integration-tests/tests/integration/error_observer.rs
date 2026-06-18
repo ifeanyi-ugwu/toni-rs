@@ -5,14 +5,19 @@
 //! the active transport rendering and bypass the chain entirely).
 
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
 use toni::{
-    Body as ToniBody, async_trait, context::HttpContext, controller, routes, errors::HttpError, get,
-    module, toni_factory::ToniFactory,
+    async_trait,
+    context::HttpContext,
+    controller,
+    errors::HttpError,
+    get, module, routes,
+    toni_factory::ToniFactory,
     traits_helpers::{ErrorObserver, Guard},
+    Body as ToniBody,
 };
 use toni_axum::AxumAdapter;
 use toni_macros::use_guards;

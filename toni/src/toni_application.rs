@@ -11,21 +11,21 @@ use std::{
     },
 };
 
-use anyhow::Result;
 use crate::error::BindError;
+use anyhow::Result;
 use event_listener::Event;
 
 use crate::{
     adapter::{
         AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
-        lifecycle_handles::{
-            GrpcLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle,
-        },
+        lifecycle_handles::{GrpcLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle},
         server_lifecycle::ServerLifecycle,
     },
     application_context::ToniApplicationContext,
-    injector::{GatewayResolver, GrpcServiceResolver, IntoToken, RpcControllerResolver, ToniContainer},
+    injector::{
+        GatewayResolver, GrpcServiceResolver, IntoToken, RpcControllerResolver, ToniContainer,
+    },
     router::RoutesResolver,
     rpc::{RpcCallInfo, RpcControllerWrapper, RpcData, RpcError},
     websocket::{
@@ -541,14 +541,17 @@ impl ToniApplication {
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
             let handle = http_adapter.into_lifecycle(port, &hostname, ctx).await?;
-            let addr = handle.local_addr().expect("HTTP handle always has a bound address");
+            let addr = handle
+                .local_addr()
+                .expect("HTTP handle always has a bound address");
             tracing::info!(addr = %addr, server_type, "HTTP listening");
             self.servers.push(Box::new(handle));
             Some(addr)
         } else if self.servers.is_empty() {
             return Err(anyhow::anyhow!(
                 "No adapters configured; register at least one adapter before calling bind()"
-            ).into());
+            )
+            .into());
         } else {
             None
         };

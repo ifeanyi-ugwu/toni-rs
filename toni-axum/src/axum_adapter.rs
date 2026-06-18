@@ -18,11 +18,11 @@ use std::str::FromStr;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
-    AdapterContext, Body as ToniBody, HttpLifecycleHandle, MessageCallbackResult, ServerHandle,
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
-    HttpAdapter, HttpMethod, HttpRequest, HttpResponse, RequestHandler,
-    WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
+    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
+    WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
@@ -133,23 +133,21 @@ async fn run_ws_connection(
         while let Some(result) = read.next().await {
             match result {
                 Ok(axum_msg) => match axum_to_ws_message(axum_msg) {
-                    Ok(ws_msg) => {
-                        match callbacks.message(client_id.clone(), ws_msg).await {
-                            MessageCallbackResult::Continue => {}
-                            MessageCallbackResult::Stop => break,
-                            MessageCallbackResult::Stream(stream) => {
-                                let sink = sender.clone();
-                                let handle = tokio::spawn(async move {
-                                    use futures_util::StreamExt;
-                                    tokio::pin!(stream);
-                                    while let Some(msg) = stream.next().await {
-                                        let _ = sink.send(msg).await;
-                                    }
-                                });
-                                stream_tasks_inner.lock().unwrap().push(handle);
-                            }
+                    Ok(ws_msg) => match callbacks.message(client_id.clone(), ws_msg).await {
+                        MessageCallbackResult::Continue => {}
+                        MessageCallbackResult::Stop => break,
+                        MessageCallbackResult::Stream(stream) => {
+                            let sink = sender.clone();
+                            let handle = tokio::spawn(async move {
+                                use futures_util::StreamExt;
+                                tokio::pin!(stream);
+                                while let Some(msg) = stream.next().await {
+                                    let _ = sink.send(msg).await;
+                                }
+                            });
+                            stream_tasks_inner.lock().unwrap().push(handle);
                         }
-                    }
+                    },
                     Err(_) => {}
                 },
                 Err(_) => break,
@@ -198,7 +196,10 @@ impl AxumAdapter {
         let box_body = body
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             .boxed_unsync();
-        Ok(HttpRequest::from_parts(parts, RequestBody::Streaming(box_body)))
+        Ok(HttpRequest::from_parts(
+            parts,
+            RequestBody::Streaming(box_body),
+        ))
     }
 
     async fn adapt_response(response: HttpResponse) -> Result<Response<Body>> {
@@ -244,7 +245,12 @@ impl AxumAdapter {
 
 #[toni::async_trait]
 impl HttpAdapter for AxumAdapter {
-    fn bind(&mut self, method: HttpMethod, path: &str, handler: Arc<dyn RequestHandler>) -> Result<()> {
+    fn bind(
+        &mut self,
+        method: HttpMethod,
+        path: &str,
+        handler: Arc<dyn RequestHandler>,
+    ) -> Result<()> {
         self.routes.push((method, path.to_owned(), handler));
         Ok(())
     }
@@ -271,10 +277,8 @@ impl HttpAdapter for AxumAdapter {
             let handler = handler.clone();
             let ctx = ctx.clone();
 
-            let handler_fn = move |
-                Path(params): Path<HashMap<String, String>>,
-                req: Request<Body>
-            | {
+            let handler_fn = move |Path(params): Path<HashMap<String, String>>,
+                                   req: Request<Body>| {
                 let handler = handler.clone();
                 let ctx = ctx.clone();
                 async move {
@@ -334,63 +338,67 @@ impl HttpAdapter for AxumAdapter {
 
         let ctx_fallback = ctx.clone();
         let ws_router = std::mem::replace(&mut self.ws_router, Router::new());
-        let router = ws_router.merge(http_router).fallback(move |req: Request<Body>| {
-            let ctx = ctx_fallback.clone();
-            async move {
-                let http_req = match Self::adapt_request(req).await {
-                    Ok(r) => r,
-                    Err(e) => {
+        let router = ws_router
+            .merge(http_router)
+            .fallback(move |req: Request<Body>| {
+                let ctx = ctx_fallback.clone();
+                async move {
+                    let http_req = match Self::adapt_request(req).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let body = serde_json::json!({
+                                "statusCode": 500,
+                                "message": e.to_string(),
+                                "error": "Internal Server Error"
+                            });
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(body.to_string()))
+                                .unwrap();
+                        }
+                    };
+                    let http_res = ctx
+                        .execute(http_req, |req| {
+                            Box::pin(async move {
+                                let method = req.method().as_str().to_uppercase();
+                                let path = req.uri().path().to_string();
+                                HttpResponse {
+                                    status: 404,
+                                    headers: vec![],
+                                    body: Some(ToniBody::json(serde_json::json!({
+                                        "statusCode": 404,
+                                        "message": format!("Cannot {} {}", method, path),
+                                        "error": "Not Found"
+                                    }))),
+                                }
+                            })
+                        })
+                        .await;
+                    Self::adapt_response(http_res).await.unwrap_or_else(|e| {
                         let body = serde_json::json!({
                             "statusCode": 500,
                             "message": e.to_string(),
                             "error": "Internal Server Error"
                         });
-                        return Response::builder()
+                        Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)
                             .header("Content-Type", "application/json")
                             .body(Body::from(body.to_string()))
-                            .unwrap();
-                    }
-                };
-                let http_res = ctx
-                    .execute(http_req, |req| {
-                        Box::pin(async move {
-                            let method = req.method().as_str().to_uppercase();
-                            let path = req.uri().path().to_string();
-                            HttpResponse {
-                                status: 404,
-                                headers: vec![],
-                                body: Some(ToniBody::json(serde_json::json!({
-                                    "statusCode": 404,
-                                    "message": format!("Cannot {} {}", method, path),
-                                    "error": "Not Found"
-                                }))),
-                            }
-                        })
+                            .unwrap()
                     })
-                    .await;
-                Self::adapt_response(http_res).await.unwrap_or_else(|e| {
-                    let body = serde_json::json!({
-                        "statusCode": 500,
-                        "message": e.to_string(),
-                        "error": "Internal Server Error"
-                    });
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header("Content-Type", "application/json")
-                        .body(Body::from(body.to_string()))
-                        .unwrap()
-                })
-            }
-        });
+                }
+            });
 
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
 
         let addr = format!("{}:{}", hostname, port);
-        let listener = TcpListener::bind(&addr).await
+        let listener = TcpListener::bind(&addr)
+            .await
             .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
-        let local_addr = listener.local_addr()
+        let local_addr = listener
+            .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
 
         let serve = Box::pin(async move {
@@ -405,10 +413,14 @@ impl HttpAdapter for AxumAdapter {
             }
         });
 
-        Ok(HttpLifecycleHandle::new(local_addr, serve, move || async move {
-            let _ = shutdown_tx.send(true);
-            Ok(())
-        }))
+        Ok(HttpLifecycleHandle::new(
+            local_addr,
+            serve,
+            move || async move {
+                let _ = shutdown_tx.send(true);
+                Ok(())
+            },
+        ))
     }
 }
 
@@ -433,9 +445,11 @@ impl WebSocketAdapter for AxumAdapter {
             let addr = format!("{}:{}", hostname, port);
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
-            let listener = TcpListener::bind(&addr).await
+            let listener = TcpListener::bind(&addr)
+                .await
                 .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
-            let local_addr = listener.local_addr()
+            let local_addr = listener
+                .local_addr()
                 .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
             let serve = Box::pin(async move {
                 axum::serve(listener, router)

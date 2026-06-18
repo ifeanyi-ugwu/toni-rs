@@ -11,9 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
 use toni::http_helpers::RequestPart;
 use toni::websocket::{SendError, TrySendError, WsMessage, WsSink};
-use toni::{
-    MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
-};
+use toni::{MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle};
 
 // ── TokioSender ───────────────────────────────────────────────────────────────
 
@@ -104,9 +102,11 @@ impl WebSocketAdapter for TungsteniteAdapter {
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
 
-            let listener = TcpListener::bind(&addr).await
+            let listener = TcpListener::bind(&addr)
+                .await
                 .map_err(|e| anyhow::anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
-            let local_addr = listener.local_addr()
+            let local_addr = listener
+                .local_addr()
                 .map_err(|e| anyhow::anyhow!("Failed to get local address: {}", e))?;
 
             let serve = Box::pin(async move {
@@ -134,10 +134,14 @@ impl WebSocketAdapter for TungsteniteAdapter {
                 }
             });
 
-            handles.push(WsLifecycleHandle::new(local_addr, serve, move || async move {
-                let _ = shutdown_tx.send(true);
-                Ok(())
-            }));
+            handles.push(WsLifecycleHandle::new(
+                local_addr,
+                serve,
+                move || async move {
+                    let _ = shutdown_tx.send(true);
+                    Ok(())
+                },
+            ));
         }
         Ok(handles)
     }

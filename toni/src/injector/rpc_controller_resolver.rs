@@ -5,9 +5,7 @@ use std::rc::Rc;
 use anyhow::{Result, anyhow};
 
 use crate::rpc::{RpcControllerTrait, RpcControllerWrapper};
-use crate::traits_helpers::{
-    RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry,
-};
+use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry};
 
 use super::ToniContainer;
 

@@ -4,7 +4,9 @@ use std::time::Duration;
 use crate::common::TestServer;
 use futures_util::{stream, StreamExt};
 use tokio::sync::broadcast;
-use toni::{controller, routes, extractors::Bytes, get, module, post, sse, HttpResponse, Sse, SseEvent};
+use toni::{
+    controller, extractors::Bytes, get, module, post, routes, sse, HttpResponse, Sse, SseEvent,
+};
 use toni_macros::{injectable, new};
 
 // ── Service ──────────────────────────────────────────────────────────────────

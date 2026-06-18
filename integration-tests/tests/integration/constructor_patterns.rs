@@ -1,6 +1,6 @@
 use crate::common::TestServer;
 use std::time::Duration;
-use toni::{controller, routes, get, injectable, module, new, provide, Body as ToniBody};
+use toni::{controller, get, injectable, module, new, provide, routes, Body as ToniBody};
 
 #[tokio_localset_test::localset_test]
 async fn provider_constructor_patterns() {
@@ -94,11 +94,16 @@ async fn provider_constructor_patterns() {
 
     #[controller("/providers")]
     pub struct ProviderTestController {
-        #[inject] base: BaseService,
-        #[inject] auto: AutoNewService,
-        #[inject] custom: CustomInitService,
-        #[inject] complex: ComplexInitService,
-        #[inject] fallback: DefaultFallbackService,
+        #[inject]
+        base: BaseService,
+        #[inject]
+        auto: AutoNewService,
+        #[inject]
+        custom: CustomInitService,
+        #[inject]
+        complex: ComplexInitService,
+        #[inject]
+        fallback: DefaultFallbackService,
     }
 
     #[routes]
