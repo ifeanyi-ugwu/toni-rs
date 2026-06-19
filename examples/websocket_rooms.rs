@@ -15,7 +15,7 @@ use toni::websocket::{
     BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsMessage,
 };
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 
 // Message types
 
@@ -66,10 +66,13 @@ struct TypingIndicator {
     user_id: String,
 }
 
-#[websocket_gateway("/chat", pub struct ChatGateway {
+#[websocket_gateway("/chat")]
+pub struct ChatGateway {
     broadcast: BroadcastService,
-})]
+}
+#[subscriptions]
 impl ChatGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }

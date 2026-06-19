@@ -15,10 +15,13 @@
 //!            {"event": "ping"}
 
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 
-#[websocket_gateway("/chat", pub struct EchoGateway {})]
+#[websocket_gateway("/chat")]
+pub struct EchoGateway {}
+#[subscriptions]
 impl EchoGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

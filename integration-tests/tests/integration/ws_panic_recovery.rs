@@ -16,7 +16,7 @@ use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
-use toni_macros::websocket_gateway;
+use toni_macros::{new, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
@@ -70,8 +70,11 @@ impl ErrorObserver for WsSegmentObserver {
     }
 }
 
-#[websocket_gateway("/ws-panic-recovery", pub struct PanicGateway {})]
+#[websocket_gateway("/ws-panic-recovery")]
+pub struct PanicGateway {}
+#[subscriptions]
 impl PanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -154,8 +157,11 @@ impl Guard<WsContext> for PanickingWsGuard {
     }
 }
 
-#[websocket_gateway("/ws-guard-panic", pub struct WsGuardPanicGateway {})]
+#[websocket_gateway("/ws-guard-panic")]
+pub struct WsGuardPanicGateway {}
+#[subscriptions]
 impl WsGuardPanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -220,8 +226,11 @@ impl Interceptor<WsContext> for PanickingWsInterceptor {
     }
 }
 
-#[websocket_gateway("/ws-interceptor-panic", pub struct WsInterceptorPanicGateway {})]
+#[websocket_gateway("/ws-interceptor-panic")]
+pub struct WsInterceptorPanicGateway {}
+#[subscriptions]
 impl WsInterceptorPanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -289,8 +298,11 @@ impl Pipe<WsContext> for PanickingWsPipe {
     }
 }
 
-#[websocket_gateway("/ws-pipe-panic", pub struct WsPipePanicGateway {})]
+#[websocket_gateway("/ws-pipe-panic")]
+pub struct WsPipePanicGateway {}
+#[subscriptions]
 impl WsPipePanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -355,8 +367,11 @@ impl ErrorHandler<WsContext, WsMessage> for PanickingWsErrorHandler {
     }
 }
 
-#[websocket_gateway("/ws-eh-panic", pub struct WsErrorHandlerPanicGateway {})]
+#[websocket_gateway("/ws-eh-panic")]
+pub struct WsErrorHandlerPanicGateway {}
+#[subscriptions]
 impl WsErrorHandlerPanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -432,8 +447,11 @@ impl toni::Error for WsRenderBomb {
     }
 }
 
-#[websocket_gateway("/ws-render-panic", pub struct WsRenderPanicGateway {})]
+#[websocket_gateway("/ws-render-panic")]
+pub struct WsRenderPanicGateway {}
+#[subscriptions]
 impl WsRenderPanicGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
