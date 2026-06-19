@@ -32,10 +32,11 @@ impl RpcControllerResolver {
         &self,
         controller: std::sync::Arc<Box<dyn RpcControllerTrait>>,
     ) -> Result<RpcControllerWrapper> {
-        let guards = self.resolve_guards(controller.get_guard_tokens())?;
-        let interceptors = self.resolve_interceptors(controller.get_interceptor_tokens())?;
-        let pipes = self.resolve_pipes(controller.get_pipe_tokens())?;
-        let error_handlers = self.resolve_error_handlers(controller.get_error_handler_tokens())?;
+        let enhancers = controller.enhancers();
+        let guards = self.resolve_guards(enhancers.guard_tokens)?;
+        let interceptors = self.resolve_interceptors(enhancers.interceptor_tokens)?;
+        let pipes = self.resolve_pipes(enhancers.pipe_tokens)?;
+        let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let error_observers = self.container.borrow().get_global_error_observers();
         let route_metadata = controller.get_route_metadata();
 
@@ -44,26 +45,23 @@ impl RpcControllerResolver {
         let mut handler_pipes: HashMap<String, Vec<RpcPipeEntry>> = HashMap::new();
         let mut handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>> = HashMap::new();
 
-        for pattern in controller.get_handler_patterns() {
+        for handler in enhancers.handlers {
+            let pattern = handler.pattern;
             handler_guards.insert(
                 pattern.clone(),
-                self.resolve_handler_guards(controller.get_handler_guard_tokens(&pattern))?,
+                self.resolve_handler_guards(handler.guard_tokens)?,
             );
             handler_interceptors.insert(
                 pattern.clone(),
-                self.resolve_handler_interceptors(
-                    controller.get_handler_interceptor_tokens(&pattern),
-                )?,
+                self.resolve_handler_interceptors(handler.interceptor_tokens)?,
             );
             handler_pipes.insert(
                 pattern.clone(),
-                self.resolve_handler_pipes(controller.get_handler_pipe_tokens(&pattern))?,
+                self.resolve_handler_pipes(handler.pipe_tokens)?,
             );
             handler_error_handlers.insert(
                 pattern.clone(),
-                self.resolve_handler_error_handlers(
-                    controller.get_handler_error_handler_tokens(&pattern),
-                )?,
+                self.resolve_handler_error_handlers(handler.error_handler_tokens)?,
             );
         }
 

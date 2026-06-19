@@ -9,7 +9,7 @@ mod rpc_error;
 pub use rpc_call_info::RpcCallInfo;
 pub use rpc_client::{RpcClient, RpcRequest};
 pub use rpc_client_error::RpcClientError;
-pub use rpc_controller_trait::RpcControllerTrait;
+pub use rpc_controller_trait::{RpcControllerTrait, RpcEnhancers, RpcHandlerEnhancers};
 pub(crate) use rpc_controller_wrapper::RpcControllerWrapper;
 pub use rpc_data::RpcData;
 pub use rpc_error::RpcError;
