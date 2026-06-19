@@ -10,7 +10,7 @@ use toni::context::WsContext;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{BroadcastModule, BroadcastService};
 use toni::*;
-use toni_macros::{injectable, module, websocket_gateway};
+use toni_macros::{injectable, module, new, subscriptions, websocket_gateway};
 
 #[injectable]
 pub struct WsAuthGuard;
@@ -42,12 +42,15 @@ impl Interceptor<WsContext> for WsLoggingInterceptor {
     }
 }
 
-#[websocket_gateway("/chat", pub struct ChatGateway {
+#[websocket_gateway("/chat")]
+pub struct ChatGateway {
     broadcast: BroadcastService,
-})]
+}
+#[subscriptions]
 #[use_guards(WsAuthGuard)]
 #[use_interceptors(WsLoggingInterceptor)]
 impl ChatGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }

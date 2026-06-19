@@ -28,22 +28,27 @@
 use crate::common::TestServer;
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
+use std::sync::atomic::{AtomicBool, Ordering};
 use toni::toni_factory::ToniFactory;
 use toni::websocket::{
     BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerOutput, WsHandlerResult,
     WsMessage,
 };
+
 use toni::{controller, module, post, routes, Body as ToniBody};
 use toni_axum::AxumAdapter;
-use toni_macros::websocket_gateway;
+use toni_macros::{new, on_connect, subscriptions, websocket_gateway};
 use toni_tungstenite::TungsteniteAdapter;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Echo gateway — simple request-response, no BroadcastModule
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[websocket_gateway("/echo", pub struct EchoGateway {})]
+#[websocket_gateway("/echo")]
+pub struct EchoGateway {}
+#[subscriptions]
 impl EchoGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -61,13 +66,52 @@ impl EchoGateway {
 struct EchoModule;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Bare gateway — no #[subscriptions] impl at all
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A `#[websocket_gateway]` with no `#[subscriptions]` impl: every behavior method resolves to its
+// `WsHandlersBridge` default, so this is a complete connection-only gateway (accepts connections,
+// routes nothing). The absence of an impl block is the point of the test.
+#[websocket_gateway("/bare")]
+pub struct BareGateway {}
+
+#[module(providers: [BareGateway])]
+struct BareModule;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hook-only gateway — #[on_connect] with no #[subscriptions] impl
+// ─────────────────────────────────────────────────────────────────────────────
+
+static ON_CONNECT_FIRED: AtomicBool = AtomicBool::new(false);
+
+// `#[on_connect]` is its own macro (it emits the `__toni_ws_on_connect` bridge fn), so a connection
+// hook stands alone — this gateway has no `#[subscriptions]` impl and routes no messages.
+#[websocket_gateway("/hook-only")]
+pub struct HookOnlyGateway {}
+
+impl HookOnlyGateway {
+    #[on_connect]
+    async fn connected(&self, _client: &WsClient) -> Result<(), WsError> {
+        ON_CONNECT_FIRED.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[module(providers: [HookOnlyGateway])]
+struct HookOnlyModule;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Room gateway — broadcast-aware, BroadcastModule required
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[websocket_gateway("/room", pub struct RoomGateway {
-    #[inject] broadcast: BroadcastService,
-})]
+#[websocket_gateway("/room")]
+pub struct RoomGateway {
+    #[inject]
+    broadcast: BroadcastService,
+}
+#[subscriptions]
 impl RoomGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }
@@ -101,8 +145,11 @@ struct RoomModule;
 // Separate-port gateway — `port = 19001` routes via TungsteniteAdapter, not HTTP
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[websocket_gateway("/ws", port = 19001, pub struct PingGateway {})]
+#[websocket_gateway("/ws", port = 19001)]
+pub struct PingGateway {}
+#[subscriptions]
 impl PingGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -140,6 +187,43 @@ async fn websocket_echo_end_to_end() {
         msg.to_text().unwrap(),
         r#"Echo: {"event": "message", "data": "hello"}"#,
     );
+}
+
+/// A gateway declared with no `#[subscriptions]` impl still registers its path and accepts
+/// connections — the `WsHandlersBridge` defaults stand in for every behavior method. This is the
+/// self-sufficiency guarantee: `#[websocket_gateway]` alone is a valid gateway.
+#[tokio_localset_test::localset_test]
+async fn websocket_bare_gateway_accepts_connection() {
+    let server = TestServer::start(BareModule::module_definition()).await;
+    let ws_url = format!("ws://127.0.0.1:{}/bare", server.port);
+
+    let (ws, response) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    assert_eq!(response.status(), 101);
+    drop(ws);
+}
+
+/// A `#[on_connect]` hook with no `#[subscriptions]` impl is wired in and fires on connect —
+/// the connection-hook macros stand on their own, separate from the subscription router.
+#[tokio_localset_test::localset_test]
+async fn websocket_on_connect_without_subscriptions_fires() {
+    let server = TestServer::start(HookOnlyModule::module_definition()).await;
+    let ws_url = format!("ws://127.0.0.1:{}/hook-only", server.port);
+
+    let (ws, response) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    assert_eq!(response.status(), 101);
+
+    // on_connect runs server-side once the upgrade completes; poll briefly for the side effect.
+    for _ in 0..50 {
+        if ON_CONNECT_FIRED.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        ON_CONNECT_FIRED.load(Ordering::SeqCst),
+        "#[on_connect] should fire without a #[subscriptions] impl"
+    );
+    drop(ws);
 }
 
 /// Full path: two real TCP clients, `handle_connection_with_broadcast()` path.
@@ -187,10 +271,14 @@ async fn websocket_broadcast_end_to_end() {
     );
 }
 
-#[websocket_gateway("/events", pub struct EventGateway {
-    #[inject] broadcast: BroadcastService,
-})]
+#[websocket_gateway("/events")]
+pub struct EventGateway {
+    #[inject]
+    broadcast: BroadcastService,
+}
+#[subscriptions]
 impl EventGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }
@@ -399,8 +487,11 @@ async fn separate_port_close_stops_ws_server() {
 // gateway as same-port. Now both bind to distinct OS-assigned listeners.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[websocket_gateway("/zero", port = 0, pub struct ZeroPortGateway {})]
+#[websocket_gateway("/zero", port = 0)]
+pub struct ZeroPortGateway {}
+#[subscriptions]
 impl ZeroPortGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

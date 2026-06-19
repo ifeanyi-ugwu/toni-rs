@@ -13,12 +13,15 @@
 
 use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 
-#[websocket_gateway("/ws", pub struct SimpleGateway {
+#[websocket_gateway("/ws")]
+pub struct SimpleGateway {
     broadcast: BroadcastService,
-})]
+}
+#[subscriptions]
 impl SimpleGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }

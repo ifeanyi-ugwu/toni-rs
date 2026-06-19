@@ -18,7 +18,7 @@ use futures::StreamExt;
 use serde_json::json;
 use toni::extractors::{BodyStream, Bytes, Path};
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 use toni_poem::PoemAdapter;
 
 #[controller("/hello")]
@@ -74,8 +74,11 @@ impl HelloController {
     }
 }
 
-#[websocket_gateway("/chat", pub struct EchoGateway {})]
+#[websocket_gateway("/chat")]
+pub struct EchoGateway {}
+#[subscriptions]
 impl EchoGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -90,8 +93,11 @@ impl EchoGateway {
     }
 }
 
-#[websocket_gateway("/ping", port = 3002, pub struct PingGateway {})]
+#[websocket_gateway("/ping", port = 3002)]
+pub struct PingGateway {}
+#[subscriptions]
 impl PingGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

@@ -16,7 +16,7 @@ use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
-use toni_macros::{rpc_controller, websocket_gateway};
+use toni_macros::{new, rpc_controller, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
@@ -107,8 +107,11 @@ impl Interceptor<WsContext> for WsPrefixInterceptor {
 //   "recovering" – error handler (error handler correctness + isolation)
 //   "plain"      – no enhancers (shared isolation control for all three above)
 
-#[websocket_gateway("/ws-method-enhancers", pub struct WsMethodEnhancersGateway {})]
+#[websocket_gateway("/ws-method-enhancers")]
+pub struct WsMethodEnhancersGateway {}
+#[subscriptions]
 impl WsMethodEnhancersGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

@@ -121,15 +121,32 @@ pub fn generate_provider_from_struct(
     scope: ProviderScope,
     init_method: Option<String>,
 ) -> Result<TokenStream> {
+    generate_provider_from_struct_with_traits(
+        struct_def,
+        scope,
+        init_method,
+        EnhancerTraits::default(),
+    )
+}
+
+/// Same struct-only DI wiring as [`generate_provider_from_struct`], but with the provider role
+/// preset by the caller. The structural macros (`#[websocket_gateway]` / `#[rpc_controller]`) own
+/// their role and emit the matching trait impl themselves, so they pass `is_gateway` / `is_rpc_*`
+/// here while still field-injecting and dispatching construction/lifecycle through the bridges.
+pub fn generate_provider_from_struct_with_traits(
+    struct_def: &ItemStruct,
+    scope: ProviderScope,
+    init_method: Option<String>,
+    enhancer_traits: EnhancerTraits,
+) -> Result<TokenStream> {
     let struct_name = struct_def.ident.clone();
     let mut dependencies = extract_struct_dependencies(struct_def)?;
     if let Some(init) = init_method {
         dependencies.init_method = Some(init);
     }
 
-    // A derive sees only the struct: no enhancer-trait detection from an impl head and no
-    // lifecycle hooks. Both live on the attribute form.
-    let enhancer_traits = EnhancerTraits::default();
+    // A derive sees only the struct: no lifecycle hooks (the bridge carries them). The role is
+    // supplied by the caller rather than detected from an impl head.
     let lifecycle_hooks = LifecycleHooks::default();
 
     // Derive can't see the impl, so it dispatches lifecycle through the `#[on_*]` bridge.

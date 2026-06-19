@@ -11,7 +11,7 @@ use toni::{
     controller, get, injectable, module, routes, use_guards, use_interceptors, Body as ToniBody,
     Request,
 };
-use toni_macros::websocket_gateway;
+use toni_macros::{new, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
@@ -149,9 +149,12 @@ impl Guard<WsContext> for WsHandshakeGuard {
     }
 }
 
-#[websocket_gateway("/guarded-ws", pub struct GuardedGateway {})]
+#[websocket_gateway("/guarded-ws")]
+pub struct GuardedGateway {}
+#[subscriptions]
 #[use_guards(WsHandshakeGuard)]
 impl GuardedGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

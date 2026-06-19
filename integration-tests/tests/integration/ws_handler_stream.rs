@@ -9,12 +9,15 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use toni::module;
 use toni::websocket::{WsClient, WsHandlerOutput, WsHandlerResult, WsMessage};
-use toni_macros::websocket_gateway;
+use toni_macros::{new, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
-#[websocket_gateway("/ws-stream", pub struct CountGateway {})]
+#[websocket_gateway("/ws-stream")]
+pub struct CountGateway {}
+#[subscriptions]
 impl CountGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

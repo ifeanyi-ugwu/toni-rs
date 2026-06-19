@@ -25,14 +25,18 @@ use toni::extractors::Json;
 use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
 use toni::*;
 use toni_axum::AxumAdapter;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 
 // ---- gateway -----------------------------------------------------------------
 
-#[websocket_gateway("/notifications", pub struct NotificationGateway {
-    #[inject] broadcast: BroadcastService,
-})]
+#[websocket_gateway("/notifications")]
+pub struct NotificationGateway {
+    #[inject]
+    broadcast: BroadcastService,
+}
+#[subscriptions]
 impl NotificationGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }

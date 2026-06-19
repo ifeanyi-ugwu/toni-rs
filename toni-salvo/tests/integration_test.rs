@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use toni::extractors::{BodyStream, Bytes, Path, Query};
 use toni::toni_factory::ToniFactory;
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 use toni_salvo::SalvoAdapter;
 
 #[derive(Debug, serde::Deserialize)]
@@ -55,8 +55,11 @@ impl ApiController {
     }
 }
 
-#[websocket_gateway("/ws", pub struct EchoGateway {})]
+#[websocket_gateway("/ws")]
+pub struct EchoGateway {}
+#[subscriptions]
 impl EchoGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -67,8 +70,11 @@ impl EchoGateway {
     }
 }
 
-#[websocket_gateway("/separate", port = 0, pub struct SeparateGateway {})]
+#[websocket_gateway("/separate", port = 0)]
+pub struct SeparateGateway {}
+#[subscriptions]
 impl SeparateGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

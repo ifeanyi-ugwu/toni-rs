@@ -13,7 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use toni::extractors::{BodyStream, Bytes, Path, Query};
 use toni::toni_factory::ToniFactory;
 use toni::*;
-use toni_macros::{module, websocket_gateway};
+use toni_macros::{module, new, subscriptions, websocket_gateway};
 use toni_rocket::RocketAdapter;
 
 #[derive(Debug, serde::Deserialize)]
@@ -21,7 +21,10 @@ struct SearchParams {
     q: String,
 }
 
-#[controller("/api", pub struct ApiController;)]
+#[controller("/api")]
+pub struct ApiController;
+
+#[routes]
 impl ApiController {
     #[get("/hello")]
     fn hello(&self) -> Body {
@@ -56,8 +59,11 @@ impl ApiController {
     }
 }
 
-#[websocket_gateway("/ws", pub struct EchoGateway {})]
+#[websocket_gateway("/ws")]
+pub struct EchoGateway {}
+#[subscriptions]
 impl EchoGateway {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

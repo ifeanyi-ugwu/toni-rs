@@ -1,5 +1,6 @@
 use toni::{
     controller, extractors::Bytes, get, http_helpers::Body as ToniBody, injectable, module, post,
+    routes,
 };
 use toni_axum::AxumAdapter;
 
@@ -17,13 +18,13 @@ impl TestService {
 }
 
 // Simple controller for testing
-#[controller(
-    "/test",
-    pub struct TestController {
-        #[inject]
-        test_service: TestService,
-    }
-)]
+#[controller("/test")]
+pub struct TestController {
+    #[inject]
+    test_service: TestService,
+}
+
+#[routes]
 impl TestController {
     #[get("/hello")]
     fn hello(&self) -> ToniBody {

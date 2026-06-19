@@ -16,14 +16,18 @@ use toni::websocket::{
     BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerResult, WsMessage,
 };
 use toni_axum::AxumAdapter;
-use toni_macros::websocket_gateway;
+use toni_macros::{new, on_module_destroy, subscriptions, websocket_gateway};
 
 static DESTROY_HOOK_RAN: AtomicBool = AtomicBool::new(false);
 
-#[websocket_gateway("/ws", pub struct CloseGateway {
-    #[inject] broadcast: BroadcastService,
-})]
+#[websocket_gateway("/ws")]
+pub struct CloseGateway {
+    #[inject]
+    broadcast: BroadcastService,
+}
+#[subscriptions]
 impl CloseGateway {
+    #[new]
     pub fn new(broadcast: BroadcastService) -> Self {
         Self { broadcast }
     }
