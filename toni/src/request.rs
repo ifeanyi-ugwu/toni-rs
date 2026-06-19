@@ -7,10 +7,13 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! #[controller("/users", pub struct UserController {
+//! #[controller("/users")]
+//! pub struct UserController {
 //!     #[inject]
 //!     request: Request,
-//! })]
+//! }
+//!
+//! #[routes]
 //! impl UserController {
 //!     #[get("/me")]
 //!     fn get_current_user(&self) -> ToniBody {
