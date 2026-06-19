@@ -54,7 +54,10 @@ pub use http_helpers::{
     RequestBody, RequestBoxBody, RequestPart, RouteMetadata, Sse, SseEvent, sse,
 };
 pub use injector::InstanceWrapper;
-pub use rpc::{RpcCallInfo, RpcClient, RpcClientError, RpcControllerTrait, RpcData, RpcError};
+pub use rpc::{
+    RpcCallInfo, RpcClient, RpcClientError, RpcControllerTrait, RpcData, RpcEnhancers, RpcError,
+    RpcHandlerEnhancers,
+};
 pub use websocket::{
     BroadcastError, BroadcastModule, BroadcastService, BroadcastTarget, ClientId, DisconnectReason,
     GatewayEnhancers, GatewayHandlerEnhancers, GatewayTrait, GatewayWrapper, RoomId, SendError,
