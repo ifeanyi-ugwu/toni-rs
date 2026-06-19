@@ -546,22 +546,28 @@ pub fn catch(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Syntax
 ///
-/// - **Basic:** `#[websocket_gateway(pub struct Foo { ... })]`
-/// - **With path:** `#[websocket_gateway("/chat", pub struct Foo { ... })]`
-/// - **With namespace:** `#[websocket_gateway("/chat", namespace = "lobby", pub struct Foo { ... })]`
+/// Placed on the struct, like `#[injectable]`. `#[inject]` fields are dependencies; the message
+/// handlers live in a sibling `#[subscriptions]` impl.
+///
+/// - **Basic:** `#[websocket_gateway] pub struct Foo { ... }`
+/// - **With path:** `#[websocket_gateway("/chat")] pub struct Foo { ... }`
+/// - **With namespace:** `#[websocket_gateway("/chat", namespace = "lobby")] pub struct Foo { ... }`
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// #[websocket_gateway("/chat", pub struct ChatGateway {})]
+/// #[websocket_gateway("/chat")]
+/// pub struct ChatGateway {}
+///
+/// #[subscriptions]
 /// impl ChatGateway {
 ///     #[subscribe_message("message")]
 ///     async fn handle_message(
 ///         &self,
 ///         client: WsClient,
 ///         message: WsMessage,
-///     ) -> Result<Option<WsMessage>, WsError> {
-///         Ok(Some(WsMessage::text("Echo: ...")))
+///     ) -> WsHandlerResult {
+///         Ok(WsMessage::text("Echo: ...").into())
 ///     }
 /// }
 /// ```
@@ -569,9 +575,48 @@ pub fn catch(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn websocket_gateway(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    let output = gateway_macro::gateway_impl::handle_websocket_gateway(attr, item);
+    let output = gateway_macro::gateway_attr::handle_websocket_gateway(attr, item);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
+
+/// Message handlers for a `#[websocket_gateway]` struct. Place it on the struct's `impl`; the
+/// `#[subscribe_message]` methods are scanned into the event router. Pairs with
+/// `#[websocket_gateway("/path")]` on the struct. Connection hooks (`#[on_connect]` /
+/// `#[on_disconnect]` / `#[after_init]`) are their own macros and need no `#[subscriptions]`.
+#[proc_macro_attribute]
+pub fn subscriptions(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let output = gateway_macro::subscriptions_attr::handle_subscriptions(item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
+macro_rules! ws_connection_hook_macro {
+    ($name:ident, $hook:expr, $doc:literal) => {
+        #[doc = $doc]
+        #[proc_macro_attribute]
+        pub fn $name(_attr: TokenStream, item: TokenStream) -> TokenStream {
+            let item = proc_macro2::TokenStream::from(item);
+            let output = gateway_macro::connection_hook_attr::handle_conn_hook($hook, item);
+            proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+        }
+    };
+}
+
+ws_connection_hook_macro!(
+    on_connect,
+    gateway_macro::connection_hook_attr::ConnHook::OnConnect,
+    "Connection hook on a `#[websocket_gateway]` struct: `async fn(&self, client: &WsClient) -> Result<(), WsError>`, run when a client connects. Returning `Err` rejects the connection. Needs no `#[subscriptions]`."
+);
+ws_connection_hook_macro!(
+    on_disconnect,
+    gateway_macro::connection_hook_attr::ConnHook::OnDisconnect,
+    "Connection hook: `async fn(&self, client: &WsClient)`, run when a client disconnects."
+);
+ws_connection_hook_macro!(
+    after_init,
+    gateway_macro::connection_hook_attr::ConnHook::AfterInit,
+    "Connection hook: `async fn(&self)`, run once after the gateway path is registered, before any connections."
+);
 
 /// Marks a method as a WebSocket message handler for a specific event.
 ///
