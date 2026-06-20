@@ -20,7 +20,7 @@
 //     | nc -u -w1 127.0.0.1 4000
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, rpc_controller};
+use toni_macros::{injectable, module, new, patterns, rpc_controller};
 
 #[injectable]
 pub struct OrdersService {}
@@ -35,10 +35,14 @@ impl OrdersService {
     }
 }
 
-#[rpc_controller(pub struct OrdersController {
-    #[inject] service: OrdersService,
-})]
+#[rpc_controller]
+pub struct OrdersController {
+    #[inject]
+    service: OrdersService,
+}
+#[patterns]
 impl OrdersController {
+    #[new]
     pub fn new(service: OrdersService) -> Self {
         Self { service }
     }

@@ -30,7 +30,7 @@ use toni::{
     extractors::{Json, Query},
     get, injectable, module, post, routes, Body as ToniBody, RpcClient, ToniFactory,
 };
-use toni_macros::{provider_value, rpc_controller};
+use toni_macros::{new, patterns, provider_value, rpc_controller};
 
 // ============================================================================
 // DTOs
@@ -81,10 +81,14 @@ impl OrdersService {
 // RPC controller — receives messages from NATS
 // ============================================================================
 
-#[rpc_controller(pub struct OrdersRpcController {
-    #[inject] service: OrdersService,
-})]
+#[rpc_controller]
+pub struct OrdersRpcController {
+    #[inject]
+    service: OrdersService,
+}
+#[patterns]
 impl OrdersRpcController {
+    #[new]
     pub fn new(service: OrdersService) -> Self {
         Self { service }
     }

@@ -17,7 +17,7 @@ use std::time::Duration;
 use toni::context::RpcContext;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
-use toni_macros::rpc_controller;
+use toni_macros::{new, patterns, rpc_controller};
 
 /// Spawn an app with the UDP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
@@ -83,8 +83,11 @@ async fn udp_rpc_timeout(
     serde_json::from_slice(&buf[..n]).ok()
 }
 
-#[rpc_controller(pub struct UdpRpcController {})]
+#[rpc_controller]
+pub struct UdpRpcController {}
+#[patterns]
 impl UdpRpcController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -370,8 +373,11 @@ async fn udp_client_transport_round_trips_and_rejects_oversized() {
     }
 }
 
-#[rpc_controller(pub struct SlowUdpController {})]
+#[rpc_controller]
+pub struct SlowUdpController {}
+#[patterns]
 impl SlowUdpController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -559,8 +565,11 @@ async fn udp_backpressure_rejects_excess_and_releases_after_completion() {
 // Metadata set on the client builder must ride the UDP frame's `metadata`
 // field and surface in the handler's RpcContext.
 
-#[rpc_controller(pub struct UdpMetaController {})]
+#[rpc_controller]
+pub struct UdpMetaController {}
+#[patterns]
 impl UdpMetaController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

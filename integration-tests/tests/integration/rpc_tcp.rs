@@ -24,7 +24,9 @@ use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni_macros::{rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes};
+use toni_macros::{
+    new, patterns, rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes,
+};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
@@ -111,8 +113,11 @@ async fn tcp_rpc_timeout(
     serde_json::from_str(line.trim()).ok()
 }
 
-#[rpc_controller(pub struct RpcPanicController {})]
+#[rpc_controller]
+pub struct RpcPanicController {}
+#[patterns]
 impl RpcPanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -167,8 +172,11 @@ async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     assert_eq!(resp.unwrap()["response"], "safe-ok");
 }
 
-#[rpc_controller(pub struct ShutdownTcpController {})]
+#[rpc_controller]
+pub struct ShutdownTcpController {}
+#[patterns]
 impl ShutdownTcpController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -243,8 +251,11 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
     );
 }
 
-#[rpc_controller(pub struct SlowTcpController {})]
+#[rpc_controller]
+pub struct SlowTcpController {}
+#[patterns]
 impl SlowTcpController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -462,8 +473,11 @@ struct EchoReply {
     repeated: String,
 }
 
-#[rpc_controller(pub struct TypedPayloadController {})]
+#[rpc_controller]
+pub struct TypedPayloadController {}
+#[patterns]
 impl TypedPayloadController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -523,8 +537,11 @@ impl Guard<RpcContext> for PanickingRpcGuard {
     }
 }
 
-#[rpc_controller(pub struct RpcGuardPanicController {})]
+#[rpc_controller]
+pub struct RpcGuardPanicController {}
+#[patterns]
 impl RpcGuardPanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -589,8 +606,11 @@ impl Interceptor<RpcContext> for PanickingRpcInterceptor {
     }
 }
 
-#[rpc_controller(pub struct RpcInterceptorPanicController {})]
+#[rpc_controller]
+pub struct RpcInterceptorPanicController {}
+#[patterns]
 impl RpcInterceptorPanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -660,8 +680,11 @@ impl Pipe<RpcContext> for PanickingRpcPipe {
     }
 }
 
-#[rpc_controller(pub struct RpcPipePanicController {})]
+#[rpc_controller]
+pub struct RpcPipePanicController {}
+#[patterns]
 impl RpcPipePanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -728,8 +751,11 @@ impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
     }
 }
 
-#[rpc_controller(pub struct RpcErrorHandlerPanicController {})]
+#[rpc_controller]
+pub struct RpcErrorHandlerPanicController {}
+#[patterns]
 impl RpcErrorHandlerPanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -803,8 +829,11 @@ impl toni::Error for RpcRenderBomb {
     }
 }
 
-#[rpc_controller(pub struct RpcRenderPanicController {})]
+#[rpc_controller]
+pub struct RpcRenderPanicController {}
+#[patterns]
 impl RpcRenderPanicController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -851,8 +880,11 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
 // Metadata set on the client builder must ride the TCP frame's `metadata`
 // field and surface in the handler's RpcContext.
 
-#[rpc_controller(pub struct TcpMetaController {})]
+#[rpc_controller]
+pub struct TcpMetaController {}
+#[patterns]
 impl TcpMetaController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
@@ -884,5 +916,25 @@ async fn tcp_client_metadata_reaches_handler() {
         resp.as_json().and_then(|v| v["trace"].as_str()),
         Some("abc123"),
         "client metadata must reach the handler over TCP"
+    );
+}
+
+// A `#[rpc_controller]` with no `#[patterns]` impl: the `RpcHandlersBridge` defaults answer, so it
+// is a complete provider that routes no patterns. The absence of an impl block is the point.
+#[rpc_controller]
+pub struct BareRpcController {}
+
+/// A controller declared with no `#[patterns]` impl still implements `RpcControllerTrait` (its token
+/// baked, its pattern list empty via the bridge default) — the self-sufficiency guarantee:
+/// `#[rpc_controller]` alone is valid, `#[patterns]` only adds handlers.
+#[test]
+fn bare_rpc_controller_registers_with_no_patterns() {
+    use toni::rpc::RpcControllerTrait;
+
+    let controller = BareRpcController {};
+    assert_eq!(controller.get_token(), "BareRpcController");
+    assert!(
+        controller.get_patterns().is_empty(),
+        "a controller with no #[patterns] impl exposes no patterns"
     );
 }

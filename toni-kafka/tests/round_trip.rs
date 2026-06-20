@@ -19,14 +19,17 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, rpc_controller, RpcClient, ToniFactory};
+use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
 use toni_kafka::{KafkaAdapter, KafkaClientTransport};
 
 static BROKERS: OnceLock<String> = OnceLock::new();
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller(pub struct MathController {})]
+#[rpc_controller]
+pub struct MathController {}
+#[patterns]
 impl MathController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }
