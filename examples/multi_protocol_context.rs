@@ -32,7 +32,9 @@ use toni::context::{HttpContext, RpcContext, WsContext};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::*;
-use toni_macros::{injectable, module, new, rpc_controller, subscriptions, websocket_gateway};
+use toni_macros::{
+    injectable, module, new, patterns, rpc_controller, subscriptions, websocket_gateway,
+};
 
 // ---- one guard, three transport-shaped impls --------------------------------
 
@@ -135,7 +137,9 @@ impl OrdersHttp {
 
 // ---- RPC controller ---------------------------------------------------------
 
-#[rpc_controller(pub struct OrdersRpc {})]
+#[rpc_controller]
+pub struct OrdersRpc {}
+#[patterns]
 #[use_guards(UniversalAuthGuard)]
 #[use_interceptors(LoggingInterceptor)]
 impl OrdersRpc {

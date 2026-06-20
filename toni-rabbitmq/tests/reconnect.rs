@@ -19,13 +19,16 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, rpc_controller, RpcClient, ToniFactory};
+use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
 use toni_rabbitmq::{RabbitMqAdapter, RabbitMqClientTransport};
 
 static URI: OnceLock<String> = OnceLock::new();
 
-#[rpc_controller(pub struct EchoController {})]
+#[rpc_controller]
+pub struct EchoController {}
+#[patterns]
 impl EchoController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

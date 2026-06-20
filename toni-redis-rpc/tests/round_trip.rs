@@ -16,14 +16,17 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, rpc_controller, RpcClient, ToniFactory};
+use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
 use toni_redis_rpc::{RedisAdapter, RedisClientTransport};
 
 static URL: OnceLock<String> = OnceLock::new();
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller(pub struct MathController {})]
+#[rpc_controller]
+pub struct MathController {}
+#[patterns]
 impl MathController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

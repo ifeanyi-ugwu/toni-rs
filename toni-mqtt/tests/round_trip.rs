@@ -15,15 +15,18 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::mosquitto::Mosquitto;
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, rpc_controller, RpcClient, ToniFactory};
+use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
 use toni_mqtt::{MqttAdapter, MqttClientTransport};
 
 static HOST: OnceLock<String> = OnceLock::new();
 static PORT: OnceLock<u16> = OnceLock::new();
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller(pub struct MathController {})]
+#[rpc_controller]
+pub struct MathController {}
+#[patterns]
 impl MathController {
+    #[new]
     pub fn new() -> Self {
         Self {}
     }

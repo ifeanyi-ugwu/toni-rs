@@ -28,7 +28,7 @@
 //   echo '{"pattern":"order.shipped","data":{"order_id":1001}}' | nc 127.0.0.1 4000
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, rpc_controller};
+use toni_macros::{injectable, module, new, patterns, rpc_controller};
 
 // ============================================================================
 // Service
@@ -51,10 +51,14 @@ impl OrdersService {
 // RPC controller
 // ============================================================================
 
-#[rpc_controller(pub struct OrdersController {
-    #[inject] service: OrdersService,
-})]
+#[rpc_controller]
+pub struct OrdersController {
+    #[inject]
+    service: OrdersService,
+}
+#[patterns]
 impl OrdersController {
+    #[new]
     pub fn new(service: OrdersService) -> Self {
         Self { service }
     }
