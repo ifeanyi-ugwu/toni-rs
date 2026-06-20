@@ -648,26 +648,40 @@ pub fn subscribe_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// RPC controller macro for defining message pattern handlers.
 ///
-/// Similar to `#[websocket_gateway]` but for RPC transports (TCP, NATS, Kafka, etc.).
-/// Implements `RpcControllerTrait` and routes incoming messages by pattern.
+/// Similar to `#[websocket_gateway]` but for RPC transports (TCP, NATS, Kafka, etc.). Placed on the
+/// struct, like `#[injectable]`: `#[inject]` fields are dependencies; the pattern handlers live in a
+/// sibling `#[patterns]` impl. Implements `RpcControllerTrait` and routes incoming messages by pattern.
 ///
 /// # Syntax
 ///
 /// ```rust,ignore
-/// #[rpc_controller(pub struct OrdersController { ... })]
+/// #[rpc_controller]
+/// pub struct OrdersController {}
+///
+/// #[patterns]
 /// impl OrdersController {
 ///     #[message_pattern("order.create")]
-///     async fn create_order(&self, data: RpcData, ctx: RpcContext) -> Result<RpcData, RpcError> { ... }
+///     async fn create_order(&self, data: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> { ... }
 ///
 ///     #[event_pattern("order.cancelled")]
-///     async fn on_order_cancelled(&self, data: RpcData, ctx: RpcContext) -> Result<(), RpcError> { ... }
+///     async fn on_order_cancelled(&self, data: RpcData, ctx: &RpcContext) -> Result<(), RpcError> { ... }
 /// }
 /// ```
 #[proc_macro_attribute]
 pub fn rpc_controller(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
     let item = proc_macro2::TokenStream::from(item);
-    let output = rpc_macro::rpc_impl::handle_rpc_controller(attr, item);
+    let output = rpc_macro::rpc_controller_attr::handle_rpc_controller(attr, item);
+    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
+}
+
+/// Pattern handlers for a `#[rpc_controller]` struct. Place it on the struct's `impl`; the
+/// `#[message_pattern]` and `#[event_pattern]` methods are scanned into the pattern router. Pairs
+/// with `#[rpc_controller]` on the struct.
+#[proc_macro_attribute]
+pub fn patterns(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let output = rpc_macro::patterns_attr::handle_patterns(item);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 

@@ -16,6 +16,8 @@ pub mod __lifecycle;
 #[doc(hidden)]
 pub mod __route;
 #[doc(hidden)]
+pub mod __rpc;
+#[doc(hidden)]
 pub mod __ws;
 pub mod di;
 pub mod errors;
