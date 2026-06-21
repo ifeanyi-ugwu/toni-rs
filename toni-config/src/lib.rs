@@ -106,11 +106,15 @@
 //!
 //! ## Validation (Optional)
 //!
-//! Enable the `validation` feature and use `validator` derive:
+//! Add the `validator` crate and derive `Validate` alongside `Config`. Fields
+//! carrying `#[validate(...)]` are checked when the config loads, before the app
+//! starts. Validation is keyed off the attributes themselves — a config without
+//! any `#[validate]` attrs never references `validator`, so configs that don't
+//! opt in pull in nothing.
 //!
 //! ```toml
 //! [dependencies]
-//! toni-config = { version = "0.1", features = ["validation"] }
+//! toni-config = "0.1"
 //! validator = { version = "0.20", features = ["derive"] }
 //! ```
 //!
@@ -149,9 +153,6 @@ use std::sync::Arc;
 
 // Re-export the derive macro
 pub use toni_macros::Config;
-
-#[cfg(feature = "validation")]
-pub use validator;
 
 mod config_service;
 pub use config_service::{ConfigService, ConfigServiceFactory};

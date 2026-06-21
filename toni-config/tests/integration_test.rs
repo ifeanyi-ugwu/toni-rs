@@ -1,5 +1,6 @@
 use serial_test::serial;
 use toni_config::{Config, ConfigError, ConfigModule, Environment};
+use validator::Validate;
 
 #[derive(Config, Clone)]
 struct BasicConfig {
@@ -27,6 +28,16 @@ struct ConfigWithOptional {
 
     #[env("OPTIONAL")]
     pub optional: Option<String>,
+}
+
+#[derive(Config, Validate, Clone)]
+struct ValidatedConfig {
+    // Range is narrower than u16 so an in-range parse can still fail validation,
+    // proving the check is validation and not a parse error.
+    #[env("VALIDATED_PORT")]
+    #[default(8080u16)]
+    #[validate(range(min = 1024, max = 65535))]
+    pub port: u16,
 }
 
 #[derive(Config, Clone)]
@@ -176,6 +187,40 @@ fn test_invalid_type_parsing() {
     }
 
     std::env::remove_var("WITH_DEFAULT");
+}
+
+#[test]
+#[serial]
+fn test_validation_rejects_out_of_range() {
+    std::env::set_var("VALIDATED_PORT", "80");
+
+    let result = ConfigModule::<ValidatedConfig>::from_env();
+    assert!(
+        matches!(result, Err(ConfigError::ValidationError(_))),
+        "port 80 is below the validated minimum of 1024 and must be rejected"
+    );
+
+    std::env::remove_var("VALIDATED_PORT");
+}
+
+#[test]
+#[serial]
+fn test_validation_accepts_in_range() {
+    std::env::set_var("VALIDATED_PORT", "9000");
+
+    let config = ConfigModule::<ValidatedConfig>::from_env().unwrap();
+    assert_eq!(config.get().port, 9000);
+
+    std::env::remove_var("VALIDATED_PORT");
+}
+
+#[test]
+#[serial]
+fn test_validation_uses_default_when_unset() {
+    std::env::remove_var("VALIDATED_PORT");
+
+    let config = ConfigModule::<ValidatedConfig>::from_env().unwrap();
+    assert_eq!(config.get().port, 8080);
 }
 
 #[test]
