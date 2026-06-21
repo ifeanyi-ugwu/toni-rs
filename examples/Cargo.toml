@@ -48,6 +48,10 @@ name = "config_module"
 path = "config_module.rs"
 
 [[example]]
+name = "config_validation"
+path = "config_validation.rs"
+
+[[example]]
 name = "gateway_http_bridge"
 path = "gateway_http_bridge.rs"
 
