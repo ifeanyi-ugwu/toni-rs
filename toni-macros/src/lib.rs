@@ -95,6 +95,26 @@ pub fn put(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn delete(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
+/// Declares a Server-Sent Events handler. Always routes as GET.
+///
+/// The handler must return a stream of events, not a response type directly:
+///
+/// ```rust,ignore
+/// // Infallible — each event always produces a value
+/// #[sse("/events")]
+/// async fn events(&self) -> impl Stream<Item = SseEvent> { ... }
+///
+/// // Per-event fallible — individual events may fail
+/// #[sse("/events")]
+/// async fn events(&self) -> impl Stream<Item = Result<SseEvent, MyError>> { ... }
+/// ```
+///
+/// For setup that can fail before streaming starts (e.g. validating a subscription token), use a
+/// guard or `#[get]` returning `Result<impl IntoResponse, E>` with an explicit `sse(stream)` call.
+#[proc_macro_attribute]
+pub fn sse(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
 
 /// Applies guards to route handlers or controllers for request authorization.
 ///
