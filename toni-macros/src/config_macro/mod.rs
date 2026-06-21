@@ -32,18 +32,14 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
     });
 
     let validation_impl = if has_validation {
+        // `#[validate(...)]` attrs only parse when the consumer derives
+        // `validator::Validate`, so `::validator` is guaranteed in scope here.
+        // The attribute presence is the opt-in; no Cargo feature gates this.
         quote! {
             impl ::toni_config::Validate for #name {
                 fn validate(&self) -> Result<(), ::toni_config::ConfigError> {
-                    #[cfg(feature = "validation")]
-                    {
-                        ::validator::Validate::validate(self)
-                            .map_err(|e| ::toni_config::ConfigError::ValidationError(e.to_string()))
-                    }
-                    #[cfg(not(feature = "validation"))]
-                    {
-                        Ok(())
-                    }
+                    ::validator::Validate::validate(self)
+                        .map_err(|e| ::toni_config::ConfigError::ValidationError(e.to_string()))
                 }
             }
         }
