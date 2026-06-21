@@ -172,6 +172,7 @@ fn find_http_method_attr(attrs: &[Attribute]) -> Option<&Attribute> {
             || attr_is(attr, "patch")
             || attr_is(attr, "head")
             || attr_is(attr, "options")
+            || attr_is(attr, "sse")
     })
 }
 
@@ -209,8 +210,14 @@ fn generate_controller_wrapper(
     marker_params: Vec<MarkerParam>,
     scope: ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
-    let http_method = attr_to_string(http_method_attr)
-        .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
+    let is_sse = attr_is(http_method_attr, "sse");
+
+    let http_method = if is_sse {
+        "get".to_string()
+    } else {
+        attr_to_string(http_method_attr)
+            .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?
+    };
 
     // Sub-path only; the controller's prefix is joined at runtime via `__toni_prefix`.
     let route_path = http_method_attr
@@ -257,6 +264,16 @@ fn generate_controller_wrapper(
             generate_method_call(method, &marker_params, struct_name, is_static_method)?;
         let (extractions, body_dto) = generate_marker_params_extraction(&marker_params)?;
         (method_call, extractions, body_dto)
+    };
+
+    let method_call = if is_sse {
+        if sse_stream_is_fallible(&method.sig.output) {
+            quote! { ::toni::Sse::new(#method_call) }
+        } else {
+            quote! { ::toni::sse(#method_call) }
+        }
+    } else {
+        method_call
     };
 
     let returns_result = returns_result_type(&method.sig.output);
@@ -684,6 +701,44 @@ fn returns_result_type(output: &syn::ReturnType) -> bool {
             .segments
             .last()
             .is_some_and(|seg| seg.ident == "Result");
+    }
+    false
+}
+
+/// `true` when the return type is `impl Stream<Item = Result<_, _>>` — the per-event fallible
+/// shape that maps to `Sse::new(stream)` rather than `sse(stream)`.
+fn sse_stream_is_fallible(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let syn::Type::ImplTrait(impl_trait) = ty.as_ref() else {
+        return false;
+    };
+    for bound in &impl_trait.bounds {
+        let syn::TypeParamBound::Trait(tb) = bound else {
+            continue;
+        };
+        let Some(last) = tb.path.segments.last() else {
+            continue;
+        };
+        if last.ident != "Stream" {
+            continue;
+        }
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            continue;
+        };
+        for arg in &args.args {
+            if let syn::GenericArgument::AssocType(assoc) = arg
+                && assoc.ident == "Item"
+                && let syn::Type::Path(item_ty) = &assoc.ty
+            {
+                return item_ty
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "Result");
+            }
+        }
     }
     false
 }
