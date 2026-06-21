@@ -86,6 +86,18 @@ impl SseController {
         sse(self.events.subscribe().take(2))
     }
 
+    #[sse("/attr-basic")]
+    async fn attr_basic(&self) -> impl futures_util::Stream<Item = SseEvent> {
+        stream::iter([SseEvent::data("hello"), SseEvent::data("world")])
+    }
+
+    #[sse("/attr-fallible")]
+    async fn attr_fallible(
+        &self,
+    ) -> impl futures_util::Stream<Item = Result<SseEvent, std::io::Error>> {
+        stream::iter([Ok(SseEvent::data("ok-event"))])
+    }
+
     #[post("/emit")]
     async fn emit_event(&self, Bytes(data): Bytes) -> impl toni::IntoResponse {
         self.events
@@ -239,4 +251,37 @@ async fn test_sse_broadcaster_delivers_to_subscriber() {
     );
 
     assert_eq!(body, "data: hello\n\ndata: world\n\n");
+}
+
+#[tokio_localset_test::localset_test]
+async fn test_sse_attr_macro_infallible() {
+    let server = TestServer::start(SseModule::module_definition()).await;
+    let resp = server
+        .client()
+        .get(server.url("/sse/attr-basic"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(ct.contains("text/event-stream"));
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "data: hello\n\ndata: world\n\n");
+}
+
+#[tokio_localset_test::localset_test]
+async fn test_sse_attr_macro_fallible() {
+    let server = TestServer::start(SseModule::module_definition()).await;
+    let body = server
+        .client()
+        .get(server.url("/sse/attr-fallible"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(body, "data: ok-event\n\n");
 }
