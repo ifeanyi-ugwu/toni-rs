@@ -3,7 +3,7 @@ mod commands;
 
 #[derive(Parser)]
 #[command(name = "toni")]
-#[command(version = "0.0.1")]
+#[command(version)]
 #[command(about = "Toni Framework CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
