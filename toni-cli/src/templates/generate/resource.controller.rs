@@ -1,42 +1,37 @@
-use super::resource_name_service::_RESOURCE_NAME_SERVICE;
-use toni::http_helpers::{Body, HttpRequest};
-use toni_macros::{controller, delete, get, post, put};
+use super::resource_name_service::RESOURCE_NAME_SERVICE;
+use toni::extractors::Path;
+use toni::*;
 
-#[controller(
-  "/resource_name",
-  pub struct _RESOURCE_NAME_CONTROLLER {
-    resource_name_service: _RESOURCE_NAME_SERVICE,
-  }
-)]
-impl _RESOURCE_NAME_CONTROLLER {
-    #[post("")]
-    fn _create(&self) -> Body {
-        let create: String = self.resource_name_service.create();
-        Body::text(create)
+#[controller("/resource_name")]
+pub struct RESOURCE_NAME_CONTROLLER {
+    #[inject]
+    resource_name_service: RESOURCE_NAME_SERVICE,
+}
+
+#[routes]
+impl RESOURCE_NAME_CONTROLLER {
+    #[post("/")]
+    fn create(&self) -> Body {
+        Body::text(self.resource_name_service.create())
     }
 
-    #[get("")]
-    fn _find_all(&self) -> Body {
-        let find_all: String = self.resource_name_service.find_all();
-        Body::text(find_all)
+    #[get("/")]
+    fn find_all(&self) -> Body {
+        Body::text(self.resource_name_service.find_all())
     }
 
     #[get("/{id}")]
-    fn _find_by_id(&self, req: HttpRequest) -> Body {
-        let id = req.path_params.get("id").unwrap().parse::<i32>().unwrap();
-        let find_by_id: String = self.resource_name_service.find_by_id(id);
-        Body::text(find_by_id)
+    fn find_by_id(&self, Path(id): Path<String>) -> Body {
+        Body::text(self.resource_name_service.find_by_id(id))
     }
 
-    #[put("")]
-    fn _update(&self) -> Body {
-        let update: String = self.resource_name_service.update();
-        Body::text(update)
+    #[put("/")]
+    fn update(&self) -> Body {
+        Body::text(self.resource_name_service.update())
     }
 
-    #[delete("")]
-    fn _delete(&self) -> Body {
-        let delete: String = self.resource_name_service.delete();
-        Body::text(delete)
+    #[delete("/")]
+    fn delete(&self) -> Body {
+        Body::text(self.resource_name_service.delete())
     }
 }
