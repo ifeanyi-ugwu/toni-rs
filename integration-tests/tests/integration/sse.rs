@@ -264,7 +264,12 @@ async fn test_sse_attr_macro_infallible() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("text/event-stream"));
     let body = resp.text().await.unwrap();
     assert_eq!(body, "data: hello\n\ndata: world\n\n");
