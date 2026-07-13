@@ -8,7 +8,7 @@ use std::str::FromStr;
 /// # Example
 ///
 /// ```rust,ignore
-/// #[get("/users/:id")]
+/// #[get("/users/{id}")]
 /// fn get_user(&self, Path(id): Path<i32>) -> String {
 ///     format!("User {}", id)
 /// }
@@ -70,34 +70,138 @@ impl<T: DeserializeOwned> FromRequestParts for Path<T> {
     type Error = PathError;
 
     fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
-        let params = parts.extensions.get::<PathParams>();
-        let json_map = match params {
-            Some(p) => serde_json::to_value(&p.0).map_err(|e| {
-                PathError::ParseError(format!("Failed to serialize path params: {}", e))
-            })?,
-            None => serde_json::Value::Object(Default::default()),
-        };
+        let empty = std::collections::HashMap::new();
+        let params = parts
+            .extensions
+            .get::<PathParams>()
+            .map_or(&empty, |p| &p.0);
 
-        // Try the map first — handles structs with named fields (e.g. `Path<MyParams>`).
-        // If that fails and there is exactly one param, try deserializing from the bare
-        // value — handles scalars like `Path<String>` and `Path<i32>`.
-        if let Ok(v) = serde_json::from_value::<T>(json_map.clone()) {
+        // Structs (e.g. `Path<MyParams>`): urlencoded round-trip, the same
+        // deserializer Query uses. Unlike a serde_json::Value round-trip it
+        // forwards T's type hints, so numeric and bool fields parse from the
+        // raw string values.
+        let encoded = serde_urlencoded::to_string(params)
+            .map_err(|e| PathError::ParseError(format!("Failed to encode path params: {}", e)))?;
+        if let Ok(v) = serde_urlencoded::from_str::<T>(&encoded) {
             return Ok(Path(v));
         }
-        if let serde_json::Value::Object(ref obj) = json_map {
-            if obj.len() == 1 {
-                if let Some(single) = obj.values().next() {
-                    let deserialized: T = serde_json::from_value(single.clone()).map_err(|e| {
-                        PathError::ParseError(format!("Failed to deserialize path params: {}", e))
-                    })?;
-                    return Ok(Path(deserialized));
-                }
+
+        // Bare scalars from a single param: urlencoded is map-shaped and cannot
+        // produce them. String forms first so `Path<String>` receives "42" or
+        // "true" verbatim; JSON re-lexing after that covers numbers and bools.
+        if params.len() == 1 {
+            let raw = params.values().next().unwrap();
+            if let Ok(v) = serde_json::from_value::<T>(serde_json::Value::String(raw.clone())) {
+                return Ok(Path(v));
+            }
+            if let Ok(v) = serde_json::from_str::<T>(raw) {
+                return Ok(Path(v));
             }
         }
 
         Err(PathError::ParseError(format!(
             "Failed to deserialize path params from {:?}",
-            json_map
+            params
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    fn parts_with(params: &[(&str, &str)]) -> RequestPart {
+        let (mut parts, _) = http::Request::builder()
+            .uri("/")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let map: HashMap<String, String> = params
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        parts.extensions.insert(PathParams(map));
+        parts
+    }
+
+    #[test]
+    fn scalar_i32() {
+        let parts = parts_with(&[("id", "42")]);
+        let Path(id) = Path::<i32>::from_request_parts(&parts).unwrap();
+        assert_eq!(id, 42);
+    }
+
+    #[test]
+    fn scalar_bool() {
+        let parts = parts_with(&[("flag", "true")]);
+        let Path(flag) = Path::<bool>::from_request_parts(&parts).unwrap();
+        assert!(flag);
+    }
+
+    #[test]
+    fn scalar_string_stays_verbatim() {
+        // Values that lex as JSON scalars must not be re-typed for Path<String>.
+        for raw in ["42", "true", "007"] {
+            let parts = parts_with(&[("v", raw)]);
+            let Path(v) = Path::<String>::from_request_parts(&parts).unwrap();
+            assert_eq!(v, raw);
+        }
+    }
+
+    #[test]
+    fn scalar_parse_failure_is_an_error() {
+        let parts = parts_with(&[("id", "abc")]);
+        assert!(Path::<i32>::from_request_parts(&parts).is_err());
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Mixed {
+        id: i32,
+        name: String,
+    }
+
+    #[test]
+    fn struct_with_typed_fields() {
+        let parts = parts_with(&[("id", "42"), ("name", "alice")]);
+        let Path(m) = Path::<Mixed>::from_request_parts(&parts).unwrap();
+        assert_eq!(m.id, 42);
+        assert_eq!(m.name, "alice");
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Code {
+        code: String,
+    }
+
+    #[test]
+    fn struct_string_field_keeps_leading_zeros() {
+        let parts = parts_with(&[("code", "007")]);
+        let Path(c) = Path::<Code>::from_request_parts(&parts).unwrap();
+        assert_eq!(c.code, "007");
+    }
+
+    #[test]
+    fn value_with_spaces_round_trips() {
+        let parts = parts_with(&[("name", "a b c")]);
+        let Path(v) = Path::<String>::from_request_parts(&parts).unwrap();
+        assert_eq!(v, "a b c");
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct AllOptional {
+        id: Option<i32>,
+    }
+
+    #[test]
+    fn missing_params_extension_deserializes_optionals() {
+        let (parts, _) = http::Request::builder()
+            .uri("/")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let Path(v) = Path::<AllOptional>::from_request_parts(&parts).unwrap();
+        assert_eq!(v.id, None);
     }
 }
