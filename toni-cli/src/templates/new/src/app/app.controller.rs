@@ -1,35 +1,31 @@
-use super::app_service::_AppService;
-use toni::http_helpers::{Body, HttpRequest};
-use toni_macros::{controller, delete, get, post, put};
+use super::app_service::AppService;
+use toni::*;
 
-#[controller(
-  "/app",
-  pub struct _AppController {
-    app_service: _AppService,
-  }
-)]
-impl _AppController {
-    #[post("")]
-    fn _create(&self) -> Body {
-        let create: String = self.app_service.create();
-        Body::text(create)
+#[controller("/app")]
+pub struct AppController {
+    #[inject]
+    app_service: AppService,
+}
+
+#[routes]
+impl AppController {
+    #[post("/")]
+    fn create(&self) -> Body {
+        Body::text(self.app_service.create())
     }
 
-    #[get("")]
-    fn _find_all(&self) -> Body {
-        let find_all: String = self.app_service.find_all();
-        Body::text(find_all)
+    #[get("/")]
+    fn find_all(&self) -> Body {
+        Body::text(self.app_service.find_all())
     }
 
-    #[put("")]
-    fn _update(&self) -> Body {
-        let update: String = self.app_service.update();
-        Body::text(update)
+    #[put("/")]
+    fn update(&self) -> Body {
+        Body::text(self.app_service.update())
     }
 
-    #[delete("")]
-    fn _delete(&self) -> Body {
-        let delete: String = self.app_service.delete();
-        Body::text(delete)
+    #[delete("/")]
+    fn delete(&self) -> Body {
+        Body::text(self.app_service.delete())
     }
 }

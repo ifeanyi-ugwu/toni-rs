@@ -45,6 +45,11 @@ pub mod websocket;
 #[doc(hidden)]
 pub use tracing;
 
+// Public re-export: macro-generated code builds error bodies with it, and
+// `Body::json` traffics in its `Value` type, so consumers need it in scope
+// without declaring their own dependency.
+pub use serde_json;
+
 // Re-exports for adapter crates
 pub use adapter::{
     AdapterContext, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,

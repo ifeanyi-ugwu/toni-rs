@@ -1,12 +1,17 @@
 use app::app_module::AppModule;
-use toni::{adapter::AxumAdapter, http_adapter::HttpAdapter, toni_factory::ToniFactory};
+use toni::ToniFactory;
+use toni_axum::AxumAdapter;
 
 mod app;
 
 #[tokio::main]
 async fn main() {
-    let axum_adapter = AxumAdapter::new();
+    let mut app = ToniFactory::new()
+        .create_with(AppModule::module_definition())
+        .await;
 
-    let mut app = ToniFactory::create(AppModule::module_definition(), axum_adapter);
-    app.listen(3000, "127.0.0.1").await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
+
+    app.start().await.unwrap();
 }

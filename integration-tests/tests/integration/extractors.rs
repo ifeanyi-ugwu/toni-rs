@@ -2,7 +2,7 @@ use crate::common::TestServer;
 use serde::Deserialize;
 use toni::{
     controller,
-    extractors::{Bytes as RenamedBytes, Json, Query, Validated},
+    extractors::{Bytes as RenamedBytes, Json, Path, Query, Validated},
     get, module, post, routes, Body as ToniBody,
 };
 use validator::Validate;
@@ -47,6 +47,11 @@ impl ExtractorController {
     #[post("/aliased-bytes")]
     fn aliased_bytes(&self, body: RenamedBytes) -> ToniBody {
         ToniBody::text(format!("len={}", body.0.len()))
+    }
+
+    #[get("/items/{id}")]
+    fn typed_path(&self, Path(id): Path<i32>) -> ToniBody {
+        ToniBody::text(format!("id={}", id))
     }
 }
 
@@ -220,6 +225,29 @@ async fn test_validated_extractor() {
         .client()
         .post(server.url("/validated/users"))
         .json(&serde_json::json!({"name": "Jo", "email": "bad"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio_localset_test::localset_test]
+async fn test_typed_path_extractor() {
+    let server = TestServer::start(ExtractorModule::module_definition()).await;
+
+    let resp = server
+        .client()
+        .get(server.url("/api/items/42"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "id=42");
+
+    // non-numeric segment → 400
+    let resp = server
+        .client()
+        .get(server.url("/api/items/abc"))
         .send()
         .await
         .unwrap();

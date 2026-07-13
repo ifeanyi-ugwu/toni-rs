@@ -27,7 +27,7 @@ pub use json::Json;
 pub use multipart::{Multipart, MultipartError};
 pub use path::Path;
 pub use query::Query;
-pub use validated::Validated;
+pub use validated::{ValidatableExtractor, Validated, ValidationError};
 
 use crate::http_helpers::{HttpRequest, RequestPart};
 

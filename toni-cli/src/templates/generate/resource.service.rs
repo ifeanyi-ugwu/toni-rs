@@ -1,13 +1,14 @@
-use toni_macros::injectable;
+use toni::*;
 
 #[injectable]
-pub struct _RESOURCE_NAME_SERVICE;
-impl _RESOURCE_NAME_SERVICE {
+pub struct RESOURCE_NAME_SERVICE;
+
+impl RESOURCE_NAME_SERVICE {
     pub fn find_all(&self) -> String {
         "find_all".to_string()
     }
 
-    pub fn find_by_id(&self, id: i32) -> String {
+    pub fn find_by_id(&self, id: String) -> String {
         format!("find_by_id {}", id)
     }
 
