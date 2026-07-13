@@ -30,17 +30,17 @@ impl CacheService {
     }
 }
 
-#[controller(
-    "/cache",
-    pub struct CacheController {
-        #[inject]
-        service: CacheService,
-        #[inject]
-        health: HealthCheckService,
-        #[inject]
-        indicator: RedisHealthIndicator,
-    }
-)]
+#[controller("/cache")]
+pub struct CacheController {
+    #[inject]
+    service: CacheService,
+    #[inject]
+    health: HealthCheckService,
+    #[inject]
+    indicator: RedisHealthIndicator,
+}
+
+#[routes]
 impl CacheController {
     #[post("/")]
     async fn set(&self, Bytes(body): Bytes) -> Body {

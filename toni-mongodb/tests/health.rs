@@ -44,17 +44,17 @@ impl ItemService {
     }
 }
 
-#[controller(
-    "/items",
-    pub struct ItemController {
-        #[inject]
-        service: ItemService,
-        #[inject]
-        health: HealthCheckService,
-        #[inject]
-        indicator: MongoHealthIndicator,
-    }
-)]
+#[controller("/items")]
+pub struct ItemController {
+    #[inject]
+    service: ItemService,
+    #[inject]
+    health: HealthCheckService,
+    #[inject]
+    indicator: MongoHealthIndicator,
+}
+
+#[routes]
 impl ItemController {
     #[post("/")]
     async fn create(&self, Bytes(body): Bytes) -> Body {
