@@ -15,3 +15,52 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+
+  check:
+    name: check (all features, all targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # --all-features compiles the feature-gated test targets (e.g. the DB
+      # crates' `integration` health tests) that a default build never touches.
+      - run: cargo check --workspace --all-features --all-targets
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Hermetic suites only — everything here runs against localhost with no
+      # external services. Broker and DB crates keep their service-dependent
+      # tests behind feature gates and are compile-checked in the check job.
+      - run: cargo test -p toni --lib
+      - run: cargo test -p integration-tests
+
+  scaffold:
+    name: cli scaffold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p toni-cli
+      # `toni new` output pins published crate versions; patching them to the
+      # checkout verifies the templates against the code under review. A version
+      # bump that forgets to update the templates fails here loudly.
+      - name: scaffold a project and compile it
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/target/debug/toni" new scaffold-smoke
+          cd scaffold-smoke
+          "$GITHUB_WORKSPACE/target/debug/toni" generate resource user
+          cat >> Cargo.toml <<EOF
+          [patch.crates-io]
+          toni = { path = "$GITHUB_WORKSPACE/toni" }
+          toni-macros = { path = "$GITHUB_WORKSPACE/toni-macros" }
+          toni-axum = { path = "$GITHUB_WORKSPACE/toni-axum" }
+          EOF
+          cargo check
