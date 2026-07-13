@@ -257,7 +257,7 @@ pub fn generate_extractor_extractions(
                     let #param_name = match <#param_type as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
                         Ok(value) => value,
                         Err(e) => {
-                            let error_body = ::serde_json::json!({
+                            let error_body = ::toni::serde_json::json!({
                                 "error": "Extraction failed",
                                 "details": e.to_string()
                             });
@@ -283,7 +283,7 @@ pub fn generate_extractor_extractions(
                     ).await {
                         Ok(value) => value,
                         Err(e) => {
-                            let error_body = ::serde_json::json!({
+                            let error_body = ::toni::serde_json::json!({
                                 "error": "Extraction failed",
                                 "details": e.to_string()
                             });
@@ -311,7 +311,7 @@ pub fn generate_extractor_extractions(
                         ).await {
                             Ok(value) => value,
                             Err(e) => {
-                                let error_body = ::serde_json::json!({
+                                let error_body = ::toni::serde_json::json!({
                                     "error": "Extraction failed",
                                     "details": e.to_string()
                                 });
@@ -333,7 +333,7 @@ pub fn generate_extractor_extractions(
                         ).await {
                             Ok(value) => value,
                             Err(e) => {
-                                let error_body = ::serde_json::json!({
+                                let error_body = ::toni::serde_json::json!({
                                     "error": "Extraction failed",
                                     "details": e.to_string()
                                 });

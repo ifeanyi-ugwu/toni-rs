@@ -21,7 +21,7 @@ pub fn extract_body_from_param(marker_param: &MarkerParam) -> Result<TokenStream
         ).await {
             Ok(::toni::extractors::Body(value)) => value,
             Err(e) => {
-                let error_body = ::serde_json::json!({
+                let error_body = ::toni::serde_json::json!({
                     "error": "Failed to extract request body",
                     "details": e.to_string()
                 });
@@ -51,7 +51,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
             let #param_name = match <::toni::extractors::Query<#param_type> as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
                 Ok(::toni::extractors::Query(value)) => value,
                 Err(e) => {
-                    let error_body = ::serde_json::json!({
+                    let error_body = ::toni::serde_json::json!({
                         "error": "Failed to extract query parameters",
                         "details": e.to_string()
                     });
@@ -99,7 +99,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                         Some(value) => match value.parse() {
                             Ok(parsed) => Some(parsed),
                             Err(e) => {
-                                let error_body = ::serde_json::json!({
+                                let error_body = ::toni::serde_json::json!({
                                     "error": "Failed to parse query parameter",
                                     "param": #marker_arg,
                                     "details": format!("Parse error: {}", e)
@@ -127,7 +127,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                         Some(value) => match value.parse() {
                             Ok(parsed) => parsed,
                             Err(e) => {
-                                let error_body = ::serde_json::json!({
+                                let error_body = ::toni::serde_json::json!({
                                     "error": "Failed to parse query parameter",
                                     "param": #marker_arg,
                                     "details": format!("Parse error: {}", e)
@@ -140,7 +140,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                             }
                         },
                         None => {
-                            let error_body = ::serde_json::json!({
+                            let error_body = ::toni::serde_json::json!({
                                 "error": "Missing required query parameter",
                                 "param": #marker_arg
                             });
@@ -160,7 +160,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
             let #param_name = match <::toni::Query<#param_type> as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
                 Ok(::toni::Query(value)) => value,
                 Err(e) => {
-                    let error_body = ::serde_json::json!({
+                    let error_body = ::toni::serde_json::json!({
                         "error": "Failed to extract query parameters",
                         "details": e.to_string()
                     });
@@ -193,7 +193,7 @@ pub fn extract_path_param_from_param(marker_param: &MarkerParam) -> Result<Token
             Some(value) => match value.parse() {
                 Ok(parsed) => parsed,
                 Err(e) => {
-                    let error_body = ::serde_json::json!({
+                    let error_body = ::toni::serde_json::json!({
                         "error": "Failed to parse path parameter",
                         "param": #marker_arg,
                         "details": format!("Parse error: {}", e)
@@ -206,7 +206,7 @@ pub fn extract_path_param_from_param(marker_param: &MarkerParam) -> Result<Token
                 }
             },
             None => {
-                let error_body = ::serde_json::json!({
+                let error_body = ::toni::serde_json::json!({
                     "error": "Missing required path parameter",
                     "param": #marker_arg
                 });
