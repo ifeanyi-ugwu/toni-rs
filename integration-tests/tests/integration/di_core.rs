@@ -44,7 +44,7 @@ async fn singleton_providers_created_once_across_requests() {
     #[module(providers: [SingletonService], controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     for _ in 0..5 {
         let resp = server
@@ -112,7 +112,7 @@ async fn transient_providers_create_unique_instances_per_injection() {
     #[module(providers: [TransientService, MultiService], controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -170,7 +170,7 @@ async fn field_injection_with_inject_attribute() {
     #[module(providers: [DependencyService, ServiceWithDeps], controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -212,7 +212,7 @@ async fn field_injection_with_default_fallback() {
     #[module(providers: [ServiceWithDefault], controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -258,7 +258,7 @@ async fn config_service_injection_in_providers() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -299,7 +299,7 @@ async fn new_attribute_syntax() {
     #[module(providers: [NewSyntaxService], controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))

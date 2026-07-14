@@ -68,10 +68,8 @@ use toni_macros::{grpc_methods, grpc_service, injectable, module};
 mod orders_pb { tonic::include_proto!("toni_examples.orders"); }
 use orders_pb::orders_server::{Orders, OrdersServer};
 
-#[injectable(pub struct OrdersCounter {})]
-impl OrdersCounter {
-    pub fn new() -> Self { Self {} }
-}
+#[injectable]
+pub struct OrdersCounter {}
 
 #[grpc_service(pub struct OrdersGrpcService {
     #[inject] counter: OrdersCounter,
@@ -103,7 +101,7 @@ async fn main() {
     let local = tokio::task::LocalSet::new();
     local.run_until(async move {
         let addr: SocketAddr = "127.0.0.1:50051".parse().unwrap();
-        let mut app = ToniFactory::create(AppModule::module_definition()).await;
+        let mut app = ToniFactory::create(AppModule).await;
         app.use_grpc_adapter(toni_grpc::GrpcAdapter::new(addr)).unwrap();
         app.start().await.unwrap();
     }).await;
@@ -138,12 +136,11 @@ impl Orders for OrdersGrpcService {
 
 ### Guards
 
-`#[guard(grpc)]` registers a provider as `Guard<GrpcContext>`. The framework runs the resolved chain before the handler; a `false` return short-circuits the call with `PermissionDenied`.
+A guard is a provider that implements `Guard<GrpcContext>`. The framework runs the resolved chain before the handler; a `false` return short-circuits the call with `PermissionDenied`.
 
 ```rust
-#[injectable(pub struct AuthGuard {})]
-#[guard(grpc)]
-impl AuthGuard {}
+#[injectable]
+pub struct AuthGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
@@ -155,12 +152,11 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 
 ### Interceptors
 
-`#[interceptor(grpc)]` registers a provider as `Interceptor<GrpcContext>`. The chain wraps the user delegation — `next.run(ctx).await` proceeds; calling `ctx.set_response(Err(GrpcStatus::...))` and skipping `next.run` short-circuits.
+An interceptor is a provider that implements `Interceptor<GrpcContext>`. The chain wraps the user delegation — `next.run(ctx).await` proceeds; calling `ctx.set_response(Err(GrpcStatus::...))` and skipping `next.run` short-circuits.
 
 ```rust
-#[injectable(pub struct LoggingInterceptor {})]
-#[interceptor(grpc)]
-impl LoggingInterceptor {}
+#[injectable]
+pub struct LoggingInterceptor {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor {
@@ -178,12 +174,11 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor
 
 ### Error handlers
 
-`#[error_handler(grpc)]` registers a provider as `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every user-returned `Err(Status)` (wrapped as `GrpcStatus`) and every caught handler panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the response; `None` lets the next handler in the chain decide, falling back to the original on full miss.
+An error handler is a provider that implements `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every user-returned `Err(Status)` (wrapped as `GrpcStatus`) and every caught handler panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the response; `None` lets the next handler in the chain decide, falling back to the original on full miss.
 
 ```rust
-#[injectable(pub struct QtyErrorHandler {})]
-#[error_handler(grpc)]
-impl QtyErrorHandler {}
+#[injectable]
+pub struct QtyErrorHandler {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for QtyErrorHandler {

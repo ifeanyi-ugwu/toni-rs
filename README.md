@@ -86,9 +86,10 @@ use toni_axum::AxumAdapter;
 
 #[tokio::main]
 async fn main() {
-    let adapter = AxumAdapter::new();
-    let mut app = ToniFactory::create(AppModule::module_definition(), adapter);
-    app.listen(3000, "127.0.0.1").await;
+    let mut app = ToniFactory::create(AppModule).await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
+    app.start().await.unwrap();
 }
 ```
 
@@ -100,9 +101,10 @@ use toni_actix::ActixAdapter;
 
 #[actix_web::main]
 async fn main() {
-    let adapter = ActixAdapter::new();
-    let mut app = ToniFactory::create(AppModule::module_definition(), adapter);
-    app.listen(3000, "127.0.0.1").await;
+    let mut app = ToniFactory::create(AppModule).await;
+    app.use_http_adapter(ActixAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
+    app.start().await.unwrap();
 }
 ```
 
@@ -111,8 +113,8 @@ async fn main() {
 ```rust
 #[module(
     imports: [],
-    controllers: [_AppController],
-    providers: [_AppService],
+    controllers: [AppController],
+    providers: [AppService],
     exports: []
 )]
 pub struct AppModule;
@@ -121,19 +123,20 @@ pub struct AppModule;
 **`app/app.controller.rs`** (HTTP Routes)
 
 ```rust
-#[controller(
-    "/app",
-    pub struct _AppController {
-        app_service: _AppService
-    }
-)]
-impl _AppController {
-    #[post("")]
+#[controller("/app")]
+pub struct AppController {
+    #[inject]
+    app_service: AppService,
+}
+
+#[routes]
+impl AppController {
+    #[post("/")]
     fn create(&self) -> Body {
         Body::text(self.app_service.create())
     }
 
-    #[get("")]
+    #[get("/")]
     fn find_all(&self) -> Body {
         Body::text(self.app_service.find_all())
     }
@@ -143,10 +146,10 @@ impl _AppController {
 **`app/app.service.rs`** (Business Logic)
 
 ```rust
-#[injectable(
-    pub struct _AppService;
-)]
-impl _AppService {
+#[injectable]
+pub struct AppService;
+
+impl AppService {
     pub fn create(&self) -> String {
         "Item created!".into()
     }

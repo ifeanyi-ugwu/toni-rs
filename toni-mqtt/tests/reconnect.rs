@@ -71,9 +71,7 @@ async fn mqtt_recovers_after_broker_restart() {
     tokio::task::LocalSet::new()
         .run_until(async move {
             tokio::task::spawn_local(async move {
-                let mut app = ToniFactory::new()
-                    .create_with(EchoModule::module_definition())
-                    .await;
+                let mut app = ToniFactory::new().create_with(EchoModule).await;
                 app.use_rpc_adapter(MqttAdapter::new(
                     HOST.get().unwrap().clone(),
                     *PORT.get().unwrap(),

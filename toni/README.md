@@ -67,21 +67,22 @@ Test your endpoints at `http://localhost:3000/app`.
 
 ### Decoupled HTTP Server
 
-Toni decouples your application from the HTTP server, and by default we use Axum. In the future we plan to integrate other HTTP adapters.
+Toni is decoupled from the HTTP server. Adapters exist for Axum (`toni-axum`), Actix-web (`toni-actix`), Poem (`toni-poem`), Salvo (`toni-salvo`), and Rocket (`toni-rocket`); any other server can be integrated by implementing the `HttpAdapter` trait.
 
 ## Code Example
 
 **`main.rs`**
 
 ```rust
-use toni::{ToniFactory, AxumAdapter};
+use toni::ToniFactory;
+use toni_axum::AxumAdapter;
 
 #[tokio::main]
 async fn main() {
-    let axum_adapter = AxumAdapter::new();
-
-    let mut app = ToniFactory::create(AppModule::module_definition(), axum_adapter);
-    app.listen(3000, "127.0.0.1").await;
+    let mut app = ToniFactory::create(AppModule).await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
+    app.start().await.unwrap();
 }
 ```
 
@@ -90,8 +91,8 @@ async fn main() {
 ```rust
 #[module(
     imports: [],
-    controllers: [_AppController],
-    providers: [_AppService],
+    controllers: [AppController],
+    providers: [AppService],
     exports: []
 )]
 pub struct AppModule;
@@ -100,14 +101,20 @@ pub struct AppModule;
 **`app/app.controller.rs`** (HTTP Routes)
 
 ```rust
-#[controller("/app", pub struct _AppController { app_service: _AppService })]
-impl _AppController {
-    #[post("")]
+#[controller("/app")]
+pub struct AppController {
+    #[inject]
+    app_service: AppService,
+}
+
+#[routes]
+impl AppController {
+    #[post("/")]
     fn create(&self) -> Body {
         Body::text(self.app_service.create())
     }
 
-    #[get("")]
+    #[get("/")]
     fn find_all(&self) -> Body {
         Body::text(self.app_service.find_all())
     }
@@ -117,8 +124,10 @@ impl _AppController {
 **`app/app.service.rs`** (Business Logic)
 
 ```rust
-#[injectable(pub struct _AppService;)]
-impl _AppService {
+#[injectable]
+pub struct AppService;
+
+impl AppService {
     pub fn create(&self) -> String {
         "Item created!".into()
     }

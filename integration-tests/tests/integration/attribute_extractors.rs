@@ -94,7 +94,7 @@ impl AttributeModule {}
 
 #[tokio_localset_test::localset_test]
 async fn test_body_attribute() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     let dto = CreateUserDto {
         name: "Alice".to_string(),
@@ -116,7 +116,7 @@ async fn test_body_attribute() {
 
 #[tokio_localset_test::localset_test]
 async fn test_query_attribute() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     let resp = server
         .client()
@@ -132,7 +132,7 @@ async fn test_query_attribute() {
 
 #[tokio_localset_test::localset_test]
 async fn test_param_attribute() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     let resp = server
         .client()
@@ -148,7 +148,7 @@ async fn test_param_attribute() {
 
 #[tokio_localset_test::localset_test]
 async fn test_query_struct_attribute() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     let resp = server
         .client()
@@ -164,7 +164,7 @@ async fn test_query_struct_attribute() {
 
 #[tokio_localset_test::localset_test]
 async fn test_default_values() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     // Test with no query params - should use defaults
     let resp = server
@@ -205,7 +205,7 @@ async fn test_default_values() {
 
 #[tokio_localset_test::localset_test]
 async fn test_mixed_attributes() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     let dto = CreateUserDto {
         name: "Bob".to_string(),
@@ -227,7 +227,7 @@ async fn test_mixed_attributes() {
 
 #[tokio_localset_test::localset_test]
 async fn test_binary_upload() {
-    let server = TestServer::start(AttributeModule::module_definition()).await;
+    let server = TestServer::start(AttributeModule).await;
 
     // Create some binary data
     let binary_data = vec![0u8, 1, 2, 3, 4, 5, 255, 128, 64];

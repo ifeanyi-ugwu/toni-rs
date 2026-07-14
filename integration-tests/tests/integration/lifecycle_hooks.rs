@@ -60,7 +60,7 @@ impl HookModule {
 async fn startup_hooks_fire_in_order() {
     get_log().lock().unwrap().clear();
 
-    let mut app = ToniFactory::create(HookModule::module_definition()).await;
+    let mut app = ToniFactory::create(HookModule).await;
     app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
         .unwrap();
     app.bind().await.unwrap();

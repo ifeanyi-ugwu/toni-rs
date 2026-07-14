@@ -46,7 +46,7 @@ async fn tower_layer_adds_response_header() {
         }
     }
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/ping"))
@@ -91,7 +91,7 @@ async fn tower_layer_cors_permissive() {
         }
     }
 
-    let server = TestServer::start(CorsModule::module_definition()).await;
+    let server = TestServer::start(CorsModule).await;
     let resp = server
         .client()
         .get(server.url("/api/data"))
@@ -142,7 +142,7 @@ async fn tower_layer_request_body_round_trip() {
         }
     }
 
-    let server = TestServer::start(EchoModule::module_definition()).await;
+    let server = TestServer::start(EchoModule).await;
     let payload = json!({"message": "hello tower", "count": 42});
 
     let resp = server
@@ -270,7 +270,7 @@ async fn tower_layer_reads_toni_extensions() {
         }
     }
 
-    let server = TestServer::start(ExtModule::module_definition()).await;
+    let server = TestServer::start(ExtModule).await;
     let resp = server
         .client()
         .get(server.url("/ext"))
@@ -324,7 +324,7 @@ async fn tower_service_builder_composition() {
         }
     }
 
-    let server = TestServer::start(ComposedModule::module_definition()).await;
+    let server = TestServer::start(ComposedModule).await;
     let resp = server
         .client()
         .get(server.url("/composed"))
@@ -381,7 +381,7 @@ async fn tower_and_toni_middleware_interleaved() {
         }
     }
 
-    let server = TestServer::start(InterleavedModule::module_definition()).await;
+    let server = TestServer::start(InterleavedModule).await;
     let resp = server
         .client()
         .get(server.url("/interleaved"))
@@ -431,7 +431,7 @@ async fn tower_compression_layer_transforms_body() {
         }
     }
 
-    let server = TestServer::start(CompressModule::module_definition()).await;
+    let server = TestServer::start(CompressModule).await;
 
     // Disable auto-decompression so we can inspect Content-Encoding directly.
     let client = reqwest::Client::builder().no_gzip().build().unwrap();

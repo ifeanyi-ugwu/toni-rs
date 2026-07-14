@@ -42,7 +42,7 @@ struct CountModule;
 async fn ws_stream_handler_delivers_all_items_in_order() {
     use tokio_tungstenite::tungstenite::Message;
 
-    let server = TestServer::start(CountModule::module_definition()).await;
+    let server = TestServer::start(CountModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/ws-stream", server.port);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();

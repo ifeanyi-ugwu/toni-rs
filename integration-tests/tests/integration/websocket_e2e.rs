@@ -171,7 +171,7 @@ struct PingModule;
 /// Uses the simple `handle_connection()` path (no BroadcastModule).
 #[tokio_localset_test::localset_test]
 async fn websocket_echo_end_to_end() {
-    let server = TestServer::start(EchoModule::module_definition()).await;
+    let server = TestServer::start(EchoModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/echo", server.port);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -194,7 +194,7 @@ async fn websocket_echo_end_to_end() {
 /// self-sufficiency guarantee: `#[websocket_gateway]` alone is a valid gateway.
 #[tokio_localset_test::localset_test]
 async fn websocket_bare_gateway_accepts_connection() {
-    let server = TestServer::start(BareModule::module_definition()).await;
+    let server = TestServer::start(BareModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/bare", server.port);
 
     let (ws, response) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -206,7 +206,7 @@ async fn websocket_bare_gateway_accepts_connection() {
 /// the connection-hook macros stand on their own, separate from the subscription router.
 #[tokio_localset_test::localset_test]
 async fn websocket_on_connect_without_subscriptions_fires() {
-    let server = TestServer::start(HookOnlyModule::module_definition()).await;
+    let server = TestServer::start(HookOnlyModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/hook-only", server.port);
 
     let (ws, response) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -231,7 +231,7 @@ async fn websocket_on_connect_without_subscriptions_fires() {
 /// proving it has passed `complete_connect()` and is registered in `ConnectionManager`.
 #[tokio_localset_test::localset_test]
 async fn websocket_broadcast_end_to_end() {
-    let server = TestServer::start(RoomModule::module_definition()).await;
+    let server = TestServer::start(RoomModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/room", server.port);
 
     let (mut client_a, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -334,7 +334,7 @@ struct GatewayInjectionModule;
 ///      `ConnectionManager` as the live gateway.
 #[tokio_localset_test::localset_test]
 async fn gateway_injected_into_rest_controller() {
-    let server = TestServer::start(GatewayInjectionModule::module_definition()).await;
+    let server = TestServer::start(GatewayInjectionModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/events", server.port);
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -379,7 +379,7 @@ async fn websocket_separate_port_end_to_end() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(PingModule::module_definition()).await;
+        let mut app = ToniFactory::create(PingModule).await;
         app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
@@ -427,7 +427,7 @@ async fn separate_port_close_stops_ws_server() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(PingModule::module_definition()).await;
+        let mut app = ToniFactory::create(PingModule).await;
         app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
@@ -512,7 +512,7 @@ async fn gateway_port_zero_binds_separately_from_http_port_zero() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(ZeroPortModule::module_definition()).await;
+        let mut app = ToniFactory::create(ZeroPortModule).await;
         app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())

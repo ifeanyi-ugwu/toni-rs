@@ -44,7 +44,7 @@ async fn middleware_http_error_preserves_status() {
         }
     }
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/ping"))
@@ -86,7 +86,7 @@ async fn middleware_http_error_unauthorized() {
         }
     }
 
-    let server = TestServer::start(AuthModule::module_definition()).await;
+    let server = TestServer::start(AuthModule).await;
     let resp = server
         .client()
         .get(server.url("/secret"))

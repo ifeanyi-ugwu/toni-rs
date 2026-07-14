@@ -81,7 +81,9 @@ struct Bound {
     http_addr: std::net::SocketAddr,
 }
 
-async fn start(module: toni::module_helpers::module_enum::ModuleDefinition) -> Bound {
+async fn start(
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+) -> Bound {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
@@ -104,7 +106,7 @@ async fn http_get_path_param_query_route_through_rocket() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(AppModule::module_definition()).await;
+            let bound = start(AppModule).await;
             let base = format!("http://{}", bound.http_addr);
             let client = reqwest::Client::new();
 
@@ -147,7 +149,7 @@ async fn http_post_buffered_body_works() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(AppModule::module_definition()).await;
+            let bound = start(AppModule).await;
             let base = format!("http://{}", bound.http_addr);
             let client = reqwest::Client::new();
 
@@ -181,7 +183,7 @@ async fn ws_same_port_upgrade_and_echo() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(AppModule::module_definition()).await;
+            let bound = start(AppModule).await;
             let url = format!("ws://{}/ws", bound.http_addr);
 
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();

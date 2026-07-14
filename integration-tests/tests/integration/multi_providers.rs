@@ -66,7 +66,7 @@ async fn multi_type_path_collects_all_contributions() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/plugins"))
@@ -127,7 +127,7 @@ async fn multi_factory_closure_collects_contributions() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/greeters"))
@@ -220,7 +220,7 @@ async fn multi_single_contribution_is_vec_of_one() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/single"))
@@ -277,7 +277,7 @@ async fn multi_raw_value_contributes_to_collection() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/named"))
@@ -351,7 +351,7 @@ async fn multi_existing_reuses_registered_singleton() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/existing"))
@@ -424,7 +424,7 @@ async fn multi_existing_string_token_with_explicit_type() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/str"))
@@ -495,7 +495,7 @@ async fn multi_provider_useclass_collects_contributions() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server.client().get(server.url("/uc")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();

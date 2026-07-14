@@ -279,7 +279,7 @@ async fn enhancers_execution_order() {
         }
     }
 
-    let server = TestServer::start(EnhancerModule::module_definition()).await;
+    let server = TestServer::start(EnhancerModule).await;
 
     tracker.clear();
     let resp = server
@@ -369,7 +369,7 @@ async fn guard_authorization() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     tracker.clear();
     let resp = server
@@ -448,7 +448,7 @@ async fn di_in_enhancers() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/api/test"))
@@ -510,7 +510,7 @@ async fn app_token_global_enhancers() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     tracker.clear();
     let resp = server
         .client()

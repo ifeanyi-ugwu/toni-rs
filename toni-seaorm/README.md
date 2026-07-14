@@ -42,9 +42,12 @@ Declare `DatabaseConnection` as a field in any injectable:
 ```rust
 use toni_seaorm::{DatabaseConnection, DbErr, EntityTrait};
 
-#[injectable(pub struct UserService {
+#[injectable]
+pub struct UserService {
+    #[inject]
     db: DatabaseConnection,
-})]
+}
+
 impl UserService {
     pub async fn find_all(&self) -> Result<Vec<user::Model>, DbErr> {
         user::Entity::find().all(&self.db).await
@@ -63,9 +66,12 @@ impl UserService {
 SeaORM's API is entity-centric (`user::Entity::find().all(&db)`) rather than repository-centric, so `toni-seaorm` does not provide a `Repository<E>` wrapper — it would only obscure the query builder. If you want a repository layer, write one with `#[injectable]`:
 
 ```rust
-#[injectable(pub struct UserRepository {
+#[injectable]
+pub struct UserRepository {
+    #[inject]
     db: DatabaseConnection,
-})]
+}
+
 impl UserRepository {
     pub async fn find_active(&self) -> Result<Vec<user::Model>, DbErr> {
         user::Entity::find()

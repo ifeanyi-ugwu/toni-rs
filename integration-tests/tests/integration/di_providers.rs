@@ -24,7 +24,7 @@ async fn provider_value_injects_constant() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/port"))
@@ -64,7 +64,7 @@ async fn provider_factory_sync_without_deps() {
     impl TestModule {}
 
     CALL_COUNT.store(0, Ordering::SeqCst);
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -115,7 +115,7 @@ async fn provider_factory_sync_with_deps() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -167,7 +167,7 @@ async fn provider_factory_async_with_deps() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -235,7 +235,7 @@ async fn provider_alias_creates_alternate_token() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -301,7 +301,7 @@ async fn provider_token_for_custom_types() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -412,7 +412,7 @@ async fn all_provider_variants_work_together() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))

@@ -73,7 +73,7 @@ impl Guard<HttpContext> for DenyGuard {
 }
 
 async fn start_with_catchers(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
@@ -120,7 +120,7 @@ async fn catch_handler_intercepts_framework_error() {
     #[module(controllers: [CatchTestController], providers: [])]
     impl CatchTestModule {}
 
-    let addr = start_with_catchers(CatchTestModule::module_definition()).await;
+    let addr = start_with_catchers(CatchTestModule).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -157,7 +157,7 @@ async fn non_matching_catch_falls_through() {
     #[module(controllers: [FallthroughController], providers: [])]
     impl FallthroughModule {}
 
-    let addr = start_with_catchers(FallthroughModule::module_definition()).await;
+    let addr = start_with_catchers(FallthroughModule).await;
 
     let client = reqwest::Client::new();
     let resp = client

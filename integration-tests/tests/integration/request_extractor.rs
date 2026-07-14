@@ -57,7 +57,7 @@ impl RequestExtractorModule {}
 
 #[tokio_localset_test::localset_test]
 async fn request_extractor_variants() {
-    let server = TestServer::start(RequestExtractorModule::module_definition()).await;
+    let server = TestServer::start(RequestExtractorModule).await;
 
     // method with no Request parameter
     let resp = server

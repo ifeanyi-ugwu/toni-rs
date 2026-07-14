@@ -43,9 +43,12 @@ Declare the generated client as a field in any injectable:
 ```rust
 use db::PrismaClient;
 
-#[injectable(pub struct UserService {
+#[injectable]
+pub struct UserService {
+    #[inject]
     db: PrismaClient,
-})]
+}
+
 impl UserService {
     pub async fn find_all(&self) -> Vec<db::user::Data> {
         self.db.user().find_many(vec![]).exec().await.unwrap()

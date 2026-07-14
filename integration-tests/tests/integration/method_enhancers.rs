@@ -237,7 +237,9 @@ async fn pick_free_port() -> u16 {
     port
 }
 
-async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
+async fn start_rpc_server(
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+) -> u16 {
     use toni::toni_factory::ToniFactory;
     let port = pick_free_port().await;
     let local = tokio::task::LocalSet::new();
@@ -302,7 +304,7 @@ async fn ws_method_level_enhancers_work() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 
-    let server = TestServer::start(WsMethodEnhancersModule::module_definition()).await;
+    let server = TestServer::start(WsMethodEnhancersModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/ws-method-enhancers", server.port);
 
     // --- With x-allow: ok ---
@@ -398,7 +400,7 @@ async fn ws_method_level_enhancers_work() {
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
 #[tokio_localset_test::localset_test]
 async fn rpc_method_level_enhancers_work() {
-    let port = start_rpc_server(RpcMethodEnhancersModule::module_definition()).await;
+    let port = start_rpc_server(RpcMethodEnhancersModule).await;
 
     let resp = tcp_rpc(port, "rpc.all", serde_json::json!({"allow": "ok"})).await;
     assert_eq!(resp["response"], "prefixed:all-ok");

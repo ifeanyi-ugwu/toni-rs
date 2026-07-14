@@ -79,9 +79,7 @@ struct AppModule {}
 async fn main() {
     println!("🔧 #[injectable] field injection\n");
 
-    let app = ToniFactory::new()
-        .create_with(AppModule::module_definition())
-        .await;
+    let app = ToniFactory::new().create_with(AppModule).await;
 
     let greeter = app
         .get::<Greeter>()

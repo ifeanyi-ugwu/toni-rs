@@ -167,7 +167,7 @@ fn main() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut app = ToniFactory::create(AppModule::module_definition()).await;
+        let mut app = ToniFactory::create(AppModule).await;
         app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
             .unwrap();
         app.start().await.expect("failed to start");

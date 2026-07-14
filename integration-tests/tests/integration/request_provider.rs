@@ -28,7 +28,7 @@ impl TestModule {}
 
 #[tokio_localset_test::localset_test]
 async fn request_auto_injected_without_providers_entry() {
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     let resp = server
         .client()

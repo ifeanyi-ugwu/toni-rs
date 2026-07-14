@@ -234,7 +234,7 @@ struct NewCtorModule {}
 
 #[tokio_localset_test::localset_test]
 async fn new_ctor_injects_without_storing() {
-    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    let app = ToniFactory::create_application_context(NewCtorModule).await;
 
     // Server was built via Self::new(config) — config injected, only port kept.
     let server: Server = app
@@ -247,7 +247,7 @@ async fn new_ctor_injects_without_storing() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn new_ctor_built_guard_still_auto_detects_role() {
-    let server = TestServer::start(NewCtorModule::module_definition()).await;
+    let server = TestServer::start(NewCtorModule).await;
 
     let resp = server
         .client()
@@ -274,7 +274,7 @@ async fn new_ctor_built_guard_still_auto_detects_role() {
 
 #[tokio_localset_test::localset_test]
 async fn new_ctor_transient_scope_resolves() {
-    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    let app = ToniFactory::create_application_context(NewCtorModule).await;
     // Transient is resolvable through the application context; the constructor must have run.
     let t: TransientServer = app
         .get::<TransientServer>()
@@ -286,7 +286,7 @@ async fn new_ctor_transient_scope_resolves() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn new_ctor_request_scope_resolves_per_request() {
-    let server = TestServer::start(NewCtorModule::module_definition()).await;
+    let server = TestServer::start(NewCtorModule).await;
     let resp = server
         .client()
         .get(server.url("/req/port"))
@@ -304,7 +304,7 @@ async fn new_ctor_request_scope_resolves_per_request() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn new_ctor_can_inject_request_scoped_dependency() {
-    let server = TestServer::start(NewCtorModule::module_definition()).await;
+    let server = TestServer::start(NewCtorModule).await;
     // ReqFacade's #[new] injects the request-scoped ReqServer — resolves only because the
     // constructor bridge threads the request context.
     let resp = server
@@ -319,7 +319,7 @@ async fn new_ctor_can_inject_request_scoped_dependency() {
 
 #[tokio_localset_test::localset_test]
 async fn new_ctor_builds_non_default_field() {
-    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    let app = ToniFactory::create_application_context(NewCtorModule).await;
     // `Handle` has no `Default`; the field is built solely by the constructor. Resolving proves the
     // dead field-injection path compiles without a `Default` bound and the constructor runs.
     let holder: ConnHolder = app
@@ -331,7 +331,7 @@ async fn new_ctor_builds_non_default_field() {
 
 #[tokio_localset_test::localset_test]
 async fn new_ctor_strips_inject_attr_from_params() {
-    let app = ToniFactory::create_application_context(NewCtorModule::module_definition()).await;
+    let app = ToniFactory::create_application_context(NewCtorModule).await;
     let server: ExplicitInjectServer = app
         .get::<ExplicitInjectServer>()
         .await

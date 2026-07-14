@@ -99,6 +99,12 @@ let members = self.broadcast.get_room_clients("lobby").await;
 
 ```rust
 #[websocket_gateway("/chat")]
+pub struct ChatGateway {
+    #[inject]
+    broadcast: RedisBroadcastService,
+}
+
+#[subscriptions]
 impl ChatGateway {
     #[subscribe_message("join")]
     async fn on_join(&self, client: WsClient, _msg: WsMessage) -> WsHandlerResult {
@@ -107,7 +113,7 @@ impl ChatGateway {
             .to_room("lobby")
             .send_event("user.joined", &client.id)
             .await?;
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 
     #[subscribe_message("message")]
@@ -117,7 +123,7 @@ impl ChatGateway {
             .to_room("lobby")
             .send_event("message", &text)
             .await?;
-        Ok(None)
+        Ok(WsHandlerOutput::Empty)
     }
 }
 ```

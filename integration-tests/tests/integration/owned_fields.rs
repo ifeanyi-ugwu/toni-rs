@@ -191,7 +191,7 @@ impl TestModule {}
 async fn test_owned_fields_runtime() {
     use toni::toni_factory::ToniFactory;
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
 
     let standalone = app
         .get::<StandaloneService>()

@@ -22,7 +22,7 @@ impl StaticModule {}
 
 #[tokio_localset_test::localset_test]
 async fn static_method_controller() {
-    let server = TestServer::start(StaticModule::module_definition()).await;
+    let server = TestServer::start(StaticModule).await;
 
     let resp = server
         .client()
@@ -75,7 +75,7 @@ impl MixedModule {}
 
 #[tokio_localset_test::localset_test]
 async fn mixed_static_and_instance_methods() {
-    let server = TestServer::start(MixedModule::module_definition()).await;
+    let server = TestServer::start(MixedModule).await;
 
     let resp = server
         .client()
@@ -112,7 +112,7 @@ impl RequestScopedStaticModule {}
 
 #[tokio_localset_test::localset_test]
 async fn request_scoped_static_methods() {
-    let server = TestServer::start(RequestScopedStaticModule::module_definition()).await;
+    let server = TestServer::start(RequestScopedStaticModule).await;
 
     let resp = server
         .client()
@@ -144,7 +144,7 @@ impl AsyncStaticModule {}
 
 #[tokio_localset_test::localset_test]
 async fn async_static_methods() {
-    let server = TestServer::start(AsyncStaticModule::module_definition()).await;
+    let server = TestServer::start(AsyncStaticModule).await;
 
     let resp = server
         .client()

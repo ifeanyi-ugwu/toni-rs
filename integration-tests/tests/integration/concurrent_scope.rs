@@ -38,7 +38,7 @@ async fn request_scoped_instances_are_isolated_under_concurrency() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     const N: usize = 20;
     let futs: Vec<_> = (0..N)

@@ -149,7 +149,7 @@ async fn app_token_enhancers_with_di() {
     TRACKER.set(ExecutionTracker::new()).ok();
     let tracker = get_tracker();
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     tracker.clear();
     let resp = server

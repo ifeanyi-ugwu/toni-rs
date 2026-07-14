@@ -152,7 +152,7 @@ mod di_tests {
 
     #[tokio_localset_test::localset_test]
     async fn broadcast_module_provides_broadcast_service() {
-        let app = ToniFactory::create(WsTestModule::module_definition()).await;
+        let app = ToniFactory::create(WsTestModule).await;
         let result = app.get::<BroadcastService>().await;
         assert!(
             result.is_ok(),
@@ -163,7 +163,7 @@ mod di_tests {
 
     #[tokio_localset_test::localset_test]
     async fn broadcast_service_can_send_to_connected_client() {
-        let app = ToniFactory::create(WsTestModule::module_definition()).await;
+        let app = ToniFactory::create(WsTestModule).await;
         let bs = app
             .get::<BroadcastService>()
             .await

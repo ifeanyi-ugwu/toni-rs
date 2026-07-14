@@ -69,7 +69,7 @@ impl ErrorObserver for PanickingObserver {
 }
 
 async fn start_app(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     observers: Vec<Arc<dyn ErrorObserver>>,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
@@ -118,7 +118,7 @@ async fn panicking_handler_renders_500_via_panic_recovered() {
         captured_segment: captured.clone(),
     });
 
-    let addr = start_app(PanicModule::module_definition(), vec![observer]).await;
+    let addr = start_app(PanicModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/boom", addr))
         .await
@@ -187,7 +187,7 @@ async fn panicking_observer_does_not_break_dispatch() {
         captured_segment: Arc::new(std::sync::Mutex::new(None)),
     });
 
-    let addr = start_app(GuardedModule::module_definition(), vec![panicker, counter]).await;
+    let addr = start_app(GuardedModule, vec![panicker, counter]).await;
 
     let resp = reqwest::get(format!("http://{}/api/protected", addr))
         .await
@@ -240,7 +240,7 @@ async fn panicking_guard_renders_500_via_panic_recovered() {
         captured_segment: captured.clone(),
     });
 
-    let addr = start_app(PanicGuardModule::module_definition(), vec![observer]).await;
+    let addr = start_app(PanicGuardModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/guarded", addr))
         .await
@@ -301,7 +301,7 @@ async fn panicking_interceptor_renders_500_via_panic_recovered() {
         captured_segment: captured.clone(),
     });
 
-    let addr = start_app(PanicInterceptorModule::module_definition(), vec![observer]).await;
+    let addr = start_app(PanicInterceptorModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/intercepted", addr))
         .await
@@ -359,7 +359,7 @@ async fn panicking_pipe_renders_500_via_panic_recovered() {
         captured_segment: captured.clone(),
     });
 
-    let addr = start_app(PanicPipeModule::module_definition(), vec![observer]).await;
+    let addr = start_app(PanicPipeModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/piped", addr))
         .await
@@ -447,7 +447,7 @@ async fn panicking_error_handler_continues_chain() {
         segments: segments.clone(),
     });
 
-    let addr = start_app(PanicEhModule::module_definition(), vec![observer]).await;
+    let addr = start_app(PanicEhModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/eh", addr))
         .await
@@ -529,7 +529,7 @@ async fn panicking_renderer_falls_back_to_safe_envelope() {
         captured_segment: captured.clone(),
     });
 
-    let addr = start_app(RenderPanicModule::module_definition(), vec![observer]).await;
+    let addr = start_app(RenderPanicModule, vec![observer]).await;
 
     let resp = reqwest::get(format!("http://{}/api/render-boom", addr))
         .await

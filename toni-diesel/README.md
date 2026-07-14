@@ -43,9 +43,12 @@ Declare the pool as a field in any injectable and acquire connections with `.get
 ```rust
 use toni_diesel::{DieselError, PgPool, RunQueryDsl, prelude::*};
 
-#[injectable(pub struct UserService {
+#[injectable]
+pub struct UserService {
+    #[inject]
     pool: PgPool,
-})]
+}
+
 impl UserService {
     pub async fn find_all(&self) -> Result<Vec<User>, DieselError> {
         use crate::schema::users::dsl::*;

@@ -303,16 +303,11 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         #user_impl_block
 
         impl #input_ident {
-            pub fn module_definition() -> ::toni::module_helpers::module_enum::ModuleDefinition {
-                let app_module = Self;
-                ::toni::module_helpers::module_enum::ModuleDefinition::DefaultModule(Box::new(app_module))
-            }
             pub fn new() -> Self {
                 Self
             }
         }
 
-        // Implement From to allow passing module directly without .module_definition()
         impl From<#input_ident> for ::toni::module_helpers::module_enum::ModuleDefinition {
             fn from(module: #input_ident) -> Self {
                 Self::DefaultModule(Box::new(module))

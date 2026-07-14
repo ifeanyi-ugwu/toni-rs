@@ -59,7 +59,7 @@ async fn main() {
     println!("GraphQL Playground: http://localhost:3000/graphql (open in browser)");
 
     // Create Toni app
-    let mut app = ToniFactory::create(AppModule::module_definition()).await;
+    let mut app = ToniFactory::create(AppModule).await;
 
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();

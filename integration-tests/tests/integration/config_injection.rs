@@ -92,7 +92,7 @@ async fn config_read_from_env_vars() {
     std::env::set_var("DATABASE_URL", "postgres://localhost/e2e_test");
     std::env::set_var("MAX_CONNECTIONS", "50");
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
 
     let resp = server
         .client()
@@ -142,7 +142,7 @@ async fn config_falls_back_to_defaults() {
     std::env::remove_var("DATABASE_URL");
     std::env::remove_var("MAX_CONNECTIONS");
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
 
     let resp = server
         .client()

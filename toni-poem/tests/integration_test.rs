@@ -96,7 +96,7 @@ struct Bound {
 }
 
 async fn start(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     with_ws_adapter: bool,
 ) -> Bound {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -128,7 +128,7 @@ async fn http_get_path_param_query_route_through_poem() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(HttpOnlyModule::module_definition(), false).await;
+            let bound = start(HttpOnlyModule, false).await;
             let base = format!("http://{}", bound.http_addr);
             let client = reqwest::Client::new();
 
@@ -171,7 +171,7 @@ async fn http_post_buffered_and_streaming_bodies() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(HttpOnlyModule::module_definition(), false).await;
+            let bound = start(HttpOnlyModule, false).await;
             let base = format!("http://{}", bound.http_addr);
             let client = reqwest::Client::new();
 
@@ -202,7 +202,7 @@ async fn ws_same_port_upgrade_and_echo() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(HttpOnlyModule::module_definition(), false).await;
+            let bound = start(HttpOnlyModule, false).await;
             let url = format!("ws://{}/ws", bound.http_addr);
 
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -223,7 +223,7 @@ async fn ws_separate_port_upgrade_and_echo() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bound = start(FullModule::module_definition(), true).await;
+            let bound = start(FullModule, true).await;
             let ws_addr = bound.ws_addr.expect("WS adapter not bound");
             let url = format!("ws://{}/separate", ws_addr);
 

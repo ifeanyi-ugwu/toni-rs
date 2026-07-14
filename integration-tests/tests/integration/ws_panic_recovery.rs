@@ -23,7 +23,7 @@ use crate::common::TestServer;
 /// Start an Axum-backed app with the supplied global error observers wired
 /// before bootstrap.
 async fn start_ws_server_with_observers(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     observers: Vec<Arc<dyn ErrorObserver>>,
 ) -> u16 {
     use toni::toni_factory::ToniFactory;
@@ -105,7 +105,7 @@ async fn ws_handler_panic_renders_envelope_and_keeps_connection_alive() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
-    let server = TestServer::start(PanicGatewayModule::module_definition()).await;
+    let server = TestServer::start(PanicGatewayModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/ws-panic-recovery", server.port);
 
     // Client A triggers the panic — receives the canonical envelope, not a Close.
@@ -192,9 +192,7 @@ async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_ws_server_with_observers(WsGuardPanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_ws_server_with_observers(WsGuardPanicModule, vec![observer]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-guard-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -261,11 +259,7 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(
-        WsInterceptorPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port = start_ws_server_with_observers(WsInterceptorPanicModule, vec![observer]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-interceptor-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -333,9 +327,7 @@ async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_ws_server_with_observers(WsPipePanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_ws_server_with_observers(WsPipePanicModule, vec![observer]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-pipe-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -397,11 +389,7 @@ async fn ws_error_handler_panic_continues_chain_to_default_rendering() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(
-        WsErrorHandlerPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port = start_ws_server_with_observers(WsErrorHandlerPanicModule, vec![observer]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-eh-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -476,9 +464,7 @@ async fn ws_renderer_panic_falls_back_to_safe_envelope() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_ws_server_with_observers(WsRenderPanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_ws_server_with_observers(WsRenderPanicModule, vec![observer]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-render-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();

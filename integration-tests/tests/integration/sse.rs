@@ -113,7 +113,7 @@ impl SseModule {}
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_headers() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let resp = server
         .client()
         .get(server.url("/sse/basic"))
@@ -152,7 +152,7 @@ async fn test_sse_headers() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_basic_wire_format() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let body = server
         .client()
         .get(server.url("/sse/basic"))
@@ -168,7 +168,7 @@ async fn test_sse_basic_wire_format() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_event_fields() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let body = server
         .client()
         .get(server.url("/sse/fields"))
@@ -187,7 +187,7 @@ async fn test_sse_event_fields() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_multiline_data() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let body = server
         .client()
         .get(server.url("/sse/multiline"))
@@ -204,7 +204,7 @@ async fn test_sse_multiline_data() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_fallible_stream() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let body = server
         .client()
         .get(server.url("/sse/fallible"))
@@ -220,7 +220,7 @@ async fn test_sse_fallible_stream() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_broadcaster_delivers_to_subscriber() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
 
     let live_url = server.url("/sse/live");
     let emit_url = server.url("/sse/emit");
@@ -255,7 +255,7 @@ async fn test_sse_broadcaster_delivers_to_subscriber() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_attr_macro_infallible() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let resp = server
         .client()
         .get(server.url("/sse/attr-basic"))
@@ -277,7 +277,7 @@ async fn test_sse_attr_macro_infallible() {
 
 #[tokio_localset_test::localset_test]
 async fn test_sse_attr_macro_fallible() {
-    let server = TestServer::start(SseModule::module_definition()).await;
+    let server = TestServer::start(SseModule).await;
     let body = server
         .client()
         .get(server.url("/sse/attr-fallible"))

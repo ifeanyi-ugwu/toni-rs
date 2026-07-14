@@ -52,9 +52,12 @@ Declare the pool as a field in any injectable:
 use sqlx::{PgPool, Row};
 use toni_sqlx::SqlxError;
 
-#[injectable(pub struct UserService {
+#[injectable]
+pub struct UserService {
+    #[inject]
     pool: PgPool,
-})]
+}
+
 impl UserService {
     pub async fn find_all(&self) -> Result<Vec<User>, SqlxError> {
         sqlx::query_as!(User, "SELECT id, name FROM users")

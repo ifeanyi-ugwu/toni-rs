@@ -99,9 +99,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Every connected WS client receives messages POSTed to /notify.");
     println!();
 
-    let mut app = ToniFactory::new()
-        .create_with(AppModule::module_definition())
-        .await;
+    let mut app = ToniFactory::new().create_with(AppModule).await;
 
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();

@@ -133,7 +133,7 @@ async fn provider_constructor_patterns() {
     )]
     impl ProviderPatternsModule {}
 
-    let server = TestServer::start(ProviderPatternsModule::module_definition()).await;
+    let server = TestServer::start(ProviderPatternsModule).await;
     let resp = server
         .client()
         .get(server.url("/providers/test"))
@@ -223,7 +223,7 @@ async fn controller_constructor_patterns() {
     )]
     impl ControllerPatternsModule {}
 
-    let server = TestServer::start(ControllerPatternsModule::module_definition()).await;
+    let server = TestServer::start(ControllerPatternsModule).await;
 
     let resp = server
         .client()
@@ -385,7 +385,7 @@ async fn constructor_param_injection_patterns() {
     )]
     impl ParamInjectionModule {}
 
-    let server = TestServer::start(ParamInjectionModule::module_definition()).await;
+    let server = TestServer::start(ParamInjectionModule).await;
 
     let resp = server
         .client()
