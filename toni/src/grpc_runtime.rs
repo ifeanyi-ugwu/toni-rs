@@ -320,7 +320,8 @@ pub async fn run_grpc_error_chain(
 }
 
 /// Wrap a future in `AssertUnwindSafe(...).catch_unwind()` and surface
-/// the panic payload as a [`PanicRecovered`] event scoped to the
+/// the panic payload as a [`PanicRecovered`](crate::errors::PanicRecovered)
+/// event scoped to the
 /// `HandlerBody` segment. Used by the macro around the user delegation
 /// inside a `#[grpc_methods]` proto method.
 ///

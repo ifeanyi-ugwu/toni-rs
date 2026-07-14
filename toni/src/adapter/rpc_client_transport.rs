@@ -23,12 +23,11 @@ use crate::rpc::{RpcClientError, RpcData};
 pub trait RpcClientTransport: Send + Sync + 'static {
     /// Establish the connection to the remote service.
     ///
-    /// Called automatically by [`ClientsModule`] during provider initialisation so
-    /// that connection failures surface at startup rather than on the first request.
-    /// Implementations that use lazy connections (e.g. reconnect on demand) may
-    /// leave this as the default no-op.
-    ///
-    /// [`ClientsModule`]: crate::rpc::ClientsModule
+    /// Called automatically by [`RpcClient`](crate::rpc::RpcClient) at
+    /// application bootstrap so that connection failures surface at startup
+    /// rather than on the first request. Implementations that use lazy
+    /// connections (e.g. reconnect on demand) may leave this as the default
+    /// no-op.
     async fn connect(&self) -> Result<(), RpcClientError> {
         Ok(())
     }

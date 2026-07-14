@@ -16,7 +16,8 @@ pub struct HttpProviderContext<'a> {
 
 /// Describes the execution context under which a provider's `execute` is called.
 ///
-/// Passed to [`Provider::execute`] so request-scoped providers can inspect the
+/// Passed to [`Provider::execute`](crate::traits_helpers::Provider::execute)
+/// so request-scoped providers can inspect the
 /// active protocol without an `Option<&HttpRequest>` that leaks HTTP details into
 /// every provider signature.
 #[derive(Clone, Copy)]

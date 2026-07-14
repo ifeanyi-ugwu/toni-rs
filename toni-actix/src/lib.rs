@@ -8,15 +8,15 @@
 //! ## Usage
 //!
 //! ```ignore
-//! use toni::prelude::*;
 //! use toni_actix::ActixAdapter;
 //!
 //! #[actix_web::main]
 //! async fn main() {
-//!     let adapter = ActixAdapter::new();
-//!
-//!     let mut app = ToniFactory::create(AppModule::module_definition(), adapter);
-//!     app.listen(3000, "127.0.0.1").await;
+//!     let mut app = ToniFactory::new()
+//!         .create_with(AppModule::module_definition())
+//!         .await;
+//!     app.use_http_adapter(ActixAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     app.start().await.unwrap();
 //! }
 //! ```
 

@@ -121,7 +121,7 @@ impl From<crate::websocket::BroadcastError> for WsError {
     }
 }
 
-/// Lift any [`toni::Error`] into [`WsError::AppError`]. Handlers returning
+/// Lift any [`toni::Error`](crate::Error) into [`WsError::AppError`]. Handlers returning
 /// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
 /// conversion at the dispatcher boundary.
 impl<E: Error> From<E> for WsError {

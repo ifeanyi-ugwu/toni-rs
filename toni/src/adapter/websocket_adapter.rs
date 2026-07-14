@@ -98,13 +98,14 @@ impl WsConnectionCallbacks {
 /// register callbacks, then calls
 /// [`into_lifecycle_handles`](Self::into_lifecycle_handles) once with
 /// every unique port — the adapter consumes itself and returns one
-/// [`WsLifecycleHandle`] per port, each owning its concrete state. The
-/// trait carries no lifecycle method past that consuming call, and the
-/// framework's `*LifecycleHandle` types don't call back into the
-/// adapter to shut it down.
+/// [`WsLifecycleHandle`](crate::adapter::WsLifecycleHandle) per port,
+/// each owning its concrete state. The trait carries no lifecycle
+/// method past that consuming call, and the framework's
+/// `*LifecycleHandle` types don't call back into the adapter to shut
+/// it down.
 ///
 /// Same-port (HTTP upgrade) gateways are handled by
-/// [`HttpAdapter::bind_ws`].
+/// [`HttpAdapter::bind_ws`](crate::adapter::HttpAdapter::bind_ws).
 #[async_trait]
 pub trait WebSocketAdapter: Send + Sync + 'static {
     /// Register a gateway path for `port`, storing `callbacks` for each
@@ -119,7 +120,8 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
     }
 
     /// Consume the adapter, bind every requested port, and return one
-    /// [`WsLifecycleHandle`] per port. The handles share whatever
+    /// [`WsLifecycleHandle`](crate::adapter::WsLifecycleHandle) per
+    /// port. The handles share whatever
     /// shutdown signal the adapter uses internally (a single
     /// `send(true)` on a watch channel typically); calling `shutdown` on
     /// any handle stops every port.

@@ -12,9 +12,13 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let adapter = AxumAdapter::new();
-//!     let mut app = ToniFactory::create(AppModule::module_definition(), adapter).await;
-//!     app.listen(3000, "127.0.0.1").await;
+//!     let mut app = ToniFactory::new()
+//!         .create_with(AppModule::module_definition())
+//!         .await;
+//!     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     // Only needed for `#[websocket_gateway(port = N)]` gateways.
+//!     app.use_websocket_adapter(AxumAdapter::new()).unwrap();
+//!     app.start().await.unwrap();
 //! }
 //! ```
 

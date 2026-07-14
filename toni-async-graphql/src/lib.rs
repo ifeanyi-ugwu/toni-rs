@@ -18,11 +18,10 @@
 //! ## Quick Start
 //!
 //! ```ignore
-//! use toni::ToniFactory;
+//! use toni::{module, ToniFactory};
 //! use toni_axum::AxumAdapter;
 //! use toni_async_graphql::{GraphQLModule, DefaultContextBuilder, async_graphql::*};
 //!
-//! // Define your schema
 //! struct Query;
 //!
 //! #[Object]
@@ -32,26 +31,22 @@
 //!     }
 //! }
 //!
+//! fn build_graphql_module()
+//! -> GraphQLModule<Query, EmptyMutation, EmptySubscription, DefaultContextBuilder> {
+//!     let schema = Schema::build(Query, EmptyMutation, EmptySubscription).finish();
+//!     GraphQLModule::for_root(schema, DefaultContextBuilder)
+//! }
+//!
+//! #[module(imports: [build_graphql_module()], controllers: [], providers: [], exports: [])]
+//! impl AppModule {}
+//!
 //! #[tokio::main]
 //! async fn main() {
-//!     // Build schema
-//!     let schema = Schema::build(Query, EmptyMutation, EmptySubscription).finish();
-//!
-//!     // Create GraphQL module
-//!     let graphql_module = GraphQLModule::for_root(schema, DefaultContextBuilder);
-//!
-//!     // Create Toni app
-//!     let adapter = AxumAdapter::new();
-//!
-//!     let mut app = ToniFactory::create(
-//!         AppModule {
-//!             imports: vec![graphql_module.into()],
-//!             ..Default::default()
-//!         },
-//!         adapter
-//!     ).await;
-//!
-//!     app.listen(3000, "127.0.0.1").await;
+//!     let mut app = ToniFactory::new()
+//!         .create_with(AppModule::module_definition())
+//!         .await;
+//!     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     app.start().await.unwrap();
 //! }
 //! ```
 //!

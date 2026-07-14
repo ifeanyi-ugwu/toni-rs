@@ -51,12 +51,11 @@ impl AppModule {}
 
 #[tokio::main]
 async fn main() {
-    let adapter = AxumAdapter::new();
-
-    let mut app = ToniFactory::create(AppModule::module_definition(), adapter)
+    let mut app = ToniFactory::new()
+        .create_with(AppModule::module_definition())
         .await;
-
-    app.listen(3000, "127.0.0.1").await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1").unwrap();
+    app.start().await.unwrap();
 }
 ```
 

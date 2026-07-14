@@ -31,7 +31,7 @@ pub type ShutdownCallback =
 /// Lifecycle handle for an HTTP adapter. Constructed by each adapter
 /// crate's `into_lifecycle` implementation; owns the concrete state
 /// needed to serve and shut down. The orchestrator only sees the
-/// [`ServerLifecycle`] surface.
+/// `ServerLifecycle` surface.
 pub struct HttpLifecycleHandle {
     local_addr: SocketAddr,
     serve: Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
