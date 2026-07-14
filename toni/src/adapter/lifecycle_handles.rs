@@ -17,12 +17,7 @@ use std::pin::Pin;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::adapter::grpc_adapter::GrpcAdapter;
-use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
-use crate::adapter::rpc_adapter::{RpcAdapter, RpcMessageCallbacks};
 use crate::adapter::server_lifecycle::ServerLifecycle;
-use crate::adapter::websocket_adapter::{WebSocketAdapter, WsConnectionCallbacks};
-use std::sync::Arc;
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 

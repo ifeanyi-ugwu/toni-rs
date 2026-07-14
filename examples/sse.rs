@@ -113,7 +113,7 @@ impl SseController {
     /// Push (per-request): a background task drives this specific connection.
     #[get("/push")]
     async fn push(&self) -> impl IntoResponse {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<SseEvent>(16);
+        let (tx, rx) = tokio::sync::mpsc::channel::<SseEvent>(16);
 
         tokio::spawn(async move {
             for i in 0..5u32 {

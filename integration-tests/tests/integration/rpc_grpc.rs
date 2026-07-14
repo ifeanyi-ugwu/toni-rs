@@ -29,7 +29,7 @@ async fn grpc_adapter_seam_round_trip_and_shuts_down() {
 
     // Spin up tonic-health as our smoke-test service — anything tonic-shaped
     // would do, but `tonic_health` doesn't need protobuf codegen.
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
         .set_service_status("test.service", ServingStatus::Serving)
         .await;

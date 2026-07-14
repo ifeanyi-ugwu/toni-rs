@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::Error;
 use crate::context::{HandlerContext, RpcContext};
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RouteMetadata};

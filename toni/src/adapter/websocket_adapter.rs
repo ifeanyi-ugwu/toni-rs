@@ -6,7 +6,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::adapter::server_handle::ServerHandle;
 use crate::http_helpers::RequestPart;
 use crate::websocket::{WsError, WsMessage, WsSink};
 

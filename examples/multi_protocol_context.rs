@@ -33,7 +33,7 @@ use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::*;
 use toni_macros::{
-    injectable, module, new, patterns, rpc_controller, subscriptions, websocket_gateway,
+    injectable, module, patterns, rpc_controller, subscriptions, websocket_gateway,
 };
 
 // ---- one guard, three transport-shaped impls --------------------------------

@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -22,7 +20,7 @@ use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
+    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
     WsConnectionCallbacks,
 };
 

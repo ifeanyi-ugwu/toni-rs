@@ -1,4 +1,4 @@
-use toni::{module, toni_factory::ToniFactory, HttpAdapter};
+use toni::{module, toni_factory::ToniFactory};
 use toni_async_graphql::{prelude::*, DefaultContextBuilder};
 use toni_axum::AxumAdapter;
 

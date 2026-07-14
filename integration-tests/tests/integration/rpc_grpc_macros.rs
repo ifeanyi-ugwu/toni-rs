@@ -20,8 +20,7 @@ use std::time::Duration;
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
 use toni_macros::{
-    grpc_methods, grpc_service, injectable, module, new, use_error_handlers, use_guards,
-    use_interceptors,
+    grpc_methods, grpc_service, injectable, module, new,
 };
 
 mod orders_pb {

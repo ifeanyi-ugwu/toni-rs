@@ -54,7 +54,7 @@ pub use serde_json;
 pub use adapter::{
     AdapterContext, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,
     MessageCallbackResult, RequestHandler, RpcAdapter, RpcClientTransport, RpcLifecycleHandle,
-    RpcMessageCallbacks, ServerHandle, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
+    RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
 };
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
