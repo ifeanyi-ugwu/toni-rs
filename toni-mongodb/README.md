@@ -36,9 +36,12 @@ struct User {
     email: String,
 }
 
-#[injectable(pub struct UserService {
+#[injectable]
+pub struct UserService {
+    #[inject]
     db: Database,
-})]
+}
+
 impl UserService {
     pub async fn find_all(&self) -> Result<Vec<User>, MongoError> {
         let col: Collection<User> = self.db.collection("users");

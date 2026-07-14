@@ -29,9 +29,12 @@ Declare `ConnectionManager` as a field in any injectable. Use `AsyncCommands` to
 ```rust
 use toni_redis::{AsyncCommands, ConnectionManager, RedisResult};
 
-#[injectable(pub struct CacheService {
+#[injectable]
+pub struct CacheService {
+    #[inject]
     redis: ConnectionManager,
-})]
+}
+
 impl CacheService {
     pub async fn set(&self, key: &str, value: &str, ttl_secs: u64) -> RedisResult<()> {
         let mut conn = self.redis.clone();

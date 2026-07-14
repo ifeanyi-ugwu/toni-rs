@@ -57,12 +57,12 @@ impl AppModule {}
 
 #[tokio::main]
 async fn main() {
-    let adapter = AxumAdapter::new();
+    let mut app = ToniFactory::create(AppModule).await;
 
-    let mut app = ToniFactory::create(AppModule::module_definition(), adapter)
-        .await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
 
-    app.listen(3000, "127.0.0.1").await;
+    app.start().await.unwrap();
 }
 ```
 
@@ -74,7 +74,7 @@ Build GraphQL context with access to Toni's dependency injection:
 
 ```rust
 use toni_juniper::{ContextBuilder, juniper};
-use toni::{HttpRequest, injectable};
+use toni::{RequestPart, injectable};
 use async_trait::async_trait;
 
 // Define your context type
@@ -87,17 +87,19 @@ struct MyContext {
 impl juniper::Context for MyContext {}
 
 // Define your context builder as a Toni provider
-#[injectable(
-    pub struct _MyContextBuilder {
-        auth_service: _AuthService,      // Injected by Toni!
-        db_service: _DatabaseService,    // Injected by Toni!
-    }
-)]
+#[injectable]
+pub struct MyContextBuilder {
+    #[inject]
+    auth_service: AuthService,
+    #[inject]
+    db_service: DatabaseService,
+}
+
 #[async_trait]
-impl ContextBuilder for _MyContextBuilder {
+impl ContextBuilder for MyContextBuilder {
     type Context = MyContext;
 
-    async fn build(&self, req: &HttpRequest) -> Self::Context {
+    async fn build(&self, req: &RequestPart) -> Self::Context {
         MyContext {
             user_id: self.auth_service.verify_token(req),
             db: self.db_service.clone(),
@@ -109,7 +111,7 @@ impl ContextBuilder for _MyContextBuilder {
 #[module(
     imports: [],
     controllers: [],
-    providers: [_AuthService, _DatabaseService, _MyContextBuilder],
+    providers: [AuthService, DatabaseService, MyContextBuilder],
     exports: []
 )]
 pub struct AppModule;

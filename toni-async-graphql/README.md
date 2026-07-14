@@ -56,12 +56,12 @@ impl AppModule {}
 
 #[tokio::main]
 async fn main() {
-    let adapter = AxumAdapter::new();
+    let mut app = ToniFactory::create(AppModule).await;
 
-    let mut app = ToniFactory::create(AppModule::module_definition(), adapter)
-        .await;
+    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
+        .unwrap();
 
-    app.listen(3000, "127.0.0.1").await;
+    app.start().await.unwrap();
 }
 ```
 
@@ -73,19 +73,21 @@ Build GraphQL context with access to Toni's dependency injection:
 
 ```rust
 use toni_async_graphql::{ContextBuilder, async_graphql::Data};
-use toni::{HttpRequest, injectable};
+use toni::{RequestPart, injectable};
 use async_trait::async_trait;
 
 // Define your context builder as a Toni provider
-#[injectable(
-    pub struct _GraphQLContextBuilder {
-        auth_service: _AuthService,      // Injected by Toni!
-        database_service: _DatabaseService, // Injected by Toni!
-    }
-)]
+#[injectable]
+pub struct GraphQLContextBuilder {
+    #[inject]
+    auth_service: AuthService,
+    #[inject]
+    database_service: DatabaseService,
+}
+
 #[async_trait]
-impl ContextBuilder for _GraphQLContextBuilder {
-    async fn build(&self, req: &HttpRequest) -> Data {
+impl ContextBuilder for GraphQLContextBuilder {
+    async fn build(&self, req: &RequestPart) -> Data {
         let mut data = Data::default();
 
         // Add HTTP request
@@ -107,7 +109,7 @@ impl ContextBuilder for _GraphQLContextBuilder {
 #[module(
     imports: [],
     controllers: [],
-    providers: [_AuthService, _DatabaseService, _GraphQLContextBuilder],
+    providers: [AuthService, DatabaseService, GraphQLContextBuilder],
     exports: []
 )]
 pub struct AppModule;
