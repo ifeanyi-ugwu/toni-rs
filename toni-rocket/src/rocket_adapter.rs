@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
-use std::future::Future;
 use std::io::Cursor;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -23,7 +21,7 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WsConnectionCallbacks,
+    HttpResponse, MessageCallbackResult, RequestHandler, WsConnectionCallbacks,
 };
 
 use crate::rocket_websocket_adapter::{rocket_to_ws_message, ws_message_to_rocket};

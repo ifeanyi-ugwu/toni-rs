@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use parking_lot::RwLock;
 
-use crate::Error;
 use crate::context::{HandlerContext, WsContext};
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};

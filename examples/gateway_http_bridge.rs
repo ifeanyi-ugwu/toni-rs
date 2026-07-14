@@ -22,7 +22,7 @@
 
 use serde::Deserialize;
 use toni::extractors::Json;
-use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsError, WsMessage};
+use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsMessage};
 use toni::*;
 use toni_axum::AxumAdapter;
 use toni_macros::{module, new, subscriptions, websocket_gateway};

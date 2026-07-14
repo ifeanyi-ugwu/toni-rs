@@ -1,6 +1,6 @@
 use toni::{
     controller, extractors::Bytes, get, http_helpers::Body as ToniBody, injectable, module, post,
-    routes, HttpAdapter,
+    routes,
 };
 use toni_actix::ActixAdapter;
 

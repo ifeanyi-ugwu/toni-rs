@@ -8,7 +8,7 @@
 //!
 //! ```rust,ignore
 //! app.use_websocket_adapter(TungsteniteAdapter::new()).unwrap();
-//! app.listen(3000, "127.0.0.1").await;
+//! app.start().await.unwrap();
 //! // Gateways with port = 4000 automatically bind to 4000 via TungsteniteAdapter.
 //! ```
 

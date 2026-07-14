@@ -19,7 +19,6 @@ use crate::{
     adapter::{
         AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
-        lifecycle_handles::{GrpcLifecycleHandle, RpcLifecycleHandle, WsLifecycleHandle},
         server_lifecycle::ServerLifecycle,
     },
     application_context::ToniApplicationContext,

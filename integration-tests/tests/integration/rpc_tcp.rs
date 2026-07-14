@@ -24,9 +24,7 @@ use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni_macros::{
-    new, patterns, rpc_controller, use_error_handlers, use_guards, use_interceptors, use_pipes,
-};
+use toni_macros::{new, patterns, rpc_controller};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.

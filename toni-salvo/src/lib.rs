@@ -66,18 +66,17 @@
 //!
 //! ## Graceful shutdown
 //!
-//! `app.close()` (or any caller of `HttpAdapter::close` /
-//! `WebSocketAdapter::close`) flips a shared `tokio::sync::watch` channel,
-//! which a per-server task observes and forwards to
+//! `app.close()` flips a shared `tokio::sync::watch` channel, which a
+//! per-server task observes and forwards to
 //! `salvo::Server::handle().stop_graceful(None)`. Both the HTTP server and
 //! every separate-port WS listener stop in response to a single signal.
 //!
-//! ## Panics
+//! ## Bind failures
 //!
-//! `bind` for either adapter panics on bind failure (port in use, permission
-//! denied, etc.) — the framework's intentional fail-fast behavior. Adapter
-//! types themselves never panic at runtime; transport-level errors flow
-//! through `tracing::debug` and `tracing::warn` events.
+//! Bind failures (port in use, permission denied, etc.) surface as errors
+//! from `app.start()` — the framework's intentional fail-fast behavior.
+//! Adapter types themselves never panic at runtime; transport-level errors
+//! flow through `tracing::debug` and `tracing::warn` events.
 
 mod salvo_adapter;
 mod salvo_websocket_adapter;

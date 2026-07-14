@@ -107,7 +107,7 @@ impl std::error::Error for RpcError {
     }
 }
 
-/// Lift any [`toni::Error`] into [`RpcError::AppError`]. Handlers returning
+/// Lift any [`toni::Error`](crate::Error) into [`RpcError::AppError`]. Handlers returning
 /// `Result<T, MyDomainError>` use this via `?` and via the macro's auto-
 /// conversion at the dispatcher boundary.
 impl<E: Error> From<E> for RpcError {

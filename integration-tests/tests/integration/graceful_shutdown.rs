@@ -6,15 +6,12 @@
 //!   3. Runs the `on_module_destroy` lifecycle hook
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use toni::module;
 use toni::toni_factory::ToniFactory;
-use toni::websocket::{
-    BroadcastModule, BroadcastService, WsClient, WsError, WsHandlerResult, WsMessage,
-};
+use toni::websocket::{BroadcastModule, BroadcastService, WsClient, WsHandlerResult, WsMessage};
 use toni_axum::AxumAdapter;
 use toni_macros::{new, on_module_destroy, subscriptions, websocket_gateway};
 

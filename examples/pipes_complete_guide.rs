@@ -4,9 +4,12 @@
 //!
 //! ## Key Differences from NestJS:
 //!
-//! 1. **No Global Pipes**: Toni uses explicit `Validated<T>` instead of `app.useGlobalPipes()`
+//! 1. **Validation Lives in the Signature**: `Validated<T>` replaces the global
+//!    ValidationPipe as the idiomatic path
 //!    - WHY: Rust's type system makes validation part of the signature, not runtime magic
 //!    - BENEFIT: You SEE validation requirements in the function signature
+//!    - Global pipes exist (`factory.use_global_http_pipes(...)`) but validation
+//!      doesn't need one
 //!
 //! 2. **Extractors Replace Most Pipes**: `Path<i32>` = ParseIntPipe built-in
 //!    - WHY: Serde does parsing automatically based on type
@@ -16,9 +19,11 @@
 //!    - WHY: Validator crate + derive macros = compile-time safety
 //!    - BENEFIT: Can't forget to validate - compiler enforces it
 //!
-//! 4. **No @UsePipes() on Controllers**: Each handler declares its own requirements
-//!    - WHY: No controller-level inheritance - explicit per handler
-//!    - BENEFIT: Clear intent, no hidden behavior
+//! 4. **Pipes Are for Cross-Cutting Transforms**: `#[use_pipes(...)]` works at
+//!    method, controller, and global level (the @UsePipes() equivalent), but
+//!    parsing and validation rarely need it
+//!    - WHY: Extractors already cover the ParseIntPipe/ValidationPipe cases
+//!    - BENEFIT: Pipes stay reserved for genuine request transformation
 //!
 //! ## What You'll Learn:
 //!
@@ -28,7 +33,7 @@
 //! ✅ Optional values (equivalent to DefaultValuePipe)
 //! ✅ Custom validation (equivalent to custom pipes)
 //! ✅ Composition (equivalent to multiple @UsePipes)
-//! ✅ Why NO global pipes (and what to use instead)
+//! ✅ When to reach for pipes vs extractors
 
 use serde::Deserialize;
 use toni::{
@@ -36,7 +41,7 @@ use toni::{
     extractors::{Json, Path, Query, Validated},
     get,
     http_helpers::Body as ToniBody,
-    module, post, routes, HttpAdapter,
+    module, post, routes,
 };
 use validator::Validate;
 
@@ -200,6 +205,7 @@ struct SearchQuery {
 ///
 /// Toni Version 1: Use Option<T> + unwrap_or in handler
 /// Toni Version 2: Use serde default attribute
+#[allow(dead_code)] // shown for comparison; the route below uses ItemsQueryWithDefaults
 #[derive(Debug, Deserialize)]
 struct ItemsQuery {
     page: Option<u32>,  // None if not provided
@@ -501,10 +507,10 @@ impl ExamplesController {
 }
 
 // ============================================================================
-// SECTION 9: WHY NO GLOBAL PIPES?
+// SECTION 9: WHEN DO YOU ACTUALLY NEED PIPES?
 // ============================================================================
 
-/// NestJS Has Global Pipes:
+/// NestJS leans on a global ValidationPipe:
 /// ```typescript
 /// app.useGlobalPipes(new ValidationPipe({
 ///   whitelist: true,
@@ -513,7 +519,9 @@ impl ExamplesController {
 /// }));
 /// ```
 ///
-/// WHY TONI DOESN'T:
+/// Toni has the same machinery — `#[use_pipes(...)]` on methods and controllers,
+/// `factory.use_global_http_pipes(...)` at bootstrap — but validation doesn't
+/// need it:
 ///
 /// 1. **Type Safety**: In NestJS, validation happens at runtime. You can forget
 ///    to add @UsePipes() and data goes through unvalidated. In Toni, if you
@@ -523,16 +531,18 @@ impl ExamplesController {
 ///    `Validated<Json<CreateUserDto>>`, you KNOW validation happens. In NestJS,
 ///    it's hidden in app.ts far from the handler.
 ///
-/// 3. **Performance**: Global pipes run on EVERY request. Toni only validates
-///    when you explicitly use `Validated<T>`. No wasted CPU cycles.
+/// 3. **Performance**: A global validation pipe runs on EVERY request. With
+///    `Validated<T>`, validation runs only where declared. No wasted CPU cycles.
 ///
 /// 4. **No Runtime Reflection**: NestJS needs global pipes because TypeScript
 ///    types disappear at runtime. Rust types are REAL - they exist at runtime
 ///    and compile time.
 ///
-/// WHAT TO USE INSTEAD:
+/// WHAT PIPES ARE FOR:
 ///
-/// If you want cross-cutting concerns (logging, auth, rate limiting), use:
+/// Reach for `#[use_pipes]` / global pipes when a request transformation is
+/// genuinely cross-cutting — the same rewrite applied to many routes regardless
+/// of their body types. For other cross-cutting concerns, use:
 /// - **Middleware**: For request/response interception
 /// - **Guards**: For authorization checks
 /// - **Interceptors**: For response transformation
@@ -600,9 +610,9 @@ async fn main() -> anyhow::Result<()> {
 //    - NestJS: implements PipeTransform
 //    - Toni: #[serde(deserialize_with = "custom_fn")]
 //
-// 6. NO GLOBAL PIPES
+// 6. GLOBAL PIPES ARE OPT-IN, NOT THE DEFAULT PATH
 //    - NestJS: app.useGlobalPipes() for convenience
-//    - Toni: Explicit per-handler - compiler-enforced safety
+//    - Toni: use_global_http_pipes() exists, but Validated<T> covers validation
 
 // CHEAT SHEET:
 //
@@ -613,8 +623,8 @@ async fn main() -> anyhow::Result<()> {
 // | @Param('id')                            | Path<ParamsStruct>                 |
 // | @Param('id', ParseIntPipe)              | Path<i32> (automatic)              |
 // | @Query('page', DefaultValuePipe(1))     | #[serde(default)] or Option<T>     |
-// | @UsePipes(CustomPipe)                   | #[serde(deserialize_with)]         |
-// | app.useGlobalPipes(ValidationPipe)      | Use Validated<T> explicitly        |
+// | @UsePipes(CustomPipe)                   | #[use_pipes(CustomPipe)]           |
+// | app.useGlobalPipes(ValidationPipe)      | use_global_http_pipes / Validated<T> |
 // | class-validator decorators              | validator::Validate derive         |
 // | @IsEmail(), @MinLength()                | #[validate(email)], #[validate...] |
 //

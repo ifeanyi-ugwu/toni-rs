@@ -1,5 +1,5 @@
 use juniper::{graphql_object, EmptyMutation, EmptySubscription, RootNode};
-use toni::{module, toni_factory::ToniFactory, HttpAdapter};
+use toni::{module, toni_factory::ToniFactory};
 use toni_axum::AxumAdapter;
 use toni_juniper::{DefaultContext, DefaultContextBuilder, GraphQLModule};
 

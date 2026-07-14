@@ -2,8 +2,8 @@
 //!
 //! A type implementing `Error` declares its semantic [`kind`](Error::kind);
 //! the transport's handler error type ([`HttpError`](crate::errors::HttpError),
-//! [`RpcError`](crate::errors::RpcError),
-//! [`WsError`](crate::errors::WsError)) carries the wire shape and provides
+//! [`RpcError`](crate::rpc::RpcError),
+//! [`WsError`](crate::websocket::WsError)) carries the wire shape and provides
 //! a `From<E: Error>` blanket so a `toni::Error` returned by a handler flows
 //! into the right transport via `?`.
 //!
@@ -98,8 +98,8 @@ impl ErrorKind {
 /// Implementing `Error` makes the type renderable on every transport via
 /// the per-transport `From<E: Error>` blankets — it `?`-flows into
 /// [`HttpError`](crate::errors::HttpError),
-/// [`RpcError`](crate::errors::RpcError), and
-/// [`WsError`](crate::errors::WsError) automatically. The transport's
+/// [`RpcError`](crate::rpc::RpcError), and
+/// [`WsError`](crate::websocket::WsError) automatically. The transport's
 /// handler error type owns the rendering; this trait owns the semantic
 /// vocabulary.
 pub trait Error: std::error::Error + Send + Sync + 'static {

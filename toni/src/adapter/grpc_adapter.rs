@@ -1,6 +1,3 @@
-use std::future::Future;
-use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -20,20 +17,21 @@ use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers
 /// Adapter implementations register tonic services on the wrapped
 /// `tonic::transport::Server` *during their own construction* — before
 /// `bind()` is called by the framework. The framework only orchestrates the
-/// shared lifecycle: bind → serve → close. Per-request dispatch is entirely
-/// inside tonic and the user's trait `impl`s.
+/// shared lifecycle: `bind` → `into_lifecycle`, then drives the returned
+/// handle. Per-request dispatch is entirely inside tonic and the user's
+/// trait `impl`s.
 #[async_trait]
 pub trait GrpcAdapter: Send + Sync + 'static {
     /// Acquire the listening socket and accept any framework-discovered
     /// services for registration.
     ///
-    /// Called once before `serve`. Implementations should bind synchronously
-    /// (so port-in-use surfaces as `Err` from `bind()` rather than panicking
-    /// inside the spawned serve loop), capture the local address for
-    /// [`local_addr`](GrpcAdapter::local_addr), and merge `services` into the
-    /// configured tonic `Server`'s routes — each service contributes itself
-    /// via [`GrpcServiceTrait::register_with`] using a tonic
-    /// `RoutesBuilder` passed as `&mut dyn Any`.
+    /// Called once before [`into_lifecycle`](Self::into_lifecycle).
+    /// Implementations should bind synchronously (so port-in-use surfaces as
+    /// `Err` from `bind()` rather than panicking inside the spawned serve
+    /// loop), capture the local address for the lifecycle handle, and merge
+    /// `services` into the configured tonic `Server`'s routes — each service
+    /// contributes itself via [`GrpcServiceTrait::register_with`] using a
+    /// tonic `RoutesBuilder` passed as `&mut dyn Any`.
     ///
     /// `services` may be empty when the user wires services directly via
     /// adapter-specific `add_service` calls. Each entry is paired with its

@@ -74,17 +74,15 @@
 //!
 //! Poem exposes `Server::run_with_graceful_shutdown(endpoint, signal,
 //! timeout)` natively, so a single `tokio::sync::watch` channel feeds both
-//! the HTTP and any separate-port WS servers. `app.close()` (or any caller
-//! of `HttpAdapter::close` / `WebSocketAdapter::close`) flips the channel
-//! and every server stops in response to the same signal.
+//! the HTTP and any separate-port WS servers. `app.close()` flips the
+//! channel and every server stops in response to the same signal.
 //!
-//! ## Panics
+//! ## Bind failures
 //!
-//! Bind failures (port in use, permission denied, etc.) propagate as
-//! `Result::Err` from the `listen` future — the framework's intentional
-//! fail-fast behavior. Adapter types themselves never panic at runtime;
-//! transport-level errors flow through `tracing::debug` and `tracing::warn`
-//! events.
+//! Bind failures (port in use, permission denied, etc.) surface as errors
+//! from `app.start()` — the framework's intentional fail-fast behavior.
+//! Adapter types themselves never panic at runtime; transport-level errors
+//! flow through `tracing::debug` and `tracing::warn` events.
 
 mod poem_adapter;
 mod poem_websocket_adapter;

@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use actix_web::{

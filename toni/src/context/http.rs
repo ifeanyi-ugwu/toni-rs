@@ -10,7 +10,7 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// Per-request context for HTTP handlers.
 ///
 /// Owns the request parts, body, and the (eventual) response. Delegates the
-/// universal [`HandlerContext`] surface to its inner [`SharedState`].
+/// universal [`HandlerContext`] surface to its inner `SharedState`.
 ///
 /// The body is wrapped in a `Mutex<Option<...>>` so the type is `Sync` even
 /// when the underlying body stream is `!Sync`, and so the handler can take

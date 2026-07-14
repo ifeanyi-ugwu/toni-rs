@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -21,8 +19,7 @@ use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, ServerHandle, WebSocketAdapter,
-    WsConnectionCallbacks,
+    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};

@@ -10,7 +10,7 @@
 //!
 //! 1. Define metadata types (any Clone + Send + Sync + 'static type)
 //! 2. Attach metadata to routes with `#[set_metadata(YourType { ... })]`
-//! 3. Guards/interceptors read via `context.metadata().unwrap().get::<YourType>()`
+//! 3. Guards/interceptors read via `context.route_metadata()` + `.get::<YourType>()`
 
 use toni::{
     async_trait,

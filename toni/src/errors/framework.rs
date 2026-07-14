@@ -1,6 +1,6 @@
 //! Typed events the framework emits when it — not a user handler — is the
 //! source of an error: guard rejections, middleware failures, panic
-//! recovery, client give-up. They implement [`Error`](crate::errors::Error)
+//! recovery, client give-up. They implement [`crate::errors::Error`]
 //! and flow through the same observer + chain pipeline as user errors;
 //! chain handlers and observers can downcast to the concrete event to react
 //! to the underlying cause.
