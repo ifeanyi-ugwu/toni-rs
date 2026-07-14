@@ -278,7 +278,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  GET  /admin/dashboard with x-auth-token: any -> 200 OK\n");
 
     let factory = ToniFactory::new();
-    let mut app = factory.create_with(AppModule::module_definition()).await;
+    let mut app = factory.create_with(AppModule).await;
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")?;
     app.run().await;
     Ok(())

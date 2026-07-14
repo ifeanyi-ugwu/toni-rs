@@ -51,7 +51,7 @@ async fn global_modules_attribute_syntax() {
     )]
     impl AppModule {}
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -93,7 +93,7 @@ async fn module_ref_runtime_provider_access() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -158,7 +158,7 @@ async fn nested_module_imports() {
     )]
     impl AppModule {}
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -221,7 +221,7 @@ async fn module_exports_selective_providers() {
     )]
     impl AppModule {}
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))
@@ -262,7 +262,7 @@ async fn module_struct_syntax() {
     )]
     pub struct TestModule;
 
-    let server = TestServer::start(TestModule.into()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/test"))

@@ -46,7 +46,7 @@ async fn async_controller_methods_with_http_server() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/api/async"))
@@ -79,7 +79,7 @@ async fn config_service_injection_in_controllers() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/api/env"))
@@ -117,7 +117,7 @@ async fn singleton_controllers_share_state() {
     impl TestModule {}
 
     INSTANCE_COUNTER.store(0, Ordering::SeqCst);
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     for _ in 0..3 {
         let resp = server
@@ -158,7 +158,7 @@ async fn request_scoped_controllers_create_per_request() {
     impl TestModule {}
 
     REQUEST_COUNTER.store(0, Ordering::SeqCst);
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     let resp1 = server
         .client()
@@ -196,7 +196,7 @@ async fn optional_request_extractor() {
     #[module(controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/api/headers"))
@@ -231,7 +231,7 @@ async fn json_body_and_request_extraction() {
     #[module(controllers: [TestController])]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let user = CreateUser {
         name: "John".to_string(),
         email: "john@example.com".to_string(),
@@ -294,7 +294,7 @@ async fn request_extensions_pattern() {
         }
     }
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
     let resp = server
         .client()
         .get(server.url("/api/user"))
@@ -316,7 +316,7 @@ async fn controller_without_routes_is_valid() {
     impl EmptyModule {}
 
     // Builds and starts with no routes registered.
-    let server = TestServer::start(EmptyModule::module_definition()).await;
+    let server = TestServer::start(EmptyModule).await;
     let resp = server
         .client()
         .get(server.url("/empty"))

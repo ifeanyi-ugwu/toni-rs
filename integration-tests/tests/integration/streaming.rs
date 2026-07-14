@@ -36,7 +36,7 @@ impl StreamingModule {}
 /// This test sends the body as a stream of chunks to verify end-to-end collection works.
 #[tokio_localset_test::localset_test]
 async fn test_streaming_body_reaches_controller() {
-    let server = TestServer::start(StreamingModule::module_definition()).await;
+    let server = TestServer::start(StreamingModule).await;
 
     // Split payload into chunks to exercise the streaming path
     let chunks: Vec<Result<_, std::io::Error>> = vec![
@@ -60,7 +60,7 @@ async fn test_streaming_body_reaches_controller() {
 
 #[tokio_localset_test::localset_test]
 async fn test_body_stream_into_stream() {
-    let server = TestServer::start(StreamingModule::module_definition()).await;
+    let server = TestServer::start(StreamingModule).await;
 
     let chunk_size = 4096usize;
     let total = 256 * 1024usize;

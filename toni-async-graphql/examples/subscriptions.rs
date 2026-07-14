@@ -62,7 +62,7 @@ async fn main() {
         r#"  > {{"type":"subscribe","id":"1","payload":{{"query":"subscription {{ countdown(from: 5) }}"}}}}"#
     );
 
-    let mut app = ToniFactory::create(AppModule::module_definition()).await;
+    let mut app = ToniFactory::create(AppModule).await;
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
     app.start().await.unwrap();

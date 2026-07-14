@@ -232,7 +232,7 @@ async fn main() {
     println!("   mutation {{ updateProfile(username: \"newname\", email: \"new@example.com\") {{ id username email }} }}\n");
 
     // Create Toni app
-    let mut app = ToniFactory::create(AppModule::module_definition()).await;
+    let mut app = ToniFactory::create(AppModule).await;
 
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();

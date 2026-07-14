@@ -42,7 +42,7 @@ async fn grpc_adapter_seam_round_trip_and_shuts_down() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(EmptyModule::module_definition()).await;
+        let mut app = ToniFactory::create(EmptyModule).await;
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound

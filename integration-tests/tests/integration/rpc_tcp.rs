@@ -29,14 +29,16 @@ use toni_macros::{new, patterns, rpc_controller};
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
 /// The caller is guaranteed the listener is live by the time it gets the port.
-async fn start_rpc_server(module: toni::module_helpers::module_enum::ModuleDefinition) -> u16 {
+async fn start_rpc_server(
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+) -> u16 {
     start_rpc_server_with_observers(module, vec![]).await
 }
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and
 /// register the supplied global error observers before bootstrap.
 async fn start_rpc_server_with_observers(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     observers: Vec<Arc<dyn ErrorObserver>>,
 ) -> u16 {
     use toni::toni_factory::ToniFactory;
@@ -144,7 +146,7 @@ impl RpcPanicModule {}
 /// panic hook firing before catch_unwind catches the unwind. It is expected.
 #[tokio_localset_test::localset_test]
 async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
-    let port = start_rpc_server(RpcPanicModule::module_definition()).await;
+    let port = start_rpc_server(RpcPanicModule).await;
 
     // Panicking handler must return a response within 500 ms, not hang.
     let resp = tcp_rpc_timeout(
@@ -200,7 +202,7 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(ShutdownTcpModule::module_definition()).await;
+        let mut app = ToniFactory::create(ShutdownTcpModule).await;
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -280,7 +282,7 @@ async fn tcp_in_flight_request_completes_during_drain() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        let mut app = ToniFactory::create(SlowTcpModule).await;
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -336,7 +338,7 @@ async fn tcp_drain_aborts_after_timeout() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        let mut app = ToniFactory::create(SlowTcpModule).await;
         let adapter =
             toni_tcp::TcpAdapter::new("127.0.0.1", 0).with_drain_timeout(Duration::from_millis(50));
         app.use_rpc_adapter(adapter).unwrap();
@@ -384,7 +386,7 @@ async fn tcp_backpressure_rejects_excess_and_releases_after_completion() {
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowTcpModule::module_definition()).await;
+        let mut app = ToniFactory::create(SlowTcpModule).await;
         let adapter = toni_tcp::TcpAdapter::new("127.0.0.1", 0).with_max_inflight(1);
         app.use_rpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
@@ -493,7 +495,7 @@ impl TypedPayloadModule {}
 
 #[tokio_localset_test::localset_test]
 async fn typed_payload_round_trip_succeeds() {
-    let port = start_rpc_server(TypedPayloadModule::module_definition()).await;
+    let port = start_rpc_server(TypedPayloadModule).await;
     let resp = tcp_rpc_timeout(
         port,
         "typed.echo",
@@ -510,7 +512,7 @@ async fn typed_payload_parse_failure_renders_canonical_envelope() {
     // Exercises the macro's typed-payload parse-error path: deserialise
     // failure renders through `RpcError::to_data` rather than
     // surfacing as a wire-level Err frame.
-    let port = start_rpc_server(TypedPayloadModule::module_definition()).await;
+    let port = start_rpc_server(TypedPayloadModule).await;
     let resp = tcp_rpc_timeout(
         port,
         "typed.echo",
@@ -567,9 +569,7 @@ async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_rpc_server_with_observers(RpcGuardPanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_rpc_server_with_observers(RpcGuardPanicModule, vec![observer]).await;
 
     let resp = tcp_rpc_timeout(
         port,
@@ -636,11 +636,7 @@ async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive()
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_rpc_server_with_observers(
-        RpcInterceptorPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port = start_rpc_server_with_observers(RpcInterceptorPanicModule, vec![observer]).await;
 
     let resp = tcp_rpc_timeout(
         port,
@@ -710,9 +706,7 @@ async fn rpc_pipe_panic_surfaces_as_envelope_and_keeps_connection_alive() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_rpc_server_with_observers(RpcPipePanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_rpc_server_with_observers(RpcPipePanicModule, vec![observer]).await;
 
     let resp = tcp_rpc_timeout(
         port,
@@ -776,11 +770,7 @@ async fn rpc_error_handler_panic_continues_chain_to_default_rendering() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_rpc_server_with_observers(
-        RpcErrorHandlerPanicModule::module_definition(),
-        vec![observer],
-    )
-    .await;
+    let port = start_rpc_server_with_observers(RpcErrorHandlerPanicModule, vec![observer]).await;
 
     let resp = tcp_rpc_timeout(
         port,
@@ -853,9 +843,7 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port =
-        start_rpc_server_with_observers(RpcRenderPanicModule::module_definition(), vec![observer])
-            .await;
+    let port = start_rpc_server_with_observers(RpcRenderPanicModule, vec![observer]).await;
 
     let resp = tcp_rpc_timeout(
         port,
@@ -901,7 +889,7 @@ impl TcpMetaModule {}
 async fn tcp_client_metadata_reaches_handler() {
     use toni::RpcClient;
 
-    let port = start_rpc_server(TcpMetaModule::module_definition()).await;
+    let port = start_rpc_server(TcpMetaModule).await;
     let client = RpcClient::new(toni_tcp::TcpClientTransport::new("127.0.0.1", port));
 
     let resp = client

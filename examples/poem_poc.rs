@@ -119,9 +119,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  WS     :3001 /chat        (same-port upgrade)");
     println!("  WS     :3002 /ping        (separate-port adapter)");
 
-    let mut app = ToniFactory::new()
-        .create_with(AppModule::module_definition())
-        .await;
+    let mut app = ToniFactory::new().create_with(AppModule).await;
 
     app.use_http_adapter(PoemAdapter::new(), 3001, "127.0.0.1")
         .unwrap();

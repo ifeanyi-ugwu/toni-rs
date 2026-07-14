@@ -172,7 +172,7 @@ impl WsGuardModule {}
 
 #[tokio_localset_test::localset_test]
 async fn request_scoped_guard_activates() {
-    let server = TestServer::start(RequestGuardModule::module_definition()).await;
+    let server = TestServer::start(RequestGuardModule).await;
 
     // Missing header — guard blocks
     let resp = server
@@ -197,7 +197,7 @@ async fn request_scoped_guard_activates() {
 
 #[tokio_localset_test::localset_test]
 async fn request_scoped_guard_injects_request() {
-    let server = TestServer::start(HeaderGuardModule::module_definition()).await;
+    let server = TestServer::start(HeaderGuardModule).await;
 
     // Wrong secret — rejected
     let resp = server
@@ -223,7 +223,7 @@ async fn request_scoped_guard_injects_request() {
 
 #[tokio_localset_test::localset_test]
 async fn transient_scoped_interceptor() {
-    let server = TestServer::start(TransientInterceptorModule::module_definition()).await;
+    let server = TestServer::start(TransientInterceptorModule).await;
 
     let resp = server
         .client()
@@ -245,7 +245,7 @@ async fn transient_scoped_interceptor() {
 async fn ws_request_scoped_guard_uses_handshake_header() {
     use futures_util::{SinkExt, StreamExt};
 
-    let server = TestServer::start(WsGuardModule::module_definition()).await;
+    let server = TestServer::start(WsGuardModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/guarded-ws", server.port);
 
     // Without the token — guard rejects, server closes connection immediately.

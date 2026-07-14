@@ -7,7 +7,7 @@ mod app;
 #[tokio::main]
 async fn main() {
     let mut app = ToniFactory::new()
-        .create_with(AppModule::module_definition())
+        .create_with(AppModule)
         .await;
 
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")

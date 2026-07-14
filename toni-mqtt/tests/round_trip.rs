@@ -66,9 +66,7 @@ async fn mqtt_rpc_send_emit_and_metadata() {
     tokio::task::LocalSet::new()
         .run_until(async move {
             tokio::task::spawn_local(async move {
-                let mut app = ToniFactory::new()
-                    .create_with(MathModule::module_definition())
-                    .await;
+                let mut app = ToniFactory::new().create_with(MathModule).await;
                 app.use_rpc_adapter(MqttAdapter::new(
                     HOST.get().unwrap().clone(),
                     *PORT.get().unwrap(),

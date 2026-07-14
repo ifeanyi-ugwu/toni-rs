@@ -13,7 +13,7 @@
 //! #[actix_web::main]
 //! async fn main() {
 //!     let mut app = ToniFactory::new()
-//!         .create_with(AppModule::module_definition())
+//!         .create_with(AppModule)
 //!         .await;
 //!     app.use_http_adapter(ActixAdapter::new(), 3000, "127.0.0.1").unwrap();
 //!     app.start().await.unwrap();

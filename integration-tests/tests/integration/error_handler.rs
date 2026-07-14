@@ -45,7 +45,7 @@ async fn http_error_renders_via_app_error_default() {
     #[module(controllers: [HttpErrController], providers: [])]
     impl HttpErrModule {}
 
-    let addr = start_app(HttpErrModule::module_definition(), None).await;
+    let addr = start_app(HttpErrModule, None).await;
 
     let resp = reqwest::get(format!("http://{}/api/missing", addr))
         .await
@@ -85,7 +85,7 @@ async fn custom_app_error_renders_canonical_envelope() {
     #[module(controllers: [CustomErrController], providers: [])]
     impl CustomErrModule {}
 
-    let addr = start_app(CustomErrModule::module_definition(), None).await;
+    let addr = start_app(CustomErrModule, None).await;
 
     let resp = reqwest::get(format!("http://{}/api/invoice", addr))
         .await
@@ -122,7 +122,7 @@ async fn unmatched_chain_handler_falls_through_to_app_error_default() {
     // user `HttpError`. The boxed error is HttpError, downcast returns None,
     // chain falls through, the canonical envelope renders the canonical envelope.
     let addr = start_app(
-        UserErrModule::module_definition(),
+        UserErrModule,
         Some(Arc::new(MarkerHandler {
             marker: "REWRITTEN",
         })),
@@ -189,7 +189,7 @@ async fn chain_fires_on_guard_rejection() {
     impl GuardedModule {}
 
     let addr = start_app(
-        GuardedModule::module_definition(),
+        GuardedModule,
         Some(Arc::new(MarkerHandler {
             marker: "guard-caught",
         })),
@@ -243,11 +243,7 @@ async fn scope_chain_overrides_app_error_default_on_user_error() {
     #[module(controllers: [UserErrController], providers: [])]
     impl UserErrModule {}
 
-    let addr = start_app(
-        UserErrModule::module_definition(),
-        Some(Arc::new(HttpErrorOverride)),
-    )
-    .await;
+    let addr = start_app(UserErrModule, Some(Arc::new(HttpErrorOverride))).await;
 
     let resp = reqwest::get(format!("http://{}/api/missing", addr))
         .await
@@ -262,7 +258,7 @@ async fn scope_chain_overrides_app_error_default_on_user_error() {
 // ---- Test harness -----------------------------------------------------------
 
 async fn start_app(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     chain_handler: Option<Arc<dyn ErrorHandler<HttpContext, HttpResponse>>>,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();

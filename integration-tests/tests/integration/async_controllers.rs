@@ -51,7 +51,7 @@ impl AsyncModule {}
 
 #[tokio_localset_test::localset_test]
 async fn async_controller_methods() {
-    let server = TestServer::start(AsyncModule::module_definition()).await;
+    let server = TestServer::start(AsyncModule).await;
 
     let resp = server
         .client()

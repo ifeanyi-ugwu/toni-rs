@@ -16,7 +16,7 @@ async fn valid_singleton_injects_singleton() {
     #[module(providers: [ServiceA, ServiceB])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     app.get::<ServiceB>()
         .await
         .expect("ServiceB with ServiceA dep should resolve");
@@ -38,7 +38,7 @@ async fn valid_request_injects_singleton() {
     #[module(providers: [SingletonService, RequestService])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     app.resolve::<RequestService>(&parts)
         .await
@@ -67,7 +67,7 @@ async fn valid_transient_injects_any_scope() {
     #[module(providers: [SingletonService, RequestService, TransientService])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     app.resolve::<TransientService>(&parts)
         .await
@@ -91,7 +91,7 @@ async fn singleton_cannot_inject_request_scoped() {
     #[module(providers: [RequestService, SingletonService])]
     impl InvalidModule {}
 
-    let _app = ToniFactory::create(InvalidModule::module_definition()).await;
+    let _app = ToniFactory::create(InvalidModule).await;
 }
 
 #[tokio::test]
@@ -110,7 +110,7 @@ async fn singleton_can_inject_transient() {
     #[module(providers: [TransientService, SingletonService])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     app.get::<SingletonService>()
         .await
         .expect("singleton with transient dep should resolve");
@@ -132,7 +132,7 @@ async fn request_can_inject_transient() {
     #[module(providers: [TransientService, RequestService])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     app.resolve::<RequestService>(&parts)
         .await
@@ -164,7 +164,7 @@ async fn complex_valid_hierarchy() {
     #[module(providers: [BaseService, MiddleService, TopService])]
     impl TestModule {}
 
-    let app = ToniFactory::create(TestModule::module_definition()).await;
+    let app = ToniFactory::create(TestModule).await;
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     app.resolve::<TopService>(&parts)
         .await
@@ -188,5 +188,5 @@ async fn explicit_singleton_with_request_fails() {
     #[module(providers: [RequestService, ExplicitSingleton])]
     impl TestModule {}
 
-    let _app = ToniFactory::create(TestModule::module_definition()).await;
+    let _app = ToniFactory::create(TestModule).await;
 }

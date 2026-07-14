@@ -49,7 +49,7 @@ impl Guard<HttpContext> for AlwaysReject {
 }
 
 async fn start_app(
-    module: toni::module_helpers::module_enum::ModuleDefinition,
+    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
     observer: Arc<CountingObserver>,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
@@ -97,7 +97,7 @@ async fn observer_fires_on_guard_rejection() {
         last_message: last_message.clone(),
     });
 
-    let addr = start_app(GuardedModule::module_definition(), observer).await;
+    let addr = start_app(GuardedModule, observer).await;
 
     let resp = reqwest::get(format!("http://{}/api/protected", addr))
         .await
@@ -139,7 +139,7 @@ async fn observer_fires_on_user_error() {
         last_message: last_message.clone(),
     });
 
-    let addr = start_app(UserErrModule::module_definition(), observer).await;
+    let addr = start_app(UserErrModule, observer).await;
 
     let resp = reqwest::get(format!("http://{}/api/missing", addr))
         .await

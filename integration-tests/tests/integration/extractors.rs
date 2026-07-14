@@ -63,7 +63,7 @@ impl ExtractorModule {}
 
 #[tokio_localset_test::localset_test]
 async fn test_query_extractor() {
-    let server = TestServer::start(ExtractorModule::module_definition()).await;
+    let server = TestServer::start(ExtractorModule).await;
 
     let resp = server
         .client()
@@ -101,7 +101,7 @@ async fn test_query_extractor() {
 
 #[tokio_localset_test::localset_test]
 async fn test_aliased_body_extractor_receives_body() {
-    let server = TestServer::start(ExtractorModule::module_definition()).await;
+    let server = TestServer::start(ExtractorModule).await;
 
     let resp = server
         .client()
@@ -116,7 +116,7 @@ async fn test_aliased_body_extractor_receives_body() {
 
 #[tokio_localset_test::localset_test]
 async fn test_json_extractor() {
-    let server = TestServer::start(ExtractorModule::module_definition()).await;
+    let server = TestServer::start(ExtractorModule).await;
 
     let resp = server
         .client()
@@ -185,7 +185,7 @@ impl ValidatedModule {}
 
 #[tokio_localset_test::localset_test]
 async fn test_validated_extractor() {
-    let server = TestServer::start(ValidatedModule::module_definition()).await;
+    let server = TestServer::start(ValidatedModule).await;
 
     let resp = server
         .client()
@@ -233,7 +233,7 @@ async fn test_validated_extractor() {
 
 #[tokio_localset_test::localset_test]
 async fn test_typed_path_extractor() {
-    let server = TestServer::start(ExtractorModule::module_definition()).await;
+    let server = TestServer::start(ExtractorModule).await;
 
     let resp = server
         .client()

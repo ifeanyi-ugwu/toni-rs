@@ -138,7 +138,7 @@ async fn provide_macro_patterns() {
     )]
     impl UnifiedProvideModule {}
 
-    let server = TestServer::start(UnifiedProvideModule::module_definition()).await;
+    let server = TestServer::start(UnifiedProvideModule).await;
     let resp = server
         .client()
         .get(server.url("/app/info"))

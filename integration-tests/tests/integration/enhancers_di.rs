@@ -280,7 +280,7 @@ async fn di_guard_with_injected_deps() {
     TRACKER.set(ExecutionTracker::new()).ok();
     let tracker = get_tracker();
 
-    let server = TestServer::start(EnhancerDITestModule::module_definition()).await;
+    let server = TestServer::start(EnhancerDITestModule).await;
 
     // guard rejects when auth service says no
     tracker.clear();
@@ -323,7 +323,7 @@ async fn di_interceptor_execution_order() {
     TRACKER.set(ExecutionTracker::new()).ok();
     let tracker = get_tracker();
 
-    let server = TestServer::start(EnhancerDITestModule::module_definition()).await;
+    let server = TestServer::start(EnhancerDITestModule).await;
 
     tracker.clear();
     let resp = server
@@ -376,7 +376,7 @@ async fn di_middleware_with_injected_deps() {
     TRACKER.set(ExecutionTracker::new()).ok();
     let tracker = get_tracker();
 
-    let server = TestServer::start(EnhancerDITestModule::module_definition()).await;
+    let server = TestServer::start(EnhancerDITestModule).await;
 
     // middleware rejects when required header is absent
     tracker.clear();

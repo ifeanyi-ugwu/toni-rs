@@ -156,7 +156,7 @@ async fn global_module_providers_accessible_across_feature_modules() {
     std::env::set_var("GLOBAL_TEST_VALUE", "production");
     std::env::set_var("GLOBAL_TEST_COUNT", "999");
 
-    let server = TestServer::start(AppModule::module_definition()).await;
+    let server = TestServer::start(AppModule).await;
 
     let resp = server
         .client()
@@ -262,7 +262,7 @@ impl BuilderAppModule {}
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn global_module_via_builder_method() {
-    let server = TestServer::start(BuilderAppModule::module_definition()).await;
+    let server = TestServer::start(BuilderAppModule).await;
 
     let resp = server
         .client()

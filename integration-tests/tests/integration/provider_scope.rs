@@ -95,7 +95,7 @@ async fn scope_behavior() {
     )]
     impl TestModule {}
 
-    let server = TestServer::start(TestModule::module_definition()).await;
+    let server = TestServer::start(TestModule).await;
 
     let resp1 = server
         .client()

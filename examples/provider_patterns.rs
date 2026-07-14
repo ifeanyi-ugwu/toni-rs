@@ -144,9 +144,7 @@ impl ProviderPatternsModule {}
 async fn main() {
     println!("🔧 toni provider patterns\n");
 
-    let app = ToniFactory::new()
-        .create_with(ProviderPatternsModule::module_definition())
-        .await;
+    let app = ToniFactory::new().create_with(ProviderPatternsModule).await;
 
     let info = app
         .get::<AppInfo>()

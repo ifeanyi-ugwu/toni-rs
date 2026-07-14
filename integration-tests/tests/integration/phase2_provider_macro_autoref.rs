@@ -71,7 +71,7 @@ struct ProviderMacroModule {}
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_value_guard_autodetected() {
-    let server = TestServer::start(ProviderMacroModule::module_definition()).await;
+    let server = TestServer::start(ProviderMacroModule).await;
 
     let resp = server
         .client()
@@ -95,7 +95,7 @@ async fn provider_value_guard_autodetected() {
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn provider_factory_request_scoped_guard_autodetected() {
-    let server = TestServer::start(ProviderMacroModule::module_definition()).await;
+    let server = TestServer::start(ProviderMacroModule).await;
 
     let resp = server
         .client()

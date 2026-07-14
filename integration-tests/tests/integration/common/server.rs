@@ -21,7 +21,7 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    pub async fn start(module: ModuleDefinition) -> Self {
+    pub async fn start(module: impl Into<ModuleDefinition> + 'static) -> Self {
         init_tracing();
 
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
