@@ -20,8 +20,7 @@ use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
-    WsConnectionCallbacks,
+    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::poem_websocket_adapter::{poem_to_ws_message, ws_message_to_poem};

@@ -18,8 +18,7 @@ use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
-    WsConnectionCallbacks,
+    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
 };
 
 use crate::salvo_websocket_adapter::{salvo_to_ws_message, ws_message_to_salvo};
