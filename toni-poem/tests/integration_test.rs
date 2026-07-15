@@ -95,10 +95,7 @@ struct Bound {
     ws_addr: Option<std::net::SocketAddr>,
 }
 
-async fn start(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-    with_ws_adapter: bool,
-) -> Bound {
+async fn start(module: impl toni::ModuleMetadata + 'static, with_ws_adapter: bool) -> Bound {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {

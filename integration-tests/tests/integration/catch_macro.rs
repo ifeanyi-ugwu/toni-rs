@@ -72,9 +72,7 @@ impl Guard<HttpContext> for DenyGuard {
     }
 }
 
-async fn start_with_catchers(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-) -> std::net::SocketAddr {
+async fn start_with_catchers(module: impl toni::ModuleMetadata + 'static) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
     let local = tokio::task::LocalSet::new();

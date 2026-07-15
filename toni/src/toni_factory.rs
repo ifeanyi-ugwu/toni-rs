@@ -9,14 +9,14 @@ use crate::context::{HttpContext, RpcContext, WsContext};
 use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};
 use crate::middleware::Middleware;
-use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::rpc::RpcData;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
 use crate::traits_helpers::{
     ErrorHandler, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-    HttpPipeEntry, Interceptor, Pipe, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
-    RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+    HttpPipeEntry, Interceptor, ModuleMetadata, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
+    RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+    WsPipeEntry,
 };
 use crate::websocket::WsMessage;
 
@@ -149,14 +149,14 @@ impl ToniFactory {
     }
 
     /// Shorthand for `ToniFactory::new().create_with(...)` when no factory config is needed
-    pub async fn create(module: impl Into<ModuleDefinition>) -> ToniApplication {
+    pub async fn create(module: impl ModuleMetadata + 'static) -> ToniApplication {
         Self::new().create_with(module).await
     }
 
-    pub async fn create_with(&self, module: impl Into<ModuleDefinition>) -> ToniApplication {
+    pub async fn create_with(&self, module: impl ModuleMetadata + 'static) -> ToniApplication {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
-        match self.initialize(module.into(), container.clone()).await {
+        match self.initialize(Box::new(module), container.clone()).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::error!(error = %e, "Critical error during module initialization");
@@ -169,18 +169,18 @@ impl ToniFactory {
 
     /// Standalone DI container for CLI tools, cron jobs, and background workers
     pub async fn create_application_context(
-        module: impl Into<ModuleDefinition>,
+        module: impl ModuleMetadata + 'static,
     ) -> ToniApplicationContext {
         Self::new().create_application_context_with(module).await
     }
 
     pub async fn create_application_context_with(
         &self,
-        module: impl Into<ModuleDefinition>,
+        module: impl ModuleMetadata + 'static,
     ) -> ToniApplicationContext {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
-        match self.initialize(module.into(), container.clone()).await {
+        match self.initialize(Box::new(module), container.clone()).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::error!(error = %e, "Critical error during module initialization");
@@ -201,14 +201,14 @@ impl ToniFactory {
 
     async fn initialize(
         &self,
-        module: ModuleDefinition,
+        module: Box<dyn ModuleMetadata>,
         container: Rc<RefCell<ToniContainer>>,
     ) -> Result<()> {
         tracing::debug!("Scanning module graph");
         let mut scanner = ToniDependenciesScanner::new(container.clone());
 
         // Register built-in global module
-        scanner.scan(crate::builtin_module::BuiltinModule.into())?;
+        scanner.scan(Box::new(crate::builtin_module::BuiltinModule))?;
 
         // Scan user's root module
         scanner.scan(module)?;

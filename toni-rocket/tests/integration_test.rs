@@ -81,9 +81,7 @@ struct Bound {
     http_addr: std::net::SocketAddr,
 }
 
-async fn start(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-) -> Bound {
+async fn start(module: impl toni::ModuleMetadata + 'static) -> Bound {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {

@@ -29,16 +29,14 @@ use toni_macros::{new, patterns, rpc_controller};
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
 /// The caller is guaranteed the listener is live by the time it gets the port.
-async fn start_rpc_server(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-) -> u16 {
+async fn start_rpc_server(module: impl toni::ModuleMetadata + 'static) -> u16 {
     start_rpc_server_with_observers(module, vec![]).await
 }
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and
 /// register the supplied global error observers before bootstrap.
 async fn start_rpc_server_with_observers(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+    module: impl toni::ModuleMetadata + 'static,
     observers: Vec<Arc<dyn ErrorObserver>>,
 ) -> u16 {
     use toni::toni_factory::ToniFactory;

@@ -5,7 +5,6 @@ use anyhow::{Result, anyhow};
 
 use crate::{
     injector::ToniContainer,
-    module_helpers::module_enum::ModuleDefinition,
     traits_helpers::{MiddlewareConsumer, ModuleMetadata},
 };
 
@@ -17,19 +16,17 @@ impl ToniDependenciesScanner {
     pub fn new(container: Rc<RefCell<ToniContainer>>) -> Self {
         Self { container }
     }
-    pub fn scan(&mut self, module: ModuleDefinition) -> Result<()> {
+    pub fn scan(&mut self, module: Box<dyn ModuleMetadata>) -> Result<()> {
         self.scan_for_modules_with_imports(module)?;
         self.scan_modules_for_dependencies()?;
         Ok(())
     }
-    fn scan_for_modules_with_imports(&mut self, module: ModuleDefinition) -> Result<()> {
+    fn scan_for_modules_with_imports(&mut self, module: Box<dyn ModuleMetadata>) -> Result<()> {
         let mut ctx_registry: Vec<String> = vec![];
 
-        let mut stack: Vec<ModuleDefinition> = vec![module];
+        let mut stack: Vec<Box<dyn ModuleMetadata>> = vec![module];
 
-        while let Some(current_module_definition) = stack.pop() {
-            let ModuleDefinition::DefaultModule(default_module) = current_module_definition;
-
+        while let Some(default_module) = stack.pop() {
             let module_name = default_module.get_name();
             tracing::debug!(module = %module_name, "scanning module");
             ctx_registry.push(module_name);
@@ -48,7 +45,7 @@ impl ToniDependenciesScanner {
                     continue;
                 }
 
-                stack.push(ModuleDefinition::DefaultModule(module_imported));
+                stack.push(module_imported);
             }
             let default_module_id = default_module.get_id();
             self.insert_module(default_module);

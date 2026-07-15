@@ -4,7 +4,6 @@
 //! to all modules without requiring explicit imports.
 
 use crate::RequestFactory;
-use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 
 /// Built-in global module that provides core framework functionality
@@ -42,11 +41,5 @@ impl ModuleMetadata for BuiltinModule {
         Some(vec![
             std::any::type_name::<crate::request::Request>().to_string(),
         ])
-    }
-}
-
-impl From<BuiltinModule> for ModuleDefinition {
-    fn from(module: BuiltinModule) -> Self {
-        ModuleDefinition::DefaultModule(Box::new(module))
     }
 }

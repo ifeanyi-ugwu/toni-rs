@@ -23,7 +23,7 @@ use crate::common::TestServer;
 /// Start an Axum-backed app with the supplied global error observers wired
 /// before bootstrap.
 async fn start_ws_server_with_observers(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+    module: impl toni::ModuleMetadata + 'static,
     observers: Vec<Arc<dyn ErrorObserver>>,
 ) -> u16 {
     use toni::toni_factory::ToniFactory;

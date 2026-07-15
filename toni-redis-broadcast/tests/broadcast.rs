@@ -5,7 +5,6 @@ use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::redis::{REDIS_PORT, Redis};
 use tokio::sync::mpsc;
 use toni::{
-    module_helpers::module_enum::ModuleDefinition,
     toni_factory::ToniFactory,
     websocket::{WsMessage, WsSink},
 };
@@ -18,10 +17,7 @@ fn make_client() -> (Arc<dyn WsSink>, mpsc::Receiver<WsMessage>) {
 }
 
 async fn boot(url: &str) -> (toni::ToniApplicationContext, RedisBroadcastService) {
-    let app = ToniFactory::create_application_context(ModuleDefinition::DefaultModule(Box::new(
-        RedisBroadcastModule::for_root(url),
-    )))
-    .await;
+    let app = ToniFactory::create_application_context(RedisBroadcastModule::for_root(url)).await;
     let rbs = app
         .get::<RedisBroadcastService>()
         .await
