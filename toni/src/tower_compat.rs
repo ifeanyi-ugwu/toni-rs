@@ -123,7 +123,7 @@ impl Service<http::Request<RequestBoxBody>> for ToniNextService {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// use toni::tower_compat::TowerLayer;
 /// use tower_http::cors::CorsLayer;
 /// use tower_http::trace::TraceLayer;

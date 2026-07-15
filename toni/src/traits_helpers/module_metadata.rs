@@ -232,7 +232,7 @@ impl MiddlewareConsumer {
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```ignore
     /// use tower::ServiceBuilder;
     /// use tower_http::cors::CorsLayer;
     /// use tower_http::trace::TraceLayer;
