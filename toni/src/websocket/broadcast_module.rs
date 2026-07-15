@@ -1,4 +1,3 @@
-use crate::module_helpers::module_enum::ModuleDefinition;
 use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 use crate::websocket::BroadcastService;
 use crate::websocket::broadcast_provider::BroadcastServiceManager;
@@ -53,11 +52,5 @@ impl ModuleMetadata for BroadcastModule {
 
     fn exports(&self) -> Option<Vec<String>> {
         Some(vec![std::any::type_name::<BroadcastService>().to_string()])
-    }
-}
-
-impl From<BroadcastModule> for ModuleDefinition {
-    fn from(module: BroadcastModule) -> Self {
-        ModuleDefinition::DefaultModule(Box::new(module))
     }
 }

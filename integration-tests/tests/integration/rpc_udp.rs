@@ -22,9 +22,7 @@ use toni_macros::{new, patterns, rpc_controller};
 /// Spawn an app with the UDP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
 /// The caller is guaranteed the socket is live by the time it gets the port.
-async fn start_rpc_server(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-) -> u16 {
+async fn start_rpc_server(module: impl toni::ModuleMetadata + 'static) -> u16 {
     use toni::toni_factory::ToniFactory;
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();

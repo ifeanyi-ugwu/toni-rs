@@ -19,3 +19,7 @@ the history is part of the value.
 - [0001 — Dispatch, don't detect: the autoref bridge for macros that can't see the impl](0001-dispatch-not-detect-autoref-bridge.md)
 - [0002 — One `#[injectable]` provider form; enhancer roles detected from trait impls](0002-one-injectable-form-marker-free-roles.md)
 - [0003 — Lifecycle hooks: bridge only where the impl is invisible](0003-lifecycle-bridge-vs-scan.md)
+- [0004 — Controllers declared like injectables: `#[controller]` on the struct, `#[routes]` on the impl](0004-controller-injectable-form.md)
+- [0005 — Gateways declared like injectables: `#[websocket_gateway]` on the struct, `#[subscriptions]` on the impl](0005-gateway-injectable-form.md)
+- [0006 — RPC controllers declared like injectables: `#[rpc_controller]` on the struct, `#[patterns]` on the impl](0006-rpc-controller-injectable-form.md)
+- [0008 — The root module is any `ModuleMetadata`; the `ModuleDefinition` enum is removed](0008-root-module-is-any-modulemetadata.md)

@@ -237,9 +237,7 @@ async fn pick_free_port() -> u16 {
     port
 }
 
-async fn start_rpc_server(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
-) -> u16 {
+async fn start_rpc_server(module: impl toni::ModuleMetadata + 'static) -> u16 {
     use toni::toni_factory::ToniFactory;
     let port = pick_free_port().await;
     let local = tokio::task::LocalSet::new();

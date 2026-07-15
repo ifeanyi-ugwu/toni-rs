@@ -49,7 +49,7 @@ impl Guard<HttpContext> for AlwaysReject {
 }
 
 async fn start_app(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+    module: impl toni::ModuleMetadata + 'static,
     observer: Arc<CountingObserver>,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();

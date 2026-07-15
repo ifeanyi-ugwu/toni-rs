@@ -308,12 +308,6 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        impl From<#input_ident> for ::toni::module_helpers::module_enum::ModuleDefinition {
-            fn from(module: #input_ident) -> Self {
-                Self::DefaultModule(Box::new(module))
-            }
-        }
-
         #[::toni::async_trait(?Send)]
         impl ::toni::traits_helpers::ModuleMetadata for #input_ident {
             fn get_id(&self) -> String {

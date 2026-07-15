@@ -1,5 +1,5 @@
-use toni::module_helpers::module_enum::ModuleDefinition;
 use toni::toni_factory::ToniFactory;
+use toni::ModuleMetadata;
 use toni_axum::AxumAdapter;
 
 /// Install a tracing subscriber that reads `RUST_LOG` (e.g. `RUST_LOG=toni=debug`).
@@ -21,7 +21,7 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    pub async fn start(module: impl Into<ModuleDefinition> + 'static) -> Self {
+    pub async fn start(module: impl ModuleMetadata + 'static) -> Self {
         init_tracing();
 
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();

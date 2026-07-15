@@ -258,7 +258,7 @@ async fn scope_chain_overrides_app_error_default_on_user_error() {
 // ---- Test harness -----------------------------------------------------------
 
 async fn start_app(
-    module: impl Into<toni::module_helpers::module_enum::ModuleDefinition> + 'static,
+    module: impl toni::ModuleMetadata + 'static,
     chain_handler: Option<Arc<dyn ErrorHandler<HttpContext, HttpResponse>>>,
 ) -> std::net::SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
