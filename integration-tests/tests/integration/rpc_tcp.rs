@@ -75,7 +75,7 @@ impl ErrorObserver for RpcSegmentObserver {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
         if let Some(p) = error.downcast_ref::<PanicRecovered>() {
@@ -530,7 +530,7 @@ impl PanickingRpcGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for PanickingRpcGuard {
-    async fn can_activate(&self, _ctx: &RpcContext) -> bool {
+    async fn can_activate(&self, _ctx: &mut RpcContext) -> bool {
         panic!("rpc guard kaboom");
     }
 }
@@ -736,7 +736,7 @@ impl PanickingRpcErrorHandler {}
 
 #[async_trait]
 impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
-    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &RpcContext) -> Option<RpcData> {
+    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &mut RpcContext) -> Option<RpcData> {
         panic!("rpc error-handler kaboom");
     }
 }

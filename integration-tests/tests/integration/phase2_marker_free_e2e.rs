@@ -37,7 +37,7 @@ pub struct AdminGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AdminGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         self.auth.is_admin(ctx.request())
     }
 }
@@ -53,7 +53,7 @@ pub struct RequestScopedGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for RequestScopedGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         ctx.request().headers.contains_key("x-allow")
     }
 }

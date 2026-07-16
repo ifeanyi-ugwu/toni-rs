@@ -152,7 +152,7 @@ impl AuthGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
         ctx.get_metadata("authorization").is_some()
     }
 }
@@ -163,7 +163,7 @@ impl AdminGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AdminGuard {
-    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
         ctx.get_metadata("x-role") == Some("admin")
     }
 }
@@ -884,7 +884,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     async fn handle_error(
         &self,
         error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &toni::GrpcContext,
+        _ctx: &mut toni::GrpcContext,
     ) -> ::std::option::Option<toni::GrpcStatus> {
         let msg = error.to_string();
         if msg.contains("remap-me") {
@@ -1276,7 +1276,7 @@ impl PanickingGrpcGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for PanickingGrpcGuard {
-    async fn can_activate(&self, _ctx: &toni::GrpcContext) -> bool {
+    async fn can_activate(&self, _ctx: &mut toni::GrpcContext) -> bool {
         panic!("guard kaboom");
     }
 }
@@ -1536,7 +1536,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &toni::GrpcContext,
+        _ctx: &mut toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
         panic!("error-handler kaboom");
     }

@@ -87,7 +87,7 @@ impl AdminGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AdminGuard {
-    async fn can_activate(&self, context: &HttpContext) -> bool {
+    async fn can_activate(&self, context: &mut HttpContext) -> bool {
         self.tracker.track("guard:admin");
         context
             .request()
@@ -112,7 +112,7 @@ impl AuthGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, context: &HttpContext) -> bool {
+    async fn can_activate(&self, context: &mut HttpContext) -> bool {
         self.tracker.track("guard:auth");
         context.request().headers.contains_key("authorization")
     }
@@ -420,7 +420,7 @@ async fn di_in_enhancers() {
 
     #[async_trait]
     impl Guard<HttpContext> for DIGuard {
-        async fn can_activate(&self, context: &HttpContext) -> bool {
+        async fn can_activate(&self, context: &mut HttpContext) -> bool {
             context
                 .request()
                 .headers
@@ -479,7 +479,7 @@ async fn app_token_global_enhancers() {
     }
     #[async_trait]
     impl Guard<HttpContext> for GlobalGuard {
-        async fn can_activate(&self, _context: &HttpContext) -> bool {
+        async fn can_activate(&self, _context: &mut HttpContext) -> bool {
             self.tracker.track("global_guard");
             true
         }

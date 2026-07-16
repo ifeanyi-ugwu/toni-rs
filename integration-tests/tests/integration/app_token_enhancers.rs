@@ -73,7 +73,7 @@ impl AppGuardWithDI {
 
 #[async_trait]
 impl Guard<HttpContext> for AppGuardWithDI {
-    async fn can_activate(&self, _context: &HttpContext) -> bool {
+    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
         self.tracker
             .track(&format!("guard:app_token:{}", self.service.get_name()));
         true

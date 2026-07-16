@@ -42,7 +42,7 @@ pub struct AdminGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AdminGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         self.policy.permits(ctx)
     }
 }
@@ -82,11 +82,13 @@ async fn marker_free_guard_resolves_coerces_and_runs() {
 
     // (3) Invoke through the trait object against a real context, exercising the injected dep.
     assert!(
-        dyn_guard.can_activate(&ctx_with_admin_header()).await,
+        dyn_guard.can_activate(&mut ctx_with_admin_header()).await,
         "guard should admit a request carrying x-admin-token"
     );
     assert!(
-        !dyn_guard.can_activate(&ctx_without_admin_header()).await,
+        !dyn_guard
+            .can_activate(&mut ctx_without_admin_header())
+            .await,
         "guard should reject a request without x-admin-token"
     );
 }

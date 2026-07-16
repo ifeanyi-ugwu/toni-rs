@@ -84,7 +84,7 @@ impl AuthGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
         matches!(
             ctx.get_metadata("authorization"),
             Some("Bearer secret-token")
@@ -135,7 +135,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
     async fn handle_error(
         &self,
         error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &toni::GrpcContext,
+        _ctx: &mut toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
         if error.to_string().contains("invalid-qty") {
             Some(toni::GrpcStatus::new(

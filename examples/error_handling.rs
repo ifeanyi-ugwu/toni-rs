@@ -85,7 +85,7 @@ impl Error for PaymentDeclined {
 // this handler, the canonical envelope (status 422 + `{"statusCode":...}`)
 // would render via the `From<PaymentDeclined> for HttpError` blanket.
 #[catch(PaymentDeclined)]
-async fn render_payment_declined(err: &PaymentDeclined, _ctx: &HttpContext) -> HttpResponse {
+async fn render_payment_declined(err: &PaymentDeclined, _ctx: &mut HttpContext) -> HttpResponse {
     HttpResponse::builder()
         .status(toni::errors::http_status(err.kind()))
         .header("Retry-After", err.retry_after_secs.to_string())
@@ -144,7 +144,7 @@ pub struct AuthGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         ctx.request().headers.contains_key("x-auth-token")
     }
 }
@@ -157,7 +157,7 @@ impl Guard<HttpContext> for AuthGuard {
 // response.
 
 #[catch(toni::errors::GuardRejection)]
-async fn auth_failure(err: &toni::errors::GuardRejection, _ctx: &HttpContext) -> HttpResponse {
+async fn auth_failure(err: &toni::errors::GuardRejection, _ctx: &mut HttpContext) -> HttpResponse {
     HttpResponse::builder()
         .status(toni::errors::http_status(err.kind()))
         .json(json!({

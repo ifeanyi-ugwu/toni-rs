@@ -17,7 +17,7 @@ pub struct WsAuthGuard;
 
 #[async_trait]
 impl Guard<WsContext> for WsAuthGuard {
-    async fn can_activate(&self, ctx: &WsContext) -> bool {
+    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
         println!("[WsAuthGuard] Checking authentication...");
         if let Some(token) = ctx.client().handshake.headers.get("x-auth-token") {
             println!("[WsAuthGuard] ✅ Auth token found: {}", token);

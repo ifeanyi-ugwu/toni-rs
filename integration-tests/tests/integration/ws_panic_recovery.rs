@@ -61,7 +61,7 @@ impl ErrorObserver for WsSegmentObserver {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
         if let Some(p) = error.downcast_ref::<PanicRecovered>() {
@@ -152,7 +152,7 @@ impl PanickingWsGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for PanickingWsGuard {
-    async fn can_activate(&self, _ctx: &WsContext) -> bool {
+    async fn can_activate(&self, _ctx: &mut WsContext) -> bool {
         panic!("ws guard kaboom");
     }
 }
@@ -354,7 +354,11 @@ impl PanickingWsErrorHandler {}
 
 #[async_trait]
 impl ErrorHandler<WsContext, WsMessage> for PanickingWsErrorHandler {
-    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &WsContext) -> Option<WsMessage> {
+    async fn handle_error(
+        &self,
+        _error: ChainError<'_>,
+        _ctx: &mut WsContext,
+    ) -> Option<WsMessage> {
         panic!("ws error-handler kaboom");
     }
 }
