@@ -8,10 +8,10 @@ use serde_json::Value;
 
 /// Type-erased response body. Adapters consume this via [`Body::into_box_body`].
 ///
-/// Requires `Send + Sync` — streams passed to [`Body::stream`] must satisfy
-/// this bound. Use `futures::stream::iter` or `futures::stream::unfold` for
-/// most cases; wrap non-`Sync` state in `Arc<Mutex<...>>` if needed.
-pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, Box<dyn Error + Send + Sync>>;
+/// `Send + !Sync` — streams passed to [`Body::stream`] need only be `Send`, so a
+/// stream holding non-`Sync` state (an `Rc`, a `RefCell`, a single-use adapter
+/// body) flows through without an `Arc<Mutex<...>>` wrapper.
+pub type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Box<dyn Error + Send + Sync>>;
 
 enum BodyInner {
     Buffered(Bytes),
@@ -95,7 +95,7 @@ impl Body {
     /// include a `Content-Type` header on the response.
     pub fn stream<S, E>(stream: S) -> Self
     where
-        S: Stream<Item = Result<Bytes, E>> + Send + Sync + 'static,
+        S: Stream<Item = Result<Bytes, E>> + Send + 'static,
         E: Into<Box<dyn Error + Send + Sync>> + 'static,
     {
         use futures::StreamExt;
@@ -103,7 +103,7 @@ impl Body {
 
         let frames = stream.map(|r| r.map(http_body::Frame::data).map_err(Into::into));
         Self {
-            inner: BodyInner::Streaming(BodyExt::boxed(StreamBody::new(frames))),
+            inner: BodyInner::Streaming(BodyExt::boxed_unsync(StreamBody::new(frames))),
             content_type: None,
         }
     }
@@ -147,7 +147,7 @@ impl Body {
         match self.inner {
             BodyInner::Buffered(bytes) => http_body_util::Full::new(bytes)
                 .map_err(|never: std::convert::Infallible| match never {})
-                .boxed(),
+                .boxed_unsync(),
             BodyInner::Streaming(box_body) => box_body,
         }
     }

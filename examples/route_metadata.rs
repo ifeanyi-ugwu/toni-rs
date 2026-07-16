@@ -49,7 +49,7 @@ pub struct RolesGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for RolesGuard {
-    async fn can_activate(&self, context: &HttpContext) -> bool {
+    async fn can_activate(&self, context: &mut HttpContext) -> bool {
         let metadata = context
             .route_metadata()
             .expect("Route metadata not available");
@@ -77,7 +77,7 @@ pub struct RateLimitGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for RateLimitGuard {
-    async fn can_activate(&self, context: &HttpContext) -> bool {
+    async fn can_activate(&self, context: &mut HttpContext) -> bool {
         let metadata = context
             .route_metadata()
             .expect("Route metadata not available");

@@ -42,7 +42,7 @@ impl UniversalAuthGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         ctx.request()
             .headers
             .get("authorization")
@@ -54,7 +54,7 @@ impl Guard<HttpContext> for UniversalAuthGuard {
 
 #[async_trait]
 impl Guard<RpcContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
         ctx.data()
             .as_json()
             .and_then(|v| v.get("auth").and_then(|a| a.as_str()))
@@ -64,7 +64,7 @@ impl Guard<RpcContext> for UniversalAuthGuard {
 
 #[async_trait]
 impl Guard<WsContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &WsContext) -> bool {
+    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
         ctx.client()
             .handshake
             .query

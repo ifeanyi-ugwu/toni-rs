@@ -120,13 +120,13 @@ impl RpcControllerWrapper {
             // `RpcError::Forbidden` instead of a torn-down dispatcher.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
-                guard.can_activate(&ctx),
+                guard.can_activate(&mut ctx),
             )
             .await
             {
                 Ok(b) => b,
                 Err(event) => {
-                    Self::fan_out_observers(&observers, &event, &ctx).await;
+                    Self::fan_out_observers(&observers, &event, &mut ctx).await;
                     return Err(RpcError::Forbidden(format!(
                         "guard {} panicked: {}",
                         index, event.message
@@ -135,12 +135,12 @@ impl RpcControllerWrapper {
             };
             if !activated {
                 let err = RpcError::Forbidden("Guard rejected message".into());
-                Self::fan_out_observers(&observers, &err, &ctx).await;
+                Self::fan_out_observers(&observers, &err, &mut ctx).await;
                 return Err(err);
             }
             if ctx.should_abort() {
                 let err = RpcError::Forbidden("Message aborted by guard".into());
-                Self::fan_out_observers(&observers, &err, &ctx).await;
+                Self::fan_out_observers(&observers, &err, &mut ctx).await;
                 return Err(err);
             }
         }
@@ -171,7 +171,7 @@ impl RpcControllerWrapper {
     async fn safe_render<F>(
         render: F,
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &RpcContext,
+        ctx: &mut RpcContext,
     ) -> RpcData
     where
         F: FnOnce() -> RpcData,
@@ -197,12 +197,12 @@ impl RpcControllerWrapper {
     async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &RpcContext,
+        ctx: &mut RpcContext,
         observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<RpcData> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
-            handler.handle_error(error, ctx),
+            handler.handle_error(error, &mut *ctx),
         )
         .await
         {
@@ -217,10 +217,10 @@ impl RpcControllerWrapper {
     async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &RpcContext,
+        ctx: &mut RpcContext,
     ) {
         for observer in observers {
-            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
             if let Err(payload) = observe.catch_unwind().await {
                 let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                     *s
@@ -352,17 +352,17 @@ impl RpcControllerWrapper {
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) {
-        Self::fan_out_observers(observers, &event, context).await;
+        Self::fan_out_observers(observers, &event, &mut *context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, context, observers).await
+                Self::try_chain_handler(handler, &event, &mut *context, observers).await
             {
                 context.set_response(Ok(Some(claimed)));
                 return;
             }
         }
         let rpc_err = RpcError::from(event);
-        let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
+        let data = Self::safe_render(|| rpc_err.to_data(), observers, &mut *context).await;
         context.set_response(Ok(Some(data)));
     }
 
@@ -421,16 +421,17 @@ impl RpcControllerWrapper {
                     RpcError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, context).await;
+                Self::fan_out_observers(observers, observed_err, &mut *context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, context, observers).await
+                        Self::try_chain_handler(handler, observed_err, &mut *context, observers)
+                            .await
                     {
                         context.set_response(Ok(Some(claimed)));
                         return;
                     }
                 }
-                let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
+                let data = Self::safe_render(|| rpc_err.to_data(), observers, &mut *context).await;
                 context.set_response(Ok(Some(data)));
             }
         }

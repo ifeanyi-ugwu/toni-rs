@@ -15,7 +15,7 @@ use crate::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle
 
 fn to_toni_response<B>(resp: http::Response<B>) -> HttpResponse
 where
-    B: HttpBody<Data = Bytes> + Send + Sync + 'static,
+    B: HttpBody<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let (parts, body) = resp.into_parts();
@@ -31,7 +31,7 @@ where
         })
         .collect();
 
-    let box_body = body.map_err(Into::into).boxed();
+    let box_body = body.map_err(Into::into).boxed_unsync();
     let toni_body = match parts
         .headers
         .get(http::header::CONTENT_TYPE)
@@ -90,7 +90,7 @@ impl Service<http::Request<RequestBoxBody>> for ToniNextService {
                 Some(body) => body.into_box_body(),
                 None => Full::new(Bytes::new())
                     .map_err(|never: Infallible| match never {})
-                    .boxed(),
+                    .boxed_unsync(),
             };
 
             let mut builder = http::Response::builder().status(status);
@@ -151,7 +151,7 @@ where
     L: Layer<ToniNextService> + Send + Sync + 'static,
     L::Service:
         Service<http::Request<RequestBoxBody>, Response = http::Response<B>> + Send + 'static,
-    B: HttpBody<Data = Bytes> + Send + Sync + 'static,
+    B: HttpBody<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     <L::Service as Service<http::Request<RequestBoxBody>>>::Error:
         Into<Box<dyn std::error::Error + Send + Sync>>,

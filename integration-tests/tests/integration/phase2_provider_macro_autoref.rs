@@ -22,7 +22,7 @@ pub struct ValueGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for ValueGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         ctx.request().headers.contains_key("x-value")
     }
 }
@@ -34,7 +34,7 @@ pub struct FactoryGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for FactoryGuard {
-    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         ctx.request().headers.contains_key("x-factory")
     }
 }

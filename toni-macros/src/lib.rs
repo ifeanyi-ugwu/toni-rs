@@ -366,7 +366,7 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// // Read in guard
 /// #[async_trait]
 /// impl Guard<HttpContext> for RolesGuard {
-///     async fn can_activate(&self, context: &HttpContext) -> bool {
+///     async fn can_activate(&self, context: &mut HttpContext) -> bool {
 ///         if let Some(Roles(required)) = context.route_metadata().and_then(|m| m.get::<Roles>()) {
 ///             // Check user has required roles
 ///         }

@@ -163,11 +163,11 @@ impl InstanceWrapper {
                     // haven't built the real one yet at this point in
                     // the pipeline.
                     let stub = http::Request::builder().body(()).unwrap();
-                    let stub_ctx = HttpContext::from_parts(stub.into_parts().0);
+                    let mut stub_ctx = HttpContext::from_parts(stub.into_parts().0);
                     return Self::safe_render(
                         || http_err.to_response(),
                         &observers_for_middleware,
-                        &stub_ctx,
+                        &mut stub_ctx,
                     )
                     .await;
                 }
@@ -176,14 +176,14 @@ impl InstanceWrapper {
                 // parts to thread through to the handler context. Construct a stub
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
-                let error_ctx = HttpContext::from_parts(stub.into_parts().0);
+                let mut error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let event = MiddlewareFailure::new(e.to_string());
-                Self::fan_out_observers(&observers_for_middleware, &event, &error_ctx).await;
+                Self::fan_out_observers(&observers_for_middleware, &event, &mut error_ctx).await;
                 for handler in error_handlers_for_middleware.iter().rev() {
                     if let Some(response) = Self::try_chain_handler(
                         handler,
                         &event,
-                        &error_ctx,
+                        &mut error_ctx,
                         &observers_for_middleware,
                     )
                     .await
@@ -195,7 +195,7 @@ impl InstanceWrapper {
                 Self::safe_render(
                     || crate::errors::http_error::render_error(&event),
                     &observers_for_middleware,
-                    &error_ctx,
+                    &mut error_ctx,
                 )
                 .await
             }
@@ -273,7 +273,7 @@ impl InstanceWrapper {
             // the chain renders the normal forbidden envelope.
             let activated = match crate::panic_recovery::catch_async(
                 PipelineSegment::Guard,
-                guard.can_activate(&context),
+                guard.can_activate(&mut context),
             )
             .await
             {
@@ -286,7 +286,7 @@ impl InstanceWrapper {
                         claimed_response,
                         &error_handlers,
                         &observers,
-                        &context,
+                        &mut context,
                     )
                     .await;
                 }
@@ -300,7 +300,7 @@ impl InstanceWrapper {
                     claimed_response,
                     &error_handlers,
                     &observers,
-                    &context,
+                    &mut context,
                 )
                 .await;
             }
@@ -334,15 +334,17 @@ impl InstanceWrapper {
         claimed_response: Option<HttpResponse>,
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &HttpContext,
+        ctx: &mut HttpContext,
     ) -> HttpResponse
     where
         E: Error,
     {
-        Self::fan_out_observers(observers, &event, ctx).await;
+        Self::fan_out_observers(observers, &event, &mut *ctx).await;
 
         for handler in error_handlers.iter().rev() {
-            if let Some(handled) = Self::try_chain_handler(handler, &event, ctx, observers).await {
+            if let Some(handled) =
+                Self::try_chain_handler(handler, &event, &mut *ctx, observers).await
+            {
                 return handled;
             }
         }
@@ -375,7 +377,7 @@ impl InstanceWrapper {
     async fn safe_render<F>(
         render: F,
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &HttpContext,
+        ctx: &mut HttpContext,
     ) -> HttpResponse
     where
         F: FnOnce() -> HttpResponse,
@@ -404,12 +406,12 @@ impl InstanceWrapper {
     async fn try_chain_handler(
         handler: &HttpErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &HttpContext,
+        ctx: &mut HttpContext,
         observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<HttpResponse> {
         match crate::panic_recovery::catch_async(
             PipelineSegment::ErrorHandler,
-            handler.handle_error(error, ctx),
+            handler.handle_error(error, &mut *ctx),
         )
         .await
         {
@@ -424,14 +426,14 @@ impl InstanceWrapper {
     async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &dyn HandlerContext,
+        ctx: &mut dyn HandlerContext,
     ) {
         for observer in observers {
             // A panicking observer must not corrupt the dispatch path.
             // Catch the unwind, log via tracing (the observer system itself
             // is the thing that just failed, so we can't route it back
             // through observers), and continue to the next observer.
-            let observe = AssertUnwindSafe(observer.observe(error, ctx));
+            let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
             if let Err(payload) = observe.catch_unwind().await {
                 let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                     *s
@@ -493,17 +495,21 @@ impl InstanceWrapper {
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) {
-        Self::fan_out_observers(observers, &event, context).await;
+        Self::fan_out_observers(observers, &event, &mut *context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, context, observers).await
+                Self::try_chain_handler(handler, &event, &mut *context, observers).await
             {
                 context.set_response(claimed);
                 return;
             }
         }
-        let rendered =
-            Self::safe_render(|| HttpError::from(event).to_response(), observers, context).await;
+        let rendered = Self::safe_render(
+            || HttpError::from(event).to_response(),
+            observers,
+            &mut *context,
+        )
+        .await;
         context.set_response(rendered);
     }
 
@@ -588,17 +594,18 @@ impl InstanceWrapper {
                     HttpError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, context).await;
+                Self::fan_out_observers(observers, observed_err, &mut *context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, context, observers).await
+                        Self::try_chain_handler(handler, observed_err, &mut *context, observers)
+                            .await
                     {
                         context.set_response(claimed);
                         return;
                     }
                 }
                 let rendered =
-                    Self::safe_render(|| http_err.to_response(), observers, context).await;
+                    Self::safe_render(|| http_err.to_response(), observers, &mut *context).await;
                 context.set_response(rendered);
             }
         }

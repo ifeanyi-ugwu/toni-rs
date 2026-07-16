@@ -15,7 +15,7 @@ use super::{CancellationToken, Extensions};
 /// implement honestly — no method requires a transport to fake an answer. If a
 /// concept only makes sense for some transports (HTTP headers, gRPC metadata,
 /// WS client identity), it lives on the concrete context, not here.
-pub trait HandlerContext: Send + Sync {
+pub trait HandlerContext: Send {
     /// Per-route metadata (`#[set_metadata(...)]` attached at the controller
     /// or method level). `None` for global handlers (404, error filters) that
     /// never bind to a specific route.

@@ -72,7 +72,7 @@ impl GlobalGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for GlobalGuard {
-    async fn can_activate(&self, _context: &HttpContext) -> bool {
+    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
         get_tracker().track("guard:global");
         true
     }
@@ -88,7 +88,7 @@ impl ControllerGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for ControllerGuard {
-    async fn can_activate(&self, _context: &HttpContext) -> bool {
+    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
         get_tracker().track("guard:controller");
         true
     }
@@ -104,7 +104,7 @@ impl MethodGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for MethodGuard {
-    async fn can_activate(&self, _context: &HttpContext) -> bool {
+    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
         get_tracker().track("guard:method");
         true
     }

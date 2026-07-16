@@ -170,9 +170,16 @@ fn write_response(http_res: HttpResponse, res: &mut SalvoResponse) {
         }
     }
 
+    // toni's response body is `Send + !Sync`, but salvo's `ResBody::Boxed`
+    // demands `Send + Sync`. Route buffered bodies through the native `Once`
+    // variant (keeps Content-Length) and streaming bodies through `stream`,
+    // whose `SyncWrapper` accepts a `Send`-only stream without buffering.
     let res_body: ResBody = match http_res.body {
-        Some(toni_body) => ResBody::Boxed(Box::pin(toni_body.into_box_body())),
         None => ResBody::None,
+        Some(toni_body) if toni_body.is_streaming() => {
+            ResBody::stream(toni_body.into_box_body().into_data_stream())
+        }
+        Some(toni_body) => ResBody::Once(toni_body.try_bytes().cloned().unwrap_or_default()),
     };
     res.body(res_body);
 }

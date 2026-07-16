@@ -47,7 +47,7 @@ impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &RpcContext,
+        _ctx: &mut RpcContext,
     ) -> Option<RpcData> {
         Some(RpcData::json(serde_json::json!("recovered")))
     }
@@ -58,7 +58,7 @@ impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &WsContext,
+        _ctx: &mut WsContext,
     ) -> Option<WsMessage> {
         Some(WsMessage::text("recovered"))
     }
@@ -73,7 +73,7 @@ impl WsAllowGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for WsAllowGuard {
-    async fn can_activate(&self, ctx: &WsContext) -> bool {
+    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
         ctx.client()
             .handshake
             .headers
@@ -153,7 +153,7 @@ impl RpcAllowGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for RpcAllowGuard {
-    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
         ctx.data()
             .as_json()
             .and_then(|v| v["allow"].as_str())

@@ -22,7 +22,7 @@ pub type ChainError<'a> = &'a (dyn Error + Send + Sync + 'static);
 /// `None`, the framework's default fallback is sent.
 #[async_trait]
 pub trait ErrorHandler<C: ?Sized + HandlerContext, R>: Send + Sync {
-    async fn handle_error(&self, error: ChainError<'_>, ctx: &C) -> Option<R>;
+    async fn handle_error(&self, error: ChainError<'_>, ctx: &mut C) -> Option<R>;
 }
 
 /// Default fallback for HTTP routes that didn't match a registered handler.
@@ -33,7 +33,7 @@ impl ErrorHandler<HttpContext, HttpResponse> for DefaultHttpErrorHandler {
     async fn handle_error(
         &self,
         error: ChainError<'_>,
-        _ctx: &HttpContext,
+        _ctx: &mut HttpContext,
     ) -> Option<HttpResponse> {
         if let Some(http_error) = error.downcast_ref::<HttpError>() {
             return Some(http_error.to_response());
@@ -56,7 +56,7 @@ pub struct DefaultRpcErrorHandler;
 
 #[async_trait]
 impl ErrorHandler<RpcContext, RpcData> for DefaultRpcErrorHandler {
-    async fn handle_error(&self, error: ChainError<'_>, _ctx: &RpcContext) -> Option<RpcData> {
+    async fn handle_error(&self, error: ChainError<'_>, _ctx: &mut RpcContext) -> Option<RpcData> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
             http_error.message().to_string()
         } else {
@@ -73,7 +73,7 @@ pub struct DefaultWsErrorHandler;
 
 #[async_trait]
 impl ErrorHandler<WsContext, WsMessage> for DefaultWsErrorHandler {
-    async fn handle_error(&self, error: ChainError<'_>, _ctx: &WsContext) -> Option<WsMessage> {
+    async fn handle_error(&self, error: ChainError<'_>, _ctx: &mut WsContext) -> Option<WsMessage> {
         let message = if let Some(http_error) = error.downcast_ref::<HttpError>() {
             http_error.message().to_string()
         } else {
@@ -94,8 +94,8 @@ mod tests {
         let handler = DefaultHttpErrorHandler;
         let error = HttpError::not_found("Resource not found");
         let stub = http::Request::builder().body(()).unwrap();
-        let ctx = HttpContext::from_parts(stub.into_parts().0);
-        let r = handler.handle_error(&error, &ctx).await.unwrap();
+        let mut ctx = HttpContext::from_parts(stub.into_parts().0);
+        let r = handler.handle_error(&error, &mut ctx).await.unwrap();
         assert_eq!(r.status, 404);
     }
 
@@ -104,8 +104,8 @@ mod tests {
         let handler = DefaultHttpErrorHandler;
         let error = std::io::Error::new(std::io::ErrorKind::Other, "Unknown error");
         let stub = http::Request::builder().body(()).unwrap();
-        let ctx = HttpContext::from_parts(stub.into_parts().0);
-        let r = handler.handle_error(&error, &ctx).await.unwrap();
+        let mut ctx = HttpContext::from_parts(stub.into_parts().0);
+        let r = handler.handle_error(&error, &mut ctx).await.unwrap();
         assert_eq!(r.status, 500);
     }
 }

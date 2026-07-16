@@ -145,7 +145,7 @@ struct AlwaysReject;
 
 #[async_trait]
 impl Guard<HttpContext> for AlwaysReject {
-    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
         false
     }
 }
@@ -159,7 +159,7 @@ impl ErrorHandler<HttpContext, HttpResponse> for MarkerHandler {
     async fn handle_error(
         &self,
         error: ChainError<'_>,
-        _ctx: &HttpContext,
+        _ctx: &mut HttpContext,
     ) -> Option<HttpResponse> {
         // Chain handlers downcast to the framework's typed event — there's
         // no synthesized `HttpError` to dispatch on anymore.
@@ -213,7 +213,7 @@ impl ErrorHandler<HttpContext, HttpResponse> for HttpErrorOverride {
     async fn handle_error(
         &self,
         error: ChainError<'_>,
-        _ctx: &HttpContext,
+        _ctx: &mut HttpContext,
     ) -> Option<HttpResponse> {
         let e = error.downcast_ref::<HttpError>()?;
         let mut resp = HttpResponse::new();

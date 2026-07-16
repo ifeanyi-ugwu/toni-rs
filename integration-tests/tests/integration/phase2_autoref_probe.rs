@@ -70,7 +70,7 @@ struct RealGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for RealGuard {
-    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
         self.allow
     }
 }
@@ -113,10 +113,10 @@ async fn coerced_trait_object_runs() {
         GuardProbe(guard).http_guard_role().expect("guard detected");
 
     let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    let ctx = HttpContext::from_parts(parts);
+    let mut ctx = HttpContext::from_parts(parts);
 
     assert!(
-        !role.can_activate(&ctx).await,
+        !role.can_activate(&mut ctx).await,
         "the coerced trait object must run and reflect the instance's state"
     );
 }
