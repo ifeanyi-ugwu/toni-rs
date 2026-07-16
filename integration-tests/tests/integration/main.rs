@@ -22,6 +22,7 @@ mod global_enhancers;
 mod global_modules;
 mod graceful_shutdown;
 mod graphql_subscriptions;
+mod guard_mut_context;
 mod http_e2e;
 mod lifecycle_hooks;
 mod method_enhancers;

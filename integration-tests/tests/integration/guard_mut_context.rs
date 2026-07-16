@@ -1,0 +1,105 @@
+//! Demonstrates the capability unlocked by guards taking `&mut C`: a guard
+//! writes into the context's extension bag, and a later enhancer reads it.
+//!
+//! Under the old `can_activate(&self, ctx: &HttpContext)` signature the line
+//! `ctx.extensions_mut()` did not compile inside a guard (`extensions_mut`
+//! needs `&mut self`), so attach-in-guard was structurally impossible. With
+//! `&mut C` it works, and the context extension bag is the documented
+//! enhancer-to-enhancer bus.
+
+use toni::async_trait;
+use toni::context::{HandlerContext, HttpContext};
+use toni::traits_helpers::Guard;
+
+#[derive(Clone, Debug, PartialEq)]
+struct Principal {
+    user: String,
+    roles: Vec<String>,
+}
+
+/// Authenticates the request and ATTACHES the principal to the context.
+struct AuthGuard;
+
+#[async_trait]
+impl Guard<HttpContext> for AuthGuard {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+        // The whole point: a guard mutating the context. A compile error
+        // under the old `&HttpContext` signature.
+        ctx.extensions_mut().insert(Principal {
+            user: "alice".into(),
+            roles: vec!["admin".into()],
+        });
+        true
+    }
+}
+
+/// Reads what an upstream guard attached and authorizes on it.
+struct RequireAdminGuard;
+
+#[async_trait]
+impl Guard<HttpContext> for RequireAdminGuard {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+        match ctx.extensions().get::<Principal>() {
+            Some(principal) => principal.roles.iter().any(|r| r == "admin"),
+            None => false,
+        }
+    }
+}
+
+fn context() -> HttpContext {
+    let (parts, ()) = http::Request::builder()
+        .method("GET")
+        .uri("/admin")
+        .body(())
+        .unwrap()
+        .into_parts();
+    HttpContext::from_parts(parts)
+}
+
+#[tokio::test]
+async fn guard_attaches_principal_that_a_later_guard_reads() {
+    let mut ctx = context();
+
+    // Nothing is attached before AuthGuard runs.
+    assert!(ctx.extensions().get::<Principal>().is_none());
+
+    // Guard A writes the principal.
+    assert!(AuthGuard.can_activate(&mut ctx).await);
+
+    // It is now on the context...
+    assert_eq!(
+        ctx.extensions().get::<Principal>().map(|p| p.user.as_str()),
+        Some("alice"),
+    );
+
+    // ...and Guard B (a downstream enhancer) reads it to authorize.
+    assert!(RequireAdminGuard.can_activate(&mut ctx).await);
+}
+
+#[tokio::test]
+async fn require_admin_denies_when_no_principal_was_attached() {
+    let mut ctx = context();
+    // AuthGuard never ran, so the downstream guard sees nothing and denies.
+    assert!(!RequireAdminGuard.can_activate(&mut ctx).await);
+}
+
+/// A guard that runs on EVERY transport via one blanket impl. It can only use
+/// the universal `HandlerContext` surface (abort flag, route metadata,
+/// extensions, cancellation) — no `ctx.request()` (HTTP) or `ctx.client()`
+/// (WS), because those live on the concrete context types, not the shared
+/// trait. This is exactly the `impl<C: HandlerContext> Guard<C>` form the
+/// guard docs describe, and it compiles.
+struct UniversalGuard;
+
+#[async_trait]
+impl<C: HandlerContext + ?Sized> Guard<C> for UniversalGuard {
+    async fn can_activate(&self, ctx: &mut C) -> bool {
+        !ctx.should_abort()
+    }
+}
+
+#[tokio::test]
+async fn blanket_guard_runs_against_a_concrete_context() {
+    let mut ctx = context();
+    assert!(UniversalGuard.can_activate(&mut ctx).await);
+}
