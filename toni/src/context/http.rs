@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::http_helpers::{HttpRequest, HttpResponse, RequestBody, RequestPart, RouteMetadata};
 use crate::traits_helpers::validate::Validatable;
 
@@ -12,13 +10,12 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// Owns the request parts, body, and the (eventual) response. Delegates the
 /// universal [`HandlerContext`] surface to its inner `SharedState`.
 ///
-/// The body is wrapped in a `Mutex<Option<...>>` so the type is `Sync` even
-/// when the underlying body stream is `!Sync`, and so the handler can take
-/// ownership exactly once via [`take_request`](Self::take_request).
+/// The body is an `Option` taken exactly once via
+/// [`take_request`](Self::take_request); a second call yields an empty body.
 pub struct HttpContext {
     pub(crate) shared: SharedState,
     pub(crate) parts: RequestPart,
-    pub(crate) body: Mutex<Option<RequestBody>>,
+    pub(crate) body: Option<RequestBody>,
     pub(crate) response: Option<HttpResponse>,
 }
 
@@ -28,7 +25,7 @@ impl HttpContext {
         Self {
             shared: SharedState::new(Some(route_metadata)),
             parts,
-            body: Mutex::new(Some(body)),
+            body: Some(body),
             response: None,
         }
     }
@@ -39,7 +36,7 @@ impl HttpContext {
         Self {
             shared: SharedState::new(Some(Arc::new(RouteMetadata::new()))),
             parts,
-            body: Mutex::new(Some(body)),
+            body: Some(body),
             response: None,
         }
     }
@@ -48,7 +45,7 @@ impl HttpContext {
         Self {
             shared: SharedState::new(Some(Arc::new(RouteMetadata::new()))),
             parts,
-            body: Mutex::new(Some(RequestBody::empty())),
+            body: Some(RequestBody::empty()),
             response: None,
         }
     }
@@ -76,7 +73,7 @@ impl HttpContext {
     /// Reconstruct the full `HttpRequest` (parts + body) and consume the body.
     /// Subsequent calls return an empty body.
     pub fn take_request(&mut self) -> HttpRequest {
-        let body = self.body.lock().take().unwrap_or_else(RequestBody::empty);
+        let body = self.body.take().unwrap_or_else(RequestBody::empty);
         HttpRequest::from_parts(self.parts.clone(), body)
     }
 

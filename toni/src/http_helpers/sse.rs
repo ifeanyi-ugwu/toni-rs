@@ -114,7 +114,7 @@ where
 
 impl<S, E> IntoResponse for Sse<S>
 where
-    S: Stream<Item = Result<SseEvent, E>> + Send + Sync + 'static,
+    S: Stream<Item = Result<SseEvent, E>> + Send + 'static,
     E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
 {
     fn into_response(self) -> HttpResponse {

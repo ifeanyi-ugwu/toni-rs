@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use http_body_util::BodyExt;
 use tokio::sync::watch;
 
@@ -138,15 +138,19 @@ fn toni_response_to_poem(http_res: HttpResponse) -> PoemResponse {
         }
     }
 
+    // toni's response body is `Send + !Sync`; poem's `Body::from(BoxBody)`
+    // wants the `Send + Sync` boxed body. Buffered bodies map to `from_bytes`
+    // (keeps Content-Length); streaming bodies go through `from_bytes_stream`,
+    // which needs only `Send`.
     let body = match http_res.body {
-        Some(toni_body) => {
-            let box_body = toni_body
-                .into_box_body()
-                .map_err(std::io::Error::other)
-                .boxed();
-            PoemBody::from(box_body)
-        }
         None => PoemBody::empty(),
+        Some(toni_body) if toni_body.is_streaming() => PoemBody::from_bytes_stream(
+            toni_body
+                .into_box_body()
+                .into_data_stream()
+                .map_err(std::io::Error::other),
+        ),
+        Some(toni_body) => PoemBody::from_bytes(toni_body.try_bytes().cloned().unwrap_or_default()),
     };
 
     builder.body(body)

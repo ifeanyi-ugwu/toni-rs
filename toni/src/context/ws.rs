@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-
 use crate::http_helpers::RouteMetadata;
 use crate::websocket::{WsClient, WsError, WsMessage};
 
@@ -9,17 +7,16 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
 /// Per-request context for WebSocket handlers.
 ///
-/// One per inbound message (or per `connect`/`disconnect` lifecycle event).
-/// The response is held inside a `Mutex` so the type stays `Sync` despite the
-/// fact that `WsHandlerOutput::Stream` carries a non-`Sync` `BoxStream` —
-/// streams themselves bypass this slot and flow through a separate channel
-/// in the gateway dispatcher.
+/// One per inbound message (or per `connect`/`disconnect` lifecycle event). The
+/// dispatcher owns the context and every enhancer borrows it exclusively, so
+/// the response slot is a plain `Option` set through `&mut self`. Streams bypass
+/// this slot and flow through a separate channel in the gateway dispatcher.
 pub struct WsContext {
     pub(crate) shared: SharedState,
     pub(crate) client: WsClient,
     pub(crate) message: WsMessage,
     pub(crate) event: String,
-    pub(crate) response: Mutex<Option<Result<Option<WsMessage>, WsError>>>,
+    pub(crate) response: Option<Result<Option<WsMessage>, WsError>>,
 }
 
 impl WsContext {
@@ -34,7 +31,7 @@ impl WsContext {
             client,
             message,
             event: event.into(),
-            response: Mutex::new(None),
+            response: None,
         }
     }
 
@@ -51,15 +48,15 @@ impl WsContext {
     }
 
     pub fn response(&self) -> Option<Result<Option<WsMessage>, WsError>> {
-        self.response.lock().clone()
+        self.response.clone()
     }
 
-    pub fn set_response(&self, response: Result<Option<WsMessage>, WsError>) {
-        *self.response.lock() = Some(response);
+    pub fn set_response(&mut self, response: Result<Option<WsMessage>, WsError>) {
+        self.response = Some(response);
     }
 
-    pub fn take_response(&self) -> Option<Result<Option<WsMessage>, WsError>> {
-        self.response.lock().take()
+    pub fn take_response(&mut self) -> Option<Result<Option<WsMessage>, WsError>> {
+        self.response.take()
     }
 }
 
