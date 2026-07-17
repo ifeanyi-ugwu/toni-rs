@@ -5,6 +5,7 @@ mod async_controllers;
 mod attribute_extractors;
 mod attribute_syntax;
 mod catch_macro;
+mod circular_dependency;
 mod concurrent_scope;
 mod config_injection;
 mod constructor_patterns;
