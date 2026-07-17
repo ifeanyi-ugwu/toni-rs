@@ -22,4 +22,5 @@ the history is part of the value.
 - [0004 — Controllers declared like injectables: `#[controller]` on the struct, `#[routes]` on the impl](0004-controller-injectable-form.md)
 - [0005 — Gateways declared like injectables: `#[websocket_gateway]` on the struct, `#[subscriptions]` on the impl](0005-gateway-injectable-form.md)
 - [0006 — RPC controllers declared like injectables: `#[rpc_controller]` on the struct, `#[patterns]` on the impl](0006-rpc-controller-injectable-form.md)
+- [0007 — The global middleware chain anchors before routing, per adapter, pinned by a conformance suite](0007-pre-routing-global-chain.md)
 - [0008 — The root module is any `ModuleMetadata`; the `ModuleDefinition` enum is removed](0008-root-module-is-any-modulemetadata.md)
