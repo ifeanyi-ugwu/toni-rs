@@ -9,6 +9,7 @@ mod circular_dependency;
 mod concurrent_scope;
 mod config_injection;
 mod constructor_patterns;
+mod cors;
 mod di_core;
 mod di_providers;
 mod di_validation;
