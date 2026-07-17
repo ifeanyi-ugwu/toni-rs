@@ -51,6 +51,13 @@ directions are re-wraps, not copies:
   Response extensions do not survive the re-wrap; nothing relies on them (hyper drives WebSocket
   upgrades from the request side).
 
+**Poem realization**: a `GlobalChainEndpoint` wraps the finished `Route` (itself an `Endpoint`).
+One divergence from axum: poem's WebSocket upgrade slot lives in the `Request`'s internal state,
+not in http extensions, so the original request shell is threaded through the chain in a take-once
+slot and the chain's output (method, URI, headers, extensions, body) is written back onto it before
+routing — rebuilding the request would drop the upgrade. Router errors (`MethodNotAllowedError`
+et al.) convert via `into_response()`, which is how 405s reach the chain.
+
 ## Considered and rejected
 
 **A toni-owned router (`matchit`) in the serve path.** It would make the five native routers dumb
@@ -67,7 +74,7 @@ adapter-independent portless handler — both out of scope here.
   `app.use` semantics.
 - Same-port WebSocket handshake requests now traverse the chain (they bypassed it before). This is
   intended: the handshake is an HTTP request, and middleware can now reject upgrades.
-- Conformance status: **axum passes**; actix, poem, rocket, and salvo still anchor post-routing
+- Conformance status: **axum and poem pass**; actix, rocket, and salvo still anchor post-routing
   and need the same re-anchor against the suite. Rocket is the constrained one — fairings cannot
   short-circuit, so it may need internal matching to conform fully.
 - The composed value — chain wrapped around router — is one `tower::Service`. Binding the socket is

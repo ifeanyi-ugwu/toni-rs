@@ -15,6 +15,7 @@ http = "1"
 toni-config = { path = "../toni-config" }
 toni-macros = { path = "../toni-macros" }
 toni-axum = { path = "../toni-axum" }
+toni-poem = { path = "../toni-poem" }
 toni-tungstenite = { path = "../toni-tungstenite" }
 toni-tcp = { path = "../toni-tcp" }
 toni-udp = { path = "../toni-udp" }

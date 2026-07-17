@@ -4,10 +4,11 @@
 //! HTTP request before route resolution, may short-circuit with a response,
 //! and the request it forwards is the one the router matches on.
 //!
-//! Every HTTP adapter must pass this suite. The discriminating cases are the
-//! ones a post-routing anchor cannot satisfy: method mismatch (405), CORS
-//! preflight to a route without an OPTIONS handler, and a path rewrite that
-//! changes which route runs.
+//! Every HTTP adapter must pass this suite — `conformance_suite!` instantiates
+//! the six cases per adapter. The discriminating cases are the ones a
+//! post-routing anchor cannot satisfy: method mismatch (405), CORS preflight
+//! to a route without an OPTIONS handler, and a path rewrite that changes
+//! which route runs.
 //!
 //! `#[serial]` must precede `#[localset_test]` — the localset macro rebuilds
 //! the function and drops any attribute written after it.
@@ -16,7 +17,6 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serial_test::serial;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::{async_trait, controller, get, module, routes, Body as ToniBody, ToniFactory};
 
@@ -112,20 +112,17 @@ impl ConformanceController {
 #[module(controllers: [ConformanceController])]
 impl ConformanceModule {}
 
-async fn start_server() -> TestServer {
+async fn boot(adapter: impl toni::HttpAdapter + 'static) -> TestServer {
     let mut factory = ToniFactory::new();
     factory
         .use_global_middleware(Arc::new(Recording))
         .use_global_middleware(Arc::new(Block))
         .use_global_middleware(Arc::new(Preflight))
         .use_global_middleware(Arc::new(Rewrite));
-    TestServer::start_with(factory, ConformanceModule).await
+    TestServer::start_adapter(factory, ConformanceModule, adapter).await
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn chain_runs_on_matched_route() {
-    let server = start_server().await;
+async fn case_matched_route(server: TestServer) {
     drain();
 
     let resp = server
@@ -141,10 +138,7 @@ async fn chain_runs_on_matched_route() {
     assert_eq!(drain(), vec!["chain:GET /probe", "handler:probe"]);
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn chain_runs_on_unknown_path() {
-    let server = start_server().await;
+async fn case_unknown_path(server: TestServer) {
     drain();
 
     let resp = server
@@ -163,10 +157,7 @@ async fn chain_runs_on_unknown_path() {
     assert_eq!(drain(), vec!["chain:GET /missing"]);
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn chain_runs_on_method_mismatch() {
-    let server = start_server().await;
+async fn case_method_mismatch(server: TestServer) {
     drain();
 
     // /probe only has GET — the adapter's native router answers 405.
@@ -186,10 +177,7 @@ async fn chain_runs_on_method_mismatch() {
     assert_eq!(drain(), vec!["chain:POST /probe"]);
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn middleware_answers_preflight() {
-    let server = start_server().await;
+async fn case_preflight(server: TestServer) {
     drain();
 
     // No OPTIONS handler exists for /probe — middleware must still see and
@@ -215,10 +203,7 @@ async fn middleware_answers_preflight() {
     assert_eq!(drain(), vec!["chain:OPTIONS /probe"]);
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn middleware_short_circuits_before_handler() {
-    let server = start_server().await;
+async fn case_short_circuit(server: TestServer) {
     drain();
 
     let resp = server
@@ -234,10 +219,7 @@ async fn middleware_short_circuits_before_handler() {
     assert_eq!(drain(), vec!["chain:GET /probe"], "handler must not run");
 }
 
-#[serial(global_chain)]
-#[tokio_localset_test::localset_test]
-async fn request_rewrite_changes_matched_route() {
-    let server = start_server().await;
+async fn case_rewrite(server: TestServer) {
     drain();
 
     // No /rewritten route exists; middleware rewrites the path to /alpha.
@@ -256,3 +238,50 @@ async fn request_rewrite_changes_matched_route() {
     assert_eq!(resp.text().await.unwrap(), "alpha");
     assert_eq!(drain(), vec!["chain:GET /rewritten", "handler:alpha"]);
 }
+
+macro_rules! conformance_suite {
+    ($adapter_mod:ident, $adapter:expr) => {
+        mod $adapter_mod {
+            use serial_test::serial;
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn chain_runs_on_matched_route() {
+                super::case_matched_route(super::boot($adapter).await).await;
+            }
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn chain_runs_on_unknown_path() {
+                super::case_unknown_path(super::boot($adapter).await).await;
+            }
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn chain_runs_on_method_mismatch() {
+                super::case_method_mismatch(super::boot($adapter).await).await;
+            }
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn middleware_answers_preflight() {
+                super::case_preflight(super::boot($adapter).await).await;
+            }
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn middleware_short_circuits_before_handler() {
+                super::case_short_circuit(super::boot($adapter).await).await;
+            }
+
+            #[serial(global_chain)]
+            #[tokio_localset_test::localset_test]
+            async fn request_rewrite_changes_matched_route() {
+                super::case_rewrite(super::boot($adapter).await).await;
+            }
+        }
+    };
+}
+
+conformance_suite!(axum, toni_axum::AxumAdapter::new());
+conformance_suite!(poem, toni_poem::PoemAdapter::new());

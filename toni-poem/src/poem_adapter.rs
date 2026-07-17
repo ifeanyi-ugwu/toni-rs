@@ -168,10 +168,45 @@ fn json_error_response(status: u16, message: String) -> HttpResponse {
     }
 }
 
-/// Poem endpoint that bridges a single toni HTTP route through the adapter context.
+/// Rebuild a poem `Body` from toni's, preserving streaming.
+fn toni_body_to_poem(body: RequestBody) -> PoemBody {
+    match body {
+        RequestBody::Buffered(bytes) => PoemBody::from_bytes(bytes),
+        RequestBody::Streaming(stream) => {
+            PoemBody::from_bytes_stream(stream.into_data_stream().map_err(std::io::Error::other))
+        }
+    }
+}
+
+/// Wraps whatever the router produced — a toni handler's response, a
+/// method-mismatch 405, a WebSocket handshake reply — back into toni's
+/// response type for the chain to observe. The body is re-wrapped, not read,
+/// so streaming responses flow through untouched.
+fn poem_response_to_toni(res: PoemResponse) -> HttpResponse {
+    let (parts, body) = res.into_parts();
+    let headers = parts
+        .headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect();
+    let inner: http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error> = body.into();
+    let boxed = inner
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed_unsync();
+    HttpResponse {
+        status: parts.status.as_u16(),
+        headers,
+        body: Some(ToniBody::from_box_body(boxed)),
+    }
+}
+
+/// Poem endpoint that bridges a single toni HTTP route.
 struct ToniEndpoint {
     handler: Arc<dyn RequestHandler>,
-    ctx: Arc<AdapterContext>,
 }
 
 impl Endpoint for ToniEndpoint {
@@ -180,39 +215,85 @@ impl Endpoint for ToniEndpoint {
     async fn call(&self, req: PoemRequest) -> poem::Result<Self::Output> {
         let (parts, body) = split_request(req);
         let http_req = HttpRequest::from_parts(parts, body);
-
-        let handler = self.handler.clone();
-        let http_res = self
-            .ctx
-            .execute(http_req, move |req| {
-                let handler = handler.clone();
-                Box::pin(async move { handler.handle(req).await })
-            })
-            .await;
-
+        let http_res = self.handler.handle(http_req).await;
         Ok(toni_response_to_poem(http_res))
     }
 }
 
-/// Catch-all endpoint that emits the standard toni 404 through the global chain.
-struct ToniFallbackEndpoint {
-    ctx: Arc<AdapterContext>,
-}
+/// Catch-all endpoint that emits the standard toni 404 shape.
+struct ToniFallbackEndpoint;
 
 impl Endpoint for ToniFallbackEndpoint {
     type Output = PoemResponse;
 
     async fn call(&self, req: PoemRequest) -> poem::Result<Self::Output> {
-        let (parts, body) = split_request(req);
-        let http_req = HttpRequest::from_parts(parts, body);
+        let method = req.method().as_str().to_uppercase();
+        let path = req.uri().path().to_string();
+        Ok(toni_response_to_poem(json_error_response(
+            404,
+            format!("Cannot {} {}", method, path),
+        )))
+    }
+}
+
+/// Wraps the finished router: the global middleware chain runs once per
+/// request, before route matching. The request the chain forwards is the one
+/// the router matches on, so middleware can rewrite paths, short-circuit
+/// (auth, CORS preflight), and observe every response the router produces
+/// natively — including 404s, 405s, and WebSocket handshakes.
+struct GlobalChainEndpoint {
+    inner: Arc<BoxEndpoint<'static, PoemResponse>>,
+    ctx: Arc<AdapterContext>,
+}
+
+impl Endpoint for GlobalChainEndpoint {
+    type Output = PoemResponse;
+
+    async fn call(&self, mut req: PoemRequest) -> poem::Result<Self::Output> {
+        // Pre-routing: no path params yet; the per-route endpoint reads them
+        // after poem matches.
+        let body = req.take_body();
+        let mut builder = http::Request::builder()
+            .method(req.method().clone())
+            .uri(req.uri().clone())
+            .version(req.version());
+        if let Some(headers) = builder.headers_mut() {
+            *headers = req.headers().clone();
+        }
+        let built = builder.body(()).expect("valid request parts");
+        let (mut parts, _) = built.into_parts();
+        parts.extensions = req.extensions().clone();
+        let http_req = HttpRequest::from_parts(parts, poem_body_to_toni(body));
+
+        // The poem request shell keeps state http parts cannot carry — the
+        // WebSocket upgrade slot — so the chain's output is written back onto
+        // the original request instead of rebuilding one. Take-once: the
+        // chain invokes routing at most once.
+        let shell = Arc::new(std::sync::Mutex::new(Some(req)));
+        let inner = self.inner.clone();
 
         let http_res = self
             .ctx
-            .execute(http_req, |req| {
+            .execute(http_req, move |treq| {
+                let inner = inner.clone();
+                let shell = shell.clone();
                 Box::pin(async move {
-                    let method = req.method().as_str().to_uppercase();
-                    let path = req.uri().path().to_string();
-                    json_error_response(404, format!("Cannot {} {}", method, path))
+                    let taken = shell.lock().unwrap().take();
+                    let Some(mut poem_req) = taken else {
+                        return json_error_response(500, "request already consumed".into());
+                    };
+                    let (parts, body) = treq.into_parts();
+                    poem_req.set_method(parts.method);
+                    *poem_req.uri_mut() = parts.uri;
+                    poem_req.set_version(parts.version);
+                    *poem_req.headers_mut() = parts.headers;
+                    *poem_req.extensions_mut() = parts.extensions;
+                    poem_req.set_body(toni_body_to_poem(body));
+
+                    match inner.call(poem_req).await {
+                        Ok(res) => poem_response_to_toni(res),
+                        Err(err) => poem_response_to_toni(err.into_response()),
+                    }
                 })
             })
             .await;
@@ -364,16 +445,10 @@ fn attach_method(
 /// method-handler pair for a given path into one `RouteMethod` before mounting.
 fn build_method_routes(
     routes: Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>,
-    ctx: &Arc<AdapterContext>,
 ) -> Vec<(String, RouteMethod)> {
     let mut by_path: HashMap<String, RouteMethod> = HashMap::new();
     for (method, path, handler) in routes {
-        let endpoint = ToniEndpoint {
-            handler,
-            ctx: ctx.clone(),
-        }
-        .map_to_response()
-        .boxed();
+        let endpoint = ToniEndpoint { handler }.map_to_response().boxed();
         let entry = by_path.entry(path).or_insert_with(RouteMethod::new);
         let current = std::mem::replace(entry, RouteMethod::new());
         *entry = attach_method(current, method, endpoint);
@@ -406,21 +481,24 @@ impl HttpAdapter for PoemAdapter {
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
-        let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
 
         let mut route = Route::new();
-        for (path, route_method) in build_method_routes(routes, &ctx) {
+        for (path, route_method) in build_method_routes(routes) {
             route = route.at(path, route_method);
         }
         for (path, callbacks) in ws_routes {
             let ws_endpoint = ToniWsEndpoint { callbacks };
             route = route.at(path, ws_endpoint);
         }
-        let fallback = ToniFallbackEndpoint { ctx: ctx.clone() };
         // `*path` is poem's wildcard syntax — matches any unmatched segment tail.
-        let route = route.at("/*toni_fallback", fallback);
+        let route = route.at("/*toni_fallback", ToniFallbackEndpoint);
+
+        let service = GlobalChainEndpoint {
+            inner: Arc::new(route.boxed()),
+            ctx: Arc::new(ctx),
+        };
 
         let addr = format!("{}:{}", hostname, port);
         let listener = TcpListener::bind(addr.clone());
@@ -440,7 +518,7 @@ impl HttpAdapter for PoemAdapter {
                 let _ = shutdown_rx.wait_for(|v| *v).await;
             };
             if let Err(e) = Server::new_with_acceptor(acceptor)
-                .run_with_graceful_shutdown(route, signal, None)
+                .run_with_graceful_shutdown(service, signal, None)
                 .await
             {
                 tracing::error!(error = %e, "HTTP server error");
