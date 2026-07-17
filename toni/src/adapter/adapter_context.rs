@@ -15,7 +15,8 @@ use crate::{
 ///
 /// TODO: add graceful shutdown signal.
 pub struct AdapterContext {
-    /// Runs before the adapter's routing on every request, including 404s.
+    /// Runs before the adapter's routing on every request — including
+    /// unknown paths (404) and method mismatches (405).
     pub global_chain: Arc<MiddlewareChain>,
 }
 
@@ -28,9 +29,13 @@ impl AdapterContext {
 
     /// Run `routing` through the global middleware chain.
     ///
-    /// Call this once per incoming request. `routing` is the adapter's own
-    /// path-matching logic — it runs after all global middleware has executed.
-    /// Unhandled middleware errors produce a 500 response.
+    /// Call this once per incoming request, before route resolution:
+    /// `routing` must be the adapter's entire match-and-dispatch step, not a
+    /// single matched handler. The request the chain hands to `routing` is
+    /// the one the router must match on — middleware may have rewritten it —
+    /// and middleware that never calls `routing` has short-circuited the
+    /// request (auth rejections, CORS preflight). Unhandled middleware
+    /// errors produce a 500 response.
     pub async fn execute<F>(&self, req: HttpRequest, routing: F) -> HttpResponse
     where
         F: Fn(HttpRequest) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>

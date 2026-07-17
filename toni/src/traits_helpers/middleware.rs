@@ -54,11 +54,20 @@ impl NextHandle {
 
 /// Intercepts a request before it reaches the controller.
 ///
-/// Middleware runs after routing is resolved but before guards, interceptors,
-/// and the controller:
+/// Middleware runs at two anchor points:
+///
+/// - **Global** (`use_global_middleware` on the factory): before the adapter
+///   resolves the route. It sees every inbound request — including ones that
+///   end in 404 or 405 — and may short-circuit by returning a response
+///   without calling `next` (auth rejections, CORS preflight). The request it
+///   forwards is the one routing matches on, so rewriting the URI changes
+///   which route runs.
+/// - **Module-scoped** (a module's middleware configuration): after routing,
+///   on the matched route only, before guards.
 ///
 /// ```text
-/// request → middleware chain → guards → interceptors → pipes → controller
+/// request → global middleware → routing → module middleware → guards
+///         → interceptors → pipes → controller
 /// ```
 ///
 /// ## Body access
