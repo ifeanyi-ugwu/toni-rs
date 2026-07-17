@@ -579,7 +579,23 @@ impl ToniContainer {
             }
 
             if ready_modules.is_empty() {
-                // No modules are ready - circular dependency
+                // The remaining modules form an import cycle. An import edge is a
+                // visibility relationship, not a construction dependency, so a cycle
+                // here is not inherently fatal — dropping these modules would silently
+                // omit their providers. Append them in a deterministic order and let
+                // the Phase-1 deferred-retry loop resolve instantiation order (or, if
+                // their providers genuinely cross-depend, surface a precise cycle error).
+                let mut remaining: Vec<String> = self
+                    .modules
+                    .keys()
+                    .filter(|token| !visited.contains_key(*token))
+                    .cloned()
+                    .collect();
+                remaining.sort();
+                for token in remaining {
+                    ordered_modules.push(token.clone());
+                    visited.insert(token, true);
+                }
                 break;
             }
 
