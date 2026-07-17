@@ -1,11 +1,17 @@
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use actix_web::{
-    web, web::Bytes, App, HttpRequest as ActixHttpRequest, HttpResponse as ActixHttpResponse,
-    HttpServer,
+use actix_web::body::BoxBody;
+use actix_web::dev::{
+    forward_ready, Payload, Service as ActixService, ServiceRequest, ServiceResponse, Transform,
 };
+use actix_web::{
+    web, web::Bytes, App, Error as ActixError, FromRequest, HttpMessage,
+    HttpRequest as ActixHttpRequest, HttpResponse as ActixHttpResponse, HttpServer, ResponseError,
+};
+use futures_util::future::LocalBoxFuture;
 use toni::{
     http_helpers::{PathParams, RequestBody},
     AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
@@ -136,6 +142,230 @@ impl ActixAdapter {
     }
 }
 
+fn json_error_response(status: u16, message: String) -> HttpResponse {
+    HttpResponse {
+        status,
+        headers: vec![],
+        body: Some(ToniBody::json(serde_json::json!({
+            "statusCode": status,
+            "message": message,
+            "error": match status {
+                404 => "Not Found",
+                405 => "Method Not Allowed",
+                _ => "Internal Server Error",
+            },
+        }))),
+    }
+}
+
+/// Match a toni-form path pattern (`/users/:id`) against a concrete path.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let mut pattern_segs = pattern.split('/').filter(|s| !s.is_empty());
+    let mut path_segs = path.split('/').filter(|s| !s.is_empty());
+    loop {
+        match (pattern_segs.next(), path_segs.next()) {
+            (None, None) => return true,
+            (Some(p), Some(s)) if p.starts_with(':') || p == s => {}
+            _ => return false,
+        }
+    }
+}
+
+fn bytes_to_payload(bytes: Bytes) -> Payload {
+    let stream = futures_util::stream::once(std::future::ready(Ok::<
+        _,
+        actix_web::error::PayloadError,
+    >(bytes)));
+    Payload::Stream {
+        payload: Box::pin(stream),
+    }
+}
+
+/// Wraps whatever the router produced back into toni's response type for the
+/// chain to observe. Bodies are collected — this adapter buffers in both
+/// directions by design.
+async fn actix_response_to_toni(res: ActixHttpResponse<BoxBody>) -> HttpResponse {
+    let status = res.status().as_u16();
+    let headers = res
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect();
+    let bytes = actix_web::body::to_bytes(res.into_body())
+        .await
+        .unwrap_or_else(|_| Bytes::new());
+    HttpResponse {
+        status,
+        headers,
+        body: if bytes.is_empty() {
+            None
+        } else {
+            Some(ToniBody::from(bytes))
+        },
+    }
+}
+
+/// App-level middleware factory: the global chain runs once per request,
+/// before actix resolves the route. The request the chain forwards is the one
+/// routing matches on, so middleware can rewrite paths, short-circuit (auth,
+/// CORS preflight), and observe every response — including 404s and 405s.
+struct GlobalChain {
+    ctx: Arc<AdapterContext>,
+}
+
+impl<S> Transform<S, ServiceRequest> for GlobalChain
+where
+    S: ActixService<ServiceRequest, Response = ServiceResponse<BoxBody>, Error = ActixError>
+        + 'static,
+{
+    type Response = ServiceResponse<BoxBody>;
+    type Error = ActixError;
+    type Transform = GlobalChainMiddleware<S>;
+    type InitError = ();
+    type Future = std::future::Ready<std::result::Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        std::future::ready(Ok(GlobalChainMiddleware {
+            service: Rc::new(service),
+            ctx: self.ctx.clone(),
+        }))
+    }
+}
+
+struct GlobalChainMiddleware<S> {
+    service: Rc<S>,
+    ctx: Arc<AdapterContext>,
+}
+
+impl<S> ActixService<ServiceRequest> for GlobalChainMiddleware<S>
+where
+    S: ActixService<ServiceRequest, Response = ServiceResponse<BoxBody>, Error = ActixError>
+        + 'static,
+{
+    type Response = ServiceResponse<BoxBody>;
+    type Error = ActixError;
+    type Future = LocalBoxFuture<'static, std::result::Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        let srv = self.service.clone();
+        let ctx = self.ctx.clone();
+        Box::pin(async move {
+            let mut payload = req.take_payload();
+            let bytes = Bytes::from_request(req.request(), &mut payload)
+                .await
+                .unwrap_or_default();
+
+            // The clone is consumed by adapt_request before the dispatch
+            // below runs — head_mut requires the request's inner Rc to be
+            // unique, so no clone may live across the join.
+            let http_req = match ActixAdapter::adapt_request((req.request().clone(), bytes)).await {
+                Ok(r) => r,
+                Err(_) => {
+                    let (base, _) = req.into_parts();
+                    let res = ActixHttpResponse::InternalServerError().finish();
+                    return Ok(ServiceResponse::new(base, res));
+                }
+            };
+
+            // Channel bridge: the chain requires a Send routing closure, but
+            // actix's inner service is worker-local (!Send). The closure hands
+            // the request to — and awaits the response from — the local
+            // dispatch future joined alongside the chain below.
+            let (req_tx, req_rx) = tokio::sync::oneshot::channel::<HttpRequest>();
+            let (res_tx, res_rx) = tokio::sync::oneshot::channel::<HttpResponse>();
+            let req_tx = Arc::new(std::sync::Mutex::new(Some(req_tx)));
+            let res_rx = Arc::new(std::sync::Mutex::new(Some(res_rx)));
+
+            let chain_fut = ctx.execute(http_req, move |treq| {
+                let req_tx = req_tx.clone();
+                let res_rx = res_rx.clone();
+                Box::pin(async move {
+                    let tx = req_tx.lock().unwrap().take();
+                    let rx = res_rx.lock().unwrap().take();
+                    let (Some(tx), Some(rx)) = (tx, rx) else {
+                        return json_error_response(500, "request already consumed".into());
+                    };
+                    if tx.send(treq).is_err() {
+                        return json_error_response(500, "dispatch unavailable".into());
+                    }
+                    rx.await
+                        .unwrap_or_else(|_| json_error_response(500, "dispatch dropped".into()))
+                })
+            });
+
+            // Resolves to the request the final ServiceResponse is built
+            // from — either un-dispatched (chain short-circuited) or the one
+            // that travelled through routing.
+            let local_fut = async move {
+                let Ok(treq) = req_rx.await else {
+                    return Some(req.into_parts().0);
+                };
+                let (parts, body) = treq.into_parts();
+
+                {
+                    let head = req.head_mut();
+                    if let Ok(m) = parts.method.as_str().parse() {
+                        head.method = m;
+                    }
+                    if let Ok(u) = parts.uri.to_string().parse::<actix_web::http::Uri>() {
+                        head.uri = u;
+                    }
+                    head.headers.clear();
+                    for (k, v) in parts.headers.iter() {
+                        if let (Ok(name), Ok(value)) = (
+                            actix_web::http::header::HeaderName::from_bytes(k.as_str().as_bytes()),
+                            actix_web::http::header::HeaderValue::from_bytes(v.as_bytes()),
+                        ) {
+                            head.headers.append(name, value);
+                        }
+                    }
+                }
+                // Routing matches on `match_info`, built before this
+                // middleware ran — refresh it from the rewritten URI.
+                let uri = req.head().uri.clone();
+                req.match_info_mut().get_mut().update(&uri);
+
+                let bytes = body.collect().await.unwrap_or_default();
+                req.set_payload(bytes_to_payload(bytes));
+
+                // No request clone may live across this call — actix's router
+                // mutates match_info through Rc::get_mut during matching.
+                let (ret_req, toni_res) = match srv.call(req).await {
+                    Ok(sr) => {
+                        let (r, res) = sr.into_parts();
+                        (Some(r), actix_response_to_toni(res).await)
+                    }
+                    Err(e) => (None, actix_response_to_toni(e.error_response()).await),
+                };
+                let _ = res_tx.send(toni_res);
+                ret_req
+            };
+
+            let (http_res, base_req) = futures_util::join!(chain_fut, local_fut);
+
+            // The dispatch consumed the request without returning it — an
+            // inner service error. The chain observed the error's response;
+            // actix renders the propagated error for the client.
+            let Some(base_req) = base_req else {
+                return Err(actix_web::error::ErrorInternalServerError(
+                    "router dispatch failed",
+                ));
+            };
+
+            let actix_res = ActixAdapter::adapt_response(http_res)
+                .await
+                .unwrap_or_else(|_| ActixHttpResponse::InternalServerError().finish());
+            Ok(ServiceResponse::new(base_req, actix_res))
+        })
+    }
+}
+
 #[toni::async_trait]
 impl HttpAdapter for ActixAdapter {
     fn bind(
@@ -157,31 +387,29 @@ impl HttpAdapter for ActixAdapter {
         let addr = format!("{}:{}", hostname, port);
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
+        let route_table: Arc<Vec<(HttpMethod, String)>> = Arc::new(
+            routes
+                .iter()
+                .map(|(method, path, _)| (*method, path.clone()))
+                .collect(),
+        );
 
         let bound = HttpServer::new(move || {
-            let ctx = ctx.clone();
             let mut app = App::new();
             for (method, path, handler) in &routes {
                 let actix_method = to_actix_method(*method);
                 let actix_path = to_actix_path(path);
                 let handler = handler.clone();
-                let ctx = ctx.clone();
                 app = app.route(
                     &actix_path,
                     web::method(actix_method).to(move |req: ActixHttpRequest, body: Bytes| {
                         let handler = handler.clone();
-                        let ctx = ctx.clone();
                         async move {
                             let http_req = match Self::adapt_request((req, body)).await {
                                 Ok(r) => r,
                                 Err(_) => return ActixHttpResponse::InternalServerError().finish(),
                             };
-                            let http_res = ctx
-                                .execute(http_req, move |req| {
-                                    let handler = handler.clone();
-                                    Box::pin(async move { handler.handle(req).await })
-                                })
-                                .await;
+                            let http_res = handler.handle(http_req).await;
                             Self::adapt_response(http_res).await.unwrap_or_else(|_| {
                                 ActixHttpResponse::InternalServerError().finish()
                             })
@@ -189,36 +417,39 @@ impl HttpAdapter for ActixAdapter {
                     }),
                 );
             }
-            let ctx_fallback = ctx.clone();
-            app.default_service(web::to(move |req: ActixHttpRequest, body: Bytes| {
-                let ctx = ctx_fallback.clone();
+            // Method-aware fallback: actix tries each resource in turn, so a
+            // known path with the wrong method also lands here — answer 405
+            // with an Allow header; unknown paths get the 404 shape.
+            let route_table = route_table.clone();
+            app.default_service(web::to(move |req: ActixHttpRequest| {
+                let routes = route_table.clone();
                 async move {
-                    let http_req = match Self::adapt_request((req, body)).await {
-                        Ok(r) => r,
-                        Err(_) => return ActixHttpResponse::InternalServerError().finish(),
+                    let method = req.method().as_str().to_uppercase();
+                    let path = req.path().to_string();
+
+                    let allowed: Vec<String> = routes
+                        .iter()
+                        .filter(|(_, pattern)| path_matches(pattern, &path))
+                        .map(|(m, _)| format!("{:?}", m))
+                        .collect();
+
+                    let http_res = if allowed.is_empty() {
+                        json_error_response(404, format!("Cannot {} {}", method, path))
+                    } else {
+                        let mut res = json_error_response(
+                            405,
+                            format!("Method {} not allowed for {}", method, path),
+                        );
+                        res.headers.push(("allow".into(), allowed.join(", ")));
+                        res
                     };
-                    let http_res = ctx
-                        .execute(http_req, |req| {
-                            Box::pin(async move {
-                                let method = req.method().as_str().to_uppercase();
-                                let path = req.uri().path().to_string();
-                                HttpResponse {
-                                    status: 404,
-                                    headers: vec![],
-                                    body: Some(ToniBody::json(serde_json::json!({
-                                        "statusCode": 404,
-                                        "message": format!("Cannot {} {}", method, path),
-                                        "error": "Not Found"
-                                    }))),
-                                }
-                            })
-                        })
-                        .await;
+
                     Self::adapt_response(http_res)
                         .await
                         .unwrap_or_else(|_| ActixHttpResponse::InternalServerError().finish())
                 }
             }))
+            .wrap(GlobalChain { ctx: ctx.clone() })
         })
         .bind(&addr)
         .with_context(|| format!("Failed to bind to {}", addr))?;
