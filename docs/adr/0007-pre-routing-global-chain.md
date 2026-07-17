@@ -67,6 +67,17 @@ rather than being reconstituted into the salvo request; and salvo's router canno
 method mismatch from an unmatched path (method and path are both opaque filters), so the fallback
 consults the route table and answers 405 with an `Allow` header itself.
 
+**Actix realization**: an App-level `Transform` middleware — routing happens inside the wrapped
+service, so the middleware position is genuinely pre-routing. The distinctive constraint is `Send`:
+the chain requires a `Send` routing closure, but actix's inner service is worker-local (`!Send`,
+`Rc`-based). A oneshot channel bridge closes the gap — the routing closure sends the request to,
+and awaits the response from, a worker-local dispatch future joined alongside the chain in the same
+task. Mutations write back through `head_mut` plus a `match_info` refresh (the `NormalizePath`
+precedent), which requires that no clone of the request exist during dispatch — actix's router
+mutates `match_info` through `Rc::get_mut` while matching. The fallback carries the same
+route-table 405 logic as salvo, since actix also falls through to `default_service` on method
+mismatch.
+
 ## Considered and rejected
 
 **A toni-owned router (`matchit`) in the serve path.** It would make the five native routers dumb
@@ -83,9 +94,9 @@ adapter-independent portless handler — both out of scope here.
   `app.use` semantics.
 - Same-port WebSocket handshake requests now traverse the chain (they bypassed it before). This is
   intended: the handshake is an HTTP request, and middleware can now reject upgrades.
-- Conformance status: **axum, poem, and salvo pass**; actix and rocket still anchor post-routing
-  and need the same re-anchor against the suite. Rocket is the constrained one — fairings cannot
-  short-circuit, so it may need internal matching to conform fully.
+- Conformance status: **axum, poem, salvo, and actix pass**; rocket still anchors post-routing.
+  Rocket is the constrained one — fairings cannot short-circuit, so it may need internal matching
+  to conform fully.
 - The composed value — chain wrapped around router — is one `tower::Service`. Binding the socket is
   the only step after composition, which is the natural seam for portless dispatch (in-process
   testing, serverless) if that lands later.
