@@ -27,6 +27,16 @@ impl TestServer {
 
     /// Boot with a pre-configured factory (global middleware, enhancers, …).
     pub async fn start_with(factory: ToniFactory, module: impl ModuleMetadata + 'static) -> Self {
+        Self::start_adapter(factory, module, AxumAdapter::new()).await
+    }
+
+    /// Boot on a specific HTTP adapter — the parameterization point for
+    /// suites that must run against every adapter (global-chain conformance).
+    pub async fn start_adapter(
+        factory: ToniFactory,
+        module: impl ModuleMetadata + 'static,
+        adapter: impl toni::HttpAdapter + 'static,
+    ) -> Self {
         init_tracing();
 
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
@@ -34,8 +44,7 @@ impl TestServer {
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
             let mut app = factory.create_with(module).await;
-            app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
-                .unwrap();
+            app.use_http_adapter(adapter, 0, "127.0.0.1").unwrap();
             let bound = app.bind().await.unwrap();
             let addr = bound.http.expect("HTTP adapter not bound");
             let _ = addr_tx.send(addr);
