@@ -58,6 +58,15 @@ slot and the chain's output (method, URI, headers, extensions, body) is written 
 routing — rebuilding the request would drop the upgrade. Router errors (`MethodNotAllowedError`
 et al.) convert via `into_response()`, which is how 405s reach the chain.
 
+**Salvo realization**: salvo has no substitutable service type — `Server::serve` takes the
+concrete `salvo::Service` — so the chain anchors as the goal of a catch-all router and drives an
+inner `Service` through salvo's public `hyper_handler` entry, with the request shell threaded the
+same way as poem's. Two host constraints shape the rest: `ReqBody::Boxed`'s inner type is
+crate-private, so the chain's request body rides to the route handlers in a request extension
+rather than being reconstituted into the salvo request; and salvo's router cannot distinguish a
+method mismatch from an unmatched path (method and path are both opaque filters), so the fallback
+consults the route table and answers 405 with an `Allow` header itself.
+
 ## Considered and rejected
 
 **A toni-owned router (`matchit`) in the serve path.** It would make the five native routers dumb
@@ -74,7 +83,7 @@ adapter-independent portless handler — both out of scope here.
   `app.use` semantics.
 - Same-port WebSocket handshake requests now traverse the chain (they bypassed it before). This is
   intended: the handshake is an HTTP request, and middleware can now reject upgrades.
-- Conformance status: **axum and poem pass**; actix, rocket, and salvo still anchor post-routing
+- Conformance status: **axum, poem, and salvo pass**; actix and rocket still anchor post-routing
   and need the same re-anchor against the suite. Rocket is the constrained one — fairings cannot
   short-circuit, so it may need internal matching to conform fully.
 - The composed value — chain wrapped around router — is one `tower::Service`. Binding the socket is

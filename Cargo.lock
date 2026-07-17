@@ -3228,6 +3228,7 @@ dependencies = [
  "toni-grpc",
  "toni-macros",
  "toni-poem",
+ "toni-salvo",
  "toni-tcp",
  "toni-tungstenite",
  "toni-udp",

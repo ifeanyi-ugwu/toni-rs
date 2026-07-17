@@ -191,15 +191,63 @@ fn json_error_response(status: u16, message: String) -> HttpResponse {
         body: Some(ToniBody::json(serde_json::json!({
             "statusCode": status,
             "message": message,
-            "error": if status == 404 { "Not Found" } else { "Internal Server Error" },
+            "error": match status {
+                404 => "Not Found",
+                405 => "Method Not Allowed",
+                _ => "Internal Server Error",
+            },
         }))),
     }
 }
 
-/// Salvo handler that bridges a single toni HTTP route through the adapter context.
+/// Carries the chain's request body through the inner dispatch. Salvo's
+/// `ReqBody::Boxed` inner type is crate-private, so a streaming toni body
+/// cannot be reconstituted into a salvo request — it rides in a request
+/// extension instead (routing only needs method and path), and the route
+/// handlers take it from there.
+#[derive(Clone)]
+struct CarriedBody(Arc<std::sync::Mutex<Option<RequestBody>>>);
+
+/// The chain's body if the outer handler carried one, the native body otherwise
+/// (separate-port WebSocket servers dispatch without the chain wrapper).
+fn take_request_body(req: &mut SalvoRequest) -> RequestBody {
+    if let Some(carried) = req.extensions().get::<CarriedBody>() {
+        if let Some(body) = carried.0.lock().unwrap().take() {
+            return body;
+        }
+    }
+    take_streaming_body(req)
+}
+
+/// Wraps whatever the inner dispatch produced — a toni handler's response,
+/// the fallback's 404/405 — back into toni's response type for the chain to
+/// observe. The body is re-wrapped, not read, so streaming responses flow
+/// through untouched.
+fn salvo_response_to_toni(mut res: SalvoResponse) -> HttpResponse {
+    let status = res.status_code.map(|s| s.as_u16()).unwrap_or(200);
+    let headers = res
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect();
+    let boxed = res
+        .take_body()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed_unsync();
+    HttpResponse {
+        status,
+        headers,
+        body: Some(ToniBody::from_box_body(boxed)),
+    }
+}
+
+/// Salvo handler that bridges a single toni HTTP route.
 struct ToniRouteHandler {
     handler: Arc<dyn RequestHandler>,
-    ctx: Arc<AdapterContext>,
 }
 
 #[salvo_async_trait]
@@ -212,25 +260,33 @@ impl Handler for ToniRouteHandler {
         _ctrl: &mut FlowCtrl,
     ) {
         let parts = build_request_part(req);
-        let body = take_streaming_body(req);
+        let body = take_request_body(req);
         let http_req = HttpRequest::from_parts(parts, body);
-
-        let handler = self.handler.clone();
-        let http_res = self
-            .ctx
-            .execute(http_req, move |req| {
-                let handler = handler.clone();
-                Box::pin(async move { handler.handle(req).await })
-            })
-            .await;
-
+        let http_res = self.handler.handle(http_req).await;
         write_response(http_res, res);
     }
 }
 
-/// Salvo handler for the catch-all fallback — runs the global chain and emits a 404.
+/// Catch-all fallback with method-aware status: salvo's router cannot
+/// distinguish a method mismatch from an unmatched path (method and path are
+/// both opaque filters), so the fallback checks the route table — a known
+/// path with a different method answers 405 with an Allow header, everything
+/// else 404.
 struct ToniFallbackHandler {
-    ctx: Arc<AdapterContext>,
+    routes: Arc<Vec<(HttpMethod, String)>>,
+}
+
+/// Match a toni-form path pattern (`/users/:id`) against a concrete path.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let mut pattern_segs = pattern.split('/').filter(|s| !s.is_empty());
+    let mut path_segs = path.split('/').filter(|s| !s.is_empty());
+    loop {
+        match (pattern_segs.next(), path_segs.next()) {
+            (None, None) => return true,
+            (Some(p), Some(s)) if p.starts_with(':') || p == s => {}
+            _ => return false,
+        }
+    }
 }
 
 #[salvo_async_trait]
@@ -242,17 +298,88 @@ impl Handler for ToniFallbackHandler {
         res: &mut SalvoResponse,
         _ctrl: &mut FlowCtrl,
     ) {
-        let parts = build_request_part(req);
-        let body = take_streaming_body(req);
+        let method = req.method().as_str().to_uppercase();
+        let path = req.uri().path().to_string();
+
+        let allowed: Vec<String> = self
+            .routes
+            .iter()
+            .filter(|(_, pattern)| path_matches(pattern, &path))
+            .map(|(m, _)| format!("{:?}", m))
+            .collect();
+
+        let http_res = if allowed.is_empty() {
+            json_error_response(404, format!("Cannot {} {}", method, path))
+        } else {
+            let mut res =
+                json_error_response(405, format!("Method {} not allowed for {}", method, path));
+            res.headers.push(("allow".into(), allowed.join(", ")));
+            res
+        };
+
+        write_response(http_res, res);
+    }
+}
+
+/// Wraps the inner service: the global middleware chain runs once per
+/// request, before route matching. The request the chain forwards is the one
+/// the router matches on, so middleware can rewrite paths, short-circuit
+/// (auth, CORS preflight), and observe every response the inner dispatch
+/// produces — including 404s, 405s, and WebSocket handshakes.
+///
+/// Served as the goal of a catch-all router; the real router lives inside
+/// `inner` and is driven through salvo's public `hyper_handler` entry.
+struct GlobalChainHandler {
+    inner: Arc<salvo::Service>,
+    ctx: Arc<AdapterContext>,
+}
+
+#[salvo_async_trait]
+impl Handler for GlobalChainHandler {
+    async fn handle(
+        &self,
+        req: &mut SalvoRequest,
+        _depot: &mut Depot,
+        res: &mut SalvoResponse,
+        _ctrl: &mut FlowCtrl,
+    ) {
+        // The owned request keeps state http parts cannot carry (the
+        // WebSocket upgrade, connection addresses, scheme); the chain's
+        // output is written back onto it before the inner dispatch.
+        let mut owned = std::mem::take(req);
+        let parts = build_request_part(&owned);
+        let body = take_streaming_body(&mut owned);
         let http_req = HttpRequest::from_parts(parts, body);
+
+        let shell = Arc::new(std::sync::Mutex::new(Some(owned)));
+        let inner = self.inner.clone();
 
         let http_res = self
             .ctx
-            .execute(http_req, |req| {
+            .execute(http_req, move |treq| {
+                let inner = inner.clone();
+                let shell = shell.clone();
                 Box::pin(async move {
-                    let method = req.method().as_str().to_uppercase();
-                    let path = req.uri().path().to_string();
-                    json_error_response(404, format!("Cannot {} {}", method, path))
+                    let taken = shell.lock().unwrap().take();
+                    let Some(mut sreq) = taken else {
+                        return json_error_response(500, "request already consumed".into());
+                    };
+                    let (parts, body) = treq.into_parts();
+                    *sreq.method_mut() = parts.method;
+                    *sreq.uri_mut() = parts.uri;
+                    *sreq.headers_mut() = parts.headers;
+                    *sreq.extensions_mut() = parts.extensions;
+                    sreq.extensions_mut()
+                        .insert(CarriedBody(Arc::new(std::sync::Mutex::new(Some(body)))));
+
+                    let handler = inner.hyper_handler(
+                        sreq.local_addr().clone(),
+                        sreq.remote_addr().clone(),
+                        sreq.scheme().clone(),
+                        None,
+                        None,
+                    );
+                    salvo_response_to_toni(handler.handle(sreq).await)
                 })
             })
             .await;
@@ -416,17 +543,20 @@ impl HttpAdapter for SalvoAdapter {
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
-        let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
+
+        let route_table: Arc<Vec<(HttpMethod, String)>> = Arc::new(
+            routes
+                .iter()
+                .map(|(method, path, _)| (*method, path.clone()))
+                .collect(),
+        );
 
         let mut router = Router::new();
         for (method, path, handler) in routes {
             let salvo_path = to_salvo_path(&path);
-            let toni_handler = ToniRouteHandler {
-                handler,
-                ctx: ctx.clone(),
-            };
+            let toni_handler = ToniRouteHandler { handler };
             let sub = attach_method(Router::with_path(salvo_path), method, toni_handler);
             router = router.push(sub);
         }
@@ -435,8 +565,16 @@ impl HttpAdapter for SalvoAdapter {
             let ws_handler = ToniWsHandler { callbacks };
             router = router.push(Router::with_path(salvo_path).goal(ws_handler));
         }
-        let fallback = ToniFallbackHandler { ctx: ctx.clone() };
+        let fallback = ToniFallbackHandler {
+            routes: route_table,
+        };
         router = router.push(Router::with_path("{**rest}").goal(fallback));
+
+        let chain = GlobalChainHandler {
+            inner: Arc::new(salvo::Service::new(router)),
+            ctx: Arc::new(ctx),
+        };
+        let router = Router::with_path("{**rest}").goal(chain);
 
         let addr = format!("{}:{}", hostname, port);
         let acceptor = TcpListener::new(addr.clone())
