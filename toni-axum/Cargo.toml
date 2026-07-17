@@ -10,6 +10,7 @@ categories = ["web-programming::http-server"]
 [dependencies]
 toni = { path = "../toni" }
 axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 tracing = "0.1"

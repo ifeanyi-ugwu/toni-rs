@@ -7300,6 +7300,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toni",
+ "tower",
  "tracing",
  "uuid",
 ]
