@@ -17,6 +17,7 @@ toni-macros = { path = "../toni-macros" }
 toni-axum = { path = "../toni-axum" }
 toni-poem = { path = "../toni-poem" }
 toni-salvo = { path = "../toni-salvo" }
+toni-actix = { path = "../toni-actix" }
 toni-tungstenite = { path = "../toni-tungstenite" }
 toni-tcp = { path = "../toni-tcp" }
 toni-udp = { path = "../toni-udp" }

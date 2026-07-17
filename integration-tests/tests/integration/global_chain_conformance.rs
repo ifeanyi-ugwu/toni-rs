@@ -286,3 +286,4 @@ macro_rules! conformance_suite {
 conformance_suite!(axum, toni_axum::AxumAdapter::new());
 conformance_suite!(poem, toni_poem::PoemAdapter::new());
 conformance_suite!(salvo, toni_salvo::SalvoAdapter::new());
+conformance_suite!(actix, toni_actix::ActixAdapter::new());
