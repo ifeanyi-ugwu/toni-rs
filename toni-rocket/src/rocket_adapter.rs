@@ -58,86 +58,40 @@ impl Default for RocketAdapter {
     }
 }
 
-/// Convert toni's `:param` syntax to rocket's `<param>` (and `*tail` to
-/// `<tail..>`). Rocket's URI parser would otherwise reject toni's paths.
-fn to_rocket_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len() + 4);
-    let mut chars = path.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            ':' if chars.peek().is_some_and(|&n| n != '/') => {
-                out.push('<');
-                while let Some(&n) = chars.peek() {
-                    if n == '/' {
-                        break;
-                    }
-                    out.push(n);
-                    chars.next();
-                }
-                out.push('>');
-            }
-            '*' if chars.peek().is_some_and(|&n| n != '/') => {
-                out.push('<');
-                while let Some(&n) = chars.peek() {
-                    if n == '/' {
-                        break;
-                    }
-                    out.push(n);
-                    chars.next();
-                }
-                out.push_str("..>");
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
+/// Match a toni-form path pattern (`/users/:id`, `/files/*tail`) against a
+/// concrete path, returning the captured parameters on match. Routing is
+/// internal to this adapter — rocket's router cannot host the pre-routing
+/// chain (fairings cannot short-circuit), so one catch-all route per method
+/// dispatches through this instead.
+fn match_route(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
+    let pattern_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
-fn to_rocket_method(method: HttpMethod) -> RocketMethod {
-    match method {
-        HttpMethod::GET => RocketMethod::Get,
-        HttpMethod::POST => RocketMethod::Post,
-        HttpMethod::PUT => RocketMethod::Put,
-        HttpMethod::DELETE => RocketMethod::Delete,
-        HttpMethod::PATCH => RocketMethod::Patch,
-        HttpMethod::HEAD => RocketMethod::Head,
-        HttpMethod::OPTIONS => RocketMethod::Options,
-        HttpMethod::TRACE => RocketMethod::Trace,
-        HttpMethod::CONNECT => RocketMethod::Connect,
-    }
-}
-
-/// Parse `(name, segment_index)` pairs out of a toni-style path. `:foo` and
-/// `*foo` count as dynamic; everything else is literal. Rocket's
-/// `Request::param(n)` keys off the **total** segment index (literals
-/// included), not the rank among dynamic segments — get this wrong and the
-/// extractor pulls the wrong slot. So we record the absolute index of each
-/// dynamic name within the non-empty segments.
-fn dynamic_param_names(toni_path: &str) -> Vec<(String, usize)> {
-    let mut params = Vec::new();
-    let mut idx = 0usize;
-    for segment in toni_path.split('/') {
-        let trimmed = segment.trim();
-        if trimmed.is_empty() {
-            continue;
+    let mut params = HashMap::new();
+    for (i, p) in pattern_segs.iter().enumerate() {
+        if let Some(name) = p.strip_prefix('*') {
+            params.insert(name.to_string(), path_segs[i..].join("/"));
+            return Some(params);
         }
-        if let Some(name) = trimmed.strip_prefix(':') {
-            params.push((name.to_string(), idx));
-        } else if let Some(name) = trimmed.strip_prefix('*') {
-            params.push((name.to_string(), idx));
+        match path_segs.get(i) {
+            Some(s) => {
+                if let Some(name) = p.strip_prefix(':') {
+                    params.insert(name.to_string(), s.to_string());
+                } else if p != s {
+                    return None;
+                }
+            }
+            None => return None,
         }
-        idx += 1;
     }
-    params
+    (path_segs.len() == pattern_segs.len()).then_some(params)
 }
 
 /// Build an `http::request::Parts` from a rocket `Request`. Rocket exposes
 /// method/uri/headers individually but no native conversion to `http`'s
-/// `Parts`, so we reconstruct via the builder. Path-parameter names are
-/// pre-parsed from the toni route at bind time (rocket's matched URI metadata
-/// is `pub(crate)`, so we can't introspect it here) and indexed via
-/// `req.param::<&str>(idx)`.
-fn extract_parts(req: &RocketRequest<'_>, param_names: &[(String, usize)]) -> RequestPart {
+/// `Parts`, so we reconstruct via the builder. Path parameters are not read
+/// here — internal routing captures them via [`match_route`].
+fn extract_parts(req: &RocketRequest<'_>) -> RequestPart {
     let method = http::Method::try_from(req.method().as_str()).unwrap_or(http::Method::GET);
     let uri_str = req.uri().to_string();
     let uri: http::Uri = uri_str.parse().unwrap_or_else(|_| http::Uri::default());
@@ -156,18 +110,7 @@ fn extract_parts(req: &RocketRequest<'_>, param_names: &[(String, usize)]) -> Re
     }
 
     let req_built = builder.body(()).expect("valid request parts");
-    let (mut http_parts, _) = req_built.into_parts();
-
-    let mut params: HashMap<String, String> = HashMap::new();
-    for (name, idx) in param_names {
-        if let Some(Ok(value)) = req.param::<&str>(*idx) {
-            params.insert(name.clone(), value.to_string());
-        }
-    }
-    if !params.is_empty() {
-        http_parts.extensions.insert(PathParams(params));
-    }
-
+    let (http_parts, _) = req_built.into_parts();
     http_parts
 }
 
@@ -238,102 +181,169 @@ fn json_error_response(status: u16, message: String) -> HttpResponse {
         body: Some(ToniBody::json(serde_json::json!({
             "statusCode": status,
             "message": message,
-            "error": if status == 404 { "Not Found" } else { "Internal Server Error" },
+            "error": match status {
+                404 => "Not Found",
+                405 => "Method Not Allowed",
+                _ => "Internal Server Error",
+            },
         }))),
     }
 }
 
-/// Rocket handler that bridges a single toni HTTP route through the adapter context.
-#[derive(Clone)]
-struct ToniRocketHandler {
-    handler: Arc<dyn RequestHandler>,
-    ctx: Arc<AdapterContext>,
-    param_names: Arc<Vec<(String, usize)>>,
+/// Internal marker on a routing-closure response signalling "this path is a
+/// WebSocket route — perform the upgrade". The closure cannot upgrade itself:
+/// `RocketWs::from_request` needs the borrowed rocket request, which a
+/// `'static` closure cannot hold. The marker carries the matched route index
+/// and captured params; the outer handler upgrades only if the marker
+/// survived the chain, so middleware can reject upgrades by replacing the
+/// response.
+const WS_MARKER_HEADER: &str = "x-toni-rocket-ws-route";
+const WS_PARAMS_HEADER: &str = "x-toni-rocket-ws-params";
+
+fn ws_marker_response(index: usize, params: &HashMap<String, String>) -> HttpResponse {
+    let mut res = json_error_response(500, "WebSocket upgrade not performed".into());
+    res.headers
+        .push((WS_MARKER_HEADER.into(), index.to_string()));
+    if !params.is_empty() {
+        if let Ok(encoded) = serde_json::to_string(params) {
+            res.headers.push((WS_PARAMS_HEADER.into(), encoded));
+        }
+    }
+    res
 }
 
-#[rocket::async_trait]
-impl Handler for ToniRocketHandler {
-    async fn handle<'r>(&self, req: &'r RocketRequest<'_>, data: Data<'r>) -> Outcome<'r> {
-        let parts = extract_parts(req, &self.param_names);
-        let body_bytes = read_request_body(data).await;
-        let http_req = HttpRequest::from_parts(parts, RequestBody::Buffered(body_bytes));
+fn take_ws_marker(res: &HttpResponse) -> Option<(usize, HashMap<String, String>)> {
+    let index = res
+        .headers
+        .iter()
+        .find(|(k, _)| k == WS_MARKER_HEADER)?
+        .1
+        .parse()
+        .ok()?;
+    let params = res
+        .headers
+        .iter()
+        .find(|(k, _)| k == WS_PARAMS_HEADER)
+        .and_then(|(_, v)| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    Some((index, params))
+}
 
-        let handler = self.handler.clone();
-        let http_res = self
-            .ctx
-            .execute(http_req, move |req| {
-                let handler = handler.clone();
-                Box::pin(async move { handler.handle(req).await })
-            })
-            .await;
+/// The single rocket handler, mounted as a catch-all for every method: runs
+/// the global middleware chain once per request, before any route matching.
+/// The request the chain forwards is the one routing matches on, so
+/// middleware can rewrite paths, short-circuit (auth, CORS preflight), and
+/// observe every response — including 404s and 405s. Routing itself is
+/// internal ([`match_route`]); rocket serves connections and performs
+/// WebSocket upgrades.
+#[derive(Clone)]
+struct GlobalChainHandler {
+    ctx: Arc<AdapterContext>,
+    http_routes: Arc<Vec<(HttpMethod, String, Arc<dyn RequestHandler>)>>,
+    ws_routes: Arc<Vec<(String, Arc<WsConnectionCallbacks>)>>,
+}
 
-        Outcome::Success(toni_response_to_rocket(http_res))
+async fn dispatch(
+    treq: HttpRequest,
+    http_routes: &[(HttpMethod, String, Arc<dyn RequestHandler>)],
+    ws_routes: &[(String, Arc<WsConnectionCallbacks>)],
+) -> HttpResponse {
+    let method = treq.method().as_str().to_uppercase();
+    let path = treq.uri().path().to_string();
+
+    // WebSocket upgrades dispatch through GET — RFC 6455 wire contract.
+    if method == "GET" {
+        for (i, (pattern, _)) in ws_routes.iter().enumerate() {
+            if let Some(params) = match_route(pattern, &path) {
+                return ws_marker_response(i, &params);
+            }
+        }
+    }
+
+    let mut matched = None;
+    for (route_method, pattern, handler) in http_routes.iter() {
+        if format!("{:?}", route_method) != method {
+            continue;
+        }
+        if let Some(params) = match_route(pattern, &path) {
+            matched = Some((handler, params));
+            break;
+        }
+    }
+    if let Some((handler, params)) = matched {
+        let mut treq = treq;
+        if !params.is_empty() {
+            treq.extensions_mut().insert(PathParams(params));
+        }
+        return handler.handle(treq).await;
+    }
+
+    let allowed: Vec<String> = http_routes
+        .iter()
+        .filter(|(_, pattern, _)| match_route(pattern, &path).is_some())
+        .map(|(m, _, _)| format!("{:?}", m))
+        .collect();
+
+    if allowed.is_empty() {
+        json_error_response(404, format!("Cannot {} {}", method, path))
+    } else {
+        let mut res =
+            json_error_response(405, format!("Method {} not allowed for {}", method, path));
+        res.headers.push(("allow".into(), allowed.join(", ")));
+        res
     }
 }
 
-/// Rocket handler for the catch-all 404 — runs the global chain so global
-/// middleware can still observe the unmatched request.
-#[derive(Clone)]
-struct ToniRocketFallback {
-    ctx: Arc<AdapterContext>,
-}
-
 #[rocket::async_trait]
-impl Handler for ToniRocketFallback {
+impl Handler for GlobalChainHandler {
     async fn handle<'r>(&self, req: &'r RocketRequest<'_>, data: Data<'r>) -> Outcome<'r> {
-        // The fallback never has named params — it only matches via the
-        // `<__toni_fallback..>` wildcard, which we don't expose to handlers.
-        let parts = extract_parts(req, &[]);
+        let parts = extract_parts(req);
         let body_bytes = read_request_body(data).await;
         let http_req = HttpRequest::from_parts(parts, RequestBody::Buffered(body_bytes));
 
+        let http_routes = self.http_routes.clone();
+        let ws_routes = self.ws_routes.clone();
         let http_res = self
             .ctx
-            .execute(http_req, |req| {
+            .execute(http_req, move |treq| {
+                let http_routes = http_routes.clone();
+                let ws_routes = ws_routes.clone();
+                Box::pin(async move { dispatch(treq, &http_routes, &ws_routes).await })
+            })
+            .await;
+
+        if let Some((index, params)) = take_ws_marker(&http_res) {
+            let Some((_, callbacks)) = self.ws_routes.get(index) else {
+                return Outcome::Error(Status::InternalServerError);
+            };
+            let callbacks = callbacks.clone();
+
+            let mut parts = extract_parts(req);
+            if !params.is_empty() {
+                parts.extensions.insert(PathParams(params));
+            }
+
+            let ws = match RocketWs::from_request(req).await {
+                rocket::request::Outcome::Success(ws) => ws,
+                rocket::request::Outcome::Forward(status) => {
+                    return Outcome::Error(status);
+                }
+                rocket::request::Outcome::Error((status, _)) => {
+                    return Outcome::Error(status);
+                }
+            };
+
+            let channel = ws.channel(move |duplex| {
                 Box::pin(async move {
-                    let method = req.method().as_str().to_uppercase();
-                    let path = req.uri().path().to_string();
-                    json_error_response(404, format!("Cannot {} {}", method, path))
+                    run_ws_connection(duplex, callbacks, parts).await;
+                    Ok(())
                 })
-            })
-            .await;
+            });
+
+            return Outcome::from(req, channel);
+        }
 
         Outcome::Success(toni_response_to_rocket(http_res))
-    }
-}
-
-/// Rocket handler that performs a same-port WebSocket upgrade and pipes the
-/// connection through toni's `WsConnectionCallbacks`.
-#[derive(Clone)]
-struct ToniRocketWsHandler {
-    callbacks: Arc<WsConnectionCallbacks>,
-    param_names: Arc<Vec<(String, usize)>>,
-}
-
-#[rocket::async_trait]
-impl Handler for ToniRocketWsHandler {
-    async fn handle<'r>(&self, req: &'r RocketRequest<'_>, _data: Data<'r>) -> Outcome<'r> {
-        let parts = extract_parts(req, &self.param_names);
-        let callbacks = self.callbacks.clone();
-
-        let ws = match RocketWs::from_request(req).await {
-            rocket::request::Outcome::Success(ws) => ws,
-            rocket::request::Outcome::Forward(status) => {
-                return Outcome::Error(status);
-            }
-            rocket::request::Outcome::Error((status, _)) => {
-                return Outcome::Error(status);
-            }
-        };
-
-        let channel = ws.channel(move |duplex| {
-            Box::pin(async move {
-                run_ws_connection(duplex, callbacks, parts).await;
-                Ok(())
-            })
-        });
-
-        Outcome::from(req, channel)
     }
 }
 
@@ -445,44 +455,32 @@ impl HttpAdapter for RocketAdapter {
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
-        let ctx = Arc::new(ctx);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
 
-        let mut rocket_routes: Vec<Route> = Vec::new();
-        for (method, path, handler) in routes {
-            let rocket_path = to_rocket_path(&path);
-            let param_names = Arc::new(dynamic_param_names(&path));
-            let toni_handler = ToniRocketHandler {
-                handler,
-                ctx: ctx.clone(),
-                param_names,
-            };
-            rocket_routes.push(Route::new(
-                to_rocket_method(method),
-                &rocket_path,
-                toni_handler,
-            ));
-        }
-        for (path, callbacks) in ws_routes {
-            let rocket_path = to_rocket_path(&path);
-            let param_names = Arc::new(dynamic_param_names(&path));
-            let ws_handler = ToniRocketWsHandler {
-                callbacks,
-                param_names,
-            };
-            // Rocket dispatches WebSocket upgrades through GET — same wire
-            // contract as RFC 6455 expects.
-            rocket_routes.push(Route::new(RocketMethod::Get, &rocket_path, ws_handler));
-        }
-
-        // Catch-all fallback — rank low so specific routes win. Rocket's
-        // `<path..>` segment matches any tail.
-        let fallback = ToniRocketFallback { ctx: ctx.clone() };
-        let mut fallback_route =
-            Route::new(RocketMethod::Get, "/<__toni_fallback..>", fallback.clone());
-        fallback_route.rank = isize::MAX;
-        rocket_routes.push(fallback_route);
+        // One catch-all per method; routing is internal to the handler. The
+        // chain must observe every request, and rocket offers no pre-routing
+        // anchor (fairings cannot short-circuit), so rocket's router reduces
+        // to connection serving.
+        let chain = GlobalChainHandler {
+            ctx: Arc::new(ctx),
+            http_routes: Arc::new(routes),
+            ws_routes: Arc::new(ws_routes),
+        };
+        let rocket_routes: Vec<Route> = [
+            RocketMethod::Get,
+            RocketMethod::Post,
+            RocketMethod::Put,
+            RocketMethod::Delete,
+            RocketMethod::Patch,
+            RocketMethod::Head,
+            RocketMethod::Options,
+            RocketMethod::Trace,
+            RocketMethod::Connect,
+        ]
+        .into_iter()
+        .map(|m| Route::new(m, "/<__toni_chain..>", chain.clone()))
+        .collect();
 
         let address: std::net::IpAddr = hostname
             .parse()
