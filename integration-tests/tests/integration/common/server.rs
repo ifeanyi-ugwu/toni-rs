@@ -22,13 +22,18 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn start(module: impl ModuleMetadata + 'static) -> Self {
+        Self::start_with(ToniFactory::new(), module).await
+    }
+
+    /// Boot with a pre-configured factory (global middleware, enhancers, …).
+    pub async fn start_with(factory: ToniFactory, module: impl ModuleMetadata + 'static) -> Self {
         init_tracing();
 
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
-            let mut app = ToniFactory::create(module).await;
+            let mut app = factory.create_with(module).await;
             app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
                 .unwrap();
             let bound = app.bind().await.unwrap();

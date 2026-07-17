@@ -19,6 +19,7 @@ mod error_handler;
 mod error_observer;
 mod extensions_and_from_request;
 mod extractors;
+mod global_chain_conformance;
 mod global_enhancers;
 mod global_modules;
 mod graceful_shutdown;

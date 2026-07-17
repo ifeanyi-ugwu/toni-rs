@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -9,10 +11,11 @@ use axum::{
     extract::{ws::WebSocketUpgrade, Path},
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode},
     routing::{MethodFilter, MethodRouter},
-    Router,
+    Router, ServiceExt as AxumServiceExt,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use std::str::FromStr;
+use tower::ServiceExt as TowerServiceExt;
 
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
@@ -185,6 +188,123 @@ fn ws_route(callbacks: Arc<WsConnectionCallbacks>) -> axum::routing::MethodRoute
     })
 }
 
+fn json_error_response(status: u16, message: String) -> HttpResponse {
+    HttpResponse {
+        status,
+        headers: vec![],
+        body: Some(ToniBody::json(serde_json::json!({
+            "statusCode": status,
+            "message": message,
+            "error": if status == 404 { "Not Found" } else { "Internal Server Error" },
+        }))),
+    }
+}
+
+fn native_error_response(message: String) -> Response<Body> {
+    let body = serde_json::json!({
+        "statusCode": 500,
+        "message": message,
+        "error": "Internal Server Error"
+    });
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Rebuilds the native request the router matches on from the chain's output,
+/// preserving extensions (path params, hyper's upgrade slot) and the body's
+/// streaming nature.
+fn to_native_request(req: HttpRequest) -> Request<Body> {
+    let (parts, body) = req.into_parts();
+    let body = match body {
+        RequestBody::Buffered(bytes) => Body::from(bytes),
+        RequestBody::Streaming(stream) => Body::new(stream),
+    };
+    Request::from_parts(parts, body)
+}
+
+/// Wraps whatever the router produced — a toni handler's response, a
+/// method-mismatch 405, a WebSocket handshake reply — back into toni's
+/// response type for the chain to observe. The body is re-wrapped, not read:
+/// `BoxBody` is Send-only, so axum's `!Sync` body fits without buffering and
+/// streaming responses (SSE) flow through untouched.
+fn native_to_toni_response(res: Response<Body>) -> HttpResponse {
+    use http_body_util::BodyExt;
+
+    let (parts, body) = res.into_parts();
+    let headers = parts
+        .headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect();
+    let box_body = body
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        .boxed_unsync();
+    HttpResponse {
+        status: parts.status.as_u16(),
+        headers,
+        body: Some(ToniBody::from_box_body(box_body)),
+    }
+}
+
+/// Wraps the finished router: the global middleware chain runs once per
+/// request, before route matching. The request the chain forwards is the one
+/// the router matches on, so middleware can rewrite paths, short-circuit
+/// (auth, CORS preflight), and observe every response the router produces
+/// natively — including 404s, 405s, and WebSocket handshakes.
+#[derive(Clone)]
+struct GlobalChainService {
+    router: Router,
+    ctx: Arc<AdapterContext>,
+}
+
+impl tower::Service<Request<Body>> for GlobalChainService {
+    type Response = Response<Body>;
+    type Error = std::convert::Infallible;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Response<Body>, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let router = self.router.clone();
+        let ctx = self.ctx.clone();
+        Box::pin(async move {
+            let http_req = match AxumAdapter::adapt_request(req).await {
+                Ok(r) => r,
+                Err(e) => return Ok(native_error_response(e.to_string())),
+            };
+
+            let http_res = ctx
+                .execute(http_req, move |req| {
+                    let router = router.clone();
+                    Box::pin(async move {
+                        match router.oneshot(to_native_request(req)).await {
+                            Ok(res) => native_to_toni_response(res),
+                            Err(never) => match never {},
+                        }
+                    })
+                })
+                .await;
+
+            Ok(AxumAdapter::adapt_response(http_res)
+                .await
+                .unwrap_or_else(|e| native_error_response(e.to_string())))
+        })
+    }
+}
+
 impl AxumAdapter {
     async fn adapt_request(request: Request<Body>) -> Result<HttpRequest> {
         use http_body_util::BodyExt;
@@ -264,7 +384,6 @@ impl HttpAdapter for AxumAdapter {
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
-        let ctx = Arc::new(ctx);
 
         // Group routes by path: Axum panics if the same path is registered twice.
         let mut by_path: HashMap<String, MethodRouter> = HashMap::new();
@@ -272,12 +391,10 @@ impl HttpAdapter for AxumAdapter {
             let axum_path = to_axum_path(&path);
             let filter = to_method_filter(method);
             let handler = handler.clone();
-            let ctx = ctx.clone();
 
             let handler_fn = move |Path(params): Path<HashMap<String, String>>,
                                    req: Request<Body>| {
                 let handler = handler.clone();
-                let ctx = ctx.clone();
                 async move {
                     let (mut parts, body) = req.into_parts();
                     if !params.is_empty() {
@@ -287,39 +404,14 @@ impl HttpAdapter for AxumAdapter {
 
                     let http_req = match Self::adapt_request(req).await {
                         Ok(r) => r,
-                        Err(e) => {
-                            let body = serde_json::json!({
-                                "statusCode": 500,
-                                "message": e.to_string(),
-                                "error": "Internal Server Error"
-                            });
-                            return Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .header("Content-Type", "application/json")
-                                .body(Body::from(body.to_string()))
-                                .unwrap();
-                        }
+                        Err(e) => return native_error_response(e.to_string()),
                     };
 
-                    let http_res = ctx
-                        .execute(http_req, move |req| {
-                            let handler = handler.clone();
-                            Box::pin(async move { handler.handle(req).await })
-                        })
-                        .await;
+                    let http_res = handler.handle(http_req).await;
 
-                    Self::adapt_response(http_res).await.unwrap_or_else(|e| {
-                        let body = serde_json::json!({
-                            "statusCode": 500,
-                            "message": e.to_string(),
-                            "error": "Internal Server Error"
-                        });
-                        Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .header("Content-Type", "application/json")
-                            .body(Body::from(body.to_string()))
-                            .unwrap()
-                    })
+                    Self::adapt_response(http_res)
+                        .await
+                        .unwrap_or_else(|e| native_error_response(e.to_string()))
                 }
             };
 
@@ -333,59 +425,24 @@ impl HttpAdapter for AxumAdapter {
             http_router = http_router.route(&path, method_router);
         }
 
-        let ctx_fallback = ctx.clone();
         let ws_router = std::mem::replace(&mut self.ws_router, Router::new());
         let router = ws_router
             .merge(http_router)
-            .fallback(move |req: Request<Body>| {
-                let ctx = ctx_fallback.clone();
-                async move {
-                    let http_req = match Self::adapt_request(req).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let body = serde_json::json!({
-                                "statusCode": 500,
-                                "message": e.to_string(),
-                                "error": "Internal Server Error"
-                            });
-                            return Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .header("Content-Type", "application/json")
-                                .body(Body::from(body.to_string()))
-                                .unwrap();
-                        }
-                    };
-                    let http_res = ctx
-                        .execute(http_req, |req| {
-                            Box::pin(async move {
-                                let method = req.method().as_str().to_uppercase();
-                                let path = req.uri().path().to_string();
-                                HttpResponse {
-                                    status: 404,
-                                    headers: vec![],
-                                    body: Some(ToniBody::json(serde_json::json!({
-                                        "statusCode": 404,
-                                        "message": format!("Cannot {} {}", method, path),
-                                        "error": "Not Found"
-                                    }))),
-                                }
-                            })
-                        })
-                        .await;
-                    Self::adapt_response(http_res).await.unwrap_or_else(|e| {
-                        let body = serde_json::json!({
-                            "statusCode": 500,
-                            "message": e.to_string(),
-                            "error": "Internal Server Error"
-                        });
-                        Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .header("Content-Type", "application/json")
-                            .body(Body::from(body.to_string()))
-                            .unwrap()
-                    })
-                }
+            .fallback(|req: Request<Body>| async move {
+                let method = req.method().as_str().to_uppercase();
+                let path = req.uri().path().to_string();
+                Self::adapt_response(json_error_response(
+                    404,
+                    format!("Cannot {} {}", method, path),
+                ))
+                .await
+                .unwrap_or_else(|e| native_error_response(e.to_string()))
             });
+
+        let service = GlobalChainService {
+            router,
+            ctx: Arc::new(ctx),
+        };
 
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
@@ -399,7 +456,7 @@ impl HttpAdapter for AxumAdapter {
             .map_err(|e| anyhow!("Failed to get local address: {}", e))?;
 
         let serve = Box::pin(async move {
-            if let Err(e) = axum::serve(listener, router)
+            if let Err(e) = axum::serve(listener, service.into_make_service())
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.wait_for(|v| *v).await;
                 })

@@ -84,9 +84,13 @@ pub trait HttpAdapter: Send + Sync + 'static {
     ///    [`HttpLifecycleHandle::new`].
     ///
     /// `ctx` carries the global middleware chain and other adapter-shared
-    /// runtime context. The adapter is responsible for composing
-    /// `ctx.global_chain` around its own routing handler so global
-    /// middleware runs pre-routing.
+    /// runtime context. The adapter must anchor [`AdapterContext::execute`]
+    /// at its outermost point, wrapping the entire native router — not
+    /// inside matched-route handlers. The chain then observes every inbound
+    /// request (matched, unknown path, method mismatch, WebSocket upgrade),
+    /// may short-circuit with a response, and the request it forwards is
+    /// the one the router matches on. `global_chain_conformance.rs` in the
+    /// integration suite pins these behaviors per adapter.
     async fn into_lifecycle(
         self: Box<Self>,
         port: u16,
