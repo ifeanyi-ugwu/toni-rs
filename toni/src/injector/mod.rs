@@ -7,7 +7,7 @@ mod module;
 mod multi_collection_provider;
 
 mod dependency_graph;
-pub use self::dependency_graph::DependencyGraph;
+pub use self::dependency_graph::{DependencyGraph, find_dependency_cycle};
 
 mod instance_wrapper;
 pub use self::instance_wrapper::InstanceWrapper;

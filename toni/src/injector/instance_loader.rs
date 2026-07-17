@@ -9,7 +9,10 @@ use std::{
 
 use parking_lot::RwLock;
 
-use super::{DependencyGraph, ToniContainer, multi_collection_provider::MultiCollectionProvider};
+use super::{
+    DependencyGraph, ToniContainer, find_dependency_cycle,
+    multi_collection_provider::MultiCollectionProvider,
+};
 use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
@@ -55,6 +58,8 @@ impl ToniInstanceLoader {
         let mut pending_modules: Vec<String> = modules_order.clone();
         let total_modules = pending_modules.len();
         let mut max_iterations = total_modules * 2; // Prevent infinite loops
+        // Last deferral reason per module, kept to explain a stall precisely.
+        let mut deferred_reasons: FxHashMap<String, String> = FxHashMap::default();
 
         while !pending_modules.is_empty() && max_iterations > 0 {
             max_iterations -= 1;
@@ -75,6 +80,7 @@ impl ToniInstanceLoader {
                     }
                     Err(e) if e.to_string().contains("DEFERRED:") => {
                         // Dependency not ready - defer to next iteration
+                        deferred_reasons.insert(module_token.clone(), e.to_string());
                         deferred_modules.push(module_token.clone());
                         continue;
                     }
@@ -86,12 +92,11 @@ impl ToniInstanceLoader {
             }
 
             if successfully_created.is_empty() && !pending_modules.is_empty() {
-                // No progress made - circular dependency or missing provider
-                return Err(anyhow!(
-                    "Cannot resolve dependencies for modules: {:?}. \
-                     Possible circular dependency or missing global provider.",
-                    pending_modules
-                ));
+                // No progress this pass: the remaining modules form a dependency cycle
+                // that spans modules, or wait on a provider that is never produced.
+                let diagnostic =
+                    self.diagnose_unresolved_modules(&pending_modules, &deferred_reasons);
+                return Err(anyhow!(diagnostic));
             }
 
             // Update pending list to only deferred modules
@@ -287,6 +292,84 @@ impl ToniInstanceLoader {
         };
         self.add_providers_instances(&module_token, provider_instances)?;
         Ok(())
+    }
+
+    /// Build a provider-level dependency graph across every module in the container.
+    ///
+    /// Returns `(adjacency, token_module)`: `adjacency` maps a provider token to the
+    /// provider tokens it depends on (multi-collection base tokens expanded to their
+    /// contributors), and `token_module` records the declaring module of each token for
+    /// diagnostics. Runs only on the failure path, so it walks the whole container.
+    fn build_provider_dependency_graph(
+        &self,
+    ) -> (FxHashMap<String, Vec<String>>, FxHashMap<String, String>) {
+        let container = self.container.borrow();
+        let multi = container.get_multi_providers();
+        let mut adjacency: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        let mut token_module: FxHashMap<String, String> = FxHashMap::default();
+
+        for module_token in container.get_modules_token() {
+            let Ok(providers) = container.get_providers_factory(&module_token) else {
+                continue;
+            };
+            for (token, factory) in providers.iter() {
+                token_module
+                    .entry(token.clone())
+                    .or_insert_with(|| module_token.clone());
+                let mut deps: Vec<String> = Vec::new();
+                for dep in factory.get_dependencies() {
+                    match multi.get(&dep) {
+                        // A multi-collection base token resolves to its contributors.
+                        Some(contribs) => deps.extend(contribs.iter().map(|(_m, t)| t.clone())),
+                        None => deps.push(dep),
+                    }
+                }
+                adjacency.entry(token.clone()).or_default().extend(deps);
+            }
+        }
+
+        (adjacency, token_module)
+    }
+
+    /// Explain why Phase 1 stalled: name the exact provider cycle when one exists,
+    /// otherwise report each stuck module's unresolved dependency. The vague
+    /// "missing global provider" fallback only applies when no cycle is found —
+    /// a genuinely missing dependency already fails earlier, in `resolve_dependencies`.
+    fn diagnose_unresolved_modules(
+        &self,
+        pending_modules: &[String],
+        deferred_reasons: &FxHashMap<String, String>,
+    ) -> String {
+        let (adjacency, token_module) = self.build_provider_dependency_graph();
+
+        if let Some(cycle) = find_dependency_cycle(&adjacency) {
+            let chain = cycle
+                .iter()
+                .map(|token| match token_module.get(token) {
+                    Some(module) => format!("{token} (in module {module})"),
+                    None => token.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n    -> ");
+            return format!(
+                "Circular dependency detected between providers:\n    {chain}\n\
+                 A provider cannot be built before a provider it depends on. Break the cycle: \
+                 extract the shared logic into a third provider both depend on, or inject \
+                 `ModuleRef` into one side and resolve the other lazily at call time."
+            );
+        }
+
+        let mut details = String::new();
+        for module in pending_modules {
+            match deferred_reasons.get(module) {
+                Some(reason) => details.push_str(&format!("\n    - {module}: {reason}")),
+                None => details.push_str(&format!("\n    - {module}")),
+            }
+        }
+        format!(
+            "Cannot resolve dependencies for modules: {pending_modules:?}. No provider cycle was \
+             found, so a required provider is missing or not exported by an imported module:{details}"
+        )
     }
 
     fn add_providers_instances(
