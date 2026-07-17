@@ -78,6 +78,14 @@ mutates `match_info` through `Rc::get_mut` while matching. The fallback carries 
 route-table 405 logic as salvo, since actix also falls through to `default_service` on method
 mismatch.
 
+**Rocket realization**: the internal-matching case. Fairings cannot short-circuit with a response,
+so rocket offers no pre-routing anchor at all; instead one catch-all route per method hosts the
+chain and routing is internal (`match_route` over the toni route table, including param capture and
+the 405/`Allow` logic). Rocket's router reduces to connection serving. WebSocket upgrades need the
+borrowed rocket request, which the `'static` routing closure cannot hold — the closure returns a
+marker response for WS paths, and the outer handler performs the upgrade only if the marker
+survived the chain, so middleware can reject upgrades by replacing the response.
+
 ## Considered and rejected
 
 **A toni-owned router (`matchit`) in the serve path.** It would make the five native routers dumb
@@ -94,9 +102,7 @@ adapter-independent portless handler — both out of scope here.
   `app.use` semantics.
 - Same-port WebSocket handshake requests now traverse the chain (they bypassed it before). This is
   intended: the handshake is an HTTP request, and middleware can now reject upgrades.
-- Conformance status: **axum, poem, salvo, and actix pass**; rocket still anchors post-routing.
-  Rocket is the constrained one — fairings cannot short-circuit, so it may need internal matching
-  to conform fully.
+- Conformance status: **all five adapters pass** — axum, poem, salvo, actix, rocket.
 - The composed value — chain wrapped around router — is one `tower::Service`. Binding the socket is
   the only step after composition, which is the natural seam for portless dispatch (in-process
   testing, serverless) if that lands later.
