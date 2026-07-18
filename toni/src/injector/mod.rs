@@ -32,3 +32,6 @@ pub use self::rpc_controller_resolver::RpcControllerResolver;
 
 mod grpc_service_resolver;
 pub use self::grpc_service_resolver::GrpcServiceResolver;
+
+#[cfg(test)]
+mod module_identity_tests;
