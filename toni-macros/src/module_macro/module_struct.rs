@@ -311,7 +311,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[::toni::async_trait(?Send)]
         impl ::toni::traits_helpers::ModuleMetadata for #input_ident {
             fn get_id(&self) -> String {
-                #input_name.to_string()
+                // Fully-qualified type name: collision-free registry key. Two same-named module
+                // types in different paths stay distinct; the bare ident is display only.
+                ::std::any::type_name::<Self>().to_string()
             }
             fn get_name(&self) -> String {
                 #input_name.to_string()

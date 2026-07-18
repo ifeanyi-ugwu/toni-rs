@@ -170,9 +170,13 @@ async fn test_module_ref_current_module() {
         .await
         .expect("PluginLoader should be available");
 
-    // Test current_module() method
+    // current_module() returns the module's identity, which is its fully-qualified type name.
     let module_name = plugin_loader.current_module();
-    assert_eq!(module_name, "Module1", "Should return correct module name");
+    assert_eq!(
+        module_name,
+        std::any::type_name::<Module1>(),
+        "Should return the module's fully-qualified identity"
+    );
 }
 
 #[tokio::test]
