@@ -13,6 +13,9 @@ where
     Fut: Future<Output = C> + Send + 'static,
 {
     pub connect: F,
+    // Injection token for this client: the `C` type name for the default (`for_root`), or the
+    // caller's chosen name for a `for_root_named` client.
+    pub token: String,
     pub _client: PhantomData<C>,
 }
 
@@ -24,7 +27,7 @@ where
     Fut: Future<Output = C> + Send + 'static,
 {
     fn get_token(&self) -> String {
-        std::any::type_name::<C>().to_string()
+        self.token.clone()
     }
 
     async fn build(
@@ -33,7 +36,10 @@ where
     ) -> toni::traits_helpers::Injectable {
         let client = (self.connect)().await;
         toni::traits_helpers::Injectable::new(
-            Arc::new(Box::new(PrismaClientProvider { client })),
+            Arc::new(Box::new(PrismaClientProvider {
+                client,
+                token: self.token.clone(),
+            })),
             vec![],
         )
     }
@@ -41,16 +47,17 @@ where
 
 struct PrismaClientProvider<C> {
     client: C,
+    token: String,
 }
 
 #[async_trait]
 impl<C: Send + Sync + Clone + 'static> Provider for PrismaClientProvider<C> {
     fn get_token(&self) -> String {
-        std::any::type_name::<C>().to_string()
+        self.token.clone()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<C>().to_string()
+        self.token.clone()
     }
 
     async fn execute(

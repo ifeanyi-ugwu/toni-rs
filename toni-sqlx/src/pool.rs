@@ -9,6 +9,9 @@ use toni::{
 
 pub(crate) struct SqlxPoolFactory<DB: Database> {
     pub url: String,
+    // Injection token for this pool: the `Pool<DB>` type name for the default
+    // (`for_root_*`), or the caller's chosen name for a `for_root_*_named` pool.
+    pub token: String,
     pub _db: PhantomData<DB>,
 }
 
@@ -25,7 +28,11 @@ where
     Pool<DB>: Send + Sync + Clone + 'static,
 {
     fn get_token(&self) -> String {
-        std::any::type_name::<Pool<DB>>().to_string()
+        self.token.clone()
+    }
+
+    fn identity_hint(&self) -> Option<String> {
+        Some(self.url.clone())
     }
 
     async fn build(
@@ -36,12 +43,19 @@ where
             .await
             .unwrap_or_else(|e| panic!("toni-sqlx: failed to connect to '{}': {e}", self.url));
 
-        Injectable::new(Arc::new(Box::new(SqlxPoolProvider { pool })), vec![])
+        Injectable::new(
+            Arc::new(Box::new(SqlxPoolProvider {
+                pool,
+                token: self.token.clone(),
+            })),
+            vec![],
+        )
     }
 }
 
 struct SqlxPoolProvider<DB: Database> {
     pool: Pool<DB>,
+    token: String,
 }
 
 unsafe impl<DB: Database> Send for SqlxPoolProvider<DB> {}
@@ -54,11 +68,11 @@ where
     Pool<DB>: Send + Sync + Clone + 'static,
 {
     fn get_token(&self) -> String {
-        std::any::type_name::<Pool<DB>>().to_string()
+        self.token.clone()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<Pool<DB>>().to_string()
+        self.token.clone()
     }
 
     async fn execute(

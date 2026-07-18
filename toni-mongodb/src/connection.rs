@@ -10,12 +10,19 @@ use toni::{
 pub(crate) struct MongoConnectionFactory {
     pub uri: String,
     pub db_name: String,
+    // Injection token for this connection: the `Database` type name for the default
+    // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
+    pub token: String,
 }
 
 #[async_trait]
 impl ProviderFactory for MongoConnectionFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<Database>().to_string()
+        self.token.clone()
+    }
+
+    fn identity_hint(&self) -> Option<String> {
+        Some(format!("{}/{}", self.uri, self.db_name))
     }
 
     async fn build(
@@ -32,7 +39,11 @@ impl ProviderFactory for MongoConnectionFactory {
         let db = client.database(&self.db_name);
 
         toni::traits_helpers::Injectable::new(
-            Arc::new(Box::new(MongoConnectionProvider { client, db })),
+            Arc::new(Box::new(MongoConnectionProvider {
+                client,
+                db,
+                token: self.token.clone(),
+            })),
             vec![],
         )
     }
@@ -42,16 +53,17 @@ struct MongoConnectionProvider {
     // Held so shutdown() can be called; Client is Arc-backed and cheap to clone.
     client: Client,
     db: Database,
+    token: String,
 }
 
 #[async_trait]
 impl Provider for MongoConnectionProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<Database>().to_string()
+        self.token.clone()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<Database>().to_string()
+        self.token.clone()
     }
 
     async fn execute(

@@ -10,12 +10,19 @@ use toni::{
 
 pub(crate) struct SeaOrmConnectionFactory {
     pub database_url: String,
+    // Injection token for this connection: the `DatabaseConnection` type name for the default
+    // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
+    pub token: String,
 }
 
 #[async_trait]
 impl ProviderFactory for SeaOrmConnectionFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<DatabaseConnection>().to_string()
+        self.token.clone()
+    }
+
+    fn identity_hint(&self) -> Option<String> {
+        Some(self.database_url.clone())
     }
 
     async fn build(
@@ -31,6 +38,7 @@ impl ProviderFactory for SeaOrmConnectionFactory {
         toni::traits_helpers::Injectable::new(
             Arc::new(Box::new(SeaOrmConnectionProvider {
                 db: Mutex::new(Some(db)),
+                token: self.token.clone(),
             })),
             vec![],
         )
@@ -40,16 +48,17 @@ impl ProviderFactory for SeaOrmConnectionFactory {
 struct SeaOrmConnectionProvider {
     // Option so close() can take ownership on shutdown; Mutex for &self access.
     db: Mutex<Option<DatabaseConnection>>,
+    token: String,
 }
 
 #[async_trait]
 impl Provider for SeaOrmConnectionProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<DatabaseConnection>().to_string()
+        self.token.clone()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<DatabaseConnection>().to_string()
+        self.token.clone()
     }
 
     async fn execute(

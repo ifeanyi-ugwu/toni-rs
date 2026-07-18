@@ -14,12 +14,19 @@ macro_rules! impl_diesel_pool {
     ($factory:ident, $provider:ident, $conn:ty, $pool:ty) => {
         pub(crate) struct $factory {
             pub url: String,
+            // Injection token for this pool: the `Pool<_>` type name for the default
+            // (`postgres`/`mysql`), or the caller's chosen name for a named pool.
+            pub token: String,
         }
 
         #[async_trait]
         impl ProviderFactory for $factory {
             fn get_token(&self) -> String {
-                std::any::type_name::<$pool>().to_string()
+                self.token.clone()
+            }
+
+            fn identity_hint(&self) -> Option<String> {
+                Some(self.url.clone())
             }
 
             async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -28,22 +35,29 @@ macro_rules! impl_diesel_pool {
                 let pool = <$pool>::builder(manager).build().unwrap_or_else(|e| {
                     panic!("toni-diesel: failed to build pool for '{}': {e}", self.url)
                 });
-                Injectable::new(Arc::new(Box::new($provider { pool })), vec![])
+                Injectable::new(
+                    Arc::new(Box::new($provider {
+                        pool,
+                        token: self.token.clone(),
+                    })),
+                    vec![],
+                )
             }
         }
 
         struct $provider {
             pool: $pool,
+            token: String,
         }
 
         #[async_trait]
         impl Provider for $provider {
             fn get_token(&self) -> String {
-                std::any::type_name::<$pool>().to_string()
+                self.token.clone()
             }
 
             fn get_token_factory(&self) -> String {
-                std::any::type_name::<$pool>().to_string()
+                self.token.clone()
             }
 
             async fn execute(
