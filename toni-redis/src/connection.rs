@@ -9,12 +9,19 @@ use toni::{
 
 pub(crate) struct RedisConnectionFactory {
     pub url: String,
+    // Injection token for this connection: the `ConnectionManager` type name for the default
+    // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
+    pub token: String,
 }
 
 #[async_trait]
 impl ProviderFactory for RedisConnectionFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<ConnectionManager>().to_string()
+        self.token.clone()
+    }
+
+    fn identity_hint(&self) -> Option<String> {
+        Some(self.url.clone())
     }
 
     async fn build(
@@ -29,7 +36,10 @@ impl ProviderFactory for RedisConnectionFactory {
             .unwrap_or_else(|e| panic!("toni-redis: failed to connect to '{}': {e}", self.url));
 
         toni::traits_helpers::Injectable::new(
-            Arc::new(Box::new(RedisConnectionProvider { manager })),
+            Arc::new(Box::new(RedisConnectionProvider {
+                manager,
+                token: self.token.clone(),
+            })),
             vec![],
         )
     }
@@ -37,16 +47,17 @@ impl ProviderFactory for RedisConnectionFactory {
 
 struct RedisConnectionProvider {
     manager: ConnectionManager,
+    token: String,
 }
 
 #[async_trait]
 impl Provider for RedisConnectionProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<ConnectionManager>().to_string()
+        self.token.clone()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<ConnectionManager>().to_string()
+        self.token.clone()
     }
 
     async fn execute(

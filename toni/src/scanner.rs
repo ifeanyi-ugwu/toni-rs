@@ -27,29 +27,29 @@ impl ToniDependenciesScanner {
         let mut stack: Vec<Box<dyn ModuleMetadata>> = vec![module];
 
         while let Some(default_module) = stack.pop() {
-            let module_name = default_module.get_name();
-            tracing::debug!(module = %module_name, "scanning module");
-            ctx_registry.push(module_name);
+            let module_id = default_module.get_id();
+            tracing::debug!(module = %default_module.get_name(), "scanning module");
+            // Dedup on the full identity (get_id), not the display name: two distinct module
+            // types can share a short name, and two dynamic modules with different config share
+            // a base name but not an identity. Keying on get_id keeps both cases correct.
+            ctx_registry.push(module_id.clone());
 
             let modules_imported = default_module.imports().unwrap_or_default();
 
             let mut modules_imported_tokens = vec![];
 
             for module_imported in modules_imported {
-                modules_imported_tokens.push(module_imported.get_id());
+                let imported_id = module_imported.get_id();
+                modules_imported_tokens.push(imported_id.clone());
 
-                if ctx_registry
-                    .iter()
-                    .any(|module_imported_id| module_imported_id == &module_imported.get_name())
-                {
+                if ctx_registry.iter().any(|seen| seen == &imported_id) {
                     continue;
                 }
 
                 stack.push(module_imported);
             }
-            let default_module_id = default_module.get_id();
-            self.insert_module(default_module);
-            self.insert_imports(default_module_id, modules_imported_tokens)?;
+            self.insert_module(default_module)?;
+            self.insert_imports(module_id, modules_imported_tokens)?;
         }
 
         tracing::debug!(total = ctx_registry.len(), "module graph scan complete");
@@ -67,9 +67,9 @@ impl ToniDependenciesScanner {
         Ok(())
     }
 
-    fn insert_module(&mut self, module: Box<dyn ModuleMetadata>) {
+    fn insert_module(&mut self, module: Box<dyn ModuleMetadata>) -> Result<()> {
         let mut container = self.container.borrow_mut();
-        container.add_module(module);
+        container.add_module(module)
     }
 
     pub fn insert_imports(&mut self, module_token: String, imports: Vec<String>) -> Result<()> {

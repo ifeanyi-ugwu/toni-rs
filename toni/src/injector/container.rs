@@ -24,6 +24,11 @@ pub struct ToniContainer {
     middleware_manager: Option<MiddlewareManager>,
     /// Global provider registry - providers from modules marked as global
     global_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    /// Owner of each global token: `(module identity, display name)`. Keyed by export token. Lets
+    /// a second, distinct module claiming the same token fail loudly with both names instead of
+    /// silently shadowing. Two dynamic modules with different config share a display name but not an
+    /// identity, so the comparison keys on the identity, not the name.
+    global_provider_sources: FxHashMap<String, (String, String)>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
     /// Global enhancers - applied to every HTTP route's pipeline.
@@ -76,6 +81,7 @@ impl ToniContainer {
             modules: FxHashMap::default(),
             middleware_manager: Some(MiddlewareManager::new()),
             global_providers: FxHashMap::default(),
+            global_provider_sources: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
             global_http_guards: Vec::new(),
             global_http_interceptors: Vec::new(),
@@ -223,11 +229,19 @@ impl ToniContainer {
         }
     }
 
-    pub fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) {
+    pub fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) -> Result<()> {
         let token: String = module_metadata.get_id();
+        // The token is the full identity (type name for static modules, base + config fingerprint
+        // for dynamic ones). A repeat is the same module reached through a second import path — a
+        // diamond — so dedup instead of overwriting. Distinct modules that resolve to the same
+        // exported provider token are caught later, at global-provider registration.
+        if self.modules.contains_key(&token) {
+            return Ok(());
+        }
         let name: String = module_metadata.get_name();
         let module = Module::new(&token, &name, module_metadata);
         self.modules.insert(token, module);
+        Ok(())
     }
 
     pub fn add_import(
@@ -614,24 +628,51 @@ impl ToniContainer {
 
     /// Register all exported providers from a global module into the global registry
     pub fn register_global_providers(&mut self, module_token: &String) -> Result<()> {
-        let module = self
-            .modules
-            .get(module_token)
-            .ok_or_else(|| anyhow!("Module not found: {}", module_token))?;
+        let (is_global, module_name, exports_tokens) = {
+            let module = self
+                .modules
+                .get(module_token)
+                .ok_or_else(|| anyhow!("Module not found: {}", module_token))?;
+            (
+                module.get_metadata().is_global(),
+                module.get_metadata().get_name(),
+                module.get_exports_instances_tokens().clone(),
+            )
+        };
 
         // Only register if module is marked as global
-        if !module.get_metadata().is_global() {
+        if !is_global {
             return Ok(());
         }
 
         // Register all exported providers as globally accessible
-        let exports_tokens = module.get_exports_instances_tokens().clone();
         for export_token in exports_tokens.iter() {
+            // Two distinct global modules exporting the same token is the shape of the
+            // "two connections, no names" mistake: both provide `DatabaseConnection`, and one
+            // would silently shadow the other at injection. Refuse it and point at the fix. The
+            // owner is keyed by identity, not display name — two dynamic modules with different
+            // config share a name but are genuinely different modules.
+            if let Some((owner_token, owner_name)) = self.global_provider_sources.get(export_token)
+            {
+                if owner_token != module_token {
+                    return Err(anyhow!(
+                        "provider '{export_token}' is exported globally by two modules \
+                         ('{owner_name}' and '{module_name}'). One would silently shadow the other. \
+                         If these are separate instances of the same integration, register each \
+                         under a distinct name — integrations expose a named constructor for this \
+                         (e.g. `for_root_named`) — and inject it with `#[inject(\"<name>\")]`."
+                    ));
+                }
+            }
             if let Ok(Some(instance)) =
                 self.get_provider_instance_by_token(module_token, export_token)
             {
                 self.global_providers
                     .insert(export_token.clone(), instance.clone());
+                self.global_provider_sources.insert(
+                    export_token.clone(),
+                    (module_token.clone(), module_name.clone()),
+                );
             }
         }
 

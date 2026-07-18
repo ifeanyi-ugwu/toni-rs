@@ -208,5 +208,19 @@ pub trait ProviderFactory {
         None
     }
 
+    /// A fingerprint of this factory's runtime configuration, folded into the identity of the
+    /// `DynamicModule` that carries it.
+    ///
+    /// Two dynamic modules built from the same maker (e.g. `SeaOrmModule::for_root`) share a base
+    /// name but must be distinguished by what they were configured with — a database URL, a pool
+    /// size. Return a value derived from that config so identical registrations dedup (the same
+    /// module reached through two import paths) while different ones stay distinct. `None` (the
+    /// default) leaves identity keyed on the base name alone: two such modules with differing
+    /// config collapse silently, as before. Integrations that support multiple instances should
+    /// override this.
+    fn identity_hint(&self) -> Option<String> {
+        None
+    }
+
     async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable;
 }

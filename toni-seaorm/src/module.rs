@@ -37,6 +37,7 @@ impl SeaOrmModule {
         let mut builder = DynamicModule::builder("SeaOrmModule")
             .provider(SeaOrmConnectionFactory {
                 database_url: database_url.clone(),
+                token: std::any::type_name::<DatabaseConnection>().to_string(),
             })
             .export::<DatabaseConnection>();
 
@@ -48,5 +49,45 @@ impl SeaOrmModule {
         }
 
         builder.global().build()
+    }
+
+    /// Register a second, named database connection.
+    ///
+    /// `for_root` provides one `DatabaseConnection` injectable by type. When an application needs
+    /// more than one connection, each additional one is registered under a name and injected by
+    /// that name — the type alone can no longer tell them apart.
+    ///
+    /// ```ignore
+    /// #[module(imports: [
+    ///     SeaOrmModule::for_root(env!("PRIMARY_URL")),
+    ///     SeaOrmModule::for_root_named("analytics", env!("ANALYTICS_URL")),
+    /// ])]
+    /// pub struct AppModule;
+    /// ```
+    ///
+    /// ```ignore
+    /// #[injectable]
+    /// pub struct ReportService {
+    ///     #[inject("analytics")]
+    ///     db: DatabaseConnection,
+    /// }
+    /// ```
+    ///
+    /// The name is a global identifier: two connections cannot share one, and reusing a name
+    /// across integrations is refused at startup. The connection only is registered — the health
+    /// indicator is attached to the default `for_root` connection.
+    pub fn for_root_named(
+        name: impl Into<String>,
+        database_url: impl Into<String>,
+    ) -> DynamicModule {
+        let name: String = name.into();
+        DynamicModule::builder(format!("SeaOrmModule::{name}"))
+            .provider(SeaOrmConnectionFactory {
+                database_url: database_url.into(),
+                token: name.clone(),
+            })
+            .export_token(name)
+            .global()
+            .build()
     }
 }
