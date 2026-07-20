@@ -115,23 +115,13 @@ impl InstanceWrapper {
         let guards = self.guards.clone();
         let interceptors = self.interceptors.clone();
         let pipes = self.pipes.clone();
-        let error_handlers_for_controller = self.error_handlers.clone();
-        let error_handlers_for_middleware = self.error_handlers.clone();
-        let observers_for_controller = self.error_observers.clone();
-        let observers_for_middleware = self.error_observers.clone();
+        let error_handlers = self.error_handlers.clone();
+        let observers = self.error_observers.clone();
         let route_metadata = self.route_metadata.clone();
 
         let middleware_result = self
             .middleware_chain
             .execute(req, move |req| {
-                let instance = instance.clone();
-                let guards = guards.clone();
-                let interceptors = interceptors.clone();
-                let pipes = pipes.clone();
-                let error_handlers = error_handlers_for_controller.clone();
-                let observers = observers_for_controller.clone();
-                let route_metadata = route_metadata.clone();
-
                 Box::pin(async move {
                     Self::execute_controller_logic(
                         req,
@@ -166,7 +156,7 @@ impl InstanceWrapper {
                     let mut stub_ctx = HttpContext::from_parts(stub.into_parts().0);
                     return Self::safe_render(
                         || http_err.to_response(),
-                        &observers_for_middleware,
+                        &self.error_observers,
                         &mut stub_ctx,
                     )
                     .await;
@@ -178,13 +168,13 @@ impl InstanceWrapper {
                 let stub = http::Request::builder().body(()).unwrap();
                 let mut error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let event = MiddlewareFailure::new(e.to_string());
-                Self::fan_out_observers(&observers_for_middleware, &event, &mut error_ctx).await;
-                for handler in error_handlers_for_middleware.iter().rev() {
+                Self::fan_out_observers(&self.error_observers, &event, &mut error_ctx).await;
+                for handler in self.error_handlers.iter().rev() {
                     if let Some(response) = Self::try_chain_handler(
                         handler,
                         &event,
                         &mut error_ctx,
-                        &observers_for_middleware,
+                        &self.error_observers,
                     )
                     .await
                     {
@@ -194,7 +184,7 @@ impl InstanceWrapper {
 
                 Self::safe_render(
                     || crate::errors::http_error::render_error(&event),
-                    &observers_for_middleware,
+                    &self.error_observers,
                     &mut error_ctx,
                 )
                 .await

@@ -38,9 +38,8 @@ impl AdapterContext {
     /// errors produce a 500 response.
     pub async fn execute<F>(&self, req: HttpRequest, routing: F) -> HttpResponse
     where
-        F: Fn(HttpRequest) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
+        F: FnOnce(HttpRequest) -> Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
             + Send
-            + Sync
             + 'static,
     {
         self.global_chain

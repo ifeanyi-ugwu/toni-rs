@@ -11,7 +11,7 @@ pub type MiddlewareResult = Result<HttpResponse, Box<dyn std::error::Error + Sen
 ///
 /// Not part of the public API — use [`NextHandle`] in `Middleware::handle`.
 #[async_trait]
-pub(crate) trait NextInternal: Send + Sync {
+pub(crate) trait NextInternal: Send {
     async fn run_internal(self: Box<Self>, req: HttpRequest) -> MiddlewareResult;
 }
 

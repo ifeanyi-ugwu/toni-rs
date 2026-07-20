@@ -279,22 +279,14 @@ where
             // dispatch future joined alongside the chain below.
             let (req_tx, req_rx) = tokio::sync::oneshot::channel::<HttpRequest>();
             let (res_tx, res_rx) = tokio::sync::oneshot::channel::<HttpResponse>();
-            let req_tx = Arc::new(std::sync::Mutex::new(Some(req_tx)));
-            let res_rx = Arc::new(std::sync::Mutex::new(Some(res_rx)));
 
             let chain_fut = ctx.execute(http_req, move |treq| {
-                let req_tx = req_tx.clone();
-                let res_rx = res_rx.clone();
                 Box::pin(async move {
-                    let tx = req_tx.lock().unwrap().take();
-                    let rx = res_rx.lock().unwrap().take();
-                    let (Some(tx), Some(rx)) = (tx, rx) else {
-                        return json_error_response(500, "request already consumed".into());
-                    };
-                    if tx.send(treq).is_err() {
+                    if req_tx.send(treq).is_err() {
                         return json_error_response(500, "dispatch unavailable".into());
                     }
-                    rx.await
+                    res_rx
+                        .await
                         .unwrap_or_else(|_| json_error_response(500, "dispatch dropped".into()))
                 })
             });

@@ -288,7 +288,6 @@ impl tower::Service<Request<Body>> for GlobalChainService {
 
             let http_res = ctx
                 .execute(http_req, move |req| {
-                    let router = router.clone();
                     Box::pin(async move {
                         match router.oneshot(to_native_request(req)).await {
                             Ok(res) => native_to_toni_response(res),
