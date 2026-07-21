@@ -306,8 +306,6 @@ impl Handler for GlobalChainHandler {
         let http_res = self
             .ctx
             .execute(http_req, move |treq| {
-                let http_routes = http_routes.clone();
-                let ws_routes = ws_routes.clone();
                 Box::pin(async move { dispatch(treq, &http_routes, &ws_routes).await })
             })
             .await;

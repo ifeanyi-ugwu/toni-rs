@@ -53,15 +53,15 @@ directions are re-wraps, not copies:
 
 **Poem realization**: a `GlobalChainEndpoint` wraps the finished `Route` (itself an `Endpoint`).
 One divergence from axum: poem's WebSocket upgrade slot lives in the `Request`'s internal state,
-not in http extensions, so the original request shell is threaded through the chain in a take-once
-slot and the chain's output (method, URI, headers, extensions, body) is written back onto it before
+not in http extensions, so the original request shell moves into the routing closure and the
+chain's output (method, URI, headers, extensions, body) is written back onto it before
 routing — rebuilding the request would drop the upgrade. Router errors (`MethodNotAllowedError`
 et al.) convert via `into_response()`, which is how 405s reach the chain.
 
 **Salvo realization**: salvo has no substitutable service type — `Server::serve` takes the
 concrete `salvo::Service` — so the chain anchors as the goal of a catch-all router and drives an
-inner `Service` through salvo's public `hyper_handler` entry, with the request shell threaded the
-same way as poem's. Two host constraints shape the rest: `ReqBody::Boxed`'s inner type is
+inner `Service` through salvo's public `hyper_handler` entry, with the request shell moved into
+the routing closure the same way as poem's. Two host constraints shape the rest: `ReqBody::Boxed`'s inner type is
 crate-private, so the chain's request body rides to the route handlers in a request extension
 rather than being reconstituted into the salvo request; and salvo's router cannot distinguish a
 method mismatch from an unmatched path (method and path are both opaque filters), so the fallback

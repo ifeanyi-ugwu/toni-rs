@@ -7,29 +7,27 @@ use crate::{
 };
 
 pub struct FinalHandler {
-    handler: Arc<
-        dyn Fn(
+    handler: Box<
+        dyn FnOnce(
                 HttpRequest,
             )
                 -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
-            + Send
-            + Sync,
+            + Send,
     >,
 }
 
 impl FinalHandler {
     pub fn new<F>(handler: F) -> Self
     where
-        F: Fn(
+        F: FnOnce(
                 HttpRequest,
             )
                 -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
             + Send
-            + Sync
             + 'static,
     {
         Self {
-            handler: Arc::new(handler),
+            handler: Box::new(handler),
         }
     }
 }
@@ -78,12 +76,11 @@ impl MiddlewareChain {
 
     pub async fn execute<F>(&self, req: HttpRequest, final_handler: F) -> MiddlewareResult
     where
-        F: Fn(
+        F: FnOnce(
                 HttpRequest,
             )
                 -> std::pin::Pin<Box<dyn std::future::Future<Output = HttpResponse> + Send>>
             + Send
-            + Sync
             + 'static,
     {
         if !self.middleware_stack.is_empty() {

@@ -351,19 +351,13 @@ impl Handler for GlobalChainHandler {
         let body = take_streaming_body(&mut owned);
         let http_req = HttpRequest::from_parts(parts, body);
 
-        let shell = Arc::new(std::sync::Mutex::new(Some(owned)));
         let inner = self.inner.clone();
 
         let http_res = self
             .ctx
             .execute(http_req, move |treq| {
-                let inner = inner.clone();
-                let shell = shell.clone();
                 Box::pin(async move {
-                    let taken = shell.lock().unwrap().take();
-                    let Some(mut sreq) = taken else {
-                        return json_error_response(500, "request already consumed".into());
-                    };
+                    let mut sreq = owned;
                     let (parts, body) = treq.into_parts();
                     *sreq.method_mut() = parts.method;
                     *sreq.uri_mut() = parts.uri;

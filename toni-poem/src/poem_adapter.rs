@@ -267,30 +267,22 @@ impl Endpoint for GlobalChainEndpoint {
 
         // The poem request shell keeps state http parts cannot carry — the
         // WebSocket upgrade slot — so the chain's output is written back onto
-        // the original request instead of rebuilding one. Take-once: the
-        // chain invokes routing at most once.
-        let shell = Arc::new(std::sync::Mutex::new(Some(req)));
+        // the original request instead of rebuilding one.
         let inner = self.inner.clone();
 
         let http_res = self
             .ctx
             .execute(http_req, move |treq| {
-                let inner = inner.clone();
-                let shell = shell.clone();
                 Box::pin(async move {
-                    let taken = shell.lock().unwrap().take();
-                    let Some(mut poem_req) = taken else {
-                        return json_error_response(500, "request already consumed".into());
-                    };
                     let (parts, body) = treq.into_parts();
-                    poem_req.set_method(parts.method);
-                    *poem_req.uri_mut() = parts.uri;
-                    poem_req.set_version(parts.version);
-                    *poem_req.headers_mut() = parts.headers;
-                    *poem_req.extensions_mut() = parts.extensions;
-                    poem_req.set_body(toni_body_to_poem(body));
+                    req.set_method(parts.method);
+                    *req.uri_mut() = parts.uri;
+                    req.set_version(parts.version);
+                    *req.headers_mut() = parts.headers;
+                    *req.extensions_mut() = parts.extensions;
+                    req.set_body(toni_body_to_poem(body));
 
-                    match inner.call(poem_req).await {
+                    match inner.call(req).await {
                         Ok(res) => poem_response_to_toni(res),
                         Err(err) => poem_response_to_toni(err.into_response()),
                     }
