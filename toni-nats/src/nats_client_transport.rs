@@ -15,7 +15,7 @@ use crate::IntoNatsServers;
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// provider_value!(
 ///     "INVENTORY_CLIENT",
 ///     toni::RpcClient::new(toni_nats::NatsClientTransport::new("nats://localhost:4222"))

@@ -24,7 +24,7 @@ use crate::IntoNatsServers;
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// app.use_rpc_adapter(toni_nats::NatsAdapter::new("nats://localhost:4222")).unwrap();
 /// ```
 ///

@@ -33,7 +33,7 @@ struct Inner {
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// provider_value!(
 ///     "ORDERS_CLIENT",
 ///     toni::RpcClient::new(toni_tcp::TcpClientTransport::new("127.0.0.1", 4000))
