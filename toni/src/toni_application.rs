@@ -391,10 +391,10 @@ impl ToniApplication {
                         broadcast_service.clone(),
                     ));
                     if let Some(http) = &mut self.http_adapter {
-                        if let Err(e) = http.bind_ws(path, callbacks) {
+                        if let Err(e) = http.register_ws_route(path, callbacks) {
                             tracing::error!(path, error = %e, "Failed to add WebSocket route");
                         } else {
-                            tracing::debug!(path, "WebSocket gateway bound");
+                            tracing::debug!(path, "WebSocket gateway registered");
                             gateway.call_after_init().await;
                         }
                     }
@@ -418,7 +418,7 @@ impl ToniApplication {
                     );
                 }
             } else {
-                // Bind all paths on the adapter while we still own it.
+                // Register all paths on the adapter while we still own it.
                 {
                     let ws = self.ws_adapter.as_mut().unwrap();
                     for (path, gateway) in &separate_port {
@@ -432,10 +432,14 @@ impl ToniApplication {
                                 client_map,
                                 broadcast_service.clone(),
                             ));
-                            if let Err(e) = ws.bind(ws_port, path, callbacks) {
-                                tracing::error!(path, error = %e, "Failed to bind gateway");
+                            if let Err(e) = ws.register_gateway(ws_port, path, callbacks) {
+                                tracing::error!(path, error = %e, "Failed to register gateway");
                             } else {
-                                tracing::debug!(port = ws_port, path, "WebSocket gateway bound");
+                                tracing::debug!(
+                                    port = ws_port,
+                                    path,
+                                    "WebSocket gateway registered"
+                                );
                                 gateway.call_after_init().await;
                             }
                         }
@@ -491,8 +495,8 @@ impl ToniApplication {
 
                 let callbacks = Arc::new(make_rpc_callbacks(self.rpc_controllers.clone()));
                 let mut adapter = self.rpc_adapter.take().unwrap();
-                if let Err(e) = adapter.bind(&all_patterns, callbacks) {
-                    tracing::error!(error = %e, "Failed to bind RPC adapter patterns");
+                if let Err(e) = adapter.register_handlers(&all_patterns, callbacks) {
+                    tracing::error!(error = %e, "Failed to register RPC patterns");
                 } else {
                     match adapter.into_lifecycle().await {
                         Ok(handle) => {
@@ -513,8 +517,8 @@ impl ToniApplication {
         if let Some(mut adapter) = self.grpc_adapter.take() {
             let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
             let grpc_services = grpc_resolver.resolve()?;
-            if let Err(e) = adapter.bind(grpc_services) {
-                tracing::error!(error = %e, "Failed to bind gRPC services");
+            if let Err(e) = adapter.register_services(grpc_services) {
+                tracing::error!(error = %e, "Failed to register gRPC services");
             } else {
                 match adapter.into_lifecycle().await {
                     Ok(handle) => {

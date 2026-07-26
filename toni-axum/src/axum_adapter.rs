@@ -361,7 +361,7 @@ impl AxumAdapter {
 
 #[toni::async_trait]
 impl HttpAdapter for AxumAdapter {
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,
@@ -371,7 +371,11 @@ impl HttpAdapter for AxumAdapter {
         Ok(())
     }
 
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_ws_route(
+        &mut self,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_router = self.ws_router.clone().route(path, ws_route(callbacks));
         Ok(())
     }
@@ -479,7 +483,12 @@ impl HttpAdapter for AxumAdapter {
 
 #[async_trait]
 impl WebSocketAdapter for AxumAdapter {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_gateway(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         let router = self.ws_ports.entry(port).or_insert_with(Router::new);
         *router = router.clone().route(path, ws_route(callbacks));
         Ok(())

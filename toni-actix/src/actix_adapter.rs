@@ -360,7 +360,7 @@ where
 
 #[toni::async_trait]
 impl HttpAdapter for ActixAdapter {
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,

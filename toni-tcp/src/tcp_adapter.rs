@@ -92,7 +92,11 @@ impl TcpAdapter {
 
 #[async_trait]
 impl RpcAdapter for TcpAdapter {
-    fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+    fn register_handlers(
+        &mut self,
+        _patterns: &[String],
+        callbacks: Arc<RpcMessageCallbacks>,
+    ) -> Result<()> {
         // Bind synchronously so port-in-use surfaces as `Err` from
         // `app.start()` instead of panicking inside the spawned accept loop.
         let addr = format!("{}:{}", self.host, self.port);
@@ -117,11 +121,11 @@ impl RpcAdapter for TcpAdapter {
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
         let listener = self
             .listener
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
         let local_addr = self.local_addr;
         let shutdown_tx = self.shutdown_tx.clone();
         let drain_timeout = self.drain_timeout;

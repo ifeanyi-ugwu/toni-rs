@@ -514,7 +514,7 @@ async fn run_ws_connection(
 
 #[toni::async_trait]
 impl HttpAdapter for SalvoAdapter {
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,
@@ -524,7 +524,11 @@ impl HttpAdapter for SalvoAdapter {
         Ok(())
     }
 
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_ws_route(
+        &mut self,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_routes.push((path.to_owned(), callbacks));
         Ok(())
     }
@@ -604,7 +608,12 @@ impl HttpAdapter for SalvoAdapter {
 
 #[async_trait]
 impl WebSocketAdapter for SalvoAdapter {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_gateway(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_ports
             .entry(port)
             .or_default()

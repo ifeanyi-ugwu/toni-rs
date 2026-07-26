@@ -16,28 +16,24 @@ use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers
 ///
 /// Adapter implementations register tonic services on the wrapped
 /// `tonic::transport::Server` *during their own construction* — before
-/// `bind()` is called by the framework. The framework only orchestrates the
-/// shared lifecycle: `bind` → `into_lifecycle`, then drives the returned
-/// handle. Per-request dispatch is entirely inside tonic and the user's
-/// trait `impl`s.
+/// `register_services()` is called by the framework. The framework only
+/// orchestrates the shared lifecycle: `register_services` →
+/// `into_lifecycle`, then drives the returned handle. Per-request dispatch
+/// is entirely inside tonic and the user's trait `impl`s.
 #[async_trait]
 pub trait GrpcAdapter: Send + Sync + 'static {
-    /// Acquire the listening socket and accept any framework-discovered
-    /// services for registration.
+    /// Accept the framework-discovered services and merge them into the
+    /// configured tonic `Server`'s routes.
     ///
-    /// Called once before [`into_lifecycle`](Self::into_lifecycle).
-    /// Implementations should bind synchronously (so port-in-use surfaces as
-    /// `Err` from `bind()` rather than panicking inside the spawned serve
-    /// loop), capture the local address for the lifecycle handle, and merge
-    /// `services` into the configured tonic `Server`'s routes — each service
-    /// contributes itself via [`GrpcServiceTrait::register_with`] using a
-    /// tonic `RoutesBuilder` passed as `&mut dyn Any`.
+    /// Called once before [`into_lifecycle`](Self::into_lifecycle). Each
+    /// service contributes itself via [`GrpcServiceTrait::register_with`]
+    /// using a tonic `RoutesBuilder` passed as `&mut dyn Any`; each entry
+    /// is paired with its resolved enhancer bundle, and the adapter
+    /// forwards both into that call.
     ///
     /// `services` may be empty when the user wires services directly via
-    /// adapter-specific `add_service` calls. Each entry is paired with its
-    /// resolved enhancer bundle; the adapter forwards both into
-    /// [`GrpcServiceTrait::register_with`].
-    fn bind(
+    /// adapter-specific `add_service` calls.
+    fn register_services(
         &mut self,
         services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()>;
@@ -47,9 +43,11 @@ pub trait GrpcAdapter: Send + Sync + 'static {
     /// the local address, and a shutdown callback. The framework joins
     /// the serve future alongside every other adapter's serve.
     ///
-    /// Implementations should bind synchronously in `bind` so port-in-use
-    /// surfaces as `Err` from `app.bind()`, and capture the shutdown
-    /// signal in the closure so the framework's `close()` flow flips it
+    /// Implementations should acquire the listening socket here, binding
+    /// synchronously so port-in-use surfaces as `Err` from `app.bind()`
+    /// rather than inside the spawned serve loop, and capture the local
+    /// address for the lifecycle handle. The shutdown signal goes into
+    /// the handle's closure so the framework's `close()` flow flips it
     /// without holding a reference back to the adapter.
     async fn into_lifecycle(
         self: Box<Self>,

@@ -8,7 +8,7 @@ use crate::{
 /// Runtime context the framework hands to an adapter at serve time.
 ///
 /// Passed to [`HttpAdapter::into_lifecycle`](crate::adapter::HttpAdapter::into_lifecycle)
-/// after all `bind`/`bind_ws` calls.
+/// after all `register_route`/`register_ws_route` calls.
 ///
 /// New fields can be added here without changing the trait signature —
 /// adapters ignore fields they don't need.

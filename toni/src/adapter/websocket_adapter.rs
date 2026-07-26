@@ -94,7 +94,7 @@ impl WsConnectionCallbacks {
 
 /// Interface for standalone (separate-port) WebSocket server adapters.
 ///
-/// The framework calls [`bind`](Self::bind) once per gateway path to
+/// The framework calls [`register_gateway`](Self::register_gateway) once per gateway path to
 /// register callbacks, then calls
 /// [`into_lifecycle_handles`](Self::into_lifecycle_handles) once with
 /// every unique port — the adapter consumes itself and returns one
@@ -105,14 +105,19 @@ impl WsConnectionCallbacks {
 /// it down.
 ///
 /// Same-port (HTTP upgrade) gateways are handled by
-/// [`HttpAdapter::bind_ws`](crate::adapter::HttpAdapter::bind_ws).
+/// [`HttpAdapter::register_ws_route`](crate::adapter::HttpAdapter::register_ws_route).
 #[async_trait]
 pub trait WebSocketAdapter: Send + Sync + 'static {
     /// Register a gateway path for `port`, storing `callbacks` for each
     /// incoming connection.
     ///
     /// **Default:** returns error — implement for separate-port support.
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_gateway(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         let _ = (port, path, callbacks);
         Err(anyhow::anyhow!(
             "This WebSocket adapter does not support separate-port servers"
