@@ -9,9 +9,9 @@ use async_trait::async_trait;
 /// (HTTP, WebSocket, RPC, gRPC, future Kafka/MQTT/etc.).
 ///
 /// The framework's startup/shutdown machinery sees adapters only through
-/// this trait. Per-transport dispatch concerns — route binding, pattern
-/// registration, service registration — happen during construction of the
-/// concrete `*LifecycleHandle` type, not through this trait.
+/// this trait. Per-transport dispatch concerns — route, pattern, and
+/// service registration — happen during construction of the concrete
+/// `*LifecycleHandle` type, not through this trait.
 ///
 /// New adapter kinds plug in by adding a new `*LifecycleHandle: ServerLifecycle`
 /// alongside a typed `use_*_adapter()` registration on `ToniApplication`. No

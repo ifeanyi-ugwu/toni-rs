@@ -55,7 +55,11 @@ impl NatsAdapter {
 
 #[toni::async_trait]
 impl RpcAdapter for NatsAdapter {
-    fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+    fn register_handlers(
+        &mut self,
+        patterns: &[String],
+        callbacks: Arc<RpcMessageCallbacks>,
+    ) -> Result<()> {
         self.patterns = patterns.to_vec();
         self.callbacks = Some(callbacks);
         Ok(())
@@ -67,7 +71,7 @@ impl RpcAdapter for NatsAdapter {
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
 
         let serve = Box::pin(async move {
             let servers_for_log = servers.join(", ");

@@ -430,7 +430,7 @@ async fn run_ws_connection(
 
 #[toni::async_trait]
 impl HttpAdapter for RocketAdapter {
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,
@@ -440,7 +440,11 @@ impl HttpAdapter for RocketAdapter {
         Ok(())
     }
 
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_ws_route(
+        &mut self,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_routes.push((path.to_owned(), callbacks));
         Ok(())
     }

@@ -50,7 +50,11 @@ impl RabbitMqAdapter {
 
 #[toni::async_trait]
 impl RpcAdapter for RabbitMqAdapter {
-    fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+    fn register_handlers(
+        &mut self,
+        patterns: &[String],
+        callbacks: Arc<RpcMessageCallbacks>,
+    ) -> Result<()> {
         self.patterns = patterns.to_vec();
         self.callbacks = Some(callbacks);
         Ok(())
@@ -62,7 +66,7 @@ impl RpcAdapter for RabbitMqAdapter {
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 

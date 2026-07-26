@@ -56,7 +56,7 @@
 //! ## WebSockets
 //!
 //! Same-port upgrades go through `rocket_ws::WebSocket`. Routes registered
-//! via `bind_ws` are mounted as `GET` (matching RFC 6455) and the upgrade
+//! via `register_ws_route` are mounted as `GET` (matching RFC 6455) and the upgrade
 //! is performed inside the handler. The adapter does not implement
 //! `WebSocketAdapter`, so `#[websocket_gateway(port = N)]` gateways will
 //! fail registration — pair toni-rocket with `toni-tungstenite` (or

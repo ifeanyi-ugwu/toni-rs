@@ -75,7 +75,12 @@ impl Default for TungsteniteAdapter {
 
 #[async_trait]
 impl WebSocketAdapter for TungsteniteAdapter {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_gateway(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ports
             .entry(port)
             .or_insert_with(PortEntry::new)

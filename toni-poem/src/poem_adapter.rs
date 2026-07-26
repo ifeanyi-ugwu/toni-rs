@@ -450,7 +450,7 @@ fn build_method_routes(
 
 #[toni::async_trait]
 impl HttpAdapter for PoemAdapter {
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,
@@ -460,7 +460,11 @@ impl HttpAdapter for PoemAdapter {
         Ok(())
     }
 
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_ws_route(
+        &mut self,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_routes.push((path.to_owned(), callbacks));
         Ok(())
     }
@@ -530,7 +534,12 @@ impl HttpAdapter for PoemAdapter {
 
 #[async_trait]
 impl WebSocketAdapter for PoemAdapter {
-    fn bind(&mut self, port: u16, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_gateway(
+        &mut self,
+        port: u16,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         self.ws_ports
             .entry(port)
             .or_default()

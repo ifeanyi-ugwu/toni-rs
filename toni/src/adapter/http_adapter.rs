@@ -10,8 +10,8 @@ use crate::adapter::request_handler::RequestHandler;
 use crate::http_helpers::HttpMethod;
 
 /// Implemented by every HTTP transport adapter (axum, actix, poem, rocket,
-/// salvo). The framework calls [`bind`](Self::bind) and
-/// [`bind_ws`](Self::bind_ws) during route resolution to register routes,
+/// salvo). The framework calls [`register_route`](Self::register_route) and
+/// [`register_ws_route`](Self::register_ws_route) during route resolution to register routes,
 /// then calls [`into_lifecycle`](Self::into_lifecycle) once to consume the
 /// adapter and produce a self-contained lifecycle handle.
 ///
@@ -53,7 +53,7 @@ pub trait HttpAdapter: Send + Sync + 'static {
     /// Called at bootstrap for every route the framework discovers. The
     /// adapter stores the (method, path, handler) triple and uses it when
     /// building its native router.
-    fn bind(
+    fn register_route(
         &mut self,
         method: HttpMethod,
         path: &str,
@@ -64,7 +64,11 @@ pub trait HttpAdapter: Send + Sync + 'static {
     ///
     /// Default: returns an error — implement only if this adapter supports
     /// same-port WebSocket upgrades.
-    fn bind_ws(&mut self, path: &str, callbacks: Arc<WsConnectionCallbacks>) -> Result<()> {
+    fn register_ws_route(
+        &mut self,
+        path: &str,
+        callbacks: Arc<WsConnectionCallbacks>,
+    ) -> Result<()> {
         let _ = (path, callbacks);
         Err(anyhow::anyhow!(
             "This HTTP adapter does not support WebSocket upgrades"
@@ -76,7 +80,7 @@ pub trait HttpAdapter: Send + Sync + 'static {
     ///
     /// The implementation typically:
     /// 1. Builds its framework-native router from the routes accumulated
-    ///    in `bind` / `bind_ws`.
+    ///    in `register_route` / `register_ws_route`.
     /// 2. Binds the listener synchronously so port-in-use surfaces here
     ///    rather than inside the spawned serve task.
     /// 3. Captures its shutdown signal in a closure and hands the

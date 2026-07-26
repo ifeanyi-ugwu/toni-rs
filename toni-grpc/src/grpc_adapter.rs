@@ -23,9 +23,10 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Wraps `tonic::transport::Server`. Construction is contract-first: the
 /// caller registers tonic-generated services via [`add_service`](Self::add_service)
-/// before passing the adapter to `app.use_grpc_adapter()`. After the
-/// framework calls `bind()`, the adapter owns a `TcpListener` on the
-/// configured address; `serve()` then drives the gRPC server until shutdown.
+/// before passing the adapter to `app.use_grpc_adapter()`. The framework
+/// then calls `register_services()` to merge its discovered services into
+/// the same route set; `into_lifecycle()` binds a `TcpListener` on the
+/// configured address and drives the gRPC server until shutdown.
 ///
 /// # Graceful shutdown
 ///
@@ -49,8 +50,6 @@ pub struct GrpcAdapter {
     /// one slow client monopolise its own connection without starving
     /// others even when the global cap isn't hit.
     max_per_connection: Option<usize>,
-    listener: Option<TcpListener>,
-    local_addr: Option<SocketAddr>,
     /// Two consumers subscribe: tonic's `serve_with_incoming_shutdown` (so
     /// it begins natural drain), and the drain-timeout guard (so the deadline
     /// timer starts only *after* shutdown is signalled, not at startup).
@@ -66,8 +65,6 @@ impl GrpcAdapter {
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
             max_inflight: None,
             max_per_connection: None,
-            listener: None,
-            local_addr: None,
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -129,7 +126,7 @@ impl GrpcAdapter {
 
 #[async_trait]
 impl toni::GrpcAdapter for GrpcAdapter {
-    fn bind(
+    fn register_services(
         &mut self,
         services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()> {
@@ -144,7 +141,10 @@ impl toni::GrpcAdapter for GrpcAdapter {
                 enhancers.clone(),
             );
         }
+        Ok(())
+    }
 
+    async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::GrpcLifecycleHandle> {
         // Bind synchronously so port-in-use surfaces as `Err` from
         // `app.bind()` instead of panicking inside the spawned serve loop.
         let std_listener = std::net::TcpListener::bind(self.addr)
@@ -158,22 +158,11 @@ impl toni::GrpcAdapter for GrpcAdapter {
             .local_addr()
             .context("GrpcAdapter: failed to read local address from listener")?;
 
-        self.listener = Some(listener);
-        self.local_addr = Some(local_addr);
-        Ok(())
-    }
-
-    async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::GrpcLifecycleHandle> {
-        let listener = self
-            .listener
-            .take()
-            .expect("bind() must be called before into_lifecycle()");
         let routes: Routes = std::mem::take(&mut self.routes_builder).routes();
         let drain_timeout = self.drain_timeout;
-        let addr = self.local_addr;
+        let addr = local_addr;
         let max_inflight = self.max_inflight;
         let max_per_connection = self.max_per_connection;
-        let local_addr = self.local_addr;
 
         let shutdown_tonic = self.shutdown_tx.subscribe();
         let shutdown_drain = self.shutdown_tx.subscribe();
@@ -249,7 +238,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
 
         let shutdown_tx = self.shutdown_tx.clone();
         Ok(toni::GrpcLifecycleHandle::new(
-            local_addr,
+            Some(local_addr),
             serve,
             move || async move {
                 // Idempotent — the watch coalesces repeat sends into the same value.

@@ -102,7 +102,11 @@ impl UdpAdapter {
 
 #[async_trait]
 impl RpcAdapter for UdpAdapter {
-    fn bind(&mut self, _patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()> {
+    fn register_handlers(
+        &mut self,
+        _patterns: &[String],
+        callbacks: Arc<RpcMessageCallbacks>,
+    ) -> Result<()> {
         // Bind synchronously so `app.start().await` surfaces a port-in-use
         // failure as `Err` instead of panicking inside the spawned recv loop.
         let addr = format!("{}:{}", self.host, self.port);
@@ -127,11 +131,11 @@ impl RpcAdapter for UdpAdapter {
         let callbacks = self
             .callbacks
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
         let socket = self
             .socket
             .take()
-            .expect("bind() must be called before into_lifecycle()");
+            .expect("register_handlers() must be called before into_lifecycle()");
         let local_addr = self.local_addr;
         let drain_timeout = self.drain_timeout;
         let inflight = self.inflight.clone();

@@ -17,7 +17,7 @@ pub struct Module {
     providers: FxHashMap<String, Box<dyn ProviderFactory>>,
     imports: FxHashSet<String>,
     exports: FxHashSet<String>,
-    /// One per route, the dispatch units the router binds to the adapter.
+    /// One per route, the dispatch units the router registers with the adapter.
     controllers_instances: FxHashMap<String, Arc<InstanceWrapper>>,
     /// One per controller struct, kept for lifecycle hooks (fired once each).
     controller_objects: Vec<Arc<dyn Controller>>,

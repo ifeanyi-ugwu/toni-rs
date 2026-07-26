@@ -56,11 +56,11 @@ impl RpcMessageCallbacks {
 
 /// Interface for RPC transport adapters.
 ///
-/// Implement `bind`, `serve`, and optionally `close`. The framework constructs
+/// Implement `register_handlers` and `into_lifecycle`. The framework constructs
 /// [`RpcMessageCallbacks`] with all dispatch logic embedded — the adapter never
 /// touches handler types directly.
 ///
-/// `patterns` in `bind` tells subscription-based adapters (NATS, Redis, Kafka)
+/// `patterns` in `register_handlers` tells subscription-based adapters (NATS, Redis, Kafka)
 /// which subjects to subscribe to. Envelope-based adapters (TCP) can ignore it
 /// and route by the pattern field in the message.
 #[async_trait]
@@ -71,7 +71,11 @@ pub trait RpcAdapter: Send + Sync + 'static {
     /// patterns this server handles — adapters that need to subscribe
     /// per-pattern (NATS, Redis) use this list; adapters that read a
     /// pattern field from the wire (TCP) can ignore it.
-    fn bind(&mut self, patterns: &[String], callbacks: Arc<RpcMessageCallbacks>) -> Result<()>;
+    fn register_handlers(
+        &mut self,
+        patterns: &[String],
+        callbacks: Arc<RpcMessageCallbacks>,
+    ) -> Result<()>;
 
     /// Consume the adapter and return a self-contained lifecycle handle.
     ///
