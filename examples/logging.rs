@@ -1,29 +1,32 @@
-//! Logging setup for toni applications.
+//! Default logging in toni applications.
 //!
-//! toni emits structured log events via the [`tracing`] crate. The framework
-//! never installs a subscriber — that is always the application's responsibility.
-//! This example shows the two common setups.
+//! toni emits structured log events via the [`tracing`] crate and installs a
+//! default subscriber during application creation: pretty-printed output to
+//! stderr, filtered by `RUST_LOG` with an `info` fallback. An application
+//! that never mentions logging still sees bootstrap events, guard
+//! rejections, and panic recoveries — including initialization failures that
+//! would otherwise exit silently.
 //!
-//! # Default (pretty stdout)
-//!
-//! ```
-//! cargo run --example logging
-//! ```
-//!
-//! # Filtered by level or target
-//!
-//! ```
-//! RUST_LOG=info cargo run --example logging
-//! RUST_LOG=toni=debug,tower_http=warn cargo run --example logging
+//! ```text
+//! cargo run --example logging                  # info and above
+//! RUST_LOG=toni=debug cargo run --example logging
+//! RUST_LOG=off cargo run --example logging     # silence at runtime
 //! ```
 //!
-//! If no subscriber is installed, all framework events are silently discarded —
-//! useful in tests or when you bring your own logging backend (e.g. `tracing-appender`,
-//! JSON via `tracing-subscriber::fmt().json()`).
+//! To bring your own backend (JSON output, `tracing-appender`,
+//! OpenTelemetry), install a global subscriber before creating the
+//! application — the default backs off whenever one is already set:
+//!
+//! ```text
+//! tracing_subscriber::fmt().json().init();
+//! let app = ToniFactory::create(AppModule).await;
+//! ```
+//!
+//! To compile the default logger out entirely, disable the crate's default
+//! features: `toni = { version = "0.2", default-features = false }`.
 
 use toni::*;
 use toni_axum::AxumAdapter;
-use tracing_subscriber::{fmt, EnvFilter};
 
 #[controller("/hello")]
 struct HelloController;
@@ -41,23 +44,13 @@ impl AppModule {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Install a subscriber before creating the application so bootstrap
-    // events (adapter registration, gateway discovery, server start) are captured.
-    //
-    // EnvFilter reads RUST_LOG; falls back to `info` when the var is absent.
-    fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-
     println!("cargo run --example logging");
     println!("RUST_LOG=debug cargo run --example logging");
     println!();
     println!("  GET http://127.0.0.1:3000/hello");
     println!();
 
-    let mut app = ToniFactory::new().create_with(AppModule).await;
+    let mut app = ToniFactory::create(AppModule).await;
 
     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")
         .unwrap();
