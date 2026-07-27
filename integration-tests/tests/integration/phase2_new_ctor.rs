@@ -342,3 +342,34 @@ async fn new_ctor_strips_inject_attr_from_params() {
 // Keep Arc import meaningful even if unused in asserts.
 #[allow(dead_code)]
 fn _arc_marker(_: Arc<()>) {}
+
+// The path-qualified spelling of `#[inject]` on a `#[new]` parameter must be read and
+// stripped like the bare one — unmatched it is neither token-routed nor removed.
+#[tokio_localset_test::localset_test]
+async fn new_ctor_path_qualified_inject_token() {
+    #[injectable]
+    pub struct Greeter {
+        greeting: String,
+    }
+
+    impl Greeter {
+        #[new]
+        fn new(#[toni::inject("GREETING")] greeting: String) -> Self {
+            Self { greeting }
+        }
+
+        pub fn greeting(&self) -> &str {
+            &self.greeting
+        }
+    }
+
+    #[module(providers: [
+        toni::provider_value!("GREETING", "hello".to_string()),
+        Greeter,
+    ])]
+    struct GreetModule {}
+
+    let app = ToniFactory::create_application_context(GreetModule).await;
+    let greeter: Greeter = app.get::<Greeter>().await.expect("Greeter resolves");
+    assert_eq!(greeter.greeting(), "hello");
+}

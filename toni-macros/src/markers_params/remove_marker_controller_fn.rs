@@ -11,10 +11,11 @@ pub fn remove_marker_in_controller_fn_args(method: &mut ImplItemFn) {
     for input in method.sig.inputs.iter_mut() {
         if let syn::FnArg::Typed(pat_type) = input {
             pat_type.attrs.retain(|attr| {
-                if let Some(ident) = attr.path().get_ident() {
-                    return !is_marker(ident);
-                }
-                true
+                !attr
+                    .path()
+                    .segments
+                    .last()
+                    .is_some_and(|seg| is_marker(&seg.ident))
             });
         }
     }

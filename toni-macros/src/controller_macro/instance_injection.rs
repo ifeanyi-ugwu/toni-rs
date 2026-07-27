@@ -40,12 +40,20 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
     let struct_name = crate::utils::extracts::extract_impl_self_ident(impl_block)?;
     let struct_name = &struct_name;
 
-    // Re-emit the impl with only the inert param markers stripped. `#[new]` and the `#[on_*]`
-    // lifecycle attrs are LEFT intact so their own macros expand into the `__toni_ctor_*` /
-    // `__toni_lc_*` bridges that `#[controller]`'s factory and object dispatch through.
+    // Re-emit the impl with the inert param markers and the consumed enhancer attrs stripped —
+    // the standalone enhancer macros reject unconsumed use, so none may survive to the output.
+    // `#[new]` and the `#[on_*]` lifecycle attrs are LEFT intact so their own macros expand into
+    // the `__toni_ctor_*` / `__toni_lc_*` bridges that `#[controller]`'s factory and object
+    // dispatch through.
     let mut impl_def = impl_block.clone();
+    impl_def
+        .attrs
+        .retain(|attr| !crate::enhancer::enhancer::has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
+            method
+                .attrs
+                .retain(|attr| !crate::enhancer::enhancer::has_enhancer_attribute(attr));
             crate::markers_params::remove_marker_controller_fn::remove_marker_in_controller_fn_args(
                 method,
             );
@@ -176,7 +184,7 @@ fn find_http_method_attr(attrs: &[Attribute]) -> Option<&Attribute> {
     })
 }
 
-fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<HashMap<&Ident, &Attribute>> {
+fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<Vec<(&Ident, &Attribute)>> {
     use crate::enhancer::enhancer::get_enhancers_attr as get_enhancers;
     get_enhancers(attrs)
 }
@@ -205,8 +213,8 @@ fn generate_controller_wrapper(
     method: &ImplItemFn,
     struct_name: &Ident,
     http_method_attr: &Attribute,
-    controller_enhancers_attr: HashMap<&Ident, &Attribute>,
-    method_enhancers_attr: HashMap<&Ident, &Attribute>,
+    controller_enhancers_attr: Vec<(&Ident, &Attribute)>,
+    method_enhancers_attr: Vec<(&Ident, &Attribute)>,
     marker_params: Vec<MarkerParam>,
     scope: ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {

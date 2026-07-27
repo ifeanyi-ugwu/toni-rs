@@ -52,7 +52,8 @@ pub fn detect_lifecycle_hooks(impl_block: &ItemImpl) -> LifecycleHooks {
     for item in &impl_block.items {
         if let syn::ImplItem::Fn(method) = item {
             for attr in &method.attrs {
-                if let Some(ident) = attr.path().get_ident() {
+                // Last segment, so path-qualified forms (`#[toni::on_module_init]`) match too.
+                if let Some(ident) = attr.path().segments.last().map(|seg| &seg.ident) {
                     let method_name = method.sig.ident.clone();
                     match ident.to_string().as_str() {
                         "on_module_init" => hooks.on_module_init = Some(method_name),
@@ -95,8 +96,9 @@ pub fn strip_lifecycle_attrs(impl_block: &ItemImpl) -> ItemImpl {
             method.attrs.retain(|attr| {
                 !attr
                     .path()
-                    .get_ident()
-                    .map(|id| LIFECYCLE_ATTRS.contains(&id.to_string().as_str()))
+                    .segments
+                    .last()
+                    .map(|seg| LIFECYCLE_ATTRS.contains(&seg.ident.to_string().as_str()))
                     .unwrap_or(false)
             });
         }

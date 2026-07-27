@@ -524,3 +524,136 @@ async fn app_token_global_enhancers() {
     tracker.assert_contains("global_guard");
     tracker.assert_contains("controller:test");
 }
+
+// Regression: the enhancer scan matched path-qualified attributes for stripping but
+// collected them via `Path::get_ident`, which fails on multi-segment paths — the
+// attribute vanished without applying the enhancer.
+#[tokio_localset_test::localset_test]
+async fn path_qualified_enhancer_attrs() {
+    use std::sync::OnceLock;
+
+    static TRACKER: OnceLock<ExecutionOrder> = OnceLock::new();
+    let tracker = ExecutionOrder::new();
+    TRACKER.set(tracker.clone()).ok();
+
+    fn get_tracker() -> ExecutionOrder {
+        TRACKER.get().unwrap().clone()
+    }
+
+    #[controller("/api")]
+    pub struct TestController {
+        #[inject]
+        tracker: ExecutionOrder,
+    }
+
+    #[routes]
+    #[toni::use_interceptors(LoggingInterceptor::new("qualified", get_tracker()))]
+    impl TestController {
+        #[toni::use_guards(AuthGuard::new(get_tracker()))]
+        #[get("/guarded")]
+        fn guarded(&self) -> ToniBody {
+            self.tracker.track("controller:guarded");
+            ToniBody::text("ok".to_string())
+        }
+    }
+
+    #[module(
+        controllers: [TestController],
+        providers: [provider_value!(ExecutionOrder, get_tracker())],
+    )]
+    impl TestModule {}
+
+    let server = TestServer::start(TestModule).await;
+
+    tracker.clear();
+    let resp = server
+        .client()
+        .get(server.url("/api/guarded"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    tracker.assert_contains("guard:auth");
+    tracker.assert_not_contains("controller:guarded");
+
+    tracker.clear();
+    let resp = server
+        .client()
+        .get(server.url("/api/guarded"))
+        .header("Authorization", "Bearer token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    tracker.assert_contains("interceptor:qualified:before");
+    tracker.assert_contains("controller:guarded");
+}
+
+// Regression: same-kind attributes stacked on one handler were collected into a map
+// keyed by attribute name, so the second silently replaced the first.
+#[tokio_localset_test::localset_test]
+async fn stacked_enhancer_attrs_accumulate() {
+    use std::sync::OnceLock;
+
+    static TRACKER: OnceLock<ExecutionOrder> = OnceLock::new();
+    let tracker = ExecutionOrder::new();
+    TRACKER.set(tracker.clone()).ok();
+
+    fn get_tracker() -> ExecutionOrder {
+        TRACKER.get().unwrap().clone()
+    }
+
+    #[controller("/api")]
+    pub struct TestController {
+        #[inject]
+        tracker: ExecutionOrder,
+    }
+
+    #[routes]
+    impl TestController {
+        #[use_guards(AuthGuard::new(get_tracker()))]
+        #[use_guards(AdminGuard::new(get_tracker()))]
+        #[get("/stacked")]
+        fn stacked(&self) -> ToniBody {
+            self.tracker.track("controller:stacked");
+            ToniBody::text("ok".to_string())
+        }
+    }
+
+    #[module(
+        controllers: [TestController],
+        providers: [provider_value!(ExecutionOrder, get_tracker())],
+    )]
+    impl TestModule {}
+
+    let server = TestServer::start(TestModule).await;
+
+    tracker.clear();
+    let resp = server
+        .client()
+        .get(server.url("/api/stacked"))
+        .header("Authorization", "Bearer token")
+        .header("X-Admin-Token", "secret123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let events = tracker.events();
+    let auth = events.iter().position(|e| e == "guard:auth");
+    let admin = events.iter().position(|e| e == "guard:admin");
+    assert!(auth.is_some(), "first stacked guard ran: {events:?}");
+    assert!(admin.is_some(), "second stacked guard ran: {events:?}");
+    assert!(auth < admin, "guards run in declaration order: {events:?}");
+    tracker.assert_contains("controller:stacked");
+
+    tracker.clear();
+    let resp = server
+        .client()
+        .get(server.url("/api/stacked"))
+        .header("Authorization", "Bearer token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    tracker.assert_not_contains("controller:stacked");
+}

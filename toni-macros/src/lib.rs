@@ -23,6 +23,22 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_macro::module_struct::module(attr, item)
 }
 
+/// Every handler macro (`#[routes]`, `#[patterns]`, `#[subscriptions]`, `#[grpc_methods]`)
+/// consumes and strips enhancer attributes, so an enhancer macro that reaches expansion is
+/// misplaced — most often written above the handler macro, where it expands first and is
+/// gone before the handler macro runs. The item is re-emitted alongside the error to keep
+/// downstream name resolution intact.
+fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
+    let message = format!(
+        "#[{name}] was not consumed by a handler macro. Place it below #[routes], #[patterns], \
+         #[subscriptions], or #[grpc_methods] on the handler impl, or on a handler method inside \
+         it — attributes above the handler macro expand first and never reach it."
+    );
+    let error = syn::Error::new(proc_macro2::Span::call_site(), message).to_compile_error();
+    let item = proc_macro2::TokenStream::from(item);
+    quote::quote! { #error #item }.into()
+}
+
 /// Field-injection provider — the way to declare a DI provider. Place it on the struct:
 /// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state. The macro adds
 /// the `Clone` impl the container needs, so the struct carries no derive ceremony.
@@ -152,11 +168,24 @@ pub fn sse(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// **Controller-level guards (applies to all methods):**
 /// ```rust,ignore
-/// #[controller("/api", pub struct MyController{})]
+/// #[routes]
 /// #[use_guards(AuthGuard{})]
 /// impl MyController {
 ///     // All methods require authentication
 /// }
+/// ```
+///
+/// # Placement
+///
+/// The attribute is consumed by the handler macro (`#[routes]`, `#[patterns]`,
+/// `#[subscriptions]`, `#[grpc_methods]`), so it must sit below it on the handler impl, or on
+/// a handler method inside it. Above the handler macro it expands first and never reaches the
+/// scan; anywhere it goes unconsumed is a compile error:
+///
+/// ```compile_fail
+/// # use toni_macros::use_guards;
+/// #[use_guards(AuthGuard)]
+/// struct NotAHandlerImpl;
 /// ```
 ///
 /// # Execution Order
@@ -169,7 +198,7 @@ pub fn sse(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Within each level, guards execute in the order specified.
 #[proc_macro_attribute]
 pub fn use_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    unconsumed_enhancer_error("use_guards", item)
 }
 
 /// Applies interceptors to route handlers or controllers for cross-cutting concerns.
@@ -208,12 +237,18 @@ pub fn use_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// **Controller-level interceptors (applies to all methods):**
 /// ```rust,ignore
+/// #[routes]
 /// #[use_interceptors(LoggingInterceptor{})]
-/// #[controller("/api")]
 /// impl MyController {
 ///     // All methods are logged
 /// }
 /// ```
+///
+/// # Placement
+///
+/// Consumed by the handler macro — see [`macro@use_guards`]: it must sit below `#[routes]` (or
+/// its transport counterpart) on the handler impl, or on a handler method inside it; anywhere
+/// it goes unconsumed is a compile error.
 ///
 /// # Execution Order
 ///
@@ -227,7 +262,7 @@ pub fn use_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// 7. Global interceptors (after phase, reverse order)
 #[proc_macro_attribute]
 pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    unconsumed_enhancer_error("use_interceptors", item)
 }
 
 /// Applies pipes to route handlers or controllers for data transformation and validation.
@@ -266,12 +301,18 @@ pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// **Controller-level pipes (applies to all methods):**
 /// ```rust,ignore
+/// #[routes]
 /// #[use_pipes(ValidationPipe{})]
-/// #[controller("/api")]
 /// impl MyController {
 ///     // All methods validate request data
 /// }
 /// ```
+///
+/// # Placement
+///
+/// Consumed by the handler macro — see [`macro@use_guards`]: it must sit below `#[routes]` (or
+/// its transport counterpart) on the handler impl, or on a handler method inside it; anywhere
+/// it goes unconsumed is a compile error.
 ///
 /// # Execution Order
 ///
@@ -283,7 +324,7 @@ pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Within each level, pipes execute in the order specified.
 #[proc_macro_attribute]
 pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    unconsumed_enhancer_error("use_pipes", item)
 }
 
 /// Applies error handlers to route handlers or controllers for custom error processing.
@@ -323,12 +364,18 @@ pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// **Controller-level error handlers (applies to all methods):**
 /// ```rust,ignore
+/// #[routes]
 /// #[use_error_handlers(CustomErrorHandler{})]
-/// #[controller("/api")]
 /// impl MyController {
 ///     // All methods use custom error handling
 /// }
 /// ```
+///
+/// # Placement
+///
+/// Consumed by the handler macro — see [`macro@use_guards`]: it must sit below `#[routes]` (or
+/// its transport counterpart) on the handler impl, or on a handler method inside it; anywhere
+/// it goes unconsumed is a compile error.
 ///
 /// # Execution Order
 ///
@@ -341,7 +388,7 @@ pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// to the next handler. If all handlers return None, a default 500 error is returned.
 #[proc_macro_attribute]
 pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    unconsumed_enhancer_error("use_error_handlers", item)
 }
 
 /// Attaches metadata to a route handler for use by guards, interceptors, or other enhancers.

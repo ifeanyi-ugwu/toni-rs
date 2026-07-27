@@ -46,7 +46,7 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         if let FnArg::Typed(pat_type) = input {
             pat_type
                 .attrs
-                .retain(|attr| !attr.path().is_ident("inject"));
+                .retain(|attr| !crate::shared::attr_is(attr, "inject"));
         }
     }
 
@@ -103,7 +103,7 @@ fn extract_params(method: &ImplItemFn) -> Result<Vec<CtorParam>> {
 /// `None` (caller falls back to the type token).
 fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStream>> {
     for attr in &pat_type.attrs {
-        if attr.path().is_ident("inject") {
+        if crate::shared::attr_is(attr, "inject") {
             if attr.meta.require_path_only().is_ok() {
                 return Ok(None);
             }

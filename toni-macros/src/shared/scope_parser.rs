@@ -1,5 +1,5 @@
 use syn::{
-    Attribute, ItemStruct, LitStr, Result, Token,
+    ItemStruct, LitStr, Result, Token,
     parse::{Parse, ParseStream},
 };
 
@@ -251,85 +251,5 @@ impl Parse for ControllerArgs {
             init,
             struct_def,
         })
-    }
-}
-
-/// Extract scope from attributes like #[scope("singleton")]
-/// DEPRECATED: Use ProviderStructArgs instead
-pub fn parse_scope_from_attrs(attrs: &[Attribute]) -> Result<ProviderScope> {
-    for attr in attrs {
-        if attr.path().is_ident("scope") {
-            let value: LitStr = attr.parse_args()?;
-
-            let scope = match value.value().as_str() {
-                "singleton" => ProviderScope::Singleton,
-                "request" => ProviderScope::Request,
-                "transient" => ProviderScope::Transient,
-                other => {
-                    return Err(syn::Error::new(
-                        value.span(),
-                        format!(
-                            "Invalid scope: '{}'. Must be 'singleton', 'request', or 'transient'",
-                            other
-                        ),
-                    ));
-                }
-            };
-
-            return Ok(scope);
-        }
-    }
-
-    // Default to singleton if no scope attribute found
-    Ok(ProviderScope::default())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use syn::parse_quote;
-
-    #[test]
-    fn test_parse_singleton_scope() {
-        let attr: Attribute = parse_quote! {
-            #[scope("singleton")]
-        };
-        let scope = parse_scope_from_attrs(&[attr]).unwrap();
-        assert_eq!(scope, ProviderScope::Singleton);
-    }
-
-    #[test]
-    fn test_parse_request_scope() {
-        let attr: Attribute = parse_quote! {
-            #[scope("request")]
-        };
-        let scope = parse_scope_from_attrs(&[attr]).unwrap();
-        assert_eq!(scope, ProviderScope::Request);
-    }
-
-    #[test]
-    fn test_parse_transient_scope() {
-        let attr: Attribute = parse_quote! {
-            #[scope("transient")]
-        };
-        let scope = parse_scope_from_attrs(&[attr]).unwrap();
-        assert_eq!(scope, ProviderScope::Transient);
-    }
-
-    #[test]
-    fn test_default_scope() {
-        // No scope attribute = defaults to singleton
-        let scope = parse_scope_from_attrs(&[]).unwrap();
-        assert_eq!(scope, ProviderScope::Singleton);
-    }
-
-    #[test]
-    fn test_invalid_scope() {
-        let attr: Attribute = parse_quote! {
-            #[scope("invalid")]
-        };
-        let result = parse_scope_from_attrs(&[attr]);
-        assert!(result.is_err());
     }
 }

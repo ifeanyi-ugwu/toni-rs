@@ -15,7 +15,12 @@ pub fn get_marker_params(method: &ImplItemFn) -> Result<Vec<MarkerParam>> {
     for input in method.sig.inputs.iter() {
         if let syn::FnArg::Typed(pat_type) = input {
             if !pat_type.attrs.is_empty() {
-                if let Some(marker_ident) = pat_type.attrs[0].path().get_ident() {
+                if let Some(marker_ident) = pat_type.attrs[0]
+                    .path()
+                    .segments
+                    .last()
+                    .map(|seg| &seg.ident)
+                {
                     if is_marker(marker_ident) {
                         let mut marker_arg = None;
                         let mut default_value = None;
