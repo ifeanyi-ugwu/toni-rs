@@ -25,3 +25,4 @@ the history is part of the value.
 - [0007 — The global middleware chain anchors before routing, per adapter, pinned by a conformance suite](0007-pre-routing-global-chain.md)
 - [0008 — The root module is any `ModuleMetadata`; the `ModuleDefinition` enum is removed](0008-root-module-is-any-modulemetadata.md)
 - [0009 — Adapter SPI names: function first; a shared name requires shared semantics](0009-function-first-spi-naming.md)
+- [0010 — Default logging: installed on create with `try_init` back-off, no runtime knob](0010-default-logger-try-init-backoff.md)
