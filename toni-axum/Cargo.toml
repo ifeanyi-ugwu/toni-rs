@@ -8,7 +8,7 @@ keywords = ["toni", "axum", "web", "framework", "adapter"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full"] }

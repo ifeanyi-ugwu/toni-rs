@@ -29,7 +29,6 @@ anyhow = "1.0"
 futures = "0.3"
 bytes = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14"

@@ -8,7 +8,7 @@ keywords = ["toni", "poem", "web", "framework", "adapter"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 poem = { version = "3.1", features = ["websocket"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"

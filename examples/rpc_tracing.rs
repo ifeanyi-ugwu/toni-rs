@@ -10,7 +10,7 @@
 //! Run:
 //!
 //! ```
-//! RUST_LOG=info cargo run --example rpc_tracing
+//! cargo run --example rpc_tracing
 //! ```
 //!
 //! Then in a second terminal:
@@ -48,7 +48,6 @@ use std::sync::Arc;
 
 use toni::ToniFactory;
 use toni_macros::{grpc_methods, grpc_service, injectable, module, new, patterns, rpc_controller};
-use tracing_subscriber::{fmt, EnvFilter};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -157,13 +156,6 @@ struct GrpcModule;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("info,toni_tcp=debug,toni_udp=debug,toni_grpc=debug")
-        }))
-        .with_target(true)
-        .init();
-
     println!("RPC tracing example");
     println!("TCP:  127.0.0.1:4000");
     println!("UDP:  127.0.0.1:4001");
