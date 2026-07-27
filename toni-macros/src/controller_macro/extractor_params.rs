@@ -99,15 +99,12 @@ pub fn get_extractor_params(method: &ImplItemFn) -> Result<Vec<ExtractorParam>> 
     for input in method.sig.inputs.iter() {
         if let FnArg::Typed(pat_type) = input {
             // Skip parameters with marker attributes (#[body], #[query], #[param])
-            if !pat_type.attrs.is_empty() {
-                if let Some(attr_ident) = pat_type.attrs[0].path().get_ident() {
-                    if matches!(
-                        attr_ident.to_string().as_str(),
-                        "body" | "param" | "query" | "inject"
-                    ) {
-                        continue;
-                    }
-                }
+            if !pat_type.attrs.is_empty()
+                && pat_type.attrs[0].path().segments.last().is_some_and(|seg| {
+                    crate::markers_params::remove_marker_controller_fn::is_marker(&seg.ident)
+                })
+            {
+                continue;
             }
 
             let param_name = extract_param_name(&pat_type.pat);

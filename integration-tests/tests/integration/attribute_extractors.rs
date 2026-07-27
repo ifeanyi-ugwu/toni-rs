@@ -84,6 +84,16 @@ impl AttributeController {
     fn upload_file(&self, data: Bytes) -> ToniBody {
         ToniBody::text(format!("Uploaded {} bytes", data.len()))
     }
+
+    /// Path-qualified marker spellings work the same as the bare ones
+    #[post("/users-qualified")]
+    fn create_user_qualified(
+        &self,
+        #[toni::query("tag")] tag: String,
+        #[toni::body] dto: CreateUserDto,
+    ) -> ToniBody {
+        ToniBody::text(format!("Created {} user: {}", tag, dto.name))
+    }
 }
 
 #[toni::module(
@@ -244,4 +254,25 @@ async fn test_binary_upload() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, format!("Uploaded {} bytes", binary_data.len()));
+}
+
+#[tokio_localset_test::localset_test]
+async fn test_path_qualified_marker_attributes() {
+    let server = TestServer::start(AttributeModule).await;
+
+    let dto = CreateUserDto {
+        name: "Bob".to_string(),
+        email: "bob@example.com".to_string(),
+    };
+
+    let resp = server
+        .client()
+        .post(server.url("/api/users-qualified?tag=vip"))
+        .json(&dto)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "Created vip user: Bob");
 }
