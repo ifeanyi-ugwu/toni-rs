@@ -100,7 +100,7 @@ fn build_enhancers_fn(
 ) -> Result<TokenStream> {
     let gateway_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
     let enhancer_infos =
-        create_enhancer_infos(gateway_enhancers_attr, std::collections::HashMap::new())?;
+        create_enhancer_infos(gateway_enhancers_attr, Vec::new())?;
 
     let tokens_for = |key: &str| -> Vec<TokenStream> {
         let empty = Vec::new();
@@ -124,7 +124,7 @@ fn build_enhancers_fn(
             continue;
         }
         let handler_infos =
-            create_enhancer_infos(method_enhancers_attr, std::collections::HashMap::new())?;
+            create_enhancer_infos(method_enhancers_attr, Vec::new())?;
         let htokens_for = |key: &str| -> Vec<TokenStream> {
             let empty = Vec::new();
             handler_infos

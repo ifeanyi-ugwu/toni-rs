@@ -163,7 +163,7 @@ fn build_enhancers_fn(
     event_handlers: &[(String, syn::ImplItemFn)],
 ) -> Result<TokenStream> {
     let ctrl_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
-    let ctrl_infos = create_enhancer_infos(ctrl_enhancers_attr, std::collections::HashMap::new())?;
+    let ctrl_infos = create_enhancer_infos(ctrl_enhancers_attr, Vec::new())?;
 
     let tokens_for = |infos: &std::collections::HashMap<
         String,
@@ -192,7 +192,7 @@ fn build_enhancers_fn(
         if method_enhancers_attr.is_empty() {
             continue;
         }
-        let infos = create_enhancer_infos(method_enhancers_attr, std::collections::HashMap::new())?;
+        let infos = create_enhancer_infos(method_enhancers_attr, Vec::new())?;
         let hg = tokens_for(&infos, "guards");
         let hi = tokens_for(&infos, "interceptors");
         let hp = tokens_for(&infos, "pipes");

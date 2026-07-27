@@ -77,3 +77,26 @@ async fn startup_hooks_fire_in_order() {
         "expected module init → provider init → module bootstrap → provider bootstrap"
     );
 }
+
+// Module-impl hooks are collected by an attribute scan (provider hooks expand through
+// the standalone macros, which resolve by path on their own). The scan must accept the
+// path-qualified spelling too.
+#[tokio_localset_test::localset_test]
+async fn path_qualified_module_hook_attr_fires() {
+    static LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
+    fn qualified_log() -> Arc<Mutex<Vec<&'static str>>> {
+        LOG.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+    }
+
+    #[module(providers: [])]
+    impl QualifiedHookModule {
+        #[toni::on_module_init]
+        async fn on_module_init(&self) -> toni::InitResult {
+            qualified_log().lock().unwrap().push("module:init");
+            Ok(())
+        }
+    }
+
+    let _app = ToniFactory::create(QualifiedHookModule).await;
+    assert_eq!(qualified_log().lock().unwrap().clone(), vec!["module:init"]);
+}

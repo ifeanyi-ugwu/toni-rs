@@ -176,7 +176,7 @@ fn find_http_method_attr(attrs: &[Attribute]) -> Option<&Attribute> {
     })
 }
 
-fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<HashMap<&Ident, &Attribute>> {
+fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<Vec<(&Ident, &Attribute)>> {
     use crate::enhancer::enhancer::get_enhancers_attr as get_enhancers;
     get_enhancers(attrs)
 }
@@ -205,8 +205,8 @@ fn generate_controller_wrapper(
     method: &ImplItemFn,
     struct_name: &Ident,
     http_method_attr: &Attribute,
-    controller_enhancers_attr: HashMap<&Ident, &Attribute>,
-    method_enhancers_attr: HashMap<&Ident, &Attribute>,
+    controller_enhancers_attr: Vec<(&Ident, &Attribute)>,
+    method_enhancers_attr: Vec<(&Ident, &Attribute)>,
     marker_params: Vec<MarkerParam>,
     scope: ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
