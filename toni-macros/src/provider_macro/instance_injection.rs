@@ -218,10 +218,13 @@ pub fn add_clone_and_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     struct_def
 }
 
-/// Recursively check if a derive meta contains Clone
+/// Recursively check if a derive meta contains Clone. Matched by the path's last segment,
+/// so `std::clone::Clone` and re-exported Clone derives count too. An aliased derive
+/// (`use Clone as C`) or a manual `impl Clone` elsewhere stays invisible — token-level
+/// scanning cannot resolve names — and surfaces as a conflicting-implementations error.
 fn meta_contains_clone(meta: &syn::Meta) -> bool {
     match meta {
-        syn::Meta::Path(path) => path.is_ident("Clone"),
+        syn::Meta::Path(path) => path.segments.last().is_some_and(|seg| seg.ident == "Clone"),
         syn::Meta::List(list) => {
             for nested in list
                 .parse_args_with(

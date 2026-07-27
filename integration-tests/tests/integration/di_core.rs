@@ -308,3 +308,26 @@ async fn new_attribute_syntax() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+// A user-supplied Clone derive suppresses the one #[injectable] adds; the qualified
+// spelling must count too, or the two derives collide as conflicting implementations.
+#[tokio_localset_test::localset_test]
+async fn injectable_accepts_path_qualified_clone_derive() {
+    #[injectable]
+    #[derive(std::clone::Clone)]
+    pub struct QualifiedCloneService {
+        #[default(7_u32)]
+        value: u32,
+    }
+
+    #[module(providers: [QualifiedCloneService])]
+    struct QualifiedCloneModule {}
+
+    let app =
+        toni::toni_factory::ToniFactory::create_application_context(QualifiedCloneModule).await;
+    let svc: QualifiedCloneService = app
+        .get::<QualifiedCloneService>()
+        .await
+        .expect("resolves with a user-supplied qualified Clone derive");
+    assert_eq!(svc.value, 7);
+}
