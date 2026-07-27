@@ -97,8 +97,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
 
     // ── parse enhancer attrs (block-level + per-method) ─────────────────────
     let ctrl_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
-    let ctrl_enhancer_infos =
-        create_enhancer_infos(ctrl_enhancers_attr, Vec::new())?;
+    let ctrl_enhancer_infos = create_enhancer_infos(ctrl_enhancers_attr, Vec::new())?;
     let empty_vec = Vec::new();
     let ctrl_guard_tokens: Vec<_> = ctrl_enhancer_infos
         .get("guards")
@@ -144,8 +143,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                 let method_name = method.sig.ident.to_string();
                 let method_attr = get_enhancers_attr(&method.attrs)?;
                 if !method_attr.is_empty() {
-                    let infos =
-                        create_enhancer_infos(method_attr, Vec::new())?;
+                    let infos = create_enhancer_infos(method_attr, Vec::new())?;
                     let guards: Vec<TokenStream> = infos
                         .get("guards")
                         .unwrap_or(&empty_vec)

@@ -40,12 +40,20 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
     let struct_name = crate::utils::extracts::extract_impl_self_ident(impl_block)?;
     let struct_name = &struct_name;
 
-    // Re-emit the impl with only the inert param markers stripped. `#[new]` and the `#[on_*]`
-    // lifecycle attrs are LEFT intact so their own macros expand into the `__toni_ctor_*` /
-    // `__toni_lc_*` bridges that `#[controller]`'s factory and object dispatch through.
+    // Re-emit the impl with the inert param markers and the consumed enhancer attrs stripped —
+    // the standalone enhancer macros reject unconsumed use, so none may survive to the output.
+    // `#[new]` and the `#[on_*]` lifecycle attrs are LEFT intact so their own macros expand into
+    // the `__toni_ctor_*` / `__toni_lc_*` bridges that `#[controller]`'s factory and object
+    // dispatch through.
     let mut impl_def = impl_block.clone();
+    impl_def
+        .attrs
+        .retain(|attr| !crate::enhancer::enhancer::has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
+            method
+                .attrs
+                .retain(|attr| !crate::enhancer::enhancer::has_enhancer_attribute(attr));
             crate::markers_params::remove_marker_controller_fn::remove_marker_in_controller_fn_args(
                 method,
             );
