@@ -20,6 +20,19 @@ use crate::traits_helpers::{
 };
 use crate::websocket::WsMessage;
 
+/// Entry point for building a toni application: registers global middleware,
+/// enhancers, and observers, then constructs the DI container from a root
+/// module via [`create_with`](Self::create_with) or
+/// [`create_application_context_with`](Self::create_application_context_with).
+///
+/// # Logging
+///
+/// Application creation installs a default logging subscriber unless a global
+/// `tracing` subscriber is already set — a subscriber installed before the
+/// `create` call always wins. The default writes to stderr, keeping stdout
+/// free for program output, and is filtered by `RUST_LOG` with an `info`
+/// fallback; `RUST_LOG=off` silences it at runtime. Disabling the crate's
+/// default `logger` feature compiles it out.
 #[derive(Default)]
 pub struct ToniFactory {
     global_middleware: Vec<Arc<dyn Middleware>>,
@@ -153,6 +166,8 @@ impl ToniFactory {
         Self::new().create_with(module).await
     }
 
+    /// Builds the application from the root module, installing the
+    /// [default logger](ToniFactory#logging) first.
     pub async fn create_with(&self, module: impl ModuleMetadata + 'static) -> ToniApplication {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
@@ -167,7 +182,8 @@ impl ToniFactory {
         ToniApplication::new(container)
     }
 
-    /// Standalone DI container for CLI tools, cron jobs, and background workers
+    /// Standalone DI container for CLI tools, cron jobs, and background
+    /// workers. Installs the [default logger](ToniFactory#logging).
     pub async fn create_application_context(
         module: impl ModuleMetadata + 'static,
     ) -> ToniApplicationContext {
@@ -204,6 +220,8 @@ impl ToniFactory {
         module: Box<dyn ModuleMetadata>,
         container: Rc<RefCell<ToniContainer>>,
     ) -> Result<()> {
+        init_default_logger();
+
         tracing::debug!("Scanning module graph");
         let mut scanner = ToniDependenciesScanner::new(container.clone());
 
@@ -280,5 +298,21 @@ impl ToniFactory {
         scanner.call_lifecycle_hooks().await?;
 
         Ok(())
+    }
+}
+
+/// Runs before the module graph is touched so init failures are visible even
+/// when the application configures no logging of its own.
+fn init_default_logger() {
+    #[cfg(feature = "logger")]
+    {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        // try_init fails when a global subscriber is already installed —
+        // the application's subscriber wins.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init();
     }
 }

@@ -11,7 +11,7 @@ homepage = "https://github.com/monterxto/toni-rs"
 integration = []
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 redis = { version = "1", features = ["tokio-comp"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

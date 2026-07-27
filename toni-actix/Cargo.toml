@@ -8,7 +8,7 @@ keywords = ["toni", "actix", "actix-web", "web", "framework", "adapter"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 actix-web = "4"
 anyhow = "1.0"
 tracing = "0.1"

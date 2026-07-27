@@ -8,5 +8,5 @@ repository = "https://github.com/monterxto/toni-rs"
 homepage = "https://github.com/monterxto/toni-rs"
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 async-trait = "0.1"

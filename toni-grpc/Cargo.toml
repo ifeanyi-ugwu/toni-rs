@@ -8,7 +8,7 @@ keywords = ["toni", "grpc", "tonic", "framework", "adapter"]
 categories = ["network-programming"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 tonic = "0.14"
 tower = { version = "0.5", features = ["util", "limit"] }
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }

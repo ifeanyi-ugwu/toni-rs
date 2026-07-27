@@ -15,7 +15,7 @@ health = ["dep:toni-terminus", "dep:serde_json", "dep:futures"]
 integration = ["health", "postgres"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 diesel-async = { version = "0.8", features = ["deadpool"], default-features = false }
 diesel = { version = "2", default-features = false }
 async-trait = "0.1"

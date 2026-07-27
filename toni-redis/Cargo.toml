@@ -12,7 +12,7 @@ health = ["dep:toni-terminus", "dep:serde_json", "dep:futures"]
 integration = ["health"]
 
 [dependencies]
-toni = { path = "../toni" }
+toni = { path = "../toni", default-features = false }
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1"
 tracing = "0.1"

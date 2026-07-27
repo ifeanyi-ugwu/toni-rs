@@ -7256,6 +7256,7 @@ dependencies = [
  "toni-macros",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "validator",
 ]
@@ -7384,7 +7385,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
- "tracing-subscriber",
  "validator",
 ]
 
