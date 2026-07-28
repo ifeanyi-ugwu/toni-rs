@@ -14,6 +14,8 @@ struct Cli {
 enum Commands {
     New(commands::new::NewArgs),
     Generate(commands::generate::GenerateArgs),
+    /// Run the application, rebuilding and restarting on file changes
+    Dev(commands::dev::DevArgs),
 }
 
 #[tokio::main]
@@ -22,5 +24,6 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::New(args) => commands::new::execute(args).await,
         Commands::Generate(args) => commands::generate::execute(args).await,
+        Commands::Dev(args) => commands::dev::execute(args).await,
     }
 }
