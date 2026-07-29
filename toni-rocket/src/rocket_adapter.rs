@@ -58,11 +58,11 @@ impl Default for RocketAdapter {
     }
 }
 
-/// Match a toni-form path pattern (`/users/:id`, `/files/*tail`) against a
-/// concrete path, returning the captured parameters on match. Routing is
-/// internal to this adapter — rocket's router cannot host the pre-routing
-/// chain (fairings cannot short-circuit), so one catch-all route per method
-/// dispatches through this instead.
+/// Match a toni-form path pattern (`/users/{id}` or `/users/:id`,
+/// `/files/*tail`) against a concrete path, returning the captured
+/// parameters on match. Routing is internal to this adapter — rocket's
+/// router cannot host the pre-routing chain (fairings cannot short-circuit),
+/// so one catch-all route per method dispatches through this instead.
 fn match_route(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
     let pattern_segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let path_segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -73,9 +73,12 @@ fn match_route(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
             params.insert(name.to_string(), path_segs[i..].join("/"));
             return Some(params);
         }
+        let param_name = p
+            .strip_prefix(':')
+            .or_else(|| p.strip_prefix('{').and_then(|s| s.strip_suffix('}')));
         match path_segs.get(i) {
             Some(s) => {
-                if let Some(name) = p.strip_prefix(':') {
+                if let Some(name) = param_name {
                     params.insert(name.to_string(), s.to_string());
                 } else if p != s {
                     return None;

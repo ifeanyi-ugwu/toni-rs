@@ -26,3 +26,4 @@ the history is part of the value.
 - [0008 — The root module is any `ModuleMetadata`; the `ModuleDefinition` enum is removed](0008-root-module-is-any-modulemetadata.md)
 - [0009 — Adapter SPI names: function first; a shared name requires shared semantics](0009-function-first-spi-naming.md)
 - [0010 — Default logging: installed on create with `try_init` back-off, no runtime knob](0010-default-logger-try-init-backoff.md)
+- [0011 — Trailing slashes are insignificant: canonicalized at registration and at the chain entry](0011-trailing-slash-insensitive-matching.md)

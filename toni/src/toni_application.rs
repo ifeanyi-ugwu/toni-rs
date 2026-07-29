@@ -391,6 +391,9 @@ impl ToniApplication {
                         broadcast_service.clone(),
                     ));
                     if let Some(http) = &mut self.http_adapter {
+                        // Upgrade requests arrive with trailing slashes already
+                        // trimmed (AdapterContext), so register the trimmed form.
+                        let path = crate::http_helpers::trim_trailing_slashes(path);
                         if let Err(e) = http.register_ws_route(path, callbacks) {
                             tracing::error!(path, error = %e, "Failed to add WebSocket route");
                         } else {
