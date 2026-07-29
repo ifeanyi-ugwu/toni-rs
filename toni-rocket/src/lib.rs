@@ -23,12 +23,11 @@
 //!
 //! ## Routing
 //!
-//! Toni's `:param` and `*tail` syntaxes are rewritten to rocket's
-//! `<param>` / `<tail..>` form at bind time. The adapter mounts every route
-//! under `/` and adds a low-rank `<__toni_fallback..>` catch-all that runs
-//! the toni 404 through the global middleware chain. Path parameters are
-//! resolved through `Request::param(idx)` and stashed in toni's
-//! `PathParams` extension so the `Path<T>` extractor reads them downstream.
+//! Routing is internal: the adapter mounts one catch-all rocket route per
+//! method and dispatches through its own `match_route` over the registered
+//! route table, matching toni's `{param}` / `:param` / `*tail` syntaxes.
+//! Captured path parameters are stashed in toni's `PathParams` extension so
+//! the `Path<T>` extractor reads them downstream.
 //!
 //! ## HTTP methods
 //!
