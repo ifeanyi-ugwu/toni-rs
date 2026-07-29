@@ -36,6 +36,7 @@ mod modules;
 mod multi_providers;
 mod owned_fields;
 mod panic_recovery;
+mod param_syntax_conformance;
 mod phase2_autoref_probe;
 mod phase2_derive_lifecycle;
 mod phase2_marker_free_e2e;

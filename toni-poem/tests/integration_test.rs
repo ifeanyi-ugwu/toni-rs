@@ -26,7 +26,7 @@ impl ApiController {
         Body::text("hello")
     }
 
-    #[get("/users/:id")]
+    #[get("/users/{id}")]
     fn user(&self, id: Path<String>) -> Body {
         Body::text(format!("user {}", id.0))
     }

@@ -182,7 +182,7 @@ impl UserController {
     /// into HttpError via the `From<E: Error>` blanket and renders the
     /// canonical envelope. No chain handler registered for UserError, so
     /// the dispatcher's fallback rendering applies.
-    #[get("/:id")]
+    #[get("/{id}")]
     fn get_user(&self, req: HttpRequest) -> Result<Body, UserError> {
         let id = req
             .extensions()

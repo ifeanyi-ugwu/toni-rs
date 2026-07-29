@@ -2,6 +2,7 @@ pub mod dependency_info;
 pub mod enhancer_emit;
 pub mod lifecycle_hooks;
 pub mod metadata_info;
+pub mod route_path;
 pub mod scope_parser;
 pub mod token_parser;
 

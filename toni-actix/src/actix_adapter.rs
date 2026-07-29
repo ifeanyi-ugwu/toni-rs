@@ -158,17 +158,22 @@ fn json_error_response(status: u16, message: String) -> HttpResponse {
     }
 }
 
-/// Match a toni-form path pattern (`/users/:id`) against a concrete path.
+/// Match a toni-form path pattern (`/users/{id}` or `/users/:id`) against a
+/// concrete path.
 fn path_matches(pattern: &str, path: &str) -> bool {
     let mut pattern_segs = pattern.split('/').filter(|s| !s.is_empty());
     let mut path_segs = path.split('/').filter(|s| !s.is_empty());
     loop {
         match (pattern_segs.next(), path_segs.next()) {
             (None, None) => return true,
-            (Some(p), Some(s)) if p.starts_with(':') || p == s => {}
+            (Some(p), Some(s)) if is_param_segment(p) || p == s => {}
             _ => return false,
         }
     }
+}
+
+fn is_param_segment(segment: &str) -> bool {
+    segment.starts_with(':') || (segment.starts_with('{') && segment.ends_with('}'))
 }
 
 fn bytes_to_payload(bytes: Bytes) -> Payload {

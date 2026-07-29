@@ -153,7 +153,7 @@ findOne(@Param('id', ParseIntPipe) id: number) { }
 **Toni:**
 
 ```rust
-#[get("/:id")]
+#[get("/{id}")]
 fn find_one(&self, Path(params): Path<i32>) -> ToniBody { }
 ```
 
@@ -269,7 +269,7 @@ struct CreateCommentDto {
 fn create(&self, Validated(Json(dto)): Validated<Json<CreateUserDto>>) -> ToniBody
 
 // ❌ DON'T: Use Validated unnecessarily
-#[get("/users/:id")]
+#[get("/users/{id}")]
 fn get(&self, Validated(Path(id)): Validated<Path<i32>>) -> ToniBody
 // ^ Overkill - Path<i32> already validates it's an integer
 ```

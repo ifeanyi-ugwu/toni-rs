@@ -31,7 +31,7 @@ impl HelloController {
         Body::json(json!({ "message": "Hello from rocket!", "framework": "toni" }))
     }
 
-    #[get("/:name")]
+    #[get("/{name}")]
     fn hello_name(&self, name: Path<String>) -> Body {
         Body::json(json!({ "message": format!("Hello, {}!", name.0) }))
     }
@@ -96,7 +96,7 @@ impl AppModule {}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("toni-rocket PoC");
-    println!("  HTTP   :3001 GET /hello, GET /hello/:name, GET /hello/_/stream");
+    println!("  HTTP   :3001 GET /hello, GET /hello/{{name}}, GET /hello/_/stream");
     println!("  HTTP   :3001 POST /hello/_/echo, POST /hello/_/count");
     println!("  WS     :3001 /chat        (same-port upgrade via rocket_ws)");
 
