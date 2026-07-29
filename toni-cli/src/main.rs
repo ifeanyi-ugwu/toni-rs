@@ -15,6 +15,7 @@ enum Commands {
     New(commands::new::NewArgs),
     Generate(commands::generate::GenerateArgs),
     /// Run the application, rebuilding and restarting on file changes
+    #[cfg(feature = "dev")]
     Dev(commands::dev::DevArgs),
 }
 
@@ -24,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::New(args) => commands::new::execute(args).await,
         Commands::Generate(args) => commands::generate::execute(args).await,
+        #[cfg(feature = "dev")]
         Commands::Dev(args) => commands::dev::execute(args).await,
     }
 }
