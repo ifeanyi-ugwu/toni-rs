@@ -56,6 +56,7 @@ mod sse;
 mod static_methods;
 mod streaming;
 mod tower_compat;
+mod trailing_slash_conformance;
 mod websocket_broadcast;
 mod websocket_e2e;
 mod ws_handler_stream;
