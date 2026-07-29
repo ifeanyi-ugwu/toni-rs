@@ -11,11 +11,28 @@ homepage = "https://github.com/monterxto/toni-rs"
 name = "toni"
 path = "src/main.rs"
 
+[features]
+default = ["dev"]
+# The `toni dev` watch/rebuild/restart command. Carries the watchexec
+# dependency tree; disable for a lean scaffolding-only install.
+dev = [
+    "dep:watchexec",
+    "dep:watchexec-events",
+    "dep:watchexec-filterer-globset",
+    "dep:watchexec-signals",
+    "dep:ignore-files",
+]
+
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.27", features = ["derive"] }
 colored = "3.0.0"
+ignore-files = { version = "3.0.5", optional = true }
 regex = "1.11.1"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.137"
 tokio = { version = "1.43.0", features = ["full"] }
+watchexec = { version = "8.2.0", optional = true }
+watchexec-events = { version = "6.1.0", optional = true }
+watchexec-filterer-globset = { version = "8.0.0", optional = true }
+watchexec-signals = { version = "5.0.1", optional = true }
