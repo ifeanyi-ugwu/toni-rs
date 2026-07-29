@@ -1,3 +1,5 @@
+use crate::http_helpers::trim_trailing_slashes;
+
 /// Represents a route pattern with optional HTTP method filtering
 #[derive(Debug, Clone)]
 pub struct RoutePattern {
@@ -5,24 +7,31 @@ pub struct RoutePattern {
     pub methods: Option<Vec<String>>,
 }
 
+/// Registered route paths never carry a trailing slash, so patterns are
+/// normalized the same way — `for_route("/app/")` matches the `/app` route.
+/// Wildcard patterns end in `*` and pass through untouched.
+fn normalize_pattern(path: &str) -> String {
+    trim_trailing_slashes(path).to_string()
+}
+
 impl RoutePattern {
     pub fn all_methods(path: &str) -> Self {
         Self {
-            path: path.to_string(),
+            path: normalize_pattern(path),
             methods: None,
         }
     }
 
     pub fn single_method(path: &str, method: &str) -> Self {
         Self {
-            path: path.to_string(),
+            path: normalize_pattern(path),
             methods: Some(vec![method.to_string()]),
         }
     }
 
     pub fn methods(path: &str, methods: Vec<&str>) -> Self {
         Self {
-            path: path.to_string(),
+            path: normalize_pattern(path),
             // Empty vec means all methods (allows mixing with specific methods in same Vec)
             methods: if methods.is_empty() {
                 None
