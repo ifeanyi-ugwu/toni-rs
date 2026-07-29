@@ -568,10 +568,10 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!("📖 API Endpoints:");
     println!("  POST   /api/users          - Basic JSON extraction");
-    println!("  GET    /api/users/:id      - Path parameter");
+    println!("  GET    /api/users/{{id}}      - Path parameter");
     println!("  GET    /api/users          - Query parameters");
     println!("  POST   /api/products       - Validated JSON");
-    println!("  GET    /api/products/:id   - Parsed path param (int)");
+    println!("  GET    /api/products/{{id}}   - Parsed path param (int)");
     println!("  GET    /api/search         - Parsed query (bool, int)");
     println!("  GET    /api/items          - Query with defaults");
     println!("  POST   /api/comments       - Custom deserializer (trim)");

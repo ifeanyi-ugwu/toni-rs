@@ -51,7 +51,7 @@ impl CacheController {
         Body::text("ok".to_string())
     }
 
-    #[get("/:key")]
+    #[get("/{key}")]
     async fn get(&self, Path(key): Path<String>) -> Body {
         let value = self.service.get(&key).await.unwrap_or_default();
         Body::text(value)

@@ -29,14 +29,14 @@ impl HelloController {
         Body::json(json!({ "message": "Hello from salvo!", "framework": "toni" }))
     }
 
-    #[get("/:name")]
+    #[get("/{name}")]
     fn hello_name(&self, name: Path<String>) -> Body {
         Body::json(json!({ "message": format!("Hello, {}!", name.0) }))
     }
 
     /// Streams three chunks with a 500ms gap between each. Used to verify the
     /// salvo adapter forwards body chunks incrementally rather than buffering.
-    /// Path is `/hello/_/stream` to avoid colliding with `/hello/:name`.
+    /// Path is `/hello/_/stream` to avoid colliding with `/hello/{name}`.
     #[get("/_/stream")]
     async fn stream_demo(&self) -> Body {
         let s = stream::unfold(0u32, |n| async move {
@@ -115,7 +115,7 @@ impl AppModule {}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("toni-salvo PoC");
-    println!("  HTTP   :3001 GET /hello, GET /hello/:name");
+    println!("  HTTP   :3001 GET /hello, GET /hello/{{name}}");
     println!("  WS     :3001 /chat        (same-port upgrade)");
     println!("  WS     :3002 /ping        (separate-port adapter)");
 
