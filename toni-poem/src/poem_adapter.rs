@@ -220,20 +220,18 @@ impl Endpoint for ToniEndpoint {
     }
 }
 
-/// Catch-all endpoint that emits the standard toni 404 shape.
-struct ToniFallbackEndpoint;
-
-impl Endpoint for ToniFallbackEndpoint {
-    type Output = PoemResponse;
-
-    async fn call(&self, req: PoemRequest) -> poem::Result<Self::Output> {
-        let method = req.method().as_str().to_uppercase();
-        let path = req.uri().path().to_string();
-        Ok(toni_response_to_poem(json_error_response(
-            404,
-            format!("Cannot {} {}", method, path),
-        )))
-    }
+/// Convert toni `{param}` path segments to poem's `:param` syntax. `:param`
+/// segments are poem-native and pass through.
+fn to_poem_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            seg.strip_prefix('{')
+                .and_then(|s| s.strip_suffix('}'))
+                .map(|name| format!(":{name}"))
+                .unwrap_or_else(|| seg.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Wraps the finished router: the global middleware chain runs once per
@@ -282,8 +280,21 @@ impl Endpoint for GlobalChainEndpoint {
                     *req.extensions_mut() = parts.extensions;
                     req.set_body(toni_body_to_poem(body));
 
+                    // For the unmatched-path 404 below — name the path the
+                    // router actually matched on (post-rewrite).
+                    let method = req.method().as_str().to_uppercase();
+                    let path = req.uri().path().to_string();
+
                     match inner.call(req).await {
                         Ok(res) => poem_response_to_toni(res),
+                        // No catch-all route hosts the toni 404: a `/*` route
+                        // would shadow an exact route at `/` (poem's radix
+                        // tree prefers a catch-all child over the node's own
+                        // data on an empty remainder). The router's
+                        // `NotFoundError` is mapped here instead.
+                        Err(err) if err.is::<poem::error::NotFoundError>() => {
+                            json_error_response(404, format!("Cannot {} {}", method, path))
+                        }
                         Err(err) => poem_response_to_toni(err.into_response()),
                     }
                 })
@@ -482,14 +493,12 @@ impl HttpAdapter for PoemAdapter {
 
         let mut route = Route::new();
         for (path, route_method) in build_method_routes(routes) {
-            route = route.at(path, route_method);
+            route = route.at(to_poem_path(&path), route_method);
         }
         for (path, callbacks) in ws_routes {
             let ws_endpoint = ToniWsEndpoint { callbacks };
-            route = route.at(path, ws_endpoint);
+            route = route.at(to_poem_path(&path), ws_endpoint);
         }
-        // `*path` is poem's wildcard syntax — matches any unmatched segment tail.
-        let route = route.at("/*toni_fallback", ToniFallbackEndpoint);
 
         let service = GlobalChainEndpoint {
             inner: Arc::new(route.boxed()),

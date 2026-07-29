@@ -24,12 +24,14 @@
 //!
 //! ## Routing
 //!
-//! Toni and poem agree on `:param` syntax, so handler routes pass through
-//! unchanged. The adapter merges every `(method, path)` pair into a single
-//! `RouteMethod` per path before mounting — poem panics if `Route::at` is
-//! called twice with the same path, so multi-method endpoints accumulate
-//! before reaching the router. A `*toni_fallback` wildcard catches anything
-//! unmatched and runs the toni 404 through the global middleware chain.
+//! Toni `{param}` segments are rewritten to poem's `:param` syntax at mount
+//! time; `:param` routes pass through unchanged. The adapter merges every
+//! `(method, path)` pair into a single `RouteMethod` per path before
+//! mounting — poem panics if `Route::at` is called twice with the same path,
+//! so multi-method endpoints accumulate before reaching the router. Unmatched
+//! paths surface as the router's `NotFoundError`, which the global-chain
+//! wrapper maps to the toni 404 shape — a `/*` catch-all route would shadow
+//! an exact route at `/`, so none is mounted.
 //!
 //! Path parameters are recovered via `Request::path_params::<HashMap>` and
 //! installed in toni's `PathParams` extension so the `Path<T>` extractor
