@@ -193,6 +193,7 @@ impl Parse for ControllerArgs {
 
         if input.peek(LitStr) {
             let path_lit: LitStr = input.parse()?;
+            crate::shared::route_path::validate_route_path(&path_lit)?;
             path = path_lit.value();
 
             if input.peek(Token![,]) {

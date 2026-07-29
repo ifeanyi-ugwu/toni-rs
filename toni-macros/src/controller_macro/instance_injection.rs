@@ -228,10 +228,11 @@ fn generate_controller_wrapper(
     };
 
     // Sub-path only; the controller's prefix is joined at runtime via `__toni_prefix`.
-    let route_path = http_method_attr
+    let route_path_lit = http_method_attr
         .parse_args::<LitStr>()
-        .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?
-        .value();
+        .map_err(|_| Error::new(http_method_attr.span(), "Invalid attribute format"))?;
+    crate::shared::route_path::validate_route_path(&route_path_lit)?;
+    let route_path = route_path_lit.value();
 
     let method_name = &method.sig.ident;
     let scope_suffix = match scope {
