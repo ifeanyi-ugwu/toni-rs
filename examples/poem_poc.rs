@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = ToniFactory::new().create_with(AppModule).await;
 
-    app.use_http_adapter(PoemAdapter::new(), 3001, "127.0.0.1")
+    app.use_http_adapter(PoemAdapter::new(), ("127.0.0.1", 3001))
         .unwrap();
     app.use_websocket_adapter(PoemAdapter::new()).unwrap();
 

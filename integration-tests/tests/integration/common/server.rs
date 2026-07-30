@@ -37,14 +37,26 @@ impl TestServer {
         module: impl ModuleMetadata + 'static,
         adapter: impl toni::HttpAdapter + 'static,
     ) -> Self {
+        Self::start_target(factory, module, adapter, ("127.0.0.1", 0)).await
+    }
+
+    /// Boot on an explicit [`BindTarget`] — the parameterization point for
+    /// suites that hand the application a socket they bound themselves.
+    pub async fn start_target(
+        factory: ToniFactory,
+        module: impl ModuleMetadata + 'static,
+        adapter: impl toni::HttpAdapter + 'static,
+        target: impl Into<toni::BindTarget>,
+    ) -> Self {
         init_tracing();
 
+        let target = target.into();
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
             let mut app = factory.create_with(module).await;
-            app.use_http_adapter(adapter, 0, "127.0.0.1").unwrap();
+            app.use_http_adapter(adapter, target).unwrap();
             let bound = app.bind().await.unwrap();
             let addr = bound.http.expect("HTTP adapter not bound");
             let _ = addr_tx.send(addr);

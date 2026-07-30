@@ -15,7 +15,7 @@
 //!     let mut app = ToniFactory::new()
 //!         .create_with(AppModule)
 //!         .await;
-//!     app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000)).unwrap();
 //!     // Only needed for `#[websocket_gateway(port = N)]` gateways.
 //!     app.use_websocket_adapter(AxumAdapter::new()).unwrap();
 //!     app.start().await.unwrap();

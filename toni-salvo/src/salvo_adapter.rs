@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use tokio::sync::watch;
 
+use salvo::conn::tcp::TcpAcceptor;
 use salvo::conn::{Listener, TcpListener};
 use salvo::http::body::ResBody;
 use salvo::http::{Request as SalvoRequest, Response as SalvoResponse};
@@ -17,8 +18,9 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, BindTarget, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod,
+    HttpRequest, HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
+    WsConnectionCallbacks,
 };
 
 use crate::salvo_websocket_adapter::{salvo_to_ws_message, ws_message_to_salvo};
@@ -540,8 +542,7 @@ impl HttpAdapter for SalvoAdapter {
 
     async fn into_lifecycle(
         mut self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
@@ -579,11 +580,14 @@ impl HttpAdapter for SalvoAdapter {
         };
         let router = Router::with_path("{**rest}").goal(chain);
 
-        let addr = format!("{}:{}", hostname, port);
-        let acceptor = TcpListener::new(addr.clone())
-            .try_bind()
-            .await
-            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let addr = target.to_string();
+        let std_listener = target
+            .into_std_listener()
+            .map_err(|e| anyhow!("Failed to bind HTTP {}: {}", addr, e))?;
+        std_listener.set_nonblocking(true)?;
+        let tokio_listener = tokio::net::TcpListener::from_std(std_listener)?;
+        let acceptor = TcpAcceptor::try_from(tokio_listener)
+            .map_err(|e| anyhow!("Failed to adopt listener for {}: {}", addr, e))?;
         let local_addr = acceptor
             .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))?;

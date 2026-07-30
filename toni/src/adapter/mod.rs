@@ -1,4 +1,5 @@
 pub(crate) mod adapter_context;
+pub(crate) mod bind_target;
 pub(crate) mod grpc_adapter;
 pub(crate) mod grpc_service_trait;
 pub(crate) mod http_adapter;
@@ -9,6 +10,7 @@ mod rpc_client_transport;
 pub(crate) mod server_lifecycle;
 pub(crate) mod websocket_adapter;
 pub use adapter_context::AdapterContext;
+pub use bind_target::BindTarget;
 pub use grpc_adapter::GrpcAdapter;
 pub use grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
 pub use http_adapter::HttpAdapter;

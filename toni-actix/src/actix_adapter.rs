@@ -14,8 +14,8 @@ use actix_web::{
 use futures_util::future::LocalBoxFuture;
 use toni::{
     http_helpers::{PathParams, RequestBody},
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, RequestHandler,
+    AdapterContext, BindTarget, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod,
+    HttpRequest, HttpResponse, RequestHandler,
 };
 
 pub struct ActixAdapter {
@@ -377,11 +377,16 @@ impl HttpAdapter for ActixAdapter {
 
     async fn into_lifecycle(
         mut self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
-        let addr = format!("{}:{}", hostname, port);
+        let addr = target.to_string();
+        // actix-server adopts a listener as-is (its `listen` docs push socket
+        // configuration to the caller); mio needs it nonblocking.
+        let std_listener = target
+            .into_std_listener()
+            .with_context(|| format!("Failed to bind to {}", addr))?;
+        std_listener.set_nonblocking(true)?;
         let routes = std::mem::take(&mut self.routes);
         let ctx = Arc::new(ctx);
         let route_table: Arc<Vec<(HttpMethod, String)>> = Arc::new(
@@ -448,8 +453,8 @@ impl HttpAdapter for ActixAdapter {
             }))
             .wrap(GlobalChain { ctx: ctx.clone() })
         })
-        .bind(&addr)
-        .with_context(|| format!("Failed to bind to {}", addr))?;
+        .listen(std_listener)
+        .with_context(|| format!("Failed to listen on {}", addr))?;
 
         let local_addr = bound
             .addrs()

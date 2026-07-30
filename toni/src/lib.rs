@@ -52,7 +52,7 @@ pub use serde_json;
 
 // Re-exports for adapter crates
 pub use adapter::{
-    AdapterContext, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,
+    AdapterContext, BindTarget, GrpcAdapter, GrpcLifecycleHandle, HttpAdapter, HttpLifecycleHandle,
     MessageCallbackResult, RequestHandler, RpcAdapter, RpcClientTransport, RpcLifecycleHandle,
     RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
 };

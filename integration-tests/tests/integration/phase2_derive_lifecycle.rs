@@ -76,7 +76,7 @@ async fn derive_startup_hooks_fire() {
     get_log().lock().unwrap().clear();
 
     let mut app = ToniFactory::create(LifecycleModule).await;
-    app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();
 
@@ -98,7 +98,7 @@ async fn derive_shutdown_hooks_fire() {
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(LifecycleModule).await;
-        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+        app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         app.bind().await.unwrap();
         let _ = shutdown_tx.send(app.shutdown_handle());

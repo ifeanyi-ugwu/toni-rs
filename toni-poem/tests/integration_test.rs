@@ -100,7 +100,7 @@ async fn start(module: impl toni::ModuleMetadata + 'static, with_ws_adapter: boo
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut app = ToniFactory::create(module).await;
-        app.use_http_adapter(PoemAdapter::new(), 0, "127.0.0.1")
+        app.use_http_adapter(PoemAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         if with_ws_adapter {
             app.use_websocket_adapter(PoemAdapter::new()).unwrap();

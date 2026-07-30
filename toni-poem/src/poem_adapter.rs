@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use poem::endpoint::{BoxEndpoint, Endpoint, EndpointExt};
 use poem::http::StatusCode;
-use poem::listener::{Acceptor, Listener, TcpListener};
+use poem::listener::{Acceptor, Listener, TcpAcceptor, TcpListener};
 use poem::web::websocket::WebSocket;
 use poem::{
     Body as PoemBody, FromRequest, IntoResponse, Request as PoemRequest, Response as PoemResponse,
@@ -19,8 +19,9 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, BindTarget, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod,
+    HttpRequest, HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
+    WsConnectionCallbacks,
 };
 
 use crate::poem_websocket_adapter::{poem_to_ws_message, ws_message_to_poem};
@@ -482,8 +483,7 @@ impl HttpAdapter for PoemAdapter {
 
     async fn into_lifecycle(
         mut self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
@@ -505,12 +505,13 @@ impl HttpAdapter for PoemAdapter {
             ctx: Arc::new(ctx),
         };
 
-        let addr = format!("{}:{}", hostname, port);
-        let listener = TcpListener::bind(addr.clone());
-        let acceptor = listener
-            .into_acceptor()
-            .await
-            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let addr = target.to_string();
+        let std_listener = target
+            .into_std_listener()
+            .map_err(|e| anyhow!("Failed to bind HTTP {}: {}", addr, e))?;
+        std_listener.set_nonblocking(true)?;
+        let acceptor = TcpAcceptor::from_std(std_listener)
+            .map_err(|e| anyhow!("Failed to adopt listener for {}: {}", addr, e))?;
         let local_addr = acceptor
             .local_addr()
             .into_iter()

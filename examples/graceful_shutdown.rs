@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = ToniFactory::new().create_with(AppModule).await;
 
-    app.use_http_adapter(toni_axum::AxumAdapter::new(), 3000, "127.0.0.1")
+    app.use_http_adapter(toni_axum::AxumAdapter::new(), ("127.0.0.1", 3000))
         .unwrap();
 
     app.bind().await?;

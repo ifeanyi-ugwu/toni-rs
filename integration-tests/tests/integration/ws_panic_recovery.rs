@@ -37,7 +37,7 @@ async fn start_ws_server_with_observers(
             factory.use_global_error_observer(o);
         }
         let mut app = factory.create_with(module).await;
-        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+        app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
         let _ = port_tx.send(bound.http.expect("HTTP adapter not bound").port());

@@ -17,7 +17,7 @@ use event_listener::Event;
 
 use crate::{
     adapter::{
-        AdapterContext, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
+        AdapterContext, BindTarget, GrpcAdapter, HttpAdapter, MessageCallbackResult, RpcAdapter,
         RpcMessageCallbacks, WebSocketAdapter, WsConnectionCallbacks,
         server_lifecycle::ServerLifecycle,
     },
@@ -111,6 +111,7 @@ impl ShutdownHandle {
 }
 
 /// The addresses of all bound adapters, returned by [`ToniApplication::bind`].
+#[derive(Debug)]
 pub struct BoundAdapters {
     /// The address the HTTP adapter is listening on, or `None` if no HTTP
     /// adapter was registered.
@@ -141,8 +142,7 @@ pub struct ToniApplication {
     // them into lifecycle handles. After `bind()` succeeds these are all
     // `None` and `servers` holds the live handles.
     http_adapter: Option<Box<dyn HttpAdapter>>,
-    http_port: Option<u16>,
-    http_hostname: Option<String>,
+    http_target: Option<BindTarget>,
     routes_resolver: RoutesResolver,
     context: ToniApplicationContext,
     ws_gateways: HashMap<String, Arc<GatewayWrapper>>,
@@ -164,8 +164,7 @@ impl ToniApplication {
     pub fn new(container: Rc<RefCell<ToniContainer>>) -> Self {
         Self {
             http_adapter: None,
-            http_port: None,
-            http_hostname: None,
+            http_target: None,
             context: ToniApplicationContext::new(container.clone()),
             routes_resolver: RoutesResolver::new(container),
             ws_gateways: HashMap::new(),
@@ -191,18 +190,19 @@ impl ToniApplication {
         Ok(())
     }
 
+    /// Register an HTTP adapter listening on `target` — a `("host", port)`
+    /// pair, or anything else that converts to a [`BindTarget`], such as a
+    /// pre-bound `std::net::TcpListener`.
     pub fn use_http_adapter<A: HttpAdapter + 'static>(
         &mut self,
         adapter: A,
-        port: u16,
-        hostname: &str,
+        target: impl Into<BindTarget>,
     ) -> Result<&mut Self> {
         self.require_state(AppState::Configuring, "use_http_adapter")?;
         let mut boxed = Box::new(adapter) as Box<dyn HttpAdapter>;
         self.routes_resolver.resolve(boxed.as_mut())?;
         self.http_adapter = Some(boxed);
-        self.http_port = Some(port);
-        self.http_hostname = Some(hostname.to_string());
+        self.http_target = Some(target.into());
         tracing::debug!("HTTP adapter registered");
         Ok(self)
     }
@@ -343,11 +343,15 @@ impl ToniApplication {
         self.discover_gateways()?;
         self.discover_rpc_controllers()?;
 
-        let http_port = self.http_port;
-        let hostname = self
-            .http_hostname
-            .clone()
-            .unwrap_or_else(|| "0.0.0.0".to_string());
+        // For a pre-bound Listener target the hint is the actual bound port,
+        // so a gateway declaring that port number still rides the HTTP
+        // listener. The hostname feeds separate-port WS binds; a Listener
+        // target carries no hostname, so those fall back to all-interfaces.
+        let http_port = self.http_target.as_ref().and_then(|t| t.port_hint());
+        let hostname = match self.http_target.as_ref() {
+            Some(BindTarget::Addr { hostname, .. }) => hostname.clone(),
+            _ => "0.0.0.0".to_string(),
+        };
 
         // One shared WsClientMap + ConnectionManager when BroadcastService is in DI;
         // otherwise a fresh WsClientMap per gateway (no CM needed).
@@ -537,7 +541,7 @@ impl ToniApplication {
         }
 
         let http_addr = if let Some(http_adapter) = self.http_adapter.take() {
-            let port = self.http_port.unwrap();
+            let target = self.http_target.take().unwrap();
             let has_same_port_ws = !same_port.is_empty();
             let server_type = if has_same_port_ws {
                 "HTTP + WebSocket"
@@ -546,7 +550,7 @@ impl ToniApplication {
             };
 
             let ctx = AdapterContext::new(self.routes_resolver.take_global_chain());
-            let handle = http_adapter.into_lifecycle(port, &hostname, ctx).await?;
+            let handle = http_adapter.into_lifecycle(target, ctx).await?;
             let addr = handle
                 .local_addr()
                 .expect("HTTP handle always has a bound address");

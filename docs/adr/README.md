@@ -28,3 +28,4 @@ the history is part of the value.
 - [0010 — Default logging: installed on create with `try_init` back-off, no runtime knob](0010-default-logger-try-init-backoff.md)
 - [0011 — Trailing slashes are insignificant: canonicalized at registration and at the chain entry](0011-trailing-slash-insensitive-matching.md)
 - [0012 — `{param}` is the canonical route parameter syntax; `:param` is a compile error](0012-canonical-param-syntax.md)
+- [0013 — Where to listen is a value: `BindTarget` carries an address or an existing listener](0013-bind-target-listener-adoption.md)

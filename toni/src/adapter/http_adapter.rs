@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 use crate::adapter::WsConnectionCallbacks;
 use crate::adapter::adapter_context::AdapterContext;
+use crate::adapter::bind_target::BindTarget;
 use crate::adapter::lifecycle_handles::HttpLifecycleHandle;
 use crate::adapter::request_handler::RequestHandler;
 use crate::http_helpers::HttpMethod;
@@ -75,14 +76,20 @@ pub trait HttpAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Consume the adapter, bind the listening socket, and return a fully
+    /// Consume the adapter, acquire the listening socket, and return a fully
     /// self-contained [`HttpLifecycleHandle`] the orchestrator can drive.
     ///
     /// The implementation typically:
     /// 1. Builds its framework-native router from the routes accumulated
     ///    in `register_route` / `register_ws_route`.
-    /// 2. Binds the listener synchronously so port-in-use surfaces here
-    ///    rather than inside the spawned serve task.
+    /// 2. Resolves `target` to a socket — usually via
+    ///    [`BindTarget::into_std_listener`], which binds for
+    ///    [`Addr`](BindTarget::Addr) and passes a pre-bound
+    ///    [`Listener`](BindTarget::Listener) through — synchronously, so
+    ///    port-in-use (or a dead inherited listener) surfaces here rather
+    ///    than inside the spawned serve task. An adapter whose framework
+    ///    cannot serve on an existing listener returns an error for the
+    ///    `Listener` arm instead.
     /// 3. Captures its shutdown signal in a closure and hands the
     ///    `local_addr`, the serve future, and the closure to
     ///    [`HttpLifecycleHandle::new`].
@@ -97,8 +104,7 @@ pub trait HttpAdapter: Send + Sync + 'static {
     /// integration suite pins these behaviors per adapter.
     async fn into_lifecycle(
         self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle>;
 }

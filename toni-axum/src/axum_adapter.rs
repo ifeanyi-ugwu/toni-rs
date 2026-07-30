@@ -21,8 +21,9 @@ use toni::websocket::{WsMessage, WsSink};
 use toni::{
     async_trait,
     http_helpers::{PathParams, RequestBody, RequestPart},
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter, WsConnectionCallbacks,
+    AdapterContext, BindTarget, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod,
+    HttpRequest, HttpResponse, MessageCallbackResult, RequestHandler, WebSocketAdapter,
+    WsConnectionCallbacks,
 };
 
 use crate::axum_websocket_adapter::{axum_to_ws_message, ws_message_to_axum};
@@ -382,8 +383,7 @@ impl HttpAdapter for AxumAdapter {
 
     async fn into_lifecycle(
         mut self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
         let routes = std::mem::take(&mut self.routes);
@@ -450,10 +450,12 @@ impl HttpAdapter for AxumAdapter {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
 
-        let addr = format!("{}:{}", hostname, port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| anyhow!("Failed to bind HTTP port {}: {}", addr, e))?;
+        let addr = target.to_string();
+        let std_listener = target
+            .into_std_listener()
+            .map_err(|e| anyhow!("Failed to bind HTTP {}: {}", addr, e))?;
+        std_listener.set_nonblocking(true)?;
+        let listener = TcpListener::from_std(std_listener)?;
         let local_addr = listener
             .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))?;

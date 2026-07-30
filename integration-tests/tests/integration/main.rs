@@ -4,6 +4,8 @@ mod app_token_enhancers;
 mod async_controllers;
 mod attribute_extractors;
 mod attribute_syntax;
+mod bind_target_conformance;
+mod bind_target_handoff;
 mod catch_macro;
 mod circular_dependency;
 mod concurrent_scope;

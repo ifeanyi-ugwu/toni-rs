@@ -20,8 +20,8 @@ use rocket_ws::WebSocket as RocketWs;
 use toni::websocket::{WsMessage, WsSink};
 use toni::{
     http_helpers::{PathParams, RequestBody, RequestPart},
-    AdapterContext, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod, HttpRequest,
-    HttpResponse, MessageCallbackResult, RequestHandler, WsConnectionCallbacks,
+    AdapterContext, BindTarget, Body as ToniBody, HttpAdapter, HttpLifecycleHandle, HttpMethod,
+    HttpRequest, HttpResponse, MessageCallbackResult, RequestHandler, WsConnectionCallbacks,
 };
 
 use crate::rocket_websocket_adapter::{rocket_to_ws_message, ws_message_to_rocket};
@@ -454,10 +454,19 @@ impl HttpAdapter for RocketAdapter {
 
     async fn into_lifecycle(
         mut self: Box<Self>,
-        port: u16,
-        hostname: &str,
+        target: BindTarget,
         ctx: AdapterContext,
     ) -> Result<HttpLifecycleHandle> {
+        // Rocket fuses bind and serve into `launch()` with no public hook for
+        // an existing listener, so only address targets are supported.
+        let (hostname, port) = match target {
+            BindTarget::Addr { hostname, port } => (hostname, port),
+            other => anyhow::bail!(
+                "RocketAdapter cannot adopt a {}; rocket binds internally from \
+                 figment config — pass a (host, port) address instead",
+                other
+            ),
+        };
         let routes = std::mem::take(&mut self.routes);
         let ws_routes = std::mem::take(&mut self.ws_routes);
         let mut shutdown_rx = self.shutdown_tx.subscribe();

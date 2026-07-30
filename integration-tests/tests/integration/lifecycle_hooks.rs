@@ -61,7 +61,7 @@ async fn startup_hooks_fire_in_order() {
     get_log().lock().unwrap().clear();
 
     let mut app = ToniFactory::create(HookModule).await;
-    app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();
 

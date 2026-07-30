@@ -85,7 +85,7 @@ async fn start_with_catchers(module: impl toni::ModuleMetadata + 'static) -> std
         factory.use_global_http_error_handler(Arc::new(guard_catcher));
         factory.use_global_http_error_handler(Arc::new(other_catcher));
         let mut app = factory.create_with(module).await;
-        app.use_http_adapter(AxumAdapter::new(), 0, "127.0.0.1")
+        app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
         let _ = addr_tx.send(bound.http.expect("HTTP adapter not bound"));
