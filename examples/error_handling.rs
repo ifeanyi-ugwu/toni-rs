@@ -279,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
 
     let factory = ToniFactory::new();
     let mut app = factory.create_with(AppModule).await;
-    app.use_http_adapter(AxumAdapter::new(), 3000, "127.0.0.1")?;
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000))?;
     app.run().await;
     Ok(())
 }

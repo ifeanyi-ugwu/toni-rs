@@ -15,7 +15,7 @@
 //!     let mut app = ToniFactory::new()
 //!         .create_with(AppModule)
 //!         .await;
-//!     app.use_http_adapter(ActixAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     app.use_http_adapter(ActixAdapter::new(), ("127.0.0.1", 3000)).unwrap();
 //!     app.start().await.unwrap();
 //! }
 //! ```

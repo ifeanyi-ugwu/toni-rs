@@ -16,7 +16,7 @@
 //!     let mut app = ToniFactory::new()
 //!         .create_with(AppModule)
 //!         .await;
-//!     app.use_http_adapter(RocketAdapter::new(), 3000, "127.0.0.1").unwrap();
+//!     app.use_http_adapter(RocketAdapter::new(), ("127.0.0.1", 3000)).unwrap();
 //!     app.start().await.unwrap();
 //! }
 //! ```
@@ -68,6 +68,14 @@
 //! `tokio::sync::watch` shutdown signal to `Shutdown::notify()`. The
 //! `launch()` future resolves once rocket has drained in-flight
 //! connections.
+//!
+//! ## Pre-bound listeners
+//!
+//! Only address targets are supported: `BindTarget::Listener` is refused with
+//! an error at `app.bind()`. Rocket binds inside `launch()` from figment
+//! configuration and accepts no externally constructed listener, so socket
+//! activation and socket-preserving restarts need one of the other HTTP
+//! adapters.
 //!
 //! ## Bound-address discovery
 //!
