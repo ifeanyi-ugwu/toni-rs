@@ -15,11 +15,81 @@ use watchexec_signals::Signal;
 /// get this long to drain.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
+/// Where the passed socket lands in the child, per the systemd socket-activation
+/// convention that `listenfd` reads.
+#[cfg(unix)]
+const LISTEN_FD: std::os::fd::RawFd = 3;
+
+/// Bind the socket the supervisor keeps across restarts.
+///
+/// A bare port is accepted as shorthand for localhost.
+#[cfg(unix)]
+fn bind_held_socket(spec: &str) -> Result<std::net::TcpListener> {
+    let addr = if spec.contains(':') {
+        spec.to_string()
+    } else {
+        format!("127.0.0.1:{spec}")
+    };
+    std::net::TcpListener::bind(&addr).with_context(|| format!("Failed to bind {addr}"))
+}
+
+/// Hand the held socket to every process this job spawns.
+///
+/// `LISTEN_PID` stays unset on purpose: the socket is claimed by the
+/// application, which `cargo run` spawns as a grandchild, so no pid announced
+/// here could match the process that reads it. `listenfd` skips the pid check
+/// when the variable is absent.
+#[cfg(unix)]
+fn install_socket_hook(job: &watchexec::job::Job, socket: Arc<std::net::TcpListener>) {
+    use std::os::fd::AsRawFd;
+
+    job.set_spawn_hook(move |command, _| {
+        // Keep the listener owned by the closure: the child inherits a
+        // duplicate, and the original must outlive every restart.
+        let source_fd = socket.as_raw_fd();
+        let command = command.command_mut();
+        command
+            .env("LISTEN_FDS", "1")
+            .env("LISTEN_FDS_FIRST_FD", LISTEN_FD.to_string())
+            .env_remove("LISTEN_PID");
+
+        // SAFETY: dup2 and fcntl are async-signal-safe, which is the
+        // constraint on anything running between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if source_fd == LISTEN_FD {
+                    // dup2 does nothing when both descriptors are equal, and
+                    // in particular leaves FD_CLOEXEC set — which would close
+                    // the socket at exec. Clear it directly instead.
+                    let flags = libc::fcntl(LISTEN_FD, libc::F_GETFD);
+                    if flags == -1
+                        || libc::fcntl(LISTEN_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else if libc::dup2(source_fd, LISTEN_FD) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The duplicate carries no FD_CLOEXEC, so it survives this
+                // exec and the one cargo does for the application binary.
+                Ok(())
+            });
+        }
+    });
+}
+
 #[derive(clap::Args)]
 pub struct DevArgs {
     /// Build and run in release mode
     #[arg(long)]
     release: bool,
+
+    /// Hold the listening socket here and pass it to every restart, so
+    /// requests arriving mid-rebuild queue instead of being refused. The
+    /// application must adopt the inherited socket (see the socket_activation
+    /// example); one that binds its own will fail with "address in use".
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<String>,
 
     /// Arguments passed to the application binary (after `--`)
     #[arg(last = true)]
@@ -77,7 +147,20 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     .await
     .context("Failed to build the file filter")?;
 
+    let held_socket = match args.listen.as_deref() {
+        None => None,
+        #[cfg(unix)]
+        Some(spec) => Some(Arc::new(bind_held_socket(spec)?)),
+        #[cfg(not(unix))]
+        Some(_) => {
+            return Err(anyhow!(
+                "--listen needs Unix file-descriptor passing and is not supported on this platform"
+            ));
+        }
+    };
+
     let job_id = watchexec::Id::default();
+    let hook_socket = held_socket.clone();
     let wx = Watchexec::new(move |mut action| {
         if action
             .signals()
@@ -91,7 +174,16 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         if action.paths().next().is_some() {
             eprintln!("{}", "[toni dev] change detected, restarting".dimmed());
         }
+        let is_new = action.get_job(job_id).is_none();
         let job = action.get_or_create_job(job_id, || command.clone());
+
+        #[cfg(unix)]
+        if let Some(socket) = hook_socket.clone().filter(|_| is_new) {
+            install_socket_hook(&job, socket);
+        }
+        #[cfg(not(unix))]
+        let _ = is_new;
+
         job.restart_with_signal(Signal::Terminate, STOP_GRACE);
         action
     })
@@ -113,6 +205,16 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         )
         .green()
     );
+    if let Some(socket) = &held_socket {
+        let addr = socket
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        eprintln!(
+            "{}",
+            format!("[toni dev] holding {addr} — passing it to each restart").green()
+        );
+    }
 
     // The action handler only runs on events; seed one so the app starts
     // before the first file change.
