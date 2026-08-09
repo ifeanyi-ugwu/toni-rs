@@ -33,6 +33,35 @@ fn bind_held_socket(spec: &str) -> Result<std::net::TcpListener> {
     std::net::TcpListener::bind(&addr).with_context(|| format!("Failed to bind {addr}"))
 }
 
+/// Put `source_fd` at [`LISTEN_FD`] so it survives the coming exec.
+///
+/// Runs between fork and exec, so everything it calls must be
+/// async-signal-safe; `dup2` and `fcntl` are.
+///
+/// # Safety
+///
+/// Call only in that window, where the process is single-threaded and no
+/// allocation or locking may happen.
+#[cfg(unix)]
+unsafe fn place_listen_fd(source_fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    if source_fd == LISTEN_FD {
+        // dup2 does nothing when both descriptors are equal, and in particular
+        // leaves FD_CLOEXEC set — which would close the socket at exec. Clear
+        // it directly instead.
+        let flags = unsafe { libc::fcntl(LISTEN_FD, libc::F_GETFD) };
+        if flags == -1
+            || unsafe { libc::fcntl(LISTEN_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } == -1
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    } else if unsafe { libc::dup2(source_fd, LISTEN_FD) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The descriptor now carries no FD_CLOEXEC, so it survives this exec and
+    // the one cargo does for the application binary.
+    Ok(())
+}
+
 /// Hand the held socket to every process this job spawns.
 ///
 /// `LISTEN_PID` stays unset on purpose: the socket is claimed by the
@@ -53,27 +82,10 @@ fn install_socket_hook(job: &watchexec::job::Job, socket: Arc<std::net::TcpListe
             .env("LISTEN_FDS_FIRST_FD", LISTEN_FD.to_string())
             .env_remove("LISTEN_PID");
 
-        // SAFETY: dup2 and fcntl are async-signal-safe, which is the
-        // constraint on anything running between fork and exec.
+        // SAFETY: pre_exec runs its closure in exactly the window
+        // place_listen_fd requires.
         unsafe {
-            command.pre_exec(move || {
-                if source_fd == LISTEN_FD {
-                    // dup2 does nothing when both descriptors are equal, and
-                    // in particular leaves FD_CLOEXEC set — which would close
-                    // the socket at exec. Clear it directly instead.
-                    let flags = libc::fcntl(LISTEN_FD, libc::F_GETFD);
-                    if flags == -1
-                        || libc::fcntl(LISTEN_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-                    {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                } else if libc::dup2(source_fd, LISTEN_FD) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // The duplicate carries no FD_CLOEXEC, so it survives this
-                // exec and the one cargo does for the application binary.
-                Ok(())
-            });
+            command.pre_exec(move || place_listen_fd(source_fd));
         }
     });
 }
@@ -227,4 +239,98 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         .context("Watcher task panicked")?
         .map_err(|e| anyhow!(e))?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{LISTEN_FD, place_listen_fd};
+    use std::net::TcpListener;
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::sync::Mutex;
+
+    /// Descriptor 3 is process-wide, so the cases cannot run concurrently.
+    static FD_SLOT: Mutex<()> = Mutex::new(());
+
+    fn cloexec_set(fd: RawFd) -> bool {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_ne!(flags, -1, "fd {fd} is not open");
+        flags & libc::FD_CLOEXEC != 0
+    }
+
+    /// Port `fd` is bound to, or `None` when it is closed or not a socket.
+    ///
+    /// Comparing this against the original listener identifies the socket,
+    /// which a "is it a socket" check alone would not.
+    fn socket_port(fd: RawFd) -> Option<u16> {
+        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let rc =
+            unsafe { libc::getsockname(fd, &mut addr as *mut _ as *mut libc::sockaddr, &mut len) };
+        (rc == 0).then(|| u16::from_be(addr.sin_port))
+    }
+
+    /// Run `body` with descriptor 3 restored afterwards, so moving a socket
+    /// into it cannot disturb the test harness.
+    fn with_listen_fd_slot<T>(body: impl FnOnce() -> T) -> T {
+        let _guard = FD_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = unsafe { libc::fcntl(LISTEN_FD, libc::F_DUPFD_CLOEXEC, 30) };
+        let out = body();
+        unsafe {
+            if saved >= 0 {
+                libc::dup2(saved, LISTEN_FD);
+                libc::close(saved);
+            } else {
+                libc::close(LISTEN_FD);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn places_the_socket_where_the_child_reads_it() {
+        with_listen_fd_slot(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            // Hold the source well away from the target slot so the branch
+            // under test is the copying one.
+            let source = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD, 20) };
+            assert!(source >= 20, "could not place the source descriptor");
+
+            unsafe { place_listen_fd(source) }.unwrap();
+
+            assert_eq!(socket_port(LISTEN_FD), Some(port), "not the held socket");
+            assert!(
+                !cloexec_set(LISTEN_FD),
+                "a descriptor marked close-on-exec never reaches the application"
+            );
+            unsafe { libc::close(source) };
+        });
+    }
+
+    /// `dup2` returns success without doing anything when both descriptors are
+    /// equal, so the close-on-exec flag survives and the socket dies at exec.
+    /// Whether the held socket lands on descriptor 3 depends on how many the
+    /// watcher already holds, which makes this silent whenever it happens.
+    #[test]
+    fn clears_close_on_exec_when_the_socket_already_occupies_the_slot() {
+        with_listen_fd_slot(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            assert_ne!(
+                unsafe { libc::dup2(listener.as_raw_fd(), LISTEN_FD) },
+                -1,
+                "could not move the socket into the slot"
+            );
+            // Restore the close-on-exec flag dup2 just cleared, so the socket
+            // sits in the slot exactly as one bound in this process would.
+            let flags = unsafe { libc::fcntl(LISTEN_FD, libc::F_GETFD) };
+            unsafe { libc::fcntl(LISTEN_FD, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+            assert!(cloexec_set(LISTEN_FD), "precondition");
+
+            unsafe { place_listen_fd(LISTEN_FD) }.unwrap();
+
+            assert_eq!(socket_port(LISTEN_FD), Some(port), "the socket was lost");
+            assert!(!cloexec_set(LISTEN_FD));
+        });
+    }
 }
