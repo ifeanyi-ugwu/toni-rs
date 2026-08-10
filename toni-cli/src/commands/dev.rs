@@ -15,11 +15,93 @@ use watchexec_signals::Signal;
 /// get this long to drain.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
+/// Where the passed socket lands in the child, per the systemd socket-activation
+/// convention that `listenfd` reads.
+#[cfg(unix)]
+const LISTEN_FD: std::os::fd::RawFd = 3;
+
+/// Bind the socket the supervisor keeps across restarts.
+///
+/// A bare port is accepted as shorthand for localhost.
+#[cfg(unix)]
+fn bind_held_socket(spec: &str) -> Result<std::net::TcpListener> {
+    let addr = if spec.contains(':') {
+        spec.to_string()
+    } else {
+        format!("127.0.0.1:{spec}")
+    };
+    std::net::TcpListener::bind(&addr).with_context(|| format!("Failed to bind {addr}"))
+}
+
+/// Put `source_fd` at [`LISTEN_FD`] so it survives the coming exec.
+///
+/// Runs between fork and exec, so everything it calls must be
+/// async-signal-safe; `dup2` and `fcntl` are.
+///
+/// # Safety
+///
+/// Call only in that window, where the process is single-threaded and no
+/// allocation or locking may happen.
+#[cfg(unix)]
+unsafe fn place_listen_fd(source_fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    if source_fd == LISTEN_FD {
+        // dup2 does nothing when both descriptors are equal, and in particular
+        // leaves FD_CLOEXEC set — which would close the socket at exec. Clear
+        // it directly instead.
+        let flags = unsafe { libc::fcntl(LISTEN_FD, libc::F_GETFD) };
+        if flags == -1
+            || unsafe { libc::fcntl(LISTEN_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } == -1
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    } else if unsafe { libc::dup2(source_fd, LISTEN_FD) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The descriptor now carries no FD_CLOEXEC, so it survives this exec and
+    // the one cargo does for the application binary.
+    Ok(())
+}
+
+/// Hand the held socket to every process this job spawns.
+///
+/// `LISTEN_PID` stays unset on purpose: the socket is claimed by the
+/// application, which `cargo run` spawns as a grandchild, so no pid announced
+/// here could match the process that reads it. `listenfd` skips the pid check
+/// when the variable is absent.
+#[cfg(unix)]
+fn install_socket_hook(job: &watchexec::job::Job, socket: Arc<std::net::TcpListener>) {
+    use std::os::fd::AsRawFd;
+
+    job.set_spawn_hook(move |command, _| {
+        // Keep the listener owned by the closure: the child inherits a
+        // duplicate, and the original must outlive every restart.
+        let source_fd = socket.as_raw_fd();
+        let command = command.command_mut();
+        command
+            .env("LISTEN_FDS", "1")
+            .env("LISTEN_FDS_FIRST_FD", LISTEN_FD.to_string())
+            .env_remove("LISTEN_PID");
+
+        // SAFETY: pre_exec runs its closure in exactly the window
+        // place_listen_fd requires.
+        unsafe {
+            command.pre_exec(move || place_listen_fd(source_fd));
+        }
+    });
+}
+
 #[derive(clap::Args)]
 pub struct DevArgs {
     /// Build and run in release mode
     #[arg(long)]
     release: bool,
+
+    /// Hold the listening socket here and pass it to every restart, so
+    /// requests arriving mid-rebuild queue instead of being refused. The
+    /// application must adopt the inherited socket (see the socket_activation
+    /// example); one that binds its own will fail with "address in use".
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<String>,
 
     /// Arguments passed to the application binary (after `--`)
     #[arg(last = true)]
@@ -77,7 +159,23 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     .await
     .context("Failed to build the file filter")?;
 
+    // Annotated because the arm that produces a socket is compiled out on
+    // platforms without descriptor passing.
+    let held_socket: Option<Arc<std::net::TcpListener>> = match args.listen.as_deref() {
+        None => None,
+        #[cfg(unix)]
+        Some(spec) => Some(Arc::new(bind_held_socket(spec)?)),
+        #[cfg(not(unix))]
+        Some(_) => {
+            return Err(anyhow!(
+                "--listen needs Unix file-descriptor passing and is not supported on this platform"
+            ));
+        }
+    };
+
     let job_id = watchexec::Id::default();
+    #[cfg(unix)]
+    let hook_socket = held_socket.clone();
     let wx = Watchexec::new(move |mut action| {
         if action
             .signals()
@@ -91,7 +189,16 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         if action.paths().next().is_some() {
             eprintln!("{}", "[toni dev] change detected, restarting".dimmed());
         }
+        let is_new = action.get_job(job_id).is_none();
         let job = action.get_or_create_job(job_id, || command.clone());
+
+        #[cfg(unix)]
+        if let Some(socket) = hook_socket.clone().filter(|_| is_new) {
+            install_socket_hook(&job, socket);
+        }
+        #[cfg(not(unix))]
+        let _ = is_new;
+
         job.restart_with_signal(Signal::Terminate, STOP_GRACE);
         action
     })
@@ -113,6 +220,16 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         )
         .green()
     );
+    if let Some(socket) = &held_socket {
+        let addr = socket
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        eprintln!(
+            "{}",
+            format!("[toni dev] holding {addr} — passing it to each restart").green()
+        );
+    }
 
     // The action handler only runs on events; seed one so the app starts
     // before the first file change.
@@ -125,4 +242,98 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         .context("Watcher task panicked")?
         .map_err(|e| anyhow!(e))?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{LISTEN_FD, place_listen_fd};
+    use std::net::TcpListener;
+    use std::os::fd::{AsRawFd, RawFd};
+    use std::sync::Mutex;
+
+    /// Descriptor 3 is process-wide, so the cases cannot run concurrently.
+    static FD_SLOT: Mutex<()> = Mutex::new(());
+
+    fn cloexec_set(fd: RawFd) -> bool {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_ne!(flags, -1, "fd {fd} is not open");
+        flags & libc::FD_CLOEXEC != 0
+    }
+
+    /// Port `fd` is bound to, or `None` when it is closed or not a socket.
+    ///
+    /// Comparing this against the original listener identifies the socket,
+    /// which a "is it a socket" check alone would not.
+    fn socket_port(fd: RawFd) -> Option<u16> {
+        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let rc =
+            unsafe { libc::getsockname(fd, &mut addr as *mut _ as *mut libc::sockaddr, &mut len) };
+        (rc == 0).then(|| u16::from_be(addr.sin_port))
+    }
+
+    /// Run `body` with descriptor 3 restored afterwards, so moving a socket
+    /// into it cannot disturb the test harness.
+    fn with_listen_fd_slot<T>(body: impl FnOnce() -> T) -> T {
+        let _guard = FD_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = unsafe { libc::fcntl(LISTEN_FD, libc::F_DUPFD_CLOEXEC, 30) };
+        let out = body();
+        unsafe {
+            if saved >= 0 {
+                libc::dup2(saved, LISTEN_FD);
+                libc::close(saved);
+            } else {
+                libc::close(LISTEN_FD);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn places_the_socket_where_the_child_reads_it() {
+        with_listen_fd_slot(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            // Hold the source well away from the target slot so the branch
+            // under test is the copying one.
+            let source = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD, 20) };
+            assert!(source >= 20, "could not place the source descriptor");
+
+            unsafe { place_listen_fd(source) }.unwrap();
+
+            assert_eq!(socket_port(LISTEN_FD), Some(port), "not the held socket");
+            assert!(
+                !cloexec_set(LISTEN_FD),
+                "a descriptor marked close-on-exec never reaches the application"
+            );
+            unsafe { libc::close(source) };
+        });
+    }
+
+    /// `dup2` returns success without doing anything when both descriptors are
+    /// equal, so the close-on-exec flag survives and the socket dies at exec.
+    /// Whether the held socket lands on descriptor 3 depends on how many the
+    /// watcher already holds, which makes this silent whenever it happens.
+    #[test]
+    fn clears_close_on_exec_when_the_socket_already_occupies_the_slot() {
+        with_listen_fd_slot(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            assert_ne!(
+                unsafe { libc::dup2(listener.as_raw_fd(), LISTEN_FD) },
+                -1,
+                "could not move the socket into the slot"
+            );
+            // Restore the close-on-exec flag dup2 just cleared, so the socket
+            // sits in the slot exactly as one bound in this process would.
+            let flags = unsafe { libc::fcntl(LISTEN_FD, libc::F_GETFD) };
+            unsafe { libc::fcntl(LISTEN_FD, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+            assert!(cloexec_set(LISTEN_FD), "precondition");
+
+            unsafe { place_listen_fd(LISTEN_FD) }.unwrap();
+
+            assert_eq!(socket_port(LISTEN_FD), Some(port), "the socket was lost");
+            assert!(!cloexec_set(LISTEN_FD));
+        });
+    }
 }

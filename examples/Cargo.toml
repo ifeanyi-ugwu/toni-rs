@@ -29,6 +29,7 @@ anyhow = "1.0"
 futures = "0.3"
 bytes = "1"
 tracing = "0.1"
+listenfd = "1.0.2"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
@@ -153,3 +154,7 @@ path = "poem_poc.rs"
 [[example]]
 name = "rocket_poc"
 path = "rocket_poc.rs"
+
+[[example]]
+name = "socket_activation"
+path = "socket_activation.rs"

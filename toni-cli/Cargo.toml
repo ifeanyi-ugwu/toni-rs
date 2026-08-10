@@ -21,7 +21,11 @@ dev = [
     "dep:watchexec-filterer-globset",
     "dep:watchexec-signals",
     "dep:ignore-files",
+    "dep:libc",
 ]
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [dependencies]
 anyhow = "1.0.95"
