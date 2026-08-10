@@ -159,7 +159,9 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     .await
     .context("Failed to build the file filter")?;
 
-    let held_socket = match args.listen.as_deref() {
+    // Annotated because the arm that produces a socket is compiled out on
+    // platforms without descriptor passing.
+    let held_socket: Option<Arc<std::net::TcpListener>> = match args.listen.as_deref() {
         None => None,
         #[cfg(unix)]
         Some(spec) => Some(Arc::new(bind_held_socket(spec)?)),
@@ -172,6 +174,7 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     };
 
     let job_id = watchexec::Id::default();
+    #[cfg(unix)]
     let hook_socket = held_socket.clone();
     let wx = Watchexec::new(move |mut action| {
         if action
