@@ -8,7 +8,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
+use toni::{
+    async_trait, BindTarget, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks,
+};
 use tracing::Instrument;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -48,8 +50,7 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// messages get an `"overloaded"` error frame back; fire-and-forget
 /// messages are dropped with a log line.
 pub struct TcpAdapter {
-    host: String,
-    port: u16,
+    target: Option<BindTarget>,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     listener: Option<TcpListener>,
     local_addr: Option<SocketAddr>,
@@ -59,11 +60,28 @@ pub struct TcpAdapter {
 }
 
 impl TcpAdapter {
+    /// Listen on `host:port`. Port 0 asks the OS for a free port; read the
+    /// assigned address back from `BoundAdapters::rpc`.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self::with_target((host.into(), port))
+    }
+
+    /// Serve on a socket the caller already bound and put into listening
+    /// state, instead of binding one.
+    ///
+    /// The socket outlives the process that hands it over, which is the point:
+    /// a supervisor holding it across restarts (systemd socket activation,
+    /// `toni dev --listen`) leaves requests queued in the accept backlog
+    /// rather than refused. Pair with the `listenfd` crate to claim an
+    /// inherited descriptor.
+    pub fn from_listener(listener: std::net::TcpListener) -> Self {
+        Self::with_target(listener)
+    }
+
+    fn with_target(target: impl Into<BindTarget>) -> Self {
         let (tx, _) = watch::channel(false);
         Self {
-            host: host.into(),
-            port,
+            target: Some(target.into()),
             callbacks: None,
             listener: None,
             local_addr: None,
@@ -99,9 +117,14 @@ impl RpcAdapter for TcpAdapter {
     ) -> Result<()> {
         // Bind synchronously so port-in-use surfaces as `Err` from
         // `app.start()` instead of panicking inside the spawned accept loop.
-        let addr = format!("{}:{}", self.host, self.port);
-        let std_listener = std::net::TcpListener::bind(&addr)
-            .with_context(|| format!("TcpAdapter: failed to bind {}", addr))?;
+        let target = self
+            .target
+            .take()
+            .context("TcpAdapter: register_handlers() called more than once")?;
+        let described = target.to_string();
+        let std_listener = target
+            .into_std_listener()
+            .with_context(|| format!("TcpAdapter: failed to listen on {described}"))?;
         std_listener
             .set_nonblocking(true)
             .context("TcpAdapter: failed to set listener nonblocking")?;

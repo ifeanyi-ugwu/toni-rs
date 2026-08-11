@@ -15,6 +15,37 @@ const MAX_DATAGRAM: usize = 65_507;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Where the adapter gets its socket. The datagram counterpart of
+/// [`toni::BindTarget`], which is TCP-typed and so cannot carry a
+/// `UdpSocket`; private because the two constructors cover the whole surface.
+enum UdpTarget {
+    Addr { hostname: String, port: u16 },
+    Socket(std::net::UdpSocket),
+}
+
+impl UdpTarget {
+    fn into_std_socket(self) -> std::io::Result<std::net::UdpSocket> {
+        match self {
+            UdpTarget::Addr { hostname, port } => {
+                std::net::UdpSocket::bind((hostname.as_str(), port))
+            }
+            UdpTarget::Socket(socket) => Ok(socket),
+        }
+    }
+}
+
+impl std::fmt::Display for UdpTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UdpTarget::Addr { hostname, port } => write!(f, "{hostname}:{port}"),
+            UdpTarget::Socket(socket) => match socket.local_addr() {
+                Ok(addr) => write!(f, "pre-bound socket on {addr}"),
+                Err(_) => write!(f, "pre-bound socket"),
+            },
+        }
+    }
+}
+
 /// UDP transport adapter for the Toni RPC gateway.
 ///
 /// One datagram = one JSON message. Inbound:
@@ -58,8 +89,7 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// datagrams get an `"overloaded"` error frame back; fire-and-forget
 /// datagrams are dropped with a log line.
 pub struct UdpAdapter {
-    host: String,
-    port: u16,
+    target: Option<UdpTarget>,
     callbacks: Option<Arc<RpcMessageCallbacks>>,
     socket: Option<Arc<UdpSocket>>,
     local_addr: Option<SocketAddr>,
@@ -69,11 +99,30 @@ pub struct UdpAdapter {
 }
 
 impl UdpAdapter {
+    /// Listen on `host:port`. Port 0 asks the OS for a free port; read the
+    /// assigned address back from `BoundAdapters::rpc`.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self::with_target(UdpTarget::Addr {
+            hostname: host.into(),
+            port,
+        })
+    }
+
+    /// Receive on a socket the caller already bound, instead of binding one.
+    ///
+    /// Datagram sockets are what systemd hands over for a `ListenDatagram=`
+    /// unit; pair with `listenfd`'s `take_udp_socket` to claim an inherited
+    /// descriptor. Unlike TCP there is no accept backlog, so a socket held
+    /// across a restart buys queueing in the receive buffer rather than
+    /// ICMP port-unreachable replies.
+    pub fn from_socket(socket: std::net::UdpSocket) -> Self {
+        Self::with_target(UdpTarget::Socket(socket))
+    }
+
+    fn with_target(target: UdpTarget) -> Self {
         let (tx, _) = watch::channel(false);
         Self {
-            host: host.into(),
-            port,
+            target: Some(target),
             callbacks: None,
             socket: None,
             local_addr: None,
@@ -109,9 +158,14 @@ impl RpcAdapter for UdpAdapter {
     ) -> Result<()> {
         // Bind synchronously so `app.start().await` surfaces a port-in-use
         // failure as `Err` instead of panicking inside the spawned recv loop.
-        let addr = format!("{}:{}", self.host, self.port);
-        let std_socket = std::net::UdpSocket::bind(&addr)
-            .with_context(|| format!("UdpAdapter: failed to bind {}", addr))?;
+        let target = self
+            .target
+            .take()
+            .context("UdpAdapter: register_handlers() called more than once")?;
+        let described = target.to_string();
+        let std_socket = target
+            .into_std_socket()
+            .with_context(|| format!("UdpAdapter: failed to listen on {described}"))?;
         std_socket
             .set_nonblocking(true)
             .context("UdpAdapter: failed to set socket nonblocking")?;
