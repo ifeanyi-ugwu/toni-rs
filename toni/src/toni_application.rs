@@ -147,6 +147,10 @@ pub struct ToniApplication {
     context: ToniApplicationContext,
     ws_gateways: HashMap<String, Arc<GatewayWrapper>>,
     ws_adapter: Option<Box<dyn WebSocketAdapter>>,
+    /// Sockets supplied for separate-port gateways, keyed by the declared
+    /// `port = N`. Drained in `bind()` as each unique port is handed to the
+    /// adapter; whatever is left names a port no gateway declared.
+    ws_targets: HashMap<u16, BindTarget>,
     rpc_adapter: Option<Box<dyn RpcAdapter>>,
     rpc_controllers: Vec<Arc<RpcControllerWrapper>>,
     grpc_adapter: Option<Box<dyn GrpcAdapter>>,
@@ -169,6 +173,7 @@ impl ToniApplication {
             routes_resolver: RoutesResolver::new(container),
             ws_gateways: HashMap::new(),
             ws_adapter: None,
+            ws_targets: HashMap::new(),
             rpc_adapter: None,
             rpc_controllers: Vec::new(),
             grpc_adapter: None,
@@ -215,6 +220,32 @@ impl ToniApplication {
         self.require_state(AppState::Configuring, "use_websocket_adapter")?;
         self.ws_adapter = Some(Box::new(adapter) as Box<dyn WebSocketAdapter>);
         tracing::debug!("WebSocket adapter registered");
+        Ok(self)
+    }
+
+    /// Hand a socket the caller already bound to the separate-port gateways
+    /// declared with `port = declared_port`, instead of letting the adapter
+    /// bind one.
+    ///
+    /// `declared_port` is the number written in the gateway attribute, which
+    /// is what selects the gateway. The socket may be listening on a
+    /// different port; [`BoundAdapters::websocket`] reports the address it
+    /// listens on. Sockets acquired this way outlive the process that hands
+    /// them over — a supervisor holding one across restarts (systemd socket
+    /// activation, `toni dev --listen`) leaves connections queued in the
+    /// accept backlog rather than refused. Pair with the `listenfd` crate to
+    /// claim an inherited descriptor.
+    ///
+    /// Same-port gateways ride the HTTP listener; pass their socket to
+    /// [`use_http_adapter`](Self::use_http_adapter) instead.
+    pub fn use_websocket_listener(
+        &mut self,
+        declared_port: u16,
+        listener: std::net::TcpListener,
+    ) -> Result<&mut Self> {
+        self.require_state(AppState::Configuring, "use_websocket_listener")?;
+        self.ws_targets
+            .insert(declared_port, BindTarget::Listener(listener));
         Ok(self)
     }
 
@@ -454,18 +485,28 @@ impl ToniApplication {
 
                     // Collect every unique port that has at least one
                     // gateway, then consume the adapter to produce one
-                    // lifecycle handle per port.
+                    // lifecycle handle per port. A gateway keeps its declared
+                    // port as its key even when the caller supplied a socket
+                    // listening elsewhere — the key selects the gateway, the
+                    // target says where to listen.
                     let mut seen: HashSet<u16> = HashSet::new();
-                    let mut ports: Vec<(u16, String)> = vec![];
+                    let mut targets: Vec<(u16, BindTarget)> = vec![];
                     for (_, gw) in &separate_port {
                         if let Some(ws_port) = gw.get_port() {
                             if seen.insert(ws_port) {
-                                ports.push((ws_port, hostname.clone()));
+                                let target =
+                                    self.ws_targets
+                                        .remove(&ws_port)
+                                        .unwrap_or(BindTarget::Addr {
+                                            hostname: hostname.clone(),
+                                            port: ws_port,
+                                        });
+                                targets.push((ws_port, target));
                             }
                         }
                     }
                     let adapter = self.ws_adapter.take().unwrap();
-                    match adapter.into_lifecycle_handles(ports).await {
+                    match adapter.into_lifecycle_handles(targets).await {
                         Ok(handles) => {
                             for handle in handles {
                                 let addr = handle.local_addr();
@@ -478,6 +519,18 @@ impl ToniApplication {
                     }
                 }
             }
+        }
+
+        // A socket left here matches no gateway, so nothing will ever accept
+        // on it. Naming the port is the only way the caller finds out — the
+        // symptom otherwise is a port that answers nothing.
+        for (declared_port, target) in self.ws_targets.drain() {
+            tracing::error!(
+                declared_port,
+                target = %target,
+                "WebSocket listener supplied for a port no gateway declares; \
+                 the socket will not be served"
+            );
         }
 
         // Wire RPC controllers into the RPC adapter.

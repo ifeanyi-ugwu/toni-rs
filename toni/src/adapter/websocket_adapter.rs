@@ -6,6 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
+use crate::adapter::BindTarget;
 use crate::http_helpers::RequestPart;
 use crate::websocket::{WsError, WsMessage, WsSink};
 
@@ -124,19 +125,29 @@ pub trait WebSocketAdapter: Send + Sync + 'static {
         ))
     }
 
-    /// Consume the adapter, bind every requested port, and return one
-    /// [`WsLifecycleHandle`](crate::adapter::WsLifecycleHandle) per
-    /// port. The handles share whatever
+    /// Consume the adapter, acquire a socket for every requested port, and
+    /// return one [`WsLifecycleHandle`](crate::adapter::WsLifecycleHandle)
+    /// per port. The handles share whatever
     /// shutdown signal the adapter uses internally (a single
     /// `send(true)` on a watch channel typically); calling `shutdown` on
     /// any handle stops every port.
     ///
+    /// Each entry pairs a declared port with a [`BindTarget`]. The `u16` is
+    /// the `port = N` from the gateway attribute and the key the adapter
+    /// stored its callbacks under in
+    /// [`register_gateway`](Self::register_gateway) — it identifies *which*
+    /// gateway the target belongs to, and is not the port to listen on.
+    /// Where to listen is the `BindTarget`, whose `Listener` arm is a socket
+    /// the caller already bound and whose address may differ from the
+    /// declared port. Report what the socket says through the handle's
+    /// address.
+    ///
     /// **Default:** errors — implement for separate-port support.
     async fn into_lifecycle_handles(
         self: Box<Self>,
-        ports: Vec<(u16, String)>,
+        targets: Vec<(u16, BindTarget)>,
     ) -> Result<Vec<crate::adapter::lifecycle_handles::WsLifecycleHandle>> {
-        let _ = ports;
+        let _ = targets;
         Err(anyhow::anyhow!(
             "This WebSocket adapter does not support separate-port servers"
         ))
