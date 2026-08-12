@@ -50,6 +50,7 @@ mod provider_scope;
 mod request_extractor;
 mod request_provider;
 mod rpc_grpc;
+mod rpc_grpc_listener_adoption;
 mod rpc_grpc_macros;
 mod rpc_tcp;
 mod rpc_udp;

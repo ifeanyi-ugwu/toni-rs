@@ -19,14 +19,46 @@ use crate::tracing_layer::TracingLayer;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Where the adapter gets its socket. Holds a `SocketAddr` rather than
+/// reusing [`toni::BindTarget`], whose address arm is a hostname string:
+/// routing a `SocketAddr` through one would re-resolve it and drop an IPv6
+/// scope id along the way.
+enum GrpcTarget {
+    Addr(SocketAddr),
+    Listener(std::net::TcpListener),
+}
+
+impl GrpcTarget {
+    fn into_std_listener(self) -> std::io::Result<std::net::TcpListener> {
+        match self {
+            GrpcTarget::Addr(addr) => std::net::TcpListener::bind(addr),
+            GrpcTarget::Listener(listener) => Ok(listener),
+        }
+    }
+}
+
+impl std::fmt::Display for GrpcTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GrpcTarget::Addr(addr) => write!(f, "{addr}"),
+            GrpcTarget::Listener(listener) => match listener.local_addr() {
+                Ok(addr) => write!(f, "pre-bound listener on {addr}"),
+                Err(_) => write!(f, "pre-bound listener"),
+            },
+        }
+    }
+}
+
 /// gRPC transport adapter for the Toni framework.
 ///
 /// Wraps `tonic::transport::Server`. Construction is contract-first: the
 /// caller registers tonic-generated services via [`add_service`](Self::add_service)
 /// before passing the adapter to `app.use_grpc_adapter()`. The framework
 /// then calls `register_services()` to merge its discovered services into
-/// the same route set; `into_lifecycle()` binds a `TcpListener` on the
-/// configured address and drives the gRPC server until shutdown.
+/// the same route set; `into_lifecycle()` acquires the listening socket —
+/// binding the configured address, or adopting the one passed to
+/// [`from_listener`](Self::from_listener) — and drives the gRPC server
+/// until shutdown.
 ///
 /// # Graceful shutdown
 ///
@@ -37,7 +69,7 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Override the timeout with [`with_drain_timeout`](Self::with_drain_timeout);
 /// pass `None` to wait without bound.
 pub struct GrpcAdapter {
-    addr: SocketAddr,
+    target: Option<GrpcTarget>,
     routes_builder: RoutesBuilder,
     drain_timeout: Option<Duration>,
     /// Global concurrency cap across all connections. `None` = unbounded.
@@ -57,10 +89,28 @@ pub struct GrpcAdapter {
 }
 
 impl GrpcAdapter {
+    /// Listen on `addr`. Port 0 asks the OS for a free port; read the
+    /// assigned address back from `BoundAdapters::grpc`.
     pub fn new(addr: SocketAddr) -> Self {
+        Self::with_target(GrpcTarget::Addr(addr))
+    }
+
+    /// Serve on a socket the caller already bound and put into listening
+    /// state, instead of binding one.
+    ///
+    /// The socket outlives the process that hands it over, which is the point:
+    /// a supervisor holding it across restarts (systemd socket activation,
+    /// `toni dev --listen`) leaves requests queued in the accept backlog
+    /// rather than refused. Pair with the `listenfd` crate to claim an
+    /// inherited descriptor.
+    pub fn from_listener(listener: std::net::TcpListener) -> Self {
+        Self::with_target(GrpcTarget::Listener(listener))
+    }
+
+    fn with_target(target: GrpcTarget) -> Self {
         let (tx, _) = watch::channel(false);
         Self {
-            addr,
+            target: Some(target),
             routes_builder: RoutesBuilder::default(),
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
             max_inflight: None,
@@ -147,8 +197,14 @@ impl toni::GrpcAdapter for GrpcAdapter {
     async fn into_lifecycle(mut self: Box<Self>) -> Result<toni::GrpcLifecycleHandle> {
         // Bind synchronously so port-in-use surfaces as `Err` from
         // `app.bind()` instead of panicking inside the spawned serve loop.
-        let std_listener = std::net::TcpListener::bind(self.addr)
-            .with_context(|| format!("GrpcAdapter: failed to bind {}", self.addr))?;
+        let target = self
+            .target
+            .take()
+            .context("GrpcAdapter: into_lifecycle() called more than once")?;
+        let described = target.to_string();
+        let std_listener = target
+            .into_std_listener()
+            .with_context(|| format!("GrpcAdapter: failed to listen on {described}"))?;
         std_listener
             .set_nonblocking(true)
             .context("GrpcAdapter: failed to set listener nonblocking")?;
