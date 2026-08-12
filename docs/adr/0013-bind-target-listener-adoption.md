@@ -49,7 +49,7 @@ theirs, so a listener reaches them through a constructor, with no SPI involvemen
 when wanted. Separate-port WebSocket is left out: an inherited socket carries no indication of which
 gateway's declared port it is meant to satisfy, and port numbers there encode intent (a gateway
 declaring `port = 0` wants its own listener, not a shared one), so the mapping is an open question
-rather than an omission.
+rather than an omission. [0014](0014-ws-listener-keyed-by-declared-port.md) answers it.
 
 Acquisition stays outside the framework. Core accepts a listener and asks nothing about its origin;
 it never reads `LISTEN_FDS` or any other protocol. Because the protocol is the standard one,
