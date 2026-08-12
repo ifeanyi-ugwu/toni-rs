@@ -498,20 +498,22 @@ impl WebSocketAdapter for AxumAdapter {
 
     async fn into_lifecycle_handles(
         mut self: Box<Self>,
-        ports: Vec<(u16, String)>,
+        targets: Vec<(u16, BindTarget)>,
     ) -> Result<Vec<toni::WsLifecycleHandle>> {
-        let mut handles = Vec::with_capacity(ports.len());
-        for (port, hostname) in ports {
-            let router = match self.ws_ports.remove(&port) {
+        let mut handles = Vec::with_capacity(targets.len());
+        for (declared_port, target) in targets {
+            let router = match self.ws_ports.remove(&declared_port) {
                 Some(r) => r,
                 None => continue,
             };
-            let addr = format!("{}:{}", hostname, port);
+            let addr = target.to_string();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
-            let listener = TcpListener::bind(&addr)
-                .await
-                .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let std_listener = target
+                .into_std_listener()
+                .map_err(|e| anyhow!("Failed to bind WebSocket {}: {}", addr, e))?;
+            std_listener.set_nonblocking(true)?;
+            let listener = TcpListener::from_std(std_listener)?;
             let local_addr = listener
                 .local_addr()
                 .map_err(|e| anyhow!("Failed to get local address: {}", e))?;

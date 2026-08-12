@@ -7,7 +7,6 @@ use http_body_util::BodyExt;
 use tokio::sync::watch;
 
 use salvo::conn::tcp::TcpAcceptor;
-use salvo::conn::{Listener, TcpListener};
 use salvo::http::body::ResBody;
 use salvo::http::{Request as SalvoRequest, Response as SalvoResponse};
 use salvo::websocket::WebSocketUpgrade;
@@ -632,11 +631,11 @@ impl WebSocketAdapter for SalvoAdapter {
 
     async fn into_lifecycle_handles(
         mut self: Box<Self>,
-        ports: Vec<(u16, String)>,
+        targets: Vec<(u16, BindTarget)>,
     ) -> Result<Vec<toni::WsLifecycleHandle>> {
-        let mut handles = Vec::with_capacity(ports.len());
-        for (port, hostname) in ports {
-            let routes = match self.ws_ports.remove(&port) {
+        let mut handles = Vec::with_capacity(targets.len());
+        for (declared_port, target) in targets {
+            let routes = match self.ws_ports.remove(&declared_port) {
                 Some(r) => r,
                 None => continue,
             };
@@ -648,14 +647,17 @@ impl WebSocketAdapter for SalvoAdapter {
                 router = router.push(Router::with_path(salvo_path).goal(ws_handler));
             }
 
-            let addr = format!("{}:{}", hostname, port);
+            let addr = target.to_string();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
 
-            let acceptor = TcpListener::new(addr.clone())
-                .try_bind()
-                .await
-                .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let std_listener = target
+                .into_std_listener()
+                .map_err(|e| anyhow!("Failed to bind WebSocket {}: {}", addr, e))?;
+            std_listener.set_nonblocking(true)?;
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)?;
+            let acceptor = TcpAcceptor::try_from(tokio_listener)
+                .map_err(|e| anyhow!("Failed to adopt listener for {}: {}", addr, e))?;
             let local_addr = acceptor
                 .local_addr()
                 .map_err(|e| anyhow!("Failed to get local address: {}", e))?;

@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 use poem::endpoint::{BoxEndpoint, Endpoint, EndpointExt};
 use poem::http::StatusCode;
-use poem::listener::{Acceptor, Listener, TcpAcceptor, TcpListener};
+use poem::listener::{Acceptor, TcpAcceptor};
 use poem::web::websocket::WebSocket;
 use poem::{
     Body as PoemBody, FromRequest, IntoResponse, Request as PoemRequest, Response as PoemResponse,
@@ -559,11 +559,11 @@ impl WebSocketAdapter for PoemAdapter {
 
     async fn into_lifecycle_handles(
         mut self: Box<Self>,
-        ports: Vec<(u16, String)>,
+        targets: Vec<(u16, BindTarget)>,
     ) -> Result<Vec<toni::WsLifecycleHandle>> {
-        let mut handles = Vec::with_capacity(ports.len());
-        for (port, hostname) in ports {
-            let routes = match self.ws_ports.remove(&port) {
+        let mut handles = Vec::with_capacity(targets.len());
+        for (declared_port, target) in targets {
+            let routes = match self.ws_ports.remove(&declared_port) {
                 Some(r) => r,
                 None => continue,
             };
@@ -574,15 +574,16 @@ impl WebSocketAdapter for PoemAdapter {
                 route = route.at(path, ws_endpoint);
             }
 
-            let addr = format!("{}:{}", hostname, port);
+            let addr = target.to_string();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
 
-            let listener = TcpListener::bind(addr.clone());
-            let acceptor = listener
-                .into_acceptor()
-                .await
-                .map_err(|e| anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let std_listener = target
+                .into_std_listener()
+                .map_err(|e| anyhow!("Failed to bind WebSocket {}: {}", addr, e))?;
+            std_listener.set_nonblocking(true)?;
+            let acceptor = TcpAcceptor::from_std(std_listener)
+                .map_err(|e| anyhow!("Failed to adopt listener for {}: {}", addr, e))?;
             let local_addr = acceptor
                 .local_addr()
                 .into_iter()

@@ -9,7 +9,9 @@ use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
 use toni::http_helpers::RequestPart;
 use toni::websocket::{SendError, TrySendError, WsMessage, WsSink};
-use toni::{MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle};
+use toni::{
+    BindTarget, MessageCallbackResult, WebSocketAdapter, WsConnectionCallbacks, WsLifecycleHandle,
+};
 
 // ── TokioSender ───────────────────────────────────────────────────────────────
 
@@ -91,23 +93,25 @@ impl WebSocketAdapter for TungsteniteAdapter {
 
     async fn into_lifecycle_handles(
         mut self: Box<Self>,
-        ports: Vec<(u16, String)>,
+        targets: Vec<(u16, BindTarget)>,
     ) -> Result<Vec<WsLifecycleHandle>> {
-        let mut handles = Vec::with_capacity(ports.len());
-        for (port, hostname) in ports {
-            let entry = match self.ports.remove(&port) {
+        let mut handles = Vec::with_capacity(targets.len());
+        for (declared_port, target) in targets {
+            let entry = match self.ports.remove(&declared_port) {
                 Some(e) => e,
                 None => continue,
             };
             // Raw TCP has no path info — use the first registered callbacks.
             let bindings: Vec<Arc<WsConnectionCallbacks>> = entry.bindings.into_values().collect();
-            let addr = format!("{}:{}", hostname, port);
+            let addr = target.to_string();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
             let shutdown_tx = self.shutdown_tx.clone();
 
-            let listener = TcpListener::bind(&addr)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to bind WebSocket port {}: {}", addr, e))?;
+            let std_listener = target
+                .into_std_listener()
+                .map_err(|e| anyhow::anyhow!("Failed to bind WebSocket {}: {}", addr, e))?;
+            std_listener.set_nonblocking(true)?;
+            let listener = TcpListener::from_std(std_listener)?;
             let local_addr = listener
                 .local_addr()
                 .map_err(|e| anyhow::anyhow!("Failed to get local address: {}", e))?;
