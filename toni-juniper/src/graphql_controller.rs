@@ -234,6 +234,7 @@ where
     async fn execute(
         &self,
         req: HttpRequest,
+        _ctx: &mut toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         self.execute_inner(req).await.into()
     }
@@ -352,6 +353,7 @@ impl Route for GraphQLPlaygroundController {
     async fn execute(
         &self,
         _req: HttpRequest,
+        _ctx: &mut toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         HttpResponse {
             status: 200,

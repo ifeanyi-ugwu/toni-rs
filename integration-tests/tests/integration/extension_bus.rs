@@ -9,12 +9,13 @@
 
 use toni::async_trait;
 use toni::context::{Extensions, HandlerContext, HttpContext, WsContext};
+use toni::extractors::Path;
 use toni::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::Guard;
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
-    controller, get, injectable, module, new, routes, subscribe_message, subscriptions,
-    toni_factory::ToniFactory, use_guards, websocket_gateway, Body as ToniBody,
+    controller, get, injectable, module, new, routes, set_metadata, subscribe_message,
+    subscriptions, toni_factory::ToniFactory, use_guards, websocket_gateway, Body as ToniBody,
 };
 
 use crate::common::TestServer;
@@ -168,4 +169,94 @@ async fn ws_guard_write_reaches_the_handler() {
 
     let reply = ws.next().await.unwrap().unwrap();
     assert_eq!(reply.into_text().unwrap().as_str(), "bob");
+}
+
+// ===== the context as a handler parameter =====
+
+#[injectable]
+pub struct StampGuard {}
+
+#[async_trait]
+impl Guard<HttpContext> for StampGuard {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+        ctx.extensions().insert(Principal("dana".into()));
+        true
+    }
+}
+
+#[derive(Clone)]
+pub struct Role(&'static str);
+
+#[controller("/ctx")]
+pub struct CtxController {}
+
+#[routes]
+#[use_guards(StampGuard)]
+impl CtxController {
+    /// Takes the context itself rather than an extractor over it.
+    #[get("/read")]
+    #[set_metadata(Role("reader"))]
+    fn read(&self, ctx: &mut HttpContext) -> ToniBody {
+        let principal = ctx
+            .extensions()
+            .get::<Principal>()
+            .map(|p| p.0)
+            .unwrap_or_else(|| "ABSENT".into());
+        // Route metadata reaches the handler for the first time here — it lives
+        // on the context and nothing else carried it.
+        let role = ctx
+            .route_metadata()
+            .and_then(|m| m.get::<Role>())
+            .map(|r| r.0)
+            .unwrap_or("none");
+        ToniBody::text(format!("{principal}/{role}"))
+    }
+
+    /// The context coexists with ordinary extractors.
+    #[get("/with-path/{id}")]
+    fn with_path(&self, Path(id): Path<u32>, ctx: &mut HttpContext) -> ToniBody {
+        let principal = ctx
+            .extensions()
+            .get::<Principal>()
+            .map(|p| p.0)
+            .unwrap_or_else(|| "ABSENT".into());
+        ToniBody::text(format!("{id}/{principal}"))
+    }
+}
+
+#[module(controllers: [CtxController], providers: [StampGuard])]
+impl CtxModule {}
+
+#[tokio_localset_test::localset_test]
+async fn a_handler_can_take_the_context() {
+    let server = TestServer::start(CtxModule).await;
+
+    let body = server
+        .client()
+        .get(server.url("/ctx/read"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(body, "dana/reader");
+}
+
+#[tokio_localset_test::localset_test]
+async fn the_context_coexists_with_extractors() {
+    let server = TestServer::start(CtxModule).await;
+
+    let body = server
+        .client()
+        .get(server.url("/ctx/with-path/7"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(body, "7/dana");
 }
