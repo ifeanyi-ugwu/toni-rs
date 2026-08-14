@@ -4,12 +4,14 @@
 //! to all modules without requiring explicit imports.
 
 use crate::RequestFactory;
+use crate::extension::ExtensionsFactory;
 use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 
 /// Built-in global module that provides core framework functionality
 ///
 /// Currently provides:
 /// - Request: HTTP request data access for handlers
+/// - Extensions: the request's extension bag, for code below the handler
 pub struct BuiltinModule;
 
 impl ModuleMetadata for BuiltinModule {
@@ -34,12 +36,13 @@ impl ModuleMetadata for BuiltinModule {
     }
 
     fn providers(&self) -> Option<Vec<Box<dyn ProviderFactory>>> {
-        Some(vec![Box::new(RequestFactory)])
+        Some(vec![Box::new(RequestFactory), Box::new(ExtensionsFactory)])
     }
 
     fn exports(&self) -> Option<Vec<String>> {
         Some(vec![
             std::any::type_name::<crate::request::Request>().to_string(),
+            std::any::type_name::<crate::context::Extensions>().to_string(),
         ])
     }
 }
