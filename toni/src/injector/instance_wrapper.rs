@@ -566,7 +566,9 @@ impl InstanceWrapper {
         // We trust the application to set its own state to a sane shape after
         // a panic — this layer only ensures the panic doesn't escape the
         // dispatcher.
-        let exec_result = AssertUnwindSafe(instance.execute(req)).catch_unwind().await;
+        let exec_result = AssertUnwindSafe(instance.execute(req, &mut *context))
+            .catch_unwind()
+            .await;
         let exec_result = match exec_result {
             Ok(result) => result,
             Err(payload) => {

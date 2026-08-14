@@ -560,6 +560,7 @@ fn generate_singleton_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
+                __ctx: &mut ::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,
@@ -640,6 +641,7 @@ fn generate_request_controller_wrapper(
             async fn execute(
                 &self,
                 __req: ::toni::http_helpers::HttpRequest,
+                __ctx: &mut ::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,

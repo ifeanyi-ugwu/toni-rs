@@ -52,7 +52,20 @@ pub trait Route: Send + Sync {
     /// Run the user handler and return either the rendered success response
     /// or the user's typed error preserved for the dispatcher's observer +
     /// chain pipeline.
-    async fn execute(&self, req: HttpRequest) -> ExecutionResult<HttpResponse, HttpError>;
+    ///
+    /// `ctx` is exclusive rather than shared because this future must be
+    /// `Send`, and `&T` is `Send` only where `T: Sync` — which `HttpContext`
+    /// deliberately is not.
+    ///
+    /// A handler still answers by returning: the dispatcher writes the returned
+    /// response onto the context afterwards, so a response a handler sets here
+    /// is overwritten. Short-circuiting through the context belongs to the
+    /// enhancers, which run before the response exists.
+    async fn execute(
+        &self,
+        req: HttpRequest,
+        ctx: &mut HttpContext,
+    ) -> ExecutionResult<HttpResponse, HttpError>;
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 

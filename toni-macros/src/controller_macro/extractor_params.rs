@@ -50,6 +50,8 @@ pub enum ExtractorKind {
     Request,
     /// Extensions extractor (the per-message bag) — parts-only
     Extensions,
+    /// `&mut HttpContext` — the handler context itself, forwarded rather than extracted
+    Context,
     /// Option<T> wrapped extractor (optional extraction)
     Optional {
         /// The inner extractor kind
@@ -135,6 +137,23 @@ pub fn get_extractor_params(method: &ImplItemFn) -> Result<Vec<ExtractorParam>> 
 
 /// Detect what kind of extractor a type is
 fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
+    // `&mut HttpContext` is the only reference a handler may take — every
+    // extractor owns what it produces. Exclusive rather than shared because the
+    // wrapper's future must be `Send` and `HttpContext` is not `Sync`.
+    if let Type::Reference(type_ref) = ty {
+        if let Type::Path(inner) = &*type_ref.elem {
+            if inner
+                .path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "HttpContext")
+            {
+                return ExtractorKind::Context;
+            }
+        }
+        return ExtractorKind::Unknown;
+    }
+
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
             let type_name = segment.ident.to_string();
@@ -225,6 +244,12 @@ pub fn generate_extractor_extractions(
 
         match &param.kind {
             ExtractorKind::HttpRequest => {}
+
+            // Not extracted from the request — the dispatcher hands it to the wrapper.
+            ExtractorKind::Context => {
+                let extraction = quote! { let #param_name = __ctx; };
+                extractions.push(extraction);
+            }
 
             // Returns None on extraction failure instead of a 400 response.
             ExtractorKind::Optional {
