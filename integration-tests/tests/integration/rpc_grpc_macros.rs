@@ -1800,3 +1800,124 @@ async fn grpc_backpressure_rejects_excess_and_releases_after_completion() {
         .await
         .expect("shutdown must complete");
 }
+
+// ── extension-bus fixture ───────────────────────────────────────────────────
+//
+// A gRPC handler receives the tonic request, never `GrpcContext`, so what a
+// guard attaches has to ride the request to reach it. Its own module and port,
+// like the guard fixtures above.
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BusPrincipal(String);
+
+#[injectable]
+pub struct BusGuard {}
+impl BusGuard {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for BusGuard {
+    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
+        use toni::context::HandlerContext;
+        ctx.extensions().insert(BusPrincipal("carol".into()));
+        true
+    }
+}
+
+#[grpc_service(pub struct BusOrdersGrpcService {})]
+impl BusOrdersGrpcService {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_guards(BusGuard)]
+impl Orders for BusOrdersGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let who = toni::context::Extensions::adopt(request.extensions())
+            .get::<BusPrincipal>()
+            .map(|p| p.0)
+            .unwrap_or_else(|| "ABSENT".into());
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 1,
+            status: who,
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+}
+
+#[module(providers: [BusGuard, BusOrdersGrpcService])]
+struct BusGrpcModule;
+
+/// The last transport to get it: `extension_bus.rs` covers HTTP and WebSocket,
+/// `rpc_tcp.rs` covers RPC.
+#[tokio_localset_test::localset_test]
+async fn grpc_guard_write_reaches_the_handler() {
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(BusGrpcModule).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let port = bound
+            .grpc
+            .expect("BoundAdapters.grpc must be populated")
+            .port();
+        let _ = port_tx.send(port);
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+
+    let port = port_rx.await.unwrap();
+    let mut client = connect(port).await;
+
+    let resp = client
+        .create(tonic::Request::new(orders_pb::CreateOrderRequest {
+            item: "shoes".into(),
+            qty: 1,
+        }))
+        .await
+        .expect("call should dispatch");
+
+    assert_eq!(resp.into_inner().status, "carol");
+}

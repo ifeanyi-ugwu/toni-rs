@@ -479,6 +479,14 @@ fn build_wrapper_method(
                 ::std::option::Option::None,
             );
 
+            // The handler receives the tonic request, never the context, so the
+            // context's extension bag rides the request to reach it. A handle,
+            // not a copy — the guards below write into the same bag.
+            let mut #req_ident = #req_ident;
+            #req_ident.extensions_mut().insert(
+                ::toni::context::HandlerContext::extensions(&__ctx).clone()
+            );
+
             // Two slots so the macro can distinguish a returned reply
             // (Ok or Err) from a caught panic, and feed the panic event
             // (not its synthesized status) to observers + the error chain.

@@ -54,8 +54,17 @@ impl Extensions {
         extensions
     }
 
-    /// Adopt the bag riding on an HTTP request, or mint a detached one when
-    /// there is none.
+    /// Adopt the bag riding on a request, or mint a detached one when there is
+    /// none.
+    ///
+    /// Both HTTP and tonic requests carry `http::Extensions`, so this is how a
+    /// gRPC handler reads what its guards attached:
+    ///
+    /// ```ignore
+    /// async fn create(&self, request: Request<CreateOrder>) -> Result<Response<Order>, Status> {
+    ///     let principal = Extensions::adopt(request.extensions()).get::<Principal>();
+    /// }
+    /// ```
     ///
     /// Read-only, so a bag minted here does not become the request's — use
     /// [`ensure`](Self::ensure) where the caller can write back.
