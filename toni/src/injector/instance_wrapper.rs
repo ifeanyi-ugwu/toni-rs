@@ -248,7 +248,12 @@ impl InstanceWrapper {
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
         // Split req so factory entries see parts before the context takes ownership.
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        // Install the request's provider cache before anything resolves against it: the
+        // enhancer factories below and the controller build further down both reach it
+        // through the parts, so a request-scoped provider injected into a guard and into
+        // the controller is constructed once.
+        crate::traits_helpers::RequestCache::install(&mut parts);
         let guards = Self::resolve_guards(&guards, &parts).await;
         let interceptors = Self::resolve_interceptors(&interceptors, &parts).await;
         let pipes = Self::resolve_pipes(&pipes, &parts).await;

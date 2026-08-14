@@ -202,7 +202,7 @@ where
             }
         };
 
-        let __req_cache = toni::RequestCache::new();
+        let __req_cache = toni::RequestCache::adopt(Some(&parts));
         let service_any = self
             .graphql_service
             .execute(

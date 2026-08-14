@@ -199,10 +199,20 @@ impl ToniApplicationContext {
     /// Use this when you need a request-scoped provider outside of an HTTP handler — for
     /// testing, CLI tools, or health checks that need to exercise the full provider tree.
     ///
+    /// Each call resolves in its own scope unless `parts` already carries a cache. Install
+    /// one with [`RequestCache::install`] to place several resolutions in one scope, so they
+    /// share request-scoped instances the way a single HTTP request would.
+    ///
     /// # Example
     /// ```rust,ignore
     /// let parts = http::Request::builder().body(()).unwrap().into_parts().0;
     /// let service = ctx.resolve::<RequestService>(&parts).await?;
+    ///
+    /// // Two resolutions, one scope:
+    /// let mut parts = http::Request::builder().body(()).unwrap().into_parts().0;
+    /// RequestCache::install(&mut parts);
+    /// let a = ctx.resolve::<ServiceA>(&parts).await?;
+    /// let b = ctx.resolve::<ServiceB>(&parts).await?;
     /// ```
     pub async fn resolve<T: 'static>(&self, parts: &crate::http_helpers::RequestPart) -> Result<T> {
         let provider_token = std::any::type_name::<T>().to_string();
@@ -226,7 +236,7 @@ impl ToniApplicationContext {
             })?
         };
 
-        let cache = RequestCache::new();
+        let cache = RequestCache::adopt(Some(parts));
         let http_ctx = HttpProviderContext {
             parts,
             cache: &cache,
@@ -276,7 +286,7 @@ impl ToniApplicationContext {
             })?
         };
 
-        let cache = RequestCache::new();
+        let cache = RequestCache::adopt(Some(parts));
         let http_ctx = HttpProviderContext {
             parts,
             cache: &cache,
