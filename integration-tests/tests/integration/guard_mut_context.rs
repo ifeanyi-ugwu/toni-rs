@@ -1,11 +1,7 @@
-//! Demonstrates the capability unlocked by guards taking `&mut C`: a guard
-//! writes into the context's extension bag, and a later enhancer reads it.
+//! A guard attaches a value to the message's extension bag and a later enhancer
+//! reads it — the enhancer-to-enhancer half of the bus.
 //!
-//! Under the old `can_activate(&self, ctx: &HttpContext)` signature the line
-//! `ctx.extensions_mut()` did not compile inside a guard (`extensions_mut`
-//! needs `&mut self`), so attach-in-guard was structurally impossible. With
-//! `&mut C` it works, and the context extension bag is the documented
-//! enhancer-to-enhancer bus.
+//! `extension_bus.rs` covers the other half, where the reader is the handler.
 
 use toni::async_trait;
 use toni::context::{HandlerContext, HttpContext};
@@ -25,7 +21,7 @@ impl Guard<HttpContext> for AuthGuard {
     async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
         // The whole point: a guard mutating the context. A compile error
         // under the old `&HttpContext` signature.
-        ctx.extensions_mut().insert(Principal {
+        ctx.extensions().insert(Principal {
             user: "alice".into(),
             roles: vec!["admin".into()],
         });
@@ -68,8 +64,8 @@ async fn guard_attaches_principal_that_a_later_guard_reads() {
 
     // It is now on the context...
     assert_eq!(
-        ctx.extensions().get::<Principal>().map(|p| p.user.as_str()),
-        Some("alice"),
+        ctx.extensions().get::<Principal>().map(|p| p.user),
+        Some("alice".to_string()),
     );
 
     // ...and Guard B (a downstream enhancer) reads it to authorize.
