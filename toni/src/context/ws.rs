@@ -21,13 +21,18 @@ pub struct WsContext {
 
 impl WsContext {
     pub fn new(
-        client: WsClient,
+        mut client: WsClient,
         message: WsMessage,
         event: impl Into<String>,
         route_metadata: Option<Arc<RouteMetadata>>,
     ) -> Self {
+        let shared = SharedState::new(route_metadata);
+        // The handler receives a clone of this client, not the context — pointing
+        // the client at this message's bag is what carries an enhancer's work
+        // across that boundary.
+        client.extensions = shared.extensions.clone();
         Self {
-            shared: SharedState::new(route_metadata),
+            shared,
             client,
             message,
             event: event.into(),
@@ -67,10 +72,6 @@ impl HandlerContext for WsContext {
 
     fn extensions(&self) -> &Extensions {
         &self.shared.extensions
-    }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.shared.extensions
     }
 
     fn cancellation(&self) -> &CancellationToken {

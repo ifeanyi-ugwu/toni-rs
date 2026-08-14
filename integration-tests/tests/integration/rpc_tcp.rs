@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use toni::async_trait;
-use toni::context::RpcContext;
+use toni::context::{HandlerContext, RpcContext};
 use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
 use toni::injectable;
 use toni::module;
@@ -921,4 +921,61 @@ fn bare_rpc_controller_registers_with_no_patterns() {
         controller.get_patterns().is_empty(),
         "a controller with no #[patterns] impl exposes no patterns"
     );
+}
+
+#[derive(Clone)]
+pub struct RpcPrincipal(String);
+
+#[injectable]
+pub struct RpcAuthGuard {}
+
+#[async_trait]
+impl Guard<RpcContext> for RpcAuthGuard {
+    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+        ctx.extensions().insert(RpcPrincipal("carol".into()));
+        true
+    }
+}
+
+#[rpc_controller]
+pub struct RpcBusController {}
+
+#[patterns]
+impl RpcBusController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.bus")]
+    #[use_guards(RpcAuthGuard)]
+    async fn bus(&self, _d: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> {
+        let who = ctx
+            .extensions()
+            .get::<RpcPrincipal>()
+            .map(|p| p.0)
+            .unwrap_or_else(|| "ABSENT".into());
+        Ok(RpcData::json(serde_json::json!(who)))
+    }
+}
+
+#[module(providers: [RpcAuthGuard, RpcBusController])]
+impl RpcBusModule {}
+
+/// The RPC handler takes `&RpcContext`, so it reads the guard's write straight
+/// off the context. `extension_bus.rs` covers HTTP and WebSocket, whose handlers
+/// reach the same bag by other routes.
+#[tokio_localset_test::localset_test]
+async fn rpc_guard_write_reaches_the_handler() {
+    let port = start_rpc_server(RpcBusModule).await;
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.bus",
+        serde_json::json!({}),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("bus response");
+
+    assert_eq!(resp["response"], "carol");
 }

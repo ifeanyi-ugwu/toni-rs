@@ -20,6 +20,7 @@ mod enhancers_di;
 mod error_derive;
 mod error_handler;
 mod error_observer;
+mod extension_bus;
 mod extensions_and_from_request;
 mod extractors;
 mod global_chain_conformance;

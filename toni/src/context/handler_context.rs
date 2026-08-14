@@ -21,11 +21,12 @@ pub trait HandlerContext: Send {
     /// never bind to a specific route.
     fn route_metadata(&self) -> Option<&RouteMetadata>;
 
-    /// Per-request typed key-value bag. Use to attach values from one enhancer
-    /// and read them from another without coupling their types.
+    /// Per-message typed key-value bag: the channel from one pipeline stage to
+    /// the next. A guard attaches a value, a later enhancer or the handler reads
+    /// it, neither coupled to the other's type.
+    ///
+    /// The bag mutates through `&self` — see [`Extensions`].
     fn extensions(&self) -> &Extensions;
-
-    fn extensions_mut(&mut self) -> &mut Extensions;
 
     /// The per-request cancellation token. Resolves when the client
     /// disconnects, the server triggers a per-request abort, or the handler's

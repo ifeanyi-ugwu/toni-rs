@@ -1,4 +1,4 @@
-use crate::http_helpers::Extensions;
+use crate::context::Extensions;
 use std::collections::HashMap;
 
 /// WebSocket client/connection
@@ -12,7 +12,12 @@ pub struct WsClient {
     /// Handshake information
     pub handshake: WsHandshake,
 
-    /// Protocol-specific extensions (for storing auth data, user info, etc.)
+    /// The bag for the message being handled — the same one the gateway's
+    /// guards and interceptors wrote to, which is how their work reaches the
+    /// handler.
+    ///
+    /// Scoped to one message, not to the connection: the next message arrives
+    /// with an empty bag.
     pub extensions: Extensions,
 }
 

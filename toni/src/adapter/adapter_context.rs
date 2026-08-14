@@ -49,8 +49,13 @@ impl AdapterContext {
             + Send
             + 'static,
     {
+        // Attach the request's extension bag before the chain runs, so a value a
+        // middleware writes reaches the guards, the providers, and the handler.
+        let mut req = normalize_request_path(req);
+        crate::context::Extensions::install(req.extensions_mut());
+
         self.global_chain
-            .execute(normalize_request_path(req), routing)
+            .execute(req, routing)
             .await
             .unwrap_or_else(|e| {
                 tracing::error!(error = %e, "unhandled error in global middleware chain");
