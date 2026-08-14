@@ -24,6 +24,10 @@ use crate::context::HandlerContext;
 /// How the handler reads it depends on the transport: an HTTP handler takes
 /// `Extensions` as a parameter, a WebSocket handler reads `client.extensions`,
 /// and an RPC or gRPC handler already holds the context.
+///
+/// On HTTP, [`Extension<T>`](crate::Extension) injects the same value into a
+/// guard and into anything below the controller, so both ends declare it rather
+/// than reaching for the bag by type.
 #[async_trait]
 pub trait Guard<C: ?Sized + HandlerContext>: Send + Sync {
     async fn can_activate(&self, context: &mut C) -> bool;

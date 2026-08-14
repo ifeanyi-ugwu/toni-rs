@@ -24,6 +24,7 @@ pub mod errors;
 pub mod extractors;
 pub mod grpc_status;
 pub use grpc_status::{GrpcCode, GrpcStatus};
+mod extension;
 pub mod grpc_runtime;
 pub mod http_helpers;
 pub mod injector;
@@ -73,6 +74,7 @@ pub use websocket::{
 };
 
 // Re-export built-in providers
+pub use extension::{Extension, ExtensionFactory};
 pub use request::{Request, RequestFactory};
 
 // Re-export ModuleRef for dynamic DI resolution
