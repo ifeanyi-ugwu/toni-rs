@@ -68,7 +68,8 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
             ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self> + Send + 'a>>
         > {
             ::std::option::Option::Some(::std::boxed::Box::pin(async move {
-                let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                let __request_cache =
+                    ::toni::traits_helpers::RequestCache::adopt(request_parts);
                 #(#resolutions)*
                 Self::#method_name(#(#arg_names),*)
             }))

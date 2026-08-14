@@ -1584,7 +1584,8 @@ fn generate_dyn_factories(
                     return __fut.await;
                 }
                 let all_deps = self.all_deps.clone();
-                let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                let __request_cache =
+                    ::toni::traits_helpers::RequestCache::adopt(request_parts);
                 #(#field_resolutions)*
                 #struct_instantiation
             }

@@ -287,7 +287,8 @@ fn generate_bridges(
                 match <Self>::__toni_ctor_build(dependencies, request_parts) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
-                        let __request_cache = ::toni::traits_helpers::RequestCache::new();
+                        let __request_cache =
+                            ::toni::traits_helpers::RequestCache::adopt(request_parts);
                         #(#field_resolutions)*
                         #struct_literal
                     }
