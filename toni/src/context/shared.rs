@@ -21,11 +21,20 @@ pub(crate) struct SharedState {
 
 impl SharedState {
     pub(crate) fn new(route_metadata: Option<Arc<RouteMetadata>>) -> Self {
+        Self::with_extensions(route_metadata, Extensions::new())
+    }
+
+    /// Build around a bag that already exists — the HTTP path, where the bag is
+    /// created at the adapter seam and rides the request into the context.
+    pub(crate) fn with_extensions(
+        route_metadata: Option<Arc<RouteMetadata>>,
+        extensions: Extensions,
+    ) -> Self {
         Self {
             route_metadata,
             abort: false,
             dto: None,
-            extensions: Extensions::new(),
+            extensions,
             cancellation: CancellationToken::new(),
         }
     }

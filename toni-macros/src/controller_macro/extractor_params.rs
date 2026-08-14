@@ -48,6 +48,8 @@ pub enum ExtractorKind {
     HttpRequest,
     /// Request extractor — parts-only
     Request,
+    /// Extensions extractor (the per-message bag) — parts-only
+    Extensions,
     /// Option<T> wrapped extractor (optional extraction)
     Optional {
         /// The inner extractor kind
@@ -162,6 +164,7 @@ fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
                 "Multipart" => ExtractorKind::Body,
                 "HttpRequest" => ExtractorKind::HttpRequest,
                 "Request" => ExtractorKind::Request,
+                "Extensions" => ExtractorKind::Extensions,
                 _ => ExtractorKind::Unknown,
             };
         }
@@ -249,7 +252,10 @@ pub fn generate_extractor_extractions(
                 extractions.push(extraction);
             }
 
-            ExtractorKind::Path | ExtractorKind::Query | ExtractorKind::Request => {
+            ExtractorKind::Path
+            | ExtractorKind::Query
+            | ExtractorKind::Request
+            | ExtractorKind::Extensions => {
                 let extraction = quote! {
                     let #param_name = match <#param_type as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
                         Ok(value) => value,

@@ -21,9 +21,12 @@ pub struct HttpContext {
 
 impl HttpContext {
     pub fn new(req: HttpRequest, route_metadata: Arc<RouteMetadata>) -> Self {
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        // `ensure`, not `adopt`: the context and the request it hands the
+        // handler must address one bag even when nothing installed one upstream.
+        let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::new(Some(route_metadata)),
+            shared: SharedState::with_extensions(Some(route_metadata), extensions),
             parts,
             body: Some(body),
             response: None,
@@ -32,18 +35,20 @@ impl HttpContext {
 
     pub fn from_request(req: impl Into<HttpRequest>) -> Self {
         let req = req.into();
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+        let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::new(Some(Arc::new(RouteMetadata::new()))),
+            shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
             parts,
             body: Some(body),
             response: None,
         }
     }
 
-    pub fn from_parts(parts: RequestPart) -> Self {
+    pub fn from_parts(mut parts: RequestPart) -> Self {
+        let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::new(Some(Arc::new(RouteMetadata::new()))),
+            shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
             parts,
             body: Some(RequestBody::empty()),
             response: None,
@@ -102,10 +107,6 @@ impl HandlerContext for HttpContext {
         &self.shared.extensions
     }
 
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.shared.extensions
-    }
-
     fn cancellation(&self) -> &CancellationToken {
         &self.shared.cancellation
     }
@@ -116,5 +117,41 @@ impl HandlerContext for HttpContext {
 
     fn should_abort(&self) -> bool {
         self.shared.abort
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::HandlerContext;
+
+    #[derive(Clone, PartialEq, Debug)]
+    struct Principal(&'static str);
+
+    /// A context built without the adapter seam still puts the request and the
+    /// context on one bag, so an enhancer's write survives the handoff that
+    /// `take_request` performs on the way to the handler.
+    #[test]
+    fn a_write_on_the_context_is_visible_on_the_request_it_yields() {
+        let parts = http::Request::builder().body(()).unwrap().into_parts().0;
+        let mut ctx = HttpContext::from_parts(parts);
+
+        ctx.extensions().insert(Principal("alice"));
+
+        let req = ctx.take_request();
+        let seen = Extensions::adopt(req.extensions());
+        assert_eq!(seen.get::<Principal>(), Some(Principal("alice")));
+    }
+
+    /// A bag installed upstream is adopted rather than replaced.
+    #[test]
+    fn an_installed_bag_survives_context_construction() {
+        let mut parts = http::Request::builder().body(()).unwrap().into_parts().0;
+        let installed = Extensions::install(&mut parts.extensions);
+        installed.insert(Principal("bob"));
+
+        let ctx = HttpContext::from_parts(parts);
+
+        assert_eq!(ctx.extensions().get::<Principal>(), Some(Principal("bob")));
     }
 }

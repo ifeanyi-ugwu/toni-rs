@@ -88,10 +88,6 @@ impl HandlerContext for GrpcContext {
         &self.shared.extensions
     }
 
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.shared.extensions
-    }
-
     fn cancellation(&self) -> &CancellationToken {
         &self.shared.cancellation
     }
