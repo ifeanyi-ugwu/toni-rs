@@ -75,11 +75,16 @@ impl HttpContext {
         self.response.take()
     }
 
-    /// Reconstruct the full `HttpRequest` (parts + body) and consume the body.
-    /// Subsequent calls return an empty body.
-    pub fn take_request(&mut self) -> HttpRequest {
-        let body = self.body.take().unwrap_or_else(RequestBody::empty);
-        HttpRequest::from_parts(self.parts.clone(), body)
+    /// Reconstruct the full `HttpRequest` (parts + body), consuming the body.
+    ///
+    /// `None` once the body has been taken. A body is single-use — it may be a
+    /// stream — so an enhancer that reads it leaves nothing for the handler, and
+    /// the `Option` is what makes that visible at the second call site instead of
+    /// handing back a silently empty body.
+    pub fn take_request(&mut self) -> Option<HttpRequest> {
+        self.body
+            .take()
+            .map(|body| HttpRequest::from_parts(self.parts.clone(), body))
     }
 
     /// Consume the context and yield the response. Panics if the response
@@ -138,7 +143,7 @@ mod tests {
 
         ctx.extensions().insert(Principal("alice"));
 
-        let req = ctx.take_request();
+        let req = ctx.take_request().expect("body present on a fresh context");
         let seen = Extensions::adopt(req.extensions());
         assert_eq!(seen.get::<Principal>(), Some(Principal("alice")));
     }

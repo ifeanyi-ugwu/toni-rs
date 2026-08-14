@@ -560,7 +560,15 @@ impl InstanceWrapper {
         }
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
-        let req = context.take_request();
+        // An enhancer that read the body leaves none for the handler; it still
+        // gets the request, with nothing in it.
+        let req = match context.take_request() {
+            Some(req) => req,
+            None => crate::http_helpers::HttpRequest::from_parts(
+                context.request().clone(),
+                crate::http_helpers::RequestBody::empty(),
+            ),
+        };
         // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
         // and adding `RefUnwindSafe` bounds to user code would be punitive.
         // We trust the application to set its own state to a sane shape after

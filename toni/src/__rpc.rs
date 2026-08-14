@@ -25,7 +25,7 @@ pub trait RpcHandlersBridge {
 
     async fn __toni_rpc_handle_message(
         &self,
-        ctx: &RpcContext,
+        ctx: &mut RpcContext,
     ) -> ExecutionResult<Option<RpcData>, RpcError> {
         ExecutionResult::Err(RpcError::PatternNotFound(format!(
             "Unknown pattern: {}",

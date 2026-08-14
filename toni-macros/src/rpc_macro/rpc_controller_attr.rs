@@ -74,7 +74,7 @@ fn generate_rpc_trait_impl(struct_name: &Ident) -> TokenStream {
 
             async fn handle_message(
                 &self,
-                ctx: &::toni::context::RpcContext,
+                ctx: &mut ::toni::context::RpcContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::std::option::Option<::toni::rpc::RpcData>,
                 ::toni::rpc::RpcError,

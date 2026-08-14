@@ -132,7 +132,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             #[allow(non_snake_case, clippy::all)]
             async fn __toni_rpc_handle_message(
                 &self,
-                ctx: &::toni::context::RpcContext,
+                ctx: &mut ::toni::context::RpcContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::std::option::Option<::toni::rpc::RpcData>,
                 ::toni::rpc::RpcError,
