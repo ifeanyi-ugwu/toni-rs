@@ -66,6 +66,7 @@ mod tower_compat;
 mod trailing_slash_conformance;
 mod websocket_broadcast;
 mod websocket_e2e;
+mod ws_extractors;
 mod ws_handler_stream;
 mod ws_listener_adoption;
 mod ws_panic_recovery;
