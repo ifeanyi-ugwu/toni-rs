@@ -61,11 +61,7 @@ pub trait Route: Send + Sync {
     /// response onto the context afterwards, so a response a handler sets here
     /// is overwritten. Short-circuiting through the context belongs to the
     /// enhancers, which run before the response exists.
-    async fn execute(
-        &self,
-        req: HttpRequest,
-        ctx: &mut HttpContext,
-    ) -> ExecutionResult<HttpResponse, HttpError>;
+    async fn execute(&self, ctx: &mut HttpContext) -> ExecutionResult<HttpResponse, HttpError>;
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
 

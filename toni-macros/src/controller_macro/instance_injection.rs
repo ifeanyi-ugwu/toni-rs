@@ -559,13 +559,15 @@ fn generate_singleton_controller_wrapper(
         impl ::toni::traits_helpers::Route for #controller_name {
             async fn execute(
                 &self,
-                __req: ::toni::http_helpers::HttpRequest,
                 __ctx: &mut ::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,
             > {
-                let (_req_parts, _req_body) = __req.0.into_parts();
+                // Cloned, not borrowed: building a request-scoped dependency holds
+                // the parts across an await, and the extractions below need the
+                // context back exclusively.
+                let _req_parts = __ctx.request().clone();
 
                 #(#marker_params_extraction)*
 
@@ -640,13 +642,15 @@ fn generate_request_controller_wrapper(
         impl ::toni::traits_helpers::Route for #controller_name {
             async fn execute(
                 &self,
-                __req: ::toni::http_helpers::HttpRequest,
                 __ctx: &mut ::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,
             > {
-                let (_req_parts, _req_body) = __req.0.into_parts();
+                // Cloned, not borrowed: building a request-scoped dependency holds
+                // the parts across an await, and the extractions below need the
+                // context back exclusively.
+                let _req_parts = __ctx.request().clone();
 
                 // Build the instance before the extractors run: building only borrows `_req_parts`
                 // (for resolving a request-scoped dependency), while a body extractor may move it.

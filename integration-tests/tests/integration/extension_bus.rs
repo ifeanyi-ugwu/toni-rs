@@ -292,10 +292,17 @@ pub struct BodyController {}
 #[routes]
 #[use_guards(BodyReadingGuard)]
 impl BodyController {
-    #[post("/probe")]
-    fn probe(&self, ext: Extensions, body: ToniBytes) -> ToniBody {
+    /// Reads no body itself, so it runs and can report what the guard saw.
+    #[post("/seen")]
+    fn seen(&self, ext: Extensions) -> ToniBody {
         let seen = ext.get::<BodySeen>().expect("guard runs first");
-        ToniBody::text(format!("{}/{}/{}", seen.first, seen.second, body.0.len()))
+        ToniBody::text(format!("{}/{}", seen.first, seen.second))
+    }
+
+    /// Wants the body the guard already took.
+    #[post("/wants-body")]
+    fn wants_body(&self, body: ToniBytes) -> ToniBody {
+        ToniBody::text(format!("{}", body.0.len()))
     }
 }
 
@@ -303,12 +310,12 @@ impl BodyController {
 impl BodyModule {}
 
 #[tokio_localset_test::localset_test]
-async fn a_body_consumed_by_an_enhancer_is_gone_for_the_handler() {
+async fn an_enhancer_reads_the_body_once_and_sees_it_gone() {
     let server = TestServer::start(BodyModule).await;
 
     let body = server
         .client()
-        .post(server.url("/body/probe"))
+        .post(server.url("/body/seen"))
         .body("payload")
         .send()
         .await
@@ -317,9 +324,27 @@ async fn a_body_consumed_by_an_enhancer_is_gone_for_the_handler() {
         .await
         .unwrap();
 
-    // The guard got it, a second take reported nothing, and the handler's body
-    // extractor is left empty rather than silently receiving the bytes twice.
-    assert_eq!(body, "true/false/0");
+    assert_eq!(body, "true/false");
+}
+
+#[tokio_localset_test::localset_test]
+async fn a_handler_whose_body_was_taken_is_told_which_extractor_lost() {
+    let server = TestServer::start(BodyModule).await;
+
+    let resp = server
+        .client()
+        .post(server.url("/body/wants-body"))
+        .body("payload")
+        .send()
+        .await
+        .unwrap();
+
+    // Not an empty body handed over in silence — the extractor that came up
+    // short is named.
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("Bytes"), "{text}");
+    assert!(text.contains("already read"), "{text}");
 }
 
 // ===== a handler answers by returning =====

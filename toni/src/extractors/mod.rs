@@ -1,19 +1,28 @@
 //! Extractors for request data
 //!
-//! Two extraction traits cover the two cases:
+//! A handler parameter is anything implementing [`FromContext`] for that
+//! handler's context, which is what makes an HTTP extractor a compile error in a
+//! WebSocket handler rather than something a macro has to catch by name.
+//!
+//! Two shorthands cover almost everything, and both produce a `FromContext` impl:
 //!
 //! - [`FromRequestParts`] — sync, metadata only (headers, path params, query
-//!   params). Implemented by `Path`, `Query`, and any extractor that doesn't
-//!   touch the body.
+//!   params). Implemented by `Path` and `Query`. Gets `FromContext<HttpContext>`
+//!   through a blanket impl, so writing one of these needs nothing else.
 //!
-//! - [`FromRequest`] — async, consumes the request. Implemented by `Json`,
-//!   `Bytes`, `Body`, and `BodyStream`. Only one `FromRequest` extractor that
-//!   actually reads the body can appear per handler because the body is
-//!   single-use.
+//! - [`FromRequest`] — async, takes the whole request. Implemented by `Json`,
+//!   `Bytes`, `Body`, `BodyStream`, `Validated` and `Multipart`, each paired with
+//!   a small `FromContext` impl that calls [`extract_body`].
+//!
+//! Only one extractor per handler can read the body, which is single-use because
+//! it may be a stream. The handler macro rejects a second one it recognises at
+//! compile time; one it doesn't recognise fails at extraction with
+//! [`BodyExtractionError::AlreadyRead`], naming itself.
 
 mod body;
 mod body_stream;
 mod bytes;
+mod from_context;
 mod json;
 pub mod multipart;
 mod path;
@@ -23,6 +32,7 @@ mod validated;
 pub use body::Body;
 pub use body_stream::BodyStream;
 pub use bytes::Bytes;
+pub use from_context::{BodyExtractionError, FromContext, extract_body};
 pub use json::Json;
 pub use multipart::{Multipart, MultipartError};
 pub use path::Path;
