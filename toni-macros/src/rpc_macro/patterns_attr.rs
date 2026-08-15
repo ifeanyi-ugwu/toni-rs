@@ -47,12 +47,12 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(|(pattern, method)| {
             let method_name = &method.sig.ident;
-            let (payload_extract, payload_expr) = typed_payload_expr(method);
+            let (extractions, call_args) = handler_params(method);
             if returns_rpc_data(method) {
                 quote! {
                     #pattern => {
-                        #payload_extract
-                        match self.#method_name(#payload_expr, ctx).await {
+                        #(#extractions)*
+                        match self.#method_name(#(#call_args),*).await {
                             Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
                             Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
                                 ::std::convert::Into::<::toni::rpc::RpcError>::into(__err),
@@ -63,8 +63,8 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             } else {
                 quote! {
                     #pattern => {
-                        #payload_extract
-                        match self.#method_name(#payload_expr, ctx).await {
+                        #(#extractions)*
+                        match self.#method_name(#(#call_args),*).await {
                             Ok(__result) => match ::toni::rpc::RpcData::from_serialize(&__result) {
                                 Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
                                 Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
@@ -85,11 +85,11 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(|(pattern, method)| {
             let method_name = &method.sig.ident;
-            let (payload_extract, payload_expr) = typed_payload_expr(method);
+            let (extractions, call_args) = handler_params(method);
             quote! {
                 #pattern => {
-                    #payload_extract
-                    match self.#method_name(#payload_expr, ctx).await {
+                    #(#extractions)*
+                    match self.#method_name(#(#call_args),*).await {
                         Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
                         Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
                             ::std::convert::Into::<::toni::rpc::RpcError>::into(__err),
@@ -279,35 +279,92 @@ fn is_rpc_data(ty: &syn::Type) -> bool {
     false
 }
 
-/// The per-arm payload extraction: `(extract_stmt, payload_expr)`. For a typed parameter, emits a
-/// `let __payload = …` that early-returns `ExecutionResult::Err` on a parse failure (so the `?`
-/// operator, which doesn't work against `ExecutionResult`, is avoided); for an `RpcData` parameter the
-/// raw `data` is forwarded.
-fn typed_payload_expr(method: &syn::ImplItemFn) -> (TokenStream, TokenStream) {
-    let payload_ty = method.sig.inputs.iter().find_map(|arg| {
-        if let syn::FnArg::Typed(pt) = arg {
-            Some(pt.ty.as_ref())
-        } else {
-            None
-        }
-    });
+/// Extraction for a handler's parameters, in signature order.
+///
+/// Anything the framework knows — `RpcData`, `Extensions`, `Payload<T>` — is a
+/// `FromContext<RpcContext>`. A parameter of any other type is the call's
+/// payload, deserialised into it: the convention RPC handlers have always used,
+/// now one case among several rather than the only shape a handler can take.
+///
+/// `&RpcContext` and `&mut RpcContext` pass through, reborrowed at the call so
+/// they hold no borrow across the extractions before them.
+fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStream>) {
+    let mut extractions = Vec::new();
+    let mut call_args = Vec::new();
 
-    match payload_ty {
-        Some(ty) if !is_rpc_data(ty) => {
-            let extract = quote! {
-                let __payload = match data.parse::<#ty>() {
-                    Ok(__p) => __p,
-                    Err(__e) => {
+    for input in method.sig.inputs.iter() {
+        let syn::FnArg::Typed(pat_type) = input else {
+            continue;
+        };
+        // The binding takes the whole extracted value — a pattern like
+        // `Payload(order)` destructures it in the user's own signature.
+        let Some(name) =
+            crate::controller_macro::extractor_params::extract_param_name(&pat_type.pat)
+        else {
+            continue;
+        };
+        let ty = &*pat_type.ty;
+
+        if is_rpc_context_ref(ty) {
+            call_args.push(quote! { &mut *ctx });
+            continue;
+        }
+
+        let extraction = if is_known_extractor(ty) {
+            quote! {
+                let #name = match <#ty as ::toni::extractors::FromContext<
+                    ::toni::context::RpcContext,
+                >>::extract(ctx).await {
+                    ::std::result::Result::Ok(__value) => __value,
+                    ::std::result::Result::Err(__e) => {
                         return ::toni::http_helpers::ExecutionResult::Err(
                             ::toni::rpc::RpcError::Internal(__e.to_string()),
                         );
                     }
                 };
-            };
-            (extract, quote! { __payload })
-        }
-        _ => (TokenStream::new(), quote! { data }),
+            }
+        } else {
+            // The bare-payload convention: deserialise the call's data into it.
+            quote! {
+                let #name = match ctx.data().parse::<#ty>() {
+                    ::std::result::Result::Ok(__value) => __value,
+                    ::std::result::Result::Err(__e) => {
+                        return ::toni::http_helpers::ExecutionResult::Err(
+                            ::toni::rpc::RpcError::Internal(__e.to_string()),
+                        );
+                    }
+                };
+            }
+        };
+        extractions.push(extraction);
+        call_args.push(quote! { #name });
     }
+
+    (extractions, call_args)
+}
+
+/// `&RpcContext` / `&mut RpcContext` — the context itself, not something
+/// extracted from it.
+fn is_rpc_context_ref(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(type_ref) = ty else {
+        return false;
+    };
+    matches!(&*type_ref.elem, syn::Type::Path(p)
+        if p.path.segments.last().is_some_and(|s| s.ident == "RpcContext"))
+}
+
+/// Types with a `FromContext<RpcContext>` impl in the framework. Everything else
+/// is the payload.
+fn is_known_extractor(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    type_path.path.segments.last().is_some_and(|s| {
+        matches!(
+            s.ident.to_string().as_str(),
+            "RpcData" | "Extensions" | "Payload"
+        )
+    })
 }
 
 /// True when a `#[message_pattern]` handler's `Ok` arm is `RpcData` (forwarded as-is); any other `T`

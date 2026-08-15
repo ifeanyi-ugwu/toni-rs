@@ -19,7 +19,7 @@ use std::fmt;
 use serde::de::DeserializeOwned;
 
 use crate::context::{Extensions, HandlerContext, WsContext};
-use crate::extractors::FromContext;
+use crate::extractors::{FromContext, Payload};
 use crate::websocket::{WsClient, WsMessage};
 
 /// The client that sent the message.
@@ -53,15 +53,10 @@ impl FromContext<WsContext> for Extensions {
     }
 }
 
-/// The message body, deserialised.
+/// Why a frame could not become the [`Payload`] a handler asked for.
 ///
-/// Text frames are parsed as JSON; binary frames are parsed as JSON over their
-/// bytes. A frame that carries no payload — ping, pong, close — has nothing to
-/// deserialise and fails.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Payload<T>(pub T);
-
-/// Why a frame could not become the payload a handler asked for.
+/// Text frames are parsed as JSON, binary frames as JSON over their bytes, and a
+/// frame carrying no payload at all — ping, pong, close — has nothing to parse.
 #[derive(Debug)]
 pub enum PayloadError {
     /// The frame carries no payload to parse.

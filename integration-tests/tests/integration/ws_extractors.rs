@@ -9,8 +9,9 @@ use serde::Deserialize;
 use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
 use toni::context::{Extensions, HandlerContext, WsContext};
+use toni::extractors::Payload;
 use toni::traits_helpers::Guard;
-use toni::websocket::{Payload, WsClient, WsHandlerResult, WsMessage};
+use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
     injectable, module, new, subscribe_message, subscriptions, use_guards, websocket_gateway,
 };

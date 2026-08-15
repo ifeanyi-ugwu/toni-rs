@@ -26,6 +26,7 @@ mod from_context;
 mod json;
 pub mod multipart;
 mod path;
+mod payload;
 mod query;
 mod validated;
 
@@ -36,6 +37,7 @@ pub use from_context::{BodyExtractionError, FromContext, extract_body};
 pub use json::Json;
 pub use multipart::{Multipart, MultipartError};
 pub use path::Path;
+pub use payload::Payload;
 pub use query::Query;
 pub use validated::{ValidatableExtractor, Validated, ValidationError};
 
