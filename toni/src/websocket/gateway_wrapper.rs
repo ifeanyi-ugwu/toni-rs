@@ -587,9 +587,7 @@ impl GatewayWrapper {
             }
         }
 
-        let client = context.client().clone();
-        let message = context.message().clone();
-        let result = AssertUnwindSafe(gateway.handle_event(client, message, event))
+        let result = AssertUnwindSafe(gateway.handle_event(&mut *context))
             .catch_unwind()
             .await;
         match result {
@@ -695,9 +693,7 @@ mod tests {
 
             async fn handle_event(
                 &self,
-                _client: WsClient,
-                _message: WsMessage,
-                _event: &str,
+                _ctx: &mut WsContext,
             ) -> ExecutionResult<WsHandlerOutput, WsError> {
                 ExecutionResult::Ok(WsHandlerOutput::Empty)
             }

@@ -195,12 +195,10 @@ fn generate_gateway_trait_impl(
 
             async fn handle_event(
                 &self,
-                client: ::toni::WsClient,
-                message: ::toni::WsMessage,
-                event: &str,
+                __ctx: &mut ::toni::context::WsContext,
             ) -> ::toni::http_helpers::ExecutionResult<::toni::WsHandlerOutput, ::toni::WsError> {
                 use ::toni::__ws::WsHandlersBridge as _;
-                <Self>::__toni_ws_handle_event(self, client, message, event).await
+                <Self>::__toni_ws_handle_event(self, __ctx).await
             }
 
             fn enhancers(&self) -> ::toni::GatewayEnhancers {

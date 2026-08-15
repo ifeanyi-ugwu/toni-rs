@@ -36,11 +36,12 @@ pub trait WsHandlersBridge {
 
     async fn __toni_ws_handle_event(
         &self,
-        _client: WsClient,
-        _message: WsMessage,
-        event: &str,
+        ctx: &mut WsContext,
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
-        ExecutionResult::Err(WsError::EventNotFound(format!("Unknown event: {}", event)))
+        ExecutionResult::Err(WsError::EventNotFound(format!(
+            "Unknown event: {}",
+            ctx.event()
+        )))
     }
 
     fn __toni_ws_enhancers(&self) -> GatewayEnhancers {
