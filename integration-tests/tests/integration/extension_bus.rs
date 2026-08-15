@@ -3,19 +3,19 @@
 //! Both halves of the HTTP path are covered — a middleware writing before
 //! routing, and a guard writing after it — plus the WebSocket path, where the
 //! handler receives a `WsClient` rather than the context. `rpc_tcp.rs` covers
-//! the RPC path, whose handler takes `&RpcContext` directly.
+//! the RPC path, whose handler holds the context already.
 //!
 //! `guard_mut_context.rs` covers the enhancer-to-enhancer half.
 
 use toni::async_trait;
 use toni::context::{Extensions, HandlerContext, HttpContext, WsContext};
-use toni::extractors::Path;
+use toni::extractors::{Bytes as ToniBytes, Path};
 use toni::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::Guard;
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
-    controller, get, injectable, module, new, routes, set_metadata, subscribe_message,
-    subscriptions, toni_factory::ToniFactory, use_guards, websocket_gateway, Body as ToniBody,
+    controller, get, injectable, module, new, post, routes, set_metadata, subscriptions,
+    toni_factory::ToniFactory, websocket_gateway, Body as ToniBody,
 };
 
 use crate::common::TestServer;
@@ -259,4 +259,65 @@ async fn the_context_coexists_with_extractors() {
         .unwrap();
 
     assert_eq!(body, "7/dana");
+}
+
+// ===== the request body is single-use, and says so =====
+
+/// Reads the raw body to check a signature — the reason `take_request` is public
+/// on the context in the first place.
+#[injectable]
+pub struct BodyReadingGuard {}
+
+#[async_trait]
+impl Guard<HttpContext> for BodyReadingGuard {
+    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+        let first = ctx.take_request().is_some();
+        // Gone on the second look, and the type says so rather than handing
+        // back an empty body.
+        let second = ctx.take_request().is_some();
+        ctx.extensions().insert(BodySeen { first, second });
+        true
+    }
+}
+
+#[derive(Clone)]
+pub struct BodySeen {
+    first: bool,
+    second: bool,
+}
+
+#[controller("/body")]
+pub struct BodyController {}
+
+#[routes]
+#[use_guards(BodyReadingGuard)]
+impl BodyController {
+    #[post("/probe")]
+    fn probe(&self, ext: Extensions, body: ToniBytes) -> ToniBody {
+        let seen = ext.get::<BodySeen>().expect("guard runs first");
+        ToniBody::text(format!("{}/{}/{}", seen.first, seen.second, body.0.len()))
+    }
+}
+
+#[module(controllers: [BodyController], providers: [BodyReadingGuard])]
+impl BodyModule {}
+
+#[tokio_localset_test::localset_test]
+async fn a_body_consumed_by_an_enhancer_is_gone_for_the_handler() {
+    let server = TestServer::start(BodyModule).await;
+
+    let body = server
+        .client()
+        .post(server.url("/body/probe"))
+        .body("payload")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    // The guard got it, a second take reported nothing, and the handler's body
+    // extractor is left empty rather than silently receiving the bytes twice.
+    assert_eq!(body, "true/false/0");
 }

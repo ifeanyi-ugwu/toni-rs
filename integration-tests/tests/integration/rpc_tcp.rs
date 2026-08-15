@@ -949,7 +949,10 @@ impl RpcBusController {
 
     #[message_pattern("rpc.bus")]
     #[use_guards(RpcAuthGuard)]
-    async fn bus(&self, _d: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> {
+    /// Takes the context exclusively — the form every transport's handler uses.
+    /// The `&RpcContext` handlers elsewhere in this file still compile, since
+    /// `&mut` coerces at the call site.
+    async fn bus(&self, _d: RpcData, ctx: &mut RpcContext) -> Result<RpcData, RpcError> {
         let who = ctx
             .extensions()
             .get::<RpcPrincipal>()

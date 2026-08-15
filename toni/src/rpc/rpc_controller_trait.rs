@@ -49,7 +49,7 @@ pub trait RpcControllerTrait: Send + Sync {
     /// `RpcError::to_data`.
     async fn handle_message(
         &self,
-        ctx: &RpcContext,
+        ctx: &mut RpcContext,
     ) -> ExecutionResult<Option<RpcData>, super::RpcError>;
 
     fn get_route_metadata(&self) -> Arc<RouteMetadata> {
