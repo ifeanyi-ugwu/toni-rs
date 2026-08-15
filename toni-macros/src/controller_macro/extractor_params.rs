@@ -88,7 +88,10 @@ impl ExtractorKind {
 
 /// Recursively extract parameter name from potentially nested patterns
 /// Handles: `dto`, `Json(dto)`, `Validated(Json(dto))`, etc.
-fn extract_param_name(pat: &syn::Pat) -> Option<Ident> {
+///
+/// The generated code binds this name to the *whole* extracted value; the
+/// destructuring happens in the user's own signature.
+pub(crate) fn extract_param_name(pat: &syn::Pat) -> Option<Ident> {
     match pat {
         syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
         syn::Pat::TupleStruct(tuple_struct) => {

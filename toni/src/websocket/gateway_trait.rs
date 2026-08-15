@@ -86,12 +86,7 @@ pub trait GatewayTrait: Send + Sync {
     /// `Err` carries the user's typed error so the dispatcher can fan
     /// observers + run the chain on it before falling back to
     /// `WsError::to_message`.
-    async fn handle_event(
-        &self,
-        client: WsClient,
-        message: WsMessage,
-        event: &str,
-    ) -> ExecutionResult<WsHandlerOutput, WsError>;
+    async fn handle_event(&self, ctx: &mut WsContext) -> ExecutionResult<WsHandlerOutput, WsError>;
 
     /// Get route metadata (permissions, rate limits, etc.)
     fn get_route_metadata(&self) -> Arc<RouteMetadata> {

@@ -6,6 +6,7 @@
 mod broadcast;
 mod broadcast_module;
 mod broadcast_provider;
+mod extractors;
 mod gateway_trait;
 mod gateway_wrapper;
 pub mod helpers;
@@ -20,6 +21,7 @@ pub use broadcast::{
     WsSink,
 };
 pub use broadcast_module::BroadcastModule;
+pub use extractors::{Payload, PayloadError};
 pub use gateway_trait::{GatewayEnhancers, GatewayHandlerEnhancers, GatewayTrait};
 pub use gateway_wrapper::GatewayWrapper;
 pub use ws_client::{WsClient, WsHandshake};

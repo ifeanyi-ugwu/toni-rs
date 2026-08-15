@@ -37,9 +37,11 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
         .iter()
         .map(|(event, method)| {
             let method_name = &method.sig.ident;
+            let (extractions, call_args) = handler_params(method);
             quote! {
                 #event => {
-                    match self.#method_name(client, message).await {
+                    #(#extractions)*
+                    match self.#method_name(#(#call_args),*).await {
                         Ok(__output) => ::toni::http_helpers::ExecutionResult::Ok(__output),
                         Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
                             ::std::convert::Into::<::toni::WsError>::into(__err),
@@ -75,14 +77,13 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
             #[allow(non_snake_case, clippy::all)]
             async fn __toni_ws_handle_event(
                 &self,
-                client: ::toni::WsClient,
-                message: ::toni::WsMessage,
-                event: &str,
+                __ctx: &mut ::toni::context::WsContext,
             ) -> ::toni::http_helpers::ExecutionResult<::toni::WsHandlerOutput, ::toni::WsError> {
-                match event {
+                let __event = ::std::string::String::from(__ctx.event());
+                match __event.as_str() {
                     #(#match_arms)*
                     _ => ::toni::http_helpers::ExecutionResult::Err(
-                        ::toni::WsError::EventNotFound(format!("Unknown event: {}", event)),
+                        ::toni::WsError::EventNotFound(format!("Unknown event: {}", __event)),
                     ),
                 }
             }
@@ -90,6 +91,62 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
             #enhancers_impl
         }
     })
+}
+
+/// Extraction for a handler's parameters, in signature order.
+///
+/// Every parameter is a `FromContext<WsContext>`, so a handler takes what it
+/// needs and nothing more — the fixed `(WsClient, WsMessage)` pair is now just
+/// the most common choice rather than the only one. `&mut WsContext` is passed
+/// straight through, reborrowed at the call so it holds no borrow across the
+/// extractions before it.
+fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStream>) {
+    let mut extractions = Vec::new();
+    let mut call_args = Vec::new();
+
+    for input in method.sig.inputs.iter() {
+        let syn::FnArg::Typed(pat_type) = input else {
+            continue;
+        };
+        // The binding takes the whole extracted value — a pattern like
+        // `Payload(order)` destructures it in the user's own signature.
+        let Some(name) =
+            crate::controller_macro::extractor_params::extract_param_name(&pat_type.pat)
+        else {
+            continue;
+        };
+        let ty = &*pat_type.ty;
+
+        if is_ws_context_ref(ty) {
+            call_args.push(quote! { &mut *__ctx });
+            continue;
+        }
+
+        extractions.push(quote! {
+            let #name = match <#ty as ::toni::extractors::FromContext<
+                ::toni::context::WsContext,
+            >>::extract(__ctx).await {
+                ::std::result::Result::Ok(__value) => __value,
+                ::std::result::Result::Err(__e) => {
+                    return ::toni::http_helpers::ExecutionResult::Err(
+                        ::toni::WsError::Internal(__e.to_string()),
+                    );
+                }
+            };
+        });
+        call_args.push(quote! { #name });
+    }
+
+    (extractions, call_args)
+}
+
+/// `&mut WsContext` — the context itself, not something extracted from it.
+fn is_ws_context_ref(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(type_ref) = ty else {
+        return false;
+    };
+    matches!(&*type_ref.elem, syn::Type::Path(p)
+        if p.path.segments.last().is_some_and(|s| s.ident == "WsContext"))
 }
 
 /// Collect gateway-level and per-handler enhancer tokens into the `__toni_ws_enhancers` inherent fn,

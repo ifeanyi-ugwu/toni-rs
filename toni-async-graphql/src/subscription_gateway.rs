@@ -142,11 +142,14 @@ where
 
     async fn handle_event(
         &self,
-        client: WsClient,
-        message: WsMessage,
-        event: &str,
+        ctx: &mut toni::context::WsContext,
     ) -> toni::http_helpers::ExecutionResult<WsHandlerOutput, toni::WsError> {
-        self.handle_event_inner(client, message, event).await.into()
+        let client = ctx.client().clone();
+        let message = ctx.message().clone();
+        let event = ctx.event().to_string();
+        self.handle_event_inner(client, message, &event)
+            .await
+            .into()
     }
 
     async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
