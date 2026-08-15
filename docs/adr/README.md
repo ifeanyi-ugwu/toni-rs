@@ -30,3 +30,4 @@ the history is part of the value.
 - [0012 — `{param}` is the canonical route parameter syntax; `:param` is a compile error](0012-canonical-param-syntax.md)
 - [0013 — Where to listen is a value: `BindTarget` carries an address or an existing listener](0013-bind-target-listener-adoption.md)
 - [0014 — A separate-port WebSocket listener is keyed by the port the gateway declares](0014-ws-listener-keyed-by-declared-port.md)
+- [0015 — Handler parameters are extracted from the handler's context](0015-handler-parameters-are-from-context.md)
