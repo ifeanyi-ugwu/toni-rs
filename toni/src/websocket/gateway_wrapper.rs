@@ -383,7 +383,6 @@ impl GatewayWrapper {
             Self::execute_handler_with_error_handling(
                 context,
                 gateway,
-                event,
                 pipes,
                 error_handlers,
                 observers,
@@ -448,13 +447,12 @@ impl GatewayWrapper {
     async fn execute_handler_with_error_handling(
         context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
     ) {
-        let result = Self::execute_handler(context, gateway, event, pipes).await;
+        let result = Self::execute_handler(context, gateway, pipes).await;
 
         match result {
             ExecutionResult::Ok(WsHandlerOutput::Stream(stream)) => {
@@ -568,7 +566,6 @@ impl GatewayWrapper {
     async fn execute_handler(
         context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        event: &str,
         pipes: &[Arc<dyn Pipe<WsContext>>],
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
         for pipe in pipes {
