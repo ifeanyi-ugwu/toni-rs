@@ -1,3 +1,4 @@
+mod extractors;
 mod rpc_call_info;
 mod rpc_client;
 mod rpc_client_error;
@@ -6,6 +7,7 @@ mod rpc_controller_wrapper;
 mod rpc_data;
 mod rpc_error;
 
+pub use extractors::PayloadError;
 pub use rpc_call_info::RpcCallInfo;
 pub use rpc_client::{RpcClient, RpcRequest};
 pub use rpc_client_error::RpcClientError;
