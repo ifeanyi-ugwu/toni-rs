@@ -78,6 +78,26 @@ impl ExtractorKind {
                 | ExtractorKind::Unknown
         )
     }
+
+    /// Whether this extractor is a *named* body consumer — the ones that
+    /// actually receive the request body.
+    ///
+    /// `Unknown` is excluded even though it is generated on the body-consuming
+    /// path: several `Unknown` parameters are legal, because each is handed an
+    /// empty body so custom parts-only extractors can coexist. Only one of
+    /// these can be served.
+    fn takes_the_body(&self) -> bool {
+        match self {
+            ExtractorKind::Json
+            | ExtractorKind::Body
+            | ExtractorKind::Bytes
+            | ExtractorKind::BodyStream
+            | ExtractorKind::Validated
+            | ExtractorKind::HttpRequest => true,
+            ExtractorKind::Optional { inner_kind, .. } => inner_kind.takes_the_body(),
+            _ => false,
+        }
+    }
 }
 
 /// Recursively extract parameter name from potentially nested patterns
@@ -132,7 +152,34 @@ pub fn get_extractor_params(method: &ImplItemFn) -> Result<Vec<ExtractorParam>> 
         }
     }
 
+    reject_second_body_extractor(&params)?;
+
     Ok(params)
+}
+
+/// A request body is read once — it may be a stream, so there is nothing to
+/// hand a second reader.
+///
+/// The generated code moves the body into the first consumer, so a second one
+/// is already rejected, but as a use-of-moved-value pointing at `#[routes]` and
+/// suggesting `ref #[routes]`. Naming the two parameters is the difference
+/// between a diagnosis and a puzzle.
+fn reject_second_body_extractor(params: &[ExtractorParam]) -> Result<()> {
+    let mut consumers = params.iter().filter(|p| p.kind.takes_the_body());
+
+    let (Some(first), Some(second)) = (consumers.next(), consumers.next()) else {
+        return Ok(());
+    };
+
+    Err(syn::Error::new_spanned(
+        &second.param_type,
+        format!(
+            "`{}` and `{}` both read the request body, and it can only be read once.\n\
+             Take the body with one of them and derive the rest from it, or take \
+             `HttpRequest` and read it yourself.",
+            first.param_name, second.param_name,
+        ),
+    ))
 }
 
 /// Detect what kind of extractor a type is
@@ -429,4 +476,69 @@ pub fn generate_extractor_static_method_call(
     } else {
         call
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn handler(sig: syn::ImplItemFn) -> Result<Vec<ExtractorParam>> {
+        get_extractor_params(&sig)
+    }
+
+    #[test]
+    fn one_body_extractor_beside_parts_extractors_is_fine() {
+        let ok = handler(parse_quote! {
+            fn h(&self, Path(id): Path<u32>, q: Query<Filter>, dto: Json<Dto>) {}
+        });
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn two_body_extractors_are_rejected_by_name() {
+        let msg = match handler(parse_quote! {
+            fn h(&self, dto: Json<Dto>, raw: Bytes) {}
+        }) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a body cannot be read twice"),
+        };
+        assert!(msg.contains("dto"), "names the first reader: {msg}");
+        assert!(msg.contains("raw"), "names the second reader: {msg}");
+    }
+
+    /// `Option<Json<T>>` still reads the body, so it counts.
+    #[test]
+    fn an_optional_body_extractor_still_counts() {
+        assert!(
+            handler(parse_quote! {
+                fn h(&self, dto: Option<Json<Dto>>, raw: Bytes) {}
+            })
+            .is_err()
+        );
+    }
+
+    /// `HttpRequest` hands over the whole request, body included.
+    #[test]
+    fn the_raw_request_counts_as_a_reader() {
+        assert!(
+            handler(parse_quote! {
+                fn h(&self, req: HttpRequest, raw: Bytes) {}
+            })
+            .is_err()
+        );
+    }
+
+    /// Unrecognised types are generated on the body path but handed an empty
+    /// body, so several of them coexist — that is how custom parts-only
+    /// extractors work.
+    #[test]
+    fn several_custom_extractors_coexist() {
+        assert!(
+            handler(parse_quote! {
+                fn h(&self, a: MyHeader, b: MyOtherHeader) {}
+            })
+            .is_ok()
+        );
+    }
 }
