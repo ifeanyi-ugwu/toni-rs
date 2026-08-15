@@ -233,9 +233,17 @@ where
 {
     async fn execute(
         &self,
-        req: HttpRequest,
-        _ctx: &mut toni::context::HttpContext,
+        ctx: &mut toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
+        let Some(req) = ctx.take_request() else {
+            return toni::http_helpers::ExecutionResult::Ok(HttpResponse {
+                status: 400,
+                headers: vec![],
+                body: Some(Body::json(serde_json::json!({
+                    "errors": [{"message": "request body was already read"}]
+                }))),
+            });
+        };
         self.execute_inner(req).await.into()
     }
 
@@ -352,7 +360,6 @@ struct GraphQLPlaygroundController {
 impl Route for GraphQLPlaygroundController {
     async fn execute(
         &self,
-        _req: HttpRequest,
         _ctx: &mut toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         HttpResponse {

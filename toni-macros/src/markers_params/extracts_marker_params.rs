@@ -14,11 +14,12 @@ pub fn extract_body_from_param(marker_param: &MarkerParam) -> Result<TokenStream
     let param_name = &marker_param.param_name;
     let param_type = &marker_param.param_type;
 
-    // Generate: Body<T> extractor call
+    // Generate: Body<T> extractor call, reading the body off the context like any
+    // other body extractor — and reporting the same way when it has already gone.
     let extract_token_stream = quote! {
-        let #param_name = match <::toni::extractors::Body<#param_type> as ::toni::FromRequest>::from_request(
-            ::toni::http_helpers::HttpRequest::from_parts(_req_parts, _req_body)
-        ).await {
+        let #param_name = match <::toni::extractors::Body<#param_type>
+            as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await
+        {
             Ok(::toni::extractors::Body(value)) => value,
             Err(e) => {
                 let error_body = ::toni::serde_json::json!({

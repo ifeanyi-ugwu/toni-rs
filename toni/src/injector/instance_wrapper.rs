@@ -560,15 +560,6 @@ impl InstanceWrapper {
         }
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
-        // An enhancer that read the body leaves none for the handler; it still
-        // gets the request, with nothing in it.
-        let req = match context.take_request() {
-            Some(req) => req,
-            None => crate::http_helpers::HttpRequest::from_parts(
-                context.request().clone(),
-                crate::http_helpers::RequestBody::empty(),
-            ),
-        };
         // An enhancer may already have set one; only a response that appears
         // across the handler call is the handler's doing.
         let response_before_handler = context.response().is_some();
@@ -577,7 +568,7 @@ impl InstanceWrapper {
         // We trust the application to set its own state to a sane shape after
         // a panic — this layer only ensures the panic doesn't escape the
         // dispatcher.
-        let exec_result = AssertUnwindSafe(instance.execute(req, &mut *context))
+        let exec_result = AssertUnwindSafe(instance.execute(&mut *context))
             .catch_unwind()
             .await;
         // A handler answers by returning, and what it returns is written over
