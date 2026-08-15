@@ -569,6 +569,9 @@ impl InstanceWrapper {
                 crate::http_helpers::RequestBody::empty(),
             ),
         };
+        // An enhancer may already have set one; only a response that appears
+        // across the handler call is the handler's doing.
+        let response_before_handler = context.response().is_some();
         // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
         // and adding `RefUnwindSafe` bounds to user code would be punitive.
         // We trust the application to set its own state to a sane shape after
@@ -577,6 +580,17 @@ impl InstanceWrapper {
         let exec_result = AssertUnwindSafe(instance.execute(req, &mut *context))
             .catch_unwind()
             .await;
+        // A handler answers by returning, and what it returns is written over
+        // the context below — so a response it set there is silently discarded.
+        // Legal to write and never what the author meant.
+        if !response_before_handler && context.response().is_some() {
+            tracing::warn!(
+                method = %instance.get_method().as_str(),
+                path = %instance.get_path(),
+                "handler set a response on the context; the value it returned is sent instead. \
+                 Return the response, or short-circuit from a guard or interceptor."
+            );
+        }
         let exec_result = match exec_result {
             Ok(result) => result,
             Err(payload) => {
