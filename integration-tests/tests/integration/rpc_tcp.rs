@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use toni::async_trait;
-use toni::context::{HandlerContext, RpcContext};
+use toni::context::{Extensions, HandlerContext, RpcContext};
 use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
+use toni::extractors::Payload;
 use toni::injectable;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
@@ -981,4 +982,110 @@ async fn rpc_guard_write_reaches_the_handler() {
     .expect("bus response");
 
     assert_eq!(resp["response"], "carol");
+}
+
+// ── handler parameter shapes ────────────────────────────────────────────────
+//
+// An RPC handler used to take exactly `(payload, ctx)`. It now takes what it
+// needs: the handlers above still declare the old pair and are untouched, which
+// is the compatibility half of the same change.
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct PlaceOrder {
+    item: String,
+    qty: u32,
+}
+
+#[derive(Clone)]
+pub struct Caller(String);
+
+#[injectable]
+pub struct ShapeGuard {}
+
+#[async_trait]
+impl Guard<RpcContext> for ShapeGuard {
+    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+        ctx.extensions().insert(Caller("frank".into()));
+        true
+    }
+}
+
+#[rpc_controller]
+pub struct ShapeController {}
+
+#[patterns]
+#[use_guards(ShapeGuard)]
+impl ShapeController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    /// The payload alone, wrapped — no context parameter at all.
+    #[message_pattern("shape.payload")]
+    async fn payload_only(&self, Payload(order): Payload<PlaceOrder>) -> Result<String, RpcError> {
+        Ok(format!("{}x{}", order.item, order.qty))
+    }
+
+    /// Extractors in an order the fixed pair could not express, and the raw data
+    /// beside the parsed form of it.
+    #[message_pattern("shape.mixed")]
+    async fn mixed(
+        &self,
+        ext: Extensions,
+        ctx: &mut RpcContext,
+        raw: RpcData,
+    ) -> Result<String, RpcError> {
+        let caller = ext
+            .get::<Caller>()
+            .map(|c| c.0)
+            .unwrap_or_else(|| "ABSENT".into());
+        Ok(format!(
+            "{caller}/{}/{}",
+            ctx.pattern(),
+            raw.parse::<PlaceOrder>().is_ok()
+        ))
+    }
+
+    /// Nothing at all.
+    #[message_pattern("shape.nothing")]
+    async fn nothing(&self) -> Result<String, RpcError> {
+        Ok("ok".to_string())
+    }
+}
+
+#[module(providers: [ShapeGuard, ShapeController])]
+impl ShapeModule {}
+
+async fn shape_call(port: u16, pattern: &str) -> serde_json::Value {
+    tcp_rpc_timeout(
+        port,
+        pattern,
+        serde_json::json!({"item": "boots", "qty": 2}),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("response")["response"]
+        .clone()
+}
+
+#[tokio_localset_test::localset_test]
+async fn a_handler_takes_only_the_payload() {
+    let port = start_rpc_server(ShapeModule).await;
+    assert_eq!(shape_call(port, "shape.payload").await, "bootsx2");
+}
+
+#[tokio_localset_test::localset_test]
+async fn rpc_extractors_compose_in_any_order() {
+    let port = start_rpc_server(ShapeModule).await;
+    assert_eq!(
+        shape_call(port, "shape.mixed").await,
+        "frank/shape.mixed/true"
+    );
+}
+
+#[tokio_localset_test::localset_test]
+async fn an_rpc_handler_can_take_nothing() {
+    let port = start_rpc_server(ShapeModule).await;
+    assert_eq!(shape_call(port, "shape.nothing").await, "ok");
 }
