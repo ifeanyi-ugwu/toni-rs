@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use super::HandlerContext;
+
 /// A typed per-message key-value bag, shared by everything handling that message.
 ///
 /// Values are keyed by their concrete type. A guard that authenticates the
@@ -165,12 +167,16 @@ impl Extensions {
 /// }
 /// ```
 ///
-/// Extraction never fails — a request with nothing attached yields an empty bag.
-impl crate::extractors::FromRequestParts for Extensions {
+/// One impl covers every transport. The bag is reached through
+/// [`HandlerContext`], which every context implements, so nothing here is
+/// specific to HTTP — the same parameter means the same thing in a WebSocket or
+/// RPC handler. Extraction never fails: a message with nothing attached yields
+/// an empty bag.
+impl<C: HandlerContext> crate::extractors::FromContext<C> for Extensions {
     type Error = std::convert::Infallible;
 
-    fn from_request_parts(parts: &crate::http_helpers::RequestPart) -> Result<Self, Self::Error> {
-        Ok(Self::adopt(&parts.extensions))
+    async fn extract(ctx: &mut C) -> Result<Self, Self::Error> {
+        Ok(ctx.extensions().clone())
     }
 }
 
@@ -256,6 +262,29 @@ mod tests {
         ext.insert(A);
         assert!(ext.contains::<A>());
         assert!(!ext.contains::<B>());
+    }
+
+    /// The claim the single impl rests on: extraction is generic over the
+    /// context, not repeated per transport. If this compiles, one impl serves
+    /// every `HandlerContext` there is — including any added later.
+    #[tokio::test]
+    async fn extraction_is_generic_over_the_context() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct Principal(&'static str);
+
+        async fn read_from_any<C: HandlerContext>(ctx: &mut C) -> Extensions {
+            use crate::extractors::FromContext;
+            Extensions::extract(ctx).await.expect("infallible")
+        }
+
+        // Instantiated at a real context to prove the bound is satisfiable, not
+        // merely well-formed.
+        let parts = http::Request::builder().body(()).unwrap().into_parts().0;
+        let mut ctx = crate::context::HttpContext::from_parts(parts);
+        ctx.extensions().insert(Principal("alice"));
+
+        let bag = read_from_any(&mut ctx).await;
+        assert_eq!(bag.get::<Principal>(), Some(Principal("alice")));
     }
 
     /// The whole point: a write through one handle is visible through another.

@@ -18,7 +18,7 @@ use std::fmt;
 
 use serde::de::DeserializeOwned;
 
-use crate::context::{Extensions, HandlerContext, WsContext};
+use crate::context::WsContext;
 use crate::extractors::{FromContext, Payload};
 use crate::websocket::{WsClient, WsMessage};
 
@@ -41,15 +41,6 @@ impl FromContext<WsContext> for WsMessage {
 
     async fn extract(ctx: &mut WsContext) -> Result<Self, Self::Error> {
         Ok(ctx.message().clone())
-    }
-}
-
-/// The message's extension bag — the same one the gateway's enhancers wrote to.
-impl FromContext<WsContext> for Extensions {
-    type Error = Infallible;
-
-    async fn extract(ctx: &mut WsContext) -> Result<Self, Self::Error> {
-        Ok(ctx.extensions().clone())
     }
 }
 

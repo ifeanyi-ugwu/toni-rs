@@ -13,9 +13,7 @@ use async_trait::async_trait;
 
 use crate::context::WsContext;
 use crate::http_helpers::ExecutionResult;
-use crate::websocket::{
-    DisconnectReason, GatewayEnhancers, WsClient, WsError, WsHandlerOutput, WsMessage,
-};
+use crate::websocket::{DisconnectReason, GatewayEnhancers, WsClient, WsError, WsHandlerOutput};
 
 /// Blanket "no handlers" defaults, implemented for every type. `#[subscriptions]` shadows these with
 /// inherent fns of the same name, which win at the concrete-type call site in the generated

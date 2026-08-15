@@ -20,7 +20,7 @@ use std::fmt;
 
 use serde::de::DeserializeOwned;
 
-use crate::context::{Extensions, HandlerContext, RpcContext};
+use crate::context::RpcContext;
 use crate::extractors::{FromContext, Payload};
 use crate::rpc::RpcData;
 
@@ -30,15 +30,6 @@ impl FromContext<RpcContext> for RpcData {
 
     async fn extract(ctx: &mut RpcContext) -> Result<Self, Self::Error> {
         Ok(ctx.data().clone())
-    }
-}
-
-/// The call's extension bag — the same one this call's enhancers wrote to.
-impl FromContext<RpcContext> for Extensions {
-    type Error = Infallible;
-
-    async fn extract(ctx: &mut RpcContext) -> Result<Self, Self::Error> {
-        Ok(ctx.extensions().clone())
     }
 }
 

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::context::WsContext;
 use crate::http_helpers::{ExecutionResult, RouteMetadata};
 
-use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput, WsMessage};
+use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput};
 
 /// The enhancer tokens a gateway declares, resolved once at registration. Gateway-level tokens apply
 /// to every handler; each `handlers` entry adds tokens for one event. A flat descriptor instead of a

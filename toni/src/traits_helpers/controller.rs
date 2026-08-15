@@ -5,9 +5,7 @@ use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
 use crate::errors::HttpError;
-use crate::http_helpers::{
-    ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RequestPart, RouteMetadata,
-};
+use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart, RouteMetadata};
 
 use crate::context::HttpContext;
 
