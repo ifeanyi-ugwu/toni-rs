@@ -15,7 +15,7 @@ use toni::traits_helpers::Guard;
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
     controller, get, injectable, module, new, post, routes, set_metadata, subscriptions,
-    toni_factory::ToniFactory, websocket_gateway, Body as ToniBody,
+    toni_factory::ToniFactory, websocket_gateway, Body as ToniBody, HttpResponse,
 };
 
 use crate::common::TestServer;
@@ -320,4 +320,48 @@ async fn a_body_consumed_by_an_enhancer_is_gone_for_the_handler() {
     // The guard got it, a second take reported nothing, and the handler's body
     // extractor is left empty rather than silently receiving the bytes twice.
     assert_eq!(body, "true/false/0");
+}
+
+// ===== a handler answers by returning =====
+
+#[controller("/answer")]
+pub struct AnswerController {}
+
+#[routes]
+impl AnswerController {
+    /// Sets a response on the context and returns a different one. The context
+    /// is where enhancers short-circuit, before a response exists; by the time a
+    /// handler runs, returning is the way to answer, so the framework writes the
+    /// returned value over whatever is there and logs that it did.
+    #[get("/both")]
+    fn both(&self, ctx: &mut HttpContext) -> ToniBody {
+        ctx.set_response(HttpResponse {
+            status: 418,
+            headers: vec![],
+            body: Some(ToniBody::text("from the context")),
+        });
+        ToniBody::text("from the return")
+    }
+}
+
+#[module(controllers: [AnswerController], providers: [])]
+impl AnswerModule {}
+
+#[tokio_localset_test::localset_test]
+async fn the_returned_response_wins_over_one_set_on_the_context() {
+    let server = TestServer::start(AnswerModule).await;
+
+    let resp = server
+        .client()
+        .get(server.url("/answer/both"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "the 418 set on the context is discarded"
+    );
+    assert_eq!(resp.text().await.unwrap(), "from the return");
 }
