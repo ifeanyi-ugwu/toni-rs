@@ -11,6 +11,7 @@
 use serial_test::serial;
 use std::sync::{Arc, Mutex};
 use toni::async_trait;
+use toni::http_helpers::HttpResponse;
 use toni::{
     controller, get, module, routes, use_guards, use_interceptors, use_pipes, Body as ToniBody,
     ToniFactory,
@@ -123,15 +124,16 @@ impl GlobalInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for GlobalInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for GlobalInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         get_tracker().track("interceptor:global:before");
-        next.run(context).await;
+        let answer = next.run(context).await;
         get_tracker().track("interceptor:global:after");
+        answer
     }
 }
 
@@ -144,15 +146,16 @@ impl ControllerInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for ControllerInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for ControllerInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         get_tracker().track("interceptor:controller:before");
-        next.run(context).await;
+        let answer = next.run(context).await;
         get_tracker().track("interceptor:controller:after");
+        answer
     }
 }
 
@@ -165,15 +168,16 @@ impl MethodInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for MethodInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for MethodInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         get_tracker().track("interceptor:method:before");
-        next.run(context).await;
+        let answer = next.run(context).await;
         get_tracker().track("interceptor:method:after");
+        answer
     }
 }
 
@@ -189,9 +193,10 @@ impl GlobalPipe {
     }
 }
 
-impl Pipe<HttpContext> for GlobalPipe {
-    fn process(&self, _context: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for GlobalPipe {
+    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:global");
+        None
     }
 }
 
@@ -203,9 +208,10 @@ impl ControllerPipe {
     }
 }
 
-impl Pipe<HttpContext> for ControllerPipe {
-    fn process(&self, _context: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for ControllerPipe {
+    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:controller");
+        None
     }
 }
 
@@ -217,9 +223,10 @@ impl MethodPipe {
     }
 }
 
-impl Pipe<HttpContext> for MethodPipe {
-    fn process(&self, _context: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for MethodPipe {
+    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:method");
+        None
     }
 }
 

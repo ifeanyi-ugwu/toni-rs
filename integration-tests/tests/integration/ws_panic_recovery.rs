@@ -218,8 +218,12 @@ pub struct PanickingWsInterceptor {}
 impl PanickingWsInterceptor {}
 
 #[async_trait]
-impl Interceptor<WsContext> for PanickingWsInterceptor {
-    async fn intercept(&self, _ctx: &mut WsContext, _next: Box<dyn InterceptorNext<WsContext>>) {
+impl Interceptor<WsContext, WsHandlerResult> for PanickingWsInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut WsContext,
+        _next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
+    ) -> WsHandlerResult {
         panic!("ws interceptor kaboom");
     }
 }
@@ -286,9 +290,10 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
 pub struct PanickingWsPipe {}
 impl PanickingWsPipe {}
 
-impl Pipe<WsContext> for PanickingWsPipe {
-    fn process(&self, _ctx: &mut WsContext) {
+impl Pipe<WsContext, WsHandlerResult> for PanickingWsPipe {
+    fn process(&self, _ctx: &mut WsContext) -> Option<WsHandlerResult> {
         panic!("ws pipe kaboom");
+        None
     }
 }
 

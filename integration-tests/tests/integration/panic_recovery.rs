@@ -263,12 +263,12 @@ async fn panicking_guard_renders_500_via_panic_recovered() {
 struct PanickingInterceptor;
 
 #[async_trait]
-impl Interceptor<HttpContext> for PanickingInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for PanickingInterceptor {
     async fn intercept(
         &self,
         _ctx: &mut HttpContext,
-        _next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        _next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         panic!("interceptor kaboom");
     }
 }
@@ -323,9 +323,10 @@ async fn panicking_interceptor_renders_500_via_panic_recovered() {
 
 struct PanickingPipe;
 
-impl Pipe<HttpContext> for PanickingPipe {
-    fn process(&self, _ctx: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for PanickingPipe {
+    fn process(&self, _ctx: &mut HttpContext) -> Option<HttpResponse> {
         panic!("pipe kaboom");
+        None
     }
 }
 

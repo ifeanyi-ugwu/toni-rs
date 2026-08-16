@@ -133,17 +133,18 @@ impl LoggingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for LoggingInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     async fn intercept(
         &self,
         _context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         self.tracker
             .track(format!("interceptor:{}:before", self.name));
-        next.run(_context).await;
+        let answer = next.run(_context).await;
         self.tracker
             .track(format!("interceptor:{}:after", self.name));
+        answer
     }
 }
 
@@ -157,8 +158,8 @@ impl ValidationPipe {
     }
 }
 
-impl Pipe<HttpContext> for ValidationPipe {
-    fn process(&self, context: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for ValidationPipe {
+    fn process(&self, context: &mut HttpContext) -> Option<HttpResponse> {
         self.tracker.track("pipe:validation");
         let is_invalid = context
             .request()
@@ -172,9 +173,9 @@ impl Pipe<HttpContext> for ValidationPipe {
             let mut response = HttpResponse::new();
             response.status = 400;
             response.body = Some(ToniBody::text("Validation failed".to_string()));
-            context.set_response(response);
-            context.abort();
+            return Some(response);
         }
+        None
     }
 }
 
@@ -188,9 +189,10 @@ impl TransformPipe {
     }
 }
 
-impl Pipe<HttpContext> for TransformPipe {
-    fn process(&self, _context: &mut HttpContext) {
+impl Pipe<HttpContext, HttpResponse> for TransformPipe {
+    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
         self.tracker.track("pipe:transform");
+        None
     }
 }
 

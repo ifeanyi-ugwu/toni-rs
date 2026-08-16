@@ -5,6 +5,7 @@
 
 use toni::async_trait;
 use toni::context::{HttpContext, WsContext};
+use toni::http_helpers::HttpResponse;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
@@ -53,18 +54,17 @@ pub struct TransientInterceptor {}
 impl TransientInterceptor {}
 
 #[async_trait]
-impl Interceptor<HttpContext> for TransientInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for TransientInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
-        next.run(context).await;
-        context
-            .response_mut()
-            .unwrap()
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
+        let mut answer = next.run(context).await;
+        answer
             .headers
             .push(("x-transient".to_string(), "hit".to_string()));
+        answer
     }
 }
 

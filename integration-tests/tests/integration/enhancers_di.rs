@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
 use toni::context::HttpContext;
+use toni::http_helpers::HttpResponse;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
@@ -175,15 +176,16 @@ impl LoggingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for LoggingInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         self.tracker.track("interceptor:before");
-        next.run(context).await;
+        let answer = next.run(context).await;
         self.tracker.track("interceptor:after");
+        answer
     }
 }
 
@@ -199,15 +201,16 @@ impl TimingInterceptor {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for TimingInterceptor {
+impl Interceptor<HttpContext, HttpResponse> for TimingInterceptor {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         self.tracker.track("interceptor:timing_start");
-        next.run(context).await;
+        let answer = next.run(context).await;
         self.tracker.track("interceptor:timing_end");
+        answer
     }
 }
 
