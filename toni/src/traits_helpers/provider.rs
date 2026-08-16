@@ -52,7 +52,7 @@ pub trait Provider: Send + Sync {
 
 macro_rules! transport_factory_types {
     (
-        $context:ty,
+        $context:ty, $answer:ty,
         $guard_factory:ident, $guard_entry:ident,
         $interceptor_factory:ident, $interceptor_entry:ident,
         $pipe_factory:ident, $pipe_entry:ident
@@ -77,13 +77,17 @@ macro_rules! transport_factory_types {
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
             ) -> Pin<
-                Box<dyn Future<Output = Arc<dyn Interceptor<$context> + Send + Sync>> + Send + 'a>,
+                Box<
+                    dyn Future<Output = Arc<dyn Interceptor<$context, $answer> + Send + Sync>>
+                        + Send
+                        + 'a,
+                >,
             >;
         }
 
         #[derive(Clone)]
         pub enum $interceptor_entry {
-            Ready(Arc<dyn Interceptor<$context>>),
+            Ready(Arc<dyn Interceptor<$context, $answer>>),
             Factory(Arc<dyn $interceptor_factory>),
         }
 
@@ -92,12 +96,16 @@ macro_rules! transport_factory_types {
             fn create<'a>(
                 &'a self,
                 request_parts: Option<&'a RequestPart>,
-            ) -> Pin<Box<dyn Future<Output = Arc<dyn Pipe<$context> + Send + Sync>> + Send + 'a>>;
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Arc<dyn Pipe<$context, $answer> + Send + Sync>> + Send + 'a,
+                >,
+            >;
         }
 
         #[derive(Clone)]
         pub enum $pipe_entry {
-            Ready(Arc<dyn Pipe<$context>>),
+            Ready(Arc<dyn Pipe<$context, $answer>>),
             Factory(Arc<dyn $pipe_factory>),
         }
     };
@@ -105,6 +113,7 @@ macro_rules! transport_factory_types {
 
 transport_factory_types!(
     HttpContext,
+    HttpResponse,
     DynHttpGuardFactory,
     HttpGuardEntry,
     DynHttpInterceptorFactory,
@@ -115,6 +124,7 @@ transport_factory_types!(
 
 transport_factory_types!(
     RpcContext,
+    crate::rpc::RpcHandlerResult,
     DynRpcGuardFactory,
     RpcGuardEntry,
     DynRpcInterceptorFactory,
@@ -125,6 +135,7 @@ transport_factory_types!(
 
 transport_factory_types!(
     WsContext,
+    crate::websocket::WsHandlerResult,
     DynWsGuardFactory,
     WsGuardEntry,
     DynWsInterceptorFactory,
@@ -135,6 +146,7 @@ transport_factory_types!(
 
 transport_factory_types!(
     GrpcContext,
+    crate::grpc_status::GrpcHandlerResult,
     DynGrpcGuardFactory,
     GrpcGuardEntry,
     DynGrpcInterceptorFactory,

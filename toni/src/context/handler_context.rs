@@ -44,9 +44,13 @@ pub trait HandlerContext: Send {
         None
     }
 
-    /// Short-circuit the handler chain. Subsequent enhancers and the handler
-    /// itself are skipped; whatever response is currently set on the context
-    /// becomes the reply.
+    /// Short-circuit the handler chain: subsequent enhancers and the handler
+    /// are skipped.
+    ///
+    /// This stops the chain without supplying an answer, so a guard aborting
+    /// this way rejects the request. An enhancer that has an answer to give
+    /// returns it instead — see [`Interceptor`](crate::traits_helpers::Interceptor)
+    /// and [`Pipe`](crate::traits_helpers::Pipe).
     fn abort(&mut self);
 
     fn should_abort(&self) -> bool;

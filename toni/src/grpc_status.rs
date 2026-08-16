@@ -97,3 +97,8 @@ impl std::fmt::Display for GrpcStatus {
 }
 
 impl std::error::Error for GrpcStatus {}
+
+/// What a gRPC call answers with. `Ok(())` means the delegate ran and its typed
+/// response is in the macro's side-channel; `Err` short-circuits the chain. The
+/// `R` of [`Interceptor`](crate::traits_helpers::Interceptor) on this transport.
+pub type GrpcHandlerResult = Result<(), GrpcStatus>;

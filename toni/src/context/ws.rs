@@ -1,22 +1,20 @@
 use std::sync::Arc;
 
 use crate::http_helpers::RouteMetadata;
-use crate::websocket::{WsClient, WsError, WsMessage};
+use crate::websocket::{WsClient, WsMessage};
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
 /// Per-request context for WebSocket handlers.
 ///
-/// One per inbound message (or per `connect`/`disconnect` lifecycle event). The
-/// dispatcher owns the context and every enhancer borrows it exclusively, so
-/// the response slot is a plain `Option` set through `&mut self`. Streams bypass
-/// this slot and flow through a separate channel in the gateway dispatcher.
+/// One per inbound message (or per `connect`/`disconnect` lifecycle event). A
+/// handler answers by returning a [`WsHandlerOutput`](super::WsHandlerOutput),
+/// streams included, so nothing about the answer lives here.
 pub struct WsContext {
     pub(crate) shared: SharedState,
     pub(crate) client: WsClient,
     pub(crate) message: WsMessage,
     pub(crate) event: String,
-    pub(crate) response: Option<Result<Option<WsMessage>, WsError>>,
 }
 
 impl WsContext {
@@ -36,7 +34,6 @@ impl WsContext {
             client,
             message,
             event: event.into(),
-            response: None,
         }
     }
 
@@ -50,18 +47,6 @@ impl WsContext {
 
     pub fn event(&self) -> &str {
         &self.event
-    }
-
-    pub fn response(&self) -> Option<Result<Option<WsMessage>, WsError>> {
-        self.response.clone()
-    }
-
-    pub fn set_response(&mut self, response: Result<Option<WsMessage>, WsError>) {
-        self.response = Some(response);
-    }
-
-    pub fn take_response(&mut self) -> Option<Result<Option<WsMessage>, WsError>> {
-        self.response.take()
     }
 }
 
