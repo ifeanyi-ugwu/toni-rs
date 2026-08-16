@@ -31,3 +31,4 @@ the history is part of the value.
 - [0013 — Where to listen is a value: `BindTarget` carries an address or an existing listener](0013-bind-target-listener-adoption.md)
 - [0014 — A separate-port WebSocket listener is keyed by the port the gateway declares](0014-ws-listener-keyed-by-declared-port.md)
 - [0015 — Handler parameters are extracted from the handler's context](0015-handler-parameters-are-from-context.md)
+- [0016 — A context spans one execution and is a shared handle](0016-context-spans-one-execution.md)
