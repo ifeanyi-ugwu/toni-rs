@@ -17,6 +17,7 @@ use futures::FutureExt;
 use crate::adapter::ResolvedGrpcEnhancers;
 use crate::context::{GrpcContext, HandlerContext};
 use crate::errors::{GuardRejection, PipelineSegment};
+use crate::grpc_status::GrpcHandlerResult;
 use crate::grpc_status::GrpcStatus;
 use crate::panic_recovery::catch_async;
 use crate::traits_helpers::{
@@ -32,11 +33,10 @@ use crate::traits_helpers::{
 /// `Arc<Mutex<Option<_>>>` side-channel inside the closure and reads it
 /// back after `run_grpc_pipeline` returns.
 ///
-/// Returns `Err(GrpcStatus)` when a guard rejects, an interceptor sets
-/// `ctx.set_response(Err(...))`, or an interceptor short-circuits without
-/// calling `next.run(ctx)`. The macro maps `GrpcStatus` to `tonic::Status`
-/// at the wire boundary; `Ok(())` means the chain completed normally and
-/// the user's delegate (which fills the side-channel) was reached.
+/// Returns `Err(GrpcStatus)` when a guard rejects or an interceptor answers
+/// with one instead of calling `next.run(ctx)`. The macro maps `GrpcStatus` to
+/// `tonic::Status` at the wire boundary; `Ok(())` means the chain completed
+/// normally and the user's delegate (which fills the side-channel) was reached.
 pub async fn run_grpc_pipeline<D, Fut>(
     ctx: &mut GrpcContext,
     enhancers: &ResolvedGrpcEnhancers,
@@ -55,12 +55,7 @@ where
     }
     let interceptors = resolve_interceptors(&all_interceptors).await;
 
-    execute_with_interceptors(ctx, &interceptors, &enhancers.error_observers, delegate).await;
-
-    if let Some(short_circuit) = ctx.take_response() {
-        return short_circuit;
-    }
-    Ok(())
+    execute_with_interceptors(ctx, &interceptors, &enhancers.error_observers, delegate).await
 }
 
 /// Guards-only entry point — same shape as PR #1 shipped, retained for
@@ -124,34 +119,36 @@ async fn run_grpc_guards_inline(
 /// contract.
 async fn execute_with_interceptors<D, Fut>(
     ctx: &mut GrpcContext,
-    interceptors: &[Arc<dyn Interceptor<GrpcContext>>],
+    interceptors: &[Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>],
     observers: &[Arc<dyn ErrorObserver>],
     delegate: D,
-) where
+) -> GrpcHandlerResult
+where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     if interceptors.is_empty() {
         delegate().await;
-        return;
+        return Ok(());
     }
 
     let next = build_next(&interceptors[1..], observers.to_vec(), delegate);
-    if let Err(event) = catch_async(
+    match catch_async(
         PipelineSegment::Middleware,
         interceptors[0].intercept(ctx, next),
     )
     .await
     {
-        record_interceptor_panic(ctx, observers, event).await;
+        Ok(answer) => answer,
+        Err(event) => record_interceptor_panic(ctx, observers, event).await,
     }
 }
 
 fn build_next<D, Fut>(
-    rest: &[Arc<dyn Interceptor<GrpcContext>>],
+    rest: &[Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>],
     observers: Vec<Arc<dyn ErrorObserver>>,
     delegate: D,
-) -> Box<dyn InterceptorNext<GrpcContext>>
+) -> Box<dyn InterceptorNext<GrpcContext, GrpcHandlerResult>>
 where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
@@ -174,12 +171,12 @@ async fn record_interceptor_panic(
     ctx: &mut GrpcContext,
     observers: &[Arc<dyn ErrorObserver>],
     event: crate::errors::PanicRecovered,
-) {
+) -> GrpcHandlerResult {
     fan_out_observers(observers, &event, &mut *ctx).await;
-    ctx.set_response(Err(GrpcStatus::new(
+    Err(GrpcStatus::new(
         crate::grpc_status::GrpcCode::Internal,
         format!("interceptor panicked: {}", event.message),
-    )));
+    ))
 }
 
 /// Innermost link: invokes the user delegate.
@@ -188,40 +185,44 @@ struct LeafNext<D> {
 }
 
 #[async_trait]
-impl<D, Fut> InterceptorNext<GrpcContext> for LeafNext<D>
+impl<D, Fut> InterceptorNext<GrpcContext, GrpcHandlerResult> for LeafNext<D>
 where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    async fn run(mut self: Box<Self>, _ctx: &mut GrpcContext) {
+    async fn run(mut self: Box<Self>, _ctx: &mut GrpcContext) -> GrpcHandlerResult {
         if let Some(delegate) = self.delegate.take() {
             delegate().await;
         }
+        Ok(())
     }
 }
 
 /// Outer link: hands off to the next interceptor in line.
 struct LinkNext<D> {
-    head: Arc<dyn Interceptor<GrpcContext>>,
-    rest: Vec<Arc<dyn Interceptor<GrpcContext>>>,
+    head: Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>,
+    rest: Vec<Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>>,
     observers: Vec<Arc<dyn ErrorObserver>>,
     delegate: Option<D>,
 }
 
 #[async_trait]
-impl<D, Fut> InterceptorNext<GrpcContext> for LinkNext<D>
+impl<D, Fut> InterceptorNext<GrpcContext, GrpcHandlerResult> for LinkNext<D>
 where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    async fn run(mut self: Box<Self>, ctx: &mut GrpcContext) {
-        if let Some(delegate) = self.delegate.take() {
-            let next = build_next(&self.rest, self.observers.clone(), delegate);
-            if let Err(event) =
-                catch_async(PipelineSegment::Middleware, self.head.intercept(ctx, next)).await
-            {
-                record_interceptor_panic(ctx, &self.observers, event).await;
+    async fn run(mut self: Box<Self>, ctx: &mut GrpcContext) -> GrpcHandlerResult {
+        match self.delegate.take() {
+            Some(delegate) => {
+                let next = build_next(&self.rest, self.observers.clone(), delegate);
+                match catch_async(PipelineSegment::Middleware, self.head.intercept(ctx, next)).await
+                {
+                    Ok(answer) => answer,
+                    Err(event) => record_interceptor_panic(ctx, &self.observers, event).await,
+                }
             }
+            None => Ok(()),
         }
     }
 }
@@ -243,7 +244,7 @@ async fn resolve_guards(entries: &[GrpcGuardEntry]) -> Vec<Arc<dyn Guard<GrpcCon
 
 async fn resolve_interceptors(
     entries: &[GrpcInterceptorEntry],
-) -> Vec<Arc<dyn Interceptor<GrpcContext>>> {
+) -> Vec<Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         let i = match entry {

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use toni::async_trait;
 use toni::context::HttpContext;
 use toni::di::{APP_GUARD, APP_INTERCEPTOR};
+use toni::http_helpers::HttpResponse;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::{
     controller, get, injectable, module, new, provider_token, provider_value, routes,
@@ -93,21 +94,22 @@ impl AppInterceptorWithDI {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext> for AppInterceptorWithDI {
+impl Interceptor<HttpContext, HttpResponse> for AppInterceptorWithDI {
     async fn intercept(
         &self,
         context: &mut HttpContext,
-        next: Box<dyn InterceptorNext<HttpContext>>,
-    ) {
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         self.tracker.track(&format!(
             "interceptor:app_token:{}:before",
             self.service.get_name()
         ));
-        next.run(context).await;
+        let answer = next.run(context).await;
         self.tracker.track(&format!(
             "interceptor:app_token:{}:after",
             self.service.get_name()
         ));
+        answer
     }
 }
 

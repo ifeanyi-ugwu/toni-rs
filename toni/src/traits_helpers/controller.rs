@@ -26,8 +26,8 @@ pub struct ControllerEnhancers {
     pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
     pub guards: Vec<Arc<dyn Guard<HttpContext>>>,
-    pub interceptors: Vec<Arc<dyn Interceptor<HttpContext>>>,
-    pub pipes: Vec<Arc<dyn Pipe<HttpContext>>>,
+    pub interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
+    pub pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }
 

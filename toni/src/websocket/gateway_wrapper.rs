@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
 use parking_lot::RwLock;
 
 use crate::context::{HandlerContext, WsContext};
@@ -13,34 +12,32 @@ use crate::traits_helpers::{
     WsInterceptorEntry, WsPipeEntry,
 };
 
-use super::{DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsMessage};
+use super::{
+    DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage,
+};
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
 struct WsChainNext {
-    interceptors: Vec<Arc<dyn Interceptor<WsContext>>>,
+    interceptors: Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>>,
     gateway: Arc<Box<dyn GatewayTrait>>,
-    event: String,
-    pipes: Vec<Arc<dyn Pipe<WsContext>>>,
+    pipes: Vec<Arc<dyn Pipe<WsContext, WsHandlerResult>>>,
     error_handlers: Vec<WsErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
-    stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
 }
 
 #[async_trait]
-impl InterceptorNext<WsContext> for WsChainNext {
-    async fn run(self: Box<Self>, context: &mut WsContext) {
-        GatewayWrapper::execute_with_interceptors_impl(
+impl InterceptorNext<WsContext, WsHandlerResult> for WsChainNext {
+    async fn run(self: Box<Self>, context: &mut WsContext) -> WsHandlerResult {
+        GatewayWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
             &self.gateway,
-            &self.event,
             &self.pipes,
             &self.error_handlers,
             &self.observers,
-            self.stream_slot,
         )
-        .await;
+        .await
     }
 }
 
@@ -231,17 +228,13 @@ impl GatewayWrapper {
                     // this, `WsError::AuthFailed` would silently drop in
                     // `ToniApplication`'s message callback and the only
                     // signal would be observer-side.
-                    Self::record_pipeline_panic(
+                    return Self::record_pipeline_panic(
                         &mut context,
                         &all_error_handlers,
                         &self.error_observers,
                         event,
                     )
                     .await;
-                    return match context.take_response() {
-                        Some(Ok(Some(msg))) => Ok(WsHandlerOutput::Single(msg)),
-                        _ => Ok(WsHandlerOutput::Empty),
-                    };
                 }
             };
             if !activated {
@@ -259,33 +252,15 @@ impl GatewayWrapper {
         let interceptors = Self::resolve_interceptors(&all_interceptors, None).await;
         let pipes = Self::resolve_pipes(&all_pipes, None).await;
 
-        // Streams bypass the context (which stores only Option<WsMessage>).
-        // The handler deposits a stream here; handle_message lifts it out.
-        let stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-
         Self::execute_with_interceptors(
             &mut context,
-            event,
-            &self.gateway,
             &interceptors,
+            &self.gateway,
             &pipes,
             &all_error_handlers,
             &self.error_observers,
-            stream_slot.clone(),
         )
-        .await?;
-
-        if let Some(stream) = stream_slot.lock().take() {
-            return Ok(WsHandlerOutput::Stream(stream));
-        }
-
-        match context.take_response() {
-            Some(Ok(Some(msg))) => Ok(WsHandlerOutput::Single(msg)),
-            Some(Ok(None)) => Ok(WsHandlerOutput::Empty),
-            Some(Err(e)) => Err(e),
-            None => Err(WsError::Internal("Handler did not set response".into())),
-        }
+        .await
     }
 
     async fn resolve_guards(
@@ -306,7 +281,7 @@ impl GatewayWrapper {
     async fn resolve_interceptors(
         entries: &[WsInterceptorEntry],
         parts: Option<&RequestPart>,
-    ) -> Vec<Arc<dyn Interceptor<WsContext>>> {
+    ) -> Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
@@ -321,7 +296,7 @@ impl GatewayWrapper {
     async fn resolve_pipes(
         entries: &[WsPipeEntry],
         parts: Option<&RequestPart>,
-    ) -> Vec<Arc<dyn Pipe<WsContext>>> {
+    ) -> Vec<Arc<dyn Pipe<WsContext, WsHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
@@ -335,61 +310,21 @@ impl GatewayWrapper {
 
     async fn execute_with_interceptors(
         context: &mut WsContext,
-        event: String,
+        interceptors: &[Arc<dyn Interceptor<WsContext, WsHandlerResult>>],
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        interceptors: &[Arc<dyn Interceptor<WsContext>>],
-        pipes: &[Arc<dyn Pipe<WsContext>>],
+        pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
-        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
-    ) -> Result<(), WsError> {
-        Self::execute_with_interceptors_impl(
-            context,
-            interceptors,
-            gateway,
-            &event,
-            pipes,
-            error_handlers,
-            observers,
-            stream_slot,
-        )
-        .await;
-
-        if context.should_abort() {
-            return context
-                .take_response()
-                .unwrap_or_else(|| {
-                    Err(WsError::Internal(
-                        "Request aborted by interceptor without response".into(),
-                    ))
-                })
-                .map(|_| ());
-        }
-
-        Ok(())
-    }
-
-    async fn execute_with_interceptors_impl(
-        context: &mut WsContext,
-        interceptors: &[Arc<dyn Interceptor<WsContext>>],
-        gateway: &Arc<Box<dyn GatewayTrait>>,
-        event: &str,
-        pipes: &[Arc<dyn Pipe<WsContext>>],
-        error_handlers: &[WsErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
-        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
-    ) {
+    ) -> WsHandlerResult {
         if interceptors.is_empty() {
-            Self::execute_handler_with_error_handling(
+            return Self::execute_handler_with_error_handling(
                 context,
                 gateway,
                 pipes,
                 error_handlers,
                 observers,
-                stream_slot,
             )
             .await;
-            return;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
@@ -397,20 +332,21 @@ impl GatewayWrapper {
         let next = WsChainNext {
             interceptors: rest.to_vec(),
             gateway: gateway.clone(),
-            event: event.to_string(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
-            stream_slot,
         };
 
-        if let Err(event) = crate::panic_recovery::catch_async(
+        match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::Middleware,
             first.intercept(context, Box::new(next)),
         )
         .await
         {
-            Self::record_pipeline_panic(context, error_handlers, observers, event).await;
+            Ok(answer) => answer,
+            Err(event) => {
+                Self::record_pipeline_panic(context, error_handlers, observers, event).await
+            }
         }
     }
 
@@ -424,48 +360,59 @@ impl GatewayWrapper {
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
-    ) {
+    ) -> WsHandlerResult {
         Self::fan_out_observers(observers, &event, &mut *context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
                 Self::try_chain_handler(handler, &event, &mut *context, observers).await
             {
-                context.set_response(Ok(Some(claimed)));
-                return;
+                return Ok(WsHandlerOutput::Single(claimed));
             }
         }
         let ws_err = WsError::from(event);
         let msg = Self::safe_render(|| ws_err.to_message(), observers, &mut *context).await;
-        context.set_response(Ok(Some(msg)));
+        Ok(WsHandlerOutput::Single(msg))
     }
 
     /// Run pipes + handler, then route the outcome.
     ///
-    /// `Ok` goes straight to the context. On `Err`, observers fan out on the
+    /// `Ok` is the answer, streams included. On `Err`, observers fan out on the
     /// underlying error, the chain's most-specific handler gets first claim,
     /// and `WsError::to_message` is the fallback frame when none claims.
     async fn execute_handler_with_error_handling(
         context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        pipes: &[Arc<dyn Pipe<WsContext>>],
+        pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
-        stream_slot: Arc<parking_lot::Mutex<Option<BoxStream<'static, WsMessage>>>>,
-    ) {
-        let result = Self::execute_handler(context, gateway, pipes).await;
+    ) -> WsHandlerResult {
+        for pipe in pipes {
+            // `pipe.process` is sync — `catch_sync` wraps it the same way
+            // `catch_async` wraps async segments. A panic routes through the
+            // observer + chain pipeline below; remaining pipes and the handler
+            // are skipped.
+            match crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
+            {
+                Ok(Some(answer)) => return answer,
+                Ok(None) => {}
+                Err(event) => {
+                    return Self::record_pipeline_panic(context, error_handlers, observers, event)
+                        .await;
+                }
+            }
+            if context.should_abort() {
+                // A pipe answers by returning one. Aborting without an answer
+                // blocks the handler with nothing to send in its place, so it
+                // leaves as a wire-level Err — parallel to guard rejection, and
+                // not the Ok+frame path a user error takes.
+                return Err(WsError::Internal(
+                    "Request aborted by pipe without an answer".into(),
+                ));
+            }
+        }
 
-        match result {
-            ExecutionResult::Ok(WsHandlerOutput::Stream(stream)) => {
-                // Streams bypass context storage — deposit and return early.
-                *stream_slot.lock() = Some(stream);
-                context.set_response(Ok(None));
-            }
-            ExecutionResult::Ok(WsHandlerOutput::Single(msg)) => {
-                context.set_response(Ok(Some(msg)));
-            }
-            ExecutionResult::Ok(WsHandlerOutput::Empty) => {
-                context.set_response(Ok(None));
-            }
+        match Self::execute_handler(context, gateway).await {
+            ExecutionResult::Ok(output) => Ok(output),
             ExecutionResult::Err(ws_err) => {
                 let observed_err: &(dyn std::error::Error + Send + Sync + 'static) = match &ws_err {
                     WsError::AppError(e) => e.as_ref(),
@@ -477,12 +424,11 @@ impl GatewayWrapper {
                         Self::try_chain_handler(handler, observed_err, &mut *context, observers)
                             .await
                     {
-                        context.set_response(Ok(Some(msg)));
-                        return;
+                        return Ok(WsHandlerOutput::Single(msg));
                     }
                 }
                 let msg = Self::safe_render(|| ws_err.to_message(), observers, &mut *context).await;
-                context.set_response(Ok(Some(msg)));
+                Ok(WsHandlerOutput::Single(msg))
             }
         }
     }
@@ -566,24 +512,7 @@ impl GatewayWrapper {
     async fn execute_handler(
         context: &mut WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        pipes: &[Arc<dyn Pipe<WsContext>>],
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
-        for pipe in pipes {
-            // `pipe.process` is sync — `catch_sync` wraps it the same way
-            // `catch_async` wraps async segments. A panic returns as
-            // `ExecutionResult::Err(WsError::from(panic_event))`; the
-            // caller's chain fans observers, gives error handlers first
-            // claim, and falls back to the default frame.
-            if let Err(event) =
-                crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
-            {
-                return ExecutionResult::Err(WsError::from(event));
-            }
-            if context.should_abort() {
-                return ExecutionResult::Err(WsError::Internal("Request aborted by pipe".into()));
-            }
-        }
-
         let result = AssertUnwindSafe(gateway.handle_event(&mut *context))
             .catch_unwind()
             .await;

@@ -23,7 +23,7 @@ pub mod di;
 pub mod errors;
 pub mod extractors;
 pub mod grpc_status;
-pub use grpc_status::{GrpcCode, GrpcStatus};
+pub use grpc_status::{GrpcCode, GrpcHandlerResult, GrpcStatus};
 mod extension;
 pub mod grpc_runtime;
 pub mod http_helpers;

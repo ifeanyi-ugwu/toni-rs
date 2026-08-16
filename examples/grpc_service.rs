@@ -94,7 +94,7 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 
 // ─── Interceptor ────────────────────────────────────────────────────────────
 //
-// `#[interceptor(grpc)]` registers this as `Interceptor<GrpcContext>`. The
+// `#[interceptor(grpc)]` registers this as `Interceptor<GrpcContext, GrpcHandlerResult>`. The
 // chain calls `intercept` before the user delegation; calling
 // `next.run(ctx).await` proceeds to the next link (and ultimately the
 // user method); not calling it short-circuits the call.
@@ -104,16 +104,21 @@ pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for LoggingInterceptor
+{
     async fn intercept(
         &self,
         ctx: &mut toni::GrpcContext,
-        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        next: Box<
+            dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
+        >,
+    ) -> toni::GrpcHandlerResult {
         let method = ctx.method().to_string();
         tracing::info!(target: "grpc_service", method = %method, "before handler");
-        next.run(ctx).await;
+        let answer = next.run(ctx).await;
         tracing::info!(target: "grpc_service", method = %method, "after handler");
+        answer
     }
 }
 

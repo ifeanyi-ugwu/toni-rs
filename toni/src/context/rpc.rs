@@ -2,22 +2,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::http_helpers::{Extensions as TransportExtensions, RouteMetadata};
-use crate::rpc::{RpcData, RpcError};
+use crate::rpc::RpcData;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
 /// Per-request context for RPC handlers.
 ///
 /// Owns the inbound payload, the call's pattern (subject/topic/method name),
-/// transport metadata (NATS headers, TCP envelope fields, etc.), and the
-/// (eventual) response.
+/// and transport metadata (NATS headers, TCP envelope fields, etc.). A handler
+/// answers by returning, not by writing here.
 pub struct RpcContext {
     pub(crate) shared: SharedState,
     pub(crate) pattern: String,
     pub(crate) metadata: HashMap<String, String>,
     pub(crate) transport_extensions: TransportExtensions,
     pub(crate) data: RpcData,
-    pub(crate) response: Option<Result<Option<RpcData>, RpcError>>,
 }
 
 impl RpcContext {
@@ -32,7 +31,6 @@ impl RpcContext {
             metadata: HashMap::new(),
             transport_extensions: TransportExtensions::new(),
             data,
-            response: None,
         }
     }
 
@@ -70,18 +68,6 @@ impl RpcContext {
 
     pub fn data(&self) -> &RpcData {
         &self.data
-    }
-
-    pub fn response(&self) -> Option<&Result<Option<RpcData>, RpcError>> {
-        self.response.as_ref()
-    }
-
-    pub fn set_response(&mut self, response: Result<Option<RpcData>, RpcError>) {
-        self.response = Some(response);
-    }
-
-    pub fn take_response(&mut self) -> Option<Result<Option<RpcData>, RpcError>> {
-        self.response.take()
     }
 }
 

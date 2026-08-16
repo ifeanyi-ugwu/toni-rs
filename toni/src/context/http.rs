@@ -1,22 +1,26 @@
 use std::sync::Arc;
 
-use crate::http_helpers::{HttpRequest, HttpResponse, RequestBody, RequestPart, RouteMetadata};
+use crate::http_helpers::{HttpRequest, RequestBody, RequestPart, RouteMetadata};
 use crate::traits_helpers::validate::Validatable;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
 /// Per-request context for HTTP handlers.
 ///
-/// Owns the request parts, body, and the (eventual) response. Delegates the
-/// universal [`HandlerContext`] surface to its inner `SharedState`.
+/// Owns the request parts and body. Delegates the universal
+/// [`HandlerContext`] surface to its inner `SharedState`.
 ///
 /// The body is an `Option` taken exactly once via
-/// [`take_request`](Self::take_request); a second call yields an empty body.
+/// [`take_request`](Self::take_request); a second call yields `None`.
+///
+/// Answering is not done here. A handler returns its response, and an enhancer
+/// that wants to answer without reaching the handler returns one too — see
+/// [`Interceptor`](crate::traits_helpers::Interceptor) and
+/// [`Pipe`](crate::traits_helpers::Pipe).
 pub struct HttpContext {
     pub(crate) shared: SharedState,
     pub(crate) parts: RequestPart,
     pub(crate) body: Option<RequestBody>,
-    pub(crate) response: Option<HttpResponse>,
 }
 
 impl HttpContext {
@@ -29,7 +33,6 @@ impl HttpContext {
             shared: SharedState::with_extensions(Some(route_metadata), extensions),
             parts,
             body: Some(body),
-            response: None,
         }
     }
 
@@ -41,7 +44,6 @@ impl HttpContext {
             shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
             parts,
             body: Some(body),
-            response: None,
         }
     }
 
@@ -51,28 +53,11 @@ impl HttpContext {
             shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
             parts,
             body: Some(RequestBody::empty()),
-            response: None,
         }
     }
 
     pub fn request(&self) -> &RequestPart {
         &self.parts
-    }
-
-    pub fn response(&self) -> Option<&HttpResponse> {
-        self.response.as_ref()
-    }
-
-    pub fn response_mut(&mut self) -> Option<&mut HttpResponse> {
-        self.response.as_mut()
-    }
-
-    pub fn set_response(&mut self, response: HttpResponse) {
-        self.response = Some(response);
-    }
-
-    pub fn take_response(&mut self) -> Option<HttpResponse> {
-        self.response.take()
     }
 
     /// Reconstruct the full `HttpRequest` (parts + body), consuming the body.
@@ -85,13 +70,6 @@ impl HttpContext {
         self.body
             .take()
             .map(|body| HttpRequest::from_parts(self.parts.clone(), body))
-    }
-
-    /// Consume the context and yield the response. Panics if the response
-    /// was never set — used by the dispatcher after the handler chain runs,
-    /// where one of the chain steps is guaranteed to have set it.
-    pub fn into_response(self) -> HttpResponse {
-        self.response.expect("HttpContext: response not set")
     }
 
     pub fn set_dto(&mut self, dto: Box<dyn Validatable>) {

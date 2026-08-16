@@ -32,13 +32,18 @@ impl Guard<WsContext> for WsAuthGuard {
 pub struct WsLoggingInterceptor;
 
 #[async_trait]
-impl Interceptor<WsContext> for WsLoggingInterceptor {
-    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
+impl Interceptor<WsContext, WsHandlerResult> for WsLoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
+    ) -> WsHandlerResult {
         println!("[WsLoggingInterceptor] 📥 Incoming message");
         println!("  Client: {}", ctx.client().id);
         println!("  Event: {}", ctx.event());
-        next.run(ctx).await;
+        let answer = next.run(ctx).await;
         println!("[WsLoggingInterceptor] 📤 Message processed");
+        answer
     }
 }
 

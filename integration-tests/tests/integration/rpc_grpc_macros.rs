@@ -294,15 +294,20 @@ pub struct ServiceInterceptor {}
 impl ServiceInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for ServiceInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for ServiceInterceptor
+{
     async fn intercept(
         &self,
         ctx: &mut toni::GrpcContext,
-        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        next: Box<
+            dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
+        >,
+    ) -> toni::GrpcHandlerResult {
         log_interceptor("service:before");
-        next.run(ctx).await;
+        let answer = next.run(ctx).await;
         log_interceptor("service:after");
+        answer
     }
 }
 
@@ -311,15 +316,20 @@ pub struct MethodInterceptor {}
 impl MethodInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for MethodInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for MethodInterceptor
+{
     async fn intercept(
         &self,
         ctx: &mut toni::GrpcContext,
-        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        next: Box<
+            dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
+        >,
+    ) -> toni::GrpcHandlerResult {
         log_interceptor("method:before");
-        next.run(ctx).await;
+        let answer = next.run(ctx).await;
         log_interceptor("method:after");
+        answer
     }
 }
 
@@ -328,17 +338,20 @@ pub struct DenyInterceptor {}
 impl DenyInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for DenyInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for DenyInterceptor
+{
     async fn intercept(
         &self,
-        ctx: &mut toni::GrpcContext,
-        _next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        _ctx: &mut toni::GrpcContext,
+        _next: Box<
+            dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
+        >,
+    ) -> toni::GrpcHandlerResult {
         log_interceptor("deny:short-circuit");
-        ctx.set_response(Err(toni::GrpcStatus::permission_denied(
+        Err(toni::GrpcStatus::permission_denied(
             "blocked by interceptor",
-        )));
-        // Deliberately skip `_next.run(ctx).await` to short-circuit.
+        ))
     }
 }
 
@@ -1096,7 +1109,7 @@ async fn grpc_interceptor_runs_around_handler() {
         .expect("shutdown must complete");
 }
 
-/// An interceptor that calls `ctx.set_response(Err(...))` and skips
+/// An interceptor that returns `Err(...)` without calling
 /// `next.run` short-circuits the call. The user handler never runs and
 /// the wire status comes from the interceptor's `GrpcStatus`.
 #[tokio_localset_test::localset_test]
@@ -1345,12 +1358,16 @@ pub struct PanickingGrpcInterceptor {}
 impl PanickingGrpcInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for PanickingGrpcInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for PanickingGrpcInterceptor
+{
     async fn intercept(
         &self,
         _ctx: &mut toni::GrpcContext,
-        _next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        _next: Box<
+            dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
+        >,
+    ) -> toni::GrpcHandlerResult {
         panic!("interceptor kaboom");
     }
 }

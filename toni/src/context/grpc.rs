@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::grpc_status::GrpcStatus;
 use crate::http_helpers::RouteMetadata;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
@@ -12,8 +11,7 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// gRPC payloads are method-typed protobuf messages and can't sit in a
 /// non-generic struct, so the context deliberately holds only what every
 /// enhancer can name without a type parameter: the method path, the
-/// inbound metadata (ASCII headers), the optional peer address, and an
-/// error-only response slot for guard / interceptor short-circuit.
+/// inbound metadata (ASCII headers), and the optional peer address.
 ///
 /// Pipes that need to transform the request body are not supported on gRPC
 /// for the same reason — the body is method-typed and there's no
@@ -23,10 +21,6 @@ pub struct GrpcContext {
     pub(crate) method: String,
     pub(crate) metadata: HashMap<String, String>,
     pub(crate) peer: Option<SocketAddr>,
-    /// Set by guards or interceptors to short-circuit the call. The handler
-    /// runs only if this stays `None`. Error-only because the success type
-    /// is method-specific and can't fit a generic slot.
-    pub(crate) response: Option<Result<(), GrpcStatus>>,
 }
 
 impl GrpcContext {
@@ -41,7 +35,6 @@ impl GrpcContext {
             method: method.into(),
             metadata,
             peer,
-            response: None,
         }
     }
 
@@ -64,18 +57,6 @@ impl GrpcContext {
 
     pub fn peer(&self) -> Option<SocketAddr> {
         self.peer
-    }
-
-    pub fn response(&self) -> Option<&Result<(), GrpcStatus>> {
-        self.response.as_ref()
-    }
-
-    pub fn set_response(&mut self, response: Result<(), GrpcStatus>) {
-        self.response = Some(response);
-    }
-
-    pub fn take_response(&mut self) -> Option<Result<(), GrpcStatus>> {
-        self.response.take()
     }
 }
 

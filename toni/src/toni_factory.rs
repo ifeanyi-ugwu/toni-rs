@@ -71,7 +71,7 @@ impl ToniFactory {
     /// Register a global interceptor that wraps every HTTP route handler.
     pub fn use_global_http_interceptors(
         &mut self,
-        interceptor: Arc<dyn Interceptor<HttpContext>>,
+        interceptor: Arc<dyn Interceptor<HttpContext, crate::http_helpers::HttpResponse>>,
     ) -> &mut Self {
         self.global_http_interceptors
             .push(HttpInterceptorEntry::Ready(interceptor));
@@ -79,7 +79,10 @@ impl ToniFactory {
     }
 
     /// Register a global pipe that runs on every HTTP route.
-    pub fn use_global_http_pipes(&mut self, pipe: Arc<dyn Pipe<HttpContext>>) -> &mut Self {
+    pub fn use_global_http_pipes(
+        &mut self,
+        pipe: Arc<dyn Pipe<HttpContext, crate::http_helpers::HttpResponse>>,
+    ) -> &mut Self {
         self.global_http_pipes.push(HttpPipeEntry::Ready(pipe));
         self
     }
@@ -101,14 +104,17 @@ impl ToniFactory {
 
     pub fn use_global_rpc_interceptors(
         &mut self,
-        interceptor: Arc<dyn Interceptor<RpcContext>>,
+        interceptor: Arc<dyn Interceptor<RpcContext, crate::rpc::RpcHandlerResult>>,
     ) -> &mut Self {
         self.global_rpc_interceptors
             .push(RpcInterceptorEntry::Ready(interceptor));
         self
     }
 
-    pub fn use_global_rpc_pipes(&mut self, pipe: Arc<dyn Pipe<RpcContext>>) -> &mut Self {
+    pub fn use_global_rpc_pipes(
+        &mut self,
+        pipe: Arc<dyn Pipe<RpcContext, crate::rpc::RpcHandlerResult>>,
+    ) -> &mut Self {
         self.global_rpc_pipes.push(RpcPipeEntry::Ready(pipe));
         self
     }
@@ -128,14 +134,17 @@ impl ToniFactory {
 
     pub fn use_global_ws_interceptors(
         &mut self,
-        interceptor: Arc<dyn Interceptor<WsContext>>,
+        interceptor: Arc<dyn Interceptor<WsContext, crate::websocket::WsHandlerResult>>,
     ) -> &mut Self {
         self.global_ws_interceptors
             .push(WsInterceptorEntry::Ready(interceptor));
         self
     }
 
-    pub fn use_global_ws_pipes(&mut self, pipe: Arc<dyn Pipe<WsContext>>) -> &mut Self {
+    pub fn use_global_ws_pipes(
+        &mut self,
+        pipe: Arc<dyn Pipe<WsContext, crate::websocket::WsHandlerResult>>,
+    ) -> &mut Self {
         self.global_ws_pipes.push(WsPipeEntry::Ready(pipe));
         self
     }

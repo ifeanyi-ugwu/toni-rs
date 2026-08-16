@@ -15,3 +15,8 @@ pub use rpc_controller_trait::{RpcControllerTrait, RpcEnhancers, RpcHandlerEnhan
 pub(crate) use rpc_controller_wrapper::RpcControllerWrapper;
 pub use rpc_data::RpcData;
 pub use rpc_error::RpcError;
+
+/// What an RPC call answers with — the value the pipeline returns and the `R`
+/// of [`Interceptor`](crate::traits_helpers::Interceptor) and
+/// [`Pipe`](crate::traits_helpers::Pipe) on this transport.
+pub type RpcHandlerResult = Result<Option<RpcData>, RpcError>;

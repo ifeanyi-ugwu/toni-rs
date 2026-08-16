@@ -8,6 +8,7 @@
 //! - Isolation: a method-level enhancer does not affect sibling handlers ("plain").
 
 use std::time::Duration;
+use toni::rpc::RpcHandlerResult;
 
 use toni::async_trait;
 use toni::context::{HandlerContext, RpcContext, WsContext};
@@ -15,7 +16,7 @@ use toni::injectable;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
-use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
+use toni::websocket::{WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
 use toni_macros::{new, patterns, rpc_controller, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
@@ -26,15 +27,17 @@ use crate::common::TestServer;
 pub struct AbortPipe {}
 impl AbortPipe {}
 
-impl Pipe<RpcContext> for AbortPipe {
-    fn process(&self, ctx: &mut RpcContext) {
+impl Pipe<RpcContext, RpcHandlerResult> for AbortPipe {
+    fn process(&self, ctx: &mut RpcContext) -> Option<RpcHandlerResult> {
         ctx.abort();
+        None
     }
 }
 
-impl Pipe<WsContext> for AbortPipe {
-    fn process(&self, ctx: &mut WsContext) {
+impl Pipe<WsContext, WsHandlerResult> for AbortPipe {
+    fn process(&self, ctx: &mut WsContext) -> Option<WsHandlerResult> {
         ctx.abort();
+        None
     }
 }
 
@@ -89,12 +92,18 @@ pub struct WsPrefixInterceptor {}
 impl WsPrefixInterceptor {}
 
 #[async_trait]
-impl Interceptor<WsContext> for WsPrefixInterceptor {
-    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
-        next.run(ctx).await;
-        if let Some(Ok(Some(msg))) = ctx.response() {
-            let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
-            ctx.set_response(Ok(Some(WsMessage::text(prefixed))));
+impl Interceptor<WsContext, WsHandlerResult> for WsPrefixInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
+    ) -> WsHandlerResult {
+        match next.run(ctx).await? {
+            WsHandlerOutput::Single(msg) => {
+                let prefixed = format!("prefixed:{}", msg.as_text().unwrap_or(""));
+                Ok(WsHandlerOutput::Single(WsMessage::text(prefixed)))
+            }
+            other => Ok(other),
         }
     }
 }
@@ -168,18 +177,21 @@ pub struct RpcPrefixInterceptor {}
 impl RpcPrefixInterceptor {}
 
 #[async_trait]
-impl Interceptor<RpcContext> for RpcPrefixInterceptor {
-    async fn intercept(&self, ctx: &mut RpcContext, next: Box<dyn InterceptorNext<RpcContext>>) {
-        next.run(ctx).await;
-        let prefixed: Option<String> = ctx
-            .response()
-            .and_then(|r| r.as_ref().ok())
-            .and_then(|opt| opt.as_ref())
+impl Interceptor<RpcContext, RpcHandlerResult> for RpcPrefixInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut RpcContext,
+        next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
+    ) -> RpcHandlerResult {
+        let answer = next.run(ctx).await?;
+        let prefixed: Option<String> = answer
+            .as_ref()
             .and_then(|data| data.as_json())
             .and_then(|v| v.as_str())
             .map(|s| format!("prefixed:{}", s));
-        if let Some(val) = prefixed {
-            ctx.set_response(Ok(Some(RpcData::json(serde_json::json!(val)))));
+        match prefixed {
+            Some(val) => Ok(Some(RpcData::json(serde_json::json!(val)))),
+            None => Ok(answer),
         }
     }
 }

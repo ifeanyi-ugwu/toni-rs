@@ -13,6 +13,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use toni::rpc::RpcHandlerResult;
 
 use serde::{Deserialize, Serialize};
 use toni::async_trait;
@@ -597,8 +598,12 @@ pub struct PanickingRpcInterceptor {}
 impl PanickingRpcInterceptor {}
 
 #[async_trait]
-impl Interceptor<RpcContext> for PanickingRpcInterceptor {
-    async fn intercept(&self, _ctx: &mut RpcContext, _next: Box<dyn InterceptorNext<RpcContext>>) {
+impl Interceptor<RpcContext, RpcHandlerResult> for PanickingRpcInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &mut RpcContext,
+        _next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
+    ) -> RpcHandlerResult {
         panic!("rpc interceptor kaboom");
     }
 }
@@ -667,9 +672,10 @@ async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive()
 pub struct PanickingRpcPipe {}
 impl PanickingRpcPipe {}
 
-impl Pipe<RpcContext> for PanickingRpcPipe {
-    fn process(&self, _ctx: &mut RpcContext) {
+impl Pipe<RpcContext, RpcHandlerResult> for PanickingRpcPipe {
+    fn process(&self, _ctx: &mut RpcContext) -> Option<RpcHandlerResult> {
         panic!("rpc pipe kaboom");
+        None
     }
 }
 

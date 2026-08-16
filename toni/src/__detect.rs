@@ -81,45 +81,45 @@ probe!(
 probe!(
     HttpInterceptorProbe,
     HttpInterceptorProbeFallback,
-    Interceptor<HttpContext>,
-    dyn Interceptor<HttpContext>
+    Interceptor<HttpContext, HttpResponse>,
+    dyn Interceptor<HttpContext, HttpResponse>
 );
 probe!(
     RpcInterceptorProbe,
     RpcInterceptorProbeFallback,
-    Interceptor<RpcContext>,
-    dyn Interceptor<RpcContext>
+    Interceptor<RpcContext, crate::rpc::RpcHandlerResult>,
+    dyn Interceptor<RpcContext, crate::rpc::RpcHandlerResult>
 );
 probe!(
     WsInterceptorProbe,
     WsInterceptorProbeFallback,
-    Interceptor<WsContext>,
-    dyn Interceptor<WsContext>
+    Interceptor<WsContext, crate::websocket::WsHandlerResult>,
+    dyn Interceptor<WsContext, crate::websocket::WsHandlerResult>
 );
 probe!(
     GrpcInterceptorProbe,
     GrpcInterceptorProbeFallback,
-    Interceptor<GrpcContext>,
-    dyn Interceptor<GrpcContext>
+    Interceptor<GrpcContext, crate::GrpcHandlerResult>,
+    dyn Interceptor<GrpcContext, crate::GrpcHandlerResult>
 );
 
 probe!(
     HttpPipeProbe,
     HttpPipeProbeFallback,
-    Pipe<HttpContext>,
-    dyn Pipe<HttpContext>
+    Pipe<HttpContext, HttpResponse>,
+    dyn Pipe<HttpContext, HttpResponse>
 );
 probe!(
     RpcPipeProbe,
     RpcPipeProbeFallback,
-    Pipe<RpcContext>,
-    dyn Pipe<RpcContext>
+    Pipe<RpcContext, crate::rpc::RpcHandlerResult>,
+    dyn Pipe<RpcContext, crate::rpc::RpcHandlerResult>
 );
 probe!(
     WsPipeProbe,
     WsPipeProbeFallback,
-    Pipe<WsContext>,
-    dyn Pipe<WsContext>
+    Pipe<WsContext, crate::websocket::WsHandlerResult>,
+    dyn Pipe<WsContext, crate::websocket::WsHandlerResult>
 );
 
 probe!(HttpErrorHandlerProbe, HttpErrorHandlerProbeFallback, ErrorHandler<HttpContext, HttpResponse>, dyn ErrorHandler<HttpContext, HttpResponse>);
@@ -181,31 +181,31 @@ type_probe!(
 type_probe!(
     HttpInterceptorTypeProbe,
     HttpInterceptorTypeProbeFallback,
-    Interceptor<HttpContext>
+    Interceptor<HttpContext, HttpResponse>
 );
 type_probe!(
     RpcInterceptorTypeProbe,
     RpcInterceptorTypeProbeFallback,
-    Interceptor<RpcContext>
+    Interceptor<RpcContext, crate::rpc::RpcHandlerResult>
 );
 type_probe!(
     WsInterceptorTypeProbe,
     WsInterceptorTypeProbeFallback,
-    Interceptor<WsContext>
+    Interceptor<WsContext, crate::websocket::WsHandlerResult>
 );
 type_probe!(
     GrpcInterceptorTypeProbe,
     GrpcInterceptorTypeProbeFallback,
-    Interceptor<GrpcContext>
+    Interceptor<GrpcContext, crate::GrpcHandlerResult>
 );
 
 type_probe!(
     HttpPipeTypeProbe,
     HttpPipeTypeProbeFallback,
-    Pipe<HttpContext>
+    Pipe<HttpContext, HttpResponse>
 );
-type_probe!(RpcPipeTypeProbe, RpcPipeTypeProbeFallback, Pipe<RpcContext>);
-type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext>);
+type_probe!(RpcPipeTypeProbe, RpcPipeTypeProbeFallback, Pipe<RpcContext, crate::rpc::RpcHandlerResult>);
+type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext, crate::websocket::WsHandlerResult>);
 
 /// Brings every fallback trait into scope so the inline `detect()` / `is()` calls resolve.
 /// Glob-import this once where the probe calls are emitted; method resolution is by receiver type,
