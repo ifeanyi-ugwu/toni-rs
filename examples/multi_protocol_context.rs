@@ -29,6 +29,7 @@
 use serde_json::json;
 use toni::async_trait;
 use toni::context::{HttpContext, RpcContext, WsContext};
+use toni::rpc::RpcHandlerResult;
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni::*;
@@ -80,8 +81,12 @@ pub struct LoggingInterceptor {}
 impl LoggingInterceptor {}
 
 #[async_trait]
-impl Interceptor<HttpContext> for LoggingInterceptor {
-    async fn intercept(&self, ctx: &mut HttpContext, next: Box<dyn InterceptorNext<HttpContext>>) {
+impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
         let req = ctx.request();
         println!(
             "[HTTP]      {} {} (agent: {:?})",
@@ -89,32 +94,40 @@ impl Interceptor<HttpContext> for LoggingInterceptor {
             req.uri,
             req.headers.get("user-agent").and_then(|v| v.to_str().ok())
         );
-        next.run(ctx).await;
+        next.run(ctx).await
     }
 }
 
 #[async_trait]
-impl Interceptor<RpcContext> for LoggingInterceptor {
-    async fn intercept(&self, ctx: &mut RpcContext, next: Box<dyn InterceptorNext<RpcContext>>) {
+impl Interceptor<RpcContext, RpcHandlerResult> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut RpcContext,
+        next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
+    ) -> RpcHandlerResult {
         println!(
             "[RPC]       pattern='{}' data={:?}",
             ctx.pattern(),
             ctx.data()
         );
-        next.run(ctx).await;
+        next.run(ctx).await
     }
 }
 
 #[async_trait]
-impl Interceptor<WsContext> for LoggingInterceptor {
-    async fn intercept(&self, ctx: &mut WsContext, next: Box<dyn InterceptorNext<WsContext>>) {
+impl Interceptor<WsContext, WsHandlerResult> for LoggingInterceptor {
+    async fn intercept(
+        &self,
+        ctx: &mut WsContext,
+        next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
+    ) -> WsHandlerResult {
         println!(
             "[WebSocket] event='{}' client={} message={:?}",
             ctx.event(),
             ctx.client().id,
             ctx.message()
         );
-        next.run(ctx).await;
+        next.run(ctx).await
     }
 }
 
