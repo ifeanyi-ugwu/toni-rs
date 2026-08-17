@@ -16,11 +16,16 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// Pipes that need to transform the request body are not supported on gRPC
 /// for the same reason — the body is method-typed and there's no
 /// `Box<dyn Validatable>`-shaped place to put it.
+#[derive(Clone)]
 pub struct GrpcContext {
-    pub(crate) shared: SharedState,
-    pub(crate) method: String,
-    pub(crate) metadata: HashMap<String, String>,
-    pub(crate) peer: Option<SocketAddr>,
+    inner: Arc<GrpcInner>,
+}
+
+struct GrpcInner {
+    shared: SharedState,
+    method: String,
+    metadata: HashMap<String, String>,
+    peer: Option<SocketAddr>,
 }
 
 impl GrpcContext {
@@ -31,54 +36,44 @@ impl GrpcContext {
         route_metadata: Option<Arc<RouteMetadata>>,
     ) -> Self {
         Self {
-            shared: SharedState::new(route_metadata),
-            method: method.into(),
-            metadata,
-            peer,
+            inner: Arc::new(GrpcInner {
+                shared: SharedState::new(route_metadata),
+                method: method.into(),
+                metadata,
+                peer,
+            }),
         }
     }
 
     /// Full method path, e.g. `"orders.OrdersService/CreateOrder"`.
     pub fn method(&self) -> &str {
-        &self.method
+        &self.inner.method
     }
 
     pub fn metadata(&self) -> &HashMap<String, String> {
-        &self.metadata
-    }
-
-    pub fn metadata_mut(&mut self) -> &mut HashMap<String, String> {
-        &mut self.metadata
+        &self.inner.metadata
     }
 
     pub fn get_metadata(&self, key: &str) -> Option<&str> {
-        self.metadata.get(key).map(|s| s.as_str())
+        self.inner.metadata.get(key).map(|s| s.as_str())
     }
 
     pub fn peer(&self) -> Option<SocketAddr> {
-        self.peer
+        self.inner.peer
     }
 }
 
 impl HandlerContext for GrpcContext {
     fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.shared.route_metadata.as_deref()
+        self.inner.shared.route_metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {
-        &self.shared.extensions
+        &self.inner.shared.extensions
     }
 
     fn cancellation(&self) -> &CancellationToken {
-        &self.shared.cancellation
-    }
-
-    fn abort(&mut self) {
-        self.shared.abort = true;
-    }
-
-    fn should_abort(&self) -> bool {
-        self.shared.abort
+        &self.inner.shared.cancellation
     }
 
     // `deadline()` from `grpc-timeout` would be a useful override here but

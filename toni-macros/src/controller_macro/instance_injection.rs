@@ -559,7 +559,7 @@ fn generate_singleton_controller_wrapper(
         impl ::toni::traits_helpers::Route for #controller_name {
             async fn execute(
                 &self,
-                __ctx: &mut ::toni::context::HttpContext,
+                __ctx: &::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,
@@ -642,7 +642,7 @@ fn generate_request_controller_wrapper(
         impl ::toni::traits_helpers::Route for #controller_name {
             async fn execute(
                 &self,
-                __ctx: &mut ::toni::context::HttpContext,
+                __ctx: &::toni::context::HttpContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::toni::http_helpers::HttpResponse,
                 ::toni::errors::HttpError,

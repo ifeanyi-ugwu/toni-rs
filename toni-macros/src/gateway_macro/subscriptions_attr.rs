@@ -77,7 +77,7 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
             #[allow(non_snake_case, clippy::all)]
             async fn __toni_ws_handle_event(
                 &self,
-                __ctx: &mut ::toni::context::WsContext,
+                __ctx: &::toni::context::WsContext,
             ) -> ::toni::http_helpers::ExecutionResult<::toni::WsHandlerOutput, ::toni::WsError> {
                 let __event = ::std::string::String::from(__ctx.event());
                 match __event.as_str() {
@@ -97,7 +97,7 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
 ///
 /// Every parameter is a `FromContext<WsContext>`, so a handler takes what it
 /// needs and nothing more — the fixed `(WsClient, WsMessage)` pair is now just
-/// the most common choice rather than the only one. `&mut WsContext` is passed
+/// the most common choice rather than the only one. `&WsContext` is passed
 /// straight through, reborrowed at the call so it holds no borrow across the
 /// extractions before it.
 fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStream>) {
@@ -118,7 +118,7 @@ fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStrea
         let ty = &*pat_type.ty;
 
         if is_ws_context_ref(ty) {
-            call_args.push(quote! { &mut *__ctx });
+            call_args.push(quote! { &*__ctx });
             continue;
         }
 
@@ -140,7 +140,7 @@ fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStrea
     (extractions, call_args)
 }
 
-/// `&mut WsContext` — the context itself, not something extracted from it.
+/// `&WsContext` — the context itself, not something extracted from it.
 fn is_ws_context_ref(ty: &syn::Type) -> bool {
     let syn::Type::Reference(type_ref) = ty else {
         return false;

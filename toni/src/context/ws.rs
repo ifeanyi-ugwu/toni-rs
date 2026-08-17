@@ -10,11 +10,16 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// One per inbound message (or per `connect`/`disconnect` lifecycle event). A
 /// handler answers by returning a [`WsHandlerOutput`](super::WsHandlerOutput),
 /// streams included, so nothing about the answer lives here.
+#[derive(Clone)]
 pub struct WsContext {
-    pub(crate) shared: SharedState,
-    pub(crate) client: WsClient,
-    pub(crate) message: WsMessage,
-    pub(crate) event: String,
+    inner: Arc<WsInner>,
+}
+
+struct WsInner {
+    shared: SharedState,
+    client: WsClient,
+    message: WsMessage,
+    event: String,
 }
 
 impl WsContext {
@@ -30,44 +35,38 @@ impl WsContext {
         // across that boundary.
         client.extensions = shared.extensions.clone();
         Self {
-            shared,
-            client,
-            message,
-            event: event.into(),
+            inner: Arc::new(WsInner {
+                shared,
+                client,
+                message,
+                event: event.into(),
+            }),
         }
     }
 
     pub fn client(&self) -> &WsClient {
-        &self.client
+        &self.inner.client
     }
 
     pub fn message(&self) -> &WsMessage {
-        &self.message
+        &self.inner.message
     }
 
     pub fn event(&self) -> &str {
-        &self.event
+        &self.inner.event
     }
 }
 
 impl HandlerContext for WsContext {
     fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.shared.route_metadata.as_deref()
+        self.inner.shared.route_metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {
-        &self.shared.extensions
+        &self.inner.shared.extensions
     }
 
     fn cancellation(&self) -> &CancellationToken {
-        &self.shared.cancellation
-    }
-
-    fn abort(&mut self) {
-        self.shared.abort = true;
-    }
-
-    fn should_abort(&self) -> bool {
-        self.shared.abort
+        &self.inner.shared.cancellation
     }
 }

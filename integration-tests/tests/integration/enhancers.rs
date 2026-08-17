@@ -87,7 +87,7 @@ impl AdminGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AdminGuard {
-    async fn can_activate(&self, context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.tracker.track("guard:admin");
         context
             .request()
@@ -112,7 +112,7 @@ impl AuthGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.tracker.track("guard:auth");
         context.request().headers.contains_key("authorization")
     }
@@ -136,7 +136,7 @@ impl LoggingInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     async fn intercept(
         &self,
-        _context: &mut HttpContext,
+        _context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         self.tracker
@@ -159,7 +159,7 @@ impl ValidationPipe {
 }
 
 impl Pipe<HttpContext, HttpResponse> for ValidationPipe {
-    fn process(&self, context: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, context: &HttpContext) -> Option<HttpResponse> {
         self.tracker.track("pipe:validation");
         let is_invalid = context
             .request()
@@ -190,7 +190,7 @@ impl TransformPipe {
 }
 
 impl Pipe<HttpContext, HttpResponse> for TransformPipe {
-    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
         self.tracker.track("pipe:transform");
         None
     }
@@ -422,7 +422,7 @@ async fn di_in_enhancers() {
 
     #[async_trait]
     impl Guard<HttpContext> for DIGuard {
-        async fn can_activate(&self, context: &mut HttpContext) -> bool {
+        async fn can_activate(&self, context: &HttpContext) -> bool {
             context
                 .request()
                 .headers
@@ -481,7 +481,7 @@ async fn app_token_global_enhancers() {
     }
     #[async_trait]
     impl Guard<HttpContext> for GlobalGuard {
-        async fn can_activate(&self, _context: &mut HttpContext) -> bool {
+        async fn can_activate(&self, _context: &HttpContext) -> bool {
             self.tracker.track("global_guard");
             true
         }

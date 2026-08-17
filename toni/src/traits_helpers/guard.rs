@@ -14,7 +14,7 @@ use crate::context::HandlerContext;
 /// principal there rather than making the handler re-derive it:
 ///
 /// ```ignore
-/// async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+/// async fn can_activate(&self, ctx: &HttpContext) -> bool {
 ///     let Some(user) = self.authenticate(ctx.request()) else { return false };
 ///     ctx.extensions().insert(user);
 ///     true
@@ -31,5 +31,5 @@ use crate::context::HandlerContext;
 /// than reaching for the bag by type.
 #[async_trait]
 pub trait Guard<C: ?Sized + HandlerContext>: Send + Sync {
-    async fn can_activate(&self, context: &mut C) -> bool;
+    async fn can_activate(&self, context: &C) -> bool;
 }

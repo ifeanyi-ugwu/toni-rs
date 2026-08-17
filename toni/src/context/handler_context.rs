@@ -15,7 +15,7 @@ use super::{CancellationToken, Extensions};
 /// implement honestly — no method requires a transport to fake an answer. If a
 /// concept only makes sense for some transports (HTTP headers, gRPC metadata,
 /// WS client identity), it lives on the concrete context, not here.
-pub trait HandlerContext: Send {
+pub trait HandlerContext: Send + Sync {
     /// Per-route metadata (`#[set_metadata(...)]` attached at the controller
     /// or method level). `None` for global handlers (404, error filters) that
     /// never bind to a specific route.
@@ -34,26 +34,13 @@ pub trait HandlerContext: Send {
     fn cancellation(&self) -> &CancellationToken;
 
     /// The absolute deadline by which the request should be answered, if the
-    /// transport carries one. gRPC populates this from `grpc-timeout`; HTTP
-    /// adapters may populate from a header; transports without a deadline
-    /// concept (TCP, UDP, WS) return `None`.
+    /// transport carries one.
     ///
-    /// Default impl returns `None` so transports that don't carry deadlines
-    /// don't have to override.
+    /// No transport overrides this yet, so it is `None` everywhere. gRPC's
+    /// `grpc-timeout` is the obvious first producer.
     fn deadline(&self) -> Option<Instant> {
         None
     }
-
-    /// Short-circuit the handler chain: subsequent enhancers and the handler
-    /// are skipped.
-    ///
-    /// This stops the chain without supplying an answer, so a guard aborting
-    /// this way rejects the request. An enhancer that has an answer to give
-    /// returns it instead — see [`Interceptor`](crate::traits_helpers::Interceptor)
-    /// and [`Pipe`](crate::traits_helpers::Pipe).
-    fn abort(&mut self);
-
-    fn should_abort(&self) -> bool;
 }
 
 impl dyn HandlerContext + '_ {

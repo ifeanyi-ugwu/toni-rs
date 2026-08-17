@@ -12,7 +12,7 @@
 //!
 //! A parameter of none of these types is the call's payload, deserialised into
 //! it. That is the convention RPC handlers have always used, and it still holds:
-//! `async fn place(&self, order: PlaceOrder, ctx: &mut RpcContext)` means what it
+//! `async fn place(&self, order: PlaceOrder, ctx: &RpcContext)` means what it
 //! always did.
 
 use std::convert::Infallible;
@@ -28,7 +28,7 @@ use crate::rpc::RpcData;
 impl FromContext<RpcContext> for RpcData {
     type Error = Infallible;
 
-    async fn extract(ctx: &mut RpcContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &RpcContext) -> Result<Self, Self::Error> {
         Ok(ctx.data().clone())
     }
 }
@@ -48,7 +48,7 @@ impl std::error::Error for PayloadError {}
 impl<T: DeserializeOwned> FromContext<RpcContext> for Payload<T> {
     type Error = PayloadError;
 
-    async fn extract(ctx: &mut RpcContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &RpcContext) -> Result<Self, Self::Error> {
         ctx.data().parse().map(Payload).map_err(PayloadError)
     }
 }

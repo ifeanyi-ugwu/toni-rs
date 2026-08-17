@@ -34,7 +34,7 @@ pub trait WsHandlersBridge {
 
     async fn __toni_ws_handle_event(
         &self,
-        ctx: &mut WsContext,
+        ctx: &WsContext,
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
         ExecutionResult::Err(WsError::EventNotFound(format!(
             "Unknown event: {}",

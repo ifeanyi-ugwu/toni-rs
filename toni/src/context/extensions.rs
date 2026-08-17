@@ -175,7 +175,7 @@ impl Extensions {
 impl<C: HandlerContext> crate::extractors::FromContext<C> for Extensions {
     type Error = std::convert::Infallible;
 
-    async fn extract(ctx: &mut C) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &C) -> Result<Self, Self::Error> {
         Ok(ctx.extensions().clone())
     }
 }
@@ -272,7 +272,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Principal(&'static str);
 
-        async fn read_from_any<C: HandlerContext>(ctx: &mut C) -> Extensions {
+        async fn read_from_any<C: HandlerContext>(ctx: &C) -> Extensions {
             use crate::extractors::FromContext;
             Extensions::extract(ctx).await.expect("infallible")
         }
@@ -280,10 +280,10 @@ mod tests {
         // Instantiated at a real context to prove the bound is satisfiable, not
         // merely well-formed.
         let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-        let mut ctx = crate::context::HttpContext::from_parts(parts);
+        let ctx = crate::context::HttpContext::from_parts(parts);
         ctx.extensions().insert(Principal("alice"));
 
-        let bag = read_from_any(&mut ctx).await;
+        let bag = read_from_any(&ctx).await;
         assert_eq!(bag.get::<Principal>(), Some(Principal("alice")));
     }
 

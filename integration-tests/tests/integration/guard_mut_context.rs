@@ -18,7 +18,7 @@ struct AuthGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         // The whole point: a guard mutating the context. A compile error
         // under the old `&HttpContext` signature.
         ctx.extensions().insert(Principal {
@@ -34,7 +34,7 @@ struct RequireAdminGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for RequireAdminGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         match ctx.extensions().get::<Principal>() {
             Some(principal) => principal.roles.iter().any(|r| r == "admin"),
             None => false,
@@ -60,7 +60,7 @@ async fn guard_attaches_principal_that_a_later_guard_reads() {
     assert!(ctx.extensions().get::<Principal>().is_none());
 
     // Guard A writes the principal.
-    assert!(AuthGuard.can_activate(&mut ctx).await);
+    assert!(AuthGuard.can_activate(&ctx).await);
 
     // It is now on the context...
     assert_eq!(
@@ -69,33 +69,36 @@ async fn guard_attaches_principal_that_a_later_guard_reads() {
     );
 
     // ...and Guard B (a downstream enhancer) reads it to authorize.
-    assert!(RequireAdminGuard.can_activate(&mut ctx).await);
+    assert!(RequireAdminGuard.can_activate(&ctx).await);
 }
 
 #[tokio::test]
 async fn require_admin_denies_when_no_principal_was_attached() {
     let mut ctx = context();
     // AuthGuard never ran, so the downstream guard sees nothing and denies.
-    assert!(!RequireAdminGuard.can_activate(&mut ctx).await);
+    assert!(!RequireAdminGuard.can_activate(&ctx).await);
 }
 
 /// A guard that runs on EVERY transport via one blanket impl. It can only use
-/// the universal `HandlerContext` surface (abort flag, route metadata,
-/// extensions, cancellation) — no `ctx.request()` (HTTP) or `ctx.client()`
-/// (WS), because those live on the concrete context types, not the shared
-/// trait. This is exactly the `impl<C: HandlerContext> Guard<C>` form the
-/// guard docs describe, and it compiles.
+/// the universal `HandlerContext` surface (route metadata, extensions,
+/// cancellation) — no `ctx.request()` (HTTP) or `ctx.client()` (WS), because
+/// those live on the concrete context types, not the shared trait. This is
+/// exactly the `impl<C: HandlerContext> Guard<C>` form the guard docs
+/// describe, and it compiles.
 struct UniversalGuard;
 
 #[async_trait]
 impl<C: HandlerContext + ?Sized> Guard<C> for UniversalGuard {
-    async fn can_activate(&self, ctx: &mut C) -> bool {
-        !ctx.should_abort()
+    async fn can_activate(&self, ctx: &C) -> bool {
+        ctx.extensions().get::<Denied>().is_none()
     }
 }
+
+#[derive(Clone)]
+struct Denied;
 
 #[tokio::test]
 async fn blanket_guard_runs_against_a_concrete_context() {
     let mut ctx = context();
-    assert!(UniversalGuard.can_activate(&mut ctx).await);
+    assert!(UniversalGuard.can_activate(&ctx).await);
 }

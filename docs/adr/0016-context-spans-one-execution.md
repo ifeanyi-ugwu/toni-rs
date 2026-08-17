@@ -112,7 +112,6 @@ struct HttpInner {
     cancellation: CancellationToken,
     parts:        RequestPart,
     body:         Mutex<Option<RequestBody>>,
-    committed:    AtomicBool,
 }
 ```
 
@@ -126,15 +125,18 @@ Four handles, not one type. An extractor declares its valid transports through i
 impls (ADR-0015), which requires the contexts to be distinct types. Uniformity of shape, not
 collapse into one noun.
 
-### Phases are enforced at runtime
+### Phases need no enforcement, because the answer never lives here
 
-A handle cannot express "the answer is committed" as a bound. Taking the answer flips `committed`, and
-an attempt to answer afterwards warns and does nothing — the register already used for a handler that
-sets a response and then returns one.
+The plan was a `committed` flag and a runtime warning, on the reasoning that a handle cannot express
+"the answer is committed" as a bound. Moving the answer off the context removed the state that flag
+would have policed: there is nothing on a context to answer with, at any phase, so there is no
+precedence and no window to warn about.
 
-This trades a compile-time check for a runtime one. The compile-time check being traded away tests
-the wrong thing: it enforces exclusivity, which is a property of the borrow, while the property worth
-enforcing is the phase.
+What survives of the phase distinction is the request body, and it was already loud — a second read
+fails by name rather than handing back an empty one.
+
+So the compile-time check `&mut` provided is not traded for a runtime one. It is dropped, because what
+it enforced — exclusivity — was never the property worth having.
 
 ### The answer is returned, never written
 
@@ -156,13 +158,20 @@ pub trait Pipe<C: ?Sized + HandlerContext, R>: Send + Sync {
 
 For an interceptor, short-circuiting is returning without calling `next` — which is what skipping the
 handler already means. For a pipe, `Some` answers and skips the remaining pipes and the handler, which
-is what `set_response` plus `abort()` meant when written together. `abort()` survives as what it says
-alone: stop, with nothing to send.
+is what `set_response` plus `abort()` meant when written together.
 
-Those two outcomes leave by different doors, and the difference is observable on the wire. An answer a
-pipe returns is the reply. A pipe that aborts without one produces a transport-level error — `Err` out
-of the RPC and WebSocket dispatchers, a 500 on HTTP — rather than the success-frame-carrying-an-error-
-envelope that a handler's `Err` renders to. A rejected request is not a user error and is not framed as
+`abort()` does not survive that. Once every enhancer answers by returning, a flag saying "stop, with
+nothing to send" is a third spelling of what `bool` and `Some(R)` say more precisely — and it was
+honoured on RPC, WebSocket and gRPC while HTTP's guard loop never read it, so the same guard rejected
+on three transports and was ignored on the fourth. It also took its name from the concept
+`CancellationToken` implements, which is a different thing entirely: stop because the caller went away,
+not stop because this stage decided to. Nest has no `abort` on `ExecutionContext` either. It is removed
+along with `should_abort` and the seven checks that read it.
+
+A guard therefore rejects by returning `false`, and a pipe rejects by returning `Some`. A pipe's answer
+and a handler's error still leave by different doors, and the difference is observable: an answer a
+pipe returns is the reply, while a handler's `Err` renders through the error chain into the
+success-frame-carrying-an-error-envelope. A rejected request is not a user error and is not framed as
 one; the parallel is guard rejection.
 
 Guards keep returning `bool`, matching Nest, and lose the read-back of a response they may have left
@@ -260,6 +269,9 @@ boundary here avoids.
   works after the call binds the answer and returns it.
 - Breaking for `Pipe` implementors: `process` returns `Option<R>`, so every pipe that transforms and
   falls through ends in `None`, and one that rejects returns `Some` instead of writing and aborting.
+- `abort()` and `should_abort()` are removed from `HandlerContext`. A guard rejects by returning
+  `false`; a pipe rejects by returning `Some`. Code calling either has no replacement, and no silent
+  behaviour change: on HTTP a guard's `abort()` was already ignored.
 - Breaking for guards only where one set a custom rejection response. Reshape with
   `#[catch(GuardRejection)]`, which already took precedence over that response.
 - `set_response`, `response()`, `response_mut()`, `take_response()` and `into_response()` are removed
@@ -275,8 +287,8 @@ boundary here avoids.
   no replacement — a dispatch target is not a dependency.
 - The window in which an execution's state is reachable grows from handler return to body drain. A
   bug that leaked a context previously ended with the handler and now ends with the stream.
-- Answering after the answer is committed is a warning at runtime where it was a compile error before,
-  in the sense that the borrow ended. Detection is a snapshot comparison, not a guess.
+- No phase check is added. Answering off-phase stopped being representable when the answer left the
+  context, so the warning this ADR planned for is unnecessary rather than deferred.
 - Extension-bag reads from inside an SSE stream, a WebSocket stream handler, or any gRPC streaming mode
   become possible. They return the execution's bag rather than nothing.
 

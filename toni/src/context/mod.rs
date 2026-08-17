@@ -22,3 +22,21 @@ pub use self::handler_context::HandlerContext;
 pub use self::http::HttpContext;
 pub use self::rpc::RpcContext;
 pub use self::ws::WsContext;
+
+#[cfg(test)]
+mod handle_bounds_tests {
+    use super::*;
+
+    fn assert_handle<T: Send + Sync + Clone + 'static>() {}
+
+    /// Every enhancer signature takes `&C` across an await, and `&T` is `Send`
+    /// only where `T` is `Sync`. A context losing `Sync` breaks the whole
+    /// enhancer surface, and the error would surface far from the cause.
+    #[test]
+    fn every_context_is_a_send_sync_clone_handle() {
+        assert_handle::<HttpContext>();
+        assert_handle::<RpcContext>();
+        assert_handle::<WsContext>();
+        assert_handle::<GrpcContext>();
+    }
+}

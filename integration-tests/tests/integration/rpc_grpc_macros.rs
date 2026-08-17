@@ -152,7 +152,7 @@ impl AuthGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
         ctx.get_metadata("authorization").is_some()
     }
 }
@@ -163,7 +163,7 @@ impl AdminGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AdminGuard {
-    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
         ctx.get_metadata("x-role") == Some("admin")
     }
 }
@@ -299,7 +299,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 {
     async fn intercept(
         &self,
-        ctx: &mut toni::GrpcContext,
+        ctx: &toni::GrpcContext,
         next: Box<
             dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
         >,
@@ -321,7 +321,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 {
     async fn intercept(
         &self,
-        ctx: &mut toni::GrpcContext,
+        ctx: &toni::GrpcContext,
         next: Box<
             dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
         >,
@@ -343,7 +343,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 {
     async fn intercept(
         &self,
-        _ctx: &mut toni::GrpcContext,
+        _ctx: &toni::GrpcContext,
         _next: Box<
             dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
         >,
@@ -897,7 +897,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     async fn handle_error(
         &self,
         error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &mut toni::GrpcContext,
+        _ctx: &toni::GrpcContext,
     ) -> ::std::option::Option<toni::GrpcStatus> {
         let msg = error.to_string();
         if msg.contains("remap-me") {
@@ -1289,7 +1289,7 @@ impl PanickingGrpcGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for PanickingGrpcGuard {
-    async fn can_activate(&self, _ctx: &mut toni::GrpcContext) -> bool {
+    async fn can_activate(&self, _ctx: &toni::GrpcContext) -> bool {
         panic!("guard kaboom");
     }
 }
@@ -1363,7 +1363,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 {
     async fn intercept(
         &self,
-        _ctx: &mut toni::GrpcContext,
+        _ctx: &toni::GrpcContext,
         _next: Box<
             dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>,
         >,
@@ -1553,7 +1553,7 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &mut toni::GrpcContext,
+        _ctx: &toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
         panic!("error-handler kaboom");
     }
@@ -1833,7 +1833,7 @@ impl BusGuard {}
 
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for BusGuard {
-    async fn can_activate(&self, ctx: &mut toni::GrpcContext) -> bool {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
         use toni::context::HandlerContext;
         ctx.extensions().insert(BusPrincipal("carol".into()));
         true

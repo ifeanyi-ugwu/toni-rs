@@ -33,7 +33,7 @@ pub struct AuthGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         let Some(token) = self
             .request
             .header("authorization")

@@ -233,7 +233,7 @@ where
 {
     async fn execute(
         &self,
-        ctx: &mut toni::context::HttpContext,
+        ctx: &toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         let Some(req) = ctx.take_request() else {
             return toni::http_helpers::ExecutionResult::Ok(HttpResponse {
@@ -360,7 +360,7 @@ struct GraphQLPlaygroundController {
 impl Route for GraphQLPlaygroundController {
     async fn execute(
         &self,
-        _ctx: &mut toni::context::HttpContext,
+        _ctx: &toni::context::HttpContext,
     ) -> toni::http_helpers::ExecutionResult<HttpResponse, toni::errors::HttpError> {
         HttpResponse {
             status: 200,

@@ -32,7 +32,7 @@ pub struct StampGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for StampGuard {
-    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         ctx.extensions().insert(Principal("erin".into()));
         true
     }
@@ -57,12 +57,7 @@ impl ExtractorGateway {
 
     /// Three extractors, declared in an order the old fixed pair could not express.
     #[subscribe_message("whoami")]
-    async fn whoami(
-        &self,
-        ext: Extensions,
-        ctx: &mut WsContext,
-        client: WsClient,
-    ) -> WsHandlerResult {
+    async fn whoami(&self, ext: Extensions, ctx: &WsContext, client: WsClient) -> WsHandlerResult {
         let principal = ext
             .get::<Principal>()
             .map(|p| p.0)

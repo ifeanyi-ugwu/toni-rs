@@ -29,7 +29,7 @@ struct ChainNext {
 
 #[async_trait]
 impl InterceptorNext<HttpContext, HttpResponse> for ChainNext {
-    async fn run(self: Box<Self>, context: &mut HttpContext) -> HttpResponse {
+    async fn run(self: Box<Self>, context: &HttpContext) -> HttpResponse {
         InstanceWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
@@ -259,7 +259,7 @@ impl InstanceWrapper {
         let pipes = Self::resolve_pipes(&pipes, &parts).await;
         let req = HttpRequest::from_parts(parts, body);
 
-        let mut context = HttpContext::new(req, route_metadata.clone());
+        let context = HttpContext::new(req, route_metadata.clone());
 
         for (i, guard) in guards.iter().enumerate() {
             // `can_activate` is user code — catch panics so the request
@@ -268,7 +268,7 @@ impl InstanceWrapper {
             // the chain renders the normal forbidden envelope.
             let activated = match crate::panic_recovery::catch_async(
                 PipelineSegment::Guard,
-                guard.can_activate(&mut context),
+                guard.can_activate(&context),
             )
             .await
             {
@@ -279,7 +279,7 @@ impl InstanceWrapper {
                         event,
                         &error_handlers,
                         &observers,
-                        &mut context,
+                        &context,
                     )
                     .await;
                 }
@@ -287,13 +287,8 @@ impl InstanceWrapper {
             if !activated {
                 tracing::debug!(guard_index = i, "guard rejected request");
                 let event = GuardRejection::new(i);
-                return Self::handle_framework_event(
-                    event,
-                    &error_handlers,
-                    &observers,
-                    &mut context,
-                )
-                .await;
+                return Self::handle_framework_event(event, &error_handlers, &observers, &context)
+                    .await;
             }
         }
 
@@ -301,7 +296,7 @@ impl InstanceWrapper {
             tracing::trace!(count = interceptors.len(), "entering interceptor chain");
         }
         Self::execute_with_interceptors(
-            &mut context,
+            &context,
             &interceptors,
             &instance,
             &pipes,
@@ -321,17 +316,15 @@ impl InstanceWrapper {
         event: E,
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &mut HttpContext,
+        ctx: &HttpContext,
     ) -> HttpResponse
     where
         E: Error,
     {
-        Self::fan_out_observers(observers, &event, &mut *ctx).await;
+        Self::fan_out_observers(observers, &event, ctx).await;
 
         for handler in error_handlers.iter().rev() {
-            if let Some(handled) =
-                Self::try_chain_handler(handler, &event, &mut *ctx, observers).await
-            {
+            if let Some(handled) = Self::try_chain_handler(handler, &event, ctx, observers).await {
                 return handled;
             }
         }
@@ -361,7 +354,7 @@ impl InstanceWrapper {
     async fn safe_render<F>(
         render: F,
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &mut HttpContext,
+        ctx: &HttpContext,
     ) -> HttpResponse
     where
         F: FnOnce() -> HttpResponse,
@@ -390,12 +383,12 @@ impl InstanceWrapper {
     async fn try_chain_handler(
         handler: &HttpErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut HttpContext,
+        ctx: &HttpContext,
         observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<HttpResponse> {
         match crate::panic_recovery::catch_async(
             PipelineSegment::ErrorHandler,
-            handler.handle_error(error, &mut *ctx),
+            handler.handle_error(error, ctx),
         )
         .await
         {
@@ -410,14 +403,14 @@ impl InstanceWrapper {
     async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut dyn HandlerContext,
+        ctx: &dyn HandlerContext,
     ) {
         for observer in observers {
             // A panicking observer must not corrupt the dispatch path.
             // Catch the unwind, log via tracing (the observer system itself
             // is the thing that just failed, so we can't route it back
             // through observers), and continue to the next observer.
-            let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
             if let Err(payload) = observe.catch_unwind().await {
                 let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                     *s
@@ -433,7 +426,7 @@ impl InstanceWrapper {
 
     /// Onion/Russian doll dispatch through the interceptor chain.
     async fn execute_with_interceptors(
-        context: &mut HttpContext,
+        context: &HttpContext,
         interceptors: &[Arc<dyn Interceptor<HttpContext, HttpResponse>>],
         instance: &Arc<dyn Route>,
         pipes: &[Arc<dyn Pipe<HttpContext, HttpResponse>>],
@@ -477,25 +470,20 @@ impl InstanceWrapper {
     /// panic never silently corrupts the response — it either gets
     /// remapped by a chain handler or rendered as a 500.
     async fn record_pipeline_panic(
-        context: &mut HttpContext,
+        context: &HttpContext,
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) -> HttpResponse {
-        Self::fan_out_observers(observers, &event, &mut *context).await;
+        Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, &mut *context, observers).await
+                Self::try_chain_handler(handler, &event, context, observers).await
             {
                 return claimed;
             }
         }
-        Self::safe_render(
-            || HttpError::from(event).to_response(),
-            observers,
-            &mut *context,
-        )
-        .await
+        Self::safe_render(|| HttpError::from(event).to_response(), observers, context).await
     }
 
     /// Run pipes + handler, then route the result.
@@ -504,18 +492,15 @@ impl InstanceWrapper {
     /// the chain's most-specific handler gets first claim, and
     /// `HttpError::to_response` is the fallback envelope when none claims.
     async fn execute_handler(
-        context: &mut HttpContext,
+        context: &HttpContext,
         instance: &Arc<dyn Route>,
         pipes: &[Arc<dyn Pipe<HttpContext, HttpResponse>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> HttpResponse {
-        let dto = instance.get_body_dto(context.request());
-        if let Some(dto) = dto {
+        if let Some(dto) = instance.get_body_dto(context.request()) {
             match dto.validate_dto() {
-                Ok(()) => {
-                    context.set_dto(dto);
-                }
+                Ok(()) => {}
                 Err(validation_errors) => {
                     let error_body = serde_json::json!({
                         "error": "Validation failed",
@@ -544,17 +529,6 @@ impl InstanceWrapper {
                         .await;
                 }
             }
-            if context.should_abort() {
-                // A pipe answers by returning one. Aborting without an answer
-                // leaves nothing to send, so it is an application bug rather
-                // than a rejected request.
-                return Self::safe_render(
-                    || HttpError::custom(500, "pipe aborted without an answer").to_response(),
-                    observers,
-                    &mut *context,
-                )
-                .await;
-            }
         }
 
         tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
@@ -563,7 +537,7 @@ impl InstanceWrapper {
         // We trust the application to set its own state to a sane shape after
         // a panic — this layer only ensures the panic doesn't escape the
         // dispatcher.
-        let exec_result = AssertUnwindSafe(instance.execute(&mut *context))
+        let exec_result = AssertUnwindSafe(instance.execute(context))
             .catch_unwind()
             .await;
         let exec_result = match exec_result {
@@ -588,16 +562,15 @@ impl InstanceWrapper {
                     HttpError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, &mut *context).await;
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, &mut *context, observers)
-                            .await
+                        Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
                         return claimed;
                     }
                 }
-                Self::safe_render(|| http_err.to_response(), observers, &mut *context).await
+                Self::safe_render(|| http_err.to_response(), observers, context).await
             }
         }
     }

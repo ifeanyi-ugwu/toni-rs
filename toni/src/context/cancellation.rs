@@ -5,9 +5,11 @@ use event_listener::Event;
 
 /// A per-request cancellation primitive.
 ///
-/// Created by the framework at the start of a request and dropped (or signalled)
-/// when the request ends or the client disconnects. Cheaply cloneable — handles
-/// share state via `Arc`.
+/// Created by the framework at the start of an execution and dropped when it
+/// ends. Cheaply cloneable — handles share state via `Arc`.
+///
+/// Nothing in the framework signals it yet: firing on client disconnect needs a
+/// producer in each adapter, since only the adapter knows the socket died.
 ///
 /// Toni-native and runtime-agnostic on purpose: toni core does not depend on
 /// any specific async runtime. Adapters that want to bridge into

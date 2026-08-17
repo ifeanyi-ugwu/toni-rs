@@ -137,7 +137,7 @@ impl AdminGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AdminGuard {
-    async fn can_activate(&self, context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.auth_service.tracker.track("guard:admin_check");
         self.auth_service.is_admin(context.request())
     }
@@ -156,7 +156,7 @@ impl UserGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for UserGuard {
-    async fn can_activate(&self, context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         self.auth_service.tracker.track("guard:user_check");
         self.auth_service.validate_user(context.request())
     }
@@ -179,7 +179,7 @@ impl LoggingInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         self.tracker.track("interceptor:before");
@@ -204,7 +204,7 @@ impl TimingInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for TimingInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         self.tracker.track("interceptor:timing_start");

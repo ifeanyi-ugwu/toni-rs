@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::http_helpers::RouteMetadata;
-use crate::traits_helpers::validate::Validatable;
 
 use super::{CancellationToken, Extensions};
 
@@ -13,8 +12,6 @@ use super::{CancellationToken, Extensions};
 /// keeps the `HandlerContext` impls a thin delegation.
 pub(crate) struct SharedState {
     pub(crate) route_metadata: Option<Arc<RouteMetadata>>,
-    pub(crate) abort: bool,
-    pub(crate) dto: Option<Box<dyn Validatable>>,
     pub(crate) extensions: Extensions,
     pub(crate) cancellation: CancellationToken,
 }
@@ -32,8 +29,6 @@ impl SharedState {
     ) -> Self {
         Self {
             route_metadata,
-            abort: false,
-            dto: None,
             extensions,
             cancellation: CancellationToken::new(),
         }

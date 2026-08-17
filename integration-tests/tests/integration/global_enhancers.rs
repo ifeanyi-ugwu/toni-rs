@@ -73,7 +73,7 @@ impl GlobalGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for GlobalGuard {
-    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:global");
         true
     }
@@ -89,7 +89,7 @@ impl ControllerGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for ControllerGuard {
-    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:controller");
         true
     }
@@ -105,7 +105,7 @@ impl MethodGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for MethodGuard {
-    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         get_tracker().track("guard:method");
         true
     }
@@ -127,7 +127,7 @@ impl GlobalInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for GlobalInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         get_tracker().track("interceptor:global:before");
@@ -149,7 +149,7 @@ impl ControllerInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for ControllerInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         get_tracker().track("interceptor:controller:before");
@@ -171,7 +171,7 @@ impl MethodInterceptor {
 impl Interceptor<HttpContext, HttpResponse> for MethodInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         get_tracker().track("interceptor:method:before");
@@ -194,7 +194,7 @@ impl GlobalPipe {
 }
 
 impl Pipe<HttpContext, HttpResponse> for GlobalPipe {
-    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:global");
         None
     }
@@ -209,7 +209,7 @@ impl ControllerPipe {
 }
 
 impl Pipe<HttpContext, HttpResponse> for ControllerPipe {
-    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:controller");
         None
     }
@@ -224,7 +224,7 @@ impl MethodPipe {
 }
 
 impl Pipe<HttpContext, HttpResponse> for MethodPipe {
-    fn process(&self, _context: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
         get_tracker().track("pipe:method");
         None
     }

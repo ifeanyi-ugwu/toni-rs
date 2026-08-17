@@ -27,7 +27,7 @@ pub struct AuthGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         self.user.set(CurrentUser("alice".into()));
         true
     }
@@ -133,7 +133,7 @@ static GUARD_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 #[async_trait]
 impl Guard<HttpContext> for OnceGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         if GUARD_RUNS.fetch_add(1, Ordering::SeqCst) == 0 {
             self.user.set(CurrentUser("alice".into()));
         }

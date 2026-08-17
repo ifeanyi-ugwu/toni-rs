@@ -77,7 +77,7 @@ impl ErrorObserver for RpcSegmentObserver {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
         if let Some(p) = error.downcast_ref::<PanicRecovered>() {
@@ -532,7 +532,7 @@ impl PanickingRpcGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for PanickingRpcGuard {
-    async fn can_activate(&self, _ctx: &mut RpcContext) -> bool {
+    async fn can_activate(&self, _ctx: &RpcContext) -> bool {
         panic!("rpc guard kaboom");
     }
 }
@@ -601,7 +601,7 @@ impl PanickingRpcInterceptor {}
 impl Interceptor<RpcContext, RpcHandlerResult> for PanickingRpcInterceptor {
     async fn intercept(
         &self,
-        _ctx: &mut RpcContext,
+        _ctx: &RpcContext,
         _next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
     ) -> RpcHandlerResult {
         panic!("rpc interceptor kaboom");
@@ -673,7 +673,7 @@ pub struct PanickingRpcPipe {}
 impl PanickingRpcPipe {}
 
 impl Pipe<RpcContext, RpcHandlerResult> for PanickingRpcPipe {
-    fn process(&self, _ctx: &mut RpcContext) -> Option<RpcHandlerResult> {
+    fn process(&self, _ctx: &RpcContext) -> Option<RpcHandlerResult> {
         panic!("rpc pipe kaboom");
         None
     }
@@ -743,7 +743,7 @@ impl PanickingRpcErrorHandler {}
 
 #[async_trait]
 impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
-    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &mut RpcContext) -> Option<RpcData> {
+    async fn handle_error(&self, _error: ChainError<'_>, _ctx: &RpcContext) -> Option<RpcData> {
         panic!("rpc error-handler kaboom");
     }
 }
@@ -938,7 +938,7 @@ pub struct RpcAuthGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for RpcAuthGuard {
-    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
         ctx.extensions().insert(RpcPrincipal("carol".into()));
         true
     }
@@ -959,7 +959,7 @@ impl RpcBusController {
     /// Takes the context exclusively — the form every transport's handler uses.
     /// The `&RpcContext` handlers elsewhere in this file still compile, since
     /// `&mut` coerces at the call site.
-    async fn bus(&self, _d: RpcData, ctx: &mut RpcContext) -> Result<RpcData, RpcError> {
+    async fn bus(&self, _d: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> {
         let who = ctx
             .extensions()
             .get::<RpcPrincipal>()
@@ -1010,7 +1010,7 @@ pub struct ShapeGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for ShapeGuard {
-    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
         ctx.extensions().insert(Caller("frank".into()));
         true
     }
@@ -1039,7 +1039,7 @@ impl ShapeController {
     async fn mixed(
         &self,
         ext: Extensions,
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
         raw: RpcData,
     ) -> Result<String, RpcError> {
         let caller = ext

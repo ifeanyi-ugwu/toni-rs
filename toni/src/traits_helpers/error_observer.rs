@@ -27,6 +27,6 @@ pub trait ErrorObserver: Send + Sync {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn Error + Send + Sync + 'static),
-        ctx: &'a mut (dyn HandlerContext + 'a),
+        ctx: &'a (dyn HandlerContext + 'a),
     );
 }

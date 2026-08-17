@@ -50,7 +50,7 @@ pub enum ExtractorKind {
     Request,
     /// Extensions extractor (the per-message bag) — parts-only
     Extensions,
-    /// `&mut HttpContext` — the handler context itself, forwarded rather than extracted
+    /// `&HttpContext` — the handler context itself, forwarded rather than extracted
     Context,
     /// Option<T> wrapped extractor (optional extraction)
     Optional {
@@ -173,9 +173,8 @@ fn reject_second_body_extractor(params: &[ExtractorParam]) -> Result<()> {
 
 /// Detect what kind of extractor a type is
 fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
-    // `&mut HttpContext` is the only reference a handler may take — every
-    // extractor owns what it produces. Exclusive rather than shared because the
-    // wrapper's future must be `Send` and `HttpContext` is not `Sync`.
+    // `&HttpContext` is the only reference a handler may take — every extractor
+    // owns what it produces.
     if let Type::Reference(type_ref) = ty {
         if let Type::Path(inner) = &*type_ref.elem
             && inner
@@ -290,7 +289,7 @@ pub fn generate_extractor_extractions(
         .map(|p| {
             let name = &p.param_name;
             match &p.kind {
-                ExtractorKind::Context => quote! { &mut *__ctx },
+                ExtractorKind::Context => quote! { &*__ctx },
                 _ => quote! { #name },
             }
         })

@@ -43,7 +43,7 @@ fn expand(target_ty: Type, func: ItemFn) -> syn::Result<TokenStream2> {
     if inputs.len() != 2 {
         return Err(syn::Error::new(
             func.sig.inputs.span(),
-            "#[catch(T)] expects exactly two arguments: (err: &T, ctx: &mut CtxType)",
+            "#[catch(T)] expects exactly two arguments: (err: &T, ctx: &CtxType)",
         ));
     }
 
@@ -54,7 +54,7 @@ fn expand(target_ty: Type, func: ItemFn) -> syn::Result<TokenStream2> {
     let ctx_ident = pat_ident(&ctx_arg.pat)?;
 
     let err_ref_ty = expect_shared_ref(&err_arg.ty, "first argument must be `&T`")?;
-    let ctx_ty = expect_mut_ref(&ctx_arg.ty, "second argument must be `&mut CtxType`")?;
+    let ctx_ty = expect_shared_ref(&ctx_arg.ty, "second argument must be `&CtxType`")?;
 
     let response_ty = match &func.sig.output {
         ReturnType::Default => {
@@ -74,7 +74,7 @@ fn expand(target_ty: Type, func: ItemFn) -> syn::Result<TokenStream2> {
         #vis struct #name;
 
         #[doc(hidden)]
-        async fn #inner_ident(#err_ident: &#err_ref_ty, #ctx_ident: &mut #ctx_ty) -> #response_ty {
+        async fn #inner_ident(#err_ident: &#err_ref_ty, #ctx_ident: &#ctx_ty) -> #response_ty {
             #body
         }
 
@@ -83,7 +83,7 @@ fn expand(target_ty: Type, func: ItemFn) -> syn::Result<TokenStream2> {
             async fn handle_error(
                 &self,
                 error: ::toni::traits_helpers::ChainError<'_>,
-                ctx: &mut #ctx_ty,
+                ctx: &#ctx_ty,
             ) -> ::std::option::Option<#response_ty> {
                 let target: &#target_ref = error.downcast_ref::<#target_ref>()?;
                 ::std::option::Option::Some(#inner_ident(target, ctx).await)
@@ -120,21 +120,7 @@ fn expect_shared_ref<'a>(ty: &'a Type, msg: &str) -> syn::Result<&'a Type> {
         if r.mutability.is_some() {
             return Err(syn::Error::new(
                 r.span(),
-                "#[catch(T)] error argument must be a shared reference (&T), not &mut",
-            ));
-        }
-        Ok(&r.elem)
-    } else {
-        Err(syn::Error::new(ty.span(), msg))
-    }
-}
-
-fn expect_mut_ref<'a>(ty: &'a Type, msg: &str) -> syn::Result<&'a Type> {
-    if let Type::Reference(r) = ty {
-        if r.mutability.is_none() {
-            return Err(syn::Error::new(
-                r.span(),
-                "#[catch(T)] context argument must be an exclusive reference (&mut CtxType)",
+                "#[catch(T)] arguments must be shared references, not &mut",
             ));
         }
         Ok(&r.elem)

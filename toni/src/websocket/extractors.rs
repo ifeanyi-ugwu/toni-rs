@@ -29,7 +29,7 @@ use crate::websocket::{WsClient, WsMessage};
 impl FromContext<WsContext> for WsClient {
     type Error = Infallible;
 
-    async fn extract(ctx: &mut WsContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &WsContext) -> Result<Self, Self::Error> {
         Ok(ctx.client().clone())
     }
 }
@@ -39,7 +39,7 @@ impl FromContext<WsContext> for WsClient {
 impl FromContext<WsContext> for WsMessage {
     type Error = Infallible;
 
-    async fn extract(ctx: &mut WsContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &WsContext) -> Result<Self, Self::Error> {
         Ok(ctx.message().clone())
     }
 }
@@ -77,7 +77,7 @@ impl std::error::Error for PayloadError {}
 impl<T: DeserializeOwned> FromContext<WsContext> for Payload<T> {
     type Error = PayloadError;
 
-    async fn extract(ctx: &mut WsContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &WsContext) -> Result<Self, Self::Error> {
         let parsed = match ctx.message() {
             WsMessage::Text(text) => serde_json::from_str::<T>(text),
             WsMessage::Binary(bytes) => serde_json::from_slice::<T>(bytes),

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::context::{HandlerContext, RpcContext};
+use crate::context::RpcContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RouteMetadata};
 use crate::traits_helpers::{
@@ -25,7 +25,7 @@ struct RpcChainNext {
 
 #[async_trait]
 impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
-    async fn run(self: Box<Self>, context: &mut RpcContext) -> RpcHandlerResult {
+    async fn run(self: Box<Self>, context: &RpcContext) -> RpcHandlerResult {
         RpcControllerWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
@@ -92,8 +92,12 @@ impl RpcControllerWrapper {
         call_metadata: HashMap<String, String>,
         pattern: String,
     ) -> Result<Option<RpcData>, RpcError> {
-        let mut ctx = RpcContext::new(pattern.clone(), data, Some(self.route_metadata.clone()));
-        *ctx.metadata_mut() = call_metadata;
+        let ctx = RpcContext::new(
+            pattern.clone(),
+            data,
+            call_metadata,
+            Some(self.route_metadata.clone()),
+        );
 
         let mut all_guards = self.guards.clone();
         if let Some(h) = self.handler_guards.get(&pattern) {
@@ -120,13 +124,13 @@ impl RpcControllerWrapper {
             // `RpcError::Forbidden` instead of a torn-down dispatcher.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
-                guard.can_activate(&mut ctx),
+                guard.can_activate(&ctx),
             )
             .await
             {
                 Ok(b) => b,
                 Err(event) => {
-                    Self::fan_out_observers(&observers, &event, &mut ctx).await;
+                    Self::fan_out_observers(&observers, &event, &ctx).await;
                     return Err(RpcError::Forbidden(format!(
                         "guard {} panicked: {}",
                         index, event.message
@@ -135,12 +139,7 @@ impl RpcControllerWrapper {
             };
             if !activated {
                 let err = RpcError::Forbidden("Guard rejected message".into());
-                Self::fan_out_observers(&observers, &err, &mut ctx).await;
-                return Err(err);
-            }
-            if ctx.should_abort() {
-                let err = RpcError::Forbidden("Message aborted by guard".into());
-                Self::fan_out_observers(&observers, &err, &mut ctx).await;
+                Self::fan_out_observers(&observers, &err, &ctx).await;
                 return Err(err);
             }
         }
@@ -148,7 +147,7 @@ impl RpcControllerWrapper {
         let interceptors = Self::resolve_interceptors(&all_interceptors).await;
         let pipes = Self::resolve_pipes(&all_pipes).await;
         Self::execute_with_interceptors(
-            &mut ctx,
+            &ctx,
             &interceptors,
             &self.controller,
             &pipes,
@@ -171,7 +170,7 @@ impl RpcControllerWrapper {
     async fn safe_render<F>(
         render: F,
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
     ) -> RpcData
     where
         F: FnOnce() -> RpcData,
@@ -197,12 +196,12 @@ impl RpcControllerWrapper {
     async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
         observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<RpcData> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
-            handler.handle_error(error, &mut *ctx),
+            handler.handle_error(error, ctx),
         )
         .await
         {
@@ -217,10 +216,10 @@ impl RpcControllerWrapper {
     async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
     ) {
         for observer in observers {
-            let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
             if let Err(payload) = observe.catch_unwind().await {
                 let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                     *s
@@ -278,7 +277,7 @@ impl RpcControllerWrapper {
     }
 
     async fn execute_with_interceptors(
-        context: &mut RpcContext,
+        context: &RpcContext,
         interceptors: &[Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>],
         controller: &Arc<Box<dyn RpcControllerTrait>>,
         pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
@@ -318,21 +317,21 @@ impl RpcControllerWrapper {
     /// give error handlers first claim, and fall back to a wire-`Err`
     /// Internal envelope.
     async fn record_pipeline_panic(
-        context: &mut RpcContext,
+        context: &RpcContext,
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) -> RpcHandlerResult {
-        Self::fan_out_observers(observers, &event, &mut *context).await;
+        Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, &mut *context, observers).await
+                Self::try_chain_handler(handler, &event, context, observers).await
             {
                 return Ok(Some(claimed));
             }
         }
         let rpc_err = RpcError::from(event);
-        let data = Self::safe_render(|| rpc_err.to_data(), observers, &mut *context).await;
+        let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
         Ok(Some(data))
     }
 
@@ -342,7 +341,7 @@ impl RpcControllerWrapper {
     /// the chain's most-specific handler gets first claim, and
     /// `RpcError::to_data` is the fallback envelope when none claims.
     async fn execute_handler(
-        context: &mut RpcContext,
+        context: &RpcContext,
         controller: &Arc<Box<dyn RpcControllerTrait>>,
         pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
         error_handlers: &[RpcErrorHandlerArc],
@@ -362,15 +361,6 @@ impl RpcControllerWrapper {
                     return Self::record_pipeline_panic(context, error_handlers, observers, event)
                         .await;
                 }
-            }
-            if context.should_abort() {
-                // A pipe answers by returning one. Aborting without an answer
-                // blocks the handler with nothing to send in its place, so it
-                // surfaces as a wire-level Err — parallel to guard rejection,
-                // and not the Ok+envelope path user errors take.
-                return Err(RpcError::Internal(
-                    "Request aborted by pipe without an answer".into(),
-                ));
             }
         }
 
@@ -393,16 +383,15 @@ impl RpcControllerWrapper {
                     RpcError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, &mut *context).await;
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, &mut *context, observers)
-                            .await
+                        Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
                         return Ok(Some(claimed));
                     }
                 }
-                let data = Self::safe_render(|| rpc_err.to_data(), observers, &mut *context).await;
+                let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
                 Ok(Some(data))
             }
         }

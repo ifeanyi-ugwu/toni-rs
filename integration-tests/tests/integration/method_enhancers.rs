@@ -23,21 +23,20 @@ use crate::common::TestServer;
 
 // ---- shared (protocol-agnostic) enhancers ------------------------------------
 
+/// Answers instead of letting the handler run — a pipe rejecting its input.
 #[injectable]
 pub struct AbortPipe {}
 impl AbortPipe {}
 
 impl Pipe<RpcContext, RpcHandlerResult> for AbortPipe {
-    fn process(&self, ctx: &mut RpcContext) -> Option<RpcHandlerResult> {
-        ctx.abort();
-        None
+    fn process(&self, _ctx: &RpcContext) -> Option<RpcHandlerResult> {
+        Some(Err(RpcError::Internal("rejected by pipe".into())))
     }
 }
 
 impl Pipe<WsContext, WsHandlerResult> for AbortPipe {
-    fn process(&self, ctx: &mut WsContext) -> Option<WsHandlerResult> {
-        ctx.abort();
-        None
+    fn process(&self, _ctx: &WsContext) -> Option<WsHandlerResult> {
+        Some(Err(WsError::Internal("rejected by pipe".into())))
     }
 }
 
@@ -50,7 +49,7 @@ impl ErrorHandler<RpcContext, RpcData> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &mut RpcContext,
+        _ctx: &RpcContext,
     ) -> Option<RpcData> {
         Some(RpcData::json(serde_json::json!("recovered")))
     }
@@ -61,7 +60,7 @@ impl ErrorHandler<WsContext, WsMessage> for RecoveryErrorHandler {
     async fn handle_error(
         &self,
         _error: toni::traits_helpers::ChainError<'_>,
-        _ctx: &mut WsContext,
+        _ctx: &WsContext,
     ) -> Option<WsMessage> {
         Some(WsMessage::text("recovered"))
     }
@@ -76,7 +75,7 @@ impl WsAllowGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for WsAllowGuard {
-    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         ctx.client()
             .handshake
             .headers
@@ -95,7 +94,7 @@ impl WsPrefixInterceptor {}
 impl Interceptor<WsContext, WsHandlerResult> for WsPrefixInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut WsContext,
+        ctx: &WsContext,
         next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
     ) -> WsHandlerResult {
         match next.run(ctx).await? {
@@ -162,7 +161,7 @@ impl RpcAllowGuard {}
 
 #[async_trait]
 impl Guard<RpcContext> for RpcAllowGuard {
-    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
         ctx.data()
             .as_json()
             .and_then(|v| v["allow"].as_str())
@@ -180,7 +179,7 @@ impl RpcPrefixInterceptor {}
 impl Interceptor<RpcContext, RpcHandlerResult> for RpcPrefixInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
         next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
     ) -> RpcHandlerResult {
         let answer = next.run(ctx).await?;

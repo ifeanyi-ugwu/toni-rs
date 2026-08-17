@@ -43,7 +43,7 @@ impl UniversalAuthGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         ctx.request()
             .headers
             .get("authorization")
@@ -55,7 +55,7 @@ impl Guard<HttpContext> for UniversalAuthGuard {
 
 #[async_trait]
 impl Guard<RpcContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &mut RpcContext) -> bool {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
         ctx.data()
             .as_json()
             .and_then(|v| v.get("auth").and_then(|a| a.as_str()))
@@ -65,7 +65,7 @@ impl Guard<RpcContext> for UniversalAuthGuard {
 
 #[async_trait]
 impl Guard<WsContext> for UniversalAuthGuard {
-    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         ctx.client()
             .handshake
             .query
@@ -84,7 +84,7 @@ impl LoggingInterceptor {}
 impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut HttpContext,
+        ctx: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         let req = ctx.request();
@@ -102,7 +102,7 @@ impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
 impl Interceptor<RpcContext, RpcHandlerResult> for LoggingInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut RpcContext,
+        ctx: &RpcContext,
         next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
     ) -> RpcHandlerResult {
         println!(
@@ -118,7 +118,7 @@ impl Interceptor<RpcContext, RpcHandlerResult> for LoggingInterceptor {
 impl Interceptor<WsContext, WsHandlerResult> for LoggingInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut WsContext,
+        ctx: &WsContext,
         next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
     ) -> WsHandlerResult {
         println!(
