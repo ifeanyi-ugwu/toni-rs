@@ -157,7 +157,7 @@ impl InstanceWrapper {
                     return Self::safe_render(
                         || http_err.to_response(),
                         &self.error_observers,
-                        &mut stub_ctx,
+                        &stub_ctx,
                     )
                     .await;
                 }
@@ -168,15 +168,11 @@ impl InstanceWrapper {
                 let stub = http::Request::builder().body(()).unwrap();
                 let mut error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let event = MiddlewareFailure::new(e.to_string());
-                Self::fan_out_observers(&self.error_observers, &event, &mut error_ctx).await;
+                Self::fan_out_observers(&self.error_observers, &event, &error_ctx).await;
                 for handler in self.error_handlers.iter().rev() {
-                    if let Some(response) = Self::try_chain_handler(
-                        handler,
-                        &event,
-                        &mut error_ctx,
-                        &self.error_observers,
-                    )
-                    .await
+                    if let Some(response) =
+                        Self::try_chain_handler(handler, &event, &error_ctx, &self.error_observers)
+                            .await
                     {
                         return response;
                     }
@@ -185,7 +181,7 @@ impl InstanceWrapper {
                 Self::safe_render(
                     || crate::errors::http_error::render_error(&event),
                     &self.error_observers,
-                    &mut error_ctx,
+                    &error_ctx,
                 )
                 .await
             }
@@ -261,6 +257,41 @@ impl InstanceWrapper {
 
         let context = HttpContext::new(req, route_metadata.clone());
 
+        let response = Self::run_chain(
+            &context,
+            instance,
+            guards,
+            interceptors,
+            pipes,
+            error_handlers,
+            observers,
+            route_metadata,
+        )
+        .await;
+
+        // The execution ends when the answer does. A streaming body has produced
+        // nothing yet at this point, so the context rides it to the last frame
+        // rather than dying here with the handler.
+        match response.body {
+            Some(body) => HttpResponse {
+                body: Some(body.keep_alive(context)),
+                ..response
+            },
+            None => response,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_chain(
+        context: &HttpContext,
+        instance: Arc<dyn Route>,
+        guards: Vec<Arc<dyn Guard<HttpContext>>>,
+        interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
+        pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
+        error_handlers: Vec<HttpErrorHandlerArc>,
+        observers: Vec<Arc<dyn ErrorObserver>>,
+        route_metadata: Arc<RouteMetadata>,
+    ) -> HttpResponse {
         for (i, guard) in guards.iter().enumerate() {
             // `can_activate` is user code — catch panics so the request
             // doesn't tear down. A panicking guard is treated as a hard
@@ -279,7 +310,7 @@ impl InstanceWrapper {
                         event,
                         &error_handlers,
                         &observers,
-                        &context,
+                        context,
                     )
                     .await;
                 }
@@ -287,7 +318,7 @@ impl InstanceWrapper {
             if !activated {
                 tracing::debug!(guard_index = i, "guard rejected request");
                 let event = GuardRejection::new(i);
-                return Self::handle_framework_event(event, &error_handlers, &observers, &context)
+                return Self::handle_framework_event(event, &error_handlers, &observers, context)
                     .await;
             }
         }
@@ -296,7 +327,7 @@ impl InstanceWrapper {
             tracing::trace!(count = interceptors.len(), "entering interceptor chain");
         }
         Self::execute_with_interceptors(
-            &context,
+            context,
             &interceptors,
             &instance,
             &pipes,

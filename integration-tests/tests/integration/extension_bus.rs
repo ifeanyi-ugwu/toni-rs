@@ -350,3 +350,113 @@ async fn a_handler_whose_body_was_taken_is_told_which_extractor_lost() {
 // A handler answering both ways used to need a precedence rule, and a warning
 // when it was applied. Returning is now the only way to answer, so there is no
 // precedence left to pin.
+
+// ===== the execution outlives the handler =====
+
+#[derive(Clone)]
+pub struct Alive(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+/// Sets the flag when the bag holding it is dropped, which is when the
+/// execution's state goes away.
+pub struct Sentinel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Sentinel {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[injectable]
+pub struct SentinelGuard {}
+
+#[async_trait]
+impl Guard<HttpContext> for SentinelGuard {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        ctx.extensions().insert(Sentinel(flag.clone()));
+        ctx.extensions().insert(Alive(flag));
+        ctx.extensions().insert(Principal("erin".into()));
+        true
+    }
+}
+
+#[controller("/tail")]
+pub struct TailController {}
+
+#[routes]
+#[use_guards(SentinelGuard)]
+impl TailController {
+    /// Holds the context, so the `Arc` alone keeps the bag reachable.
+    #[get("/captured")]
+    fn captured(&self, ctx: &HttpContext) -> ToniBody {
+        use futures_util::StreamExt;
+        let held = ctx.clone();
+        ToniBody::stream(futures_util::stream::iter(0..3).map(move |i| {
+            let who = held
+                .extensions()
+                .get::<Principal>()
+                .map(|p| p.0)
+                .unwrap_or_else(|| "ABSENT".into());
+            Ok::<_, std::io::Error>(bytes::Bytes::from(format!("{i}:{who};")))
+        }))
+    }
+
+    /// Holds only the flag — never the context. Whether the execution's state
+    /// survives the drain is then a property of the framework rather than of
+    /// what this handler happened to capture.
+    #[get("/detached")]
+    fn detached(&self, ctx: &HttpContext) -> ToniBody {
+        use futures_util::StreamExt;
+        let flag = ctx.extensions().get::<Alive>().expect("guard ran").0;
+        ToniBody::stream(futures_util::stream::iter(0..3).map(move |i| {
+            let state = if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                "alive"
+            } else {
+                "dropped"
+            };
+            Ok::<_, std::io::Error>(bytes::Bytes::from(format!("{i}:{state};")))
+        }))
+    }
+}
+
+#[module(controllers: [TailController], providers: [SentinelGuard])]
+impl TailModule {}
+
+/// A stream that captures the context reads the bag through its own `Arc`. This
+/// holds because a context is a handle, with no help from the dispatcher.
+#[tokio_localset_test::localset_test]
+async fn a_capturing_stream_reads_the_bag() {
+    let server = TestServer::start(TailModule).await;
+
+    let body = server
+        .client()
+        .get(server.url("/tail/captured"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(body, "0:erin;1:erin;2:erin;");
+}
+
+/// The execution's state is still there while the body streams, even though
+/// nothing in the stream holds the context. The response body carries it, so
+/// the execution ends with the answer rather than with the handler.
+#[tokio_localset_test::localset_test]
+async fn execution_state_survives_until_the_body_is_drained() {
+    let server = TestServer::start(TailModule).await;
+
+    let body = server
+        .client()
+        .get(server.url("/tail/detached"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(body, "0:alive;1:alive;2:alive;");
+}

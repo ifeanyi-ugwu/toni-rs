@@ -96,8 +96,15 @@ struct ScopedBody { inner: BoxBody, _ctx: HttpContext }
 ```
 
 The dispatcher wraps rather than consumes. The adapter drains the body; the last frame drops the
-handle; the execution ends there. A stream holding a context is correct rather than tolerated, and the
-compiler's `'static` bound stops being an argument against reaching execution state from a stream.
+handle; the execution ends there. WebSocket does the same for a streaming answer, since a stream that
+has emitted nothing is in the same position as a body that has written nothing.
+
+Making the context a handle already covers half of this on its own: a stream that *captures* one keeps
+the execution alive through its own `Arc`, with no help from the dispatcher. What the wrap adds is the
+other half — the execution's state survives the drain whether or not the answer happens to hold a
+reference to it. That is the difference between a property of the framework and a property of how a
+particular handler was written, and it is what makes request-scoped state safe to drop at the end of
+an execution rather than at the end of a handler.
 
 ### A context is a cheap-clone handle
 

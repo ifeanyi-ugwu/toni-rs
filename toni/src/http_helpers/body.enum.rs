@@ -18,6 +18,35 @@ enum BodyInner {
     Streaming(BoxBody),
 }
 
+/// Delegates to an inner body while holding something alive alongside it.
+///
+/// `UnsyncBoxBody` is a `Pin<Box<_>>` and therefore `Unpin`, so the projection
+/// needs no pin machinery.
+struct ScopedBody {
+    inner: BoxBody,
+    _keep_alive: Box<dyn std::any::Any + Send>,
+}
+
+impl http_body::Body for ScopedBody {
+    type Data = Bytes;
+    type Error = Box<dyn Error + Send + Sync>;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 impl fmt::Debug for BodyInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -53,6 +82,12 @@ impl fmt::Debug for BodyInner {
 pub struct Body {
     inner: BodyInner,
     content_type: Option<String>,
+    /// Held for exactly as long as the body is.
+    ///
+    /// An execution is not over when the handler returns — it is over when the
+    /// answer is. Whatever the dispatcher parks here is dropped by the adapter
+    /// after the last frame, not at handler return.
+    keep_alive: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl Body {
@@ -61,6 +96,7 @@ impl Body {
         Self {
             inner: BodyInner::Buffered(Bytes::from(s.into().into_bytes())),
             content_type: Some("text/plain; charset=utf-8".to_string()),
+            keep_alive: None,
         }
     }
 
@@ -69,6 +105,7 @@ impl Body {
         Self {
             inner: BodyInner::Buffered(Bytes::from(serde_json::to_vec(&value).unwrap_or_default())),
             content_type: Some("application/json".to_string()),
+            keep_alive: None,
         }
     }
 
@@ -77,6 +114,7 @@ impl Body {
         Self {
             inner: BodyInner::Buffered(Bytes::from(data.into())),
             content_type: Some("application/octet-stream".to_string()),
+            keep_alive: None,
         }
     }
 
@@ -85,6 +123,7 @@ impl Body {
         Self {
             inner: BodyInner::Buffered(Bytes::new()),
             content_type: None,
+            keep_alive: None,
         }
     }
 
@@ -105,6 +144,7 @@ impl Body {
         Self {
             inner: BodyInner::Streaming(BodyExt::boxed_unsync(StreamBody::new(frames))),
             content_type: None,
+            keep_alive: None,
         }
     }
 
@@ -139,16 +179,38 @@ impl Body {
         Self {
             inner: BodyInner::Streaming(box_body),
             content_type: None,
+            keep_alive: None,
         }
     }
 
     /// Consume this body and return a [`BoxBody`] for the adapter to write.
+    /// Keep `value` alive until this body is dropped.
+    ///
+    /// The dispatcher parks the execution context here so a streaming answer can
+    /// still reach the bag it was built with. Buffered bodies keep reporting as
+    /// buffered — the guard rides alongside rather than changing what this is.
+    pub fn keep_alive<T: std::any::Any + Send>(mut self, value: T) -> Self {
+        self.keep_alive = Some(Box::new(value));
+        self
+    }
+
     pub fn into_box_body(self) -> BoxBody {
-        match self.inner {
+        let Self {
+            inner, keep_alive, ..
+        } = self;
+        let body = match inner {
             BodyInner::Buffered(bytes) => http_body_util::Full::new(bytes)
                 .map_err(|never: std::convert::Infallible| match never {})
                 .boxed_unsync(),
             BodyInner::Streaming(box_body) => box_body,
+        };
+        match keep_alive {
+            Some(guard) => ScopedBody {
+                inner: body,
+                _keep_alive: guard,
+            }
+            .boxed_unsync(),
+            None => body,
         }
     }
 }
@@ -158,6 +220,7 @@ impl From<Bytes> for Body {
         Self {
             inner: BodyInner::Buffered(bytes),
             content_type: None,
+            keep_alive: None,
         }
     }
 }
