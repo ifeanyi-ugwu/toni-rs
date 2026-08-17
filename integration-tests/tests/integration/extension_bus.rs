@@ -33,7 +33,7 @@ pub struct AuthGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for AuthGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         ctx.extensions().insert(Principal("alice".into()));
         true
     }
@@ -121,7 +121,7 @@ pub struct WsAuthGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for WsAuthGuard {
-    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         ctx.extensions().insert(Principal("bob".into()));
         true
     }
@@ -178,7 +178,7 @@ pub struct StampGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for StampGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         ctx.extensions().insert(Principal("dana".into()));
         true
     }
@@ -196,7 +196,7 @@ impl CtxController {
     /// Takes the context itself rather than an extractor over it.
     #[get("/read")]
     #[set_metadata(Role("reader"))]
-    fn read(&self, ctx: &mut HttpContext) -> ToniBody {
+    fn read(&self, ctx: &HttpContext) -> ToniBody {
         let principal = ctx
             .extensions()
             .get::<Principal>()
@@ -214,7 +214,7 @@ impl CtxController {
 
     /// The context coexists with ordinary extractors.
     #[get("/with-path/{id}")]
-    fn with_path(&self, Path(id): Path<u32>, ctx: &mut HttpContext) -> ToniBody {
+    fn with_path(&self, Path(id): Path<u32>, ctx: &HttpContext) -> ToniBody {
         let principal = ctx
             .extensions()
             .get::<Principal>()
@@ -270,7 +270,7 @@ pub struct BodyReadingGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for BodyReadingGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         let first = ctx.take_request().is_some();
         // Gone on the second look, and the type says so rather than handing
         // back an empty body.

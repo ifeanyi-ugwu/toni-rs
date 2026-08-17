@@ -39,7 +39,7 @@ impl ErrorObserver for CountingObserver {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
         if let Some(panic) = error.downcast_ref::<PanicRecovered>() {
@@ -59,7 +59,7 @@ impl ErrorObserver for PanickingObserver {
     async fn observe<'a>(
         &'a self,
         _error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
     ) {
         // Bump the other-counter via side effect so the test can detect this
         // observer was reached even though it panics afterwards.
@@ -151,7 +151,7 @@ struct AlwaysReject;
 
 #[async_trait]
 impl Guard<HttpContext> for AlwaysReject {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         false
     }
 }
@@ -207,7 +207,7 @@ struct PanickingGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for PanickingGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         panic!("guard kaboom");
     }
 }
@@ -266,7 +266,7 @@ struct PanickingInterceptor;
 impl Interceptor<HttpContext, HttpResponse> for PanickingInterceptor {
     async fn intercept(
         &self,
-        _ctx: &mut HttpContext,
+        _ctx: &HttpContext,
         _next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         panic!("interceptor kaboom");
@@ -324,7 +324,7 @@ async fn panicking_interceptor_renders_500_via_panic_recovered() {
 struct PanickingPipe;
 
 impl Pipe<HttpContext, HttpResponse> for PanickingPipe {
-    fn process(&self, _ctx: &mut HttpContext) -> Option<HttpResponse> {
+    fn process(&self, _ctx: &HttpContext) -> Option<HttpResponse> {
         panic!("pipe kaboom");
         None
     }
@@ -387,7 +387,7 @@ impl ErrorHandler<HttpContext, HttpResponse> for PanickingErrorHandler {
     async fn handle_error(
         &self,
         _error: ChainError<'_>,
-        _ctx: &mut HttpContext,
+        _ctx: &HttpContext,
     ) -> Option<HttpResponse> {
         panic!("error-handler kaboom");
     }
@@ -434,7 +434,7 @@ async fn panicking_error_handler_continues_chain() {
         async fn observe<'a>(
             &'a self,
             error: &'a (dyn std::error::Error + Send + Sync + 'static),
-            _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
+            _ctx: &'a (dyn toni::context::HandlerContext + 'a),
         ) {
             self.count.fetch_add(1, Ordering::SeqCst);
             if let Some(p) = error.downcast_ref::<PanicRecovered>() {

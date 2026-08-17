@@ -32,7 +32,7 @@ impl ErrorObserver for CountingObserver {
     async fn observe<'a>(
         &'a self,
         error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a mut (dyn toni::context::HandlerContext + 'a),
+        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
         *self.last_message.lock().unwrap() = error.to_string();
@@ -43,7 +43,7 @@ struct AlwaysReject;
 
 #[async_trait]
 impl Guard<HttpContext> for AlwaysReject {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         false
     }
 }

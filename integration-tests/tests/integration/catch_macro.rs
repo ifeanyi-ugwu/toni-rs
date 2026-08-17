@@ -24,7 +24,7 @@ use toni_axum::AxumAdapter;
 use toni_macros::use_guards;
 
 #[catch(GuardRejection)]
-async fn guard_catcher(err: &GuardRejection, _ctx: &mut HttpContext) -> HttpResponse {
+async fn guard_catcher(err: &GuardRejection, _ctx: &HttpContext) -> HttpResponse {
     let mut resp = HttpResponse::new();
     resp.status = toni::errors::http_status(err.kind());
     resp.body = Some(ToniBody::text(format!("catch:{}", err.message())));
@@ -45,7 +45,7 @@ impl std::fmt::Display for OtherError {
 impl std::error::Error for OtherError {}
 
 #[catch(OtherError)]
-async fn other_catcher(_err: &OtherError, _ctx: &mut HttpContext) -> HttpResponse {
+async fn other_catcher(_err: &OtherError, _ctx: &HttpContext) -> HttpResponse {
     let mut resp = HttpResponse::new();
     resp.status = 500;
     resp.body = Some(ToniBody::text("OTHER-CAUGHT"));
@@ -67,7 +67,7 @@ struct DenyGuard;
 
 #[async_trait]
 impl Guard<HttpContext> for DenyGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         false
     }
 }

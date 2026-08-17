@@ -24,7 +24,7 @@ impl RequestGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for RequestGuard {
-    async fn can_activate(&self, context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, context: &HttpContext) -> bool {
         context.request().headers.contains_key("x-allow")
     }
 }
@@ -40,7 +40,7 @@ impl HeaderGuard {}
 
 #[async_trait]
 impl Guard<HttpContext> for HeaderGuard {
-    async fn can_activate(&self, _context: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _context: &HttpContext) -> bool {
         self.request
             .header("x-secret")
             .map_or(false, |v| v == "open-sesame")
@@ -57,7 +57,7 @@ impl TransientInterceptor {}
 impl Interceptor<HttpContext, HttpResponse> for TransientInterceptor {
     async fn intercept(
         &self,
-        context: &mut HttpContext,
+        context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
     ) -> HttpResponse {
         let mut answer = next.run(context).await;
@@ -139,7 +139,7 @@ impl WsHandshakeGuard {}
 
 #[async_trait]
 impl Guard<WsContext> for WsHandshakeGuard {
-    async fn can_activate(&self, ctx: &mut WsContext) -> bool {
+    async fn can_activate(&self, ctx: &WsContext) -> bool {
         ctx.client()
             .handshake
             .headers

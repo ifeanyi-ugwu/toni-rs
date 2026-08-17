@@ -67,7 +67,7 @@ impl PortGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for PortGuard {
-    async fn can_activate(&self, ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, ctx: &HttpContext) -> bool {
         // admit only when the caller echoes the configured port in a header
         ctx.request()
             .headers

@@ -42,7 +42,7 @@ pub struct RecordingGuard {
 
 #[async_trait]
 impl Guard<HttpContext> for RecordingGuard {
-    async fn can_activate(&self, _ctx: &mut HttpContext) -> bool {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
         GUARD_SAW.store(self.request_id.id, Ordering::SeqCst);
         true
     }
