@@ -8,7 +8,7 @@ use crate::context::HandlerContext;
 /// prevents an interceptor from invoking the downstream handler twice.
 #[async_trait]
 pub trait InterceptorNext<C: ?Sized + HandlerContext, R>: Send {
-    async fn run(self: Box<Self>, context: &mut C) -> R;
+    async fn run(self: Box<Self>, context: &C) -> R;
 }
 
 /// An interceptor wraps the handler with code that runs before and/or after.
@@ -23,5 +23,5 @@ pub trait InterceptorNext<C: ?Sized + HandlerContext, R>: Send {
 /// WsError>` on WebSocket, `Result<(), GrpcStatus>` on gRPC.
 #[async_trait]
 pub trait Interceptor<C: ?Sized + HandlerContext, R>: Send + Sync {
-    async fn intercept(&self, context: &mut C, next: Box<dyn InterceptorNext<C, R>>) -> R;
+    async fn intercept(&self, context: &C, next: Box<dyn InterceptorNext<C, R>>) -> R;
 }

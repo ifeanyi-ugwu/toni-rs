@@ -142,7 +142,7 @@ where
 
     async fn handle_event(
         &self,
-        ctx: &mut toni::context::WsContext,
+        ctx: &toni::context::WsContext,
     ) -> toni::http_helpers::ExecutionResult<WsHandlerOutput, toni::WsError> {
         let client = ctx.client().clone();
         let message = ctx.message().clone();

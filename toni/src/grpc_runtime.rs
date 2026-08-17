@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 
 use crate::adapter::ResolvedGrpcEnhancers;
-use crate::context::{GrpcContext, HandlerContext};
+use crate::context::GrpcContext;
 use crate::errors::{GuardRejection, PipelineSegment};
 use crate::grpc_status::GrpcHandlerResult;
 use crate::grpc_status::GrpcStatus;
@@ -38,7 +38,7 @@ use crate::traits_helpers::{
 /// `tonic::Status` at the wire boundary; `Ok(())` means the chain completed
 /// normally and the user's delegate (which fills the side-channel) was reached.
 pub async fn run_grpc_pipeline<D, Fut>(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     enhancers: &ResolvedGrpcEnhancers,
     method: &str,
     delegate: D,
@@ -62,7 +62,7 @@ where
 /// services that declare no interceptors so the macro can skip the
 /// closure-boxing cost.
 pub async fn run_grpc_guards(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     enhancers: &ResolvedGrpcEnhancers,
     method: &str,
 ) -> Result<(), GrpcStatus> {
@@ -70,7 +70,7 @@ pub async fn run_grpc_guards(
 }
 
 async fn run_grpc_guards_inline(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     enhancers: &ResolvedGrpcEnhancers,
     method: &str,
 ) -> Result<(), GrpcStatus> {
@@ -85,29 +85,23 @@ async fn run_grpc_guards_inline(
         // observers see the typed `PanicRecovered { during: Guard }` event
         // and the wire response is `PermissionDenied`, matching the
         // semantic of "guard said no" rather than tearing the request down.
-        let activated =
-            match catch_async(PipelineSegment::Guard, guard.can_activate(&mut *ctx)).await {
-                Ok(b) => b,
-                Err(event) => {
-                    fan_out_observers(&enhancers.error_observers, &event, &mut *ctx).await;
-                    return Err(GrpcStatus::permission_denied(format!(
-                        "guard {} panicked: {}",
-                        index, event.message
-                    )));
-                }
-            };
+        let activated = match catch_async(PipelineSegment::Guard, guard.can_activate(ctx)).await {
+            Ok(b) => b,
+            Err(event) => {
+                fan_out_observers(&enhancers.error_observers, &event, ctx).await;
+                return Err(GrpcStatus::permission_denied(format!(
+                    "guard {} panicked: {}",
+                    index, event.message
+                )));
+            }
+        };
         if !activated {
             let event = GuardRejection::new(index);
-            fan_out_observers(&enhancers.error_observers, &event, &mut *ctx).await;
+            fan_out_observers(&enhancers.error_observers, &event, ctx).await;
             return Err(GrpcStatus::permission_denied(format!(
                 "guard {} rejected request",
                 index
             )));
-        }
-        if ctx.should_abort() {
-            let event = GuardRejection::with_reason(index, "request aborted by guard");
-            fan_out_observers(&enhancers.error_observers, &event, &mut *ctx).await;
-            return Err(GrpcStatus::permission_denied("request aborted by guard"));
         }
     }
     Ok(())
@@ -118,7 +112,7 @@ async fn run_grpc_guards_inline(
 /// move on `InterceptorNext::run` enforces the once-only invocation
 /// contract.
 async fn execute_with_interceptors<D, Fut>(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     interceptors: &[Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>],
     observers: &[Arc<dyn ErrorObserver>],
     delegate: D,
@@ -168,11 +162,11 @@ where
 }
 
 async fn record_interceptor_panic(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     observers: &[Arc<dyn ErrorObserver>],
     event: crate::errors::PanicRecovered,
 ) -> GrpcHandlerResult {
-    fan_out_observers(observers, &event, &mut *ctx).await;
+    fan_out_observers(observers, &event, ctx).await;
     Err(GrpcStatus::new(
         crate::grpc_status::GrpcCode::Internal,
         format!("interceptor panicked: {}", event.message),
@@ -190,7 +184,7 @@ where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    async fn run(mut self: Box<Self>, _ctx: &mut GrpcContext) -> GrpcHandlerResult {
+    async fn run(mut self: Box<Self>, _ctx: &GrpcContext) -> GrpcHandlerResult {
         if let Some(delegate) = self.delegate.take() {
             delegate().await;
         }
@@ -212,7 +206,7 @@ where
     D: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    async fn run(mut self: Box<Self>, ctx: &mut GrpcContext) -> GrpcHandlerResult {
+    async fn run(mut self: Box<Self>, ctx: &GrpcContext) -> GrpcHandlerResult {
         match self.delegate.take() {
             Some(delegate) => {
                 let next = build_next(&self.rest, self.observers.clone(), delegate);
@@ -259,10 +253,10 @@ async fn resolve_interceptors(
 async fn fan_out_observers(
     observers: &[Arc<dyn ErrorObserver>],
     error: &(dyn std::error::Error + Send + Sync + 'static),
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
 ) {
     for observer in observers {
-        let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
+        let observe = AssertUnwindSafe(observer.observe(error, ctx));
         if let Err(payload) = observe.catch_unwind().await {
             let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                 *s
@@ -289,12 +283,12 @@ async fn fan_out_observers(
 /// passed here) and a caught handler panic (where `err` is a
 /// `PanicRecovered` event so observers see the typed framework signal).
 pub async fn run_grpc_error_chain(
-    ctx: &mut GrpcContext,
+    ctx: &GrpcContext,
     enhancers: &ResolvedGrpcEnhancers,
     method: &str,
     err: &(dyn std::error::Error + Send + Sync + 'static),
 ) -> Option<crate::grpc_status::GrpcStatus> {
-    fan_out_observers(&enhancers.error_observers, err, &mut *ctx).await;
+    fan_out_observers(&enhancers.error_observers, err, ctx).await;
 
     let mut all = enhancers.error_handlers.clone();
     if let Some(per_method) = enhancers.handler_error_handlers.get(method) {
@@ -307,14 +301,14 @@ pub async fn run_grpc_error_chain(
         // observers, treat as `None` claim, move on to the next handler.
         let outcome = catch_async(
             PipelineSegment::ErrorHandler,
-            handler.handle_error(err, &mut *ctx),
+            handler.handle_error(err, ctx),
         )
         .await;
         match outcome {
             Ok(Some(claimed)) => return Some(claimed),
             Ok(None) => continue,
             Err(panic_event) => {
-                fan_out_observers(&enhancers.error_observers, &panic_event, &mut *ctx).await;
+                fan_out_observers(&enhancers.error_observers, &panic_event, ctx).await;
             }
         }
     }

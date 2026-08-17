@@ -23,7 +23,7 @@ use super::{FromRequest, FromRequestParts};
 pub trait FromContext<C: HandlerContext>: Sized {
     type Error: fmt::Display;
 
-    fn extract(ctx: &mut C) -> impl Future<Output = Result<Self, Self::Error>> + Send;
+    fn extract(ctx: &C) -> impl Future<Output = Result<Self, Self::Error>> + Send;
 }
 
 /// Take the request for a body extractor, or report that it has already gone.
@@ -34,7 +34,7 @@ pub trait FromContext<C: HandlerContext>: Sized {
 /// impl FromContext<HttpContext> for MyRawBody {
 ///     type Error = BodyExtractionError<<Self as FromRequest>::Error>;
 ///
-///     async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+///     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
 ///         extract_body::<Self>(ctx).await
 ///     }
 /// }
@@ -49,7 +49,7 @@ pub trait FromContext<C: HandlerContext>: Sized {
 /// cannot — a custom extractor it has never heard of — the second one to run
 /// fails with [`BodyExtractionError::AlreadyRead`].
 pub async fn extract_body<T: FromRequest>(
-    ctx: &mut HttpContext,
+    ctx: &HttpContext,
 ) -> Result<T, BodyExtractionError<<T as FromRequest>::Error>> {
     let Some(req) = ctx.take_request() else {
         // The client's request was fine; the handler asked for the body twice.
@@ -100,7 +100,7 @@ impl<E: fmt::Display> fmt::Display for BodyExtractionError<E> {
 impl<T: FromRequestParts> FromContext<HttpContext> for T {
     type Error = <T as FromRequestParts>::Error;
 
-    async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         T::from_request_parts(ctx.request())
     }
 }
@@ -112,7 +112,7 @@ macro_rules! framework_body_extractor {
         impl FromContext<HttpContext> for $ty {
             type Error = BodyExtractionError<<$ty as FromRequest>::Error>;
 
-            async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+            async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
                 extract_body::<$ty>(ctx).await
             }
         }
@@ -126,7 +126,7 @@ framework_body_extractor!(super::Multipart);
 impl<T: serde::de::DeserializeOwned + Send> FromContext<HttpContext> for super::Json<T> {
     type Error = BodyExtractionError<<Self as FromRequest>::Error>;
 
-    async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         extract_body::<Self>(ctx).await
     }
 }
@@ -134,7 +134,7 @@ impl<T: serde::de::DeserializeOwned + Send> FromContext<HttpContext> for super::
 impl<T: serde::de::DeserializeOwned + Send> FromContext<HttpContext> for super::Body<T> {
     type Error = BodyExtractionError<<Self as FromRequest>::Error>;
 
-    async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         extract_body::<Self>(ctx).await
     }
 }
@@ -144,7 +144,7 @@ impl<E: FromRequest + super::ValidatableExtractor + Send> FromContext<HttpContex
 {
     type Error = BodyExtractionError<<Self as FromRequest>::Error>;
 
-    async fn extract(ctx: &mut HttpContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         extract_body::<Self>(ctx).await
     }
 }

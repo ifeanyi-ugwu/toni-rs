@@ -472,7 +472,7 @@ fn build_wrapper_method(
                     .map(|s| (k.as_str().to_string(), s.to_string())),
                 ::tonic::metadata::KeyAndValueRef::Binary(_, _) => None,
             }).collect::<::std::collections::HashMap<::std::string::String, ::std::string::String>>();
-            let mut __ctx = ::toni::context::GrpcContext::new(
+            let __ctx = ::toni::context::GrpcContext::new(
                 #method_path_lit,
                 __metadata,
                 #req_ident.remote_addr(),
@@ -499,7 +499,7 @@ fn build_wrapper_method(
             let __inner = self.inner.clone();
 
             let __pipeline = ::toni::grpc_runtime::run_grpc_pipeline(
-                &mut __ctx,
+                &__ctx,
                 &self.enhancers,
                 #method_name_lit,
                 move || async move {
@@ -537,7 +537,7 @@ fn build_wrapper_method(
                 .take();
             if let ::std::option::Option::Some(__panic_event) = __taken_panic {
                 let __mapped = ::toni::grpc_runtime::run_grpc_error_chain(
-                    &mut __ctx, &self.enhancers, #method_name_lit, &__panic_event,
+                    &__ctx, &self.enhancers, #method_name_lit, &__panic_event,
                 ).await;
                 return ::std::result::Result::Err(match __mapped {
                     ::std::option::Option::Some(__grpc) => {
@@ -568,7 +568,7 @@ fn build_wrapper_method(
                         message: __status.message().to_string(),
                     };
                     let __mapped = ::toni::grpc_runtime::run_grpc_error_chain(
-                        &mut __ctx, &self.enhancers, #method_name_lit, &__wrapped,
+                        &__ctx, &self.enhancers, #method_name_lit, &__wrapped,
                     ).await;
                     ::std::result::Result::Err(match __mapped {
                         ::std::option::Option::Some(__grpc) => {

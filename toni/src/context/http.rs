@@ -1,26 +1,36 @@
 use std::sync::Arc;
 
+use parking_lot::Mutex;
+
 use crate::http_helpers::{HttpRequest, RequestBody, RequestPart, RouteMetadata};
-use crate::traits_helpers::validate::Validatable;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
-/// Per-request context for HTTP handlers.
+/// The execution context for one HTTP request.
 ///
-/// Owns the request parts and body. Delegates the universal
-/// [`HandlerContext`] surface to its inner `SharedState`.
+/// A cheap-clone handle: cloning shares the execution rather than copying it, so
+/// a streaming response body can hold one and keep reading the bag after the
+/// handler has returned.
 ///
-/// The body is an `Option` taken exactly once via
-/// [`take_request`](Self::take_request); a second call yields `None`.
+/// The request parts are readable any number of times. The body is not — it may
+/// be a stream, so [`take_request`](Self::take_request) yields it exactly once
+/// and `None` after that.
 ///
 /// Answering is not done here. A handler returns its response, and an enhancer
 /// that wants to answer without reaching the handler returns one too — see
 /// [`Interceptor`](crate::traits_helpers::Interceptor) and
 /// [`Pipe`](crate::traits_helpers::Pipe).
+#[derive(Clone)]
 pub struct HttpContext {
-    pub(crate) shared: SharedState,
-    pub(crate) parts: RequestPart,
-    pub(crate) body: Option<RequestBody>,
+    inner: Arc<HttpInner>,
+}
+
+struct HttpInner {
+    shared: SharedState,
+    parts: RequestPart,
+    /// The one slot needing interior mutability: single-use, and the context is
+    /// shared, so `take` has to be reachable through `&self`.
+    body: Mutex<Option<RequestBody>>,
 }
 
 impl HttpContext {
@@ -30,9 +40,11 @@ impl HttpContext {
         // handler must address one bag even when nothing installed one upstream.
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::with_extensions(Some(route_metadata), extensions),
-            parts,
-            body: Some(body),
+            inner: Arc::new(HttpInner {
+                shared: SharedState::with_extensions(Some(route_metadata), extensions),
+                parts,
+                body: Mutex::new(Some(body)),
+            }),
         }
     }
 
@@ -41,23 +53,33 @@ impl HttpContext {
         let (mut parts, body) = req.into_parts();
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
-            parts,
-            body: Some(body),
+            inner: Arc::new(HttpInner {
+                shared: SharedState::with_extensions(
+                    Some(Arc::new(RouteMetadata::new())),
+                    extensions,
+                ),
+                parts,
+                body: Mutex::new(Some(body)),
+            }),
         }
     }
 
     pub fn from_parts(mut parts: RequestPart) -> Self {
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
-            shared: SharedState::with_extensions(Some(Arc::new(RouteMetadata::new())), extensions),
-            parts,
-            body: Some(RequestBody::empty()),
+            inner: Arc::new(HttpInner {
+                shared: SharedState::with_extensions(
+                    Some(Arc::new(RouteMetadata::new())),
+                    extensions,
+                ),
+                parts,
+                body: Mutex::new(Some(RequestBody::empty())),
+            }),
         }
     }
 
     pub fn request(&self) -> &RequestPart {
-        &self.parts
+        &self.inner.parts
     }
 
     /// Reconstruct the full `HttpRequest` (parts + body), consuming the body.
@@ -66,40 +88,26 @@ impl HttpContext {
     /// stream — so an enhancer that reads it leaves nothing for the handler, and
     /// the `Option` is what makes that visible at the second call site instead of
     /// handing back a silently empty body.
-    pub fn take_request(&mut self) -> Option<HttpRequest> {
-        self.body
+    pub fn take_request(&self) -> Option<HttpRequest> {
+        self.inner
+            .body
+            .lock()
             .take()
-            .map(|body| HttpRequest::from_parts(self.parts.clone(), body))
-    }
-
-    pub fn set_dto(&mut self, dto: Box<dyn Validatable>) {
-        self.shared.dto = Some(dto);
-    }
-
-    pub fn dto(&self) -> Option<&dyn Validatable> {
-        self.shared.dto.as_deref()
+            .map(|body| HttpRequest::from_parts(self.inner.parts.clone(), body))
     }
 }
 
 impl HandlerContext for HttpContext {
     fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.shared.route_metadata.as_deref()
+        self.inner.shared.route_metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {
-        &self.shared.extensions
+        &self.inner.shared.extensions
     }
 
     fn cancellation(&self) -> &CancellationToken {
-        &self.shared.cancellation
-    }
-
-    fn abort(&mut self) {
-        self.shared.abort = true;
-    }
-
-    fn should_abort(&self) -> bool {
-        self.shared.abort
+        &self.inner.shared.cancellation
     }
 }
 
@@ -117,7 +125,7 @@ mod tests {
     #[test]
     fn a_write_on_the_context_is_visible_on_the_request_it_yields() {
         let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-        let mut ctx = HttpContext::from_parts(parts);
+        let ctx = HttpContext::from_parts(parts);
 
         ctx.extensions().insert(Principal("alice"));
 

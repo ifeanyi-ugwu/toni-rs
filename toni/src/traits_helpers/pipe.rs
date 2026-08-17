@@ -10,5 +10,5 @@ use crate::context::HandlerContext;
 /// `R` is what the transport answers with, matching
 /// [`Interceptor`](super::Interceptor).
 pub trait Pipe<C: ?Sized + HandlerContext, R>: Send + Sync {
-    fn process(&self, data: &mut C) -> Option<R>;
+    fn process(&self, data: &C) -> Option<R>;
 }

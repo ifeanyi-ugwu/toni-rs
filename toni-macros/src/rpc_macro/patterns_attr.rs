@@ -132,7 +132,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             #[allow(non_snake_case, clippy::all)]
             async fn __toni_rpc_handle_message(
                 &self,
-                ctx: &mut ::toni::context::RpcContext,
+                ctx: &::toni::context::RpcContext,
             ) -> ::toni::http_helpers::ExecutionResult<
                 ::std::option::Option<::toni::rpc::RpcData>,
                 ::toni::rpc::RpcError,
@@ -286,7 +286,7 @@ fn is_rpc_data(ty: &syn::Type) -> bool {
 /// payload, deserialised into it: the convention RPC handlers have always used,
 /// now one case among several rather than the only shape a handler can take.
 ///
-/// `&RpcContext` and `&mut RpcContext` pass through, reborrowed at the call so
+/// `&RpcContext` passes through, reborrowed at the call so
 /// they hold no borrow across the extractions before them.
 fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStream>) {
     let mut extractions = Vec::new();
@@ -306,7 +306,7 @@ fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStrea
         let ty = &*pat_type.ty;
 
         if is_rpc_context_ref(ty) {
-            call_args.push(quote! { &mut *ctx });
+            call_args.push(quote! { &*ctx });
             continue;
         }
 
@@ -343,7 +343,7 @@ fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStrea
     (extractions, call_args)
 }
 
-/// `&RpcContext` / `&mut RpcContext` — the context itself, not something
+/// `&RpcContext` — the context itself, not something
 /// extracted from it.
 fn is_rpc_context_ref(ty: &syn::Type) -> bool {
     let syn::Type::Reference(type_ref) = ty else {

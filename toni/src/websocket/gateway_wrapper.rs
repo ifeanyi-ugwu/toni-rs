@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
-use crate::context::{HandlerContext, WsContext};
+use crate::context::WsContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};
 use crate::traits_helpers::{
@@ -28,7 +28,7 @@ struct WsChainNext {
 
 #[async_trait]
 impl InterceptorNext<WsContext, WsHandlerResult> for WsChainNext {
-    async fn run(self: Box<Self>, context: &mut WsContext) -> WsHandlerResult {
+    async fn run(self: Box<Self>, context: &WsContext) -> WsHandlerResult {
         GatewayWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
@@ -95,7 +95,7 @@ impl GatewayWrapper {
         client: WsClient,
         parts: &RequestPart,
     ) -> Result<(), WsError> {
-        let mut context = WsContext::new(
+        let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
             "connect",
@@ -109,14 +109,14 @@ impl GatewayWrapper {
             // `PanicRecovered { during: Guard }`; the connection is refused.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
-                guard.can_activate(&mut context),
+                guard.can_activate(&context),
             )
             .await
             {
                 Ok(b) => b,
                 Err(event) => {
                     tracing::debug!(client_id = %client.id, guard_index = i, "guard panicked during connect");
-                    Self::fan_out_observers(&self.error_observers, &event, &mut context).await;
+                    Self::fan_out_observers(&self.error_observers, &event, &context).await;
                     return Err(WsError::AuthFailed(format!(
                         "guard {} panicked: {}",
                         i, event.message
@@ -126,12 +126,7 @@ impl GatewayWrapper {
             if !activated {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
                 let err = WsError::AuthFailed("Guard rejected connection".into());
-                Self::fan_out_observers(&self.error_observers, &err, &mut context).await;
-                return Err(err);
-            }
-            if context.should_abort() {
-                let err = WsError::AuthFailed("Connection aborted by guard".into());
-                Self::fan_out_observers(&self.error_observers, &err, &mut context).await;
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
                 return Err(err);
             }
         }
@@ -187,7 +182,7 @@ impl GatewayWrapper {
 
         tracing::trace!(client_id = %client_id, event = %event, "WebSocket message received");
 
-        let mut context = WsContext::new(
+        let context = WsContext::new(
             client.clone(),
             message.clone(),
             event.clone(),
@@ -215,7 +210,7 @@ impl GatewayWrapper {
         for guard in guards.iter() {
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
-                guard.can_activate(&mut context),
+                guard.can_activate(&context),
             )
             .await
             {
@@ -229,7 +224,7 @@ impl GatewayWrapper {
                     // `ToniApplication`'s message callback and the only
                     // signal would be observer-side.
                     return Self::record_pipeline_panic(
-                        &mut context,
+                        &context,
                         &all_error_handlers,
                         &self.error_observers,
                         event,
@@ -239,12 +234,7 @@ impl GatewayWrapper {
             };
             if !activated {
                 let err = WsError::AuthFailed("Guard rejected message".into());
-                Self::fan_out_observers(&self.error_observers, &err, &mut context).await;
-                return Err(err);
-            }
-            if context.should_abort() {
-                let err = WsError::AuthFailed("Message aborted by guard".into());
-                Self::fan_out_observers(&self.error_observers, &err, &mut context).await;
+                Self::fan_out_observers(&self.error_observers, &err, &context).await;
                 return Err(err);
             }
         }
@@ -253,7 +243,7 @@ impl GatewayWrapper {
         let pipes = Self::resolve_pipes(&all_pipes, None).await;
 
         Self::execute_with_interceptors(
-            &mut context,
+            &context,
             &interceptors,
             &self.gateway,
             &pipes,
@@ -309,7 +299,7 @@ impl GatewayWrapper {
     }
 
     async fn execute_with_interceptors(
-        context: &mut WsContext,
+        context: &WsContext,
         interceptors: &[Arc<dyn Interceptor<WsContext, WsHandlerResult>>],
         gateway: &Arc<Box<dyn GatewayTrait>>,
         pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
@@ -356,21 +346,21 @@ impl GatewayWrapper {
     /// connection. Fan to observers, give error handlers first claim,
     /// and fall back to a wire-`Err` frame.
     async fn record_pipeline_panic(
-        context: &mut WsContext,
+        context: &WsContext,
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) -> WsHandlerResult {
-        Self::fan_out_observers(observers, &event, &mut *context).await;
+        Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
             if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, &mut *context, observers).await
+                Self::try_chain_handler(handler, &event, context, observers).await
             {
                 return Ok(WsHandlerOutput::Single(claimed));
             }
         }
         let ws_err = WsError::from(event);
-        let msg = Self::safe_render(|| ws_err.to_message(), observers, &mut *context).await;
+        let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
         Ok(WsHandlerOutput::Single(msg))
     }
 
@@ -380,7 +370,7 @@ impl GatewayWrapper {
     /// underlying error, the chain's most-specific handler gets first claim,
     /// and `WsError::to_message` is the fallback frame when none claims.
     async fn execute_handler_with_error_handling(
-        context: &mut WsContext,
+        context: &WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
         error_handlers: &[WsErrorHandlerArc],
@@ -400,15 +390,6 @@ impl GatewayWrapper {
                         .await;
                 }
             }
-            if context.should_abort() {
-                // A pipe answers by returning one. Aborting without an answer
-                // blocks the handler with nothing to send in its place, so it
-                // leaves as a wire-level Err — parallel to guard rejection, and
-                // not the Ok+frame path a user error takes.
-                return Err(WsError::Internal(
-                    "Request aborted by pipe without an answer".into(),
-                ));
-            }
         }
 
         match Self::execute_handler(context, gateway).await {
@@ -418,16 +399,15 @@ impl GatewayWrapper {
                     WsError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, &mut *context).await;
+                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(msg) =
-                        Self::try_chain_handler(handler, observed_err, &mut *context, observers)
-                            .await
+                        Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
                         return Ok(WsHandlerOutput::Single(msg));
                     }
                 }
-                let msg = Self::safe_render(|| ws_err.to_message(), observers, &mut *context).await;
+                let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
                 Ok(WsHandlerOutput::Single(msg))
             }
         }
@@ -447,7 +427,7 @@ impl GatewayWrapper {
     async fn safe_render<F>(
         render: F,
         observers: &[Arc<dyn ErrorObserver>],
-        ctx: &mut WsContext,
+        ctx: &WsContext,
     ) -> WsMessage
     where
         F: FnOnce() -> WsMessage,
@@ -472,12 +452,12 @@ impl GatewayWrapper {
     async fn try_chain_handler(
         handler: &WsErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut WsContext,
+        ctx: &WsContext,
         observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<WsMessage> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
-            handler.handle_error(error, &mut *ctx),
+            handler.handle_error(error, ctx),
         )
         .await
         {
@@ -492,10 +472,10 @@ impl GatewayWrapper {
     async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &mut WsContext,
+        ctx: &WsContext,
     ) {
         for observer in observers {
-            let observe = AssertUnwindSafe(observer.observe(error, &mut *ctx));
+            let observe = AssertUnwindSafe(observer.observe(error, ctx));
             if let Err(payload) = observe.catch_unwind().await {
                 let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
                     *s
@@ -510,10 +490,10 @@ impl GatewayWrapper {
     }
 
     async fn execute_handler(
-        context: &mut WsContext,
+        context: &WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
-        let result = AssertUnwindSafe(gateway.handle_event(&mut *context))
+        let result = AssertUnwindSafe(gateway.handle_event(context))
             .catch_unwind()
             .await;
         match result {
@@ -619,7 +599,7 @@ mod tests {
 
             async fn handle_event(
                 &self,
-                _ctx: &mut WsContext,
+                _ctx: &WsContext,
             ) -> ExecutionResult<WsHandlerOutput, WsError> {
                 ExecutionResult::Ok(WsHandlerOutput::Empty)
             }
