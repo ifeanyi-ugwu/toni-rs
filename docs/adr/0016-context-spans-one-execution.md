@@ -112,7 +112,6 @@ struct HttpInner {
     cancellation: CancellationToken,
     parts:        RequestPart,
     body:         Mutex<Option<RequestBody>>,
-    committed:    AtomicBool,
 }
 ```
 
@@ -126,15 +125,18 @@ Four handles, not one type. An extractor declares its valid transports through i
 impls (ADR-0015), which requires the contexts to be distinct types. Uniformity of shape, not
 collapse into one noun.
 
-### Phases are enforced at runtime
+### Phases need no enforcement, because the answer never lives here
 
-A handle cannot express "the answer is committed" as a bound. Taking the answer flips `committed`, and
-an attempt to answer afterwards warns and does nothing — the register already used for a handler that
-sets a response and then returns one.
+The plan was a `committed` flag and a runtime warning, on the reasoning that a handle cannot express
+"the answer is committed" as a bound. Moving the answer off the context removed the state that flag
+would have policed: there is nothing on a context to answer with, at any phase, so there is no
+precedence and no window to warn about.
 
-This trades a compile-time check for a runtime one. The compile-time check being traded away tests
-the wrong thing: it enforces exclusivity, which is a property of the borrow, while the property worth
-enforcing is the phase.
+What survives of the phase distinction is the request body, and it was already loud — a second read
+fails by name rather than handing back an empty one.
+
+So the compile-time check `&mut` provided is not traded for a runtime one. It is dropped, because what
+it enforced — exclusivity — was never the property worth having.
 
 ### The answer is returned, never written
 
@@ -275,8 +277,8 @@ boundary here avoids.
   no replacement — a dispatch target is not a dependency.
 - The window in which an execution's state is reachable grows from handler return to body drain. A
   bug that leaked a context previously ended with the handler and now ends with the stream.
-- Answering after the answer is committed is a warning at runtime where it was a compile error before,
-  in the sense that the borrow ended. Detection is a snapshot comparison, not a guess.
+- No phase check is added. Answering off-phase stopped being representable when the answer left the
+  context, so the warning this ADR planned for is unnecessary rather than deferred.
 - Extension-bag reads from inside an SSE stream, a WebSocket stream handler, or any gRPC streaming mode
   become possible. They return the execution's bag rather than nothing.
 
