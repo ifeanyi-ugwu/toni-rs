@@ -15,8 +15,33 @@ use crate::traits_helpers::{
 use super::{
     DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage,
 };
-use futures::FutureExt;
+use futures::stream::BoxStream;
+use futures::{FutureExt, StreamExt};
 use std::panic::AssertUnwindSafe;
+
+/// Delegates to an inner stream while holding something alive alongside it.
+///
+/// `BoxStream` is a `Pin<Box<_>>` and therefore `Unpin`, so the projection needs
+/// no pin machinery. The HTTP side does the same for response bodies.
+struct ScopedStream {
+    inner: BoxStream<'static, WsMessage>,
+    _keep_alive: WsContext,
+}
+
+impl futures::Stream for ScopedStream {
+    type Item = WsMessage;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_next(cx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
 
 struct WsChainNext {
     interceptors: Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>>,
@@ -242,7 +267,7 @@ impl GatewayWrapper {
         let interceptors = Self::resolve_interceptors(&all_interceptors, None).await;
         let pipes = Self::resolve_pipes(&all_pipes, None).await;
 
-        Self::execute_with_interceptors(
+        let answer = Self::execute_with_interceptors(
             &context,
             &interceptors,
             &self.gateway,
@@ -250,7 +275,20 @@ impl GatewayWrapper {
             &all_error_handlers,
             &self.error_observers,
         )
-        .await
+        .await;
+
+        // The execution ends when the answer does. A stream has emitted nothing
+        // at this point, so the context rides it rather than dying here.
+        match answer {
+            Ok(WsHandlerOutput::Stream(stream)) => Ok(WsHandlerOutput::Stream(
+                ScopedStream {
+                    inner: stream,
+                    _keep_alive: context,
+                }
+                .boxed(),
+            )),
+            other => other,
+        }
     }
 
     async fn resolve_guards(
