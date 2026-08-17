@@ -158,13 +158,20 @@ pub trait Pipe<C: ?Sized + HandlerContext, R>: Send + Sync {
 
 For an interceptor, short-circuiting is returning without calling `next` — which is what skipping the
 handler already means. For a pipe, `Some` answers and skips the remaining pipes and the handler, which
-is what `set_response` plus `abort()` meant when written together. `abort()` survives as what it says
-alone: stop, with nothing to send.
+is what `set_response` plus `abort()` meant when written together.
 
-Those two outcomes leave by different doors, and the difference is observable on the wire. An answer a
-pipe returns is the reply. A pipe that aborts without one produces a transport-level error — `Err` out
-of the RPC and WebSocket dispatchers, a 500 on HTTP — rather than the success-frame-carrying-an-error-
-envelope that a handler's `Err` renders to. A rejected request is not a user error and is not framed as
+`abort()` does not survive that. Once every enhancer answers by returning, a flag saying "stop, with
+nothing to send" is a third spelling of what `bool` and `Some(R)` say more precisely — and it was
+honoured on RPC, WebSocket and gRPC while HTTP's guard loop never read it, so the same guard rejected
+on three transports and was ignored on the fourth. It also took its name from the concept
+`CancellationToken` implements, which is a different thing entirely: stop because the caller went away,
+not stop because this stage decided to. Nest has no `abort` on `ExecutionContext` either. It is removed
+along with `should_abort` and the seven checks that read it.
+
+A guard therefore rejects by returning `false`, and a pipe rejects by returning `Some`. A pipe's answer
+and a handler's error still leave by different doors, and the difference is observable: an answer a
+pipe returns is the reply, while a handler's `Err` renders through the error chain into the
+success-frame-carrying-an-error-envelope. A rejected request is not a user error and is not framed as
 one; the parallel is guard rejection.
 
 Guards keep returning `bool`, matching Nest, and lose the read-back of a response they may have left
@@ -262,6 +269,9 @@ boundary here avoids.
   works after the call binds the answer and returns it.
 - Breaking for `Pipe` implementors: `process` returns `Option<R>`, so every pipe that transforms and
   falls through ends in `None`, and one that rejects returns `Some` instead of writing and aborting.
+- `abort()` and `should_abort()` are removed from `HandlerContext`. A guard rejects by returning
+  `false`; a pipe rejects by returning `Some`. Code calling either has no replacement, and no silent
+  behaviour change: on HTTP a guard's `abort()` was already ignored.
 - Breaking for guards only where one set a custom rejection response. Reshape with
   `#[catch(GuardRejection)]`, which already took precedence over that response.
 - `set_response`, `response()`, `response_mut()`, `take_response()` and `into_response()` are removed
