@@ -53,7 +53,7 @@ where
     if let Some(per_method) = enhancers.handler_interceptors.get(method) {
         all_interceptors.extend_from_slice(per_method);
     }
-    let interceptors = resolve_interceptors(&all_interceptors).await;
+    let interceptors = resolve_interceptors(&all_interceptors, ctx).await;
 
     execute_with_interceptors(ctx, &interceptors, &enhancers.error_observers, delegate).await
 }
@@ -79,7 +79,7 @@ async fn run_grpc_guards_inline(
         all_guards.extend_from_slice(per_method);
     }
 
-    let guards = resolve_guards(&all_guards).await;
+    let guards = resolve_guards(&all_guards, ctx).await;
     for (index, guard) in guards.iter().enumerate() {
         // A panic inside `can_activate` is treated as a hard rejection:
         // observers see the typed `PanicRecovered { during: Guard }` event
@@ -221,15 +221,15 @@ where
     }
 }
 
-/// gRPC has no HTTP request; factory entries are called with `None`.
-/// Factory guards with `requires_http_parts() == true` are rejected at
-/// startup by [`GrpcServiceResolver`](crate::injector::GrpcServiceResolver).
-async fn resolve_guards(entries: &[GrpcGuardEntry]) -> Vec<Arc<dyn Guard<GrpcContext>>> {
+async fn resolve_guards(
+    entries: &[GrpcGuardEntry],
+    ctx: &GrpcContext,
+) -> Vec<Arc<dyn Guard<GrpcContext>>> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         let g = match entry {
             GrpcGuardEntry::Ready(g) => g.clone(),
-            GrpcGuardEntry::Factory(f) => f.create(None).await,
+            GrpcGuardEntry::Factory(f) => f.create(ctx).await,
         };
         out.push(g);
     }
@@ -238,12 +238,13 @@ async fn resolve_guards(entries: &[GrpcGuardEntry]) -> Vec<Arc<dyn Guard<GrpcCon
 
 async fn resolve_interceptors(
     entries: &[GrpcInterceptorEntry],
+    ctx: &GrpcContext,
 ) -> Vec<Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>> {
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         let i = match entry {
             GrpcInterceptorEntry::Ready(i) => i.clone(),
-            GrpcInterceptorEntry::Factory(f) => f.create(None).await,
+            GrpcInterceptorEntry::Factory(f) => f.create(ctx).await,
         };
         out.push(i);
     }

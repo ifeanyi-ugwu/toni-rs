@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 
 use crate::context::WsContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
-use crate::http_helpers::{ExecutionResult, RequestPart, RouteMetadata};
+use crate::http_helpers::{ExecutionResult, RouteMetadata};
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
     WsInterceptorEntry, WsPipeEntry,
@@ -115,11 +115,11 @@ impl GatewayWrapper {
     }
 
     /// Phase 1 of connection setup: run guards and store client.
-    pub async fn begin_connect(
-        &self,
-        client: WsClient,
-        parts: &RequestPart,
-    ) -> Result<(), WsError> {
+    ///
+    /// The upgrade's parts are no longer threaded in: a connect guard reads the
+    /// handshake through `ctx.client().handshake`, which is the same information
+    /// by a route that works per-message too.
+    pub async fn begin_connect(&self, client: WsClient) -> Result<(), WsError> {
         let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
@@ -127,7 +127,7 @@ impl GatewayWrapper {
             Some(self.route_metadata.clone()),
         );
 
-        let guards = Self::resolve_guards(&self.guards, Some(parts)).await;
+        let guards = Self::resolve_guards(&self.guards, &context).await;
         for (i, guard) in guards.iter().enumerate() {
             // A panic in `can_activate` is treated as a hard rejection so the
             // dispatcher doesn't tear down. Observers see
@@ -181,13 +181,9 @@ impl GatewayWrapper {
     }
 
     /// Handle new WebSocket connection (simple path — no ConnectionManager).
-    pub async fn handle_connect(
-        &self,
-        client: WsClient,
-        parts: &RequestPart,
-    ) -> Result<(), WsError> {
+    pub async fn handle_connect(&self, client: WsClient) -> Result<(), WsError> {
         let client_id = client.id.clone();
-        self.begin_connect(client, parts).await?;
+        self.begin_connect(client).await?;
         self.complete_connect(&client_id).await
     }
 
@@ -231,7 +227,7 @@ impl GatewayWrapper {
             all_error_handlers.extend_from_slice(h);
         }
 
-        let guards = Self::resolve_guards(&all_guards, None).await;
+        let guards = Self::resolve_guards(&all_guards, &context).await;
         for guard in guards.iter() {
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
@@ -264,8 +260,8 @@ impl GatewayWrapper {
             }
         }
 
-        let interceptors = Self::resolve_interceptors(&all_interceptors, None).await;
-        let pipes = Self::resolve_pipes(&all_pipes, None).await;
+        let interceptors = Self::resolve_interceptors(&all_interceptors, &context).await;
+        let pipes = Self::resolve_pipes(&all_pipes, &context).await;
 
         let answer = Self::execute_with_interceptors(
             &context,
@@ -293,13 +289,13 @@ impl GatewayWrapper {
 
     async fn resolve_guards(
         entries: &[WsGuardEntry],
-        parts: Option<&RequestPart>,
+        ctx: &WsContext,
     ) -> Vec<Arc<dyn Guard<WsContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
                 WsGuardEntry::Ready(g) => g.clone(),
-                WsGuardEntry::Factory(f) => f.create(parts).await,
+                WsGuardEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(g);
         }
@@ -308,13 +304,13 @@ impl GatewayWrapper {
 
     async fn resolve_interceptors(
         entries: &[WsInterceptorEntry],
-        parts: Option<&RequestPart>,
+        ctx: &WsContext,
     ) -> Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
                 WsInterceptorEntry::Ready(i) => i.clone(),
-                WsInterceptorEntry::Factory(f) => f.create(parts).await,
+                WsInterceptorEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(i);
         }
@@ -323,13 +319,13 @@ impl GatewayWrapper {
 
     async fn resolve_pipes(
         entries: &[WsPipeEntry],
-        parts: Option<&RequestPart>,
+        ctx: &WsContext,
     ) -> Vec<Arc<dyn Pipe<WsContext, WsHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
                 WsPipeEntry::Ready(p) => p.clone(),
-                WsPipeEntry::Factory(f) => f.create(parts).await,
+                WsPipeEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(p);
         }

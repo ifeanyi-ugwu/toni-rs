@@ -153,7 +153,7 @@ impl InstanceWrapper {
                     // haven't built the real one yet at this point in
                     // the pipeline.
                     let stub = http::Request::builder().body(()).unwrap();
-                    let mut stub_ctx = HttpContext::from_parts(stub.into_parts().0);
+                    let stub_ctx = HttpContext::from_parts(stub.into_parts().0);
                     return Self::safe_render(
                         || http_err.to_response(),
                         &self.error_observers,
@@ -166,7 +166,7 @@ impl InstanceWrapper {
                 // parts to thread through to the handler context. Construct a stub
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
-                let mut error_ctx = HttpContext::from_parts(stub.into_parts().0);
+                let error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let event = MiddlewareFailure::new(e.to_string());
                 Self::fan_out_observers(&self.error_observers, &event, &error_ctx).await;
                 for handler in self.error_handlers.iter().rev() {
@@ -190,13 +190,13 @@ impl InstanceWrapper {
 
     async fn resolve_guards(
         entries: &[HttpGuardEntry],
-        parts: &crate::http_helpers::RequestPart,
+        ctx: &HttpContext,
     ) -> Vec<Arc<dyn Guard<HttpContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
                 HttpGuardEntry::Ready(g) => g.clone(),
-                HttpGuardEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpGuardEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(g);
         }
@@ -205,13 +205,13 @@ impl InstanceWrapper {
 
     async fn resolve_interceptors(
         entries: &[HttpInterceptorEntry],
-        parts: &crate::http_helpers::RequestPart,
+        ctx: &HttpContext,
     ) -> Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
                 HttpInterceptorEntry::Ready(i) => i.clone(),
-                HttpInterceptorEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpInterceptorEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(i);
         }
@@ -220,13 +220,13 @@ impl InstanceWrapper {
 
     async fn resolve_pipes(
         entries: &[HttpPipeEntry],
-        parts: &crate::http_helpers::RequestPart,
+        ctx: &HttpContext,
     ) -> Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
                 HttpPipeEntry::Ready(p) => p.clone(),
-                HttpPipeEntry::Factory(f) => f.create(Some(parts)).await,
+                HttpPipeEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(p);
         }
@@ -243,19 +243,14 @@ impl InstanceWrapper {
         observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
     ) -> HttpResponse {
-        // Split req so factory entries see parts before the context takes ownership.
-        let (mut parts, body) = req.into_parts();
-        // Install the request's provider cache before anything resolves against it: the
-        // enhancer factories below and the controller build further down both reach it
-        // through the parts, so a request-scoped provider injected into a guard and into
-        // the controller is constructed once.
-        crate::traits_helpers::RequestCache::install(&mut parts);
-        let guards = Self::resolve_guards(&guards, &parts).await;
-        let interceptors = Self::resolve_interceptors(&interceptors, &parts).await;
-        let pipes = Self::resolve_pipes(&pipes, &parts).await;
-        let req = HttpRequest::from_parts(parts, body);
-
+        // The context comes first now: it owns the execution's cache, so a
+        // request-scoped provider injected into a guard and into the controller
+        // is constructed once only if both resolve against the same one.
         let context = HttpContext::new(req, route_metadata.clone());
+
+        let guards = Self::resolve_guards(&guards, &context).await;
+        let interceptors = Self::resolve_interceptors(&interceptors, &context).await;
+        let pipes = Self::resolve_pipes(&pipes, &context).await;
 
         let response = Self::run_chain(
             &context,

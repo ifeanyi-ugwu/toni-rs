@@ -76,17 +76,6 @@ impl GrpcServiceResolver {
         let mut guards = self.container.borrow().get_global_grpc_guards();
         for token in tokens {
             let entry = self.resolve_guard_by_token(&token)?;
-            // gRPC has no HTTP request context — request-scoped factories
-            // can't be honoured. Fail at startup rather than at first call.
-            if let GrpcGuardEntry::Factory(ref f) = entry {
-                if f.requires_http_parts() {
-                    anyhow::bail!(
-                        "Guard '{}' has request-scoped dependencies and cannot be used on a \
-                         gRPC service — gRPC has no HTTP request context",
-                        token
-                    );
-                }
-            }
             guards.push(entry);
         }
         Ok(guards)
@@ -115,15 +104,6 @@ impl GrpcServiceResolver {
         let mut interceptors = self.container.borrow().get_global_grpc_interceptors();
         for token in tokens {
             let entry = self.resolve_interceptor_by_token(&token)?;
-            if let GrpcInterceptorEntry::Factory(ref f) = entry {
-                if f.requires_http_parts() {
-                    anyhow::bail!(
-                        "Interceptor '{}' has request-scoped dependencies and cannot be used on \
-                         a gRPC service — gRPC has no HTTP request context",
-                        token
-                    );
-                }
-            }
             interceptors.push(entry);
         }
         Ok(interceptors)

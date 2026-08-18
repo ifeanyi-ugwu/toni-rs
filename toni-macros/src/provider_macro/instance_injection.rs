@@ -425,7 +425,7 @@ fn generate_singleton_provider(
             async fn execute(
                 &self,
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
-                _ctx: ::toni::ProviderContext<'_>,
+                _ctx: ::toni::ProviderContext,
             ) -> Box<dyn ::std::any::Any + Send> {
                 Box::new((*self.instance).clone())
             }
@@ -522,28 +522,34 @@ fn generate_request_provider(
          can fire. Use a singleton provider if you need lifecycle hooks.",
     );
 
-    // Request-scoped providers require an active HTTP context. Constructing them
-    // outside of a request would silently violate the declared scope contract.
+    // Request-scoped providers require an active execution. Constructing one outside
+    // of any execution would silently violate the declared scope contract. Which
+    // execution it is does not matter — every transport has one, and the cache that
+    // makes the scope mean anything lives on it.
     //
     // Build via the `#[new]` constructor when one exists (inherent fn shadows the blanket
     // `CtorBridge` default), else by field injection — same dispatch as the singleton factory.
     let execute_body = quote! {
         use ::toni::__construct::CtorBridge as _;
-        let ::toni::ProviderContext::Http(__http_ctx) = _ctx else {
+        let __exec_ctx = _ctx;
+        if __exec_ctx.cache().is_none() {
             panic!(
-                "Request-scoped provider '{}' requires an HTTP execution context. \
-                 Request-scoped providers cannot be resolved outside of an active HTTP request.",
+                "Request-scoped provider '{}' requires an active execution; it cannot be \
+                 resolved outside one.",
                 ::std::any::type_name::<#struct_name>()
             );
-        };
-        if let Some(__cached) = __http_ctx.cache.get::<#struct_name>() {
+        }
+        if let Some(__cached) = __exec_ctx
+            .cache()
+            .and_then(|__c| __c.get::<#struct_name>())
+        {
             return Box::new(__cached);
         }
-        // Request scope: pass the active request parts so a request-scoped constructor parameter
-        // can itself be resolved.
+        // Thread the execution on, so a request-scoped constructor parameter resolves in
+        // the same one and is shared rather than rebuilt.
         let instance = match <#struct_name>::__toni_ctor_build(
             &self.dependencies,
-            ::std::option::Option::Some(__http_ctx.parts),
+            __exec_ctx.clone(),
         ) {
             ::std::option::Option::Some(__fut) => __fut.await,
             ::std::option::Option::None => {
@@ -551,7 +557,10 @@ fn generate_request_provider(
                 #struct_instantiation
             }
         };
-        __http_ctx.cache.insert(instance.clone());
+        __exec_ctx
+            .cache()
+            .expect("checked above")
+            .insert(instance.clone());
         Box::new(instance)
     };
 
@@ -570,7 +579,7 @@ fn generate_request_provider(
             async fn execute(
                 &self,
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
-                _ctx: ::toni::ProviderContext<'_>,
+                _ctx: ::toni::ProviderContext,
             ) -> Box<dyn ::std::any::Any + Send> {
                 #execute_body
             }
@@ -655,13 +664,15 @@ fn generate_transient_provider(
             async fn execute(
                 &self,
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
-                _ctx: ::toni::ProviderContext<'_>,
+                _ctx: ::toni::ProviderContext,
             ) -> Box<dyn ::std::any::Any + Send> {
                 // Build via the `#[new]` constructor when one exists, else by field injection.
-                // Transient construction carries no request context (a transient consumed in a
-                // request is rebuilt there; its own request-scoped params resolve via that path).
+                // A transient is rebuilt at every injection point, so it is built inside
+                // whatever execution asked for it — and its request-scoped fields resolve in
+                // that same one rather than starting a new one.
                 use ::toni::__construct::CtorBridge as _;
-                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies, ::std::option::Option::None) {
+                let __exec_ctx = _ctx;
+                let instance = match <#struct_name>::__toni_ctor_build(&self.dependencies, __exec_ctx.clone()) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
@@ -719,7 +730,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                         "Missing multi-provider '{}' for field '{}'",
                         __lookup_token, #field_name_str
                     ));
-                let any_box = provider.execute(vec![], _ctx).await;
+                let any_box = provider.execute(vec![], __exec_ctx.clone()).await;
                 let erased_items = *any_box
                     .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
                     .unwrap_or_else(|_| panic!(
@@ -772,7 +783,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                             __lookup_token, #field_name_str
                         ));
 
-                    let any_box = provider.execute(vec![], _ctx).await;
+                    let any_box = provider.execute(vec![], __exec_ctx.clone()).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(
@@ -815,7 +826,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                 if matches!(provider.get_scope(), ::toni::ProviderScope::Transient) {
                     #(
                         #field_idents = {
-                            let any_box = provider.execute(vec![], _ctx).await;
+                            let any_box = provider.execute(vec![], __exec_ctx.clone()).await;
                             *any_box.downcast::<#full_type>()
                                 .unwrap_or_else(|_| panic!(
                                     "Failed to downcast '{}' to {}",
@@ -826,7 +837,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                     )*
                 } else {
                     let #temp_var: #full_type = {
-                        let any_box = provider.execute(vec![], _ctx).await;
+                        let any_box = provider.execute(vec![], __exec_ctx.clone()).await;
                         *any_box.downcast::<#full_type>()
                             .unwrap_or_else(|_| panic!(
                                 "Failed to downcast '{}' to {}",
@@ -1198,8 +1209,9 @@ fn generate_singleton_factory(
                 #scope_validation
 
                 // Build via the `#[new]` constructor if one exists, else by field injection.
-                // Singletons are built at startup with no request context.
-                let instance = match <#struct_name>::__toni_ctor_build(&dependencies, ::std::option::Option::None) {
+                // Singletons are built at startup, outside any execution.
+                let __exec_ctx = ::toni::ProviderContext::None;
+                let instance = match <#struct_name>::__toni_ctor_build(&dependencies, __exec_ctx.clone()) {
                     ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
                     ::std::option::Option::None => ::std::sync::Arc::new({
                         #(#field_resolutions)*
@@ -1423,10 +1435,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
-                        parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
-                        cache: &__request_cache,
-                    })
+                    __exec_ctx.clone()
                 } else {
                     ::toni::ProviderContext::None
                 };
@@ -1465,10 +1474,7 @@ fn generate_create_field_resolutions(
                         __lookup_token, #field_name_str
                     ));
                 let __ctx = if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                    ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
-                        parts: request_parts.expect("HTTP request context required for request-scoped dependency"),
-                        cache: &__request_cache,
-                    })
+                    __exec_ctx.clone()
                 } else {
                     ::toni::ProviderContext::None
                 };
@@ -1517,9 +1523,9 @@ fn generate_dyn_factories(
         let is_from_request = init_fn == "from_request";
         if is_from_request {
             if field_names.is_empty() {
-                quote! { #struct_name::#init_ident(request_parts.expect("HTTP request context required")) }
+                quote! { #struct_name::#init_ident(__exec_ctx.request_parts().expect("HTTP request context required")) }
             } else {
-                quote! { #struct_name::#init_ident(request_parts.expect("HTTP request context required"), #(#field_names),*) }
+                quote! { #struct_name::#init_ident(__exec_ctx.request_parts().expect("HTTP request context required"), #(#field_names),*) }
             }
         } else {
             quote! { #struct_name::#init_ident(#(#field_names),*) }
@@ -1573,19 +1579,18 @@ fn generate_dyn_factories(
         impl #builder_struct_name {
             async fn __build_instance<'a>(
                 &'a self,
-                request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+                __exec_ctx: ::toni::ProviderContext,
             ) -> #struct_name {
                 // A `#[new]` constructor takes over construction; otherwise fall back to field
-                // injection. Both thread `request_parts` so request-scoped sub-dependencies resolve.
+                // injection. Both thread the execution so request-scoped sub-dependencies
+                // resolve in it rather than in one of their own.
                 use ::toni::__construct::CtorBridge as _;
                 if let ::std::option::Option::Some(__fut) =
-                    <#struct_name>::__toni_ctor_build(&*self.all_deps, request_parts)
+                    <#struct_name>::__toni_ctor_build(&*self.all_deps, __exec_ctx.clone())
                 {
                     return __fut.await;
                 }
                 let all_deps = self.all_deps.clone();
-                let __request_cache =
-                    ::toni::traits_helpers::RequestCache::adopt(request_parts);
                 #(#field_resolutions)*
                 #struct_instantiation
             }
@@ -1601,6 +1606,8 @@ fn generate_dyn_factories(
         let factory_trait_path = &spec.dyn_factory_trait;
         let role_variant = &spec.role_variant;
         let entry_path = &spec.entry_path;
+        let context_path = &spec.context_path;
+        let provider_ctx_variant = &spec.provider_ctx_variant;
         let value_probe = Ident::new(&format!("{}Probe", spec.factory_suffix), struct_name.span());
         let type_probe = Ident::new(
             &format!("{}TypeProbe", spec.factory_suffix),
@@ -1613,19 +1620,15 @@ fn generate_dyn_factories(
         // the `expect` cannot fire.
         impl_defs.push(quote! {
             impl #factory_trait_path for #builder_struct_name {
-                fn requires_http_parts(&self) -> bool {
-                    self.has_request_deps
-                }
-
                 fn create<'a>(
                     &'a self,
-                    request_parts: Option<&'a ::toni::http_helpers::RequestPart>,
+                    __ctx: &'a #context_path,
                 ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
                     Output = ::std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {
                     ::std::boxed::Box::pin(async move {
                         use ::toni::__detect::prelude::*;
-                        let instance = self.__build_instance(request_parts).await;
+                        let instance = self.__build_instance(#provider_ctx_variant(__ctx.clone())).await;
                         ::toni::__detect::#value_probe(::std::sync::Arc::new(instance))
                             .detect()
                             .expect("enhancer factory registered only when the type implements the role")

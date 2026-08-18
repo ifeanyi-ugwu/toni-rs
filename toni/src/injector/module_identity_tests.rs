@@ -60,7 +60,7 @@ impl Provider for FakeProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         Box::new(0i32)
     }

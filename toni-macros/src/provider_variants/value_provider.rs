@@ -126,7 +126,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                     async fn execute(
                         &self,
                         _params: Vec<Box<dyn std::any::Any + Send>>,
-                        _ctx: toni::ProviderContext<'_>,
+                        _ctx: toni::ProviderContext,
                     ) -> Box<dyn std::any::Any + Send> {
                         self.instance.execute(_params, _ctx).await
                     }
@@ -202,7 +202,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                     async fn execute(
                         &self,
                         _params: Vec<Box<dyn std::any::Any + Send>>,
-                        _ctx: toni::ProviderContext<'_>,
+                        _ctx: toni::ProviderContext,
                     ) -> Box<dyn std::any::Any + Send> {
                         Box::new((*self.instance).clone())
                     }
@@ -262,7 +262,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                             async fn execute(
                                 &self,
                                 _params: Vec<Box<dyn std::any::Any + Send>>,
-                                _ctx: toni::ProviderContext<'_>,
+                                _ctx: toni::ProviderContext,
                             ) -> Box<dyn std::any::Any + Send> {
                                 (self.get_value)()
                             }

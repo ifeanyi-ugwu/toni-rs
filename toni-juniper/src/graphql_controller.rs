@@ -244,7 +244,7 @@ where
                 }))),
             });
         };
-        self.execute_inner(req).await.into()
+        self.execute_inner(req, ctx).await.into()
     }
 
     fn get_path(&self) -> String {
@@ -288,7 +288,11 @@ where
     Mutation::TypeInfo: Send + Sync,
     Subscription::TypeInfo: Send + Sync,
 {
-    async fn execute_inner(&self, req: HttpRequest) -> HttpResponse {
+    async fn execute_inner(
+        &self,
+        req: HttpRequest,
+        ctx: &toni::context::HttpContext,
+    ) -> HttpResponse {
         let (parts, body) = req.into_parts();
         let body_bytes = match body.collect().await {
             Ok(b) => b,
@@ -317,16 +321,9 @@ where
             }
         };
 
-        let __req_cache = toni::RequestCache::adopt(Some(&parts));
         let service_any = self
             .graphql_service
-            .execute(
-                vec![],
-                toni::ProviderContext::Http(toni::HttpProviderContext {
-                    parts: &parts,
-                    cache: &__req_cache,
-                }),
-            )
+            .execute(vec![], toni::ProviderContext::Http(ctx.clone()))
             .await;
 
         let service = service_any

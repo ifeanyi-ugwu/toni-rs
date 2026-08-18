@@ -82,15 +82,6 @@ impl GatewayResolver {
         let mut guards = self.container.borrow().get_global_ws_guards();
         for token in tokens {
             let entry = self.resolve_guard_by_token(&token)?;
-            if let WsGuardEntry::Factory(ref f) = entry {
-                if f.requires_http_parts() {
-                    anyhow::bail!(
-                        "Guard '{}' has request-scoped dependencies and cannot be used on a \
-                         WebSocket gateway — WS handlers have no HTTP request context",
-                        token
-                    );
-                }
-            }
             guards.push(entry);
         }
         Ok(guards)
@@ -100,15 +91,6 @@ impl GatewayResolver {
         let mut interceptors = self.container.borrow().get_global_ws_interceptors();
         for token in tokens {
             let entry = self.resolve_interceptor_by_token(&token)?;
-            if let WsInterceptorEntry::Factory(ref f) = entry {
-                if f.requires_http_parts() {
-                    anyhow::bail!(
-                        "Interceptor '{}' has request-scoped dependencies and cannot be used on \
-                         a WebSocket gateway — WS handlers have no HTTP request context",
-                        token
-                    );
-                }
-            }
             interceptors.push(entry);
         }
         Ok(interceptors)
@@ -118,15 +100,6 @@ impl GatewayResolver {
         let mut pipes = self.container.borrow().get_global_ws_pipes();
         for token in tokens {
             let entry = self.resolve_pipe_by_token(&token)?;
-            if let WsPipeEntry::Factory(ref f) = entry {
-                if f.requires_http_parts() {
-                    anyhow::bail!(
-                        "Pipe '{}' has request-scoped dependencies and cannot be used on a \
-                         WebSocket gateway — WS handlers have no HTTP request context",
-                        token
-                    );
-                }
-            }
             pipes.push(entry);
         }
         Ok(pipes)
@@ -145,15 +118,6 @@ impl GatewayResolver {
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_guard_by_token(&token)?;
-                if let WsGuardEntry::Factory(ref f) = entry {
-                    if f.requires_http_parts() {
-                        anyhow::bail!(
-                            "Guard '{}' has request-scoped dependencies and cannot be used on a \
-                             WebSocket gateway — WS handlers have no HTTP request context",
-                            token
-                        );
-                    }
-                }
                 Ok(entry)
             })
             .collect()
@@ -167,15 +131,6 @@ impl GatewayResolver {
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_interceptor_by_token(&token)?;
-                if let WsInterceptorEntry::Factory(ref f) = entry {
-                    if f.requires_http_parts() {
-                        anyhow::bail!(
-                            "Interceptor '{}' has request-scoped dependencies and cannot be used \
-                             on a WebSocket gateway — WS handlers have no HTTP request context",
-                            token
-                        );
-                    }
-                }
                 Ok(entry)
             })
             .collect()
@@ -186,15 +141,6 @@ impl GatewayResolver {
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_pipe_by_token(&token)?;
-                if let WsPipeEntry::Factory(ref f) = entry {
-                    if f.requires_http_parts() {
-                        anyhow::bail!(
-                            "Pipe '{}' has request-scoped dependencies and cannot be used on a \
-                             WebSocket gateway — WS handlers have no HTTP request context",
-                            token
-                        );
-                    }
-                }
                 Ok(entry)
             })
             .collect()

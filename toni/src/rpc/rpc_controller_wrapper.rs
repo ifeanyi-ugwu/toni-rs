@@ -117,7 +117,7 @@ impl RpcControllerWrapper {
         }
         let observers = self.error_observers.clone();
 
-        let guards = Self::resolve_guards(&all_guards).await;
+        let guards = Self::resolve_guards(&all_guards, &ctx).await;
         for (index, guard) in guards.iter().enumerate() {
             // Treat a panic in `can_activate` as a hard rejection: observers
             // see `PanicRecovered { during: Guard }` and the caller gets
@@ -144,8 +144,8 @@ impl RpcControllerWrapper {
             }
         }
 
-        let interceptors = Self::resolve_interceptors(&all_interceptors).await;
-        let pipes = Self::resolve_pipes(&all_pipes).await;
+        let interceptors = Self::resolve_interceptors(&all_interceptors, &ctx).await;
+        let pipes = Self::resolve_pipes(&all_pipes, &ctx).await;
         Self::execute_with_interceptors(
             &ctx,
             &interceptors,
@@ -233,15 +233,15 @@ impl RpcControllerWrapper {
         }
     }
 
-    /// RPC has no HTTP request; factory entries are called with `None`.
-    /// Factory guards with `requires_http_parts() == true` should have been
-    /// rejected at startup by the resolver.
-    async fn resolve_guards(entries: &[RpcGuardEntry]) -> Vec<Arc<dyn Guard<RpcContext>>> {
+    async fn resolve_guards(
+        entries: &[RpcGuardEntry],
+        ctx: &RpcContext,
+    ) -> Vec<Arc<dyn Guard<RpcContext>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let g = match entry {
                 RpcGuardEntry::Ready(g) => g.clone(),
-                RpcGuardEntry::Factory(f) => f.create(None).await,
+                RpcGuardEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(g);
         }
@@ -250,12 +250,13 @@ impl RpcControllerWrapper {
 
     async fn resolve_interceptors(
         entries: &[RpcInterceptorEntry],
+        ctx: &RpcContext,
     ) -> Vec<Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let i = match entry {
                 RpcInterceptorEntry::Ready(i) => i.clone(),
-                RpcInterceptorEntry::Factory(f) => f.create(None).await,
+                RpcInterceptorEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(i);
         }
@@ -264,12 +265,13 @@ impl RpcControllerWrapper {
 
     async fn resolve_pipes(
         entries: &[RpcPipeEntry],
+        ctx: &RpcContext,
     ) -> Vec<Arc<dyn Pipe<RpcContext, RpcHandlerResult>>> {
         let mut out = Vec::with_capacity(entries.len());
         for entry in entries {
             let p = match entry {
                 RpcPipeEntry::Ready(p) => p.clone(),
-                RpcPipeEntry::Factory(f) => f.create(None).await,
+                RpcPipeEntry::Factory(f) => f.create(ctx).await,
             };
             out.push(p);
         }

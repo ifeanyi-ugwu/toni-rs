@@ -109,7 +109,7 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
                         async fn execute(
                             &self,
                             params: Vec<Box<dyn std::any::Any + Send>>,
-                            ctx: toni::ProviderContext<'_>,
+                            ctx: toni::ProviderContext,
                         ) -> Box<dyn std::any::Any + Send> {
                             self.inner_provider.execute(params, ctx).await
                         }

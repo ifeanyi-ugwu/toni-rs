@@ -66,6 +66,10 @@ impl HandlerContext for WsContext {
         &self.inner.shared.extensions
     }
 
+    fn cache(&self) -> &crate::traits_helpers::ExecutionCache {
+        &self.inner.shared.cache
+    }
+
     fn cancellation(&self) -> &CancellationToken {
         &self.inner.shared.cancellation
     }

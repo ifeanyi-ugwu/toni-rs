@@ -242,7 +242,7 @@ impl Provider for RpcClient {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         Box::new(self.clone())
     }
