@@ -42,24 +42,21 @@ pub fn handle_rpc_controller(attr: TokenStream, item: TokenStream) -> Result<Tok
     }
 
     let struct_name = struct_def.ident.clone();
-    let is_request = matches!(args.scope, ControllerScope::Request);
-    let scope = if is_request {
-        ProviderScope::Request
-    } else {
-        ProviderScope::Singleton
-    };
 
     let emitted_struct = add_clone_and_inject_fields(&struct_def);
+    // The scope passed here is ignored: an RPC controller carries both provider shapes and its
+    // factory settles the scope at startup, where the dependencies' own scopes are known.
     let provider_system = generate_provider_from_struct_with_traits(
         &struct_def,
-        scope,
+        ProviderScope::Singleton,
         None,
         EnhancerTraits {
             is_rpc_controller: true,
+            rpc_request_scoped: matches!(args.scope, ControllerScope::Request),
             ..Default::default()
         },
     )?;
-    let trait_impl = generate_rpc_trait_impl(&struct_name, is_request);
+    let trait_impl = generate_rpc_trait_impl(&struct_name);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -75,46 +72,11 @@ pub fn handle_rpc_controller(attr: TokenStream, item: TokenStream) -> Result<Tok
 /// on a generated companion. Both route through `Self::__toni_rpc_*`, which the `#[patterns]` impl
 /// shadows with inherent fns; without that impl, the `RpcHandlersBridge` defaults answer.
 ///
-/// The companion carries what the declared scope makes available: the instance built at startup, or
-/// the controller's own provider to build one from once a call arrives.
-fn generate_rpc_trait_impl(struct_name: &Ident, is_request: bool) -> TokenStream {
+/// The companion is the fork between a controller built once and a controller built per call. Which
+/// variant it is settled at startup, by the factory.
+fn generate_rpc_trait_impl(struct_name: &Ident) -> TokenStream {
     let struct_token = struct_name.to_string();
     let source_name = rpc_source_ident(struct_name);
-    let (source_fields, instance_body) = if is_request {
-        (
-            quote! {
-                provider: ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
-            },
-            // The provider caches in the execution, so a controller asked for twice in one call is
-            // built once; init/bootstrap fire on the instance the call gets, as they do for a
-            // request-scoped HTTP controller.
-            quote! {
-                let __any = self
-                    .provider
-                    .execute(vec![], ::toni::ProviderContext::Rpc(ctx.clone()))
-                    .await;
-                let __concrete = *__any.downcast::<#struct_name>().unwrap_or_else(|_| panic!(
-                    "RPC controller '{}' resolved to a different type",
-                    #struct_token
-                ));
-                {
-                    use ::toni::__lifecycle::LifecycleBridge as _;
-                    let _ = #struct_name::__toni_lc_on_init(&__concrete).await;
-                    let _ = #struct_name::__toni_lc_on_bootstrap(&__concrete).await;
-                }
-                ::std::sync::Arc::new(
-                    Box::new(__concrete) as Box<dyn ::toni::rpc::RpcControllerTrait>
-                )
-            },
-        )
-    } else {
-        (
-            quote! {
-                instance: ::std::sync::Arc<Box<dyn ::toni::rpc::RpcControllerTrait>>,
-            },
-            quote! { self.instance.clone() },
-        )
-    };
 
     quote! {
         #[::toni::async_trait]
@@ -131,8 +93,11 @@ fn generate_rpc_trait_impl(struct_name: &Ident, is_request: bool) -> TokenStream
             }
         }
 
-        struct #source_name {
-            #source_fields
+        enum #source_name {
+            /// Built at startup and shared by every call.
+            Singleton(::std::sync::Arc<Box<dyn ::toni::rpc::RpcControllerTrait>>),
+            /// The controller's own provider, resolved inside the call being served.
+            PerCall(::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>),
         }
 
         #[::toni::async_trait]
@@ -155,8 +120,29 @@ fn generate_rpc_trait_impl(struct_name: &Ident, is_request: bool) -> TokenStream
                 &self,
                 ctx: &::toni::context::RpcContext,
             ) -> ::std::sync::Arc<Box<dyn ::toni::rpc::RpcControllerTrait>> {
-                let _ = ctx;
-                #instance_body
+                match self {
+                    Self::Singleton(__instance) => __instance.clone(),
+                    Self::PerCall(__provider) => {
+                        // The provider caches in the execution, so a controller asked for twice in
+                        // one call is built once; init/bootstrap fire on the instance the call is
+                        // served by, as they do for a request-scoped HTTP controller.
+                        let __any = __provider
+                            .execute(vec![], ::toni::ProviderContext::Rpc(ctx.clone()))
+                            .await;
+                        let __concrete = *__any.downcast::<#struct_name>().unwrap_or_else(|_| panic!(
+                            "RPC controller '{}' resolved to a different type",
+                            #struct_token
+                        ));
+                        {
+                            use ::toni::__lifecycle::LifecycleBridge as _;
+                            let _ = #struct_name::__toni_lc_on_init(&__concrete).await;
+                            let _ = #struct_name::__toni_lc_on_bootstrap(&__concrete).await;
+                        }
+                        ::std::sync::Arc::new(
+                            Box::new(__concrete) as Box<dyn ::toni::rpc::RpcControllerTrait>
+                        )
+                    }
+                }
             }
         }
     }
