@@ -1225,3 +1225,184 @@ async fn a_request_scoped_provider_is_shared_within_one_rpc_call() {
         "both guards hold the same instance: {resp}"
     );
 }
+
+// ---- a controller built per call --------------------------------------------
+
+/// Hands out a distinct id per construction, so two holders reporting the same
+/// number are holding one instance. Separate from `SCOPED_BUILDS` because these
+/// tests run concurrently and that counter is reset by its own test.
+static CALL_IDS: AtomicUsize = AtomicUsize::new(0);
+
+#[injectable(scope = "request")]
+pub struct CallScoped {
+    #[default(0)]
+    id: usize,
+}
+
+impl CallScoped {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            id: CALL_IDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+}
+
+#[derive(Clone)]
+pub struct GuardSaw(usize);
+
+/// Reads `CallScoped` before the controller exists, so the id it records is the
+/// one the execution already holds by the time the controller is built.
+#[injectable(scope = "request")]
+pub struct CallScopedGuard {
+    #[inject]
+    scoped: CallScoped,
+}
+
+#[async_trait]
+impl Guard<RpcContext> for CallScopedGuard {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+        ctx.extensions().insert(GuardSaw(self.scoped.id()));
+        true
+    }
+}
+
+/// Numbers each controller construction.
+static PER_CALL_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+#[rpc_controller(scope = "request")]
+pub struct PerCallRpcController {
+    #[inject]
+    scoped: CallScoped,
+    #[default(0)]
+    build: usize,
+}
+
+#[patterns]
+#[use_guards(CallScopedGuard)]
+impl PerCallRpcController {
+    #[new]
+    pub fn new(scoped: CallScoped) -> Self {
+        Self {
+            scoped,
+            build: PER_CALL_CONTROLLER_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    #[message_pattern("rpc.per_call")]
+    async fn per_call(&self, _d: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!({
+            "build": self.build,
+            "controller_saw": self.scoped.id(),
+            "guard_saw": ctx.extensions().get::<GuardSaw>().map(|s| s.0),
+        })))
+    }
+}
+
+#[module(providers: [CallScoped, CallScopedGuard, PerCallRpcController])]
+impl PerCallRpcModule {}
+
+/// Numbers each construction of the singleton controller below.
+static SINGLETON_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+#[rpc_controller]
+pub struct SingletonRpcController {
+    #[default(0)]
+    build: usize,
+}
+
+#[patterns]
+impl SingletonRpcController {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            build: SINGLETON_CONTROLLER_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    #[message_pattern("rpc.singleton")]
+    async fn singleton(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!({ "build": self.build })))
+    }
+}
+
+#[module(providers: [SingletonRpcController])]
+impl SingletonRpcModule {}
+
+/// `#[rpc_controller(scope = "request")]` builds the controller inside the call it
+/// serves: a fresh one per message, and its request-scoped dependency is the
+/// instance the call already holds rather than a second one.
+#[tokio_localset_test::localset_test]
+async fn a_request_scoped_rpc_controller_is_built_per_call() {
+    let port = start_rpc_server(PerCallRpcModule).await;
+
+    let first = tcp_rpc_timeout(
+        port,
+        "rpc.per_call",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("per-call controller should answer")["response"]
+        .clone();
+    let second = tcp_rpc_timeout(
+        port,
+        "rpc.per_call",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("per-call controller should answer again")["response"]
+        .clone();
+
+    assert_ne!(
+        first["build"], second["build"],
+        "each call builds its own controller: {first} then {second}"
+    );
+    // The guard ran first and resolved `CallScoped` before the controller existed.
+    // Equal ids mean the controller joined that same execution rather than starting one.
+    assert_eq!(
+        first["controller_saw"], first["guard_saw"],
+        "the controller shares the call's request-scoped instance: {first}"
+    );
+    assert_eq!(
+        second["controller_saw"], second["guard_saw"],
+        "the controller shares the call's request-scoped instance: {second}"
+    );
+    assert_ne!(
+        first["controller_saw"], second["controller_saw"],
+        "a second call gets its own instance: {first} then {second}"
+    );
+}
+
+/// The default is unchanged: a controller with no declared scope is built once at
+/// startup and every call is served by that one instance.
+#[tokio_localset_test::localset_test]
+async fn a_singleton_rpc_controller_is_built_once() {
+    let port = start_rpc_server(SingletonRpcModule).await;
+
+    let first = tcp_rpc_timeout(
+        port,
+        "rpc.singleton",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("singleton controller should answer")["response"]["build"]
+        .clone();
+    let second = tcp_rpc_timeout(
+        port,
+        "rpc.singleton",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("singleton controller should answer again")["response"]["build"]
+        .clone();
+
+    assert_eq!(first, second, "one instance serves every call");
+}
