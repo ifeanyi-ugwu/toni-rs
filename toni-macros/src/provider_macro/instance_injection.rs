@@ -288,7 +288,7 @@ fn generate_provider_wrapper(
 /// type itself via `toni::__detect` probes — the `impl Guard<HttpContext> for T` is the declaration,
 /// no marker required. Structural roles (gateway / rpc-controller / grpc-service) stay flag-driven:
 /// they come from the structural macros that also generate the trait impls and routing.
-fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
+fn generate_role_pushes(struct_name: &Ident, traits: &EnhancerTraits) -> TokenStream {
     let mut pushes = vec![crate::shared::enhancer_emit::value_probe_detection()];
 
     if traits.is_gateway {
@@ -301,11 +301,14 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
         });
     }
     if traits.is_rpc_controller {
+        let source_name = crate::rpc_macro::rpc_controller_attr::rpc_source_ident(struct_name);
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
-                ::std::sync::Arc::new(
-                    Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
-                )
+                ::std::sync::Arc::new(#source_name {
+                    instance: ::std::sync::Arc::new(
+                        Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
+                    ),
+                }) as ::std::sync::Arc<dyn ::toni::rpc::RpcControllerSource>
             ));
         });
     }
@@ -1180,7 +1183,7 @@ fn generate_singleton_factory(
         quote! {}
     };
 
-    let role_pushes = generate_role_pushes(enhancer_traits);
+    let role_pushes = generate_role_pushes(struct_name, enhancer_traits);
 
     quote! {
         pub struct #factory_name;

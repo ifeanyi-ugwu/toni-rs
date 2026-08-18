@@ -186,7 +186,7 @@ pub enum ProviderRole {
 
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
-    RpcController(Arc<Box<dyn crate::rpc::RpcControllerTrait>>),
+    RpcController(Arc<dyn crate::rpc::RpcControllerSource>),
     GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),
 }
 

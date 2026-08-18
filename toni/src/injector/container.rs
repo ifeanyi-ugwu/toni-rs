@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     middleware::MiddlewareManager,
-    rpc::RpcControllerTrait,
+    rpc::RpcControllerSource,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
@@ -391,7 +391,7 @@ impl ToniContainer {
         &self.role_registry.gateways
     }
 
-    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>> {
+    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<dyn RpcControllerSource>> {
         &self.role_registry.rpc_controllers
     }
 

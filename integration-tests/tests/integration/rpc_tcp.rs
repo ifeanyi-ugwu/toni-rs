@@ -915,18 +915,27 @@ async fn tcp_client_metadata_reaches_handler() {
 #[rpc_controller]
 pub struct BareRpcController {}
 
-/// A controller declared with no `#[patterns]` impl still implements `RpcControllerTrait` (its token
-/// baked, its pattern list empty via the bridge default) — the self-sufficiency guarantee:
-/// `#[rpc_controller]` alone is valid, `#[patterns]` only adds handlers.
-#[test]
-fn bare_rpc_controller_registers_with_no_patterns() {
-    use toni::rpc::RpcControllerTrait;
+#[module(providers: [BareRpcController])]
+impl BareRpcModule {}
 
-    let controller = BareRpcController {};
-    assert_eq!(controller.get_token(), "BareRpcController");
-    assert!(
-        controller.get_patterns().is_empty(),
-        "a controller with no #[patterns] impl exposes no patterns"
+/// The self-sufficiency guarantee: `#[rpc_controller]` alone is valid and `#[patterns]` only adds
+/// handlers. An app whose only controller is bare starts, and every pattern is unrouted — the
+/// bridge's empty pattern list leaves the dispatch index with nothing in it.
+#[tokio_localset_test::localset_test]
+async fn bare_rpc_controller_registers_with_no_patterns() {
+    let port = start_rpc_server(BareRpcModule).await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "anything",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("a bare controller must still leave a serving app");
+    assert_eq!(
+        resp["err"]["status"], "not_found",
+        "a controller with no #[patterns] impl routes nothing"
     );
 }
 

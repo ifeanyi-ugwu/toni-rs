@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use anyhow::{Result, anyhow};
 
-use crate::rpc::{RpcControllerTrait, RpcControllerWrapper};
+use crate::rpc::{RpcControllerSource, RpcControllerWrapper};
 use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry};
 
 use super::ToniContainer;
@@ -21,8 +21,8 @@ impl RpcControllerResolver {
     pub fn resolve(&self) -> Result<Vec<std::sync::Arc<RpcControllerWrapper>>> {
         let raw = self.container.borrow().get_rpc_controllers().clone();
         raw.into_values()
-            .map(|controller| {
-                let wrapper = self.wrap_controller(controller)?;
+            .map(|source| {
+                let wrapper = self.wrap_controller(source)?;
                 Ok(std::sync::Arc::new(wrapper))
             })
             .collect()
@@ -30,15 +30,15 @@ impl RpcControllerResolver {
 
     fn wrap_controller(
         &self,
-        controller: std::sync::Arc<Box<dyn RpcControllerTrait>>,
+        source: std::sync::Arc<dyn RpcControllerSource>,
     ) -> Result<RpcControllerWrapper> {
-        let enhancers = controller.enhancers();
+        let enhancers = source.enhancers();
         let guards = self.resolve_guards(enhancers.guard_tokens)?;
         let interceptors = self.resolve_interceptors(enhancers.interceptor_tokens)?;
         let pipes = self.resolve_pipes(enhancers.pipe_tokens)?;
         let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let error_observers = self.container.borrow().get_global_error_observers();
-        let route_metadata = controller.get_route_metadata();
+        let route_metadata = source.get_route_metadata();
 
         let mut handler_guards: HashMap<String, Vec<RpcGuardEntry>> = HashMap::new();
         let mut handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>> = HashMap::new();
@@ -66,7 +66,7 @@ impl RpcControllerResolver {
         }
 
         Ok(RpcControllerWrapper::new(
-            controller,
+            source,
             guards,
             interceptors,
             pipes,
