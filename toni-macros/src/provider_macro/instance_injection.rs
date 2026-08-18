@@ -1258,9 +1258,23 @@ fn generate_request_factory(
     let (dyn_factory_structs, factory_role_pushes) =
         generate_dyn_factories(struct_name, dependencies, enhancer_traits);
 
-    let has_enhancer_roles = !factory_role_pushes.is_empty();
+    // A request-scoped RPC controller registers the provider itself as its source, which is what
+    // makes each call build its own controller inside that call's execution.
+    let structural_role_pushes = if enhancer_traits.is_rpc_controller {
+        let source_name = crate::rpc_macro::rpc_controller_attr::rpc_source_ident(struct_name);
+        quote! {
+            __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
+                ::std::sync::Arc::new(#source_name { provider: __provider.clone() })
+                    as ::std::sync::Arc<dyn ::toni::rpc::RpcControllerSource>
+            ));
+        }
+    } else {
+        quote! {}
+    };
 
-    let build_body = if has_enhancer_roles {
+    let enhancer_preamble = if factory_role_pushes.is_empty() {
+        quote! {}
+    } else {
         quote! {
             let __has_request_deps = __deps.values().any(|inj|
                 matches!(inj.instance.get_scope(), ::toni::ProviderScope::Request)
@@ -1270,24 +1284,19 @@ fn generate_request_factory(
                     .map(|(k, inj)| (k.clone(), inj.instance.clone()))
                     .collect::<::toni::FxHashMap<_, _>>()
             );
-            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            let mut __roles = ::std::vec::Vec::new();
-            #factory_role_pushes
-            ::toni::traits_helpers::Injectable::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
-                __roles,
-            )
         }
-    } else {
-        quote! {
-            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            ::toni::traits_helpers::Injectable::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
-                ::std::vec::Vec::new(),
-            )
-        }
+    };
+
+    let build_body = quote! {
+        #enhancer_preamble
+        let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+            __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+        let __provider: ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> =
+            ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>);
+        let mut __roles = ::std::vec::Vec::new();
+        #factory_role_pushes
+        #structural_role_pushes
+        ::toni::traits_helpers::Injectable::new(__provider, __roles)
     };
 
     quote! {

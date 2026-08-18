@@ -254,3 +254,59 @@ impl Parse for ControllerArgs {
         })
     }
 }
+
+/// Parse the `#[rpc_controller]` attribute: nothing, or `scope = "singleton" | "request"`.
+///
+/// `struct_def` is `Some` only for the removed inline-struct form, which the attribute rejects with
+/// a migration error rather than a parse failure.
+pub struct RpcControllerArgs {
+    pub scope: ControllerScope,
+    pub struct_def: Option<ItemStruct>,
+}
+
+impl Parse for RpcControllerArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut scope = ControllerScope::default();
+
+        while input.peek(syn::Ident) && !input.peek(Token![pub]) && !input.peek(Token![struct]) {
+            let ident: syn::Ident = input.parse()?;
+
+            if ident == "scope" {
+                let _eq: Token![=] = input.parse()?;
+                let value: LitStr = input.parse()?;
+
+                scope = match value.value().as_str() {
+                    "singleton" => ControllerScope::Singleton,
+                    "request" => ControllerScope::Request,
+                    other => {
+                        return Err(syn::Error::new(
+                            value.span(),
+                            format!(
+                                "Invalid RPC controller scope: '{}'. Must be 'singleton' or \
+                                 'request'. Note: RPC controllers cannot be 'transient'",
+                                other
+                            ),
+                        ));
+                    }
+                };
+            } else {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("Unknown attribute: '{}'. Expected 'scope'", ident),
+                ));
+            }
+
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        let struct_def = if !input.is_empty() {
+            Some(input.parse::<ItemStruct>()?)
+        } else {
+            None
+        };
+
+        Ok(RpcControllerArgs { scope, struct_def })
+    }
+}
