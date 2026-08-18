@@ -599,15 +599,17 @@ impl ToniInstanceLoader {
             // steps so the answer names the reason rather than reporting the token as missing —
             // it is registered, just not as something resolvable.
             let built_locally = providers_instances.and_then(|m| m.get(&dependency));
-            if built_locally.is_some_and(|inj| inj.is_dispatch_target())
-                || container.is_dispatch_target_token(&dependency)
-            {
+            let dispatch_kind = built_locally
+                .and_then(|inj| inj.dispatch_target_kind())
+                .or_else(|| container.dispatch_target_kind(&dependency));
+            if let Some(kind) = dispatch_kind {
                 return Err(anyhow!(
-                    "'{}' is an RPC controller and cannot be injected into '{}'. A controller is \
-                     reached by pattern, and the scope it is built at follows its own \
-                     dependencies — a holder could not know whether it held one instance or one \
-                     per call. Move what is being shared into a provider and inject that.",
+                    "'{}' is {} and cannot be injected into '{}'. A dispatch target is reached by \
+                     its transport, and the scope it is built at follows its own dependencies — a \
+                     holder could not know whether it held one instance or one per call. Move what \
+                     is being shared into a provider and inject that.",
                     dependency,
+                    kind,
                     module_token
                 ));
             }
