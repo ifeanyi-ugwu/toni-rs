@@ -1,18 +1,21 @@
 //! `#[grpc_methods]` — applied to `impl SomeProtoTrait for MyService` blocks.
 //!
-//! Emits two things alongside the user's impl block:
+//! Emits three things alongside the user's impl block:
 //!
-//! 1. An `impl GrpcServiceTrait for MyService` whose `register_with` body
-//!    constructs a hidden enhancer-aware wrapper struct, downcasts the
-//!    registrar to `tonic::service::RoutesBuilder`, and adds
-//!    `MyServiceServer::new(wrapper)`.
+//! 1. A `MyServiceGrpcServiceSource` companion carrying the service's declarations — its token and
+//!    its enhancer tokens — and an `instance` that answers with the service serving a given call.
+//!    Registration and enhancer resolution both happen before any call exists, which is why they
+//!    read the companion rather than a service.
 //!
-//! 2. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper
-//!    that runs guards (and, in later PRs, interceptors / pipes / error
-//!    handlers) before delegating to the user's implementation via UFCS:
-//!    `<MyService as SomeProtoTrait>::method(&self.inner, req).await`. UFCS
-//!    keeps the user's body verbatim so `Self::SomeStream` associated types,
-//!    `self.<field>`, and any inherent helper calls all resolve naturally.
+//! 2. An `impl GrpcServiceSource` on that companion whose `register_with` body constructs a hidden
+//!    enhancer-aware wrapper struct, downcasts the registrar to `tonic::service::RoutesBuilder`,
+//!    and adds `MyServiceServer::new(wrapper)`.
+//!
+//! 3. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper that runs guards
+//!    (and, in later PRs, interceptors / pipes / error handlers) before delegating to the user's
+//!    implementation via UFCS: `<MyService as SomeProtoTrait>::method(&inner, req).await`. UFCS
+//!    keeps the user's body verbatim so `Self::SomeStream` associated types, `self.<field>`, and
+//!    any inherent helper calls all resolve naturally.
 //!
 //! By convention the wrapping `*Server` type name is the proto trait's
 //! identifier with `Server` appended (`OrdersService` → `OrdersServer`),
@@ -27,6 +30,11 @@ use syn::{ItemImpl, Path, Result, Token, parse2};
 use crate::enhancer::enhancer::{
     create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
 };
+
+/// The `GrpcServiceSource` companion generated beside the service struct.
+pub fn grpc_source_ident(self_ident: &syn::Ident) -> syn::Ident {
+    format_ident!("{}GrpcServiceSource", self_ident)
+}
 
 struct GrpcMethodsArgs {
     server: Option<Path>,
@@ -94,6 +102,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         .unwrap_or_default();
 
     let wrapper_ident = format_ident!("__{}Enhanced", self_ident);
+    let source_ident = grpc_source_ident(&self_ident);
 
     // ── parse enhancer attrs (block-level + per-method) ─────────────────────
     let ctrl_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
@@ -332,7 +341,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         #[doc(hidden)]
         #[derive(::std::clone::Clone)]
         pub struct #wrapper_ident {
-            inner: ::std::sync::Arc<#self_ident>,
+            source: #source_ident,
             enhancers: ::std::sync::Arc<::toni::adapter::ResolvedGrpcEnhancers>,
         }
 
@@ -344,9 +353,30 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         }
     };
 
-    // ── GrpcServiceTrait impl on the user's struct ──────────────────────────
+    // ── The source companion, and `GrpcServiceSource` on it ────────────────
     let grpc_trait_impl = quote! {
-        impl ::toni::adapter::GrpcServiceTrait for #self_ty {
+        #[doc(hidden)]
+        #[derive(::std::clone::Clone)]
+        pub struct #source_ident {
+            /// Built at startup and shared by every call.
+            singleton: ::std::sync::Arc<#self_ident>,
+        }
+
+        impl #source_ident {
+            /// The service serving `ctx`.
+            ///
+            /// Inherent rather than a trait method: the wrapper delegates through UFCS at the
+            /// concrete type, so what comes back has to be the service itself.
+            #[doc(hidden)]
+            pub async fn instance(
+                &self,
+                _ctx: &::toni::context::GrpcContext,
+            ) -> ::std::sync::Arc<#self_ident> {
+                self.singleton.clone()
+            }
+        }
+
+        impl ::toni::adapter::GrpcServiceSource for #source_ident {
             fn token(&self) -> ::std::string::String {
                 #token.to_string()
             }
@@ -368,7 +398,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                     ::tonic::service::RoutesBuilder,
                 >() {
                     let __wrapper = #wrapper_ident {
-                        inner: ::std::sync::Arc::new(self.clone()),
+                        source: self.clone(),
                         enhancers,
                     };
                     builder.add_service(#server_path::new(__wrapper));
@@ -376,7 +406,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                     ::toni::tracing::warn!(
                         service = #token,
                         proto_trait = #trait_short,
-                        "GrpcServiceTrait::register_with received an unknown registrar; service not bound"
+                        "GrpcServiceSource::register_with received an unknown registrar; service not bound"
                     );
                 }
             }
@@ -496,18 +526,24 @@ fn build_wrapper_method(
                 = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
             let __outcome_capture = __outcome.clone();
             let __panic_capture = __panic.clone();
-            let __inner = self.inner.clone();
+            let __source = self.source.clone();
+            let __build_ctx = __ctx.clone();
 
             let __pipeline = ::toni::grpc_runtime::run_grpc_pipeline(
                 &__ctx,
                 &self.enhancers,
                 #method_name_lit,
                 move || async move {
-                    let __caught = ::toni::grpc_runtime::catch_handler_panic(
+                    // The service is asked for here and nowhere earlier: a guard that rejects never
+                    // builds one. Construction sits inside the same panic recovery as the handler
+                    // body, so a panicking constructor renders a status rather than tearing down
+                    // the connection.
+                    let __caught = ::toni::grpc_runtime::catch_handler_panic(async move {
+                        let __inner = __source.instance(&__build_ctx).await;
                         <#self_ident as #trait_path>::#method_ident(
                             &__inner, #(#forward_args),*
-                        )
-                    ).await;
+                        ).await
+                    }).await;
                     match __caught {
                         ::std::result::Result::Ok(__reply) => {
                             *__outcome_capture.lock().expect("grpc pipeline outcome mutex poisoned") =

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::adapter::grpc_service_trait::{GrpcServiceTrait, ResolvedGrpcEnhancers};
+use crate::adapter::grpc_service_source::{GrpcServiceSource, ResolvedGrpcEnhancers};
 
 /// Interface for gRPC transport adapters.
 ///
@@ -26,7 +26,7 @@ pub trait GrpcAdapter: Send + Sync + 'static {
     /// configured tonic `Server`'s routes.
     ///
     /// Called once before [`into_lifecycle`](Self::into_lifecycle). Each
-    /// service contributes itself via [`GrpcServiceTrait::register_with`]
+    /// service contributes itself via [`GrpcServiceSource::register_with`]
     /// using a tonic `RoutesBuilder` passed as `&mut dyn Any`; each entry
     /// is paired with its resolved enhancer bundle, and the adapter
     /// forwards both into that call.
@@ -35,7 +35,7 @@ pub trait GrpcAdapter: Send + Sync + 'static {
     /// adapter-specific `add_service` calls.
     fn register_services(
         &mut self,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+        services: Vec<(Arc<dyn GrpcServiceSource>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()>;
 
     /// Consume the adapter and return a self-contained lifecycle handle

@@ -435,7 +435,7 @@ impl ToniContainer {
 
     pub fn get_grpc_services(
         &self,
-    ) -> &FxHashMap<String, Arc<Box<dyn crate::adapter::GrpcServiceTrait>>> {
+    ) -> &FxHashMap<String, Arc<dyn crate::adapter::GrpcServiceSource>> {
         &self.role_registry.grpc_services
     }
 

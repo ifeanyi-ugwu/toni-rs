@@ -2,8 +2,8 @@
 //!
 //! - `#[grpc_service]` on a struct + its inherent impl makes it an injectable
 //!   DI provider that the framework discovers as a gRPC service.
-//! - `#[grpc_methods]` on the proto-trait impl emits a `GrpcServiceTrait`
-//!   that wraps `self` in the inferred `*Server` and registers it with
+//! - `#[grpc_methods]` on the proto-trait impl emits a `GrpcServiceSource`
+//!   that wraps the service in the inferred `*Server` and registers it with
 //!   the framework's gRPC adapter at bind time.
 //! - The user never types `*Server::new(handler)` and never calls
 //!   `adapter.add_service()` — DI + module registration is the entire

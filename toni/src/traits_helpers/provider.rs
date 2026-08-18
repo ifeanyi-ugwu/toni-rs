@@ -187,7 +187,7 @@ pub enum ProviderRole {
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
     RpcController(Arc<dyn crate::rpc::RpcControllerSource>),
-    GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),
+    GrpcService(Arc<dyn crate::adapter::GrpcServiceSource>),
 }
 
 /// A fully-built, ready-to-inject provider with its role registrations.

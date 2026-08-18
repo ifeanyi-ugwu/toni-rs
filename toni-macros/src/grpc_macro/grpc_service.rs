@@ -4,7 +4,7 @@
 //! Lives on the **struct declaration + an inherent impl block** containing the
 //! `new()` constructor (parallel to `#[rpc_controller]`). The trait impl
 //! against the proto-generated trait gets `#[grpc_methods]` separately —
-//! that's what produces the `GrpcServiceTrait` impl that knows how to wrap
+//! that's what produces the `GrpcServiceSource` impl that knows how to wrap
 //! `self` in the tonic `*Server`.
 
 use std::collections::HashSet;

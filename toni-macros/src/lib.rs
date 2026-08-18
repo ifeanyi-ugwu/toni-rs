@@ -838,9 +838,9 @@ pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
 /// ```
 ///
-/// The annotated impl block is passed through unchanged; only an
-/// additional `impl GrpcServiceTrait for YourService` block is emitted
-/// alongside it.
+/// The annotated impl block is passed through unchanged; a source companion carrying the
+/// service's declarations, its `GrpcServiceSource` impl, and the enhancer-aware wrapper are
+/// emitted alongside it.
 #[proc_macro_attribute]
 pub fn grpc_methods(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

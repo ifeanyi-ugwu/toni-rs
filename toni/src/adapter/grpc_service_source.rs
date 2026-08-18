@@ -1,16 +1,19 @@
-//! Trait that user-defined gRPC services implement (via `#[grpc_methods]`).
+//! What a gRPC service declares, and how it is registered with tonic.
 //!
-//! Discovery shape mirrors the existing RPC pattern: each service is
-//! registered as a provider with `ProviderRole::GrpcService`, the framework
-//! collects them at bind time, resolves their declared enhancer tokens
-//! against the role registry, and hands the result back via
-//! [`register_with`](GrpcServiceTrait::register_with) so the macro-generated
-//! body can wrap itself in an enhancer-aware tonic service.
+//! Each service is registered as a provider carrying `ProviderRole::GrpcService`. The framework
+//! collects the sources at bind time, resolves their declared enhancer tokens against the role
+//! registry, and hands the result back through
+//! [`register_with`](GrpcServiceSource::register_with) so the macro-generated body can wrap itself
+//! in an enhancer-aware tonic service.
 //!
-//! The `dyn Any` registrar keeps tonic types out of toni core. The macro
-//! emits a body that downcasts to `tonic::service::RoutesBuilder` and calls
-//! `add_service(MyServiceServer::new(wrapper))` where `wrapper` carries both
-//! the user's struct and the resolved enhancers. Toni core never names tonic.
+//! Nothing here reaches an instance. Registration happens before any call exists, so a service
+//! built per call has nothing to answer with yet; the source knows the declarations without one and
+//! produces instances later, inside the call being served.
+//!
+//! The `dyn Any` registrar keeps tonic types out of toni core. The macro emits a body that
+//! downcasts to `tonic::service::RoutesBuilder` and calls
+//! `add_service(MyServiceServer::new(wrapper))`, where `wrapper` carries the source and the
+//! resolved enhancers. Toni core never names tonic.
 
 use std::sync::Arc;
 
@@ -19,8 +22,8 @@ use crate::traits_helpers::{
 };
 
 /// Per-service bundle of resolved enhancer instances. Built by the framework
-/// at bind time from the token getters on [`GrpcServiceTrait`] and handed to
-/// [`GrpcServiceTrait::register_with`] so the macro-generated wrapper can
+/// at bind time from the token getters on [`GrpcServiceSource`] and handed to
+/// [`GrpcServiceSource::register_with`] so the macro-generated wrapper can
 /// invoke them per call without touching the DI container at request time.
 #[derive(Default, Clone)]
 pub struct ResolvedGrpcEnhancers {
@@ -47,10 +50,10 @@ pub struct ResolvedGrpcEnhancers {
     pub error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
-/// gRPC service marker trait — implemented by `#[grpc_methods]` on the
-/// trait-impl block. The framework discovers implementors via the DI
-/// container at bind time.
-pub trait GrpcServiceTrait: Send + Sync + 'static {
+/// A gRPC service's declarations plus its registration hook — implemented by `#[grpc_methods]` on
+/// a companion generated beside the service struct, not on the struct itself. The framework
+/// discovers sources through the DI container at bind time.
+pub trait GrpcServiceSource: Send + Sync + 'static {
     /// Stable token for DI resolution. Defaults to the type name.
     fn token(&self) -> String;
 
@@ -66,9 +69,9 @@ pub trait GrpcServiceTrait: Send + Sync + 'static {
         enhancers: Arc<ResolvedGrpcEnhancers>,
     );
 
-    // -- Enhancer token getters; default empty so manual `impl GrpcServiceTrait`
-    //    users don't have to touch them. The macro overrides these with the
-    //    tokens parsed from `#[use_guards(...)]` etc.
+    // -- Enhancer token getters; default empty so a hand-written source does not
+    //    have to touch them. The macro overrides these with the tokens parsed
+    //    from `#[use_guards(...)]` etc.
 
     fn get_guard_tokens(&self) -> Vec<String> {
         vec![]

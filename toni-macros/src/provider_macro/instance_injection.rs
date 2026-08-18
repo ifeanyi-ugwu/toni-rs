@@ -332,7 +332,7 @@ fn generate_provider_wrapper(
 /// no marker required. Structural roles (gateway / grpc-service) stay flag-driven: they come from
 /// the structural macros that also generate the trait impls and routing. The rpc-controller role is
 /// pushed by its own factory, which decides between the two sources a controller can have.
-fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
+fn generate_role_pushes(struct_name: &Ident, traits: &EnhancerTraits) -> TokenStream {
     let mut pushes = vec![crate::shared::enhancer_emit::value_probe_detection()];
 
     if traits.is_gateway {
@@ -345,11 +345,11 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
         });
     }
     if traits.is_grpc_service {
+        let source_name = crate::grpc_macro::grpc_methods::grpc_source_ident(struct_name);
         pushes.push(quote! {
             __roles.push(::toni::traits_helpers::ProviderRole::GrpcService(
-                ::std::sync::Arc::new(
-                    Box::new((*instance).clone()) as Box<dyn ::toni::adapter::GrpcServiceTrait>
-                )
+                ::std::sync::Arc::new(#source_name { singleton: instance.clone() })
+                    as ::std::sync::Arc<dyn ::toni::adapter::GrpcServiceSource>
             ));
         });
     }
@@ -1220,7 +1220,7 @@ fn generate_singleton_factory(
         quote! {}
     };
 
-    let role_pushes = generate_role_pushes(enhancer_traits);
+    let role_pushes = generate_role_pushes(struct_name, enhancer_traits);
 
     quote! {
         pub struct #factory_name;
@@ -1291,7 +1291,7 @@ fn generate_rpc_controller_factory(
 
     let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
     let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
-    let role_pushes = generate_role_pushes(enhancer_traits);
+    let role_pushes = generate_role_pushes(struct_name, enhancer_traits);
 
     let dependency_tokens: Vec<_> = dependencies
         .constructor_params
