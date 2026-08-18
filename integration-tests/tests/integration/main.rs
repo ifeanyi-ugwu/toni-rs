@@ -52,6 +52,7 @@ mod provider_scope;
 mod request_extractor;
 mod request_provider;
 mod request_scope_sharing;
+mod rpc_controller_injection;
 mod rpc_grpc;
 mod rpc_grpc_listener_adoption;
 mod rpc_grpc_macros;
