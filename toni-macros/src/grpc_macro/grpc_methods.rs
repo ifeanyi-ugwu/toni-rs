@@ -357,9 +357,11 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     let grpc_trait_impl = quote! {
         #[doc(hidden)]
         #[derive(::std::clone::Clone)]
-        pub struct #source_ident {
+        pub enum #source_ident {
             /// Built at startup and shared by every call.
-            singleton: ::std::sync::Arc<#self_ident>,
+            Singleton(::std::sync::Arc<#self_ident>),
+            /// The service's own provider, resolved inside the call being served.
+            PerCall(::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>),
         }
 
         impl #source_ident {
@@ -370,9 +372,29 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
             #[doc(hidden)]
             pub async fn instance(
                 &self,
-                _ctx: &::toni::context::GrpcContext,
+                ctx: &::toni::context::GrpcContext,
             ) -> ::std::sync::Arc<#self_ident> {
-                self.singleton.clone()
+                match self {
+                    Self::Singleton(__instance) => __instance.clone(),
+                    Self::PerCall(__provider) => {
+                        // The provider caches in the execution, so a service asked for twice in one
+                        // call is built once; init/bootstrap fire on the instance the call is served
+                        // by, as they do for a request-scoped HTTP controller.
+                        let __any = __provider
+                            .execute(vec![], ::toni::ProviderContext::Grpc(ctx.clone()))
+                            .await;
+                        let __concrete = *__any.downcast::<#self_ident>().unwrap_or_else(|_| panic!(
+                            "gRPC service '{}' resolved to a different type",
+                            #token
+                        ));
+                        {
+                            use ::toni::__lifecycle::LifecycleBridge as _;
+                            let _ = #self_ident::__toni_lc_on_init(&__concrete).await;
+                            let _ = #self_ident::__toni_lc_on_bootstrap(&__concrete).await;
+                        }
+                        ::std::sync::Arc::new(__concrete)
+                    }
+                }
             }
         }
 
