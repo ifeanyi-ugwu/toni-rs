@@ -83,7 +83,7 @@ impl Provider for SeaOrmHealthProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         Box::new(self.indicator.clone())
     }

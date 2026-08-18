@@ -200,7 +200,7 @@ fn generate_factory(struct_name: &Ident) -> TokenStream {
                         ::std::sync::Arc::new(
                             <#struct_name>::__toni_build_from_deps(
                                 &dependencies,
-                                ::std::option::Option::None,
+                                ::toni::ProviderContext::None,
                             ).await,
                         );
                     ::toni::traits_helpers::ControllerInstance::Singleton(controller_instance)
@@ -273,7 +273,7 @@ fn generate_bridges(
         impl #struct_name {
             /// Build the controller from resolved dependencies — via the `#[new]` constructor when
             /// one exists (inherent fn shadows the blanket `CtorBridge` default), else by field
-            /// injection. `request_parts` is `Some` only on the request-scoped rebuild path.
+            /// injection. `__exec_ctx` is the execution being served, or `None` at startup.
             #[doc(hidden)]
             #[allow(unused_variables, non_snake_case, clippy::all)]
             pub async fn __toni_build_from_deps(
@@ -281,14 +281,12 @@ fn generate_bridges(
                     String,
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
                 >,
-                request_parts: ::std::option::Option<&::toni::http_helpers::RequestPart>,
+                __exec_ctx: ::toni::ProviderContext,
             ) -> Self {
                 use ::toni::__construct::CtorBridge as _;
-                match <Self>::__toni_ctor_build(dependencies, request_parts) {
+                match <Self>::__toni_ctor_build(dependencies, __exec_ctx.clone()) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
-                        let __request_cache =
-                            ::toni::traits_helpers::RequestCache::adopt(request_parts);
                         #(#field_resolutions)*
                         #struct_literal
                     }
@@ -410,18 +408,13 @@ fn resolve_one(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     }
 }
 
-/// The `ProviderContext` for a `__provider` in scope: `Http` (with request parts + shared cache) when
-/// the provider is request-scoped, `None` otherwise.
+/// The `ProviderContext` for a `__provider` in scope: this execution when the
+/// provider is request-scoped, `None` otherwise. Resolving it in the same
+/// execution is what makes one construction shared across the request.
 fn ctx_expr() -> TokenStream {
     quote! {
         if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-            ::toni::ProviderContext::Http(::toni::traits_helpers::HttpProviderContext {
-                parts: request_parts.unwrap_or_else(|| panic!(
-                    "a request-scoped dependency was resolved but no HTTP request context is \
-                     available; request-scoped dependencies can only be constructed within a request"
-                )),
-                cache: &__request_cache,
-            })
+            __exec_ctx.clone()
         } else {
             ::toni::ProviderContext::None
         }

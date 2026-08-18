@@ -7,7 +7,7 @@ use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware:
 use crate::{
     ProviderScope,
     context::{GrpcContext, HttpContext, RpcContext, WsContext},
-    http_helpers::{HttpResponse, RequestPart},
+    http_helpers::HttpResponse,
     rpc::RpcData,
     websocket::WsMessage,
 };
@@ -21,7 +21,7 @@ pub trait Provider: Send + Sync {
     async fn execute(
         &self,
         params: Vec<Box<dyn Any + Send>>,
-        ctx: ProviderContext<'_>,
+        ctx: ProviderContext,
     ) -> Box<dyn Any + Send>;
     fn get_token_factory(&self) -> String;
     fn get_scope(&self) -> ProviderScope {
@@ -58,10 +58,9 @@ macro_rules! transport_factory_types {
         $pipe_factory:ident, $pipe_entry:ident
     ) => {
         pub trait $guard_factory: Send + Sync {
-            fn requires_http_parts(&self) -> bool;
             fn create<'a>(
                 &'a self,
-                request_parts: Option<&'a RequestPart>,
+                ctx: &'a $context,
             ) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<$context> + Send + Sync>> + Send + 'a>>;
         }
 
@@ -72,10 +71,9 @@ macro_rules! transport_factory_types {
         }
 
         pub trait $interceptor_factory: Send + Sync {
-            fn requires_http_parts(&self) -> bool;
             fn create<'a>(
                 &'a self,
-                request_parts: Option<&'a RequestPart>,
+                ctx: &'a $context,
             ) -> Pin<
                 Box<
                     dyn Future<Output = Arc<dyn Interceptor<$context, $answer> + Send + Sync>>
@@ -92,10 +90,9 @@ macro_rules! transport_factory_types {
         }
 
         pub trait $pipe_factory: Send + Sync {
-            fn requires_http_parts(&self) -> bool;
             fn create<'a>(
                 &'a self,
-                request_parts: Option<&'a RequestPart>,
+                ctx: &'a $context,
             ) -> Pin<
                 Box<
                     dyn Future<Output = Arc<dyn Pipe<$context, $answer> + Send + Sync>> + Send + 'a,

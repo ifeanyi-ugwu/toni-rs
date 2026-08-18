@@ -63,7 +63,7 @@ impl<C: Send + Sync + Clone + 'static> Provider for PrismaClientProvider<C> {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         Box::new(self.client.clone())
     }

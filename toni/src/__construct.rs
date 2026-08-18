@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::http_helpers::RequestPart;
 use crate::traits_helpers::Provider;
+use crate::traits_helpers::ProviderContext;
 
 /// The already-built dependency providers passed to a factory's `build`, keyed by token.
 pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
@@ -44,7 +44,7 @@ pub trait CtorBridge: Sized {
 
     fn __toni_ctor_build<'a>(
         _deps: &'a ResolvedDeps,
-        _request_parts: Option<&'a RequestPart>,
+        _ctx: ProviderContext,
     ) -> Option<Pin<Box<dyn Future<Output = Self> + Send + 'a>>> {
         None
     }

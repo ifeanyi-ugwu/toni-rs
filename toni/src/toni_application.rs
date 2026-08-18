@@ -794,7 +794,7 @@ fn make_ws_callbacks(
             Box::pin(async move {
                 let client = create_client_from_parts(&parts);
                 let client_id = client.id.clone();
-                gateway.begin_connect(client, &parts).await?;
+                gateway.begin_connect(client).await?;
                 if let Some(bs) = &bs {
                     bs.connect(client_id.clone(), sink, gateway.get_namespace());
                 } else {

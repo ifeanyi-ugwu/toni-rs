@@ -238,7 +238,7 @@ where
     async fn execute(
         &self,
         _deps: Vec<Box<dyn std::any::Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn std::any::Any + Send> {
         let service: GraphQLService<Query, Mutation, Subscription, Ctx, S> = GraphQLService {
             schema: self.schema.clone(),

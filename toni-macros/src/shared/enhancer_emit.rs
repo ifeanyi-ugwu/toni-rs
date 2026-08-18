@@ -47,6 +47,11 @@ pub struct EnhancerSpec {
     pub dyn_factory_trait: TokenStream,
     /// Camel-case suffix used to derive a unique factory struct name per kind.
     pub factory_suffix: &'static str,
+    /// `::toni::context::HttpContext` etc. — what this kind's factory is handed.
+    pub context_path: TokenStream,
+    /// `::toni::ProviderContext::Http` etc. — how that context is wrapped for
+    /// the provider being built.
+    pub provider_ctx_variant: TokenStream,
 }
 
 pub struct ErrorHandlerSpec {
@@ -80,6 +85,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::HttpContext> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynHttpGuardFactory },
                 factory_suffix: "HttpGuard",
+                context_path: quote! { ::toni::context::HttpContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Http },
             },
             EnhancerKind::HttpInterceptor => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::HttpInterceptor },
@@ -87,6 +94,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynHttpInterceptorFactory },
                 factory_suffix: "HttpInterceptor",
+                context_path: quote! { ::toni::context::HttpContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Http },
             },
             EnhancerKind::HttpPipe => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::HttpPipe },
@@ -94,6 +103,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynHttpPipeFactory },
                 factory_suffix: "HttpPipe",
+                context_path: quote! { ::toni::context::HttpContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Http },
             },
             EnhancerKind::RpcGuard => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcGuard },
@@ -101,6 +112,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::RpcContext> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynRpcGuardFactory },
                 factory_suffix: "RpcGuard",
+                context_path: quote! { ::toni::context::RpcContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Rpc },
             },
             EnhancerKind::RpcInterceptor => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcInterceptor },
@@ -108,6 +121,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::RpcContext, ::toni::rpc::RpcHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynRpcInterceptorFactory },
                 factory_suffix: "RpcInterceptor",
+                context_path: quote! { ::toni::context::RpcContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Rpc },
             },
             EnhancerKind::RpcPipe => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcPipe },
@@ -115,6 +130,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::RpcContext, ::toni::rpc::RpcHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynRpcPipeFactory },
                 factory_suffix: "RpcPipe",
+                context_path: quote! { ::toni::context::RpcContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Rpc },
             },
             EnhancerKind::WsGuard => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsGuard },
@@ -122,6 +139,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::WsContext> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsGuardFactory },
                 factory_suffix: "WsGuard",
+                context_path: quote! { ::toni::context::WsContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::WebSocket },
             },
             EnhancerKind::WsInterceptor => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsInterceptor },
@@ -129,6 +148,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::WsContext, ::toni::websocket::WsHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsInterceptorFactory },
                 factory_suffix: "WsInterceptor",
+                context_path: quote! { ::toni::context::WsContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::WebSocket },
             },
             EnhancerKind::WsPipe => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsPipe },
@@ -136,6 +157,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext, ::toni::websocket::WsHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsPipeFactory },
                 factory_suffix: "WsPipe",
+                context_path: quote! { ::toni::context::WsContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::WebSocket },
             },
             EnhancerKind::GrpcGuard => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcGuard },
@@ -143,6 +166,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Guard<::toni::context::GrpcContext> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynGrpcGuardFactory },
                 factory_suffix: "GrpcGuard",
+                context_path: quote! { ::toni::context::GrpcContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Grpc },
             },
             EnhancerKind::GrpcInterceptor => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::GrpcInterceptor },
@@ -150,6 +175,8 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::GrpcContext, ::toni::GrpcHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynGrpcInterceptorFactory },
                 factory_suffix: "GrpcInterceptor",
+                context_path: quote! { ::toni::context::GrpcContext },
+                provider_ctx_variant: quote! { ::toni::ProviderContext::Grpc },
             },
         }
     }

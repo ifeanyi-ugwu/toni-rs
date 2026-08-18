@@ -166,7 +166,7 @@ fn contrib_provider_tokens(
             async fn execute(
                 &self,
                 _params: ::std::vec::Vec<::std::boxed::Box<dyn ::std::any::Any + Send>>,
-                _ctx: ::toni::ProviderContext<'_>,
+                _ctx: ::toni::ProviderContext,
             ) -> ::std::boxed::Box<dyn ::std::any::Any + Send> {
                 ::std::boxed::Box::new(self.item.clone())
             }

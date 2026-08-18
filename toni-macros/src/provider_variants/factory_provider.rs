@@ -191,7 +191,7 @@ fn generate_caching_provider(
             async fn execute(
                 &self,
                 _params: Vec<Box<dyn std::any::Any + Send>>,
-                _ctx: toni::ProviderContext<'_>,
+                _ctx: toni::ProviderContext,
             ) -> Box<dyn std::any::Any + Send> {
                 #execute_body
             }
@@ -368,7 +368,7 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                     async fn execute(
                         &self,
                         _params: Vec<Box<dyn std::any::Any + Send>>,
-                        _ctx: toni::ProviderContext<'_>,
+                        _ctx: toni::ProviderContext,
                     ) -> Box<dyn std::any::Any + Send> {
                         let _dependencies = &self.deps;
                         let factory = #factory_expr;
@@ -404,7 +404,7 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                     async fn execute(
                         &self,
                         _params: Vec<Box<dyn std::any::Any + Send>>,
-                        _ctx: toni::ProviderContext<'_>,
+                        _ctx: toni::ProviderContext,
                     ) -> Box<dyn std::any::Any + Send> {
                         let _dependencies = &self.deps;
                         let factory = #factory_expr;
@@ -477,8 +477,8 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
 /// One `Dyn*Factory` is emitted per enhancer kind; each `create()` re-invokes the closure and
 /// value-probes the fresh result (compiles for any output type via the `None` fallback, and only
 /// ever runs for a kind whose registration the type-probe admitted, so the `expect` can't fire).
-/// `requires_http_parts()` is always `false` — dep resolution uses `ProviderContext::None`, as the
-/// non-caching provider's `execute()` does.
+/// Dep resolution uses `ProviderContext::None`, as the non-caching provider's
+/// `execute()` does — nothing here is request-scoped.
 ///
 /// Returns `(struct_defs, role_push_stmts)`; role pushes assume `__all_deps: Arc<FxHashMap<...>>`.
 fn generate_noncaching_factory_structs(
@@ -523,6 +523,7 @@ fn generate_noncaching_factory_structs(
         let entry_path = &spec.entry_path;
         let role_variant = &spec.role_variant;
         let dyn_factory_trait = &spec.dyn_factory_trait;
+        let context_path = &spec.context_path;
         let value_probe = format_ident!("{}Probe", spec.factory_suffix);
         let type_probe = format_ident!("{}TypeProbe", spec.factory_suffix);
 
@@ -532,11 +533,9 @@ fn generate_noncaching_factory_structs(
             }
 
             impl #dyn_factory_trait for #struct_name {
-                fn requires_http_parts(&self) -> bool { false }
-
                 fn create<'a>(
                     &'a self,
-                    _request_parts: Option<&'a toni::http_helpers::RequestPart>,
+                    _ctx: &'a #context_path,
                 ) -> std::pin::Pin<Box<dyn std::future::Future<
                     Output = std::sync::Arc<dyn #trait_path + Send + Sync>
                 > + Send + 'a>> {

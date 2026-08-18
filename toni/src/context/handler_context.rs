@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crate::http_helpers::RouteMetadata;
 
 use super::{CancellationToken, Extensions};
+use crate::traits_helpers::ExecutionCache;
 
 /// The universal interface every per-request context implements.
 ///
@@ -27,6 +28,13 @@ pub trait HandlerContext: Send + Sync {
     ///
     /// The bag mutates through `&self` — see [`Extensions`].
     fn extensions(&self) -> &Extensions;
+
+    /// The instances built for this execution.
+    ///
+    /// A request-scoped type resolved twice in one execution is constructed
+    /// once and shared. Nothing in here is transport-specific — it lives on the
+    /// context because that is the object whose lifetime it shares.
+    fn cache(&self) -> &ExecutionCache;
 
     /// The per-request cancellation token. Resolves when the client
     /// disconnects, the server triggers a per-request abort, or the handler's

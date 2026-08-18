@@ -135,18 +135,15 @@ impl<T: Send + Sync + 'static> Provider for Extension<T> {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        ctx: ProviderContext<'_>,
+        ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        let ProviderContext::Http(http_ctx) = ctx else {
+        let Some(bag) = ctx.extensions() else {
             panic!(
-                "Extension<{}> requires an HTTP execution context; it is request-scoped and \
-                 cannot be resolved outside an active request",
+                "Extension<{}> is request-scoped and cannot be resolved outside an execution",
                 std::any::type_name::<T>()
             );
         };
-        Box::new(Extension::<T>::over(Extensions::adopt(
-            &http_ctx.parts.extensions,
-        )))
+        Box::new(Extension::<T>::over(bag))
     }
 
     fn get_scope(&self) -> ProviderScope {
@@ -171,15 +168,12 @@ impl Provider for Extensions {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        ctx: ProviderContext<'_>,
+        ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        let ProviderContext::Http(http_ctx) = ctx else {
-            panic!(
-                "Extensions requires an HTTP execution context; it is request-scoped and cannot \
-                 be resolved outside an active request"
-            );
+        let Some(bag) = ctx.extensions() else {
+            panic!("Extensions is request-scoped and cannot be resolved outside an execution");
         };
-        Box::new(Extensions::adopt(&http_ctx.parts.extensions))
+        Box::new(bag)
     }
 
     fn get_scope(&self) -> ProviderScope {

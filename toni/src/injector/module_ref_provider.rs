@@ -28,7 +28,7 @@ impl Provider for ModuleRefProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         Box::new(ModuleRef::new(
             self.module_token.clone(),

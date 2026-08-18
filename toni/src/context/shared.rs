@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::http_helpers::RouteMetadata;
 
 use super::{CancellationToken, Extensions};
+use crate::traits_helpers::ExecutionCache;
 
 /// State shared by every per-transport handler context.
 ///
@@ -14,6 +15,7 @@ pub(crate) struct SharedState {
     pub(crate) route_metadata: Option<Arc<RouteMetadata>>,
     pub(crate) extensions: Extensions,
     pub(crate) cancellation: CancellationToken,
+    pub(crate) cache: ExecutionCache,
 }
 
 impl SharedState {
@@ -31,6 +33,7 @@ impl SharedState {
             route_metadata,
             extensions,
             cancellation: CancellationToken::new(),
+            cache: ExecutionCache::new(),
         }
     }
 }

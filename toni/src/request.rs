@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use crate::FxHashMap;
 use crate::async_trait;
+use crate::context::HandlerContext;
 use crate::extractors::FromRequestParts;
 use crate::http_helpers::{PathParams, RequestPart};
 use crate::provider_scope::ProviderScope;
@@ -56,16 +57,17 @@ impl Provider for Request {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        ctx: ProviderContext<'_>,
+        ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        let ProviderContext::Http(http_ctx) = ctx else {
+        let ProviderContext::Http(http_ctx) = &ctx else {
             panic!("Request provider requires an HTTP execution context");
         };
-        if let Some(cached) = http_ctx.cache.get::<Request>() {
+        let cache = http_ctx.cache();
+        if let Some(cached) = cache.get::<Request>() {
             return Box::new(cached);
         }
-        let instance = Request::from_request_parts(http_ctx.parts).expect("infallible");
-        http_ctx.cache.insert(instance.clone());
+        let instance = Request::from_request_parts(http_ctx.request()).expect("infallible");
+        cache.insert(instance.clone());
         Box::new(instance)
     }
 

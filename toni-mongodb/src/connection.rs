@@ -69,7 +69,7 @@ impl Provider for MongoConnectionProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // Database is Clone (Arc-backed); cloning shares the same connection pool.
         Box::new(self.db.clone())

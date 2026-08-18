@@ -612,7 +612,7 @@ fn generate_request_controller_wrapper(
             quote! {
                 let controller = #struct_name::__toni_build_from_deps(
                     &self.dependencies,
-                    ::std::option::Option::Some(&_req_parts),
+                    ::toni::ProviderContext::Http(__ctx.clone()),
                 ).await;
                 {
                     use ::toni::__lifecycle::LifecycleBridge as _;

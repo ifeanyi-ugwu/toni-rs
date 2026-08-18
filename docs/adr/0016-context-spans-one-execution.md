@@ -216,6 +216,23 @@ It becomes a field on every context and is renamed `ExecutionCache`. The carrier
 Callers driving the container outside a request — tests, CLI entry points, background jobs — construct
 a context instead of installing a cache on synthetic parts.
 
+Moving it forces the enhancer factory SPI to move with it, and that is the larger half of the change.
+A factory received `Option<&RequestPart>`, which is only enough to find a cache that rides on parts;
+it now receives the execution itself:
+
+```rust
+fn create<'a>(&'a self, ctx: &'a C) -> Pin<Box<dyn Future<Output = Arc<dyn Guard<C>>> + Send + 'a>>;
+```
+
+Which in turn forces the dispatcher's order: the context is built before enhancers resolve, rather
+than assembled from parts afterwards.
+
+And that removes a rule rather than relocating it. `requires_http_parts()` and the startup refusals on
+RPC, WebSocket and gRPC — *"this transport has no HTTP request context"* — were true only while the
+scope handle was HTTP-shaped. Every transport carries an execution, so a request-scoped provider is a
+usable enhancer dependency on all four. This is the HTTP privilege dissolving, and it is the point of
+the ADR rather than a side effect of it.
+
 ### Provider contexts stay concrete; universal state goes through the trait
 
 ```rust
@@ -238,6 +255,11 @@ introduced to prevent, relocated from one variant onto every implementor.
 
 The line: state every execution has reaches through `HandlerContext` — extensions, cancellation, route
 metadata, and now `cache()`. State one transport has reaches through the variant.
+
+The enum stops being `Copy`, which is worth stating because it is load-bearing. Holding a handle rather
+than two borrowed references means a construction site that passed the context on by value now has to
+clone it, and the compiler names each one. Those sites were correct only because the old enum was
+trivially copyable.
 
 ### Each transport gets one execution context per execution
 
