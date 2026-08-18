@@ -289,14 +289,14 @@ impl ToniDependenciesScanner {
         for module_token in modules_token {
             {
                 let container = self.container.borrow();
-                if let Ok(providers) = container.get_providers_instance(module_token) {
-                    for (token, provider) in providers.iter() {
+                if let Ok(providers) = container.get_lifecycle_instances(module_token) {
+                    for provider in providers {
                         // Skip request-scoped providers - they require an active HTTP request
                         if provider.get_scope() == crate::ProviderScope::Request {
                             continue;
                         }
 
-                        tracing::debug!(module = %module_token, provider = %token, hook = "on_application_bootstrap", "lifecycle hook");
+                        tracing::debug!(module = %module_token, provider = %provider.get_token(), hook = "on_application_bootstrap", "lifecycle hook");
                         provider
                             .on_application_bootstrap()
                             .await
@@ -356,15 +356,15 @@ impl ToniDependenciesScanner {
         for module_token in modules_token {
             {
                 let container = self.container.borrow();
-                if let Ok(providers) = container.get_providers_instance(module_token) {
-                    for (token, provider) in providers.iter() {
+                if let Ok(providers) = container.get_lifecycle_instances(module_token) {
+                    for provider in providers {
                         // Skip request-scoped providers - they require an active HTTP request
                         // and cannot be executed during module initialization
                         if provider.get_scope() == crate::ProviderScope::Request {
                             continue;
                         }
 
-                        tracing::debug!(module = %module_token, provider = %token, hook = "on_module_init", "lifecycle hook");
+                        tracing::debug!(module = %module_token, provider = %provider.get_token(), hook = "on_module_init", "lifecycle hook");
                         provider.on_module_init().await.map_err(|source| {
                             BindError::HookFailed {
                                 module: module_token.clone(),
