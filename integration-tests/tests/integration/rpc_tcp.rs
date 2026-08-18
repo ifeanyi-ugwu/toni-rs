@@ -1406,3 +1406,73 @@ async fn a_singleton_rpc_controller_is_built_once() {
 
     assert_eq!(first, second, "one instance serves every call");
 }
+
+/// Numbers each construction of the controller that never declares a scope.
+static ELEVATED_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Declares no scope, and depends on a request-scoped provider.
+#[rpc_controller]
+pub struct ElevatedRpcController {
+    #[inject]
+    scoped: CallScoped,
+    #[default(0)]
+    build: usize,
+}
+
+#[patterns]
+impl ElevatedRpcController {
+    #[new]
+    pub fn new(scoped: CallScoped) -> Self {
+        Self {
+            scoped,
+            build: ELEVATED_CONTROLLER_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    #[message_pattern("rpc.elevated")]
+    async fn elevated(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+        Ok(RpcData::json(serde_json::json!({
+            "build": self.build,
+            "saw": self.scoped.id(),
+        })))
+    }
+}
+
+#[module(providers: [CallScoped, ElevatedRpcController])]
+impl ElevatedRpcModule {}
+
+/// A controller that declares no scope but depends on a request-scoped provider is elevated rather
+/// than refused. Registering this used to abort at startup: a singleton cannot hold something that
+/// belongs to one call, and `#[rpc_controller]` had no other scope to offer.
+#[tokio_localset_test::localset_test]
+async fn an_rpc_controller_elevates_to_request_scope() {
+    let port = start_rpc_server(ElevatedRpcModule).await;
+
+    let first = tcp_rpc_timeout(
+        port,
+        "rpc.elevated",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("elevated controller should answer")["response"]
+        .clone();
+    let second = tcp_rpc_timeout(
+        port,
+        "rpc.elevated",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("elevated controller should answer again")["response"]
+        .clone();
+
+    assert_ne!(
+        first["build"], second["build"],
+        "elevation means one controller per call: {first} then {second}"
+    );
+    assert_ne!(
+        first["saw"], second["saw"],
+        "and its request-scoped dependency is the calling execution's: {first} then {second}"
+    );
+}
