@@ -143,3 +143,104 @@ async fn an_rpc_controller_still_gets_its_startup_hooks() {
         "an RPC controller's startup hooks must fire in the usual order"
     );
 }
+
+mod orders_pb {
+    tonic::include_proto!("toni_test.orders");
+}
+
+#[toni_macros::grpc_service(pub struct HookedGrpcService {})]
+impl HookedGrpcService {
+    #[toni_macros::new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[on_module_init]
+    async fn ready(&self) -> toni::InitResult {
+        get_log().lock().unwrap().push("grpc-service:init");
+        Ok(())
+    }
+
+    #[on_application_bootstrap]
+    async fn started(&self) -> toni::InitResult {
+        get_log().lock().unwrap().push("grpc-service:bootstrap");
+        Ok(())
+    }
+}
+
+#[toni_macros::grpc_methods]
+#[tonic::async_trait]
+impl orders_pb::orders_server::Orders for HookedGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 1,
+            status: "ok".to_string(),
+        }))
+    }
+
+    type WatchProgressStream = std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send,
+        >,
+    >;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream = std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>,
+    >;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+}
+
+#[module(providers: [HookedGrpcService])]
+impl GrpcHookModule {}
+
+/// A gRPC service is kept out of the module's provider map so nothing can inject it, and the
+/// startup hooks still reach it. Its hooks are dispatched through the lifecycle bridge rather than
+/// by name, because a service built per call has no `Provider` of its own to hang them on — this
+/// fails if that rewiring drops them.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_grpc_service_still_gets_its_startup_hooks() {
+    get_log().lock().unwrap().clear();
+
+    let mut app = ToniFactory::create(GrpcHookModule).await;
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
+        .unwrap();
+    app.bind().await.unwrap();
+
+    let log = get_log().lock().unwrap().clone();
+    assert_eq!(
+        log,
+        vec!["grpc-service:init", "grpc-service:bootstrap"],
+        "a gRPC service's startup hooks must fire in the usual order"
+    );
+}
