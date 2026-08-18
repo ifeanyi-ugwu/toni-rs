@@ -78,7 +78,7 @@ where
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // Pool<DB> is Arc-backed; cloning is cheap and shares the same connection pool.
         Box::new(self.pool.clone())

@@ -64,7 +64,7 @@ impl Provider for SeaOrmConnectionProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // DatabaseConnection is Clone — it wraps a connection pool internally.
         let db = self

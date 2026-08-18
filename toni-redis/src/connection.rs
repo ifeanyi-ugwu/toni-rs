@@ -63,7 +63,7 @@ impl Provider for RedisConnectionProvider {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // ConnectionManager is Clone (Arc-backed); clones share the same underlying connection.
         Box::new(self.manager.clone())

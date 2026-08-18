@@ -77,7 +77,7 @@ impl<T: Config> Provider for ConfigService<T> {
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
-        _ctx: ProviderContext<'_>,
+        _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // Return a clone of self for injection
         Box::new(self.clone())
