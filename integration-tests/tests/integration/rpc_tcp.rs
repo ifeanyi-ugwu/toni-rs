@@ -1095,3 +1095,124 @@ async fn an_rpc_handler_can_take_nothing() {
     let port = start_rpc_server(ShapeModule).await;
     assert_eq!(shape_call(port, "shape.nothing").await, "ok");
 }
+
+// ---- request scope on a transport that is not HTTP ---------------------------
+
+/// Counts how many times it is constructed, process-wide.
+static SCOPED_BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Request-scoped, so one construction per execution and no more — the property
+/// that used to be reachable only on HTTP.
+#[injectable(scope = "request")]
+pub struct PerCall {
+    #[default(0)]
+    id: usize,
+}
+
+impl PerCall {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            id: SCOPED_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    /// Which construction this instance came from. Two holders reporting the
+    /// same number are holding one instance.
+    pub fn id(&self) -> usize {
+        self.id
+    }
+}
+
+/// Resolves `PerCall` twice through two separate guards plus the handler. All
+/// three must see one instance.
+#[injectable(scope = "request")]
+pub struct ScopedGuardA {
+    #[inject]
+    scoped: PerCall,
+}
+
+#[async_trait]
+impl Guard<RpcContext> for ScopedGuardA {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+        ctx.extensions().insert(SeenA(self.scoped.id()));
+        true
+    }
+}
+
+#[injectable(scope = "request")]
+pub struct ScopedGuardB {
+    #[inject]
+    scoped: PerCall,
+}
+
+#[async_trait]
+impl Guard<RpcContext> for ScopedGuardB {
+    async fn can_activate(&self, ctx: &RpcContext) -> bool {
+        ctx.extensions().insert(SeenB(self.scoped.id()));
+        true
+    }
+}
+
+#[derive(Clone)]
+pub struct SeenA(usize);
+#[derive(Clone)]
+pub struct SeenB(usize);
+
+#[rpc_controller]
+pub struct ScopedRpcController {}
+
+#[patterns]
+#[use_guards(ScopedGuardA, ScopedGuardB)]
+impl ScopedRpcController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("rpc.scoped")]
+    async fn scoped(&self, _d: RpcData, ctx: &RpcContext) -> Result<RpcData, RpcError> {
+        let a = ctx.extensions().get::<SeenA>().map(|s| s.0).unwrap_or(0);
+        let b = ctx.extensions().get::<SeenB>().map(|s| s.0).unwrap_or(0);
+        Ok(RpcData::json(serde_json::json!({
+            "a": a,
+            "b": b,
+            "builds": SCOPED_BUILDS.load(Ordering::SeqCst),
+        })))
+    }
+}
+
+#[module(providers: [PerCall, ScopedGuardA, ScopedGuardB, ScopedRpcController])]
+impl ScopedRpcModule {}
+
+/// A request-scoped provider injected into two RPC guards is constructed once
+/// per call and shared, exactly as on HTTP.
+///
+/// Registering this at all used to be refused at startup — the RPC resolver
+/// rejected a factory enhancer with request-scoped dependencies on the grounds
+/// that "RPC has no HTTP request context". Every transport carries an execution
+/// now, and the cache that makes the scope mean anything lives on it.
+#[tokio_localset_test::localset_test]
+async fn a_request_scoped_provider_is_shared_within_one_rpc_call() {
+    SCOPED_BUILDS.store(0, Ordering::SeqCst);
+    let port = start_rpc_server(ScopedRpcModule).await;
+
+    let resp = tcp_rpc_timeout(
+        port,
+        "rpc.scoped",
+        serde_json::json!({}),
+        Duration::from_millis(500),
+    )
+    .await
+    .expect("scoped handler should answer");
+
+    // Both guards resolved it; one construction served them both.
+    assert_eq!(
+        resp["response"]["builds"], 1,
+        "one execution builds it once: {resp}"
+    );
+    assert_eq!(
+        resp["response"]["a"], resp["response"]["b"],
+        "both guards hold the same instance: {resp}"
+    );
+}
