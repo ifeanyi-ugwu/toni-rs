@@ -51,14 +51,13 @@ pub trait Route: Send + Sync {
     /// or the user's typed error preserved for the dispatcher's observer +
     /// chain pipeline.
     ///
-    /// `ctx` is exclusive rather than shared because this future must be
-    /// `Send`, and `&T` is `Send` only where `T: Sync` — which `HttpContext`
-    /// deliberately is not.
+    /// `ctx` is shared: a context is a handle several participants in one
+    /// execution hold at once, and the request body — the only part needing
+    /// exclusive access — sits behind a lock.
     ///
-    /// A handler still answers by returning: the dispatcher writes the returned
-    /// response onto the context afterwards, so a response a handler sets here
-    /// is overwritten. Short-circuiting through the context belongs to the
-    /// enhancers, which run before the response exists.
+    /// Returning is the only way to answer. A response is not a field on the
+    /// context, so there is no off-phase write to overrule; an enhancer
+    /// short-circuits by returning too.
     async fn execute(&self, ctx: &HttpContext) -> ExecutionResult<HttpResponse, HttpError>;
     fn get_path(&self) -> String;
     fn get_method(&self) -> HttpMethod;
