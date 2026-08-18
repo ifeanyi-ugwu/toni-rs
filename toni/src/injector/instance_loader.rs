@@ -595,8 +595,25 @@ impl ToniInstanceLoader {
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
+            // A dispatch target exists to be routed to, not to be held. Refuse before the lookup
+            // steps so the answer names the reason rather than reporting the token as missing —
+            // it is registered, just not as something resolvable.
+            let built_locally = providers_instances.and_then(|m| m.get(&dependency));
+            if built_locally.is_some_and(|inj| inj.is_dispatch_target())
+                || container.is_dispatch_target_token(&dependency)
+            {
+                return Err(anyhow!(
+                    "'{}' is an RPC controller and cannot be injected into '{}'. A controller is \
+                     reached by pattern, and the scope it is built at follows its own \
+                     dependencies — a holder could not know whether it held one instance or one \
+                     per call. Move what is being shared into a provider and inject that.",
+                    dependency,
+                    module_token
+                ));
+            }
+
             // Step 1: Check local providers (in-progress build map)
-            if let Some(injectable) = providers_instances.and_then(|m| m.get(&dependency)) {
+            if let Some(injectable) = built_locally {
                 resolved_dependencies.insert(dependency, injectable.clone());
             }
             // Step 1b: Check pre-registered container instances not yet in the build map

@@ -736,6 +736,16 @@ pub fn subscribe_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     async fn on_order_cancelled(&self, data: RpcData, ctx: &RpcContext) -> Result<(), RpcError> { ... }
 /// }
 /// ```
+///
+/// # Scope
+///
+/// `#[rpc_controller(scope = "request")]` builds the controller inside each call it serves, so a
+/// dependency that belongs to the call reaches it. A controller that declares no scope is built
+/// once at startup, unless one of its dependencies is request-scoped — then it is elevated to the
+/// same per-call construction with a warning naming the dependency.
+///
+/// A controller is reached by pattern and cannot be injected: what a holder would get is decided
+/// by the controller's own dependencies. Put shared behaviour in a provider and inject that.
 #[proc_macro_attribute]
 pub fn rpc_controller(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

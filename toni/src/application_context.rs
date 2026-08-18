@@ -323,8 +323,8 @@ impl ToniApplicationContext {
         }
 
         for module_token in modules {
-            if let Ok(providers) = container.get_providers_instance(&module_token) {
-                for (_token, provider) in providers.iter() {
+            if let Ok(providers) = container.get_lifecycle_instances(&module_token) {
+                for provider in providers {
                     if provider.get_scope() == crate::ProviderScope::Request {
                         continue;
                     }
@@ -345,8 +345,8 @@ impl ToniApplicationContext {
         }
 
         for module_token in modules {
-            if let Ok(providers) = container.get_providers_instance(&module_token) {
-                for (_token, provider) in providers.iter() {
+            if let Ok(providers) = container.get_lifecycle_instances(&module_token) {
+                for provider in providers {
                     if provider.get_scope() == crate::ProviderScope::Request {
                         continue;
                     }
@@ -370,8 +370,8 @@ impl ToniApplicationContext {
         }
 
         for module_token in modules {
-            if let Ok(providers) = container.get_providers_instance(&module_token) {
-                for (_token, provider) in providers.iter() {
+            if let Ok(providers) = container.get_lifecycle_instances(&module_token) {
+                for provider in providers {
                     if provider.get_scope() == crate::ProviderScope::Request {
                         continue;
                     }

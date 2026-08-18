@@ -269,6 +269,10 @@ be held as a dependency, so `#[rpc_controller]` becomes a dispatch target and st
 as an injectable provider. This is a divergence from the current registration, where every provider
 reaches the provider store regardless of role.
 
+The store is not only what dependency resolution reads — the startup and shutdown hook loops read it
+too. So a dispatch target is moved to a second collection rather than left out of both: what it loses
+is resolvability, not its lifecycle.
+
 **WebSocket.** One context per message, and one per connect, rather than three across a connect. A
 connect guard's writes reach the connect hook because there is one execution and one bag, not because
 anything is copied between them.

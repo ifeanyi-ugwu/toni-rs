@@ -5,7 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     middleware::MiddlewareManager,
-    rpc::RpcControllerTrait,
+    rpc::RpcControllerSource,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
@@ -31,6 +31,9 @@ pub struct ToniContainer {
     global_provider_sources: FxHashMap<String, (String, String)>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
+    /// Tokens of instances reached only by dispatch. Injecting one is refused, so this is read on
+    /// the resolution failure path to say why rather than "not found".
+    dispatch_target_tokens: FxHashSet<String>,
     /// Global enhancers - applied to every HTTP route's pipeline.
     global_http_guards: Vec<HttpGuardEntry>,
     global_http_interceptors: Vec<HttpInterceptorEntry>,
@@ -83,6 +86,7 @@ impl ToniContainer {
             global_providers: FxHashMap::default(),
             global_provider_sources: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
+            dispatch_target_tokens: FxHashSet::default(),
             global_http_guards: Vec::new(),
             global_http_interceptors: Vec::new(),
             global_http_pipes: Vec::new(),
@@ -290,6 +294,7 @@ impl ToniContainer {
         roles: Vec<ProviderRole>,
     ) -> Result<()> {
         let token = provider_instance.get_token_factory();
+        let mut is_dispatch_target = false;
 
         for role in roles {
             match role {
@@ -360,6 +365,7 @@ impl ToniContainer {
                 ProviderRole::RpcController(rc) => {
                     let rc_token = rc.get_token();
                     self.role_registry.rpc_controllers.insert(rc_token, rc);
+                    is_dispatch_target = true;
                 }
                 ProviderRole::GrpcService(gs) => {
                     let gs_token = gs.token();
@@ -368,12 +374,44 @@ impl ToniContainer {
             }
         }
 
+        // An RPC controller is reached by pattern and nothing else. Leaving it out of the module's
+        // provider map is what makes it unresolvable as a dependency, and the scope it is built at
+        // is decided by its own dependencies — so a holder could not know what it was holding.
+        if is_dispatch_target {
+            self.dispatch_target_tokens.insert(token);
+        }
+
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_provider_instance(provider_instance);
+        if is_dispatch_target {
+            module_ref.add_dispatch_target(provider_instance);
+        } else {
+            module_ref.add_provider_instance(provider_instance);
+        }
         Ok(())
+    }
+
+    pub fn is_dispatch_target_token(&self, token: &str) -> bool {
+        self.dispatch_target_tokens.contains(token)
+    }
+
+    /// Every instance a module's lifecycle hooks must reach: the providers, plus the dispatch
+    /// targets kept out of dependency resolution.
+    pub fn get_lifecycle_instances(
+        &self,
+        module_ref_token: &String,
+    ) -> Result<Vec<&Arc<Box<dyn Provider>>>> {
+        let module_ref = self
+            .modules
+            .get(module_ref_token)
+            .ok_or_else(|| anyhow!("Module not found"))?;
+        Ok(module_ref
+            .get_providers_instances()
+            .values()
+            .chain(module_ref.get_dispatch_targets())
+            .collect())
     }
 
     pub(crate) fn get_role_registry(&self) -> &RoleRegistry {
@@ -391,7 +429,7 @@ impl ToniContainer {
         &self.role_registry.gateways
     }
 
-    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>> {
+    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<dyn RpcControllerSource>> {
         &self.role_registry.rpc_controllers
     }
 

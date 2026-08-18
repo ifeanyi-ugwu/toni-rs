@@ -35,6 +35,10 @@ pub struct EnhancerTraits {
     pub is_gateway: bool,
     pub is_rpc_controller: bool,
     pub is_grpc_service: bool,
+    /// `scope = "request"` on `#[rpc_controller]`. An RPC controller's scope is settled at runtime
+    /// — the factory elevates an undeclared one whose dependencies are request-scoped — so this
+    /// says only what the attribute declared, not which shape gets built.
+    pub rpc_request_scoped: bool,
 }
 
 /// Detect lifecycle hooks by scanning for method-level attributes in the impl block.
@@ -76,6 +80,7 @@ pub fn generate_instance_provider_system(
         is_gateway,
         is_rpc_controller,
         is_grpc_service,
+        rpc_request_scoped: false,
     };
 
     // Attribute form scans the impl for hooks and delegates by method name; it does not use the
@@ -259,6 +264,20 @@ fn generate_provider_factory_accessor(struct_name: &Ident) -> TokenStream {
     }
 }
 
+/// The provider struct for `struct_name` at the given scope.
+pub(crate) fn provider_ident(struct_name: &Ident) -> Ident {
+    Ident::new(&format!("{}Provider", struct_name), struct_name.span())
+}
+
+/// The second provider struct an RPC controller carries, holding the dependencies a per-call build
+/// resolves from. Which of the two the factory uses is settled at startup.
+pub(crate) fn request_provider_ident(struct_name: &Ident) -> Ident {
+    Ident::new(
+        &format!("{}RequestProvider", struct_name),
+        struct_name.span(),
+    )
+}
+
 fn generate_provider_wrapper(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
@@ -267,13 +286,37 @@ fn generate_provider_wrapper(
     lifecycle_hooks: &LifecycleHooks,
     lifecycle_via_bridge: bool,
 ) -> TokenStream {
+    // An RPC controller's scope is not known until its dependencies are, so it carries both shapes
+    // and the factory picks one.
+    if enhancer_traits.is_rpc_controller {
+        let singleton = generate_singleton_provider(
+            struct_name,
+            &provider_ident(struct_name),
+            lifecycle_hooks,
+            lifecycle_via_bridge,
+        );
+        let per_call = generate_request_provider(
+            struct_name,
+            &request_provider_ident(struct_name),
+            dependencies,
+            lifecycle_hooks,
+        );
+        return quote! { #singleton #per_call };
+    }
+
     match scope {
-        ProviderScope::Singleton => {
-            generate_singleton_provider(struct_name, lifecycle_hooks, lifecycle_via_bridge)
-        }
-        ProviderScope::Request => {
-            generate_request_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
-        }
+        ProviderScope::Singleton => generate_singleton_provider(
+            struct_name,
+            &provider_ident(struct_name),
+            lifecycle_hooks,
+            lifecycle_via_bridge,
+        ),
+        ProviderScope::Request => generate_request_provider(
+            struct_name,
+            &provider_ident(struct_name),
+            dependencies,
+            lifecycle_hooks,
+        ),
         ProviderScope::Transient => {
             generate_transient_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
         }
@@ -286,8 +329,9 @@ fn generate_provider_wrapper(
 ///
 /// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are detected from the
 /// type itself via `toni::__detect` probes — the `impl Guard<HttpContext> for T` is the declaration,
-/// no marker required. Structural roles (gateway / rpc-controller / grpc-service) stay flag-driven:
-/// they come from the structural macros that also generate the trait impls and routing.
+/// no marker required. Structural roles (gateway / grpc-service) stay flag-driven: they come from
+/// the structural macros that also generate the trait impls and routing. The rpc-controller role is
+/// pushed by its own factory, which decides between the two sources a controller can have.
 fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     let mut pushes = vec![crate::shared::enhancer_emit::value_probe_detection()];
 
@@ -296,15 +340,6 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
             __roles.push(::toni::traits_helpers::ProviderRole::Gateway(
                 ::std::sync::Arc::new(
                     Box::new((*instance).clone()) as Box<dyn ::toni::websocket::GatewayTrait>
-                )
-            ));
-        });
-    }
-    if traits.is_rpc_controller {
-        pushes.push(quote! {
-            __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
-                ::std::sync::Arc::new(
-                    Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
                 )
             ));
         });
@@ -405,10 +440,10 @@ fn generate_bridge_lifecycle_methods(struct_name: &Ident) -> TokenStream {
 
 fn generate_singleton_provider(
     struct_name: &Ident,
+    provider_name: &Ident,
     lifecycle_hooks: &LifecycleHooks,
     lifecycle_via_bridge: bool,
 ) -> TokenStream {
-    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
     let lifecycle_methods = if lifecycle_via_bridge {
         generate_bridge_lifecycle_methods(struct_name)
     } else {
@@ -449,12 +484,10 @@ fn generate_singleton_provider(
 
 fn generate_request_provider(
     struct_name: &Ident,
+    provider_name: &Ident,
     dependencies: &DependencyInfo,
-    _enhancer_traits: &EnhancerTraits,
     lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
-    let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
-
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
     // Check if this uses from_request pattern
@@ -1033,6 +1066,10 @@ fn generate_factory(
     scope: ProviderScope,
     enhancer_traits: &EnhancerTraits,
 ) -> TokenStream {
+    if enhancer_traits.is_rpc_controller {
+        return generate_rpc_controller_factory(struct_name, dependencies, enhancer_traits);
+    }
+
     match scope {
         ProviderScope::Singleton => {
             generate_singleton_factory(struct_name, dependencies, enhancer_traits)
@@ -1042,6 +1079,43 @@ fn generate_factory(
         }
         ProviderScope::Transient => {
             generate_transient_factory(struct_name, dependencies, enhancer_traits)
+        }
+    }
+}
+
+/// Assemble the instance: through `init = "…"` when one is named, else as a struct literal with the
+/// resolved `#[inject]` fields and the `#[default(…)]` (or `Default`) owned ones.
+fn struct_instantiation(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    field_names: &[Ident],
+) -> TokenStream {
+    if let Some(init_fn) = &dependencies.init_method {
+        let init_ident = syn::Ident::new(init_fn, struct_name.span());
+        return quote! { #struct_name::#init_ident(#(#field_names),*) };
+    }
+
+    let owned_field_inits: Vec<_> = dependencies
+        .owned_fields
+        .iter()
+        .map(|(field_name, field_type, default_expr)| {
+            if let Some(expr) = default_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: {
+                    #[allow(unused_imports)]
+                    use ::toni::__construct::OwnedFieldDefaultFallback as _;
+                    (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
+                        .field_default(stringify!(#field_name), stringify!(#field_type))
+                } }
+            }
+        })
+        .collect();
+
+    quote! {
+        #struct_name {
+            #(#field_names,)*
+            #(#owned_field_inits),*
         }
     }
 }
@@ -1059,41 +1133,7 @@ fn generate_singleton_factory(
 
     let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
 
-    // Generate struct instantiation code (either custom init or struct literal)
-    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
-        // Custom init method: MyService::new(dep1, dep2, ...)
-        let init_ident = syn::Ident::new(init_fn, struct_name.span());
-        quote! {
-            #struct_name::#init_ident(#(#field_names),*)
-        }
-    } else {
-        // Standard struct literal: MyService { dep1, dep2, field3: default, ... }
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    // User provided #[default(...)]
-                    quote! { #field_name: #expr }
-                } else {
-                    // Fall back to Default trait
-                    quote! { #field_name: {
-                        #[allow(unused_imports)]
-                        use ::toni::__construct::OwnedFieldDefaultFallback as _;
-                        (&::toni::__construct::OwnedFieldDefault::<#field_type>::new())
-                            .field_default(stringify!(#field_name), stringify!(#field_type))
-                    } }
-                }
-            })
-            .collect();
-
-        quote! {
-            #struct_name {
-                #(#field_names,)*
-                #(#owned_field_inits),*
-            }
-        }
-    };
+    let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
     // Collect dependency tokens from both constructor params (if using constructor injection)
     // and from #[inject] fields (if using field injection)
@@ -1229,6 +1269,124 @@ fn generate_singleton_factory(
     }
 }
 
+/// The factory for an RPC controller — the one provider whose scope is settled at startup rather
+/// than at expansion. A controller that declares no scope but depends on a request-scoped provider
+/// is elevated, as an HTTP controller is; a declared `scope = "request"` forces the same outcome.
+/// The two outcomes differ in what the source is handed: the instance built here, or the per-call
+/// provider to build one from.
+fn generate_rpc_controller_factory(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+    enhancer_traits: &EnhancerTraits,
+) -> TokenStream {
+    let factory_name = Ident::new(
+        &format!("{}ProviderFactory", struct_name),
+        struct_name.span(),
+    );
+    let singleton_provider = provider_ident(struct_name);
+    let per_call_provider = request_provider_ident(struct_name);
+    let source_name = crate::rpc_macro::rpc_controller_attr::rpc_source_ident(struct_name);
+    let struct_token = struct_name.to_string();
+    let force_request = enhancer_traits.rpc_request_scoped;
+
+    let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
+    let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
+    let role_pushes = generate_role_pushes(enhancer_traits);
+
+    let dependency_tokens: Vec<_> = dependencies
+        .constructor_params
+        .iter()
+        .map(|(_, _, lookup_token_expr)| lookup_token_expr)
+        .chain(
+            dependencies
+                .fields
+                .iter()
+                .map(|(_, _, lookup_token_expr)| lookup_token_expr),
+        )
+        .collect();
+
+    quote! {
+        pub struct #factory_name;
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::ProviderFactory for #factory_name {
+            fn get_token(&self) -> String {
+                ::std::any::type_name::<#struct_name>().to_string()
+            }
+
+            fn get_dependencies(&self) -> Vec<String> {
+                use ::toni::__construct::CtorBridge as _;
+                <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
+            }
+
+            async fn build(
+                &self,
+                __deps: ::toni::FxHashMap<String, ::toni::traits_helpers::Injectable>,
+            ) -> ::toni::traits_helpers::Injectable {
+                use ::toni::__construct::CtorBridge as _;
+                let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+                    __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+
+                let mut __request_deps: ::std::vec::Vec<String> = ::std::vec::Vec::new();
+                for __token in <Self as ::toni::traits_helpers::ProviderFactory>::get_dependencies(self) {
+                    if let Some(__provider) = dependencies.get(&__token) {
+                        if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
+                            __request_deps.push(__token);
+                        }
+                    }
+                }
+
+                if !#force_request && !__request_deps.is_empty() {
+                    ::toni::tracing::warn!(
+                        rpc_controller = #struct_token,
+                        request_scoped_deps = ?__request_deps,
+                        "RPC controller automatically elevated to request scope due to \
+                         request-scoped providers. Silence this by declaring \
+                         #[rpc_controller(scope = \"request\")]."
+                    );
+                }
+
+                let mut __roles = ::std::vec::Vec::new();
+
+                if #force_request || !__request_deps.is_empty() {
+                    let __provider: ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> =
+                        ::std::sync::Arc::new(Box::new(#per_call_provider { dependencies })
+                            as Box<dyn ::toni::traits_helpers::Provider>);
+                    __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
+                        ::std::sync::Arc::new(#source_name::PerCall(__provider.clone()))
+                            as ::std::sync::Arc<dyn ::toni::rpc::RpcControllerSource>
+                    ));
+                    return ::toni::traits_helpers::Injectable::new(__provider, __roles);
+                }
+
+                // Built at startup, outside any execution, and shared by every call.
+                let instance = match <#struct_name>::__toni_ctor_build(
+                    &dependencies,
+                    ::toni::ProviderContext::None,
+                ) {
+                    ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
+                    ::std::option::Option::None => ::std::sync::Arc::new({
+                        #(#field_resolutions)*
+                        #instantiation
+                    }),
+                };
+
+                #role_pushes
+                __roles.push(::toni::traits_helpers::ProviderRole::RpcController(
+                    ::std::sync::Arc::new(#source_name::Singleton(::std::sync::Arc::new(
+                        Box::new((*instance).clone()) as Box<dyn ::toni::rpc::RpcControllerTrait>
+                    ))) as ::std::sync::Arc<dyn ::toni::rpc::RpcControllerSource>
+                ));
+
+                let provider = ::std::sync::Arc::new(
+                    Box::new(#singleton_provider { instance }) as Box<dyn ::toni::traits_helpers::Provider>
+                );
+                ::toni::traits_helpers::Injectable::new(provider, __roles)
+            }
+        }
+    }
+}
+
 fn generate_request_factory(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
@@ -1255,9 +1413,9 @@ fn generate_request_factory(
     let (dyn_factory_structs, factory_role_pushes) =
         generate_dyn_factories(struct_name, dependencies, enhancer_traits);
 
-    let has_enhancer_roles = !factory_role_pushes.is_empty();
-
-    let build_body = if has_enhancer_roles {
+    let enhancer_preamble = if factory_role_pushes.is_empty() {
+        quote! {}
+    } else {
         quote! {
             let __has_request_deps = __deps.values().any(|inj|
                 matches!(inj.instance.get_scope(), ::toni::ProviderScope::Request)
@@ -1267,24 +1425,18 @@ fn generate_request_factory(
                     .map(|(k, inj)| (k.clone(), inj.instance.clone()))
                     .collect::<::toni::FxHashMap<_, _>>()
             );
-            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            let mut __roles = ::std::vec::Vec::new();
-            #factory_role_pushes
-            ::toni::traits_helpers::Injectable::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
-                __roles,
-            )
         }
-    } else {
-        quote! {
-            let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            ::toni::traits_helpers::Injectable::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>),
-                ::std::vec::Vec::new(),
-            )
-        }
+    };
+
+    let build_body = quote! {
+        #enhancer_preamble
+        let dependencies: ::toni::FxHashMap<String, ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>> =
+            __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+        let __provider: ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>> =
+            ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::toni::traits_helpers::Provider>);
+        let mut __roles = ::std::vec::Vec::new();
+        #factory_role_pushes
+        ::toni::traits_helpers::Injectable::new(__provider, __roles)
     };
 
     quote! {

@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     adapter::GrpcServiceTrait,
-    rpc::RpcControllerTrait,
+    rpc::RpcControllerSource,
     traits_helpers::{
         GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, HttpErrorHandlerArc,
         HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ProviderRole, RpcErrorHandlerArc,
@@ -38,7 +38,7 @@ pub(crate) struct RoleRegistry {
     /// Keyed by WS path (e.g. "/chat"), not by provider token.
     pub gateways: FxHashMap<String, Arc<Box<dyn GatewayTrait>>>,
     /// Keyed by the RPC controller's own token.
-    pub rpc_controllers: FxHashMap<String, Arc<Box<dyn RpcControllerTrait>>>,
+    pub rpc_controllers: FxHashMap<String, Arc<dyn RpcControllerSource>>,
     /// Keyed by the gRPC service's own token.
     pub grpc_services: FxHashMap<String, Arc<Box<dyn GrpcServiceTrait>>>,
 }

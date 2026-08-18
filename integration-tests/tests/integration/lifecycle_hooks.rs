@@ -15,6 +15,7 @@ use toni::{
     injectable, module, on_application_bootstrap, on_module_init, toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
+use toni_macros::{patterns, rpc_controller};
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
 
@@ -99,4 +100,46 @@ async fn path_qualified_module_hook_attr_fires() {
 
     let _app = ToniFactory::create(QualifiedHookModule).await;
     assert_eq!(qualified_log().lock().unwrap().clone(), vec!["module:init"]);
+}
+
+#[rpc_controller]
+pub struct HookedRpcController {}
+
+#[patterns]
+impl HookedRpcController {
+    #[on_module_init]
+    async fn ready(&self) -> toni::InitResult {
+        get_log().lock().unwrap().push("rpc-controller:init");
+        Ok(())
+    }
+
+    #[on_application_bootstrap]
+    async fn started(&self) -> toni::InitResult {
+        get_log().lock().unwrap().push("rpc-controller:bootstrap");
+        Ok(())
+    }
+}
+
+#[module(providers: [HookedRpcController])]
+impl RpcHookModule {}
+
+/// An RPC controller is kept out of the module's provider map so nothing can inject it, and the
+/// startup hooks still reach it. The map excluding it is the same one the hook loops read, so
+/// dropping it there without a second home would have silenced these hooks and nothing else.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn an_rpc_controller_still_gets_its_startup_hooks() {
+    get_log().lock().unwrap().clear();
+
+    let mut app = ToniFactory::create(RpcHookModule).await;
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
+        .unwrap();
+    app.bind().await.unwrap();
+
+    let log = get_log().lock().unwrap().clone();
+    assert_eq!(
+        log,
+        vec!["rpc-controller:init", "rpc-controller:bootstrap"],
+        "an RPC controller's startup hooks must fire in the usual order"
+    );
 }

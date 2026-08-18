@@ -11,13 +11,13 @@ use crate::traits_helpers::{
     RpcInterceptorEntry, RpcPipeEntry,
 };
 
-use super::{RpcControllerTrait, RpcData, RpcError, RpcHandlerResult};
+use super::{RpcControllerSource, RpcData, RpcError, RpcHandlerResult};
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
 struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>>,
-    controller: Arc<Box<dyn RpcControllerTrait>>,
+    source: Arc<dyn RpcControllerSource>,
     pipes: Vec<Arc<dyn Pipe<RpcContext, RpcHandlerResult>>>,
     error_handlers: Vec<RpcErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
@@ -29,7 +29,7 @@ impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
         RpcControllerWrapper::execute_with_interceptors(
             context,
             &self.interceptors,
-            &self.controller,
+            &self.source,
             &self.pipes,
             &self.error_handlers,
             &self.observers,
@@ -38,9 +38,9 @@ impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
     }
 }
 
-/// Wraps an [`RpcControllerTrait`] with the full guard/interceptor/pipe pipeline.
+/// Wraps an [`RpcControllerSource`] with the full guard/interceptor/pipe pipeline.
 pub struct RpcControllerWrapper {
-    controller: Arc<Box<dyn RpcControllerTrait>>,
+    source: Arc<dyn RpcControllerSource>,
     guards: Vec<RpcGuardEntry>,
     interceptors: Vec<RpcInterceptorEntry>,
     pipes: Vec<RpcPipeEntry>,
@@ -55,7 +55,7 @@ pub struct RpcControllerWrapper {
 
 impl RpcControllerWrapper {
     pub fn new(
-        controller: Arc<Box<dyn RpcControllerTrait>>,
+        source: Arc<dyn RpcControllerSource>,
         guards: Vec<RpcGuardEntry>,
         interceptors: Vec<RpcInterceptorEntry>,
         pipes: Vec<RpcPipeEntry>,
@@ -68,7 +68,7 @@ impl RpcControllerWrapper {
         handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>>,
     ) -> Self {
         Self {
-            controller,
+            source,
             guards,
             interceptors,
             pipes,
@@ -83,7 +83,7 @@ impl RpcControllerWrapper {
     }
 
     pub fn get_patterns(&self) -> Vec<String> {
-        self.controller.get_patterns()
+        self.source.get_patterns()
     }
 
     pub async fn handle_message(
@@ -149,7 +149,7 @@ impl RpcControllerWrapper {
         Self::execute_with_interceptors(
             &ctx,
             &interceptors,
-            &self.controller,
+            &self.source,
             &pipes,
             &all_error_handlers,
             &observers,
@@ -281,21 +281,20 @@ impl RpcControllerWrapper {
     async fn execute_with_interceptors(
         context: &RpcContext,
         interceptors: &[Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>],
-        controller: &Arc<Box<dyn RpcControllerTrait>>,
+        source: &Arc<dyn RpcControllerSource>,
         pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> RpcHandlerResult {
         if interceptors.is_empty() {
-            return Self::execute_handler(context, controller, pipes, error_handlers, observers)
-                .await;
+            return Self::execute_handler(context, source, pipes, error_handlers, observers).await;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
 
         let next = RpcChainNext {
             interceptors: rest.to_vec(),
-            controller: controller.clone(),
+            source: source.clone(),
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
@@ -344,7 +343,7 @@ impl RpcControllerWrapper {
     /// `RpcError::to_data` is the fallback envelope when none claims.
     async fn execute_handler(
         context: &RpcContext,
-        controller: &Arc<Box<dyn RpcControllerTrait>>,
+        source: &Arc<dyn RpcControllerSource>,
         pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
@@ -366,9 +365,15 @@ impl RpcControllerWrapper {
             }
         }
 
-        let exec_result = AssertUnwindSafe(controller.handle_message(context))
-            .catch_unwind()
-            .await;
+        // The instance is asked for here and nowhere earlier: a guard that rejects, an
+        // interceptor that answers, or a pipe that aborts never builds a controller. Construction
+        // sits inside the same `catch_unwind` as the handler body, so a panicking `#[new]` renders
+        // an envelope instead of tearing down the dispatcher.
+        let exec_result = AssertUnwindSafe(async {
+            source.instance(context).await.handle_message(context).await
+        })
+        .catch_unwind()
+        .await;
         let exec_result = match exec_result {
             Ok(result) => result,
             Err(payload) => {
