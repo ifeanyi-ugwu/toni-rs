@@ -124,7 +124,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         impl #struct_name {
             #[doc(hidden)]
             #[allow(non_snake_case, clippy::all)]
-            fn __toni_rpc_get_patterns(&self) -> Vec<String> {
+            fn __toni_rpc_patterns() -> Vec<String> {
                 vec![#(#all_patterns.to_string()),*]
             }
 
@@ -214,7 +214,7 @@ fn build_enhancers_fn(
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_snake_case, clippy::all)]
-        fn __toni_rpc_enhancers(&self) -> ::toni::rpc::RpcEnhancers {
+        fn __toni_rpc_enhancers() -> ::toni::rpc::RpcEnhancers {
             ::toni::rpc::RpcEnhancers {
                 guard_tokens: vec![#(#guard_tokens),*],
                 interceptor_tokens: vec![#(#interceptor_tokens),*],

@@ -69,7 +69,7 @@ fn generate_rpc_trait_impl(struct_name: &Ident) -> TokenStream {
 
             fn get_patterns(&self) -> Vec<String> {
                 use ::toni::__rpc::RpcHandlersBridge as _;
-                <Self>::__toni_rpc_get_patterns(self)
+                <Self>::__toni_rpc_patterns()
             }
 
             async fn handle_message(
@@ -85,7 +85,7 @@ fn generate_rpc_trait_impl(struct_name: &Ident) -> TokenStream {
 
             fn enhancers(&self) -> ::toni::rpc::RpcEnhancers {
                 use ::toni::__rpc::RpcHandlersBridge as _;
-                <Self>::__toni_rpc_enhancers(self)
+                <Self>::__toni_rpc_enhancers()
             }
         }
     }
