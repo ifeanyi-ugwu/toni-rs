@@ -22,9 +22,9 @@ pub struct Module {
     /// One per controller struct, kept for lifecycle hooks (fired once each).
     controller_objects: Vec<Arc<dyn Controller>>,
     providers_instances: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    /// Instances reached only by dispatch — RPC controllers. Kept for lifecycle hooks the way
-    /// `controller_objects` is, and deliberately absent from `providers_instances` so nothing
-    /// resolves one as a dependency.
+    /// Instances reached only by dispatch — RPC controllers and gRPC services. Kept for lifecycle
+    /// hooks the way `controller_objects` is, and deliberately absent from `providers_instances` so
+    /// nothing resolves one as a dependency.
     dispatch_targets: Vec<Arc<Box<dyn Provider>>>,
     exports_instances: FxHashSet<String>,
     metadata: Box<dyn ModuleMetadata>,
