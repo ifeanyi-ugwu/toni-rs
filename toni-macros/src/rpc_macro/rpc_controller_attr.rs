@@ -17,9 +17,10 @@ use quote::quote;
 use syn::{Ident, ItemStruct, Result, parse2};
 
 use crate::provider_macro::instance_injection::{
-    EnhancerTraits, add_clone_and_inject_fields, generate_provider_from_struct_with_traits,
+    add_clone_and_inject_fields, generate_rpc_controller_system,
 };
-use crate::shared::scope_parser::{ControllerScope, ProviderScope, RpcControllerArgs};
+use crate::shared::scope_parser::{ControllerScope, RpcControllerArgs};
+use crate::utils::extracts::extract_struct_dependencies;
 
 /// The `RpcControllerSource` companion generated beside the controller struct.
 pub fn rpc_source_ident(struct_name: &Ident) -> Ident {
@@ -44,25 +45,19 @@ pub fn handle_rpc_controller(attr: TokenStream, item: TokenStream) -> Result<Tok
     let struct_name = struct_def.ident.clone();
 
     let emitted_struct = add_clone_and_inject_fields(&struct_def);
-    // The scope passed here is ignored: an RPC controller carries both provider shapes and its
-    // factory settles the scope at startup, where the dependencies' own scopes are known.
-    let provider_system = generate_provider_from_struct_with_traits(
-        &struct_def,
-        ProviderScope::Singleton,
-        None,
-        EnhancerTraits {
-            is_rpc_controller: true,
-            rpc_request_scoped: matches!(args.scope, ControllerScope::Request),
-            ..Default::default()
-        },
-    )?;
+    let dependencies = extract_struct_dependencies(&struct_def)?;
+    let controller_system = generate_rpc_controller_system(
+        &struct_name,
+        &dependencies,
+        matches!(args.scope, ControllerScope::Request),
+    );
     let trait_impl = generate_rpc_trait_impl(&struct_name);
 
     Ok(quote! {
         #[allow(dead_code)]
         #emitted_struct
 
-        #provider_system
+        #controller_system
 
         #trait_impl
     })

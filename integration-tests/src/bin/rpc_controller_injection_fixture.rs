@@ -1,8 +1,8 @@
 //! Test fixture for the `rpc_controller_injection` integration test.
 //!
-//! Injects an RPC controller into an ordinary provider. A controller is reached by pattern and is
-//! not a dependency, so the injector finds nothing under its token and `create_application_context`
-//! logs the diagnostic and exits with status 1.
+//! Injects an RPC controller into an ordinary provider. A controller is declared in `controllers:`
+//! and is reached by pattern, so its token is not in the provider store: the injector finds nothing
+//! under it and `create_application_context` logs the failure and exits with status 1.
 //!
 //! A subprocess is required because the only public trigger path calls `std::process::exit`.
 
@@ -36,7 +36,7 @@ pub struct OrdersReporter {
     controller: OrdersController,
 }
 
-#[module(providers: [OrdersController, OrdersReporter])]
+#[module(controllers: [OrdersController], providers: [OrdersReporter])]
 impl AppModule {}
 
 #[tokio::main(flavor = "current_thread")]

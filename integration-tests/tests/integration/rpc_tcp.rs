@@ -133,7 +133,7 @@ impl RpcPanicController {
     }
 }
 
-#[module(providers: [RpcPanicController])]
+#[module(controllers: [RpcPanicController])]
 impl RpcPanicModule {}
 
 /// A panicking RPC handler is caught by the dispatcher, surfaced as a
@@ -187,7 +187,7 @@ impl ShutdownTcpController {
     }
 }
 
-#[module(providers: [ShutdownTcpController])]
+#[module(controllers: [ShutdownTcpController])]
 impl ShutdownTcpModule {}
 
 /// `app.shutdown()` must drive the accept loop to exit; otherwise
@@ -267,7 +267,7 @@ impl SlowTcpController {
     }
 }
 
-#[module(providers: [SlowTcpController])]
+#[module(controllers: [SlowTcpController])]
 impl SlowTcpModule {}
 
 /// A request already running when shutdown fires must finish during the
@@ -490,7 +490,7 @@ impl TypedPayloadController {
     }
 }
 
-#[module(providers: [TypedPayloadController])]
+#[module(controllers: [TypedPayloadController])]
 impl TypedPayloadModule {}
 
 #[tokio_localset_test::localset_test]
@@ -558,7 +558,7 @@ impl RpcGuardPanicController {
     }
 }
 
-#[module(providers: [PanickingRpcGuard, RpcGuardPanicController])]
+#[module(controllers: [RpcGuardPanicController], providers: [PanickingRpcGuard])]
 impl RpcGuardPanicModule {}
 
 #[tokio_localset_test::localset_test]
@@ -629,7 +629,7 @@ impl RpcInterceptorPanicController {
     }
 }
 
-#[module(providers: [PanickingRpcInterceptor, RpcInterceptorPanicController])]
+#[module(controllers: [RpcInterceptorPanicController], providers: [PanickingRpcInterceptor])]
 impl RpcInterceptorPanicModule {}
 
 #[tokio_localset_test::localset_test]
@@ -700,7 +700,7 @@ impl RpcPipePanicController {
     }
 }
 
-#[module(providers: [PanickingRpcPipe, RpcPipePanicController])]
+#[module(controllers: [RpcPipePanicController], providers: [PanickingRpcPipe])]
 impl RpcPipePanicModule {}
 
 #[tokio_localset_test::localset_test]
@@ -764,7 +764,7 @@ impl RpcErrorHandlerPanicController {
     }
 }
 
-#[module(providers: [PanickingRpcErrorHandler, RpcErrorHandlerPanicController])]
+#[module(controllers: [RpcErrorHandlerPanicController], providers: [PanickingRpcErrorHandler])]
 impl RpcErrorHandlerPanicModule {}
 
 #[tokio_localset_test::localset_test]
@@ -837,7 +837,7 @@ impl RpcRenderPanicController {
     }
 }
 
-#[module(providers: [RpcRenderPanicController])]
+#[module(controllers: [RpcRenderPanicController])]
 impl RpcRenderPanicModule {}
 
 #[tokio_localset_test::localset_test]
@@ -887,7 +887,7 @@ impl TcpMetaController {
     }
 }
 
-#[module(providers: [TcpMetaController])]
+#[module(controllers: [TcpMetaController])]
 impl TcpMetaModule {}
 
 #[tokio_localset_test::localset_test]
@@ -915,7 +915,7 @@ async fn tcp_client_metadata_reaches_handler() {
 #[rpc_controller]
 pub struct BareRpcController {}
 
-#[module(providers: [BareRpcController])]
+#[module(controllers: [BareRpcController])]
 impl BareRpcModule {}
 
 /// The self-sufficiency guarantee: `#[rpc_controller]` alone is valid and `#[patterns]` only adds
@@ -978,7 +978,7 @@ impl RpcBusController {
     }
 }
 
-#[module(providers: [RpcAuthGuard, RpcBusController])]
+#[module(controllers: [RpcBusController], providers: [RpcAuthGuard])]
 impl RpcBusModule {}
 
 /// The RPC handler takes `&RpcContext`, so it reads the guard's write straight
@@ -1069,7 +1069,7 @@ impl ShapeController {
     }
 }
 
-#[module(providers: [ShapeGuard, ShapeController])]
+#[module(controllers: [ShapeController], providers: [ShapeGuard])]
 impl ShapeModule {}
 
 async fn shape_call(port: u16, pattern: &str) -> serde_json::Value {
@@ -1191,7 +1191,7 @@ impl ScopedRpcController {
     }
 }
 
-#[module(providers: [PerCall, ScopedGuardA, ScopedGuardB, ScopedRpcController])]
+#[module(controllers: [ScopedRpcController], providers: [PerCall, ScopedGuardA, ScopedGuardB])]
 impl ScopedRpcModule {}
 
 /// A request-scoped provider injected into two RPC guards is constructed once
@@ -1303,7 +1303,7 @@ impl PerCallRpcController {
     }
 }
 
-#[module(providers: [CallScoped, CallScopedGuard, PerCallRpcController])]
+#[module(controllers: [PerCallRpcController], providers: [CallScoped, CallScopedGuard])]
 impl PerCallRpcModule {}
 
 /// Numbers each construction of the singleton controller below.
@@ -1330,7 +1330,7 @@ impl SingletonRpcController {
     }
 }
 
-#[module(providers: [SingletonRpcController])]
+#[module(controllers: [SingletonRpcController])]
 impl SingletonRpcModule {}
 
 /// `#[rpc_controller(scope = "request")]` builds the controller inside the call it
@@ -1438,7 +1438,7 @@ impl ElevatedRpcController {
     }
 }
 
-#[module(providers: [CallScoped, ElevatedRpcController])]
+#[module(controllers: [ElevatedRpcController], providers: [CallScoped])]
 impl ElevatedRpcModule {}
 
 /// A controller that declares no scope but depends on a request-scoped provider is elevated rather

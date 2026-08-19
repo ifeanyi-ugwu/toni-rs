@@ -120,7 +120,7 @@ impl HookedRpcController {
     }
 }
 
-#[module(providers: [HookedRpcController])]
+#[module(controllers: [HookedRpcController])]
 impl RpcHookModule {}
 
 /// An RPC controller is kept out of the module's provider map so nothing can inject it, and the

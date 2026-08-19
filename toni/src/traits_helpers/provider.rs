@@ -161,8 +161,8 @@ pub type GrpcErrorHandlerArc = Arc<dyn ErrorHandler<GrpcContext, crate::grpc_sta
 ///
 /// Returned as the second element of `ProviderFactory::build`. The container
 /// inserts each variant into the matching slot of `RoleRegistry` keyed by the
-/// provider token (or, for gateways, by WS path; for RPC controllers, by
-/// controller token).
+/// provider token (or, for gateways, by WS path; for gRPC services, by service
+/// token).
 #[derive(Clone)]
 pub enum ProviderRole {
     HttpGuard(HttpGuardEntry),
@@ -186,7 +186,6 @@ pub enum ProviderRole {
 
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
-    RpcController(Arc<dyn crate::rpc::RpcControllerSource>),
     GrpcService(Arc<dyn crate::adapter::GrpcServiceSource>),
 }
 
@@ -212,7 +211,6 @@ impl Injectable {
     /// refusal calls it.
     pub fn dispatch_target_kind(&self) -> Option<&'static str> {
         self.roles.iter().find_map(|role| match role {
-            ProviderRole::RpcController(_) => Some("an RPC controller"),
             ProviderRole::GrpcService(_) => Some("a gRPC service"),
             _ => None,
         })

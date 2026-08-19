@@ -233,7 +233,7 @@ impl RpcMethodEnhancersController {
     }
 }
 
-#[module(providers: [RpcAllowGuard, RpcPrefixInterceptor, AbortPipe, RecoveryErrorHandler, RpcMethodEnhancersController])]
+#[module(controllers: [RpcMethodEnhancersController], providers: [RpcAllowGuard, RpcPrefixInterceptor, AbortPipe, RecoveryErrorHandler])]
 impl RpcMethodEnhancersModule {}
 
 // ---- TCP helpers -------------------------------------------------------------

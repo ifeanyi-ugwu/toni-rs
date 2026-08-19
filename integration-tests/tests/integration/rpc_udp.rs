@@ -108,7 +108,7 @@ impl UdpRpcController {
     }
 }
 
-#[module(providers: [UdpRpcController])]
+#[module(controllers: [UdpRpcController])]
 impl UdpRpcModule {}
 
 #[tokio_localset_test::localset_test]
@@ -389,7 +389,7 @@ impl SlowUdpController {
     }
 }
 
-#[module(providers: [SlowUdpController])]
+#[module(controllers: [SlowUdpController])]
 impl SlowUdpModule {}
 
 /// A datagram handler already running when shutdown fires must finish
@@ -581,7 +581,7 @@ impl UdpMetaController {
     }
 }
 
-#[module(providers: [UdpMetaController])]
+#[module(controllers: [UdpMetaController])]
 impl UdpMetaModule {}
 
 #[tokio_localset_test::localset_test]

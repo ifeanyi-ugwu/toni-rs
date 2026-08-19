@@ -363,11 +363,6 @@ impl ToniContainer {
                     let path = gw.get_path();
                     self.role_registry.gateways.insert(path, gw);
                 }
-                ProviderRole::RpcController(rc) => {
-                    let rc_token = rc.get_token();
-                    self.role_registry.rpc_controllers.insert(rc_token, rc);
-                    dispatch_target_kind = Some("an RPC controller");
-                }
                 ProviderRole::GrpcService(gs) => {
                     let gs_token = gs.token();
                     self.role_registry.grpc_services.insert(gs_token, gs);
