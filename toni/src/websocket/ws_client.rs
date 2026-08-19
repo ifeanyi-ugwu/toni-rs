@@ -12,12 +12,12 @@ pub struct WsClient {
     /// Handshake information
     pub handshake: WsHandshake,
 
-    /// The bag for the message being handled — the same one the gateway's
-    /// guards and interceptors wrote to, which is how their work reaches the
-    /// handler.
+    /// The bag for the execution being handled — the same one the gateway's guards and interceptors
+    /// wrote to, which is how their work reaches the handler. At connect that execution is the
+    /// connect itself, so a connect guard's writes are what an `#[on_connect]` hook reads here.
     ///
-    /// Scoped to one message, not to the connection: the next message arrives
-    /// with an empty bag.
+    /// Scoped to one execution, not to the connection: the next message arrives with an empty bag,
+    /// and nothing written at connect survives into it.
     pub extensions: Extensions,
 }
 

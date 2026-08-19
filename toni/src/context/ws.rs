@@ -7,7 +7,7 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
 /// Per-request context for WebSocket handlers.
 ///
-/// One per inbound message (or per `connect`/`disconnect` lifecycle event). A
+/// One per execution: one inbound message, or one connect. A
 /// handler answers by returning a [`WsHandlerOutput`](super::WsHandlerOutput),
 /// streams included, so nothing about the answer lives here.
 #[derive(Clone)]

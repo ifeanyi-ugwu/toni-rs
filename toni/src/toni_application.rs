@@ -764,13 +764,15 @@ fn make_ws_callbacks(
             Box::pin(async move {
                 let client = create_client_from_parts(&parts);
                 let client_id = client.id.clone();
-                gateway.begin_connect(client).await?;
+                // The sink is registered between the two phases, inside the one connect execution
+                // the context carries — so what a guard wrote is still there for the hook.
+                let context = gateway.begin_connect(client).await?;
                 if let Some(bs) = &bs {
                     bs.connect(client_id.clone(), sink, gateway.get_namespace());
                 } else {
                     map.register(client_id.clone(), sink);
                 }
-                gateway.complete_connect(&client_id).await?;
+                gateway.complete_connect(&context).await?;
                 Ok(client_id)
             })
         },

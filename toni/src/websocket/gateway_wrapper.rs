@@ -119,7 +119,12 @@ impl GatewayWrapper {
     /// The upgrade's parts are no longer threaded in: a connect guard reads the
     /// handshake through `ctx.client().handshake`, which is the same information
     /// by a route that works per-message too.
-    pub async fn begin_connect(&self, client: WsClient) -> Result<(), WsError> {
+    /// Phase 1 of connection setup: run the guards that admit the connection.
+    ///
+    /// Returns the connect execution's context, which phase 2 finishes. The two phases exist so the
+    /// adapter can register the client's sink between them, not because they are separate
+    /// executions — a guard's writes have to reach the hook, so they share one context and one bag.
+    pub async fn begin_connect(&self, client: WsClient) -> Result<WsContext, WsError> {
         let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
@@ -158,33 +163,24 @@ impl GatewayWrapper {
 
         tracing::debug!(client_id = %client.id, "WebSocket client connected");
         self.clients.write().insert(client.id.clone(), client);
-        Ok(())
+        Ok(context)
     }
 
-    /// Phase 2 of connection setup: fire the `on_connect` lifecycle hook.
-    pub async fn complete_connect(&self, client_id: &str) -> Result<(), WsError> {
-        let client = self
-            .clients
-            .read()
-            .get(client_id)
-            .cloned()
-            .ok_or_else(|| WsError::ConnectionClosed("Client not found".into()))?;
+    /// Phase 2 of connection setup: fire the `on_connect` lifecycle hook on the context phase 1
+    /// built, so the hook reads the bag the guards wrote to.
+    pub async fn complete_connect(&self, context: &WsContext) -> Result<(), WsError> {
+        let client = context.client();
+        if !self.clients.read().contains_key(&client.id) {
+            return Err(WsError::ConnectionClosed("Client not found".into()));
+        }
 
-        let context = WsContext::new(
-            client.clone(),
-            WsMessage::text(""),
-            "connect",
-            Some(self.route_metadata.clone()),
-        );
-
-        self.gateway.on_connect(&client, &context).await
+        self.gateway.on_connect(client, context).await
     }
 
     /// Handle new WebSocket connection (simple path — no ConnectionManager).
     pub async fn handle_connect(&self, client: WsClient) -> Result<(), WsError> {
-        let client_id = client.id.clone();
-        self.begin_connect(client).await?;
-        self.complete_connect(&client_id).await
+        let context = self.begin_connect(client).await?;
+        self.complete_connect(&context).await
     }
 
     pub async fn handle_message(
