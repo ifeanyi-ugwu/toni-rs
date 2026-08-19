@@ -727,44 +727,14 @@ impl ToniApplication {
         self.context
             .call_before_shutdown_hooks(signal.clone())
             .await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                for controller in module.get_controller_objects() {
-                    controller.before_application_shutdown(signal.clone()).await;
-                }
-            }
-        }
     }
 
     async fn call_module_destroy_hooks(&self) {
         self.context.call_module_destroy_hooks().await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                for controller in module.get_controller_objects() {
-                    controller.on_module_destroy().await;
-                }
-            }
-        }
     }
 
     async fn call_shutdown_hooks(&self, signal: Option<String>) {
         self.context.call_shutdown_hooks(signal.clone()).await;
-
-        let container = self.routes_resolver.container.borrow();
-        let modules = container.get_modules_token();
-        for module_token in modules {
-            if let Some(module) = container.get_module_by_token(&module_token) {
-                for controller in module.get_controller_objects() {
-                    controller.on_application_shutdown(signal.clone()).await;
-                }
-            }
-        }
     }
 }
 
