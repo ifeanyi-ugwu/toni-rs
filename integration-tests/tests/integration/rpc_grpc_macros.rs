@@ -136,7 +136,7 @@ impl Orders for OrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, OrdersGrpcService])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersCounter])]
 struct GrpcMacrosModule;
 
 // ── enhancer-coverage fixtures ──────────────────────────────────────────────
@@ -234,7 +234,7 @@ impl Orders for GuardedOrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, AuthGuard, AdminGuard, GuardedOrdersGrpcService])]
+#[module(controllers: [GuardedOrdersGrpcService], providers: [OrdersCounter, AuthGuard, AdminGuard])]
 struct GuardedGrpcModule;
 
 async fn boot_guarded() -> (u16, toni::ShutdownHandle) {
@@ -423,12 +423,7 @@ impl Orders for InterceptedOrdersGrpcService {
     }
 }
 
-#[module(providers: [
-    OrdersCounter,
-    ServiceInterceptor,
-    MethodInterceptor,
-    InterceptedOrdersGrpcService,
-])]
+#[module(controllers: [InterceptedOrdersGrpcService], providers: [OrdersCounter, ServiceInterceptor, MethodInterceptor])]
 struct InterceptedGrpcModule;
 
 /// Same shape as the deny module below but with `MethodInterceptor` swapped
@@ -493,7 +488,7 @@ impl Orders for DenyOrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, DenyInterceptor, DenyOrdersGrpcService])]
+#[module(controllers: [DenyOrdersGrpcService], providers: [OrdersCounter, DenyInterceptor])]
 struct DenyGrpcModule;
 
 async fn boot_intercepted() -> (u16, toni::ShutdownHandle) {
@@ -970,11 +965,7 @@ impl Orders for ErrorHandledOrdersGrpcService {
     }
 }
 
-#[module(providers: [
-    OrdersCounter,
-    ConditionalErrorHandler,
-    ErrorHandledOrdersGrpcService,
-])]
+#[module(controllers: [ErrorHandledOrdersGrpcService], providers: [OrdersCounter, ConditionalErrorHandler])]
 struct ErrorHandledGrpcModule;
 
 async fn boot_error_handled() -> (u16, toni::ShutdownHandle) {
@@ -1053,7 +1044,7 @@ impl Orders for PanickyOrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, PanickyOrdersGrpcService])]
+#[module(controllers: [PanickyOrdersGrpcService], providers: [OrdersCounter])]
 struct PanickyGrpcModule;
 
 async fn boot_panicky() -> (u16, toni::ShutdownHandle) {
@@ -1350,7 +1341,7 @@ impl Orders for GuardPanicGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, PanickingGrpcGuard, GuardPanicGrpcService])]
+#[module(controllers: [GuardPanicGrpcService], providers: [OrdersCounter, PanickingGrpcGuard])]
 struct GuardPanicGrpcModule;
 
 #[injectable]
@@ -1428,7 +1419,7 @@ impl Orders for InterceptorPanicGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, PanickingGrpcInterceptor, InterceptorPanicGrpcService])]
+#[module(controllers: [InterceptorPanicGrpcService], providers: [OrdersCounter, PanickingGrpcInterceptor])]
 struct InterceptorPanicGrpcModule;
 
 async fn boot_guard_panic() -> (u16, toni::ShutdownHandle) {
@@ -1612,7 +1603,7 @@ impl Orders for ErrorHandlerPanicGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, PanickingGrpcErrorHandler, ErrorHandlerPanicGrpcService])]
+#[module(controllers: [ErrorHandlerPanicGrpcService], providers: [OrdersCounter, PanickingGrpcErrorHandler])]
 struct ErrorHandlerPanicGrpcModule;
 
 async fn boot_error_handler_panic() -> (u16, toni::ShutdownHandle) {
@@ -1728,7 +1719,7 @@ impl Orders for SlowOrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, SlowOrdersGrpcService])]
+#[module(controllers: [SlowOrdersGrpcService], providers: [OrdersCounter])]
 struct SlowGrpcModule;
 
 async fn boot_slow_with<F>(configure: F) -> (u16, toni::ShutdownHandle)
@@ -1901,7 +1892,7 @@ impl Orders for BusOrdersGrpcService {
     }
 }
 
-#[module(providers: [BusGuard, BusOrdersGrpcService])]
+#[module(controllers: [BusOrdersGrpcService], providers: [BusGuard])]
 struct BusGrpcModule;
 
 /// The last transport to get it: `extension_bus.rs` covers HTTP and WebSocket,
@@ -2057,7 +2048,7 @@ impl Orders for PerCallGrpcService {
     }
 }
 
-#[module(providers: [GrpcCallScoped, GrpcCallScopedGuard, PerCallGrpcService])]
+#[module(controllers: [PerCallGrpcService], providers: [GrpcCallScoped, GrpcCallScopedGuard])]
 struct PerCallGrpcModule;
 
 /// Numbers each construction of the singleton service below.
@@ -2123,7 +2114,7 @@ impl Orders for SingletonGrpcService {
     }
 }
 
-#[module(providers: [SingletonGrpcService])]
+#[module(controllers: [SingletonGrpcService])]
 struct SingletonGrpcModule;
 
 async fn boot_module<M>(module: M) -> (u16, toni::ShutdownHandle)

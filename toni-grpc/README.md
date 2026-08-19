@@ -93,7 +93,7 @@ impl Orders for OrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, OrdersGrpcService])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersCounter])]
 struct AppModule;
 
 #[tokio::main(flavor = "current_thread")]

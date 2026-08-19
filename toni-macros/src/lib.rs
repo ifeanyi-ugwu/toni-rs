@@ -744,8 +744,11 @@ pub fn subscribe_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// once at startup, unless one of its dependencies is request-scoped — then it is elevated to the
 /// same per-call construction with a warning naming the dependency.
 ///
-/// A controller is reached by pattern and cannot be injected: what a holder would get is decided
-/// by the controller's own dependencies. Put shared behaviour in a provider and inject that.
+/// # Declaration
+///
+/// The struct goes in its module's `controllers:` list, beside HTTP controllers. A controller is
+/// reached by pattern and cannot be injected: what a holder would get is decided by the
+/// controller's own dependencies. Put shared behaviour in a provider and inject that.
 #[proc_macro_attribute]
 pub fn rpc_controller(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
@@ -826,8 +829,11 @@ pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// at startup, unless one of its dependencies is request-scoped — then it is elevated to the same
 /// per-call construction with a warning naming the dependency.
 ///
-/// A service is reached by its transport and cannot be injected: what a holder would get is decided
-/// by the service's own dependencies. Put shared behaviour in a provider and inject that.
+/// # Declaration
+///
+/// The struct goes in its module's `controllers:` list, beside HTTP controllers. A service is
+/// reached by its transport and cannot be injected: what a holder would get is decided by the
+/// service's own dependencies. Put shared behaviour in a provider and inject that.
 #[proc_macro_attribute]
 pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

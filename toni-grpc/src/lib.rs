@@ -28,7 +28,7 @@
 //! #[tonic::async_trait]
 //! impl Orders for OrdersGrpcService { /* methods */ }
 //!
-//! #[module(providers: [OrdersGrpcService])]
+//! #[module(controllers: [OrdersGrpcService])]
 //! struct AppModule;
 //!
 //! #[tokio::main(flavor = "current_thread")]

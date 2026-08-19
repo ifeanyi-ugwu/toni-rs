@@ -220,7 +220,7 @@ impl orders_pb::orders_server::Orders for HookedGrpcService {
     }
 }
 
-#[module(providers: [HookedGrpcService])]
+#[module(controllers: [HookedGrpcService])]
 impl GrpcHookModule {}
 
 /// A gRPC service is kept out of the module's provider map so nothing can inject it, and the

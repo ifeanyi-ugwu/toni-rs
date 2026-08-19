@@ -13,11 +13,8 @@ use proc_macro2::TokenStream;
 use syn::{ItemImpl, ItemStruct, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
-use crate::provider_macro::instance_injection::{
-    EnhancerTraits, generate_instance_provider_system,
-};
+use crate::provider_macro::instance_injection::generate_grpc_service_wiring;
 use crate::shared::dependency_info::{DependencyInfo, DependencySource};
-use crate::shared::scope_parser::ProviderScope;
 use crate::utils::extracts::extract_struct_dependencies;
 
 struct GrpcServiceArgs {
@@ -103,15 +100,10 @@ pub fn handle_grpc_service(attr: TokenStream, item: TokenStream) -> Result<Token
         ));
     }
 
-    generate_instance_provider_system(
+    generate_grpc_service_wiring(
         struct_def.as_ref(),
         &impl_block,
         &dependencies,
-        ProviderScope::Singleton,
-        EnhancerTraits {
-            is_grpc_service: true,
-            grpc_request_scoped: args.request_scoped,
-            ..Default::default()
-        },
+        args.request_scoped,
     )
 }

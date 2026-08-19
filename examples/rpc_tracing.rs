@@ -149,7 +149,7 @@ impl Orders for OrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, OrdersGrpcService])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersCounter])]
 struct GrpcModule;
 
 // ─── Entry point ────────────────────────────────────────────────────────────

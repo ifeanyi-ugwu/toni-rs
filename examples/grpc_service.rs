@@ -201,13 +201,7 @@ impl Orders for OrdersGrpcService {
     }
 }
 
-#[module(providers: [
-    OrdersCounter,
-    AuthGuard,
-    LoggingInterceptor,
-    QtyErrorHandler,
-    OrdersGrpcService,
-])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersCounter, AuthGuard, LoggingInterceptor, QtyErrorHandler])]
 struct GrpcExampleModule;
 
 #[tokio::main(flavor = "current_thread")]
