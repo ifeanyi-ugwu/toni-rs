@@ -187,7 +187,7 @@ pub enum ProviderRole {
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
     RpcController(Arc<dyn crate::rpc::RpcControllerSource>),
-    GrpcService(Arc<Box<dyn crate::adapter::GrpcServiceTrait>>),
+    GrpcService(Arc<dyn crate::adapter::GrpcServiceSource>),
 }
 
 /// A fully-built, ready-to-inject provider with its role registrations.
@@ -206,13 +206,16 @@ impl Injectable {
         Self { instance, roles }
     }
 
-    /// Whether this is reached only by its transport's dispatch — an RPC controller. Such an
-    /// instance is not resolvable as a dependency, so the injector skips it rather than handing
-    /// it to whatever asked.
-    pub fn is_dispatch_target(&self) -> bool {
-        self.roles
-            .iter()
-            .any(|role| matches!(role, ProviderRole::RpcController(_)))
+    /// What kind of dispatch target this is, or `None` if it is an ordinary provider. Such an
+    /// instance is reached only by its transport's dispatch and is not resolvable as a dependency,
+    /// so the injector refuses it rather than handing it to whatever asked. The name is what the
+    /// refusal calls it.
+    pub fn dispatch_target_kind(&self) -> Option<&'static str> {
+        self.roles.iter().find_map(|role| match role {
+            ProviderRole::RpcController(_) => Some("an RPC controller"),
+            ProviderRole::GrpcService(_) => Some("a gRPC service"),
+            _ => None,
+        })
     }
 }
 

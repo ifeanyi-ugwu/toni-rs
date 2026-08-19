@@ -12,7 +12,7 @@ use tonic::service::{Routes, RoutesBuilder};
 use tonic::transport::Server;
 use tower::Service;
 
-use toni::adapter::{GrpcServiceTrait, ResolvedGrpcEnhancers};
+use toni::adapter::{GrpcServiceSource, ResolvedGrpcEnhancers};
 use toni::async_trait;
 
 use crate::tracing_layer::TracingLayer;
@@ -178,7 +178,7 @@ impl GrpcAdapter {
 impl toni::GrpcAdapter for GrpcAdapter {
     fn register_services(
         &mut self,
-        services: Vec<(Arc<Box<dyn GrpcServiceTrait>>, Arc<ResolvedGrpcEnhancers>)>,
+        services: Vec<(Arc<dyn GrpcServiceSource>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()> {
         // Framework-discovered services (`#[grpc_service]` + `#[grpc_methods]`)
         // each know how to wrap themselves in their tonic `*Server` — hand

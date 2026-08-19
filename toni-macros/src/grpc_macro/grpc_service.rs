@@ -4,7 +4,7 @@
 //! Lives on the **struct declaration + an inherent impl block** containing the
 //! `new()` constructor (parallel to `#[rpc_controller]`). The trait impl
 //! against the proto-generated trait gets `#[grpc_methods]` separately —
-//! that's what produces the `GrpcServiceTrait` impl that knows how to wrap
+//! that's what produces the `GrpcServiceSource` impl that knows how to wrap
 //! `self` in the tonic `*Server`.
 
 use std::collections::HashSet;
@@ -13,23 +13,62 @@ use proc_macro2::TokenStream;
 use syn::{ItemImpl, ItemStruct, Result, parse2};
 
 use crate::controller_macro::controller_struct::{extract_constructor_params, has_new_method};
-use crate::provider_macro::instance_injection::generate_instance_provider_system;
+use crate::provider_macro::instance_injection::{
+    EnhancerTraits, generate_instance_provider_system,
+};
 use crate::shared::dependency_info::{DependencyInfo, DependencySource};
 use crate::shared::scope_parser::ProviderScope;
 use crate::utils::extracts::extract_struct_dependencies;
 
 struct GrpcServiceArgs {
+    request_scoped: bool,
     struct_def: Option<ItemStruct>,
 }
 
 impl syn::parse::Parse for GrpcServiceArgs {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        let mut request_scoped = false;
+
+        while input.peek(syn::Ident)
+            && !input.peek(syn::Token![pub])
+            && !input.peek(syn::Token![struct])
+        {
+            let ident: syn::Ident = input.parse()?;
+            if ident != "scope" {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("Unknown attribute: '{}'. Expected 'scope'", ident),
+                ));
+            }
+            let _: syn::Token![=] = input.parse()?;
+            let value: syn::LitStr = input.parse()?;
+            request_scoped = match value.value().as_str() {
+                "singleton" => false,
+                "request" => true,
+                other => {
+                    return Err(syn::Error::new(
+                        value.span(),
+                        format!(
+                            "Invalid gRPC service scope: '{}'. Must be 'singleton' or 'request'",
+                            other
+                        ),
+                    ));
+                }
+            };
+            if input.peek(syn::Token![,]) {
+                let _: syn::Token![,] = input.parse()?;
+            }
+        }
+
         let struct_def = if !input.is_empty() {
             Some(input.parse::<ItemStruct>()?)
         } else {
             None
         };
-        Ok(GrpcServiceArgs { struct_def })
+        Ok(GrpcServiceArgs {
+            request_scoped,
+            struct_def,
+        })
     }
 }
 
@@ -69,8 +108,10 @@ pub fn handle_grpc_service(attr: TokenStream, item: TokenStream) -> Result<Token
         &impl_block,
         &dependencies,
         ProviderScope::Singleton,
-        false, // is_gateway
-        false, // is_rpc_controller
-        true,  // is_grpc_service
+        EnhancerTraits {
+            is_grpc_service: true,
+            grpc_request_scoped: args.request_scoped,
+            ..Default::default()
+        },
     )
 }

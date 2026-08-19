@@ -818,6 +818,16 @@ pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// #[grpc_methods]
 /// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
 /// ```
+///
+/// # Scope
+///
+/// `#[grpc_service(scope = "request", …)]` builds the service inside each call it serves, so a
+/// dependency that belongs to the call reaches it. A service that declares no scope is built once
+/// at startup, unless one of its dependencies is request-scoped — then it is elevated to the same
+/// per-call construction with a warning naming the dependency.
+///
+/// A service is reached by its transport and cannot be injected: what a holder would get is decided
+/// by the service's own dependencies. Put shared behaviour in a provider and inject that.
 #[proc_macro_attribute]
 pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
@@ -838,9 +848,9 @@ pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
 /// ```
 ///
-/// The annotated impl block is passed through unchanged; only an
-/// additional `impl GrpcServiceTrait for YourService` block is emitted
-/// alongside it.
+/// The annotated impl block is passed through unchanged; a source companion carrying the
+/// service's declarations, its `GrpcServiceSource` impl, and the enhancer-aware wrapper are
+/// emitted alongside it.
 #[proc_macro_attribute]
 pub fn grpc_methods(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

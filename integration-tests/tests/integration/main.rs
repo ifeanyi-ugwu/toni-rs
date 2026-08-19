@@ -29,6 +29,7 @@ mod global_enhancers;
 mod global_modules;
 mod graceful_shutdown;
 mod graphql_subscriptions;
+mod grpc_service_injection;
 mod guard_mut_context;
 mod http_e2e;
 mod import_cycle;

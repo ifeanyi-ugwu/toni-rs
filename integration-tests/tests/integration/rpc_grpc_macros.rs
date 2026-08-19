@@ -2,8 +2,8 @@
 //!
 //! - `#[grpc_service]` on a struct + its inherent impl makes it an injectable
 //!   DI provider that the framework discovers as a gRPC service.
-//! - `#[grpc_methods]` on the proto-trait impl emits a `GrpcServiceTrait`
-//!   that wraps `self` in the inferred `*Server` and registers it with
+//! - `#[grpc_methods]` on the proto-trait impl emits a `GrpcServiceSource`
+//!   that wraps the service in the inferred `*Server` and registers it with
 //!   the framework's gRPC adapter at bind time.
 //! - The user never types `*Server::new(handler)` and never calls
 //!   `adapter.add_service()` — DI + module registration is the entire
@@ -1937,4 +1937,305 @@ async fn grpc_guard_write_reaches_the_handler() {
         .expect("call should dispatch");
 
     assert_eq!(resp.into_inner().status, "carol");
+}
+
+// ── a service built per call ────────────────────────────────────────────────
+//
+// Its own module and port, like the fixtures above. The singleton case is
+// pinned beside it so an accidental elevation of every service would fail
+// rather than pass quietly.
+
+/// Hands out a distinct id per construction, so two holders reporting the same
+/// number are holding one instance.
+static GRPC_CALL_IDS: AtomicU64 = AtomicU64::new(0);
+
+#[injectable(scope = "request")]
+pub struct GrpcCallScoped {
+    #[default(0)]
+    id: u64,
+}
+
+impl GrpcCallScoped {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            id: GRPC_CALL_IDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+#[derive(Clone)]
+pub struct GrpcGuardSaw(u64);
+
+/// Reads `GrpcCallScoped` before the service exists, so the id it records is the
+/// one the execution already holds by the time the service is built.
+#[injectable(scope = "request")]
+pub struct GrpcCallScopedGuard {
+    #[inject]
+    scoped: GrpcCallScoped,
+}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for GrpcCallScopedGuard {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+        use toni::context::HandlerContext;
+        ctx.extensions().insert(GrpcGuardSaw(self.scoped.id()));
+        true
+    }
+}
+
+/// Numbers each service construction.
+static PER_CALL_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+#[grpc_service(scope = "request", pub struct PerCallGrpcService {
+    #[inject] scoped: GrpcCallScoped,
+    #[default(0)] build: u64,
+})]
+impl PerCallGrpcService {
+    #[new]
+    pub fn new(scoped: GrpcCallScoped) -> Self {
+        Self {
+            scoped,
+            build: PER_CALL_GRPC_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_guards(GrpcCallScopedGuard)]
+impl Orders for PerCallGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let guard_saw = toni::context::Extensions::adopt(request.extensions())
+            .get::<GrpcGuardSaw>()
+            .map(|s| s.0);
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: self.build,
+            status: format!("{}:{:?}", self.scoped.id(), guard_saw),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+}
+
+#[module(providers: [GrpcCallScoped, GrpcCallScopedGuard, PerCallGrpcService])]
+struct PerCallGrpcModule;
+
+/// Numbers each construction of the singleton service below.
+static SINGLETON_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+#[grpc_service(pub struct SingletonGrpcService {
+    #[default(0)] build: u64,
+})]
+impl SingletonGrpcService {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            build: SINGLETON_GRPC_BUILDS.fetch_add(1, Ordering::SeqCst),
+        }
+    }
+}
+
+#[grpc_methods]
+#[tonic::async_trait]
+impl Orders for SingletonGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: self.build,
+            status: "singleton".to_string(),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+}
+
+#[module(providers: [SingletonGrpcService])]
+struct SingletonGrpcModule;
+
+async fn boot_module<M>(module: M) -> (u16, toni::ShutdownHandle)
+where
+    M: toni::traits_helpers::ModuleMetadata + 'static,
+{
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
+        let mut app = ToniFactory::create(module).await;
+        app.use_grpc_adapter(adapter).unwrap();
+        let bound = app.bind().await.unwrap();
+        let _ = port_tx.send(
+            bound
+                .grpc
+                .expect("BoundAdapters.grpc must be populated")
+                .port(),
+        );
+        let _ = shutdown_tx.send(app.shutdown_handle());
+        app.run().await;
+    });
+    tokio::task::spawn_local(async move { local.await });
+    (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
+}
+
+/// `#[grpc_service(scope = "request", …)]` builds the service inside the call it
+/// serves: a fresh one per call, and its request-scoped dependency is the
+/// instance the call already holds rather than a second one.
+#[tokio_localset_test::localset_test]
+async fn a_request_scoped_grpc_service_is_built_per_call() {
+    let (port, shutdown) = boot_module(PerCallGrpcModule).await;
+    let mut client = connect(port).await;
+
+    let request = || orders_pb::CreateOrderRequest {
+        item: "per-call".to_string(),
+        qty: 1,
+    };
+
+    let first = client
+        .create(request())
+        .await
+        .expect("per-call service should answer")
+        .into_inner();
+    let second = client
+        .create(request())
+        .await
+        .expect("per-call service should answer again")
+        .into_inner();
+
+    assert_ne!(
+        first.id, second.id,
+        "each call builds its own service: {} then {}",
+        first.id, second.id
+    );
+
+    // The guard ran first and resolved `GrpcCallScoped` before the service
+    // existed. Equal ids mean the service joined that same execution rather
+    // than starting one.
+    let (service_saw, guard_saw) = first.status.split_once(':').expect("status is id:guard");
+    assert_eq!(
+        format!("Some({})", service_saw),
+        guard_saw,
+        "the service and the guard hold one instance: {}",
+        first.status
+    );
+    assert_ne!(
+        first.status, second.status,
+        "two calls hold two instances: {} then {}",
+        first.status, second.status
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
+}
+
+/// A service that declares no scope and injects nothing request-scoped is still
+/// built once and shared.
+#[tokio_localset_test::localset_test]
+async fn a_singleton_grpc_service_is_built_once() {
+    let (port, shutdown) = boot_module(SingletonGrpcModule).await;
+    let mut client = connect(port).await;
+
+    let first = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "singleton".to_string(),
+            qty: 1,
+        })
+        .await
+        .expect("singleton service should answer")
+        .into_inner();
+    let second = client
+        .create(orders_pb::CreateOrderRequest {
+            item: "singleton".to_string(),
+            qty: 1,
+        })
+        .await
+        .expect("singleton service should answer again")
+        .into_inner();
+
+    assert_eq!(
+        first.id, second.id,
+        "one instance serves both calls: {} then {}",
+        first.id, second.id
+    );
+
+    shutdown.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
+        .await
+        .expect("shutdown must complete");
 }

@@ -31,9 +31,10 @@ pub struct ToniContainer {
     global_provider_sources: FxHashMap<String, (String, String)>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
-    /// Tokens of instances reached only by dispatch. Injecting one is refused, so this is read on
-    /// the resolution failure path to say why rather than "not found".
-    dispatch_target_tokens: FxHashSet<String>,
+    /// Instances reached only by dispatch, mapped to what the refusal should call them. Injecting
+    /// one is refused, so this is read on the resolution failure path to say why rather than
+    /// "not found".
+    dispatch_target_tokens: FxHashMap<String, &'static str>,
     /// Global enhancers - applied to every HTTP route's pipeline.
     global_http_guards: Vec<HttpGuardEntry>,
     global_http_interceptors: Vec<HttpInterceptorEntry>,
@@ -86,7 +87,7 @@ impl ToniContainer {
             global_providers: FxHashMap::default(),
             global_provider_sources: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
-            dispatch_target_tokens: FxHashSet::default(),
+            dispatch_target_tokens: FxHashMap::default(),
             global_http_guards: Vec::new(),
             global_http_interceptors: Vec::new(),
             global_http_pipes: Vec::new(),
@@ -294,7 +295,7 @@ impl ToniContainer {
         roles: Vec<ProviderRole>,
     ) -> Result<()> {
         let token = provider_instance.get_token_factory();
-        let mut is_dispatch_target = false;
+        let mut dispatch_target_kind: Option<&'static str> = None;
 
         for role in roles {
             match role {
@@ -365,27 +366,28 @@ impl ToniContainer {
                 ProviderRole::RpcController(rc) => {
                     let rc_token = rc.get_token();
                     self.role_registry.rpc_controllers.insert(rc_token, rc);
-                    is_dispatch_target = true;
+                    dispatch_target_kind = Some("an RPC controller");
                 }
                 ProviderRole::GrpcService(gs) => {
                     let gs_token = gs.token();
                     self.role_registry.grpc_services.insert(gs_token, gs);
+                    dispatch_target_kind = Some("a gRPC service");
                 }
             }
         }
 
-        // An RPC controller is reached by pattern and nothing else. Leaving it out of the module's
-        // provider map is what makes it unresolvable as a dependency, and the scope it is built at
-        // is decided by its own dependencies — so a holder could not know what it was holding.
-        if is_dispatch_target {
-            self.dispatch_target_tokens.insert(token);
+        // A dispatch target is reached by its transport and nothing else. Leaving it out of the
+        // module's provider map is what makes it unresolvable as a dependency, and the scope it is
+        // built at is decided by its own dependencies — so a holder could not know what it held.
+        if let Some(kind) = dispatch_target_kind {
+            self.dispatch_target_tokens.insert(token, kind);
         }
 
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        if is_dispatch_target {
+        if dispatch_target_kind.is_some() {
             module_ref.add_dispatch_target(provider_instance);
         } else {
             module_ref.add_provider_instance(provider_instance);
@@ -393,8 +395,10 @@ impl ToniContainer {
         Ok(())
     }
 
-    pub fn is_dispatch_target_token(&self, token: &str) -> bool {
-        self.dispatch_target_tokens.contains(token)
+    /// What the refusal should call the dispatch target under `token`, or `None` if the token is
+    /// an ordinary provider.
+    pub fn dispatch_target_kind(&self, token: &str) -> Option<&'static str> {
+        self.dispatch_target_tokens.get(token).copied()
     }
 
     /// Every instance a module's lifecycle hooks must reach: the providers, plus the dispatch
@@ -435,7 +439,7 @@ impl ToniContainer {
 
     pub fn get_grpc_services(
         &self,
-    ) -> &FxHashMap<String, Arc<Box<dyn crate::adapter::GrpcServiceTrait>>> {
+    ) -> &FxHashMap<String, Arc<dyn crate::adapter::GrpcServiceSource>> {
         &self.role_registry.grpc_services
     }
 

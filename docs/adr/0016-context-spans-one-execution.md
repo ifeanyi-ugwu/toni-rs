@@ -277,9 +277,15 @@ is resolvability, not its lifecycle.
 connect guard's writes reach the connect hook because there is one execution and one bag, not because
 anything is copied between them.
 
-**gRPC.** In. Nothing about tonic obstructs the context model. gRPC remains outside the extractor model
-of ADR-0015, because `#[grpc_methods]` re-emits a signature the tonic trait dictates; that exclusion is
-about handler signatures and does not extend to the context those handlers run under.
+**gRPC.** In. Nothing about tonic obstructs the context model. A call is an execution, so a service
+with request-scoped dependencies is built per call and `#[grpc_service]` becomes a dispatch target on
+the same terms as `#[rpc_controller]` — the argument is about what a holder could know, and holds
+wherever the scope follows the dependencies. The service is asked for inside the wrapper's delegate,
+which is where tonic's generated impl hands control back.
+
+gRPC remains outside the extractor model of ADR-0015, because `#[grpc_methods]` re-emits a signature
+the tonic trait dictates; that exclusion is about handler signatures and does not extend to the
+context those handlers run under.
 
 ### A connection is a session, not an execution
 
