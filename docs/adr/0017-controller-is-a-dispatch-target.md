@@ -1,6 +1,6 @@
 # 0017 — A controller is a dispatch target, whatever the transport
 
-Status: proposed
+Status: accepted
 
 ## Context
 

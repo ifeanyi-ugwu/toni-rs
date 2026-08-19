@@ -1,6 +1,6 @@
 # 0016 — A context spans one execution and is a shared handle
 
-Status: proposed
+Status: accepted
 
 ## Context
 
