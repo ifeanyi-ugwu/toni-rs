@@ -42,6 +42,18 @@ pub enum ControllerInstance {
     Request(FxHashMap<String, Arc<Box<dyn Provider>>>),
 }
 
+/// What a controller hands over to be dispatched on.
+///
+/// The one place the transports differ. HTTP dispatches on routes keyed by path and method, RPC on a
+/// set of patterns, gRPC on a registration with the tonic router. Everything else a controller
+/// carries — its token, its dependencies, its lifecycle, the scope it is built at — is common to all
+/// three and lives on [`Controller`] itself.
+pub enum Dispatch {
+    Http(Vec<Arc<dyn Route>>),
+    Rpc(Arc<dyn crate::rpc::RpcControllerSource>),
+    Grpc(Arc<dyn crate::adapter::GrpcServiceSource>),
+}
+
 /// One dispatchable route: the handler plus the routing facts and enhancers the
 /// dispatcher needs to register and run it. A `Controller` yields one `Route` per
 /// handler method.
@@ -82,7 +94,7 @@ pub trait Route: Send + Sync {
 #[async_trait]
 pub trait Controller: Send + Sync {
     fn get_token(&self) -> String;
-    fn routes(&self) -> Vec<Arc<dyn Route>>;
+    fn dispatch(&self) -> Dispatch;
 
     // Lifecycle Hooks
 

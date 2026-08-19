@@ -35,7 +35,7 @@ impl AdoptionController {
     }
 }
 
-#[module(providers: [AdoptionController])]
+#[module(controllers: [AdoptionController])]
 impl AdoptionModule {}
 
 /// Start an app whose RPC adapter was built from a caller-owned socket, and

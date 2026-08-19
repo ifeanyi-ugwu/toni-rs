@@ -161,8 +161,7 @@ pub type GrpcErrorHandlerArc = Arc<dyn ErrorHandler<GrpcContext, crate::grpc_sta
 ///
 /// Returned as the second element of `ProviderFactory::build`. The container
 /// inserts each variant into the matching slot of `RoleRegistry` keyed by the
-/// provider token (or, for gateways, by WS path; for RPC controllers, by
-/// controller token).
+/// provider token (or, for gateways, by WS path).
 #[derive(Clone)]
 pub enum ProviderRole {
     HttpGuard(HttpGuardEntry),
@@ -186,8 +185,6 @@ pub enum ProviderRole {
 
     Middleware(Arc<dyn Middleware>),
     Gateway(Arc<Box<dyn crate::websocket::GatewayTrait>>),
-    RpcController(Arc<dyn crate::rpc::RpcControllerSource>),
-    GrpcService(Arc<dyn crate::adapter::GrpcServiceSource>),
 }
 
 /// A fully-built, ready-to-inject provider with its role registrations.
@@ -204,18 +201,6 @@ pub struct Injectable {
 impl Injectable {
     pub fn new(instance: Arc<Box<dyn Provider>>, roles: Vec<ProviderRole>) -> Self {
         Self { instance, roles }
-    }
-
-    /// What kind of dispatch target this is, or `None` if it is an ordinary provider. Such an
-    /// instance is reached only by its transport's dispatch and is not resolvable as a dependency,
-    /// so the injector refuses it rather than handing it to whatever asked. The name is what the
-    /// refusal calls it.
-    pub fn dispatch_target_kind(&self) -> Option<&'static str> {
-        self.roles.iter().find_map(|role| match role {
-            ProviderRole::RpcController(_) => Some("an RPC controller"),
-            ProviderRole::GrpcService(_) => Some("a gRPC service"),
-            _ => None,
-        })
     }
 }
 

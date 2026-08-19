@@ -331,6 +331,11 @@ impl ToniApplicationContext {
                     provider.before_application_shutdown(signal.clone()).await;
                 }
             }
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                for controller in module.get_controller_objects() {
+                    controller.before_application_shutdown(signal.clone()).await;
+                }
+            }
         }
     }
 
@@ -351,6 +356,11 @@ impl ToniApplicationContext {
                         continue;
                     }
                     provider.on_module_destroy().await;
+                }
+            }
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                for controller in module.get_controller_objects() {
+                    controller.on_module_destroy().await;
                 }
             }
         }
@@ -376,6 +386,11 @@ impl ToniApplicationContext {
                         continue;
                     }
                     provider.on_application_shutdown(signal.clone()).await;
+                }
+            }
+            if let Some(module) = container.get_module_by_token(&module_token) {
+                for controller in module.get_controller_objects() {
+                    controller.on_application_shutdown(signal.clone()).await;
                 }
             }
         }

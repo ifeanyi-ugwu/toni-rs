@@ -16,8 +16,8 @@ use super::{
 use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable, Provider,
-        Route,
+        Controller, Dispatch, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable,
+        Provider, Route,
     },
 };
 
@@ -442,37 +442,48 @@ impl ToniInstanceLoader {
         module_token: String,
         controllers: Vec<Arc<dyn Controller>>,
     ) -> Result<()> {
-        // Phase A: expand each controller into its routes and resolve per-route
-        // enhancers under an immutable borrow.
-        type ResolvedController = (Arc<dyn Controller>, Vec<(Arc<dyn Route>, EnhancerMetadata)>);
+        // Phase A: expand each controller into its dispatch under an immutable borrow. Only HTTP
+        // resolves its enhancers here; RPC and gRPC declare tokens their own resolvers read at bind.
+        type ResolvedController = (Arc<dyn Controller>, ResolvedDispatch);
         let resolved: Vec<ResolvedController> = controllers
             .into_iter()
             .map(|controller| {
-                let routes = controller
-                    .routes()
-                    .into_iter()
-                    .map(|route| {
-                        let meta = self.resolve_enhancers_from_tokens(&route)?;
-                        Ok((route, meta))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((controller, routes))
+                let dispatch = match controller.dispatch() {
+                    Dispatch::Http(routes) => ResolvedDispatch::Http(
+                        routes
+                            .into_iter()
+                            .map(|route| {
+                                let meta = self.resolve_enhancers_from_tokens(&route)?;
+                                Ok((route, meta))
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
+                    Dispatch::Rpc(source) => ResolvedDispatch::Rpc(source),
+                    Dispatch::Grpc(source) => ResolvedDispatch::Grpc(source),
+                };
+                Ok((controller, dispatch))
             })
             .collect::<Result<_>>()?;
 
-        // Phase B: store the controller (for lifecycle) and its route dispatch
-        // units under a mutable borrow.
+        // Phase B: store the controller (for lifecycle) and its dispatch units under a mutable
+        // borrow.
         let mut container_mut = self.container.borrow_mut();
-        for (controller, routes) in resolved {
+        for (controller, dispatch) in resolved {
             let token = controller.get_token();
             container_mut.add_controller_object(&module_token, controller)?;
-            for (route, enhancer_metadata) in routes {
-                container_mut.add_route_instance(
-                    &module_token,
-                    &token,
-                    route,
-                    enhancer_metadata,
-                )?;
+            match dispatch {
+                ResolvedDispatch::Http(routes) => {
+                    for (route, enhancer_metadata) in routes {
+                        container_mut.add_route_instance(
+                            &module_token,
+                            &token,
+                            route,
+                            enhancer_metadata,
+                        )?;
+                    }
+                }
+                ResolvedDispatch::Rpc(source) => container_mut.add_rpc_controller_source(source),
+                ResolvedDispatch::Grpc(source) => container_mut.add_grpc_service_source(source),
             }
         }
         Ok(())
@@ -595,26 +606,10 @@ impl ToniInstanceLoader {
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
-            // A dispatch target exists to be routed to, not to be held. Refuse before the lookup
-            // steps so the answer names the reason rather than reporting the token as missing —
-            // it is registered, just not as something resolvable.
+            // Step 1: Check local providers (in-progress build map). A dispatch target is not
+            // among them — it is declared in `controllers:` and never reaches the provider store —
+            // so asking for one falls through to the not-found answer below.
             let built_locally = providers_instances.and_then(|m| m.get(&dependency));
-            let dispatch_kind = built_locally
-                .and_then(|inj| inj.dispatch_target_kind())
-                .or_else(|| container.dispatch_target_kind(&dependency));
-            if let Some(kind) = dispatch_kind {
-                return Err(anyhow!(
-                    "'{}' is {} and cannot be injected into '{}'. A dispatch target is reached by \
-                     its transport, and the scope it is built at follows its own dependencies — a \
-                     holder could not know whether it held one instance or one per call. Move what \
-                     is being shared into a provider and inject that.",
-                    dependency,
-                    kind,
-                    module_token
-                ));
-            }
-
-            // Step 1: Check local providers (in-progress build map)
             if let Some(injectable) = built_locally {
                 resolved_dependencies.insert(dependency, injectable.clone());
             }
@@ -737,4 +732,11 @@ impl ToniInstanceLoader {
 
         Ok(None)
     }
+}
+
+/// `Dispatch` with HTTP's enhancers already resolved — the shape Phase B stores from.
+enum ResolvedDispatch {
+    Http(Vec<(Arc<dyn Route>, EnhancerMetadata)>),
+    Rpc(Arc<dyn crate::rpc::RpcControllerSource>),
+    Grpc(Arc<dyn crate::adapter::GrpcServiceSource>),
 }

@@ -1,6 +1,6 @@
-//! Injects a gRPC service into an ordinary provider. A service is reached by its transport and is
-//! not a dependency, so the injector refuses it and `create_application_context` logs the
-//! diagnostic and exits with status 1.
+//! Injects a gRPC service into an ordinary provider. A service is declared in `controllers:` and is
+//! reached by its transport, so its token is not in the provider store: the injector finds nothing
+//! under it and `create_application_context` logs the failure and exits with status 1.
 //!
 //! A subprocess is required because the only public trigger path calls `std::process::exit`.
 
@@ -81,7 +81,7 @@ pub struct OrdersReporter {
     service: OrdersGrpcService,
 }
 
-#[module(providers: [OrdersGrpcService, OrdersReporter])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersReporter])]
 impl AppModule {}
 
 #[tokio::main(flavor = "current_thread")]

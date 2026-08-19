@@ -92,7 +92,7 @@ impl OrdersController {
     }
 }
 
-#[module(providers: [OrdersController])]
+#[module(controllers: [OrdersController])]
 struct PatternModule;
 
 // ─── gRPC — contract-first ──────────────────────────────────────────────────
@@ -149,7 +149,7 @@ impl Orders for OrdersGrpcService {
     }
 }
 
-#[module(providers: [OrdersCounter, OrdersGrpcService])]
+#[module(controllers: [OrdersGrpcService], providers: [OrdersCounter])]
 struct GrpcModule;
 
 // ─── Entry point ────────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ impl EchoController {
     }
 }
 
-#[module(providers: [EchoController])]
+#[module(controllers: [EchoController])]
 impl EchoModule {}
 
 async fn echo_succeeds_within(client: &RpcClient, budget: Duration) -> bool {

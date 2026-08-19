@@ -1,8 +1,8 @@
 //! What a gRPC service declares, and how it is registered with tonic.
 //!
-//! Each service is registered as a provider carrying `ProviderRole::GrpcService`. The framework
-//! collects the sources at bind time, resolves their declared enhancer tokens against the role
-//! registry, and hands the result back through
+//! Each service is declared in its module's `controllers:` list and hands its source over as
+//! `Dispatch::Grpc`. The framework collects the sources at bind time, resolves their declared
+//! enhancer tokens against the role registry, and hands the result back through
 //! [`register_with`](GrpcServiceSource::register_with) so the macro-generated body can wrap itself
 //! in an enhancer-aware tonic service.
 //!

@@ -167,16 +167,12 @@ impl OrdersHttpController {
 // ============================================================================
 
 #[module(
-    providers: [
-        OrdersService,
-        OrdersRpcController,
-        // Register the RpcClient under a named token so it can be injected.
+    providers: [OrdersService, // Register the RpcClient under a named token so it can be injected.
         provider_value!(
             "ORDER_SERVICE_CLIENT",
             toni::RpcClient::new(toni_nats::NatsClientTransport::new("nats://127.0.0.1:4222"))
-        ),
-    ],
-    controllers: [OrdersHttpController],
+        )],
+    controllers: [OrdersHttpController, OrdersRpcController],
 )]
 struct OrdersModule;
 

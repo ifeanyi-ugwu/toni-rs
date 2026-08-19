@@ -4,7 +4,7 @@ use async_graphql::{ObjectType, SubscriptionType};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
-use toni::traits_helpers::{Controller, ControllerFactory, Provider, Route};
+use toni::traits_helpers::{Controller, ControllerFactory, Dispatch, Provider, Route};
 use toni::{http_helpers::Body, FxHashMap, HttpMethod, HttpRequest, HttpResponse};
 
 /// GraphQL request payload
@@ -116,8 +116,8 @@ impl Controller for GraphQLController {
         self.token.clone()
     }
 
-    fn routes(&self) -> Vec<Arc<dyn Route>> {
-        self.routes.clone()
+    fn dispatch(&self) -> Dispatch {
+        Dispatch::Http(self.routes.clone())
     }
 }
 

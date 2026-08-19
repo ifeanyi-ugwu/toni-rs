@@ -75,8 +75,9 @@ fn controller_object_ident(struct_name: &Ident) -> Ident {
     )
 }
 
-/// The single `Controller` per struct. `routes()` dispatches to the `#[routes]` impl through the
-/// `RoutesBridge` (empty when there is no `#[routes]` impl — a controller with no routes is valid);
+/// The single `Controller` per struct. `dispatch()` hands over the routes from the `#[routes]` impl
+/// through the `RoutesBridge` (empty when there is no `#[routes]` impl — a controller with no routes
+/// is valid);
 /// lifecycle hooks dispatch to the user's methods through the `LifecycleBridge`, firing on the
 /// built singleton instance and no-op on the per-request path (which fires them per request).
 fn generate_controller_object(struct_name: &Ident) -> TokenStream {
@@ -115,9 +116,11 @@ fn generate_controller_object(struct_name: &Ident) -> TokenStream {
                 #struct_token.to_string()
             }
 
-            fn routes(&self) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Route>> {
+            fn dispatch(&self) -> ::toni::traits_helpers::Dispatch {
                 use ::toni::__route::RoutesBridge as _;
-                <#struct_name>::__toni_routes(&self.state)
+                ::toni::traits_helpers::Dispatch::Http(
+                    <#struct_name>::__toni_routes(&self.state)
+                )
             }
 
             async fn on_module_init(&self) -> ::toni::InitResult {

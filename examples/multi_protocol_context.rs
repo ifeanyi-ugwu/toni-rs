@@ -193,13 +193,8 @@ impl OrdersWs {
 // ---- module + bootstrap -----------------------------------------------------
 
 #[module(
-    providers: [
-        UniversalAuthGuard,
-        LoggingInterceptor,
-        OrdersRpc,
-        OrdersWs,
-    ],
-    controllers: [OrdersHttp],
+    providers: [UniversalAuthGuard, LoggingInterceptor, OrdersWs],
+    controllers: [OrdersHttp, OrdersRpc],
 )]
 impl AppModule {}
 

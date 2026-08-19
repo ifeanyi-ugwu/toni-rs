@@ -40,7 +40,7 @@ impl EchoController {
     }
 }
 
-#[module(providers: [EchoController])]
+#[module(controllers: [EchoController])]
 impl EchoModule {}
 
 /// Drive `send("echo")` until it round-trips or the budget runs out.

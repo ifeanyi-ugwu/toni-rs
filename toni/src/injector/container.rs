@@ -31,10 +31,6 @@ pub struct ToniContainer {
     global_provider_sources: FxHashMap<String, (String, String)>,
     /// Global provider tokens - registered during scan phase (before instance creation)
     global_provider_tokens: FxHashSet<String>,
-    /// Instances reached only by dispatch, mapped to what the refusal should call them. Injecting
-    /// one is refused, so this is read on the resolution failure path to say why rather than
-    /// "not found".
-    dispatch_target_tokens: FxHashMap<String, &'static str>,
     /// Global enhancers - applied to every HTTP route's pipeline.
     global_http_guards: Vec<HttpGuardEntry>,
     global_http_interceptors: Vec<HttpInterceptorEntry>,
@@ -87,7 +83,6 @@ impl ToniContainer {
             global_providers: FxHashMap::default(),
             global_provider_sources: FxHashMap::default(),
             global_provider_tokens: FxHashSet::default(),
-            dispatch_target_tokens: FxHashMap::default(),
             global_http_guards: Vec::new(),
             global_http_interceptors: Vec::new(),
             global_http_pipes: Vec::new(),
@@ -295,7 +290,6 @@ impl ToniContainer {
         roles: Vec<ProviderRole>,
     ) -> Result<()> {
         let token = provider_instance.get_token_factory();
-        let mut dispatch_target_kind: Option<&'static str> = None;
 
         for role in roles {
             match role {
@@ -363,46 +357,19 @@ impl ToniContainer {
                     let path = gw.get_path();
                     self.role_registry.gateways.insert(path, gw);
                 }
-                ProviderRole::RpcController(rc) => {
-                    let rc_token = rc.get_token();
-                    self.role_registry.rpc_controllers.insert(rc_token, rc);
-                    dispatch_target_kind = Some("an RPC controller");
-                }
-                ProviderRole::GrpcService(gs) => {
-                    let gs_token = gs.token();
-                    self.role_registry.grpc_services.insert(gs_token, gs);
-                    dispatch_target_kind = Some("a gRPC service");
-                }
             }
-        }
-
-        // A dispatch target is reached by its transport and nothing else. Leaving it out of the
-        // module's provider map is what makes it unresolvable as a dependency, and the scope it is
-        // built at is decided by its own dependencies — so a holder could not know what it held.
-        if let Some(kind) = dispatch_target_kind {
-            self.dispatch_target_tokens.insert(token, kind);
         }
 
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        if dispatch_target_kind.is_some() {
-            module_ref.add_dispatch_target(provider_instance);
-        } else {
-            module_ref.add_provider_instance(provider_instance);
-        }
+        module_ref.add_provider_instance(provider_instance);
         Ok(())
     }
 
-    /// What the refusal should call the dispatch target under `token`, or `None` if the token is
-    /// an ordinary provider.
-    pub fn dispatch_target_kind(&self, token: &str) -> Option<&'static str> {
-        self.dispatch_target_tokens.get(token).copied()
-    }
-
-    /// Every instance a module's lifecycle hooks must reach: the providers, plus the dispatch
-    /// targets kept out of dependency resolution.
+    /// Every provider instance a module's lifecycle hooks must reach. Controllers are held
+    /// separately and iterated beside these.
     pub fn get_lifecycle_instances(
         &self,
         module_ref_token: &String,
@@ -411,11 +378,28 @@ impl ToniContainer {
             .modules
             .get(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        Ok(module_ref
-            .get_providers_instances()
-            .values()
-            .chain(module_ref.get_dispatch_targets())
-            .collect())
+        Ok(module_ref.get_providers_instances().values().collect())
+    }
+
+    /// Register an RPC controller's source under its own token. Called from the controller path,
+    /// which is where every dispatch target is declared.
+    pub(crate) fn add_rpc_controller_source(
+        &mut self,
+        source: Arc<dyn crate::rpc::RpcControllerSource>,
+    ) {
+        self.role_registry
+            .rpc_controllers
+            .insert(source.get_token(), source);
+    }
+
+    /// Register a gRPC service's source under its own token.
+    pub(crate) fn add_grpc_service_source(
+        &mut self,
+        source: Arc<dyn crate::adapter::GrpcServiceSource>,
+    ) {
+        self.role_registry
+            .grpc_services
+            .insert(source.token(), source);
     }
 
     pub(crate) fn get_role_registry(&self) -> &RoleRegistry {

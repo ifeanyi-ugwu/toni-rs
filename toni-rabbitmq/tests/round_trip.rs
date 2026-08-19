@@ -51,7 +51,7 @@ impl MathController {
     }
 }
 
-#[module(providers: [MathController])]
+#[module(controllers: [MathController])]
 impl MathModule {}
 
 #[tokio::test]

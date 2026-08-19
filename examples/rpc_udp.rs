@@ -84,7 +84,7 @@ impl OrdersController {
     }
 }
 
-#[module(providers: [OrdersService, OrdersController])]
+#[module(controllers: [OrdersController], providers: [OrdersService])]
 struct OrdersModule;
 
 #[tokio::main]

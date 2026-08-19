@@ -15,7 +15,9 @@ use toni::{
     injectable, module, on_application_bootstrap, on_module_init, toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
-use toni_macros::{patterns, rpc_controller};
+use toni_macros::{
+    controller, on_application_shutdown, on_module_destroy, patterns, routes, rpc_controller,
+};
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
 
@@ -120,7 +122,7 @@ impl HookedRpcController {
     }
 }
 
-#[module(providers: [HookedRpcController])]
+#[module(controllers: [HookedRpcController])]
 impl RpcHookModule {}
 
 /// An RPC controller is kept out of the module's provider map so nothing can inject it, and the
@@ -220,7 +222,7 @@ impl orders_pb::orders_server::Orders for HookedGrpcService {
     }
 }
 
-#[module(providers: [HookedGrpcService])]
+#[module(controllers: [HookedGrpcService])]
 impl GrpcHookModule {}
 
 /// A gRPC service is kept out of the module's provider map so nothing can inject it, and the
@@ -242,5 +244,65 @@ async fn a_grpc_service_still_gets_its_startup_hooks() {
         log,
         vec!["grpc-service:init", "grpc-service:bootstrap"],
         "a gRPC service's startup hooks must fire in the usual order"
+    );
+}
+
+#[controller("/ctx")]
+pub struct ContextHookedController {}
+
+#[routes]
+impl ContextHookedController {
+    #[on_module_destroy]
+    async fn torn_down(&self) {
+        get_log().lock().unwrap().push("controller:destroy");
+    }
+
+    #[on_application_shutdown]
+    async fn stopped(&self, _signal: Option<String>) {
+        get_log().lock().unwrap().push("controller:shutdown");
+    }
+}
+
+#[module(controllers: [ContextHookedController])]
+impl ContextHookModule {}
+
+/// An application context has no HTTP server, and its shutdown hooks used to reach providers only —
+/// the controller pass lived on `ToniApplication`. Every dispatch target is a controller now, so a
+/// worker built with `create_application_context` would otherwise close without running any of them.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn an_application_context_runs_its_controllers_shutdown_hooks() {
+    get_log().lock().unwrap().clear();
+
+    let mut ctx = ToniFactory::create_application_context(ContextHookModule).await;
+    ctx.close().await;
+
+    let log = get_log().lock().unwrap().clone();
+    assert_eq!(
+        log,
+        vec!["controller:destroy", "controller:shutdown"],
+        "a controller's teardown hooks must run when the context closes"
+    );
+}
+
+/// The full application delegates its teardown to the context rather than running a controller pass
+/// of its own. Each hook must therefore appear once, not twice — a second pass anywhere above the
+/// context would show up here as a duplicate.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn an_application_runs_its_controllers_teardown_hooks_once() {
+    get_log().lock().unwrap().clear();
+
+    let mut app = ToniFactory::create(ContextHookModule).await;
+    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
+        .unwrap();
+    app.bind().await.unwrap();
+    app.close().await;
+
+    let log = get_log().lock().unwrap().clone();
+    assert_eq!(
+        log,
+        vec!["controller:destroy", "controller:shutdown"],
+        "a controller's teardown hooks must run exactly once when the application closes"
     );
 }
