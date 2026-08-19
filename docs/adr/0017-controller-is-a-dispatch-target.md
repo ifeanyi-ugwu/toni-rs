@@ -116,6 +116,11 @@ This is accepted rather than regretted: the special-cased message existed only b
 somewhere it should not have been. Keeping it would mean the container tracking controller tokens for
 the error path alone, re-introducing a cross-reference between the two lists to buy a message.
 
+The weaker message only covers the weaker mistake. Declaring a dispatch target in `providers:` does
+not compile at all — the macro emits no provider factory for one, so the list has nothing to name.
+Only reaching for one through `#[inject]` reaches runtime, and there the token is absent the way any
+undeclared provider's is.
+
 ### Construction strategy stays per transport
 
 This unifies declaration and registration, not construction. `ControllerInstance`,
