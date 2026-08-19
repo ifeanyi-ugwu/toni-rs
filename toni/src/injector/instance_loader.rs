@@ -606,26 +606,10 @@ impl ToniInstanceLoader {
         let mut resolved_dependencies = FxHashMap::default();
 
         for dependency in dependencies {
-            // A dispatch target exists to be routed to, not to be held. Refuse before the lookup
-            // steps so the answer names the reason rather than reporting the token as missing —
-            // it is registered, just not as something resolvable.
+            // Step 1: Check local providers (in-progress build map). A dispatch target is not
+            // among them — it is declared in `controllers:` and never reaches the provider store —
+            // so asking for one falls through to the not-found answer below.
             let built_locally = providers_instances.and_then(|m| m.get(&dependency));
-            let dispatch_kind = built_locally
-                .and_then(|inj| inj.dispatch_target_kind())
-                .or_else(|| container.dispatch_target_kind(&dependency));
-            if let Some(kind) = dispatch_kind {
-                return Err(anyhow!(
-                    "'{}' is {} and cannot be injected into '{}'. A dispatch target is reached by \
-                     its transport, and the scope it is built at follows its own dependencies — a \
-                     holder could not know whether it held one instance or one per call. Move what \
-                     is being shared into a provider and inject that.",
-                    dependency,
-                    kind,
-                    module_token
-                ));
-            }
-
-            // Step 1: Check local providers (in-progress build map)
             if let Some(injectable) = built_locally {
                 resolved_dependencies.insert(dependency, injectable.clone());
             }

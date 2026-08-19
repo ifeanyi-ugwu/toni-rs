@@ -22,10 +22,6 @@ pub struct Module {
     /// One per controller struct, kept for lifecycle hooks (fired once each).
     controller_objects: Vec<Arc<dyn Controller>>,
     providers_instances: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    /// Instances reached only by dispatch — RPC controllers. Kept for lifecycle hooks the way
-    /// `controller_objects` is, and deliberately absent from `providers_instances` so nothing
-    /// resolves one as a dependency.
-    dispatch_targets: Vec<Arc<Box<dyn Provider>>>,
     exports_instances: FxHashSet<String>,
     metadata: Box<dyn ModuleMetadata>,
 }
@@ -42,7 +38,6 @@ impl Module {
             controllers_instances: FxHashMap::default(),
             controller_objects: Vec::new(),
             providers_instances: FxHashMap::default(),
-            dispatch_targets: Vec::new(),
             exports_instances: FxHashSet::default(),
             metadata,
         }
@@ -96,15 +91,6 @@ impl Module {
         self.providers_instances
             .insert(provider.get_token(), provider);
     }
-    /// Keep a dispatch target's instance for lifecycle-hook dispatch, out of dependency resolution.
-    pub fn add_dispatch_target(&mut self, provider: Arc<Box<dyn Provider>>) {
-        self.dispatch_targets.push(provider);
-    }
-
-    pub fn get_dispatch_targets(&self) -> &[Arc<Box<dyn Provider>>] {
-        &self.dispatch_targets
-    }
-
     pub fn add_export_instance(&mut self, provider_token: String) {
         self.exports_instances.insert(provider_token);
     }
