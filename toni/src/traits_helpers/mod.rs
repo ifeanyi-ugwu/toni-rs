@@ -21,7 +21,7 @@ pub use self::provider::{
 
 mod controller;
 pub use self::controller::{
-    Controller, ControllerEnhancers, ControllerFactory, ControllerInstance, Route,
+    Controller, ControllerEnhancers, ControllerFactory, ControllerInstance, Dispatch, Route,
 };
 
 mod interceptor;

@@ -418,6 +418,27 @@ impl ToniContainer {
             .collect())
     }
 
+    /// Register an RPC controller's source under its own token. Called from the controller path,
+    /// which is where every dispatch target is declared.
+    pub(crate) fn add_rpc_controller_source(
+        &mut self,
+        source: Arc<dyn crate::rpc::RpcControllerSource>,
+    ) {
+        self.role_registry
+            .rpc_controllers
+            .insert(source.get_token(), source);
+    }
+
+    /// Register a gRPC service's source under its own token.
+    pub(crate) fn add_grpc_service_source(
+        &mut self,
+        source: Arc<dyn crate::adapter::GrpcServiceSource>,
+    ) {
+        self.role_registry
+            .grpc_services
+            .insert(source.token(), source);
+    }
+
     pub(crate) fn get_role_registry(&self) -> &RoleRegistry {
         &self.role_registry
     }

@@ -16,8 +16,8 @@ use super::{
 use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable, Provider,
-        Route,
+        Controller, Dispatch, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable,
+        Provider, Route,
     },
 };
 
@@ -442,37 +442,48 @@ impl ToniInstanceLoader {
         module_token: String,
         controllers: Vec<Arc<dyn Controller>>,
     ) -> Result<()> {
-        // Phase A: expand each controller into its routes and resolve per-route
-        // enhancers under an immutable borrow.
-        type ResolvedController = (Arc<dyn Controller>, Vec<(Arc<dyn Route>, EnhancerMetadata)>);
+        // Phase A: expand each controller into its dispatch under an immutable borrow. Only HTTP
+        // resolves its enhancers here; RPC and gRPC declare tokens their own resolvers read at bind.
+        type ResolvedController = (Arc<dyn Controller>, ResolvedDispatch);
         let resolved: Vec<ResolvedController> = controllers
             .into_iter()
             .map(|controller| {
-                let routes = controller
-                    .routes()
-                    .into_iter()
-                    .map(|route| {
-                        let meta = self.resolve_enhancers_from_tokens(&route)?;
-                        Ok((route, meta))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((controller, routes))
+                let dispatch = match controller.dispatch() {
+                    Dispatch::Http(routes) => ResolvedDispatch::Http(
+                        routes
+                            .into_iter()
+                            .map(|route| {
+                                let meta = self.resolve_enhancers_from_tokens(&route)?;
+                                Ok((route, meta))
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
+                    Dispatch::Rpc(source) => ResolvedDispatch::Rpc(source),
+                    Dispatch::Grpc(source) => ResolvedDispatch::Grpc(source),
+                };
+                Ok((controller, dispatch))
             })
             .collect::<Result<_>>()?;
 
-        // Phase B: store the controller (for lifecycle) and its route dispatch
-        // units under a mutable borrow.
+        // Phase B: store the controller (for lifecycle) and its dispatch units under a mutable
+        // borrow.
         let mut container_mut = self.container.borrow_mut();
-        for (controller, routes) in resolved {
+        for (controller, dispatch) in resolved {
             let token = controller.get_token();
             container_mut.add_controller_object(&module_token, controller)?;
-            for (route, enhancer_metadata) in routes {
-                container_mut.add_route_instance(
-                    &module_token,
-                    &token,
-                    route,
-                    enhancer_metadata,
-                )?;
+            match dispatch {
+                ResolvedDispatch::Http(routes) => {
+                    for (route, enhancer_metadata) in routes {
+                        container_mut.add_route_instance(
+                            &module_token,
+                            &token,
+                            route,
+                            enhancer_metadata,
+                        )?;
+                    }
+                }
+                ResolvedDispatch::Rpc(source) => container_mut.add_rpc_controller_source(source),
+                ResolvedDispatch::Grpc(source) => container_mut.add_grpc_service_source(source),
             }
         }
         Ok(())
@@ -737,4 +748,11 @@ impl ToniInstanceLoader {
 
         Ok(None)
     }
+}
+
+/// `Dispatch` with HTTP's enhancers already resolved — the shape Phase B stores from.
+enum ResolvedDispatch {
+    Http(Vec<(Arc<dyn Route>, EnhancerMetadata)>),
+    Rpc(Arc<dyn crate::rpc::RpcControllerSource>),
+    Grpc(Arc<dyn crate::adapter::GrpcServiceSource>),
 }
