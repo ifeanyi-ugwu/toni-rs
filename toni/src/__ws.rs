@@ -30,7 +30,13 @@ pub trait WsHandlersBridge {
         Ok(())
     }
 
-    async fn __toni_ws_on_disconnect(&self, _client: &WsClient, _reason: DisconnectReason) {}
+    async fn __toni_ws_on_disconnect(
+        &self,
+        _client: &WsClient,
+        _reason: DisconnectReason,
+        _context: &WsContext,
+    ) {
+    }
 
     async fn __toni_ws_handle_event(
         &self,

@@ -69,8 +69,8 @@ pub use rpc::{
 pub use websocket::{
     BroadcastError, BroadcastModule, BroadcastService, BroadcastTarget, ClientId, DisconnectReason,
     GatewayEnhancers, GatewayHandlerEnhancers, GatewayTrait, GatewayWrapper, RoomId, SendError,
-    TrySendError, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsHandshake, WsMessage,
-    WsSink,
+    Session, TrySendError, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsHandshake,
+    WsMessage, WsSink,
 };
 
 // Re-export built-in providers

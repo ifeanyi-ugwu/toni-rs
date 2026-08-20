@@ -188,9 +188,10 @@ fn generate_gateway_trait_impl(
                 &self,
                 client: &::toni::WsClient,
                 reason: ::toni::DisconnectReason,
+                context: &::toni::context::WsContext,
             ) {
                 use ::toni::__ws::WsHandlersBridge as _;
-                <Self>::__toni_ws_on_disconnect(self, client, reason).await
+                <Self>::__toni_ws_on_disconnect(self, client, reason, context).await
             }
 
             async fn handle_event(
