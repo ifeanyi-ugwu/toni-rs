@@ -73,10 +73,13 @@ pub fn handle_conn_hook(hook: ConnHook, item: TokenStream) -> Result<TokenStream
         .filter(|a| matches!(a, FnArg::Typed(_)))
         .count();
 
-    let forward_call = if hook.takes_client() && user_param_count >= 1 {
-        quote! { self.#user_method_name(client).await }
-    } else {
-        quote! { self.#user_method_name().await }
+    // A hook takes what it asks for, positionally: nothing, the client, or the client and the
+    // execution. The context is how a hook reaches the connection's session, which is not on the
+    // client — so a connect or disconnect hook that needs it declares a second parameter.
+    let forward_call = match (hook.takes_client(), user_param_count) {
+        (true, 0) | (false, _) => quote! { self.#user_method_name().await },
+        (true, 1) => quote! { self.#user_method_name(client).await },
+        (true, _) => quote! { self.#user_method_name(client, context).await },
     };
 
     let bridge_fn = match hook {
@@ -94,7 +97,12 @@ pub fn handle_conn_hook(hook: ConnHook, item: TokenStream) -> Result<TokenStream
         ConnHook::OnDisconnect => quote! {
             #[doc(hidden)]
             #[allow(non_snake_case, unused_variables, clippy::all)]
-            async fn #bridge_method(&self, client: &::toni::WsClient, reason: ::toni::DisconnectReason) {
+            async fn #bridge_method(
+                &self,
+                client: &::toni::WsClient,
+                reason: ::toni::DisconnectReason,
+                context: &::toni::context::WsContext,
+            ) {
                 #forward_call;
             }
         },

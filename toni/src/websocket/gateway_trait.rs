@@ -67,9 +67,17 @@ pub trait GatewayTrait: Send + Sync {
     }
 
     /// Connection lifecycle: called when a client disconnects
-    async fn on_disconnect(&self, client: &WsClient, reason: DisconnectReason) {
+    /// Connection teardown. `context` is the disconnect's own execution, and is how the connection's
+    /// [`Session`](crate::websocket::Session) is read one last time. No enhancers run here — a
+    /// disconnect cannot be rejected.
+    async fn on_disconnect(
+        &self,
+        client: &WsClient,
+        reason: DisconnectReason,
+        context: &WsContext,
+    ) {
         // Default implementation: no-op
-        let _ = (client, reason);
+        let _ = (client, reason, context);
     }
 
     /// The JSON field name used to route incoming messages to a handler.

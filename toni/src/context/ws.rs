@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::http_helpers::RouteMetadata;
-use crate::websocket::{WsClient, WsMessage};
+use crate::websocket::{Session, WsClient, WsMessage};
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
@@ -20,6 +20,7 @@ struct WsInner {
     client: WsClient,
     message: WsMessage,
     event: String,
+    session: Session,
 }
 
 impl WsContext {
@@ -28,6 +29,7 @@ impl WsContext {
         message: WsMessage,
         event: impl Into<String>,
         route_metadata: Option<Arc<RouteMetadata>>,
+        session: Session,
     ) -> Self {
         let shared = SharedState::new(route_metadata);
         // The handler receives a clone of this client, not the context — pointing
@@ -40,12 +42,21 @@ impl WsContext {
                 client,
                 message,
                 event: event.into(),
+                session,
             }),
         }
     }
 
     pub fn client(&self) -> &WsClient {
         &self.inner.client
+    }
+
+    /// The connection's store, shared by every execution on it.
+    ///
+    /// Distinct from [`extensions`](crate::context::HandlerContext::extensions), which empties with
+    /// this execution. What belongs to the connection rather than the message goes here.
+    pub fn session(&self) -> &Session {
+        &self.inner.session
     }
 
     pub fn message(&self) -> &WsMessage {

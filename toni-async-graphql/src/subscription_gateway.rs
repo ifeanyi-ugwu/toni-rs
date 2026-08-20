@@ -152,7 +152,12 @@ where
             .into()
     }
 
-    async fn on_disconnect(&self, client: &WsClient, _reason: DisconnectReason) {
+    async fn on_disconnect(
+        &self,
+        client: &WsClient,
+        _reason: DisconnectReason,
+        _context: &toni::context::WsContext,
+    ) {
         self.init_payloads.lock().unwrap().remove(&client.id);
         let mut handles = self.abort_handles.lock().unwrap();
         handles.retain(|(cid, _), handle| {
