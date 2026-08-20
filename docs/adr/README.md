@@ -33,3 +33,4 @@ the history is part of the value.
 - [0015 — Handler parameters are extracted from the handler's context](0015-handler-parameters-are-from-context.md)
 - [0016 — A context spans one execution and is a shared handle](0016-context-spans-one-execution.md)
 - [0017 — A controller is a dispatch target, whatever the transport](0017-controller-is-a-dispatch-target.md)
+- [0018 — A WebSocket connection is a session, and a session is a store](0018-a-connection-is-a-session.md)
