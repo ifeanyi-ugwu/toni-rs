@@ -73,3 +73,4 @@ mod ws_extractors;
 mod ws_handler_stream;
 mod ws_listener_adoption;
 mod ws_panic_recovery;
+mod ws_request_scope;
