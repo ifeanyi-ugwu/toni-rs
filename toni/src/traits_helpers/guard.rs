@@ -21,10 +21,9 @@ use crate::context::HandlerContext;
 /// }
 /// ```
 ///
-/// How the handler reads it depends on the transport: an HTTP handler takes
-/// `Extensions` as a parameter, a WebSocket handler reads `client.extensions`,
-/// an RPC handler already holds the context, and a gRPC handler takes it off
-/// the tonic request with `Extensions::adopt(request.extensions())`.
+/// An HTTP or WebSocket handler takes `Extensions` as a parameter, an RPC
+/// handler already holds the context, and a gRPC handler takes it off the tonic
+/// request with `Extensions::adopt(request.extensions())`.
 ///
 /// On HTTP, [`Extension<T>`](crate::Extension) injects the same value into a
 /// guard and into anything below the controller, so both ends declare it rather

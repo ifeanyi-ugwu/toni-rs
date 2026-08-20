@@ -1,9 +1,10 @@
-use crate::context::Extensions;
+use super::Session;
 use std::collections::HashMap;
 
 /// WebSocket client/connection
 ///
-/// Represents a connected WebSocket client with handshake data and session information.
+/// Represents a connected WebSocket client with its handshake data and the store scoped to the
+/// connection. Cloned freely; every clone is the same connection and shares its session.
 #[derive(Debug, Clone)]
 pub struct WsClient {
     /// Client identifier (connection ID, session ID, etc.)
@@ -12,13 +13,12 @@ pub struct WsClient {
     /// Handshake information
     pub handshake: WsHandshake,
 
-    /// The bag for the execution being handled — the same one the gateway's guards and interceptors
-    /// wrote to, which is how their work reaches the handler. At connect that execution is the
-    /// connect itself, so a connect guard's writes are what an `#[on_connect]` hook reads here.
+    /// State scoped to this connection, shared by every execution on it. Read it through
+    /// [`session`](Self::session).
     ///
-    /// Scoped to one execution, not to the connection: the next message arrives with an empty bag,
-    /// and nothing written at connect survives into it.
-    pub extensions: Extensions,
+    /// Private because the handle must not be replaced: a `WsClient` is cloned freely, and swapping
+    /// one clone's store detaches it from the connection while still looking connected.
+    session: Session,
 }
 
 /// WebSocket handshake data
@@ -43,12 +43,22 @@ impl WsClient {
                 headers: HashMap::new(),
                 remote_addr: None,
             },
-            extensions: Extensions::new(),
+            session: Session::new(),
         }
     }
 
     pub fn with_handshake(mut self, handshake: WsHandshake) -> Self {
         self.handshake = handshake;
         self
+    }
+
+    /// State that outlives the executions on this connection — what a connect guard establishes and
+    /// every later message reads.
+    ///
+    /// The bag for the execution being handled is a different thing with a shorter life: take
+    /// [`Extensions`](crate::context::Extensions) as a handler parameter, or read
+    /// [`WsContext::extensions`](crate::context::HandlerContext::extensions).
+    pub fn session(&self) -> &Session {
+        &self.session
     }
 }

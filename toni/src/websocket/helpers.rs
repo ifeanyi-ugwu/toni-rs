@@ -34,13 +34,9 @@ pub fn create_client_from_parts(parts: &RequestPart) -> WsClient {
         })
         .unwrap_or_default();
 
-    WsClient {
-        id: uuid::Uuid::new_v4().to_string(),
-        handshake: WsHandshake {
-            headers,
-            query,
-            remote_addr: None,
-        },
-        extensions: Default::default(),
-    }
+    WsClient::new(uuid::Uuid::new_v4().to_string()).with_handshake(WsHandshake {
+        headers,
+        query,
+        remote_addr: None,
+    })
 }
