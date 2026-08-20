@@ -60,6 +60,10 @@ confusion between them would be structural rather than merely possible.
 
 ### It is reached through the execution, never through the client
 
+> Revised by [ADR-0019](0019-a-client-owns-its-session.md): the session moves onto `WsClient`, whose
+> lifetime it matches, once `WsClient::extensions` is removed. The reasoning below holds only while
+> that field is present.
+
 `WsContext::session()`, plus a `Session` extractor for handlers. It is not a field on `WsClient`.
 
 `WsClient` already carries the execution's bag. A second field beside it, distinguished from the first
