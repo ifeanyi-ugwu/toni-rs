@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 use toni::async_trait;
-use toni::context::{HandlerContext, WsContext};
+use toni::context::{Extensions, HandlerContext, WsContext};
 use toni::traits_helpers::Guard;
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{
@@ -56,21 +56,18 @@ impl ConnectExecutionGateway {
         Self {}
     }
 
-    /// Reads the bag the connect guard wrote to. The hook only ever receives the client, so this is
-    /// the whole of what a user can see of the connect execution's state.
+    /// Reads the bag the connect guard wrote to, through the connect's own context.
     #[on_connect]
-    async fn greet(&self, client: &WsClient) -> Result<(), toni::WsError> {
-        *seen().lock().unwrap() = client.extensions.get::<Principal>();
+    async fn greet(&self, _client: &WsClient, ctx: &WsContext) -> Result<(), toni::WsError> {
+        *seen().lock().unwrap() = ctx.extensions().get::<Principal>();
         Ok(())
     }
 
     /// Reports whether the connect execution's bag is visible here. It must not be: a message is a
-    /// different execution, and state meant to span the connection is a session scope toni does not
-    /// have yet.
+    /// different execution, and what is meant to span the connection belongs in the session.
     #[subscribe_message("whoami")]
-    async fn whoami(&self, client: WsClient, _msg: WsMessage) -> WsHandlerResult {
-        let seen = client
-            .extensions
+    async fn whoami(&self, ext: Extensions, _msg: WsMessage) -> WsHandlerResult {
+        let seen = ext
             .get::<Principal>()
             .map(|p| p.0)
             .unwrap_or_else(|| "none".into());
