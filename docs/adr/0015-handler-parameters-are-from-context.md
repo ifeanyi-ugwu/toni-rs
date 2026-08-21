@@ -95,4 +95,5 @@ because neither covers the other's set:
   three transports here. gRPC handlers reach the extension bag through the tonic request instead.
 - WebSocket handlers can now read `route_metadata()` from their context, and it is always empty:
   `#[set_metadata]` is not wired for gateways on either level. The access is real, the value is not
-  yet.
+  yet. (No longer so: [ADR-0020](0020-declared-metadata-and-wire-headers.md) wires the attribute on
+  every transport and renames the accessor to `metadata()`.)

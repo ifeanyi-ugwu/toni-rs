@@ -484,7 +484,7 @@ fn build_wrapper_method(
     let declared_metadata = match metadata_ctor(&merged) {
         Some(ctor) => quote! {
             static __DECLARED: ::std::sync::OnceLock<
-                ::std::sync::Arc<::toni::http_helpers::RouteMetadata>
+                ::std::sync::Arc<::toni::context::Metadata>
             > = ::std::sync::OnceLock::new();
             let __declared = ::std::option::Option::Some(
                 __DECLARED.get_or_init(|| ::std::sync::Arc::new(#ctor)).clone(),
@@ -492,7 +492,7 @@ fn build_wrapper_method(
         },
         None => quote! {
             let __declared: ::std::option::Option<
-                ::std::sync::Arc<::toni::http_helpers::RouteMetadata>
+                ::std::sync::Arc<::toni::context::Metadata>
             > = ::std::option::Option::None;
         },
     };

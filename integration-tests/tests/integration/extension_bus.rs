@@ -204,7 +204,7 @@ impl CtxController {
         // Route metadata reaches the handler for the first time here — it lives
         // on the context and nothing else carried it.
         let role = ctx
-            .route_metadata()
+            .metadata()
             .and_then(|m| m.get::<Role>())
             .map(|r| r.0)
             .unwrap_or("none");

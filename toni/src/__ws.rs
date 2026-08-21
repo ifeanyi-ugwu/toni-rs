@@ -11,6 +11,7 @@
 
 use async_trait::async_trait;
 
+use crate::context::Metadata;
 use crate::context::WsContext;
 use crate::http_helpers::ExecutionResult;
 use crate::websocket::{DisconnectReason, GatewayEnhancers, WsClient, WsError, WsHandlerOutput};
@@ -38,14 +39,14 @@ pub trait WsHandlersBridge {
     ) {
     }
 
-    fn __toni_ws_metadata() -> crate::http_helpers::RouteMetadata
+    fn __toni_ws_metadata() -> crate::context::Metadata
     where
         Self: Sized,
     {
-        crate::http_helpers::RouteMetadata::new()
+        crate::context::Metadata::new()
     }
 
-    fn __toni_ws_handler_metadata() -> Vec<(String, crate::http_helpers::RouteMetadata)>
+    fn __toni_ws_handler_metadata() -> Vec<(String, crate::context::Metadata)>
     where
         Self: Sized,
     {

@@ -492,8 +492,8 @@ fn route_common_methods(
 
         #enhancers
 
-        fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
-            let mut metadata = ::toni::http_helpers::RouteMetadata::new();
+        fn metadata(&self) -> ::std::sync::Arc<::toni::context::Metadata> {
+            let mut metadata = ::toni::context::Metadata::new();
             #(metadata.insert(#metadata_exprs);)*
             ::std::sync::Arc::new(metadata)
         }

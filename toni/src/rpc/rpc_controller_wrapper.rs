@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::Metadata;
 use crate::context::RpcContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
-use crate::http_helpers::{ExecutionResult, RouteMetadata};
+use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
     RpcInterceptorEntry, RpcPipeEntry,
@@ -46,10 +47,10 @@ pub struct RpcControllerWrapper {
     pipes: Vec<RpcPipeEntry>,
     error_handlers: Vec<RpcErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
-    route_metadata: Arc<RouteMetadata>,
-    /// Per-pattern metadata, already merged over `route_metadata` at expansion. A pattern absent
+    metadata: Arc<Metadata>,
+    /// Per-pattern metadata, already merged over `metadata` at expansion. A pattern absent
     /// here declared nothing of its own and reads the controller's.
-    handler_metadata: HashMap<String, Arc<RouteMetadata>>,
+    handler_metadata: HashMap<String, Arc<Metadata>>,
     handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
     handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
@@ -64,8 +65,8 @@ impl RpcControllerWrapper {
         pipes: Vec<RpcPipeEntry>,
         error_handlers: Vec<RpcErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
-        route_metadata: Arc<RouteMetadata>,
-        handler_metadata: HashMap<String, Arc<RouteMetadata>>,
+        metadata: Arc<Metadata>,
+        handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
         handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
@@ -78,7 +79,7 @@ impl RpcControllerWrapper {
             pipes,
             error_handlers,
             error_observers,
-            route_metadata,
+            metadata,
             handler_metadata,
             handler_guards,
             handler_interceptors,
@@ -104,7 +105,7 @@ impl RpcControllerWrapper {
             Some(
                 self.handler_metadata
                     .get(&pattern)
-                    .unwrap_or(&self.route_metadata)
+                    .unwrap_or(&self.metadata)
                     .clone(),
             ),
         );

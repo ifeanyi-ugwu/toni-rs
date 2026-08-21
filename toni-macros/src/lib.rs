@@ -394,8 +394,8 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// Attaches metadata to a route handler for use by guards, interceptors, or other enhancers.
 ///
 /// Route metadata is stored once at startup and shared across all requests to the route.
-/// Guards and interceptors read it via `context.route_metadata()`, which returns
-/// `Option<&RouteMetadata>` — `None` for global handlers (404, error filters) that never
+/// Guards and interceptors read it via `context.metadata()`, which returns
+/// `Option<&Metadata>` — `None` for global handlers (404, error filters) that never
 /// bind to a specific route.
 ///
 /// # Usage
@@ -414,7 +414,7 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// #[async_trait]
 /// impl Guard<HttpContext> for RolesGuard {
 ///     async fn can_activate(&self, context: &HttpContext) -> bool {
-///         if let Some(Roles(required)) = context.route_metadata().and_then(|m| m.get::<Roles>()) {
+///         if let Some(Roles(required)) = context.metadata().and_then(|m| m.get::<Roles>()) {
 ///             // Check user has required roles
 ///         }
 ///         true
@@ -457,7 +457,7 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// # Transports
 ///
 /// Works the same on `#[routes]`, `#[subscriptions]`, `#[patterns]` and `#[grpc_methods]`. Read it
-/// back with `ctx.route_metadata()`, which every context carries, so a guard written over
+/// back with `ctx.metadata()`, which every context carries, so a guard written over
 /// `HandlerContext` reads it on any of them.
 ///
 /// **On gRPC a handler cannot read it.** The tonic trait dictates that signature and never passes

@@ -33,14 +33,14 @@ pub fn merged_metadata_exprs(
     Ok(exprs)
 }
 
-/// Build a `RouteMetadata` from collected expressions, or `None` when there are none to insert.
+/// Build a `Metadata` from collected expressions, or `None` when there are none to insert.
 pub fn metadata_ctor(exprs: &[TokenStream]) -> Option<TokenStream> {
     if exprs.is_empty() {
         return None;
     }
     Some(quote! {
         {
-            let mut __metadata = ::toni::http_helpers::RouteMetadata::new();
+            let mut __metadata = ::toni::context::Metadata::new();
             #(__metadata.insert(#exprs);)*
             __metadata
         }

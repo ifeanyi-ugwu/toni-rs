@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use crate::{
     async_trait,
+    context::Metadata,
     context::{HandlerContext, HttpContext},
     errors::{
         Error, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered, PipelineSegment,
     },
-    http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse, RouteMetadata},
+    http_helpers::{ExecutionResult, HttpMethod, HttpRequest, HttpResponse},
     middleware::{Middleware, MiddlewareChain},
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
@@ -24,7 +25,7 @@ struct ChainNext {
     pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
     error_handlers: Vec<HttpErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
-    route_metadata: Arc<RouteMetadata>,
+    metadata: Arc<Metadata>,
 }
 
 #[async_trait]
@@ -37,7 +38,7 @@ impl InterceptorNext<HttpContext, HttpResponse> for ChainNext {
             &self.pipes,
             &self.error_handlers,
             &self.observers,
-            &self.route_metadata,
+            &self.metadata,
         )
         .await
     }
@@ -51,7 +52,7 @@ pub struct InstanceWrapper {
     middleware_chain: MiddlewareChain,
     error_handlers: Vec<HttpErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
-    route_metadata: Arc<RouteMetadata>,
+    metadata: Arc<Metadata>,
 }
 
 impl InstanceWrapper {
@@ -74,7 +75,7 @@ impl InstanceWrapper {
         let mut error_handlers = global_enhancers.error_handlers;
         error_handlers.extend(enhancer_metadata.error_handlers);
 
-        let route_metadata = instance.get_route_metadata();
+        let metadata = instance.metadata();
 
         Self {
             instance,
@@ -84,7 +85,7 @@ impl InstanceWrapper {
             middleware_chain: MiddlewareChain::new(),
             error_handlers,
             error_observers,
-            route_metadata,
+            metadata,
         }
     }
 
@@ -117,7 +118,7 @@ impl InstanceWrapper {
         let pipes = self.pipes.clone();
         let error_handlers = self.error_handlers.clone();
         let observers = self.error_observers.clone();
-        let route_metadata = self.route_metadata.clone();
+        let metadata = self.metadata.clone();
 
         let middleware_result = self
             .middleware_chain
@@ -131,7 +132,7 @@ impl InstanceWrapper {
                         pipes,
                         error_handlers,
                         observers,
-                        route_metadata,
+                        metadata,
                     )
                     .await
                 })
@@ -241,12 +242,12 @@ impl InstanceWrapper {
         pipes: Vec<HttpPipeEntry>,
         error_handlers: Vec<HttpErrorHandlerArc>,
         observers: Vec<Arc<dyn ErrorObserver>>,
-        route_metadata: Arc<RouteMetadata>,
+        metadata: Arc<Metadata>,
     ) -> HttpResponse {
         // The context comes first now: it owns the execution's cache, so a
         // request-scoped provider injected into a guard and into the controller
         // is constructed once only if both resolve against the same one.
-        let context = HttpContext::new(req, route_metadata.clone());
+        let context = HttpContext::new(req, metadata.clone());
 
         let guards = Self::resolve_guards(&guards, &context).await;
         let interceptors = Self::resolve_interceptors(&interceptors, &context).await;
@@ -260,7 +261,7 @@ impl InstanceWrapper {
             pipes,
             error_handlers,
             observers,
-            route_metadata,
+            metadata,
         )
         .await;
 
@@ -285,7 +286,7 @@ impl InstanceWrapper {
         pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
         error_handlers: Vec<HttpErrorHandlerArc>,
         observers: Vec<Arc<dyn ErrorObserver>>,
-        route_metadata: Arc<RouteMetadata>,
+        metadata: Arc<Metadata>,
     ) -> HttpResponse {
         for (i, guard) in guards.iter().enumerate() {
             // `can_activate` is user code — catch panics so the request
@@ -328,7 +329,7 @@ impl InstanceWrapper {
             &pipes,
             &error_handlers,
             &observers,
-            &route_metadata,
+            &metadata,
         )
         .await
     }
@@ -458,7 +459,7 @@ impl InstanceWrapper {
         pipes: &[Arc<dyn Pipe<HttpContext, HttpResponse>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
-        route_metadata: &Arc<RouteMetadata>,
+        metadata: &Arc<Metadata>,
     ) -> HttpResponse {
         if interceptors.is_empty() {
             return Self::execute_handler(context, instance, pipes, error_handlers, observers)
@@ -473,7 +474,7 @@ impl InstanceWrapper {
             pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
-            route_metadata: route_metadata.clone(),
+            metadata: metadata.clone(),
         };
 
         match crate::panic_recovery::catch_async(

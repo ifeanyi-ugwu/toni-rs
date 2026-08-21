@@ -4,9 +4,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
+use crate::context::Metadata;
 use crate::context::WsContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
-use crate::http_helpers::{ExecutionResult, RouteMetadata};
+use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
     ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
     WsInterceptorEntry, WsPipeEntry,
@@ -75,10 +76,10 @@ pub struct GatewayWrapper {
     pipes: Vec<WsPipeEntry>,
     error_handlers: Vec<WsErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
-    route_metadata: Arc<RouteMetadata>,
-    /// Per-event metadata, already merged over `route_metadata` at expansion. An event absent here
+    metadata: Arc<Metadata>,
+    /// Per-event metadata, already merged over `metadata` at expansion. An event absent here
     /// declared nothing of its own and reads the gateway's.
-    handler_metadata: HashMap<String, Arc<RouteMetadata>>,
+    handler_metadata: HashMap<String, Arc<Metadata>>,
     handler_guards: HashMap<String, Vec<WsGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
     handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
@@ -96,8 +97,8 @@ impl GatewayWrapper {
         pipes: Vec<WsPipeEntry>,
         error_handlers: Vec<WsErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
-        route_metadata: Arc<RouteMetadata>,
-        handler_metadata: HashMap<String, Arc<RouteMetadata>>,
+        metadata: Arc<Metadata>,
+        handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<WsGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
         handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
@@ -110,7 +111,7 @@ impl GatewayWrapper {
             pipes,
             error_handlers,
             error_observers,
-            route_metadata,
+            metadata,
             handler_metadata,
             handler_guards,
             handler_interceptors,
@@ -137,7 +138,7 @@ impl GatewayWrapper {
             client.clone(),
             WsMessage::text(""),
             "connect",
-            Some(self.route_metadata.clone()),
+            Some(self.metadata.clone()),
         );
 
         let guards = Self::resolve_guards(&self.guards, &context).await;
@@ -214,7 +215,7 @@ impl GatewayWrapper {
             Some(
                 self.handler_metadata
                     .get(&event)
-                    .unwrap_or(&self.route_metadata)
+                    .unwrap_or(&self.metadata)
                     .clone(),
             ),
         );
@@ -557,7 +558,7 @@ impl GatewayWrapper {
                 client.clone(),
                 WsMessage::text(""),
                 "disconnect",
-                Some(self.route_metadata.clone()),
+                Some(self.metadata.clone()),
             );
             self.gateway
                 .on_disconnect(context.client(), reason, &context)
@@ -665,7 +666,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            Arc::new(RouteMetadata::new()),
+            Arc::new(Metadata::new()),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),

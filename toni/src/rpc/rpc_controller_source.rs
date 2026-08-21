@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::Metadata;
 use crate::context::RpcContext;
-use crate::http_helpers::RouteMetadata;
 
 use super::RpcControllerTrait;
 
@@ -51,13 +51,13 @@ pub trait RpcControllerSource: Send + Sync {
     }
 
     /// What the controller declares for every handler, before any handler adds to it.
-    fn get_route_metadata(&self) -> Arc<RouteMetadata> {
-        Arc::new(RouteMetadata::new())
+    fn metadata(&self) -> Arc<Metadata> {
+        Arc::new(Metadata::new())
     }
 
     /// Per-pattern metadata for handlers that declare their own, already merged over the
-    /// controller's. A pattern absent from this list reads [`get_route_metadata`](Self::get_route_metadata).
-    fn handler_metadata(&self) -> Vec<(String, Arc<RouteMetadata>)> {
+    /// controller's. A pattern absent from this list reads [`metadata`](Self::metadata).
+    fn handler_metadata(&self) -> Vec<(String, Arc<Metadata>)> {
         Vec::new()
     }
 

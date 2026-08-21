@@ -4,8 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
+use crate::context::Metadata;
 use crate::errors::HttpError;
-use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart, RouteMetadata};
+use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart};
 
 use crate::context::HttpContext;
 
@@ -79,8 +80,8 @@ pub trait Route: Send + Sync {
     }
 
     /// Get route metadata (roles, permissions, custom config)
-    fn get_route_metadata(&self) -> Arc<RouteMetadata> {
-        Arc::new(RouteMetadata::new())
+    fn metadata(&self) -> Arc<Metadata> {
+        Arc::new(Metadata::new())
     }
 
     fn get_body_dto(&self, _req: &RequestPart) -> Option<Box<dyn Validatable>>;

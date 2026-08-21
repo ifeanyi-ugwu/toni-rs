@@ -882,7 +882,7 @@ impl TcpMetaController {
 
     #[message_pattern("meta.echo")]
     async fn meta_echo(&self, _d: RpcData, c: &RpcContext) -> Result<RpcData, RpcError> {
-        let trace = c.get_metadata("trace").unwrap_or("none").to_string();
+        let trace = c.header("trace").unwrap_or("none").to_string();
         Ok(RpcData::json(serde_json::json!({ "trace": trace })))
     }
 }
@@ -1511,7 +1511,7 @@ impl MetaRpcController {
 }
 
 fn read_declared(ctx: &RpcContext) -> String {
-    let m = ctx.route_metadata();
+    let m = ctx.metadata();
     let tier = m
         .and_then(|m| m.get::<Tier>())
         .map(|t| t.0)

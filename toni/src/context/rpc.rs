@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::http_helpers::RouteMetadata;
+use crate::context::Metadata;
 use crate::rpc::RpcData;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
@@ -19,7 +19,7 @@ pub struct RpcContext {
 struct RpcInner {
     shared: SharedState,
     pattern: String,
-    metadata: HashMap<String, String>,
+    headers: HashMap<String, String>,
     data: RpcData,
 }
 
@@ -27,14 +27,14 @@ impl RpcContext {
     pub fn new(
         pattern: impl Into<String>,
         data: RpcData,
-        metadata: HashMap<String, String>,
-        route_metadata: Option<Arc<RouteMetadata>>,
+        headers: HashMap<String, String>,
+        metadata: Option<Arc<Metadata>>,
     ) -> Self {
         Self {
             inner: Arc::new(RpcInner {
-                shared: SharedState::new(route_metadata),
+                shared: SharedState::new(metadata),
                 pattern: pattern.into(),
-                metadata,
+                headers,
                 data,
             }),
         }
@@ -44,12 +44,17 @@ impl RpcContext {
         &self.inner.pattern
     }
 
-    pub fn metadata(&self) -> &HashMap<String, String> {
-        &self.inner.metadata
+    /// The wire fields that arrived with this call.
+    ///
+    /// NATS headers, AMQP headers, Kafka record headers and MQTT user properties; `headers` is the one name this framework uses for all of them, leaving `metadata`
+    /// to mean what `#[set_metadata]` declared.
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.inner.headers
     }
 
-    pub fn get_metadata(&self, key: &str) -> Option<&str> {
-        self.inner.metadata.get(key).map(|s| s.as_str())
+    /// One wire field by key.
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.inner.headers.get(key).map(|s| s.as_str())
     }
 
     pub fn data(&self) -> &RpcData {
@@ -58,8 +63,8 @@ impl RpcContext {
 }
 
 impl HandlerContext for RpcContext {
-    fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.inner.shared.route_metadata.as_deref()
+    fn metadata(&self) -> Option<&Metadata> {
+        self.inner.shared.metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {

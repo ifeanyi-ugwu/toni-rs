@@ -406,7 +406,7 @@ fn build_metadata_fns(
     event_handlers: &[(String, syn::ImplItemFn)],
 ) -> Result<TokenStream> {
     let base = metadata_ctor(&get_metadata_exprs(&impl_block.attrs)?)
-        .unwrap_or_else(|| quote! { ::toni::http_helpers::RouteMetadata::new() });
+        .unwrap_or_else(|| quote! { ::toni::context::Metadata::new() });
 
     let mut entries: Vec<TokenStream> = Vec::new();
     for (pattern, method) in message_handlers.iter().chain(event_handlers.iter()) {
@@ -421,14 +421,14 @@ fn build_metadata_fns(
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_snake_case, clippy::all)]
-        fn __toni_rpc_metadata() -> ::toni::http_helpers::RouteMetadata {
+        fn __toni_rpc_metadata() -> ::toni::context::Metadata {
             #base
         }
 
         #[doc(hidden)]
         #[allow(non_snake_case, clippy::all)]
         fn __toni_rpc_handler_metadata()
-            -> Vec<(String, ::toni::http_helpers::RouteMetadata)> {
+            -> Vec<(String, ::toni::context::Metadata)> {
             vec![#(#entries),*]
         }
     })
