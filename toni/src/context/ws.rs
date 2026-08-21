@@ -20,29 +20,21 @@ struct WsInner {
     client: WsClient,
     message: WsMessage,
     event: String,
-    session: Session,
 }
 
 impl WsContext {
     pub fn new(
-        mut client: WsClient,
+        client: WsClient,
         message: WsMessage,
         event: impl Into<String>,
         route_metadata: Option<Arc<RouteMetadata>>,
-        session: Session,
     ) -> Self {
-        let shared = SharedState::new(route_metadata);
-        // The handler receives a clone of this client, not the context — pointing
-        // the client at this message's bag is what carries an enhancer's work
-        // across that boundary.
-        client.extensions = shared.extensions.clone();
         Self {
             inner: Arc::new(WsInner {
-                shared,
+                shared: SharedState::new(route_metadata),
                 client,
                 message,
                 event: event.into(),
-                session,
             }),
         }
     }
@@ -56,7 +48,7 @@ impl WsContext {
     /// Distinct from [`extensions`](crate::context::HandlerContext::extensions), which empties with
     /// this execution. What belongs to the connection rather than the message goes here.
     pub fn session(&self) -> &Session {
-        &self.inner.session
+        self.inner.client.session()
     }
 
     pub fn message(&self) -> &WsMessage {

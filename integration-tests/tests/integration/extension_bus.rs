@@ -137,13 +137,12 @@ impl BusGateway {
         Self {}
     }
 
-    /// The handler gets a `WsClient`, never the context — the bag rides the
-    /// client to bridge that gap.
+    /// The handler asks for the bag by name. It reaches the guard's write without the client
+    /// carrying it, which is the same shape every other transport uses.
     #[subscribe_message("read")]
     #[use_guards(WsAuthGuard)]
-    async fn read(&self, client: WsClient, _m: WsMessage) -> WsHandlerResult {
-        let principal = client
-            .extensions
+    async fn read(&self, ext: Extensions, _m: WsMessage) -> WsHandlerResult {
+        let principal = ext
             .get::<Principal>()
             .map(|p| p.0)
             .unwrap_or_else(|| "ABSENT".into());

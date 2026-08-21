@@ -13,16 +13,8 @@ use crate::traits_helpers::{
 };
 
 use super::{
-    DisconnectReason, GatewayTrait, Session, WsClient, WsError, WsHandlerOutput, WsHandlerResult,
-    WsMessage,
+    DisconnectReason, GatewayTrait, WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage,
 };
-
-/// One live connection: the client, and the store shared by every execution on it.
-#[derive(Clone)]
-struct Connected {
-    client: WsClient,
-    session: Session,
-}
 use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt};
 use std::panic::AssertUnwindSafe;
@@ -88,8 +80,9 @@ pub struct GatewayWrapper {
     handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
     handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
     handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>>,
-    /// Active client connections (client_id => the client and its session store).
-    clients: Arc<RwLock<HashMap<String, Connected>>>,
+    /// Active client connections (client_id => WsClient). A client carries the session scoped to
+    /// its connection, so there is nothing to keep beside it.
+    clients: Arc<RwLock<HashMap<String, WsClient>>>,
 }
 
 impl GatewayWrapper {
@@ -133,14 +126,13 @@ impl GatewayWrapper {
     /// adapter can register the client's sink between them, not because they are separate
     /// executions — a guard's writes have to reach the hook, so they share one context and one bag.
     pub async fn begin_connect(&self, client: WsClient) -> Result<WsContext, WsError> {
-        // Before the guards, so what one writes to the session is there for every later execution.
-        let session = Session::new();
+        // The client was born with its session, so a guard below writes to the store every later
+        // execution on this connection reads.
         let context = WsContext::new(
             client.clone(),
             WsMessage::text(""),
             "connect",
             Some(self.route_metadata.clone()),
-            session.clone(),
         );
 
         let guards = Self::resolve_guards(&self.guards, &context).await;
@@ -173,9 +165,7 @@ impl GatewayWrapper {
         }
 
         tracing::debug!(client_id = %client.id, "WebSocket client connected");
-        self.clients
-            .write()
-            .insert(client.id.clone(), Connected { client, session });
+        self.clients.write().insert(client.id.clone(), client);
         Ok(context)
     }
 
@@ -201,7 +191,7 @@ impl GatewayWrapper {
         client_id: String,
         message: WsMessage,
     ) -> Result<WsHandlerOutput, WsError> {
-        let Connected { client, session } = self
+        let client = self
             .clients
             .read()
             .get(&client_id)
@@ -217,7 +207,6 @@ impl GatewayWrapper {
             message.clone(),
             event.clone(),
             Some(self.route_metadata.clone()),
-            session,
         );
 
         let mut all_guards = self.guards.clone();
@@ -550,7 +539,7 @@ impl GatewayWrapper {
 
     pub async fn handle_disconnect(&self, client_id: String, reason: DisconnectReason) {
         let maybe = self.clients.write().remove(&client_id);
-        if let Some(Connected { client, session }) = maybe {
+        if let Some(client) = maybe {
             tracing::debug!(client_id = %client_id, "WebSocket client disconnected");
             // An execution of its own, so teardown reads the session the way every other
             // participant does. No enhancers run: a disconnect cannot be rejected.
@@ -559,7 +548,6 @@ impl GatewayWrapper {
                 WsMessage::text(""),
                 "disconnect",
                 Some(self.route_metadata.clone()),
-                session,
             );
             self.gateway
                 .on_disconnect(context.client(), reason, &context)
@@ -593,15 +581,11 @@ impl GatewayWrapper {
     }
 
     pub async fn get_clients(&self) -> Vec<WsClient> {
-        self.clients
-            .read()
-            .values()
-            .map(|c| c.client.clone())
-            .collect()
+        self.clients.read().values().cloned().collect()
     }
 
     pub async fn get_client(&self, client_id: &str) -> Option<WsClient> {
-        self.clients.read().get(client_id).map(|c| c.client.clone())
+        self.clients.read().get(client_id).cloned()
     }
 
     pub async fn call_after_init(&self) {

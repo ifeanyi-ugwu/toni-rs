@@ -72,6 +72,17 @@ impl SessionGateway {
         Ok(WsMessage::text(who).into())
     }
 
+    /// Reads the session off the `WsClient` a handler is given, rather than through the extractor.
+    #[subscribe_message("via-client")]
+    async fn via_client(&self, client: WsClient) -> WsHandlerResult {
+        let who = client
+            .session()
+            .get::<Principal>()
+            .map(|p| p.0)
+            .unwrap_or_else(|| "none".into());
+        Ok(WsMessage::text(who).into())
+    }
+
     /// The execution's own bag, for contrast: empty on every message.
     #[subscribe_message("execution")]
     async fn execution(&self, ctx: &WsContext) -> WsHandlerResult {
@@ -185,5 +196,23 @@ async fn teardown_reads_the_session_it_is_closing() {
         teardown().lock().unwrap().clone(),
         Some(Principal(who.clone())),
         "on_disconnect must see the principal the connect guard established"
+    );
+}
+
+/// A `WsClient` is cloned into every execution and handed to handlers. Each clone is the same
+/// connection, so each reads the one session — the property that lets the client own it at all.
+#[tokio_localset_test::localset_test]
+async fn every_clone_of_a_client_reads_the_one_session() {
+    let server = TestServer::start(SessionModule).await;
+    let url = format!("ws://127.0.0.1:{}/ws-session", server.port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // `whoami` reads through the extractor, `via-client` through a handler's own `WsClient`.
+    let through_session = ask(&mut ws, "whoami").await;
+    let through_client = ask(&mut ws, "via-client").await;
+
+    assert_eq!(
+        through_client, through_session,
+        "the client handed to a handler must carry the connection's session, not a detached one"
     );
 }
