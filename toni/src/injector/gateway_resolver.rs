@@ -36,6 +36,8 @@ impl GatewayResolver {
         let pipes = self.resolve_pipes(enhancers.pipe_tokens)?;
         let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let route_metadata = gateway.get_route_metadata();
+        let handler_metadata: HashMap<String, std::sync::Arc<crate::http_helpers::RouteMetadata>> =
+            gateway.handler_metadata().into_iter().collect();
 
         let mut handler_guards: HashMap<String, Vec<WsGuardEntry>> = HashMap::new();
         let mut handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>> = HashMap::new();
@@ -71,6 +73,7 @@ impl GatewayResolver {
             error_handlers,
             error_observers,
             route_metadata,
+            handler_metadata,
             handler_guards,
             handler_interceptors,
             handler_pipes,

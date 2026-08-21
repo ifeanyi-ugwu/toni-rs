@@ -16,6 +16,7 @@ use crate::enhancer::enhancer::{
     create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
 };
 use crate::shared::attr_is;
+use crate::shared::set_metadata::{get_metadata_exprs, merged_metadata_exprs, metadata_ctor};
 
 pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
     let impl_block = parse2::<ItemImpl>(item)?;
@@ -53,6 +54,7 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
         .collect();
 
     let enhancers_impl = build_enhancers_fn(&impl_block, &message_handlers)?;
+    let metadata_fns = build_metadata_fns(&impl_block, &message_handlers)?;
 
     // Re-emit the impl with the consumed `#[subscribe_message]` and enhancer attrs stripped.
     // `#[new]`, the `#[on_*]` lifecycle attrs, and the `#[on_connect]`/`#[on_disconnect]`/
@@ -63,7 +65,9 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
     for item in impl_def.items.iter_mut() {
         if let ImplItem::Fn(method) = item {
             method.attrs.retain(|attr| {
-                !attr_is(attr, "subscribe_message") && !has_enhancer_attribute(attr)
+                !attr_is(attr, "subscribe_message")
+                    && !attr_is(attr, "set_metadata")
+                    && !has_enhancer_attribute(attr)
             });
         }
     }
@@ -89,6 +93,41 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
             }
 
             #enhancers_impl
+            #metadata_fns
+        }
+    })
+}
+
+/// The gateway's declared metadata: the impl block's entries as the base, and one merged map per
+/// event whose handler adds to them. An event the handler does not annotate reads the base.
+fn build_metadata_fns(
+    impl_block: &ItemImpl,
+    message_handlers: &[(String, syn::ImplItemFn)],
+) -> Result<TokenStream> {
+    let base = metadata_ctor(&get_metadata_exprs(&impl_block.attrs)?)
+        .unwrap_or_else(|| quote! { ::toni::http_helpers::RouteMetadata::new() });
+
+    let mut entries: Vec<TokenStream> = Vec::new();
+    for (event, method) in message_handlers {
+        if get_metadata_exprs(&method.attrs)?.is_empty() {
+            continue;
+        }
+        let merged = merged_metadata_exprs(&impl_block.attrs, &method.attrs)?;
+        let ctor = metadata_ctor(&merged).expect("non-empty");
+        entries.push(quote! { (#event.to_string(), #ctor) });
+    }
+
+    Ok(quote! {
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::all)]
+        fn __toni_ws_metadata() -> ::toni::http_helpers::RouteMetadata {
+            #base
+        }
+
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::all)]
+        fn __toni_ws_handler_metadata() -> Vec<(String, ::toni::http_helpers::RouteMetadata)> {
+            vec![#(#entries),*]
         }
     })
 }

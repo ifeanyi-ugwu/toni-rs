@@ -11,8 +11,8 @@ use toni::context::{HandlerContext, WsContext};
 use toni::traits_helpers::Guard;
 use toni::websocket::{Session, WsClient, WsHandlerResult, WsMessage};
 use toni::{
-    injectable, module, new, on_connect, on_disconnect, subscribe_message, subscriptions,
-    use_guards, websocket_gateway, DisconnectReason,
+    injectable, module, new, on_connect, on_disconnect, set_metadata, subscribe_message,
+    subscriptions, use_guards, websocket_gateway, DisconnectReason,
 };
 
 use crate::common::TestServer;
@@ -215,4 +215,65 @@ async fn every_clone_of_a_client_reads_the_one_session() {
         through_client, through_session,
         "the client handed to a handler must carry the connection's session, not a detached one"
     );
+}
+
+// ---- declared metadata -------------------------------------------------------
+
+#[derive(Clone)]
+pub struct Tier(&'static str);
+
+#[derive(Clone)]
+pub struct Audience(&'static str);
+
+#[websocket_gateway("/ws-metadata")]
+pub struct MetaGateway {}
+
+/// Both entries apply to every event below unless one overrides them.
+#[subscriptions]
+#[set_metadata(Tier("standard"))]
+#[set_metadata(Audience("internal"))]
+impl MetaGateway {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[subscribe_message("inherited")]
+    async fn inherited(&self, ctx: &WsContext) -> WsHandlerResult {
+        Ok(WsMessage::text(read_declared(ctx)).into())
+    }
+
+    #[subscribe_message("overridden")]
+    #[set_metadata(Tier("premium"))]
+    async fn overridden(&self, ctx: &WsContext) -> WsHandlerResult {
+        Ok(WsMessage::text(read_declared(ctx)).into())
+    }
+}
+
+fn read_declared(ctx: &WsContext) -> String {
+    let m = ctx.route_metadata();
+    let tier = m
+        .and_then(|m| m.get::<Tier>())
+        .map(|t| t.0)
+        .unwrap_or("none");
+    let audience = m
+        .and_then(|m| m.get::<Audience>())
+        .map(|a| a.0)
+        .unwrap_or("none");
+    format!("{tier}/{audience}")
+}
+
+#[module(providers: [MetaGateway])]
+impl MetaGatewayModule {}
+
+/// `#[set_metadata]` reaches a transport that populated nothing before. A universal guard reading
+/// this on WebSocket used to find an empty map and admit every message.
+#[tokio_localset_test::localset_test]
+async fn declared_metadata_reaches_a_ws_handler() {
+    let server = TestServer::start(MetaGatewayModule).await;
+    let url = format!("ws://127.0.0.1:{}/ws-metadata", server.port);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    assert_eq!(ask(&mut ws, "inherited").await, "standard/internal");
+    assert_eq!(ask(&mut ws, "overridden").await, "premium/internal");
 }

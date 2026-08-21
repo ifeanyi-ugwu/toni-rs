@@ -96,9 +96,15 @@ pub trait GatewayTrait: Send + Sync {
     /// `WsError::to_message`.
     async fn handle_event(&self, ctx: &WsContext) -> ExecutionResult<WsHandlerOutput, WsError>;
 
-    /// Get route metadata (permissions, rate limits, etc.)
+    /// What the gateway declares for every handler, before any handler adds to it.
     fn get_route_metadata(&self) -> Arc<RouteMetadata> {
         Arc::new(RouteMetadata::new())
+    }
+
+    /// Per-event metadata for handlers that declare their own, already merged over the gateway's.
+    /// An event absent from this list reads [`get_route_metadata`](Self::get_route_metadata).
+    fn handler_metadata(&self) -> Vec<(String, Arc<RouteMetadata>)> {
+        Vec::new()
     }
 
     /// All enhancer tokens for this gateway — gateway-level plus per-handler — resolved once at
