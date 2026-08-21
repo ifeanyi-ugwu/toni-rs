@@ -47,6 +47,9 @@ pub struct RpcControllerWrapper {
     error_handlers: Vec<RpcErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
+    /// Per-pattern metadata, already merged over `route_metadata` at expansion. A pattern absent
+    /// here declared nothing of its own and reads the controller's.
+    handler_metadata: HashMap<String, Arc<RouteMetadata>>,
     handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
     handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
@@ -62,6 +65,7 @@ impl RpcControllerWrapper {
         error_handlers: Vec<RpcErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
+        handler_metadata: HashMap<String, Arc<RouteMetadata>>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
         handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
@@ -75,6 +79,7 @@ impl RpcControllerWrapper {
             error_handlers,
             error_observers,
             route_metadata,
+            handler_metadata,
             handler_guards,
             handler_interceptors,
             handler_pipes,
@@ -96,7 +101,12 @@ impl RpcControllerWrapper {
             pattern.clone(),
             data,
             call_metadata,
-            Some(self.route_metadata.clone()),
+            Some(
+                self.handler_metadata
+                    .get(&pattern)
+                    .unwrap_or(&self.route_metadata)
+                    .clone(),
+            ),
         );
 
         let mut all_guards = self.guards.clone();

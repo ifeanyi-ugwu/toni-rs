@@ -38,6 +38,20 @@ pub trait WsHandlersBridge {
     ) {
     }
 
+    fn __toni_ws_metadata() -> crate::http_helpers::RouteMetadata
+    where
+        Self: Sized,
+    {
+        crate::http_helpers::RouteMetadata::new()
+    }
+
+    fn __toni_ws_handler_metadata() -> Vec<(String, crate::http_helpers::RouteMetadata)>
+    where
+        Self: Sized,
+    {
+        Vec::new()
+    }
+
     async fn __toni_ws_handle_event(
         &self,
         ctx: &WsContext,

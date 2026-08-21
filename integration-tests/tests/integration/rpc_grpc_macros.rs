@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, new};
+use toni_macros::{grpc_methods, grpc_service, injectable, module, new, set_metadata};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -2229,4 +2229,146 @@ async fn a_singleton_grpc_service_is_built_once() {
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())
         .await
         .expect("shutdown must complete");
+}
+
+// ---- declared metadata -------------------------------------------------------
+
+#[derive(Clone)]
+pub struct Tier(&'static str);
+
+#[derive(Clone)]
+pub struct Audience(&'static str);
+
+/// What the guard read off the context, per method it ran on.
+static DECLARED_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// A gRPC handler's signature is tonic's, so it never receives the context. A guard is the only
+/// participant that can read what `#[set_metadata]` declared.
+#[injectable]
+pub struct RecordDeclared {}
+
+#[toni::async_trait]
+impl toni::traits_helpers::Guard<toni::GrpcContext> for RecordDeclared {
+    async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
+        use toni::context::HandlerContext as _;
+        let m = ctx.route_metadata();
+        let tier = m
+            .and_then(|m| m.get::<Tier>())
+            .map(|t| t.0)
+            .unwrap_or("none");
+        let audience = m
+            .and_then(|m| m.get::<Audience>())
+            .map(|a| a.0)
+            .unwrap_or("none");
+        DECLARED_SEEN
+            .lock()
+            .unwrap()
+            .push(format!("{}:{tier}/{audience}", ctx.method()));
+        true
+    }
+}
+
+#[grpc_service(pub struct MetaGrpcService {
+    #[inject] counter: OrdersCounter,
+})]
+impl MetaGrpcService {
+    pub fn new(counter: OrdersCounter) -> Self {
+        Self { counter }
+    }
+}
+
+/// Both entries apply to every method below unless one overrides them.
+#[grpc_methods]
+#[tonic::async_trait]
+#[use_guards(RecordDeclared)]
+#[set_metadata(Tier("standard"))]
+#[set_metadata(Audience("internal"))]
+impl Orders for MetaGrpcService {
+    async fn create(
+        &self,
+        request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let id = self.counter.next_id();
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id,
+            status: format!("created:{}", req.item),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(Box::pin(futures_util::stream::iter(
+            ::std::iter::empty(),
+        ))))
+    }
+
+    #[set_metadata(Tier("premium"))]
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(Box::pin(futures_util::stream::iter(
+            ::std::iter::empty(),
+        ))))
+    }
+}
+
+#[module(controllers: [MetaGrpcService], providers: [OrdersCounter, RecordDeclared])]
+struct MetaGrpcModule;
+
+/// The service's entries reach every method, and a method that declares its own shadows the
+/// matching type. Read through a guard, that being the only participant holding the context.
+#[tokio_localset_test::localset_test]
+async fn declared_metadata_reaches_a_grpc_guard() {
+    DECLARED_SEEN.lock().unwrap().clear();
+    let (port, shutdown) = boot_module(MetaGrpcModule).await;
+    let mut client = connect(port).await;
+
+    client
+        .create(orders_pb::CreateOrderRequest {
+            item: "k".into(),
+            qty: 1,
+        })
+        .await
+        .expect("create must succeed");
+    client
+        .bulk_create(futures_util::stream::iter(vec![
+            orders_pb::CreateOrderRequest {
+                item: "a".into(),
+                qty: 1,
+            },
+        ]))
+        .await
+        .expect("bulk_create must succeed");
+
+    let seen = DECLARED_SEEN.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|s| s == "Orders/create:standard/internal"),
+        "an unannotated method inherits the service's entries: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|s| s == "Orders/bulk_create:premium/internal"),
+        "an annotated method shadows one entry and keeps the rest: {seen:?}"
+    );
+    shutdown.shutdown();
 }

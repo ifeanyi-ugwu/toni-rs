@@ -26,7 +26,7 @@ use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
 };
-use toni_macros::{new, patterns, rpc_controller};
+use toni_macros::{new, patterns, rpc_controller, set_metadata};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
@@ -1474,5 +1474,69 @@ async fn an_rpc_controller_elevates_to_request_scope() {
     assert_ne!(
         first["saw"], second["saw"],
         "and its request-scoped dependency is the calling execution's: {first} then {second}"
+    );
+}
+
+// ---- declared metadata -------------------------------------------------------
+
+#[derive(Clone)]
+pub struct Tier(&'static str);
+
+#[derive(Clone)]
+pub struct Audience(&'static str);
+
+#[rpc_controller]
+pub struct MetaRpcController {}
+
+/// Both entries apply to every pattern below unless one overrides them.
+#[patterns]
+#[set_metadata(Tier("standard"))]
+#[set_metadata(Audience("internal"))]
+impl MetaRpcController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("meta.inherited")]
+    async fn inherited(&self, ctx: &RpcContext) -> Result<String, RpcError> {
+        Ok(read_declared(ctx))
+    }
+
+    #[message_pattern("meta.overridden")]
+    #[set_metadata(Tier("premium"))]
+    async fn overridden(&self, ctx: &RpcContext) -> Result<String, RpcError> {
+        Ok(read_declared(ctx))
+    }
+}
+
+fn read_declared(ctx: &RpcContext) -> String {
+    let m = ctx.route_metadata();
+    let tier = m
+        .and_then(|m| m.get::<Tier>())
+        .map(|t| t.0)
+        .unwrap_or("none");
+    let audience = m
+        .and_then(|m| m.get::<Audience>())
+        .map(|a| a.0)
+        .unwrap_or("none");
+    format!("{tier}/{audience}")
+}
+
+#[module(controllers: [MetaRpcController])]
+impl MetaRpcModule {}
+
+/// `#[set_metadata]` reaches a transport that populated nothing before: the controller's entries
+/// apply to every pattern, and a pattern that declares its own shadows the matching type.
+#[tokio_localset_test::localset_test]
+async fn declared_metadata_reaches_an_rpc_handler() {
+    let port = start_rpc_server(MetaRpcModule).await;
+    assert_eq!(
+        shape_call(port, "meta.inherited").await,
+        "standard/internal"
+    );
+    assert_eq!(
+        shape_call(port, "meta.overridden").await,
+        "premium/internal"
     );
 }

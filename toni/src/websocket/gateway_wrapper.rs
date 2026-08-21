@@ -76,6 +76,9 @@ pub struct GatewayWrapper {
     error_handlers: Vec<WsErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
     route_metadata: Arc<RouteMetadata>,
+    /// Per-event metadata, already merged over `route_metadata` at expansion. An event absent here
+    /// declared nothing of its own and reads the gateway's.
+    handler_metadata: HashMap<String, Arc<RouteMetadata>>,
     handler_guards: HashMap<String, Vec<WsGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
     handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
@@ -94,6 +97,7 @@ impl GatewayWrapper {
         error_handlers: Vec<WsErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
         route_metadata: Arc<RouteMetadata>,
+        handler_metadata: HashMap<String, Arc<RouteMetadata>>,
         handler_guards: HashMap<String, Vec<WsGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
         handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
@@ -107,6 +111,7 @@ impl GatewayWrapper {
             error_handlers,
             error_observers,
             route_metadata,
+            handler_metadata,
             handler_guards,
             handler_interceptors,
             handler_pipes,
@@ -206,7 +211,12 @@ impl GatewayWrapper {
             client.clone(),
             message.clone(),
             event.clone(),
-            Some(self.route_metadata.clone()),
+            Some(
+                self.handler_metadata
+                    .get(&event)
+                    .unwrap_or(&self.route_metadata)
+                    .clone(),
+            ),
         );
 
         let mut all_guards = self.guards.clone();
@@ -656,6 +666,7 @@ mod tests {
             vec![],
             vec![],
             Arc::new(RouteMetadata::new()),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),

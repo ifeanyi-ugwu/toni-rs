@@ -432,6 +432,41 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// #[get("/api/data")]
 /// fn get_data(&self) -> ToniBody { ... }
 /// ```
+///
+/// # Two levels
+///
+/// The attribute applies to the handler impl block as well as to a handler, and the handler wins
+/// where both declare the same type. Everything else the block declares is still there:
+///
+/// ```rust,ignore
+/// #[routes]
+/// #[set_metadata(Tier("standard"))]
+/// #[set_metadata(Audience("internal"))]
+/// impl Reports {
+///     // reads Tier("standard") and Audience("internal")
+///     #[get("/summary")]
+///     fn summary(&self) -> ToniBody { ... }
+///
+///     // reads Tier("premium") and Audience("internal")
+///     #[get("/full")]
+///     #[set_metadata(Tier("premium"))]
+///     fn full(&self) -> ToniBody { ... }
+/// }
+/// ```
+///
+/// # Transports
+///
+/// Works the same on `#[routes]`, `#[subscriptions]`, `#[patterns]` and `#[grpc_methods]`. Read it
+/// back with `ctx.route_metadata()`, which every context carries, so a guard written over
+/// `HandlerContext` reads it on any of them.
+///
+/// **On gRPC a handler cannot read it.** The tonic trait dictates that signature and never passes
+/// the context, so what a service declares is visible to its guards, interceptors and error
+/// handlers, and not to the method itself. Everywhere else a handler can take the context or an
+/// extractor over it.
+///
+/// A type nothing declared reads back as absent rather than as an error, which is what lets one
+/// guard serve annotated and unannotated handlers alike.
 #[proc_macro_attribute]
 pub fn set_metadata(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item

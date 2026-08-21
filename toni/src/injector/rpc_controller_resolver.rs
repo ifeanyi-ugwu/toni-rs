@@ -39,6 +39,8 @@ impl RpcControllerResolver {
         let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let error_observers = self.container.borrow().get_global_error_observers();
         let route_metadata = source.get_route_metadata();
+        let handler_metadata: HashMap<String, std::sync::Arc<crate::http_helpers::RouteMetadata>> =
+            source.handler_metadata().into_iter().collect();
 
         let mut handler_guards: HashMap<String, Vec<RpcGuardEntry>> = HashMap::new();
         let mut handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>> = HashMap::new();
@@ -73,6 +75,7 @@ impl RpcControllerResolver {
             error_handlers,
             error_observers,
             route_metadata,
+            handler_metadata,
             handler_guards,
             handler_interceptors,
             handler_pipes,

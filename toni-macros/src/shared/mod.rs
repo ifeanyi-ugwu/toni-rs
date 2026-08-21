@@ -4,6 +4,7 @@ pub mod lifecycle_hooks;
 pub mod metadata_info;
 pub mod route_path;
 pub mod scope_parser;
+pub mod set_metadata;
 pub mod token_parser;
 
 pub use token_parser::TokenType;

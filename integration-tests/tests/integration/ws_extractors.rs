@@ -62,9 +62,8 @@ impl ExtractorGateway {
             .get::<Principal>()
             .map(|p| p.0)
             .unwrap_or_else(|| "ABSENT".into());
-        // The context reaches the handler; its route metadata is empty because
-        // nothing populates it on this transport — `#[set_metadata]` is not wired
-        // for gateways, gateway-level or per-handler.
+        // The context reaches the handler, and its declared metadata is empty because this gateway
+        // annotates nothing. Empty means not annotated here, rather than not populated.
         let metadata_is_empty = ctx.route_metadata().is_none_or(|m| m.is_empty());
         Ok(WsMessage::text(format!(
             "{principal}/{metadata_is_empty}/{}",

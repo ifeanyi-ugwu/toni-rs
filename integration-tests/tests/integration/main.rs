@@ -34,6 +34,7 @@ mod guard_mut_context;
 mod http_e2e;
 mod import_cycle;
 mod lifecycle_hooks;
+mod metadata_overlay;
 mod method_enhancers;
 mod middleware_error;
 mod module_ref;

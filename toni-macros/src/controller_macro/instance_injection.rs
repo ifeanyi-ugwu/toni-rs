@@ -30,6 +30,7 @@ use crate::{
         },
         get_marker_params::MarkerParam,
     },
+    shared::set_metadata::get_metadata_exprs,
     shared::{attr_is, metadata_info::MetadataInfo, scope_parser::ControllerScope},
     utils::controller_utils::attr_to_string,
 };
@@ -145,6 +146,7 @@ fn generate_controller_wrappers(
     let mut metadata_list = Vec::new();
 
     let controller_enhancers_attr = get_enhancers_attr(&impl_block.attrs)?;
+    let controller_metadata_exprs = get_metadata_exprs(&impl_block.attrs)?;
 
     for item in &impl_block.items {
         if let syn::ImplItem::Fn(method) = item {
@@ -158,6 +160,7 @@ fn generate_controller_wrappers(
                     http_method_attr,
                     controller_enhancers_attr.clone(),
                     method_enhancers_attr,
+                    &controller_metadata_exprs,
                     marker_params,
                     scope,
                 )?;
@@ -194,20 +197,6 @@ fn get_marker_params(method: &ImplItemFn) -> Result<Vec<MarkerParam>> {
     get_params(method)
 }
 
-/// Extract #[set_metadata(...)] expressions from method attributes
-fn get_metadata_exprs(attrs: &[Attribute]) -> Result<Vec<TokenStream>> {
-    let mut metadata_exprs = Vec::new();
-
-    for attr in attrs {
-        if attr_is(attr, "set_metadata") {
-            let expr: syn::Expr = attr.parse_args()?;
-            metadata_exprs.push(quote! { #expr });
-        }
-    }
-
-    Ok(metadata_exprs)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn generate_controller_wrapper(
     method: &ImplItemFn,
@@ -215,6 +204,7 @@ fn generate_controller_wrapper(
     http_method_attr: &Attribute,
     controller_enhancers_attr: Vec<(&Ident, &Attribute)>,
     method_enhancers_attr: Vec<(&Ident, &Attribute)>,
+    controller_metadata_exprs: &[TokenStream],
     marker_params: Vec<MarkerParam>,
     scope: ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
@@ -252,7 +242,11 @@ fn generate_controller_wrapper(
     let is_static_method = !has_self_receiver(method);
 
     let enhancer_infos = create_enhancer_infos(controller_enhancers_attr, method_enhancers_attr)?;
-    let metadata_exprs = get_metadata_exprs(&method.attrs)?;
+    // The impl block's entries first, the method's second: a later `insert` shadows an earlier one,
+    // so the method wins where both annotate the same type. That is the result Nest reaches by
+    // searching `[getHandler(), getClass()]` in order, settled here instead of at every read.
+    let mut metadata_exprs = controller_metadata_exprs.to_vec();
+    metadata_exprs.extend(get_metadata_exprs(&method.attrs)?);
 
     let extractor_params = get_extractor_params(method)?;
     let has_extractors = extractor_params
