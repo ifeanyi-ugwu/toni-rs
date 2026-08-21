@@ -16,6 +16,7 @@ use crate::enhancer::enhancer::{
     create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
 };
 use crate::shared::attr_is;
+use crate::shared::set_metadata::{get_metadata_exprs, merged_metadata_exprs, metadata_ctor};
 
 pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
     let impl_block = parse2::<ItemImpl>(item)?;
@@ -101,17 +102,21 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         .collect();
 
     let enhancers_impl = build_enhancers_fn(&impl_block, &message_handlers, &event_handlers)?;
+    let metadata_fns = build_metadata_fns(&impl_block, &message_handlers, &event_handlers)?;
 
     // Re-emit the impl with the consumed pattern markers and enhancer attrs stripped. `#[new]` and
     // the `#[on_*]` lifecycle attrs are LEFT intact so their own macros form the bridges that
     // `#[rpc_controller]`'s provider wiring dispatches through.
     let mut impl_def = impl_block.clone();
-    impl_def.attrs.retain(|attr| !has_enhancer_attribute(attr));
+    impl_def
+        .attrs
+        .retain(|attr| !has_enhancer_attribute(attr) && !attr_is(attr, "set_metadata"));
     for item in impl_def.items.iter_mut() {
         if let ImplItem::Fn(method) = item {
             method.attrs.retain(|attr| {
                 !attr_is(attr, "message_pattern")
                     && !attr_is(attr, "event_pattern")
+                    && !attr_is(attr, "set_metadata")
                     && !has_enhancer_attribute(attr)
             });
         }
@@ -127,6 +132,8 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             fn __toni_rpc_patterns() -> Vec<String> {
                 vec![#(#all_patterns.to_string()),*]
             }
+
+            #metadata_fns
 
             #[doc(hidden)]
             #[allow(non_snake_case, clippy::all)]
@@ -389,4 +396,40 @@ fn returns_rpc_data(method: &syn::ImplItemFn) -> bool {
         return true;
     };
     is_rpc_data(inner)
+}
+
+/// The controller's declared metadata: the impl block's entries as the base, and one merged entry per
+/// pattern whose handler adds to them. A pattern the handler does not annotate reads the base.
+fn build_metadata_fns(
+    impl_block: &ItemImpl,
+    message_handlers: &[(String, syn::ImplItemFn)],
+    event_handlers: &[(String, syn::ImplItemFn)],
+) -> Result<TokenStream> {
+    let base = metadata_ctor(&get_metadata_exprs(&impl_block.attrs)?)
+        .unwrap_or_else(|| quote! { ::toni::http_helpers::RouteMetadata::new() });
+
+    let mut entries: Vec<TokenStream> = Vec::new();
+    for (pattern, method) in message_handlers.iter().chain(event_handlers.iter()) {
+        if get_metadata_exprs(&method.attrs)?.is_empty() {
+            continue;
+        }
+        let merged = merged_metadata_exprs(&impl_block.attrs, &method.attrs)?;
+        let ctor = metadata_ctor(&merged).expect("non-empty");
+        entries.push(quote! { (#pattern.to_string(), #ctor) });
+    }
+
+    Ok(quote! {
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::all)]
+        fn __toni_rpc_metadata() -> ::toni::http_helpers::RouteMetadata {
+            #base
+        }
+
+        #[doc(hidden)]
+        #[allow(non_snake_case, clippy::all)]
+        fn __toni_rpc_handler_metadata()
+            -> Vec<(String, ::toni::http_helpers::RouteMetadata)> {
+            vec![#(#entries),*]
+        }
+    })
 }

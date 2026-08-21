@@ -24,13 +24,13 @@ use crate::{
         generate_extractor_static_method_call, get_extractor_params, has_self_receiver,
     },
     enhancer::enhancer::{EnhancerInfo, create_enhancer_infos},
-    shared::set_metadata::get_metadata_exprs,
     markers_params::{
         extracts_marker_params::{
             extract_body_from_param, extract_path_param_from_param, extract_query_from_param,
         },
         get_marker_params::MarkerParam,
     },
+    shared::set_metadata::get_metadata_exprs,
     shared::{attr_is, metadata_info::MetadataInfo, scope_parser::ControllerScope},
     utils::controller_utils::attr_to_string,
 };
