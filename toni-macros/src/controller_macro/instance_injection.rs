@@ -24,6 +24,7 @@ use crate::{
         generate_extractor_static_method_call, get_extractor_params, has_self_receiver,
     },
     enhancer::enhancer::{EnhancerInfo, create_enhancer_infos},
+    shared::set_metadata::get_metadata_exprs,
     markers_params::{
         extracts_marker_params::{
             extract_body_from_param, extract_path_param_from_param, extract_query_from_param,
@@ -194,20 +195,6 @@ fn get_enhancers_attr(attrs: &[syn::Attribute]) -> Result<Vec<(&Ident, &Attribut
 fn get_marker_params(method: &ImplItemFn) -> Result<Vec<MarkerParam>> {
     use crate::markers_params::get_marker_params::get_marker_params as get_params;
     get_params(method)
-}
-
-/// Extract `#[set_metadata(...)]` expressions from an attribute list — a method's or an impl block's.
-fn get_metadata_exprs(attrs: &[Attribute]) -> Result<Vec<TokenStream>> {
-    let mut metadata_exprs = Vec::new();
-
-    for attr in attrs {
-        if attr_is(attr, "set_metadata") {
-            let expr: syn::Expr = attr.parse_args()?;
-            metadata_exprs.push(quote! { #expr });
-        }
-    }
-
-    Ok(metadata_exprs)
 }
 
 #[allow(clippy::too_many_arguments)]
