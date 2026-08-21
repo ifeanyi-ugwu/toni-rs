@@ -30,6 +30,8 @@ use syn::{ItemImpl, Path, Result, Token, parse2};
 use crate::enhancer::enhancer::{
     create_enhancer_infos, get_enhancers_attr, has_enhancer_attribute,
 };
+use crate::shared::attr_is;
+use crate::shared::set_metadata::{merged_metadata_exprs, metadata_ctor};
 
 /// The `GrpcServiceSource` companion generated beside the service struct.
 pub fn grpc_source_ident(self_ident: &syn::Ident) -> syn::Ident {
@@ -192,10 +194,14 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
 
     // ── strip enhancer attrs from the user's impl block before re-emitting ──
     let mut user_impl = impl_block.clone();
-    user_impl.attrs.retain(|attr| !has_enhancer_attribute(attr));
+    user_impl
+        .attrs
+        .retain(|attr| !has_enhancer_attribute(attr) && !attr_is(attr, "set_metadata"));
     for item in user_impl.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
-            method.attrs.retain(|attr| !has_enhancer_attribute(attr));
+            method
+                .attrs
+                .retain(|attr| !has_enhancer_attribute(attr) && !attr_is(attr, "set_metadata"));
         }
     }
 
@@ -320,7 +326,15 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
 
     let wrapper_methods: Vec<TokenStream> = method_sigs_for_wrapper
         .iter()
-        .map(|method| build_wrapper_method(method, &self_ident, &trait_path, &trait_short))
+        .map(|method| {
+            build_wrapper_method(
+                method,
+                &self_ident,
+                &trait_path,
+                &trait_short,
+                &impl_block.attrs,
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let wrapper_assoc_types: Vec<TokenStream> = assoc_types
@@ -458,10 +472,30 @@ fn build_wrapper_method(
     self_ident: &syn::Ident,
     trait_path: &Path,
     trait_short: &str,
+    impl_attrs: &[syn::Attribute],
 ) -> Result<TokenStream> {
     let sig = &method.sig;
     let method_name_lit = sig.ident.to_string();
     let method_path_lit = format!("{}/{}", trait_short, method_name_lit);
+
+    // The impl block's `#[set_metadata]` entries then the method's, merged here rather than at every
+    // call. The map is built once and shared, the service having one shape for the process.
+    let merged = merged_metadata_exprs(impl_attrs, &method.attrs)?;
+    let declared_metadata = match metadata_ctor(&merged) {
+        Some(ctor) => quote! {
+            static __DECLARED: ::std::sync::OnceLock<
+                ::std::sync::Arc<::toni::http_helpers::RouteMetadata>
+            > = ::std::sync::OnceLock::new();
+            let __declared = ::std::option::Option::Some(
+                __DECLARED.get_or_init(|| ::std::sync::Arc::new(#ctor)).clone(),
+            );
+        },
+        None => quote! {
+            let __declared: ::std::option::Option<
+                ::std::sync::Arc<::toni::http_helpers::RouteMetadata>
+            > = ::std::option::Option::None;
+        },
+    };
 
     // Forward every non-receiver argument to the user impl by name.
     let forward_args: Vec<TokenStream> = sig
@@ -524,11 +558,12 @@ fn build_wrapper_method(
                     .map(|s| (k.as_str().to_string(), s.to_string())),
                 ::tonic::metadata::KeyAndValueRef::Binary(_, _) => None,
             }).collect::<::std::collections::HashMap<::std::string::String, ::std::string::String>>();
+            #declared_metadata
             let __ctx = ::toni::context::GrpcContext::new(
                 #method_path_lit,
                 __metadata,
                 #req_ident.remote_addr(),
-                ::std::option::Option::None,
+                __declared,
             );
 
             // The handler receives the tonic request, never the context, so the
