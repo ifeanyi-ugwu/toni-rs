@@ -34,3 +34,4 @@ the history is part of the value.
 - [0016 — A context spans one execution and is a shared handle](0016-context-spans-one-execution.md)
 - [0017 — A controller is a dispatch target, whatever the transport](0017-controller-is-a-dispatch-target.md)
 - [0018 — A WebSocket connection is a session, and a session is a store](0018-a-connection-is-a-session.md)
+- [0019 — A WebSocket client owns its session; an execution owns its bag](0019-a-client-owns-its-session.md)
