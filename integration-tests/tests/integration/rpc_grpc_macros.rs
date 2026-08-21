@@ -153,7 +153,7 @@ impl AuthGuard {}
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
     async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
-        ctx.get_metadata("authorization").is_some()
+        ctx.header("authorization").is_some()
     }
 }
 
@@ -164,7 +164,7 @@ impl AdminGuard {}
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AdminGuard {
     async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
-        ctx.get_metadata("x-role") == Some("admin")
+        ctx.header("x-role") == Some("admin")
     }
 }
 
@@ -2251,7 +2251,7 @@ pub struct RecordDeclared {}
 impl toni::traits_helpers::Guard<toni::GrpcContext> for RecordDeclared {
     async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
         use toni::context::HandlerContext as _;
-        let m = ctx.route_metadata();
+        let m = ctx.metadata();
         let tier = m
             .and_then(|m| m.get::<Tier>())
             .map(|t| t.0)

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::http_helpers::RouteMetadata;
+use crate::context::Metadata;
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 
@@ -30,22 +30,22 @@ pub struct GrpcContext {
 struct GrpcInner {
     shared: SharedState,
     method: String,
-    metadata: HashMap<String, String>,
+    headers: HashMap<String, String>,
     peer: Option<SocketAddr>,
 }
 
 impl GrpcContext {
     pub fn new(
         method: impl Into<String>,
-        metadata: HashMap<String, String>,
+        headers: HashMap<String, String>,
         peer: Option<SocketAddr>,
-        route_metadata: Option<Arc<RouteMetadata>>,
+        metadata: Option<Arc<Metadata>>,
     ) -> Self {
         Self {
             inner: Arc::new(GrpcInner {
-                shared: SharedState::new(route_metadata),
+                shared: SharedState::new(metadata),
                 method: method.into(),
-                metadata,
+                headers,
                 peer,
             }),
         }
@@ -56,12 +56,17 @@ impl GrpcContext {
         &self.inner.method
     }
 
-    pub fn metadata(&self) -> &HashMap<String, String> {
-        &self.inner.metadata
+    /// The wire fields that arrived with this call.
+    ///
+    /// gRPC's specification calls these metadata; `headers` is the one name this framework uses for all of them, leaving `metadata`
+    /// to mean what `#[set_metadata]` declared.
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.inner.headers
     }
 
-    pub fn get_metadata(&self, key: &str) -> Option<&str> {
-        self.inner.metadata.get(key).map(|s| s.as_str())
+    /// One wire field by key.
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.inner.headers.get(key).map(|s| s.as_str())
     }
 
     pub fn peer(&self) -> Option<SocketAddr> {
@@ -70,8 +75,8 @@ impl GrpcContext {
 }
 
 impl HandlerContext for GrpcContext {
-    fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.inner.shared.route_metadata.as_deref()
+    fn metadata(&self) -> Option<&Metadata> {
+        self.inner.shared.metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {

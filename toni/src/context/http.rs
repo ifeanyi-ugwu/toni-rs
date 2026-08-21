@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::http_helpers::{HttpRequest, RequestBody, RequestPart, RouteMetadata};
+use crate::http_helpers::{HttpRequest, RequestBody, RequestPart};
 
-use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
+use super::{CancellationToken, Extensions, HandlerContext, Metadata, shared::SharedState};
 
 /// The execution context for one HTTP request.
 ///
@@ -34,14 +34,14 @@ struct HttpInner {
 }
 
 impl HttpContext {
-    pub fn new(req: HttpRequest, route_metadata: Arc<RouteMetadata>) -> Self {
+    pub fn new(req: HttpRequest, metadata: Arc<Metadata>) -> Self {
         let (mut parts, body) = req.into_parts();
         // `ensure`, not `adopt`: the context and the request it hands the
         // handler must address one bag even when nothing installed one upstream.
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
             inner: Arc::new(HttpInner {
-                shared: SharedState::with_extensions(Some(route_metadata), extensions),
+                shared: SharedState::with_extensions(Some(metadata), extensions),
                 parts,
                 body: Mutex::new(Some(body)),
             }),
@@ -54,10 +54,7 @@ impl HttpContext {
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
             inner: Arc::new(HttpInner {
-                shared: SharedState::with_extensions(
-                    Some(Arc::new(RouteMetadata::new())),
-                    extensions,
-                ),
+                shared: SharedState::with_extensions(Some(Arc::new(Metadata::new())), extensions),
                 parts,
                 body: Mutex::new(Some(body)),
             }),
@@ -68,10 +65,7 @@ impl HttpContext {
         let extensions = Extensions::ensure(&mut parts.extensions);
         Self {
             inner: Arc::new(HttpInner {
-                shared: SharedState::with_extensions(
-                    Some(Arc::new(RouteMetadata::new())),
-                    extensions,
-                ),
+                shared: SharedState::with_extensions(Some(Arc::new(Metadata::new())), extensions),
                 parts,
                 body: Mutex::new(Some(RequestBody::empty())),
             }),
@@ -98,8 +92,8 @@ impl HttpContext {
 }
 
 impl HandlerContext for HttpContext {
-    fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.inner.shared.route_metadata.as_deref()
+    fn metadata(&self) -> Option<&Metadata> {
+        self.inner.shared.metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::http_helpers::RouteMetadata;
+use crate::context::Metadata;
 use crate::websocket::{Session, WsClient, WsMessage};
 
 use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
@@ -27,11 +27,11 @@ impl WsContext {
         client: WsClient,
         message: WsMessage,
         event: impl Into<String>,
-        route_metadata: Option<Arc<RouteMetadata>>,
+        metadata: Option<Arc<Metadata>>,
     ) -> Self {
         Self {
             inner: Arc::new(WsInner {
-                shared: SharedState::new(route_metadata),
+                shared: SharedState::new(metadata),
                 client,
                 message,
                 event: event.into(),
@@ -61,8 +61,8 @@ impl WsContext {
 }
 
 impl HandlerContext for WsContext {
-    fn route_metadata(&self) -> Option<&RouteMetadata> {
-        self.inner.shared.route_metadata.as_deref()
+    fn metadata(&self) -> Option<&Metadata> {
+        self.inner.shared.metadata.as_deref()
     }
 
     fn extensions(&self) -> &Extensions {

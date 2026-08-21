@@ -59,7 +59,7 @@ pub use adapter::{
 };
 pub use http_helpers::{
     Body, BoxBody, HttpMethod, HttpRequest, HttpResponse, HttpResponseBuilder, IntoResponse,
-    RequestBody, RequestBoxBody, RequestPart, RouteMetadata, Sse, SseEvent, sse,
+    RequestBody, RequestBoxBody, RequestPart, Sse, SseEvent, sse,
 };
 pub use injector::InstanceWrapper;
 pub use rpc::{

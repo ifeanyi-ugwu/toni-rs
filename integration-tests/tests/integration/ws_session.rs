@@ -251,7 +251,7 @@ impl MetaGateway {
 }
 
 fn read_declared(ctx: &WsContext) -> String {
-    let m = ctx.route_metadata();
+    let m = ctx.metadata();
     let tier = m
         .and_then(|m| m.get::<Tier>())
         .map(|t| t.0)

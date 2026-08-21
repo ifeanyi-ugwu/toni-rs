@@ -145,7 +145,7 @@ pub struct AuthGuard {}
 #[toni::async_trait]
 impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
     async fn can_activate(&self, ctx: &toni::GrpcContext) -> bool {
-        ctx.get_metadata("authorization") == Some("Bearer secret-token")
+        ctx.header("authorization") == Some("Bearer secret-token")
     }
 }
 ```

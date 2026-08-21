@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::application_context::ToniApplicationContext;
+use crate::context::Metadata;
 use crate::context::{HttpContext, RpcContext, WsContext};
 use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};

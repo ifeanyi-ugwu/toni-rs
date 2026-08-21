@@ -25,11 +25,8 @@ pub use self::http_method::HttpMethod;
 mod into_response;
 pub use self::into_response::IntoResponse;
 
-mod extensions;
-pub use self::extensions::Extensions;
-
-mod route_metadata;
-pub use self::route_metadata::RouteMetadata;
+mod type_map;
+pub use self::type_map::TypeMap;
 
 mod sse;
 pub use self::sse::{Sse, SseEvent, sse};

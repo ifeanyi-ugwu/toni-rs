@@ -111,14 +111,14 @@ fn generate_rpc_trait_impl(struct_name: &Ident) -> TokenStream {
                 <#struct_name>::__toni_rpc_enhancers()
             }
 
-            fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
+            fn metadata(&self) -> ::std::sync::Arc<::toni::context::Metadata> {
                 use ::toni::__rpc::RpcHandlersBridge as _;
                 ::std::sync::Arc::new(<#struct_name>::__toni_rpc_metadata())
             }
 
             fn handler_metadata(
                 &self,
-            ) -> Vec<(String, ::std::sync::Arc<::toni::http_helpers::RouteMetadata>)> {
+            ) -> Vec<(String, ::std::sync::Arc<::toni::context::Metadata>)> {
                 use ::toni::__rpc::RpcHandlersBridge as _;
                 <#struct_name>::__toni_rpc_handler_metadata()
                     .into_iter()

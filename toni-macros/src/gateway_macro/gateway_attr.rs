@@ -194,14 +194,14 @@ fn generate_gateway_trait_impl(
                 <Self>::__toni_ws_on_disconnect(self, client, reason, context).await
             }
 
-            fn get_route_metadata(&self) -> ::std::sync::Arc<::toni::http_helpers::RouteMetadata> {
+            fn metadata(&self) -> ::std::sync::Arc<::toni::context::Metadata> {
                 use ::toni::__ws::WsHandlersBridge as _;
                 ::std::sync::Arc::new(<Self>::__toni_ws_metadata())
             }
 
             fn handler_metadata(
                 &self,
-            ) -> Vec<(String, ::std::sync::Arc<::toni::http_helpers::RouteMetadata>)> {
+            ) -> Vec<(String, ::std::sync::Arc<::toni::context::Metadata>)> {
                 use ::toni::__ws::WsHandlersBridge as _;
                 <Self>::__toni_ws_handler_metadata()
                     .into_iter()

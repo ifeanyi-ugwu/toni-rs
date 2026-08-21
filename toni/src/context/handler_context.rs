@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::http_helpers::RouteMetadata;
+use crate::context::Metadata;
 
 use super::{CancellationToken, Extensions};
 use crate::traits_helpers::ExecutionCache;
@@ -17,10 +17,13 @@ use crate::traits_helpers::ExecutionCache;
 /// concept only makes sense for some transports (HTTP headers, gRPC metadata,
 /// WS client identity), it lives on the concrete context, not here.
 pub trait HandlerContext: Send + Sync {
-    /// Per-route metadata (`#[set_metadata(...)]` attached at the controller
-    /// or method level). `None` for global handlers (404, error filters) that
-    /// never bind to a specific route.
-    fn route_metadata(&self) -> Option<&RouteMetadata>;
+    /// What the handler declared about itself with `#[set_metadata(...)]`, on the impl block or on
+    /// the handler, with the handler winning where both name one type.
+    ///
+    /// Distinct from the wire fields a call arrived with, which are `headers()` on the transports
+    /// that have them. `None` for global handlers (404, error filters) that never bind to one
+    /// handler; a type nothing declared reads back as absent rather than as an error.
+    fn metadata(&self) -> Option<&Metadata>;
 
     /// Per-message typed key-value bag: the channel from one pipeline stage to
     /// the next. A guard attaches a value, a later enhancer or the handler reads

@@ -1,7 +1,9 @@
-//! Type-safe storage for request-scoped data.
+//! A synchronous type-keyed map.
 //!
-//! The `Extensions` type provides a way for middleware to pass typed data
-//! to controllers and services without coupling them to HTTP implementation details.
+//! Storage for things built once and read many times — a handler's declared
+//! [`Metadata`](crate::context::Metadata), an RPC call's descriptor. Per-execution state that
+//! enhancers write and handlers read is [`Extensions`](crate::context::Extensions) instead, which
+//! is shared by handle and mutable through it.
 //!
 //! # Implementation Note
 //!
@@ -11,12 +13,12 @@
 //! # Examples
 //!
 //! ```
-//! use toni::http_helpers::Extensions;
+//! use toni::http_helpers::TypeMap;
 //!
 //! #[derive(Clone)]
 //! struct UserId(String);
 //!
-//! let mut ext = Extensions::new();
+//! let mut ext = TypeMap::new();
 //! ext.insert(UserId("alice".to_string()));
 //!
 //! let user_id = ext.get::<UserId>().unwrap();
@@ -59,11 +61,11 @@ impl Hasher for IdHasher {
 ///
 /// Values stored in `Extensions` must implement `Clone + Send + Sync + 'static`.
 #[derive(Clone, Default)]
-pub struct Extensions {
+pub struct TypeMap {
     map: AnyMap,
 }
 
-impl Extensions {
+impl TypeMap {
     /// Create an empty `Extensions` map.
     pub fn new() -> Self {
         Self::default()
@@ -76,12 +78,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// assert!(ext.insert(UserId("alice".to_string())).is_none());
     /// assert_eq!(
     ///     ext.insert(UserId("bob".to_string())).unwrap().0,
@@ -99,12 +101,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// assert!(ext.get::<UserId>().is_none());
     ///
     /// ext.insert(UserId("alice".to_string()));
@@ -121,12 +123,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct Counter(i32);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// ext.insert(Counter(5));
     ///
     /// ext.get_mut::<Counter>().unwrap().0 += 10;
@@ -145,12 +147,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// ext.insert(UserId("alice".to_string()));
     ///
     /// assert_eq!(ext.remove::<UserId>().unwrap().0, "alice");
@@ -167,12 +169,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// ext.insert(UserId("alice".to_string()));
     /// ext.clear();
     ///
@@ -188,12 +190,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// assert!(ext.is_empty());
     ///
     /// ext.insert(UserId("alice".to_string()));
@@ -209,12 +211,12 @@ impl Extensions {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::Extensions;
+    /// use toni::http_helpers::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
     ///
-    /// let mut ext = Extensions::new();
+    /// let mut ext = TypeMap::new();
     /// assert_eq!(ext.len(), 0);
     ///
     /// ext.insert(UserId("alice".to_string()));
@@ -226,9 +228,9 @@ impl Extensions {
     }
 }
 
-impl fmt::Debug for Extensions {
+impl fmt::Debug for TypeMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Extensions").finish()
+        f.debug_struct("TypeMap").finish()
     }
 }
 
@@ -273,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_extensions() {
-        let mut extensions = Extensions::new();
+        let mut extensions = TypeMap::new();
 
         extensions.insert(5i32);
         extensions.insert(MyType(10));
@@ -297,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut ext = Extensions::new();
+        let mut ext = TypeMap::new();
         ext.insert(5i32);
         ext.insert("hello");
 
@@ -309,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut ext = Extensions::new();
+        let mut ext = TypeMap::new();
         ext.insert(5i32);
 
         assert_eq!(ext.remove::<i32>(), Some(5));

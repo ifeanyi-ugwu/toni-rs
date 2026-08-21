@@ -37,7 +37,7 @@ impl MetaController {
 }
 
 fn read(ctx: &HttpContext) -> String {
-    let m = ctx.route_metadata();
+    let m = ctx.metadata();
     let tier = m
         .and_then(|m| m.get::<Tier>())
         .map(|t| t.0)

@@ -44,7 +44,7 @@ impl MathController {
 
     #[message_pattern("meta.echo")]
     async fn meta_echo(&self, _d: RpcData, c: &RpcContext) -> Result<RpcData, RpcError> {
-        let trace = c.get_metadata("trace").unwrap_or("none").to_string();
+        let trace = c.header("trace").unwrap_or("none").to_string();
         Ok(RpcData::json(serde_json::json!({ "trace": trace })))
     }
 

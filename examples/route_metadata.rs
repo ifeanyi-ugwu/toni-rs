@@ -10,7 +10,7 @@
 //!
 //! 1. Define metadata types (any Clone + Send + Sync + 'static type)
 //! 2. Attach metadata to routes with `#[set_metadata(YourType { ... })]`
-//! 3. Guards/interceptors read via `context.route_metadata()` + `.get::<YourType>()`
+//! 3. Guards/interceptors read via `context.metadata()` + `.get::<YourType>()`
 
 use toni::{
     async_trait,
@@ -50,9 +50,7 @@ pub struct RolesGuard;
 #[async_trait]
 impl Guard<HttpContext> for RolesGuard {
     async fn can_activate(&self, context: &HttpContext) -> bool {
-        let metadata = context
-            .route_metadata()
-            .expect("Route metadata not available");
+        let metadata = context.metadata().expect("Route metadata not available");
 
         if metadata.get::<Public>().is_some() {
             return true;
@@ -78,9 +76,7 @@ pub struct RateLimitGuard;
 #[async_trait]
 impl Guard<HttpContext> for RateLimitGuard {
     async fn can_activate(&self, context: &HttpContext) -> bool {
-        let metadata = context
-            .route_metadata()
-            .expect("Route metadata not available");
+        let metadata = context.metadata().expect("Route metadata not available");
 
         let Some(RateLimit {
             max_requests,

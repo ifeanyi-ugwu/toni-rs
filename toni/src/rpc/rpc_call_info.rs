@@ -1,4 +1,4 @@
-use crate::http_helpers::Extensions;
+use crate::http_helpers::TypeMap;
 use std::collections::HashMap;
 
 /// Wire-level call info passed by RPC adapters into the framework dispatcher.
@@ -19,7 +19,7 @@ pub struct RpcCallInfo {
     pub metadata: HashMap<String, String>,
 
     /// Type-erased transport-specific extensions.
-    pub extensions: Extensions,
+    pub extensions: TypeMap,
 }
 
 impl RpcCallInfo {
@@ -27,7 +27,7 @@ impl RpcCallInfo {
         Self {
             pattern: pattern.into(),
             metadata: HashMap::new(),
-            extensions: Extensions::new(),
+            extensions: TypeMap::new(),
         }
     }
 

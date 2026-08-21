@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::context::Metadata;
 use crate::context::WsContext;
-use crate::http_helpers::{ExecutionResult, RouteMetadata};
+use crate::http_helpers::ExecutionResult;
 
 use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput};
 
@@ -97,13 +98,13 @@ pub trait GatewayTrait: Send + Sync {
     async fn handle_event(&self, ctx: &WsContext) -> ExecutionResult<WsHandlerOutput, WsError>;
 
     /// What the gateway declares for every handler, before any handler adds to it.
-    fn get_route_metadata(&self) -> Arc<RouteMetadata> {
-        Arc::new(RouteMetadata::new())
+    fn metadata(&self) -> Arc<Metadata> {
+        Arc::new(Metadata::new())
     }
 
     /// Per-event metadata for handlers that declare their own, already merged over the gateway's.
-    /// An event absent from this list reads [`get_route_metadata`](Self::get_route_metadata).
-    fn handler_metadata(&self) -> Vec<(String, Arc<RouteMetadata>)> {
+    /// An event absent from this list reads [`metadata`](Self::metadata).
+    fn handler_metadata(&self) -> Vec<(String, Arc<Metadata>)> {
         Vec::new()
     }
 

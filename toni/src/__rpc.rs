@@ -18,8 +18,9 @@
 
 use async_trait::async_trait;
 
+use crate::context::Metadata;
 use crate::context::RpcContext;
-use crate::http_helpers::{ExecutionResult, RouteMetadata};
+use crate::http_helpers::ExecutionResult;
 use crate::rpc::{RpcData, RpcEnhancers, RpcError};
 
 /// Blanket "no patterns" defaults, implemented for every type. `#[patterns]` shadows these with
@@ -51,14 +52,14 @@ pub trait RpcHandlersBridge {
         RpcEnhancers::default()
     }
 
-    fn __toni_rpc_metadata() -> RouteMetadata
+    fn __toni_rpc_metadata() -> Metadata
     where
         Self: Sized,
     {
-        RouteMetadata::new()
+        Metadata::new()
     }
 
-    fn __toni_rpc_handler_metadata() -> Vec<(String, RouteMetadata)>
+    fn __toni_rpc_handler_metadata() -> Vec<(String, Metadata)>
     where
         Self: Sized,
     {

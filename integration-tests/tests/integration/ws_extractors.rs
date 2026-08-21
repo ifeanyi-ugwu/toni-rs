@@ -64,7 +64,7 @@ impl ExtractorGateway {
             .unwrap_or_else(|| "ABSENT".into());
         // The context reaches the handler, and its declared metadata is empty because this gateway
         // annotates nothing. Empty means not annotated here, rather than not populated.
-        let metadata_is_empty = ctx.route_metadata().is_none_or(|m| m.is_empty());
+        let metadata_is_empty = ctx.metadata().is_none_or(|m| m.is_empty());
         Ok(WsMessage::text(format!(
             "{principal}/{metadata_is_empty}/{}",
             !client.id.is_empty()
