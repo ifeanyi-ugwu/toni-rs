@@ -467,6 +467,20 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 ///
 /// A type nothing declared reads back as absent rather than as an error, which is what lets one
 /// guard serve annotated and unannotated handlers alike.
+///
+/// # Replacing or accumulating
+///
+/// Both declarations are kept, and the reader picks which it wants:
+///
+/// ```rust,ignore
+/// metadata.get::<Roles>()      // the handler's, or the block's where the handler declared none
+/// metadata.get_all::<Roles>()  // both, block first
+/// ```
+///
+/// `get` is the common case — most metadata is a setting, and the nearer declaration is the one
+/// that applies. `get_all` is for declarations that add up, where a handler's roles extend its
+/// controller's rather than replacing them. Nothing is combined for you: what it means to combine
+/// two values is known where their type is defined.
 #[proc_macro_attribute]
 pub fn set_metadata(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
