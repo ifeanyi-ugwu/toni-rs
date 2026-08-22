@@ -67,10 +67,15 @@ type-keyed map used as storage here and by `RpcCallInfo`.
 Every structural macro — HTTP controller, WebSocket gateway, RPC controller, gRPC service — collects
 `#[set_metadata]` at both levels and emits the impl-block entries first, the method entries second.
 
-A later `insert` shadows an earlier one, so method-level wins by position. That reproduces Nest's
-first-non-undefined result without a lookup-time search, and the merge happens in the macro while the
-types are still concrete. `getAllAndMerge` has no analogue here and is not added until something asks
-for one.
+Both are kept, in that order, and `metadata.get::<T>()` answers the last — so method-level wins by
+position. That reproduces Nest's first-non-undefined result without a lookup-time search.
+
+`metadata.get_all::<T>()` answers every declaration, least-specific first, which is where Nest reaches
+for `getAllAndMerge`. It combines nothing. Nest merges generically on the strength of arrays
+concatenating and objects spreading; Rust has no such operation for an arbitrary `T`, and inventing
+one guesses wrong on the first type that is a setting rather than a set — a rate limit spread into a
+hybrid nobody declared. What it means to combine two values is known where their type is defined,
+which is also where the reader that wants them combined lives.
 
 ### Declared metadata is `Metadata`, and lives in `context`
 
@@ -124,6 +129,8 @@ the misfiling this ADR corrects one level up.
 - A universal guard begins refusing what it admitted unchecked, on any transport where the annotation is
   present. That is the point of the change and the reason it is worth calling out.
 - One type named `Extensions` in the crate rather than two.
+- `Metadata::insert` records rather than replaces, and returns nothing. `Metadata::get` is unchanged
+  in what it answers and gains a `Clone` bound, every declared type being one already.
 - `get_metadata(k)` loses a `get_` prefix the Rust API guidelines discourage, and `headers()` /
   `header(k)` is a plural and its singular rather than two unrelated shapes.
 - A gRPC transport file imports `context::Metadata` and `tonic::metadata::MetadataMap` together. The
