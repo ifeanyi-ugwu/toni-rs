@@ -4,10 +4,12 @@
 //! `AbortSignal`. A Rust future stops when dropped. These pin that difference, since every decision
 //! about cancellation in this framework rests on it — see ADR 0021.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use bytes::Bytes;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serial_test::serial;
+use toni::context::{HandlerContext, HttpContext};
 use toni::{controller, get, module, routes, Body as ToniBody};
 
 use crate::common::TestServer;
@@ -91,4 +93,76 @@ async fn a_live_connection_does_not_drop_the_handler() {
         "nothing should be dropped while the client is still connected"
     );
     drop(request);
+}
+
+// ---- the tail a dropped future does not reach --------------------------------
+
+/// Whether the spawned producer learned the client had gone.
+static PRODUCER_SAW_CANCEL: AtomicBool = AtomicBool::new(false);
+/// How many expensive units the producer completed after the client left.
+static WORK_AFTER_DISCONNECT: AtomicUsize = AtomicUsize::new(0);
+
+#[controller("/tail")]
+pub struct TailController {}
+
+#[routes]
+impl TailController {
+    /// Returns a stream fed by a spawned task, which is the shape the token exists for: the handler
+    /// future is finished the moment this returns, so nothing drops the producer.
+    #[get("/stream")]
+    async fn stream(&self, ctx: &HttpContext) -> ToniBody {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+        let cancelled = ctx.cancellation().clone();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancelled.cancelled() => {
+                        PRODUCER_SAW_CANCEL.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    // Stands in for an expensive unit — a query, a page fetch. Without the arm
+                    // above, each one runs to completion before the send that would reveal the
+                    // client is gone.
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                        WORK_AFTER_DISCONNECT.fetch_add(1, Ordering::SeqCst);
+                        if tx.send(Ok(Bytes::from_static(b"tick"))).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        ToniBody::stream(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+#[module(controllers: [TailController])]
+impl TailModule {}
+
+/// The producer stops when the body is dropped, rather than at whatever it was going to do next.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_dropped_body_cancels_the_work_feeding_it() {
+    PRODUCER_SAW_CANCEL.store(false, Ordering::SeqCst);
+    WORK_AFTER_DISCONNECT.store(0, Ordering::SeqCst);
+
+    let server = TestServer::start(TailModule).await;
+    let response = server
+        .client()
+        .get(server.url("/tail/stream"))
+        .send()
+        .await
+        .expect("headers arrive before the body");
+
+    // Take one frame, then abandon the body mid-stream.
+    drop(response);
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    assert!(
+        PRODUCER_SAW_CANCEL.load(Ordering::SeqCst),
+        "the task feeding the body must learn the client went away"
+    );
 }

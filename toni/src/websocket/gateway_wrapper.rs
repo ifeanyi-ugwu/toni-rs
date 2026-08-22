@@ -26,7 +26,9 @@ use std::panic::AssertUnwindSafe;
 /// no pin machinery. The HTTP side does the same for response bodies.
 struct ScopedStream {
     inner: BoxStream<'static, WsMessage>,
-    _keep_alive: WsContext,
+    context: WsContext,
+    /// Set once the inner stream answers `None`, which is the end of it.
+    drained: bool,
 }
 
 impl futures::Stream for ScopedStream {
@@ -36,11 +38,27 @@ impl futures::Stream for ScopedStream {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_next(cx)
+        let this = self.get_mut();
+        let polled = std::pin::Pin::new(&mut this.inner).poll_next(cx);
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            this.drained = true;
+        }
+        polled
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
+    }
+}
+
+/// A stream dropped with messages still to come is the connection having gone. The handler returned
+/// when it had a stream, so whatever feeds that stream is not inside a future anything drops.
+impl Drop for ScopedStream {
+    fn drop(&mut self) {
+        if !self.drained {
+            use crate::context::HandlerContext as _;
+            self.context.cancellation().cancel();
+        }
     }
 }
 
@@ -289,7 +307,8 @@ impl GatewayWrapper {
             Ok(WsHandlerOutput::Stream(stream)) => Ok(WsHandlerOutput::Stream(
                 ScopedStream {
                     inner: stream,
-                    _keep_alive: context,
+                    context,
+                    drained: false,
                 }
                 .boxed(),
             )),
