@@ -25,9 +25,6 @@ pub use self::http_method::HttpMethod;
 mod into_response;
 pub use self::into_response::IntoResponse;
 
-mod type_map;
-pub use self::type_map::TypeMap;
-
 mod sse;
 pub use self::sse::{Sse, SseEvent, sse};
 

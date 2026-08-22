@@ -48,11 +48,14 @@ impl RpcContext {
     ///
     /// NATS headers, AMQP headers, Kafka record headers and MQTT user properties; `headers` is the one name this framework uses for all of them, leaving `metadata`
     /// to mean what `#[set_metadata]` declared.
+    #[doc(alias = "metadata")]
     pub fn headers(&self) -> &HashMap<String, String> {
         &self.inner.headers
     }
 
     /// One wire field by key.
+    #[doc(alias = "get_metadata")]
+    #[doc(alias = "metadata")]
     pub fn header(&self, key: &str) -> Option<&str> {
         self.inner.headers.get(key).map(|s| s.as_str())
     }

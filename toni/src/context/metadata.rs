@@ -20,7 +20,7 @@
 //! }
 //! ```
 
-use crate::http_helpers::TypeMap;
+use crate::type_map::TypeMap;
 
 /// A handler's declared configuration — roles, a rate-limit tier, a feature flag.
 ///

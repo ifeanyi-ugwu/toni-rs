@@ -5,15 +5,19 @@
 //! enhancers write and handlers read is [`Extensions`](crate::context::Extensions) instead, which
 //! is shared by handle and mutable through it.
 //!
+//! Nothing here is transport-specific. It sits at the crate root rather than under `http_helpers`
+//! because its two users are a declared-metadata map read on all four transports and an RPC call
+//! descriptor, and neither is HTTP.
+//!
 //! # Implementation Note
 //!
 //! This implementation is based on the `http` crate's Extensions type
-//! (https://docs.rs/http/1.3.1/http/struct.Extensions.html).
+//! (<https://docs.rs/http/1.3.1/http/struct.Extensions.html>).
 //!
 //! # Examples
 //!
 //! ```
-//! use toni::http_helpers::TypeMap;
+//! use toni::type_map::TypeMap;
 //!
 //! #[derive(Clone)]
 //! struct UserId(String);
@@ -78,7 +82,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
@@ -101,7 +105,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
@@ -123,7 +127,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct Counter(i32);
@@ -147,7 +151,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
@@ -169,7 +173,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
@@ -190,7 +194,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);
@@ -211,7 +215,7 @@ impl TypeMap {
     /// # Examples
     ///
     /// ```
-    /// use toni::http_helpers::TypeMap;
+    /// use toni::type_map::TypeMap;
     ///
     /// #[derive(Clone)]
     /// struct UserId(String);

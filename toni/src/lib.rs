@@ -40,6 +40,7 @@ mod structs_helpers;
 pub mod toni_application;
 pub mod toni_factory;
 pub mod traits_helpers;
+pub mod type_map;
 pub mod websocket;
 
 // Re-exported for use in macro-generated code — not part of the public API.
