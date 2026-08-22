@@ -15,8 +15,9 @@ pub struct RpcCallInfo {
     /// Transport-specific pattern/topic/channel identifier.
     pub pattern: String,
 
-    /// Message metadata (headers, properties, etc.).
-    pub metadata: HashMap<String, String>,
+    /// The wire fields the message arrived with — headers, user properties, record headers,
+    /// whatever the transport calls them.
+    pub headers: HashMap<String, String>,
 
     /// Type-erased transport-specific extensions.
     pub extensions: TypeMap,
@@ -26,17 +27,19 @@ impl RpcCallInfo {
     pub fn new(pattern: impl Into<String>) -> Self {
         Self {
             pattern: pattern.into(),
-            metadata: HashMap::new(),
+            headers: HashMap::new(),
             extensions: TypeMap::new(),
         }
     }
 
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.metadata.insert(key.into(), value.into());
+    #[doc(alias = "with_metadata")]
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
         self
     }
 
-    pub fn get_metadata(&self, key: &str) -> Option<&str> {
-        self.metadata.get(key).map(|s| s.as_str())
+    #[doc(alias = "get_metadata")]
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.headers.get(key).map(|s| s.as_str())
     }
 }

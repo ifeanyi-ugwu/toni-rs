@@ -59,8 +59,8 @@ impl RpcClient {
 
     /// Send a message and wait for the remote reply (request-response).
     ///
-    /// Carries no metadata. Use [`request`](Self::request) to attach per-call
-    /// metadata.
+    /// Carries no headers. Use [`request`](Self::request) to attach per-call
+    /// headers.
     pub async fn send(
         &self,
         pattern: impl AsRef<str>,
@@ -73,8 +73,8 @@ impl RpcClient {
 
     /// Send a message without waiting for a reply (fire-and-forget).
     ///
-    /// Carries no metadata. Use [`request`](Self::request) to attach per-call
-    /// metadata.
+    /// Carries no headers. Use [`request`](Self::request) to attach per-call
+    /// headers.
     pub async fn emit(
         &self,
         pattern: impl AsRef<str>,
@@ -85,15 +85,15 @@ impl RpcClient {
             .await
     }
 
-    /// Begin a request with per-call metadata (auth tokens, trace ids, tenant,
-    /// etc.). Chain [`metadata`](RpcRequest::metadata), then finish with
+    /// Begin a request with per-call headers (auth tokens, trace ids, tenant,
+    /// etc.). Chain [`header`](RpcRequest::header), then finish with
     /// [`send`](RpcRequest::send) / [`emit`](RpcRequest::emit) (or their typed
     /// `_json` variants).
     ///
     /// ```ignore
     /// client.request("inventory.restock")
-    ///     .metadata("trace-id", trace_id)
-    ///     .metadata("tenant", tenant)
+    ///     .header("trace-id", trace_id)
+    ///     .header("tenant", tenant)
     ///     .send(RpcData::json(payload))
     ///     .await?;
     /// ```
@@ -101,7 +101,7 @@ impl RpcClient {
         RpcRequest {
             client: self,
             pattern: pattern.into(),
-            metadata: HashMap::new(),
+            headers: HashMap::new(),
         }
     }
 
@@ -164,20 +164,25 @@ impl RpcClient {
     }
 }
 
-/// A pending RPC call accumulating per-call metadata before dispatch.
+/// A pending RPC call accumulating per-call headers before dispatch.
 ///
 /// Built by [`RpcClient::request`]; finish with [`send`](Self::send) /
 /// [`emit`](Self::emit) or their typed `_json` variants.
 pub struct RpcRequest<'a> {
     client: &'a RpcClient,
     pattern: String,
-    metadata: HashMap<String, String>,
+    headers: HashMap<String, String>,
 }
 
 impl RpcRequest<'_> {
-    /// Attach one metadata entry. Chainable; a repeated key overwrites.
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.metadata.insert(key.into(), value.into());
+    /// Attach one header. Chainable; a repeated key overwrites.
+    ///
+    /// The transport carries these as whatever it calls headers — NATS headers, AMQP headers, Kafka
+    /// record headers, MQTT user properties — and the handler reads them back through
+    /// [`RpcContext::headers`](crate::context::RpcContext::headers).
+    #[doc(alias = "metadata")]
+    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
         self
     }
 
@@ -185,7 +190,7 @@ impl RpcRequest<'_> {
     pub async fn send(self, data: RpcData) -> Result<RpcData, RpcClientError> {
         self.client
             .transport
-            .send(&self.pattern, data, self.metadata)
+            .send(&self.pattern, data, self.headers)
             .await
     }
 
@@ -193,7 +198,7 @@ impl RpcRequest<'_> {
     pub async fn emit(self, data: RpcData) -> Result<(), RpcClientError> {
         self.client
             .transport
-            .emit(&self.pattern, data, self.metadata)
+            .emit(&self.pattern, data, self.headers)
             .await
     }
 
@@ -208,7 +213,7 @@ impl RpcRequest<'_> {
         let reply = self
             .client
             .transport
-            .send(&self.pattern, payload, self.metadata)
+            .send(&self.pattern, payload, self.headers)
             .await?;
         reply
             .parse::<R>()
@@ -224,7 +229,7 @@ impl RpcRequest<'_> {
             RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
         self.client
             .transport
-            .emit(&self.pattern, payload, self.metadata)
+            .emit(&self.pattern, payload, self.headers)
             .await
     }
 }

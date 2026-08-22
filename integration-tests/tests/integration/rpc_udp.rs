@@ -597,7 +597,7 @@ async fn udp_client_metadata_reaches_handler() {
 
     let resp = client
         .request("meta.echo")
-        .metadata("trace", "abc123")
+        .header("trace", "abc123")
         .send(RpcData::json(serde_json::json!({})))
         .await
         .expect("metadata request should round-trip");

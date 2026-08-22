@@ -136,7 +136,7 @@ async fn handle_publish(
     };
 
     let mut ctx = RpcCallInfo::new(topic);
-    ctx.metadata = metadata;
+    ctx.headers = metadata;
 
     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
         .catch_unwind()

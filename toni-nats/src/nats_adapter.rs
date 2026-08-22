@@ -141,7 +141,7 @@ impl RpcAdapter for NatsAdapter {
                             if let Some(headers) = headers {
                                 for (name, values) in headers.iter() {
                                     if let Some(first) = values.iter().next() {
-                                        ctx.metadata
+                                        ctx.headers
                                             .insert(name.to_string(), first.to_string());
                                     }
                                 }

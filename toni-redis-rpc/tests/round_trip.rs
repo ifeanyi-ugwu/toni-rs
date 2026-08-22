@@ -119,7 +119,7 @@ async fn redis_rpc_send_emit_and_metadata() {
             // handler's RpcContext and round-trip back.
             let resp = client
                 .request("meta.echo")
-                .metadata("trace", "abc123")
+                .header("trace", "abc123")
                 .send(RpcData::json(serde_json::json!({})))
                 .await
                 .expect("metadata request should round-trip");
