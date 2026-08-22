@@ -1,6 +1,6 @@
 # 0020 — Declared metadata reaches every transport, and wire fields are headers
 
-Status: proposed
+Status: accepted
 
 ## Context
 
@@ -81,21 +81,39 @@ The attribute is `#[set_metadata]`, so the getter is `metadata()`. `#[set_metada
 read back as `route_metadata()` is an asymmetry that has escaped notice while one transport uses it,
 and "route" stops being true the moment a WebSocket event or an RPC pattern carries it.
 
-### Wire fields are `headers`
+### Wire fields are `headers`, and not by choice
 
 `RpcContext` and `GrpcContext` expose `headers()` and `header(k)` in place of `metadata()` and
 `get_metadata(k)`.
 
-This is a deliberate infidelity on gRPC, whose specification calls these metadata. It is paid because
-one unambiguous word per concept on one object is worth more than protocol fidelity in a name; the
-alternative leaves two methods a character apart meaning unrelated things. **The doc comments say
-gRPC calls these metadata**, keeping the spec term findable by search.
+This follows from the rename above rather than standing beside it. The two names coexisted for as
+long as they differed: `HandlerContext::route_metadata()` and an inherent `RpcContext::metadata()`
+never met. The moment the trait method is `metadata()`, an inherent `metadata()` on the same type
+shadows it — and only where the receiver's concrete type is known:
 
-### The storage primitive is named for what it is
+```rust
+fn generic<C: HandlerContext>(c: &C) -> _ { c.metadata() }  // declared — no inherent candidate
+fn concrete(c: &GrpcContext)      -> _ { c.metadata() }     // wire — inherent wins
+```
+
+Both compile. `rustc` and `clippy` report nothing at either site. A guard written over
+`impl<C: HandlerContext>` would read what `#[set_metadata]` declared, and the identical line in a
+handler body, or in a guard specialised to one transport, would read the fields off the wire. That is
+the fail-open this ADR opens with in a second form, on `RpcContext` and `GrpcContext` alike.
+
+Most of the transports behind `RpcContext` call these headers already — AMQP, Kafka and NATS by name,
+MQTT's user properties by shape. gRPC's specification calls them metadata, which is the one place the
+name gives something up. `#[doc(alias = "metadata")]` on both accessors puts them in rustdoc's search
+index under the spec term, so the word still finds them.
+
+### The storage primitive is named for what it is, and filed where it belongs
 
 `http_helpers::Extensions` becomes `TypeMap`, keeping its synchronous shape, and its module doc stops
-describing the request bag. `Metadata` and `RpcCallInfo` are built on it. `context::Extensions` is then
-the only `Extensions` in the crate.
+describing the request bag. `context::Extensions` is then the only `Extensions` in the crate.
+
+It moves to `toni::type_map` rather than staying under `http_helpers`, its two users being a declared
+map read on four transports and an RPC call descriptor. Leaving it there would repeat one level down
+the misfiling this ADR corrects one level up.
 
 ## Consequences
 
@@ -106,6 +124,11 @@ the only `Extensions` in the crate.
 - A universal guard begins refusing what it admitted unchecked, on any transport where the annotation is
   present. That is the point of the change and the reason it is worth calling out.
 - One type named `Extensions` in the crate rather than two.
+- `get_metadata(k)` loses a `get_` prefix the Rust API guidelines discourage, and `headers()` /
+  `header(k)` is a plural and its singular rather than two unrelated shapes.
+- A gRPC transport file imports `context::Metadata` and `tonic::metadata::MetadataMap` together. The
+  names differ enough to compile and not enough to skim, which is worth knowing before it is
+  rediscovered.
 
 ## Roads not taken
 
@@ -116,5 +139,3 @@ the only `Extensions` in the crate.
 **Merging parent and child at read time.** Requires walking a target list on every lookup and returning
 owned values through `dyn Any`. Insertion order settles it once, at expansion.
 
-**Leaving the wire accessors as `metadata()` and renaming only the declared side.** Preserves gRPC's
-spec term and leaves the two most confusable things on the context differing by a prefix.
