@@ -205,7 +205,7 @@ async fn handle_message(
     };
 
     let mut ctx = RpcCallInfo::new(channel);
-    ctx.metadata = metadata;
+    ctx.headers = metadata;
 
     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
         .catch_unwind()

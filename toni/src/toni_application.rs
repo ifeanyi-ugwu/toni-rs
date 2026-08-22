@@ -840,7 +840,7 @@ fn make_rpc_callbacks(wrappers: Vec<Arc<RpcControllerWrapper>>) -> RpcMessageCal
         Box::pin(async move {
             let pattern = ctx.pattern.clone();
             if let Some(wrapper) = pattern_map.get(&pattern) {
-                wrapper.handle_message(data, ctx.metadata, pattern).await
+                wrapper.handle_message(data, ctx.headers, pattern).await
             } else {
                 Err(RpcError::PatternNotFound(pattern))
             }

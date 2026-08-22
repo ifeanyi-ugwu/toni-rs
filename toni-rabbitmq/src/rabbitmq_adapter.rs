@@ -155,7 +155,7 @@ async fn handle_delivery(
 
     let data = bytes_to_data(&delivery.data);
     let mut ctx = RpcCallInfo::new(delivery.routing_key.to_string());
-    ctx.metadata = metadata;
+    ctx.headers = metadata;
 
     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
         .catch_unwind()

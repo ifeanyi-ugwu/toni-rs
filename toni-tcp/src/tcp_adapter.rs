@@ -310,7 +310,7 @@ async fn handle_connection(
                     peer = %addr,
                 );
                 let mut ctx = RpcCallInfo::new(pattern);
-                ctx.metadata = extract_metadata(&msg);
+                ctx.headers = extract_metadata(&msg);
 
                 // Backpressure: try to claim a permit before spawning. If
                 // the cap is full, reject inline (write is cheap) so the

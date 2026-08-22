@@ -366,7 +366,7 @@ async fn handle_datagram(
         peer = %src,
     );
     let mut ctx = RpcCallInfo::new(pattern);
-    ctx.metadata = extract_metadata(&msg);
+    ctx.headers = extract_metadata(&msg);
 
     async move {
         let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
