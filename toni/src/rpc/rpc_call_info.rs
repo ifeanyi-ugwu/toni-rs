@@ -1,4 +1,4 @@
-use crate::http_helpers::TypeMap;
+use crate::type_map::TypeMap;
 use std::collections::HashMap;
 
 /// Wire-level call info passed by RPC adapters into the framework dispatcher.
