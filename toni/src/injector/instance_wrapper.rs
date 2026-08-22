@@ -269,10 +269,18 @@ impl InstanceWrapper {
         // nothing yet at this point, so the context rides it to the last frame
         // rather than dying here with the handler.
         match response.body {
-            Some(body) => HttpResponse {
-                body: Some(body.keep_alive(context)),
-                ..response
-            },
+            Some(body) => {
+                // Dropped owing frames, the client is gone. Work feeding the body escaped the
+                // handler's future and would otherwise learn only at its next send.
+                let cancellation = context.cancellation().clone();
+                HttpResponse {
+                    body: Some(
+                        body.keep_alive(context)
+                            .on_abandoned(move || cancellation.cancel()),
+                    ),
+                    ..response
+                }
+            }
             None => response,
         }
     }

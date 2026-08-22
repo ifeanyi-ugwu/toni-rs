@@ -25,6 +25,12 @@ enum BodyInner {
 struct ScopedBody {
     inner: BoxBody,
     _keep_alive: Box<dyn std::any::Any + Send>,
+    /// Run when this is dropped with frames still to come. Held as a callback rather than a
+    /// cancellation token because a body knows nothing about executions, and `http_helpers`
+    /// depending on `context` would point an edge back the way it already runs.
+    on_abandoned: Option<Box<dyn FnOnce() + Send>>,
+    /// Set once the inner body answers `None` or an error, either being the end of it.
+    drained: bool,
 }
 
 impl http_body::Body for ScopedBody {
@@ -35,7 +41,15 @@ impl http_body::Body for ScopedBody {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_frame(cx)
+        let this = self.get_mut();
+        let polled = std::pin::Pin::new(&mut this.inner).poll_frame(cx);
+        if matches!(
+            polled,
+            std::task::Poll::Ready(None) | std::task::Poll::Ready(Some(Err(_)))
+        ) {
+            this.drained = true;
+        }
+        polled
     }
 
     fn is_end_stream(&self) -> bool {
@@ -44,6 +58,19 @@ impl http_body::Body for ScopedBody {
 
     fn size_hint(&self) -> http_body::SizeHint {
         self.inner.size_hint()
+    }
+}
+
+/// A body dropped with frames still owed is the client having gone. Nothing else observes that: the
+/// handler returned when it had a stream, and whatever feeds that stream is not inside the future
+/// hyper drops.
+impl Drop for ScopedBody {
+    fn drop(&mut self) {
+        if !self.drained {
+            if let Some(on_abandoned) = self.on_abandoned.take() {
+                on_abandoned();
+            }
+        }
     }
 }
 
@@ -78,7 +105,6 @@ impl fmt::Debug for BodyInner {
 /// ]))
 /// .with_content_type("text/plain; charset=utf-8")
 /// ```
-#[derive(Debug)]
 pub struct Body {
     inner: BodyInner,
     content_type: Option<String>,
@@ -88,6 +114,17 @@ pub struct Body {
     /// answer is. Whatever the dispatcher parks here is dropped by the adapter
     /// after the last frame, not at handler return.
     keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    /// Run when the body is dropped owing frames — see [`on_abandoned`](Self::on_abandoned).
+    on_abandoned: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Body")
+            .field("inner", &self.inner)
+            .field("content_type", &self.content_type)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Body {
@@ -97,6 +134,7 @@ impl Body {
             inner: BodyInner::Buffered(Bytes::from(s.into().into_bytes())),
             content_type: Some("text/plain; charset=utf-8".to_string()),
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -106,6 +144,7 @@ impl Body {
             inner: BodyInner::Buffered(Bytes::from(serde_json::to_vec(&value).unwrap_or_default())),
             content_type: Some("application/json".to_string()),
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -115,6 +154,7 @@ impl Body {
             inner: BodyInner::Buffered(Bytes::from(data.into())),
             content_type: Some("application/octet-stream".to_string()),
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -124,6 +164,7 @@ impl Body {
             inner: BodyInner::Buffered(Bytes::new()),
             content_type: None,
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -145,6 +186,7 @@ impl Body {
             inner: BodyInner::Streaming(BodyExt::boxed_unsync(StreamBody::new(frames))),
             content_type: None,
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -180,6 +222,7 @@ impl Body {
             inner: BodyInner::Streaming(box_body),
             content_type: None,
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 
@@ -194,9 +237,21 @@ impl Body {
         self
     }
 
+    /// Run `f` if this body is dropped before its last frame.
+    ///
+    /// The dispatcher fires the execution's cancellation token here, so work feeding a stream can
+    /// stop at the moment the client goes rather than at its next send.
+    pub fn on_abandoned(mut self, f: impl FnOnce() + Send + 'static) -> Self {
+        self.on_abandoned = Some(Box::new(f));
+        self
+    }
+
     pub fn into_box_body(self) -> BoxBody {
         let Self {
-            inner, keep_alive, ..
+            inner,
+            keep_alive,
+            on_abandoned,
+            ..
         } = self;
         let body = match inner {
             BodyInner::Buffered(bytes) => http_body_util::Full::new(bytes)
@@ -204,13 +259,15 @@ impl Body {
                 .boxed_unsync(),
             BodyInner::Streaming(box_body) => box_body,
         };
-        match keep_alive {
-            Some(guard) => ScopedBody {
+        match (keep_alive, on_abandoned) {
+            (None, None) => body,
+            (keep_alive, on_abandoned) => ScopedBody {
                 inner: body,
-                _keep_alive: guard,
+                _keep_alive: keep_alive.unwrap_or_else(|| Box::new(())),
+                on_abandoned,
+                drained: false,
             }
             .boxed_unsync(),
-            None => body,
         }
     }
 }
@@ -221,6 +278,7 @@ impl From<Bytes> for Body {
             inner: BodyInner::Buffered(bytes),
             content_type: None,
             keep_alive: None,
+            on_abandoned: None,
         }
     }
 }
