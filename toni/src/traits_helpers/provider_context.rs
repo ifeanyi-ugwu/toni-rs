@@ -48,6 +48,28 @@ impl ProviderContext {
         }
     }
 
+    /// Refuses a provider whose scope this execution cannot satisfy.
+    ///
+    /// A request-scoped instance lives in the execution's cache. Where there is no
+    /// execution there is nowhere to put it, and the generated provider panics on
+    /// the missing cache — so a caller resolving by hand checks here first and
+    /// returns the refusal instead.
+    pub(crate) fn ensure_can_build(
+        &self,
+        scope: crate::ProviderScope,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        if scope == crate::ProviderScope::Request && self.cache().is_none() {
+            return Err(anyhow::anyhow!(
+                "Provider '{}' is request-scoped and cannot be built outside an execution. \
+                 Resolve it in one with `resolve` on the application.",
+                token
+            ));
+        }
+
+        Ok(())
+    }
+
     /// The HTTP request parts, when this execution is an HTTP one.
     pub fn request_parts(&self) -> Option<&crate::http_helpers::RequestPart> {
         match self {

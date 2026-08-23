@@ -68,7 +68,7 @@ impl ToniApplicationContext {
     pub async fn get<T: 'static>(&self) -> Result<T> {
         let token = std::any::type_name::<T>().to_string();
         let provider = self.provider_in_any_module(&token)?;
-        refuse_request_scope(&provider, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
         downcast(
             provider.execute(vec![], ProviderContext::None).await,
@@ -80,7 +80,7 @@ impl ToniApplicationContext {
     pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T> {
         let token = std::any::type_name::<T>().to_string();
         let provider = self.provider_in_module(module_token, &token)?;
-        refuse_request_scope(&provider, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
         downcast(
             provider.execute(vec![], ProviderContext::None).await,
@@ -92,7 +92,7 @@ impl ToniApplicationContext {
     pub async fn get_by_token<T: 'static>(&self, token: impl IntoToken) -> Result<T> {
         let token = token.into_token();
         let provider = self.provider_in_any_module(&token)?;
-        refuse_request_scope(&provider, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
         downcast(
             provider.execute(vec![], ProviderContext::None).await,
@@ -108,7 +108,7 @@ impl ToniApplicationContext {
     ) -> Result<T> {
         let token = token.into_token();
         let provider = self.provider_in_module(module_token, &token)?;
-        refuse_request_scope(&provider, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
         downcast(
             provider.execute(vec![], ProviderContext::None).await,
@@ -249,19 +249,6 @@ impl ToniApplicationContext {
             }
         }
     }
-}
-
-/// A request-scoped provider cannot be built here: there is no execution to build it into.
-fn refuse_request_scope(provider: &Arc<Box<dyn Provider>>, token: &str) -> Result<()> {
-    if provider.get_scope() == crate::ProviderScope::Request {
-        return Err(anyhow::anyhow!(
-            "Provider '{}' is request-scoped and cannot be retrieved from ToniApplicationContext. \
-             Request-scoped providers are only available within an active HTTP request.",
-            token
-        ));
-    }
-
-    Ok(())
 }
 
 fn downcast<T: 'static>(instance: Box<dyn Any + Send>, token: &str) -> Result<T> {

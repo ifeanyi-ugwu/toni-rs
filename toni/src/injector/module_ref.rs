@@ -161,8 +161,11 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
             }
         };
 
+        let execution = crate::traits_helpers::ProviderContext::None;
+        execution.ensure_can_build(provider_instance.get_scope(), &self.token)?;
+
         provider_instance
-            .execute(vec![], crate::traits_helpers::ProviderContext::None)
+            .execute(vec![], execution)
             .await
             .downcast::<T>()
             .map(|boxed| *boxed)
