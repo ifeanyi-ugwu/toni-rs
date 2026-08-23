@@ -24,8 +24,9 @@ use crate::websocket::{WsClient, WsMessage};
 
 /// The client that sent the message.
 ///
-/// A clone scoped to this message — see [`WsClient::extensions`], which is the
-/// message's bag rather than the connection's.
+/// A clone of the connection's client. What it carries — the handshake, and the
+/// [`session`](WsClient::session) — outlives this message; the bag that empties
+/// with the message is [`Extensions`](crate::context::Extensions).
 impl FromContext<WsContext> for WsClient {
     type Error = Infallible;
 
