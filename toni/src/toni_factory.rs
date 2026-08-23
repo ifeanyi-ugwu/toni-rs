@@ -172,21 +172,30 @@ impl ToniFactory {
     }
 
     /// Shorthand for `ToniFactory::new().create_with(...)` when no factory config is needed
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module graph fails to initialize — see
+    /// [`create_with`](Self::create_with).
     pub async fn create(module: impl ModuleMetadata + 'static) -> ToniApplication {
         Self::new().create_with(module).await
     }
 
     /// Builds the application from the root module, installing the
     /// [default logger](ToniFactory#logging) first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module graph fails to initialize: an unresolvable
+    /// dependency, a provider cycle, or a global-export clash between two
+    /// modules. None of these are recoverable at runtime, and the panic unwinds
+    /// so buffered log writers still flush.
     pub async fn create_with(&self, module: impl ModuleMetadata + 'static) -> ToniApplication {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
         match self.initialize(Box::new(module), container.clone()).await {
             Ok(_) => (),
-            Err(e) => {
-                tracing::error!(error = %e, "Critical error during module initialization");
-                std::process::exit(1);
-            }
+            Err(e) => panic!("module initialization failed: {e}"),
         };
 
         ToniApplication::new(container)
@@ -194,12 +203,22 @@ impl ToniFactory {
 
     /// Standalone DI container for CLI tools, cron jobs, and background
     /// workers. Installs the [default logger](ToniFactory#logging).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the module graph fails to initialize — see
+    /// [`create_with`](Self::create_with).
     pub async fn create_application_context(
         module: impl ModuleMetadata + 'static,
     ) -> ToniApplicationContext {
         Self::new().create_application_context_with(module).await
     }
 
+    /// # Panics
+    ///
+    /// Panics if the module graph fails to initialize — see
+    /// [`create_with`](Self::create_with). A bootstrap hook that fails is
+    /// logged and does not panic.
     pub async fn create_application_context_with(
         &self,
         module: impl ModuleMetadata + 'static,
@@ -208,10 +227,7 @@ impl ToniFactory {
 
         match self.initialize(Box::new(module), container.clone()).await {
             Ok(_) => (),
-            Err(e) => {
-                tracing::error!(error = %e, "Critical error during module initialization");
-                std::process::exit(1);
-            }
+            Err(e) => panic!("module initialization failed: {e}"),
         };
 
         // HTTP adapters trigger bootstrap through their own init; standalone needs it explicitly
