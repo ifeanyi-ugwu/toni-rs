@@ -1,4 +1,5 @@
-use super::FromRequestParts;
+use super::FromContext;
+use crate::context::HttpContext;
 use crate::http_helpers::{PathParams, RequestPart};
 use serde::de::DeserializeOwned;
 use std::str::FromStr;
@@ -66,12 +67,13 @@ where
         .map_err(|e| PathError::ParseError(format!("{}: {}", name, e)))
 }
 
-impl<T: DeserializeOwned> FromRequestParts for Path<T> {
+impl<T: DeserializeOwned> FromContext<HttpContext> for Path<T> {
     type Error = PathError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         let empty = std::collections::HashMap::new();
-        let params = parts
+        let params = ctx
+            .request()
             .extensions
             .get::<PathParams>()
             .map_or(&empty, |p| &p.0);
@@ -112,7 +114,7 @@ mod tests {
     use serde::Deserialize;
     use std::collections::HashMap;
 
-    fn parts_with(params: &[(&str, &str)]) -> RequestPart {
+    fn ctx_with(params: &[(&str, &str)]) -> HttpContext {
         let (mut parts, _) = http::Request::builder()
             .uri("/")
             .body(())
@@ -123,37 +125,37 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         parts.extensions.insert(PathParams(map));
-        parts
+        HttpContext::from_parts(parts)
     }
 
-    #[test]
-    fn scalar_i32() {
-        let parts = parts_with(&[("id", "42")]);
-        let Path(id) = Path::<i32>::from_request_parts(&parts).unwrap();
+    #[tokio::test]
+    async fn scalar_i32() {
+        let ctx = ctx_with(&[("id", "42")]);
+        let Path(id) = Path::<i32>::extract(&ctx).await.unwrap();
         assert_eq!(id, 42);
     }
 
-    #[test]
-    fn scalar_bool() {
-        let parts = parts_with(&[("flag", "true")]);
-        let Path(flag) = Path::<bool>::from_request_parts(&parts).unwrap();
+    #[tokio::test]
+    async fn scalar_bool() {
+        let ctx = ctx_with(&[("flag", "true")]);
+        let Path(flag) = Path::<bool>::extract(&ctx).await.unwrap();
         assert!(flag);
     }
 
-    #[test]
-    fn scalar_string_stays_verbatim() {
+    #[tokio::test]
+    async fn scalar_string_stays_verbatim() {
         // Values that lex as JSON scalars must not be re-typed for Path<String>.
         for raw in ["42", "true", "007"] {
-            let parts = parts_with(&[("v", raw)]);
-            let Path(v) = Path::<String>::from_request_parts(&parts).unwrap();
+            let ctx = ctx_with(&[("v", raw)]);
+            let Path(v) = Path::<String>::extract(&ctx).await.unwrap();
             assert_eq!(v, raw);
         }
     }
 
-    #[test]
-    fn scalar_parse_failure_is_an_error() {
-        let parts = parts_with(&[("id", "abc")]);
-        assert!(Path::<i32>::from_request_parts(&parts).is_err());
+    #[tokio::test]
+    async fn scalar_parse_failure_is_an_error() {
+        let ctx = ctx_with(&[("id", "abc")]);
+        assert!(Path::<i32>::extract(&ctx).await.is_err());
     }
 
     #[derive(Debug, Deserialize)]
@@ -162,10 +164,10 @@ mod tests {
         name: String,
     }
 
-    #[test]
-    fn struct_with_typed_fields() {
-        let parts = parts_with(&[("id", "42"), ("name", "alice")]);
-        let Path(m) = Path::<Mixed>::from_request_parts(&parts).unwrap();
+    #[tokio::test]
+    async fn struct_with_typed_fields() {
+        let ctx = ctx_with(&[("id", "42"), ("name", "alice")]);
+        let Path(m) = Path::<Mixed>::extract(&ctx).await.unwrap();
         assert_eq!(m.id, 42);
         assert_eq!(m.name, "alice");
     }
@@ -175,17 +177,17 @@ mod tests {
         code: String,
     }
 
-    #[test]
-    fn struct_string_field_keeps_leading_zeros() {
-        let parts = parts_with(&[("code", "007")]);
-        let Path(c) = Path::<Code>::from_request_parts(&parts).unwrap();
+    #[tokio::test]
+    async fn struct_string_field_keeps_leading_zeros() {
+        let ctx = ctx_with(&[("code", "007")]);
+        let Path(c) = Path::<Code>::extract(&ctx).await.unwrap();
         assert_eq!(c.code, "007");
     }
 
-    #[test]
-    fn value_with_spaces_round_trips() {
-        let parts = parts_with(&[("name", "a b c")]);
-        let Path(v) = Path::<String>::from_request_parts(&parts).unwrap();
+    #[tokio::test]
+    async fn value_with_spaces_round_trips() {
+        let ctx = ctx_with(&[("name", "a b c")]);
+        let Path(v) = Path::<String>::extract(&ctx).await.unwrap();
         assert_eq!(v, "a b c");
     }
 
@@ -194,14 +196,15 @@ mod tests {
         id: Option<i32>,
     }
 
-    #[test]
-    fn missing_params_extension_deserializes_optionals() {
+    #[tokio::test]
+    async fn missing_params_extension_deserializes_optionals() {
         let (parts, _) = http::Request::builder()
             .uri("/")
             .body(())
             .unwrap()
             .into_parts();
-        let Path(v) = Path::<AllOptional>::from_request_parts(&parts).unwrap();
+        let ctx = HttpContext::from_parts(parts);
+        let Path(v) = Path::<AllOptional>::extract(&ctx).await.unwrap();
         assert_eq!(v.id, None);
     }
 }

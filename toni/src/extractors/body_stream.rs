@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
-use super::FromRequest;
+use super::{BodyExtractionError, FromContext, take_body};
+use crate::context::HttpContext;
 use crate::http_helpers::{HttpRequest, RequestBody, RequestBoxBody};
 
 /// Extracts the request body as a raw, unbuffered stream.
@@ -67,20 +68,26 @@ impl std::fmt::Display for BodyStreamError {
 
 impl std::error::Error for BodyStreamError {}
 
-impl FromRequest for BodyStream {
-    type Error = BodyStreamError;
+impl FromContext<HttpContext> for BodyStream {
+    type Error = BodyExtractionError<BodyStreamError>;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (_, body) = req.into_parts();
-        match body {
-            RequestBody::Streaming(s) => Ok(BodyStream(s)),
-            RequestBody::Buffered(b) => {
-                use http_body_util::{BodyExt as _, Full};
-                let box_body = Full::new(b)
-                    .map_err(|never: std::convert::Infallible| match never {})
-                    .boxed_unsync();
-                Ok(BodyStream(box_body))
-            }
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        read(take_body::<Self>(ctx)?)
+            .await
+            .map_err(BodyExtractionError::Extract)
+    }
+}
+
+async fn read(req: HttpRequest) -> Result<BodyStream, BodyStreamError> {
+    let (_, body) = req.into_parts();
+    match body {
+        RequestBody::Streaming(s) => Ok(BodyStream(s)),
+        RequestBody::Buffered(b) => {
+            use http_body_util::{BodyExt as _, Full};
+            let box_body = Full::new(b)
+                .map_err(|never: std::convert::Infallible| match never {})
+                .boxed_unsync();
+            Ok(BodyStream(box_body))
         }
     }
 }

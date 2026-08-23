@@ -49,7 +49,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
     // If no argument provided, extract as struct using Query<T>
     let Some(marker_arg) = &marker_param.marker_arg else {
         let extract_token_stream = quote! {
-            let #param_name = match <::toni::extractors::Query<#param_type> as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
+            let #param_name = match <::toni::extractors::Query<#param_type> as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await {
                 Ok(::toni::extractors::Query(value)) => value,
                 Err(e) => {
                     let error_body = ::toni::serde_json::json!({
@@ -80,7 +80,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                 let #param_name: #param_type = {
                     let __qp: std::collections::HashMap<String, String> =
                         <::toni::extractors::Query<std::collections::HashMap<String, String>>
-                            as ::toni::FromRequestParts>::from_request_parts(&_req_parts)
+                            as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await
                         .map(|q| q.0)
                         .unwrap_or_default();
                     __qp.get(#marker_arg)
@@ -93,7 +93,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                 let #param_name: #param_type = {
                     let __qp: std::collections::HashMap<String, String> =
                         <::toni::extractors::Query<std::collections::HashMap<String, String>>
-                            as ::toni::FromRequestParts>::from_request_parts(&_req_parts)
+                            as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await
                         .map(|q| q.0)
                         .unwrap_or_default();
                     match __qp.get(#marker_arg) {
@@ -121,7 +121,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
                 let #param_name: #param_type = {
                     let __qp: std::collections::HashMap<String, String> =
                         <::toni::extractors::Query<std::collections::HashMap<String, String>>
-                            as ::toni::FromRequestParts>::from_request_parts(&_req_parts)
+                            as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await
                         .map(|q| q.0)
                         .unwrap_or_default();
                     match __qp.get(#marker_arg) {
@@ -158,7 +158,7 @@ pub fn extract_query_from_param(marker_param: &MarkerParam) -> Result<TokenStrea
     } else {
         // For complex types, use Query<T> extractor
         quote! {
-            let #param_name = match <::toni::Query<#param_type> as ::toni::FromRequestParts>::from_request_parts(&_req_parts) {
+            let #param_name = match <::toni::Query<#param_type> as ::toni::extractors::FromContext<::toni::context::HttpContext>>::extract(__ctx).await {
                 Ok(::toni::Query(value)) => value,
                 Err(e) => {
                     let error_body = ::toni::serde_json::json!({
