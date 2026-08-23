@@ -225,7 +225,8 @@ impl MiddlewareConsumer {
         MiddlewareConfigProxy { consumer: self }
     }
 
-    /// Apply a [`tower::Layer`] directly as middleware, without wrapping it in [`TowerLayer`].
+    /// Apply a [`tower::Layer`] directly as middleware, without wrapping it in
+    /// [`TowerLayer`](crate::TowerLayer).
     ///
     /// This is sugar for `.apply(TowerLayer::new(layer))`. Use it when composing
     /// Tower layers via `ServiceBuilder::into_inner()` or passing a single layer inline.

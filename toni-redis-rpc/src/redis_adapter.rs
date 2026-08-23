@@ -12,7 +12,7 @@ use crate::wire::{frame_panic, frame_response, RequestEnvelope};
 /// maps directly to a channel name — exact match, no glob; patterns containing
 /// Redis glob characters will not match anything.
 ///
-/// **Request-response**: the caller's [`RequestEnvelope`] carries a `reply_to`
+/// **Request-response**: the caller's request envelope carries a `reply_to`
 /// channel; the adapter publishes the framed response there.
 ///
 /// **Fire-and-forget**: no `reply_to`; the handler runs and nothing is sent
