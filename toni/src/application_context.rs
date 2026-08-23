@@ -3,13 +3,13 @@
 //! Use this for CLI tools, CRON jobs, background workers, and other
 //! scenarios where you need dependency injection without an HTTP server.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
 use anyhow::Result;
 
 use crate::{
-    context::HttpContext,
     injector::{IntoToken, ToniContainer},
+    traits_helpers::{Provider, ProviderContext},
 };
 
 /// Full DI container without an HTTP server
@@ -22,134 +22,81 @@ impl ToniApplicationContext {
         Self { container }
     }
 
-    /// Returns an instance of `T` from the DI container, searching across all modules
-    pub async fn get<T: 'static>(&self) -> Result<T> {
-        let provider_token = std::any::type_name::<T>().to_string();
+    /// The provider registered under `token`, from whichever module holds it.
+    ///
+    /// The instance is cloned out so the container borrow ends here rather than
+    /// spanning the `execute` that follows.
+    fn provider_in_any_module(&self, token: &str) -> Result<Arc<Box<dyn Provider>>> {
+        let container = self.container.borrow();
+        let token = token.to_string();
 
-        let provider_instance = {
-            let container = self.container.borrow();
-            let modules = container.get_modules_token();
+        container
+            .get_modules_token()
+            .iter()
+            .find_map(|module_token| {
+                container
+                    .get_provider_instance_by_token(module_token, &token)
+                    .ok()
+                    .flatten()
+                    .cloned()
+            })
+            .ok_or_else(|| anyhow::anyhow!("Provider '{}' not found in any module", token))
+    }
 
-            let mut found_instance = None;
-            for module_token in modules {
-                if let Ok(Some(instance)) =
-                    container.get_provider_instance_by_token(&module_token, &provider_token)
-                {
-                    found_instance = Some(instance.clone());
-                    break;
-                }
-            }
+    /// The provider registered under `token` in one named module.
+    fn provider_in_module(
+        &self,
+        module_token: &str,
+        token: &str,
+    ) -> Result<Arc<Box<dyn Provider>>> {
+        let container = self.container.borrow();
 
-            found_instance.ok_or_else(|| {
-                anyhow::anyhow!("Provider '{}' not found in any module", provider_token)
-            })?
-        };
-
-        if provider_instance.get_scope() == crate::ProviderScope::Request {
-            return Err(anyhow::anyhow!(
-                "Provider '{}' is request-scoped and cannot be retrieved from ToniApplicationContext. \
-                 Request-scoped providers are only available within an active HTTP request.",
-                provider_token
-            ));
-        }
-
-        let instance_any = provider_instance
-            .execute(vec![], crate::traits_helpers::ProviderContext::None)
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
+        container
+            .get_provider_instance_by_token(&module_token.to_string(), &token.to_string())?
+            .cloned()
+            .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    provider_token
+                    "Provider '{}' not found in module '{}'",
+                    token,
+                    module_token
                 )
             })
+    }
+
+    /// Returns an instance of `T` from the DI container, searching across all modules
+    pub async fn get<T: 'static>(&self) -> Result<T> {
+        let token = std::any::type_name::<T>().to_string();
+        let provider = self.provider_in_any_module(&token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
+
+        downcast(
+            provider.execute(vec![], ProviderContext::None).await,
+            &token,
+        )
     }
 
     /// Returns an instance of `T` from a specific module's scope in the DI container
     pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T> {
-        let container = self.container.borrow();
-        let provider_token = std::any::type_name::<T>().to_string();
+        let token = std::any::type_name::<T>().to_string();
+        let provider = self.provider_in_module(module_token, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
-        let provider_instance = container
-            .get_provider_instance_by_token(&module_token.to_string(), &provider_token)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Provider '{}' not found in module '{}'",
-                    provider_token,
-                    module_token,
-                )
-            })?;
-
-        if provider_instance.get_scope() == crate::ProviderScope::Request {
-            return Err(anyhow::anyhow!(
-                "Provider '{}' is request-scoped and cannot be retrieved from ToniApplicationContext. \
-                 Request-scoped providers are only available within an active HTTP request.",
-                provider_token
-            ));
-        }
-
-        let instance_any = provider_instance
-            .execute(vec![], crate::traits_helpers::ProviderContext::None)
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    provider_token
-                )
-            })
+        downcast(
+            provider.execute(vec![], ProviderContext::None).await,
+            &token,
+        )
     }
 
     /// Returns an instance from the DI container by token rather than type; use when providers are registered with a custom token
     pub async fn get_by_token<T: 'static>(&self, token: impl IntoToken) -> Result<T> {
-        let token_str = token.into_token();
+        let token = token.into_token();
+        let provider = self.provider_in_any_module(&token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
-        let provider_instance = {
-            let container = self.container.borrow();
-            let modules = container.get_modules_token();
-
-            let mut found_instance = None;
-            for module_token in modules {
-                if let Ok(Some(instance)) =
-                    container.get_provider_instance_by_token(&module_token, &token_str)
-                {
-                    found_instance = Some(instance.clone());
-                    break;
-                }
-            }
-
-            found_instance.ok_or_else(|| {
-                anyhow::anyhow!("Provider '{}' not found in any module", token_str)
-            })?
-        };
-
-        if provider_instance.get_scope() == crate::ProviderScope::Request {
-            return Err(anyhow::anyhow!(
-                "Provider '{}' is request-scoped and cannot be retrieved from ToniApplicationContext. \
-                 Request-scoped providers are only available within an active HTTP request.",
-                token_str
-            ));
-        }
-
-        let instance_any = provider_instance
-            .execute(vec![], crate::traits_helpers::ProviderContext::None)
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    token_str
-                )
-            })
+        downcast(
+            provider.execute(vec![], ProviderContext::None).await,
+            &token,
+        )
     }
 
     /// Returns an instance by token from a specific module's scope in the DI container
@@ -158,149 +105,56 @@ impl ToniApplicationContext {
         module_token: &str,
         token: impl IntoToken,
     ) -> Result<T> {
-        let container = self.container.borrow();
-        let token_str = token.into_token();
+        let token = token.into_token();
+        let provider = self.provider_in_module(module_token, &token)?;
+        ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
-        let provider_instance = container
-            .get_provider_instance_by_token(&module_token.to_string(), &token_str)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Provider '{}' not found in module '{}'",
-                    token_str,
-                    module_token,
-                )
-            })?;
-
-        if provider_instance.get_scope() == crate::ProviderScope::Request {
-            return Err(anyhow::anyhow!(
-                "Provider '{}' is request-scoped and cannot be retrieved from ToniApplicationContext. \
-                 Request-scoped providers are only available within an active HTTP request.",
-                token_str
-            ));
-        }
-
-        let instance_any = provider_instance
-            .execute(vec![], crate::traits_helpers::ProviderContext::None)
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    token_str
-                )
-            })
+        downcast(
+            provider.execute(vec![], ProviderContext::None).await,
+            &token,
+        )
     }
 
-    /// Resolves a request-scoped or transient provider `T` using a synthetic request context.
+    /// Resolves a provider `T` in an execution.
     ///
-    /// Use this when you need a request-scoped provider outside of an HTTP handler — for
-    /// testing, CLI tools, or health checks that need to exercise the full provider tree.
+    /// What [`get`](Self::get) cannot reach: a request-scoped provider is built into
+    /// the execution's cache, so it needs one. Everything resolved in the same
+    /// execution shares that cache — a request-scoped type is built once and handed
+    /// to each of them, the way a handler and its guards see one instance.
     ///
-    /// Each call is its own execution, so two calls build two instances of a
-    /// request-scoped type. To place several resolutions in one execution the
-    /// way a single request would, build a context and use
-    /// [`resolve_in`](Self::resolve_in).
+    /// The execution can be any transport's context, or
+    /// [`ProviderContext::standalone`] where the work arrived over nothing: a CLI
+    /// command, a job, a test.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    /// let service = ctx.resolve::<RequestService>(&parts).await?;
+    /// let execution = ProviderContext::standalone();
+    /// let repo = ctx.resolve::<Repo>(&execution).await?;
+    /// let audit = ctx.resolve::<AuditLog>(&execution).await?;
     ///
-    /// // Two resolutions, one execution:
-    /// let execution = HttpContext::from_parts(parts);
-    /// let a = ctx.resolve_in::<ServiceA>(&execution).await?;
-    /// let b = ctx.resolve_in::<ServiceB>(&execution).await?;
+    /// // An HTTP execution, when the work is genuinely a request:
+    /// let execution: ProviderContext = HttpContext::from_parts(parts).into();
+    /// let service = ctx.resolve::<RequestService>(&execution).await?;
     /// ```
-    pub async fn resolve<T: 'static>(&self, parts: &crate::http_helpers::RequestPart) -> Result<T> {
-        let provider_token = std::any::type_name::<T>().to_string();
+    pub async fn resolve<T: 'static>(&self, execution: &ProviderContext) -> Result<T> {
+        let token = std::any::type_name::<T>().to_string();
+        let provider = self.provider_in_any_module(&token)?;
+        execution.ensure_can_build(provider.get_scope(), &token)?;
 
-        let provider_instance = {
-            let container = self.container.borrow();
-            let modules = container.get_modules_token();
-
-            let mut found = None;
-            for module_token in modules {
-                if let Ok(Some(instance)) =
-                    container.get_provider_instance_by_token(&module_token, &provider_token)
-                {
-                    found = Some(instance.clone());
-                    break;
-                }
-            }
-
-            found.ok_or_else(|| {
-                anyhow::anyhow!("Provider '{}' not found in any module", provider_token)
-            })?
-        };
-
-        let instance_any = provider_instance
-            .execute(
-                vec![],
-                crate::traits_helpers::ProviderContext::Http(HttpContext::from_parts(
-                    parts.clone(),
-                )),
-            )
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    provider_token
-                )
-            })
+        downcast(provider.execute(vec![], execution.clone()).await, &token)
     }
 
-    /// Resolves a request-scoped or transient provider by token using a synthetic request context.
+    /// Resolves a provider by token in an execution.
     pub async fn resolve_by_token<T: 'static>(
         &self,
         token: impl IntoToken,
-        parts: &crate::http_helpers::RequestPart,
+        execution: &ProviderContext,
     ) -> Result<T> {
-        let token_str = token.into_token();
+        let token = token.into_token();
+        let provider = self.provider_in_any_module(&token)?;
+        execution.ensure_can_build(provider.get_scope(), &token)?;
 
-        let provider_instance = {
-            let container = self.container.borrow();
-            let modules = container.get_modules_token();
-
-            let mut found = None;
-            for module_token in modules {
-                if let Ok(Some(instance)) =
-                    container.get_provider_instance_by_token(&module_token, &token_str)
-                {
-                    found = Some(instance.clone());
-                    break;
-                }
-            }
-
-            found.ok_or_else(|| {
-                anyhow::anyhow!("Provider '{}' not found in any module", token_str)
-            })?
-        };
-
-        let instance_any = provider_instance
-            .execute(
-                vec![],
-                crate::traits_helpers::ProviderContext::Http(HttpContext::from_parts(
-                    parts.clone(),
-                )),
-            )
-            .await;
-
-        instance_any
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Failed to downcast provider '{}' to requested type",
-                    token_str
-                )
-            })
+        downcast(provider.execute(vec![], execution.clone()).await, &token)
     }
 
     pub async fn close(&mut self) {
@@ -395,4 +249,11 @@ impl ToniApplicationContext {
             }
         }
     }
+}
+
+fn downcast<T: 'static>(instance: Box<dyn Any + Send>, token: &str) -> Result<T> {
+    instance
+        .downcast::<T>()
+        .map(|boxed| *boxed)
+        .map_err(|_| anyhow::anyhow!("Failed to downcast provider '{}' to requested type", token))
 }

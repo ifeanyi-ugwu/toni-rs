@@ -2,9 +2,8 @@
 //! sites inject it.
 //!
 //! The two sites here are the ones the framework builds separately: an enhancer
-//! factory (the guard, resolved before the context exists) and the controller
-//! (built later, from the parts). Both join the request's cache through the
-//! request parts, so the guard and the handler see the same construction.
+//! factory (the guard) and the controller. Both build in the execution and reach
+//! its cache, so the guard and the handler see the same construction.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -34,9 +34,9 @@ pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
 /// them); `__toni_ctor_build` resolves those dependencies and calls the constructor. `None` from
 /// either means "no `#[new]` — use field injection".
 ///
-/// `request_parts` carries the active HTTP request parts when one exists (request-scoped
-/// construction), so a constructor parameter that is itself request-scoped can be resolved; it is
-/// `None` for singleton/transient construction, matching the field-injection paths.
+/// The context parameter carries the execution being served, so a constructor parameter that is
+/// itself request-scoped resolves in that same execution; it is `ProviderContext::None` for
+/// construction outside any execution, matching the field-injection paths.
 pub trait CtorBridge: Sized {
     fn __toni_ctor_tokens() -> Option<Vec<String>> {
         None

@@ -5,7 +5,8 @@ pub mod builtin_module;
 pub mod context;
 mod error;
 pub use context::{
-    CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, WsContext,
+    CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, StandaloneContext,
+    WsContext,
 };
 #[doc(hidden)]
 pub mod __construct;

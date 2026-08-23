@@ -338,21 +338,26 @@ impl ToniApplication {
             .await
     }
 
-    /// Resolves a request-scoped or transient provider `T` using a synthetic request context.
+    /// Resolves a provider `T` in an execution.
     ///
-    /// Use this when you need a request-scoped provider outside of an HTTP handler — for
-    /// testing, CLI tools, or health checks that need to exercise the full provider tree.
-    pub async fn resolve<T: 'static>(&self, parts: &crate::http_helpers::RequestPart) -> Result<T> {
-        self.context.resolve::<T>(parts).await
+    /// Everything resolved in one execution shares its cache, so a request-scoped
+    /// provider is built once for all of them. Use
+    /// [`ProviderContext::standalone`](crate::ProviderContext::standalone) where the
+    /// work arrived over no transport.
+    pub async fn resolve<T: 'static>(
+        &self,
+        execution: &crate::traits_helpers::ProviderContext,
+    ) -> Result<T> {
+        self.context.resolve::<T>(execution).await
     }
 
-    /// Resolves a request-scoped or transient provider by token using a synthetic request context.
+    /// Resolves a provider by token in an execution.
     pub async fn resolve_by_token<T: 'static>(
         &self,
         token: impl IntoToken,
-        parts: &crate::http_helpers::RequestPart,
+        execution: &crate::traits_helpers::ProviderContext,
     ) -> Result<T> {
-        self.context.resolve_by_token::<T>(token, parts).await
+        self.context.resolve_by_token::<T>(token, execution).await
     }
 
     /// Bind all registered adapters and run bootstrap hooks.

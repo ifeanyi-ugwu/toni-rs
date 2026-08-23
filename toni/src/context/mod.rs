@@ -14,6 +14,7 @@ mod http;
 mod metadata;
 mod rpc;
 pub(crate) mod shared;
+mod standalone;
 mod ws;
 
 pub use self::cancellation::CancellationToken;
@@ -23,6 +24,7 @@ pub use self::handler_context::HandlerContext;
 pub use self::http::HttpContext;
 pub use self::metadata::Metadata;
 pub use self::rpc::RpcContext;
+pub use self::standalone::StandaloneContext;
 pub use self::ws::WsContext;
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use toni::{injectable, module, toni_factory::ToniFactory};
+use toni::{injectable, module, toni_factory::ToniFactory, ProviderContext};
 
 #[tokio::test]
 async fn valid_singleton_injects_singleton() {
@@ -39,8 +39,8 @@ async fn valid_request_injects_singleton() {
     impl TestModule {}
 
     let app = ToniFactory::create(TestModule).await;
-    let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    app.resolve::<RequestService>(&parts)
+    let execution = ProviderContext::standalone();
+    app.resolve::<RequestService>(&execution)
         .await
         .expect("request-scoped service with singleton dep should resolve");
 }
@@ -68,8 +68,8 @@ async fn valid_transient_injects_any_scope() {
     impl TestModule {}
 
     let app = ToniFactory::create(TestModule).await;
-    let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    app.resolve::<TransientService>(&parts)
+    let execution = ProviderContext::standalone();
+    app.resolve::<TransientService>(&execution)
         .await
         .expect("transient with mixed deps should resolve");
 }
@@ -133,8 +133,8 @@ async fn request_can_inject_transient() {
     impl TestModule {}
 
     let app = ToniFactory::create(TestModule).await;
-    let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    app.resolve::<RequestService>(&parts)
+    let execution = ProviderContext::standalone();
+    app.resolve::<RequestService>(&execution)
         .await
         .expect("request-scoped with transient dep should resolve");
 }
@@ -165,8 +165,8 @@ async fn complex_valid_hierarchy() {
     impl TestModule {}
 
     let app = ToniFactory::create(TestModule).await;
-    let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    app.resolve::<TopService>(&parts)
+    let execution = ProviderContext::standalone();
+    app.resolve::<TopService>(&execution)
         .await
         .expect("three-level hierarchy should resolve");
 }

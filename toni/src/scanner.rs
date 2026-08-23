@@ -291,7 +291,8 @@ impl ToniDependenciesScanner {
                 let container = self.container.borrow();
                 if let Ok(providers) = container.get_lifecycle_instances(module_token) {
                     for provider in providers {
-                        // Skip request-scoped providers - they require an active HTTP request
+                        // Skip request-scoped providers — they are built into an
+                        // execution, and bootstrap is not one.
                         if provider.get_scope() == crate::ProviderScope::Request {
                             continue;
                         }
@@ -358,8 +359,8 @@ impl ToniDependenciesScanner {
                 let container = self.container.borrow();
                 if let Ok(providers) = container.get_lifecycle_instances(module_token) {
                     for provider in providers {
-                        // Skip request-scoped providers - they require an active HTTP request
-                        // and cannot be executed during module initialization
+                        // Skip request-scoped providers — they are built into an
+                        // execution, and module initialisation is not one.
                         if provider.get_scope() == crate::ProviderScope::Request {
                             continue;
                         }
