@@ -2,10 +2,16 @@
 
 use validator::Validate;
 
-use super::FromRequest;
-use crate::http_helpers::HttpRequest;
+use super::FromContext;
+use crate::context::HttpContext;
 
-/// Wrapper that validates the inner extractor
+/// Runs `validator` over what the inner extractor produced, before the handler
+/// sees it.
+///
+/// Wraps any extractor implementing [`ValidatableExtractor`] — `Json`, `Body`,
+/// `Query`, `Path` — and reads only what that extractor reads. So
+/// `Validated<Query<T>>` leaves the body for a body extractor on the same
+/// handler.
 ///
 /// # Example
 ///
@@ -21,7 +27,7 @@ use crate::http_helpers::HttpRequest;
 /// }
 ///
 /// #[post("/users")]
-/// fn create_user(&self, Json(dto): Validated<Json<CreateUserDto>>) -> String {
+/// fn create_user(&self, Validated(Json(dto)): Validated<Json<CreateUserDto>>) -> String {
 ///     // dto is already validated here
 ///     format!("Created user: {}", dto.name)
 /// }
@@ -115,15 +121,14 @@ impl<T: Validate> ValidatableExtractor for super::body::Body<T> {
     }
 }
 
-impl<E> FromRequest for Validated<E>
+impl<E> FromContext<HttpContext> for Validated<E>
 where
-    E: FromRequest + ValidatableExtractor + Send,
-    E::Error: std::fmt::Display + Send + Sync + 'static,
+    E: FromContext<HttpContext> + ValidatableExtractor,
 {
     type Error = ValidationError;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let extracted = E::from_request(req)
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let extracted = E::extract(ctx)
             .await
             .map_err(|e| ValidationError::ExtractionError(e.to_string()))?;
 
