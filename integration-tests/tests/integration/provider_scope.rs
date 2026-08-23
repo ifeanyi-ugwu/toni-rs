@@ -2,7 +2,7 @@
 //!
 //! When multiple fields inject the same provider token, deduplication behavior depends on scope:
 //! - Singleton: Same instance app-wide, persists across requests
-//! - Request: Same instance per HTTP request, fresh instance for each request
+//! - Request: Same instance within one execution, fresh instance for the next
 //! - Transient: Fresh instance per injection point at construction time
 
 use toni::{controller, get, module, provider_factory, routes, Body as ToniBody};

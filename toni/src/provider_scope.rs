@@ -1,17 +1,17 @@
 /// Defines the lifecycle scope of a provider in the dependency injection system.
 ///
 /// This determines when and how often provider instances are created:
-/// - **Singleton**: Created once at startup, shared across all requests (default, 95% of use cases)
-/// - **Request**: Created once per HTTP request, shared within that request only (5% of use cases)
+/// - **Singleton**: Created once at startup, shared by every execution (default, 95% of use cases)
+/// - **Request**: Created once per execution, shared within that execution only (5% of use cases)
 /// - **Transient**: Created every time it's injected, never cached (<1% of use cases)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderScope {
-    /// Created once at application startup and reused for all requests.
+    /// Created once at application startup and reused by every execution.
     /// This is the default and most common scope.
     ///
     /// **Use for:** Services, repositories, utilities, stateless controllers
     ///
-    /// **Performance:** Zero allocations per request (just Arc clone)
+    /// **Performance:** Zero allocations per execution (just Arc clone)
     ///
     /// # Example
     /// ```ignore
@@ -23,10 +23,10 @@ pub enum ProviderScope {
     /// ```
     Singleton,
 
-    /// Created once per HTTP request and shared within that request.
-    /// Destroyed after the request completes.
+    /// Created once per execution and shared within it — one HTTP request, one
+    /// WebSocket message, one RPC or gRPC call. Dropped when that execution ends.
     ///
-    /// **Use for:** Request-specific context, user session data, audit logging
+    /// **Use for:** Per-execution context, caller identity, audit logging
     ///
     /// # Example
     /// ```ignore
