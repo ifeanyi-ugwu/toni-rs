@@ -1,4 +1,5 @@
 use toni::*;
+use uuid::Uuid;
 
 // Test providers
 #[injectable]
@@ -25,6 +26,21 @@ impl CacheService {
     pub fn new() -> Self {
         Self {
             host: "redis://localhost:6379".to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+#[injectable(scope = "request")]
+pub struct RequestScopedService {
+    pub id: String,
+}
+
+impl RequestScopedService {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
         }
     }
 }
@@ -60,6 +76,23 @@ impl PluginLoader {
             .ok()
     }
 
+    pub async fn load_request_scoped(&self) -> Result<RequestScopedService, String> {
+        self.module_ref
+            .get::<RequestScopedService>()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn resolve_request_scoped(
+        &self,
+        execution: &ProviderContext,
+    ) -> Result<RequestScopedService, String> {
+        self.module_ref
+            .resolve::<RequestScopedService>(execution)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     /// Get current module name
     pub fn current_module(&self) -> String {
         self.module_ref.current_module().to_string()
@@ -68,7 +101,7 @@ impl PluginLoader {
 
 // Module 1 - contains DatabaseService and PluginLoader
 #[module(
-    providers: [DatabaseService, PluginLoader],
+    providers: [DatabaseService, RequestScopedService, PluginLoader],
     exports: [DatabaseService, PluginLoader],
 )]
 impl Module1 {}
@@ -238,4 +271,86 @@ async fn test_module_ref_works_from_any_thread() {
         result.is_some(),
         "ModuleRef::get should work from any thread, not just the initialization thread"
     );
+}
+
+#[tokio::test]
+async fn request_scoped_get_is_refused_not_a_panic() {
+    let app = ToniFactory::create(AppModule).await;
+
+    let plugin_loader = app
+        .get::<PluginLoader>()
+        .await
+        .expect("PluginLoader should be available");
+
+    let message = plugin_loader
+        .load_request_scoped()
+        .await
+        .expect_err("`get` has no execution to build a request-scoped provider in");
+
+    assert!(
+        message.contains("RequestScopedService") && message.contains("request-scoped"),
+        "the refusal should name the provider and its scope, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_builds_a_request_scoped_provider_in_the_execution() {
+    let app = ToniFactory::create(AppModule).await;
+
+    let plugin_loader = app
+        .get::<PluginLoader>()
+        .await
+        .expect("PluginLoader should be available");
+
+    let execution = ProviderContext::standalone();
+
+    let first = plugin_loader
+        .resolve_request_scoped(&execution)
+        .await
+        .expect("an execution is all a request-scoped provider needs");
+    let second = plugin_loader
+        .resolve_request_scoped(&execution)
+        .await
+        .expect("an execution is all a request-scoped provider needs");
+
+    assert_eq!(
+        first.id, second.id,
+        "one execution holds one instance of a request-scoped provider"
+    );
+
+    let elsewhere = ProviderContext::standalone();
+    let third = plugin_loader
+        .resolve_request_scoped(&elsewhere)
+        .await
+        .expect("an execution is all a request-scoped provider needs");
+
+    assert_ne!(
+        first.id, third.id,
+        "a second execution builds its own instance"
+    );
+}
+
+/// The cache belongs to the execution, not to whoever reached it: a module's own
+/// handle and the application context resolve the same instance in one execution.
+#[tokio::test]
+async fn the_module_and_the_application_resolve_into_one_cache() {
+    let app = ToniFactory::create(AppModule).await;
+
+    let plugin_loader = app
+        .get::<PluginLoader>()
+        .await
+        .expect("PluginLoader should be available");
+
+    let execution = ProviderContext::standalone();
+
+    let through_module = plugin_loader
+        .resolve_request_scoped(&execution)
+        .await
+        .expect("a module resolves in the execution it is given");
+    let through_app = app
+        .resolve::<RequestScopedService>(&execution)
+        .await
+        .expect("the application resolves in the same one");
+
+    assert_eq!(through_module.id, through_app.id);
 }
