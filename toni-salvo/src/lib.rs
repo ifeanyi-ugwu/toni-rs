@@ -23,8 +23,9 @@
 //!
 //! ## Routing
 //!
-//! Toni uses `:param` path syntax; salvo uses `{param}`. The adapter rewrites
-//! routes at bind time, so handlers stay written in toni's style. A catch-all
+//! Toni and salvo share `{param}` path syntax, so routes mount unchanged.
+//! Express-style `:param` segments are rewritten at bind time for callers of
+//! the raw adapter SPI — the route macros reject that syntax. A catch-all
 //! fallback is registered at `{**rest}` to produce the standard toni 404
 //! response for unmatched paths, with the global middleware chain applied.
 //!
