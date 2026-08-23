@@ -7,7 +7,7 @@
 //!
 //! | Concept | NestJS | Toni |
 //! |---------|--------|------|
-//! | Define custom extractor | `createParamDecorator()` | `impl FromRequest` trait |
+//! | Define custom extractor | `createParamDecorator()` | `impl FromContext` trait |
 //! | Use in handler | `@CurrentUser()` decorator | `CurrentUser(user): CurrentUser` |
 //! | Error handling | Throw exceptions | Return `Result<T, E>` |
 //! | Type safety | Runtime (TypeScript) | Compile-time (Rust) |
@@ -64,10 +64,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use toni::context::HttpContext;
 use toni::extractors::Json;
 use toni::http_helpers::Body as ToniBody;
-use toni::http_helpers::RequestPart;
-use toni::{controller, get, module, post, routes, FromRequestParts};
+use toni::{controller, get, module, post, routes, FromContext};
 
 // ============================================================================
 // SECTION 1: AUTHENTICATION EXTRACTORS
@@ -122,10 +122,11 @@ impl fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
-impl FromRequestParts for CurrentUser {
+impl FromContext<HttpContext> for CurrentUser {
     type Error = AuthError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let auth_header = parts
             .headers
             .get("authorization")
@@ -197,10 +198,11 @@ impl fmt::Display for TokenError {
 
 impl std::error::Error for TokenError {}
 
-impl FromRequestParts for BearerToken {
+impl FromContext<HttpContext> for BearerToken {
     type Error = TokenError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let auth_header = parts
             .headers
             .get("authorization")
@@ -253,10 +255,11 @@ impl fmt::Display for ApiKeyError {
 
 impl std::error::Error for ApiKeyError {}
 
-impl FromRequestParts for ApiKey {
+impl FromContext<HttpContext> for ApiKey {
     type Error = ApiKeyError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let key = parts
             .headers
             .get("x-api-key")
@@ -306,10 +309,11 @@ impl fmt::Display for IpError {
 
 impl std::error::Error for IpError {}
 
-impl FromRequestParts for ClientIp {
+impl FromContext<HttpContext> for ClientIp {
     type Error = IpError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         // Check X-Forwarded-For first (proxy/load balancer support)
         if let Some(forwarded) = parts
             .headers
@@ -359,10 +363,11 @@ impl fmt::Display for UserAgentError {
 
 impl std::error::Error for UserAgentError {}
 
-impl FromRequestParts for UserAgent {
+impl FromContext<HttpContext> for UserAgent {
     type Error = UserAgentError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let ua = parts
             .headers
             .get("user-agent")
@@ -403,10 +408,11 @@ impl fmt::Display for RequestIdError {
 
 impl std::error::Error for RequestIdError {}
 
-impl FromRequestParts for RequestId {
+impl FromContext<HttpContext> for RequestId {
     type Error = RequestIdError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         // Check existing header
         if let Some(id) = parts
             .headers
@@ -462,10 +468,11 @@ impl fmt::Display for CookieError {
 
 impl std::error::Error for CookieError {}
 
-impl FromRequestParts for Cookies {
+impl FromContext<HttpContext> for Cookies {
     type Error = CookieError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let cookie_header = parts
             .headers
             .get("cookie")
@@ -508,10 +515,11 @@ impl fmt::Display for SessionCookieError {
 
 impl std::error::Error for SessionCookieError {}
 
-impl FromRequestParts for SessionCookie {
+impl FromContext<HttpContext> for SessionCookie {
     type Error = SessionCookieError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let parts = ctx.request();
         let cookie_header = parts
             .headers
             .get("cookie")
@@ -573,17 +581,20 @@ impl fmt::Display for AuthContextError {
 
 impl std::error::Error for AuthContextError {}
 
-impl FromRequestParts for AuthContext {
+impl FromContext<HttpContext> for AuthContext {
     type Error = AuthContextError;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
-        let CurrentUser(user) = CurrentUser::from_request_parts(parts)
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        let CurrentUser(user) = CurrentUser::extract(ctx)
+            .await
             .map_err(|e| AuthContextError(format!("User extraction failed: {}", e)))?;
 
-        let ClientIp(ip) = ClientIp::from_request_parts(parts)
+        let ClientIp(ip) = ClientIp::extract(ctx)
+            .await
             .map_err(|e| AuthContextError(format!("IP extraction failed: {}", e)))?;
 
-        let UserAgent(user_agent) = UserAgent::from_request_parts(parts)
+        let UserAgent(user_agent) = UserAgent::extract(ctx)
+            .await
             .map_err(|e| AuthContextError(format!("User-Agent extraction failed: {}", e)))?;
 
         Ok(AuthContext {
@@ -931,7 +942,7 @@ async fn main() -> anyhow::Result<()> {
     println!(r#"   curl http://localhost:3000/metadata/ip"#);
     println!();
     println!("Key Takeaway:");
-    println!("   Toni's FromRequest trait = NestJS's createParamDecorator()");
+    println!("   Toni's FromContext trait = NestJS's createParamDecorator()");
     println!("   - More type-safe (compile-time errors)");
     println!("   - More explicit (no hidden magic)");
     println!("   - More composable (wrap extractors)");
