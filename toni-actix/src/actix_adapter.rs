@@ -34,7 +34,9 @@ impl Default for ActixAdapter {
     }
 }
 
-/// Converts toni `:param` path syntax to Actix `{param}` syntax.
+/// Rewrites Express-style `:param` segments to actix's `{param}`. Toni's own
+/// `{param}` paths mount unchanged; the route macros reject `:param`, so only
+/// paths registered through the adapter SPI directly can still carry it.
 fn to_actix_path(path: &str) -> String {
     if !path.contains(':') {
         return path.to_owned();

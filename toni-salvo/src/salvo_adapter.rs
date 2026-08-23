@@ -51,7 +51,9 @@ impl Default for SalvoAdapter {
     }
 }
 
-/// Converts toni `:param` path syntax to salvo `{param}` syntax. Same shape as axum.
+/// Rewrites Express-style `:param` segments to salvo's `{param}`. Toni's own
+/// `{param}` paths mount unchanged; the route macros reject `:param`, so only
+/// paths registered through the adapter SPI directly can still carry it.
 fn to_salvo_path(path: &str) -> String {
     if !path.contains(':') {
         return path.to_owned();
