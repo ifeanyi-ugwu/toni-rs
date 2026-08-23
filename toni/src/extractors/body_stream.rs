@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
@@ -57,37 +59,27 @@ impl BodyStream {
     }
 }
 
-#[derive(Debug)]
-pub struct BodyStreamError;
-
-impl std::fmt::Display for BodyStreamError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "missing request body")
-    }
-}
-
-impl std::error::Error for BodyStreamError {}
-
+/// Fallible only in the way every body extractor is: the body may already have
+/// been read. A buffered body is wrapped rather than rejected, so there is
+/// nothing else to fail at.
 impl FromContext<HttpContext> for BodyStream {
-    type Error = BodyExtractionError<BodyStreamError>;
+    type Error = BodyExtractionError<Infallible>;
 
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
-        read(take_body::<Self>(ctx)?)
-            .await
-            .map_err(BodyExtractionError::Extract)
+        Ok(read(take_body::<Self>(ctx)?))
     }
 }
 
-async fn read(req: HttpRequest) -> Result<BodyStream, BodyStreamError> {
+fn read(req: HttpRequest) -> BodyStream {
     let (_, body) = req.into_parts();
     match body {
-        RequestBody::Streaming(s) => Ok(BodyStream(s)),
+        RequestBody::Streaming(s) => BodyStream(s),
         RequestBody::Buffered(b) => {
             use http_body_util::{BodyExt as _, Full};
             let box_body = Full::new(b)
-                .map_err(|never: std::convert::Infallible| match never {})
+                .map_err(|never: Infallible| match never {})
                 .boxed_unsync();
-            Ok(BodyStream(box_body))
+            BodyStream(box_body)
         }
     }
 }
