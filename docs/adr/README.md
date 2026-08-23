@@ -39,3 +39,4 @@ the history is part of the value.
 - [0021 — Cancellation signals the tail, because the handler is already covered](0021-cancellation-signals-the-tail.md)
 - [0022 — An execution need not have a transport](0022-an-execution-without-a-transport.md)
 - [0023 — Extraction is one trait, and body-freedom is a convention](0023-extraction-is-one-trait.md)
+- [0024 — An application binds every transport it declares, or none](0024-bind-every-declared-transport-or-none.md)

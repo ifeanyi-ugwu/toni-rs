@@ -10,19 +10,30 @@ pub type InitResult = Result<(), Box<dyn Error + Send + Sync + 'static>>;
 /// Errors from [`ToniApplication::bind`].
 ///
 /// [`HookFailed`] carries the module name and hook name so callers can identify which startup
-/// hook failed without inspecting the error message. [`Setup`] covers framework-level failures
-/// (no adapter registered, wrong call order, etc.) that are typically fatal and not worth
+/// hook failed without inspecting the error message. [`Adapter`] names the transport that could
+/// not start, so a caller can report which half of a multi-transport application is unavailable.
+/// [`Setup`] covers framework-level failures (no adapter registered for something the
+/// application declares, wrong call order, etc.) that are typically fatal and not worth
 /// pattern-matching on.
 ///
 /// [`HookFailed`]: BindError::HookFailed
+/// [`Adapter`]: BindError::Adapter
 /// [`Setup`]: BindError::Setup
 /// [`ToniApplication::bind`]: crate::ToniApplication::bind
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BindError {
     #[error("hook `{hook}` failed in module `{module}`: {source}")]
     HookFailed {
         module: String,
         hook: &'static str,
+        #[source]
+        source: Box<dyn Error + Send + Sync + 'static>,
+    },
+    /// `transport` is one of `http`, `websocket`, `rpc`, `grpc`.
+    #[error("{transport} adapter failed to start: {source}")]
+    Adapter {
+        transport: &'static str,
         #[source]
         source: Box<dyn Error + Send + Sync + 'static>,
     },
