@@ -29,7 +29,7 @@ use crate::health_check_result::HealthIndicatorResult;
 /// }
 /// ```
 ///
-/// Pass the future to [`HealthCheckService::check`]:
+/// Pass the future to [`HealthCheckService::check`](crate::HealthCheckService::check):
 ///
 /// ```ignore
 /// self.health.check(vec![

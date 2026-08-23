@@ -43,14 +43,12 @@ impl std::ops::DerefMut for Bytes {
 
 #[derive(Debug)]
 pub enum BytesError {
-    MissingBody,
     CollectError(String),
 }
 
 impl std::fmt::Display for BytesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BytesError::MissingBody => write!(f, "No body provided"),
             BytesError::CollectError(msg) => write!(f, "Failed to read request body: {}", msg),
         }
     }

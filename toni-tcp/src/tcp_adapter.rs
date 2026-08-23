@@ -36,7 +36,7 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// # Graceful shutdown
 ///
-/// On [`close`](RpcAdapter::close), the accept loop stops, connection
+/// On shutdown the accept loop stops, connection
 /// handlers stop reading new lines, and in-flight per-message tasks are
 /// awaited up to a configurable drain timeout (default 10 s). Tasks still
 /// running after the timeout are aborted. Override the timeout — including

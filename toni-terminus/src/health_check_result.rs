@@ -61,7 +61,7 @@ impl HealthEntry {
 /// include full details regardless of outcome.
 pub type HealthIndicatorResult = Result<HealthEntry, HealthEntry>;
 
-/// Aggregated result of all health checks run by [`HealthCheckService::check`].
+/// Aggregated result of all health checks run by [`HealthCheckService::check`](crate::HealthCheckService::check).
 ///
 /// Implements [`IntoResponse`]: returns **HTTP 200** when all checks pass,
 /// **HTTP 503** when any check fails. The JSON shape matches NestJS Terminus:

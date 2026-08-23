@@ -76,8 +76,8 @@ impl std::fmt::Display for UdpTarget {
 ///
 /// # Graceful shutdown
 ///
-/// On [`close`](RpcAdapter::close) the receive loop stops accepting new
-/// datagrams, then in-flight per-datagram tasks are awaited up to a
+/// On shutdown the receive loop stops accepting new datagrams, then in-flight
+/// per-datagram tasks are awaited up to a
 /// configurable drain timeout (default 10 s). Tasks still running after the
 /// timeout are aborted. Override with [`UdpAdapter::with_drain_timeout`].
 ///

@@ -29,6 +29,22 @@ jobs:
       # resolving fresh versions the repo doesn't record.
       - run: cargo check --workspace --all-features --all-targets --locked
 
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    env:
+      # Broken intra-doc links are warnings by default, so they rot unnoticed:
+      # every one this gate was written for dated from an earlier rename.
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # --all-features because a doc comment behind a feature gate is only
+      # linted when that feature is on, and --no-deps because upstream crates'
+      # doc warnings are not ours to fix.
+      - run: cargo doc --workspace --all-features --no-deps --locked
+
   test:
     name: test
     runs-on: ubuntu-latest

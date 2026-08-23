@@ -563,7 +563,7 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
 }
 
-/// Derive [`toni::Error`] from an annotated error type.
+/// Derive `toni::Error` from an annotated error type.
 ///
 /// Tag the type (or each enum variant) with `#[error_kind(KIND)]`, where
 /// `KIND` is a variant of `toni::ErrorKind`. Untagged variants fall back
@@ -627,7 +627,7 @@ pub fn provide(input: TokenStream) -> TokenStream {
 /// `#[catch(T)]` — escape hatch for runtime-selected error handling.
 ///
 /// The framework's primary error path: a domain error type implements
-/// [`toni::Error`] and the active transport renders it. `#[catch]` is for
+/// `toni::Error` and the active transport renders it. `#[catch]` is for
 /// cases that path doesn't reach — re-shaping framework events
 /// (`GuardRejection`, etc.) per route or per controller, where one handler
 /// claims an error and the chain falls through otherwise.
