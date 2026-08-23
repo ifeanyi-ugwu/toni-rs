@@ -168,18 +168,26 @@ impl<T: Config> ConfigModule<T> {
     /// This is called automatically when the module is imported in a Toni module.
     /// The configuration is loaded eagerly and stored in the module instance.
     ///
-    /// Panics if configuration loading or validation fails (fail-fast behavior).
+    /// # Panics
+    ///
+    /// Panics if loading or validation fails, so a misconfigured process stops
+    /// before it serves anything. Use [`from_env`](Self::from_env) to handle the
+    /// failure instead.
     pub fn new() -> Self {
         // Load config eagerly
         let config = T::load_from_env().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Failed to load config");
-            std::process::exit(1);
+            panic!(
+                "failed to load config `{}`: {e}",
+                std::any::type_name::<T>()
+            )
         });
 
         // Validate config
         config.validate().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Config validation failed");
-            std::process::exit(1);
+            panic!(
+                "config `{}` failed validation: {e}",
+                std::any::type_name::<T>()
+            )
         });
 
         Self {

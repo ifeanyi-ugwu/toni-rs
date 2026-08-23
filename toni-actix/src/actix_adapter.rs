@@ -469,7 +469,6 @@ impl HttpAdapter for ActixAdapter {
         let serve = Box::pin(async move {
             if let Err(e) = running.await {
                 tracing::error!(error = %e, "Actix server error");
-                std::process::exit(1);
             }
         });
 

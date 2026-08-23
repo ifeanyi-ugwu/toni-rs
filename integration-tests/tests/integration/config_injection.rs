@@ -165,3 +165,29 @@ async fn config_falls_back_to_defaults() {
         "DB: sqlite://test.db (max 10 connections)"
     );
 }
+
+/// A field with an `#[env]` source and no default that the environment does not supply.
+#[derive(Config, Clone)]
+struct RequiredConfig {
+    #[env("TONI_TEST_REQUIRED_UNSET")]
+    pub required: String,
+}
+
+/// A missing required value must unwind rather than exit, so an embedding process keeps
+/// control and buffered log writers still flush. `ConfigModule::from_env` is the path for
+/// callers that want to handle the failure.
+#[test]
+fn a_missing_required_value_panics_naming_the_config() {
+    let message = crate::common::panic_message(|| async {
+        ConfigModule::<RequiredConfig>::new();
+    });
+
+    assert!(
+        message.contains("failed to load config"),
+        "expected the load failure, got:\n{message}"
+    );
+    assert!(
+        message.contains("RequiredConfig"),
+        "the panic should name the config type, got:\n{message}"
+    );
+}

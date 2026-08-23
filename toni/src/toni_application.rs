@@ -656,10 +656,15 @@ impl ToniApplication {
         Ok(())
     }
 
-    /// Drive the serve loops until all adapters exit or [`ShutdownHandle::shutdown`] is called.
+    /// Drive the serve loops until [`ShutdownHandle::shutdown`] is called.
     ///
     /// Consumes `self`. On a shutdown signal, adapters are closed first so
     /// in-flight requests can drain before lifecycle hooks run.
+    ///
+    /// A serve loop that returns on its own signals shutdown for the whole
+    /// application. An adapter stops accepting only when it is shutting down or
+    /// when its transport has failed, and a process that keeps serving the
+    /// remaining transports after one dies answers less than it advertises.
     ///
     /// # Panics
     ///
@@ -671,8 +676,25 @@ impl ToniApplication {
             .take()
             .expect("run() called before bind() — call bind() first or use start()");
 
-        let serve_all = Box::pin(futures::future::join_all(bound.serve_futures));
         let shutdown = self.shutdown.clone();
+
+        // Signalling from inside each serve future is what makes one dead
+        // transport close the application: during a graceful shutdown the flag
+        // is already set and this is a no-op, so only an unexpected return
+        // actually triggers anything.
+        let serve_futures: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = bound
+            .serve_futures
+            .into_iter()
+            .map(|serve| {
+                let shutdown = shutdown.clone();
+                Box::pin(async move {
+                    serve.await;
+                    shutdown.shutdown();
+                }) as Pin<Box<dyn Future<Output = ()> + Send>>
+            })
+            .collect();
+
+        let serve_all = Box::pin(futures::future::join_all(serve_futures));
         let shutdown_wait = Box::pin(async move { shutdown.wait_for_shutdown().await });
 
         match futures::future::select(serve_all, shutdown_wait).await {
