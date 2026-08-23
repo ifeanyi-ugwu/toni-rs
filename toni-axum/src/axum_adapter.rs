@@ -468,7 +468,6 @@ impl HttpAdapter for AxumAdapter {
                 .await
             {
                 tracing::error!(error = %e, "HTTP server error");
-                std::process::exit(1);
             }
         });
 
