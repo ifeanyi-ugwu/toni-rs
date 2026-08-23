@@ -8,7 +8,6 @@ use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 use anyhow::Result;
 
 use crate::{
-    context::HttpContext,
     injector::{IntoToken, ToniContainer},
     traits_helpers::{Provider, ProviderContext},
 };
@@ -116,45 +115,46 @@ impl ToniApplicationContext {
         )
     }
 
-    /// Resolves a request-scoped or transient provider `T` using a synthetic request context.
+    /// Resolves a provider `T` in an execution.
     ///
-    /// Use this when you need a request-scoped provider outside of an HTTP handler — for
-    /// testing, CLI tools, or health checks that need to exercise the full provider tree.
+    /// What [`get`](Self::get) cannot reach: a request-scoped provider is built into
+    /// the execution's cache, so it needs one. Everything resolved in the same
+    /// execution shares that cache — a request-scoped type is built once and handed
+    /// to each of them, the way a handler and its guards see one instance.
     ///
-    /// Each call is its own execution, so two calls build two instances of a
-    /// request-scoped type. To place several resolutions in one execution the
-    /// way a single request would, build a context and use
-    /// [`resolve_in`](Self::resolve_in).
+    /// The execution can be any transport's context, or
+    /// [`ProviderContext::standalone`] where the work arrived over nothing: a CLI
+    /// command, a job, a test.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let parts = http::Request::builder().body(()).unwrap().into_parts().0;
-    /// let service = ctx.resolve::<RequestService>(&parts).await?;
+    /// let execution = ProviderContext::standalone();
+    /// let repo = ctx.resolve::<Repo>(&execution).await?;
+    /// let audit = ctx.resolve::<AuditLog>(&execution).await?;
     ///
-    /// // Two resolutions, one execution:
-    /// let execution = HttpContext::from_parts(parts);
-    /// let a = ctx.resolve_in::<ServiceA>(&execution).await?;
-    /// let b = ctx.resolve_in::<ServiceB>(&execution).await?;
+    /// // An HTTP execution, when the work is genuinely a request:
+    /// let execution: ProviderContext = HttpContext::from_parts(parts).into();
+    /// let service = ctx.resolve::<RequestService>(&execution).await?;
     /// ```
-    pub async fn resolve<T: 'static>(&self, parts: &crate::http_helpers::RequestPart) -> Result<T> {
+    pub async fn resolve<T: 'static>(&self, execution: &ProviderContext) -> Result<T> {
         let token = std::any::type_name::<T>().to_string();
         let provider = self.provider_in_any_module(&token)?;
-        let execution = ProviderContext::Http(HttpContext::from_parts(parts.clone()));
+        execution.ensure_can_build(provider.get_scope(), &token)?;
 
-        downcast(provider.execute(vec![], execution).await, &token)
+        downcast(provider.execute(vec![], execution.clone()).await, &token)
     }
 
-    /// Resolves a request-scoped or transient provider by token using a synthetic request context.
+    /// Resolves a provider by token in an execution.
     pub async fn resolve_by_token<T: 'static>(
         &self,
         token: impl IntoToken,
-        parts: &crate::http_helpers::RequestPart,
+        execution: &ProviderContext,
     ) -> Result<T> {
         let token = token.into_token();
         let provider = self.provider_in_any_module(&token)?;
-        let execution = ProviderContext::Http(HttpContext::from_parts(parts.clone()));
+        execution.ensure_can_build(provider.get_scope(), &token)?;
 
-        downcast(provider.execute(vec![], execution).await, &token)
+        downcast(provider.execute(vec![], execution.clone()).await, &token)
     }
 
     pub async fn close(&mut self) {

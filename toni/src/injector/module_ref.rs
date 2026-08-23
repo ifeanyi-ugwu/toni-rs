@@ -6,7 +6,7 @@ use anyhow::Result;
 use rustc_hash::FxHashMap;
 
 use super::token::IntoToken;
-use crate::traits_helpers::Provider;
+use crate::traits_helpers::{Provider, ProviderContext};
 
 pub type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>;
 
@@ -15,6 +15,10 @@ pub type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provide
 /// `ModuleRef` is scoped to a specific module and allows dynamic resolution
 /// of providers at runtime. It supports both strict (module-only, default) and
 /// global (fallback) resolution modes.
+///
+/// [`get`](Self::get) builds outside any execution, which limits it to providers
+/// that can exist there. A request-scoped provider cannot, so it is reached with
+/// [`resolve`](Self::resolve), which builds in an execution you hand it.
 ///
 /// # Examples
 ///
@@ -67,6 +71,7 @@ impl ModuleRef {
             module_ref: self,
             token: std::any::type_name::<T>().to_string(),
             strict: true,
+            execution: ProviderContext::None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -90,6 +95,51 @@ impl ModuleRef {
             module_ref: self,
             token: token.into_token(),
             strict: true,
+            execution: ProviderContext::None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Resolve a provider by its type in an execution
+    ///
+    /// Reaches what [`get`](Self::get) cannot: a request-scoped provider is built
+    /// into the execution's cache, so resolving one twice in the same execution
+    /// returns the instance the handler is holding rather than a second one.
+    ///
+    /// Any execution will do — an HTTP request, a WebSocket message, an RPC or
+    /// gRPC call. Search mode works as it does for `get`: current module only,
+    /// or `.global()` for the fallback.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // In a guard, an interceptor, or anywhere the context reaches:
+    /// let execution: ProviderContext = ctx.clone().into();
+    /// let audit = module_ref.resolve::<AuditLog>(&execution).await?;
+    /// ```
+    pub fn resolve<T: 'static>(&self, execution: &ProviderContext) -> ModuleRefQuery<'_, T> {
+        ModuleRefQuery {
+            module_ref: self,
+            token: std::any::type_name::<T>().to_string(),
+            strict: true,
+            execution: execution.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Resolve a provider by token in an execution
+    ///
+    /// The token counterpart of [`resolve`](Self::resolve).
+    pub fn resolve_by_token<T: 'static>(
+        &self,
+        token: impl IntoToken,
+        execution: &ProviderContext,
+    ) -> ModuleRefQuery<'_, T> {
+        ModuleRefQuery {
+            module_ref: self,
+            token: token.into_token(),
+            strict: true,
+            execution: execution.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -105,6 +155,8 @@ pub struct ModuleRefQuery<'a, T: 'static> {
     module_ref: &'a ModuleRef,
     token: String,
     strict: bool,
+    /// The execution to build in; `None` for a `get`, which has none.
+    execution: ProviderContext,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -161,11 +213,11 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
             }
         };
 
-        let execution = crate::traits_helpers::ProviderContext::None;
-        execution.ensure_can_build(provider_instance.get_scope(), &self.token)?;
+        self.execution
+            .ensure_can_build(provider_instance.get_scope(), &self.token)?;
 
         provider_instance
-            .execute(vec![], execution)
+            .execute(vec![], self.execution.clone())
             .await
             .downcast::<T>()
             .map(|boxed| *boxed)
