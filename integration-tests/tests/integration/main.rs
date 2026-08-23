@@ -64,6 +64,7 @@ mod rpc_tcp;
 mod rpc_udp;
 mod scope_bubbling;
 mod scoped_enhancers;
+mod serve_loop_death;
 mod sse;
 mod static_methods;
 mod streaming;
