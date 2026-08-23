@@ -18,7 +18,7 @@ use crate::extractors::FromContext;
 /// #[subscribe_message("orders")]
 /// async fn orders(&self, session: Session, Payload(order): Payload<Order>) -> WsHandlerResult {
 ///     let who = session.get::<Principal>().ok_or(WsError::AuthFailed("no principal".into()))?;
-///     …
+///     // ...
 /// }
 /// ```
 ///
