@@ -18,6 +18,7 @@ use toni_axum::AxumAdapter;
 use toni_macros::{
     controller, on_application_shutdown, on_module_destroy, patterns, routes, rpc_controller,
 };
+use toni_tcp::TcpAdapter;
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
 
@@ -135,6 +136,10 @@ async fn an_rpc_controller_still_gets_its_startup_hooks() {
 
     let mut app = ToniFactory::create(RpcHookModule).await;
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
+        .unwrap();
+    // The declared patterns need a transport to reach: `bind()` refuses an RPC controller with
+    // no RPC adapter behind it.
+    app.use_rpc_adapter(TcpAdapter::new("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();
 
