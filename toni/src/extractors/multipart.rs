@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
-use super::FromRequest;
+use super::{BodyExtractionError, FromContext, take_body};
+use crate::context::HttpContext;
 use crate::http_helpers::{HttpRequest, RequestBody, RequestBoxBody};
 
 pub use multer::Field;
@@ -77,29 +78,35 @@ fn body_into_stream(
     })
 }
 
-impl FromRequest for Multipart {
-    type Error = MultipartError;
+impl FromContext<HttpContext> for Multipart {
+    type Error = BodyExtractionError<MultipartError>;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (parts, body) = req.into_parts();
-
-        let boundary = parts
-            .headers
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|ct| multer::parse_boundary(ct).ok())
-            .ok_or(MultipartError::MissingBoundary)?;
-
-        let box_body: RequestBoxBody = match body {
-            RequestBody::Streaming(s) => s,
-            RequestBody::Buffered(b) => http_body_util::Full::new(b)
-                .map_err(|never: std::convert::Infallible| match never {})
-                .boxed_unsync(),
-        };
-
-        Ok(Multipart(multer::Multipart::new(
-            body_into_stream(box_body),
-            boundary,
-        )))
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        read(take_body::<Self>(ctx)?)
+            .await
+            .map_err(BodyExtractionError::Extract)
     }
+}
+
+async fn read(req: HttpRequest) -> Result<Multipart, MultipartError> {
+    let (parts, body) = req.into_parts();
+
+    let boundary = parts
+        .headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|ct| multer::parse_boundary(ct).ok())
+        .ok_or(MultipartError::MissingBoundary)?;
+
+    let box_body: RequestBoxBody = match body {
+        RequestBody::Streaming(s) => s,
+        RequestBody::Buffered(b) => http_body_util::Full::new(b)
+            .map_err(|never: std::convert::Infallible| match never {})
+            .boxed_unsync(),
+    };
+
+    Ok(Multipart(multer::Multipart::new(
+        body_into_stream(box_body),
+        boundary,
+    )))
 }

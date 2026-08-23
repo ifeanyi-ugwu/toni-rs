@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 
-use super::FromRequest;
+use super::{BodyExtractionError, FromContext, take_body};
+use crate::context::HttpContext;
 use crate::http_helpers::HttpRequest;
 
 /// Extracts and deserializes the request body, auto-detecting content type.
@@ -78,24 +79,30 @@ fn parse_bytes<T: DeserializeOwned>(bytes: &[u8], content_type: &str) -> Result<
     }
 }
 
-impl<T: DeserializeOwned + Send> FromRequest for Body<T> {
-    type Error = BodyError;
+impl<T: DeserializeOwned + Send> FromContext<HttpContext> for Body<T> {
+    type Error = BodyExtractionError<BodyError>;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (parts, body) = req.into_parts();
-        let bytes = body
-            .collect()
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        read(take_body::<Self>(ctx)?)
             .await
-            .map_err(|e| BodyError::CollectError(e.to_string()))?;
-        if bytes.is_empty() {
-            return Err(BodyError::DeserializeError("Empty body".to_string()));
-        }
-        let content_type = parts
-            .headers
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-        Ok(Body(parse_bytes(&bytes, &content_type)?))
+            .map_err(BodyExtractionError::Extract)
     }
+}
+
+async fn read<T: DeserializeOwned>(req: HttpRequest) -> Result<Body<T>, BodyError> {
+    let (parts, body) = req.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|e| BodyError::CollectError(e.to_string()))?;
+    if bytes.is_empty() {
+        return Err(BodyError::DeserializeError("Empty body".to_string()));
+    }
+    let content_type = parts
+        .headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    Ok(Body(parse_bytes(&bytes, &content_type)?))
 }

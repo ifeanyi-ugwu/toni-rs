@@ -54,6 +54,9 @@ would not be dyn-compatible. Each transport's macro knows its transport and rend
 
 ### Two shorthands, and why one of them is not a blanket
 
+Superseded by [ADR-0023](0023-extraction-is-one-trait.md): both shorthands are removed and
+`FromContext` is the only extraction trait.
+
 `FromRequestParts` — sync, metadata only — keeps its place and gains `FromContext<HttpContext>`
 through a blanket impl. Extractors written against it need no change.
 

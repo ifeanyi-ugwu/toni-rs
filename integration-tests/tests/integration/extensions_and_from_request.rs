@@ -7,7 +7,7 @@
 
 use toni::{
     controller, get, injectable, module, new, routes, toni_factory::ToniFactory, Body as ToniBody,
-    FromRequestParts, Request,
+    Request,
 };
 
 // ===== 1. Define types to store in extensions =====
@@ -146,7 +146,7 @@ mod tests {
         req.extensions.insert(RequestId("req-123".to_string()));
 
         // Build the injected Request from the parts, then run the constructor.
-        let context = RequestContext::new(Request::from_request_parts(&req).unwrap());
+        let context = RequestContext::new(Request::from_parts(&req));
 
         assert_eq!(context.get_user_id(), "alice");
         assert_eq!(context.get_request_id(), "req-123");
@@ -163,7 +163,7 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        let context = RequestContext::new(Request::from_request_parts(&req).unwrap());
+        let context = RequestContext::new(Request::from_parts(&req));
 
         assert_eq!(context.get_user_id(), "anonymous");
         assert!(!context.is_authenticated);

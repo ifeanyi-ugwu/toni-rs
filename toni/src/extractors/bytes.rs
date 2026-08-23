@@ -1,4 +1,5 @@
-use super::FromRequest;
+use super::{BodyExtractionError, FromContext, take_body};
+use crate::context::HttpContext;
 use crate::http_helpers::HttpRequest;
 
 /// Extracts the raw request body as bytes.
@@ -57,15 +58,21 @@ impl std::fmt::Display for BytesError {
 
 impl std::error::Error for BytesError {}
 
-impl FromRequest for Bytes {
-    type Error = BytesError;
+impl FromContext<HttpContext> for Bytes {
+    type Error = BodyExtractionError<BytesError>;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (_, body) = req.into_parts();
-        let bytes = body
-            .collect()
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        read(take_body::<Self>(ctx)?)
             .await
-            .map_err(|e| BytesError::CollectError(e.to_string()))?;
-        Ok(Bytes(bytes.to_vec()))
+            .map_err(BodyExtractionError::Extract)
     }
+}
+
+async fn read(req: HttpRequest) -> Result<Bytes, BytesError> {
+    let (_, body) = req.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|e| BytesError::CollectError(e.to_string()))?;
+    Ok(Bytes(bytes.to_vec()))
 }

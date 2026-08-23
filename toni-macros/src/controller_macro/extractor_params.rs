@@ -1,7 +1,8 @@
 //! Extractor parameter detection and code generation
 //!
-//! Detects extractor types like Path<T>, Query<T>, Json<T>, Validated<T>
-//! and generates FromRequestParts or FromRequest extraction code accordingly.
+//! Detects extractor types like Path<T>, Query<T>, Json<T>, Validated<T> to
+//! decide which of them reads the body. Extraction itself goes through
+//! `FromContext` whatever the type is.
 
 use proc_macro2::TokenStream;
 use quote::quote;

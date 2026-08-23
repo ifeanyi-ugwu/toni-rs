@@ -101,7 +101,7 @@ pub use errors::{
 };
 
 // Re-export trait so users wont have to import manually
-pub use extractors::{BodyStream, FromRequest, FromRequestParts};
+pub use extractors::{BodyStream, FromContext, take_body};
 
 // Re-export macros
 pub use toni_macros::*;

@@ -31,7 +31,8 @@ use std::sync::Arc;
 use crate::FxHashMap;
 use crate::async_trait;
 use crate::context::HandlerContext;
-use crate::extractors::FromRequestParts;
+use crate::context::HttpContext;
+use crate::extractors::FromContext;
 use crate::http_helpers::{PathParams, RequestPart};
 use crate::provider_scope::ProviderScope;
 use crate::traits_helpers::{Provider, ProviderContext, ProviderFactory};
@@ -66,7 +67,7 @@ impl Provider for Request {
         if let Some(cached) = cache.get::<Request>() {
             return Box::new(cached);
         }
-        let instance = Request::from_request_parts(http_ctx.request()).expect("infallible");
+        let instance = Request::from_parts(http_ctx.request());
         cache.insert(instance.clone());
         Box::new(instance)
     }
@@ -81,6 +82,28 @@ impl Provider for Request {
 }
 
 impl Request {
+    /// Build one from request parts, for a caller holding them rather than a
+    /// context.
+    pub fn from_parts(parts: &RequestPart) -> Self {
+        let path_params = parts
+            .extensions
+            .get::<PathParams>()
+            .map(|p| p.0.clone())
+            .unwrap_or_default();
+
+        let query_params = parts
+            .uri
+            .query()
+            .and_then(|q| serde_urlencoded::from_str(q).ok())
+            .unwrap_or_default();
+
+        Self {
+            inner: Arc::new(parts.clone()),
+            path_params,
+            query_params,
+        }
+    }
+
     pub fn method(&self) -> &str {
         self.inner.method.as_str()
     }
@@ -115,27 +138,11 @@ impl Request {
     }
 }
 
-impl FromRequestParts for Request {
+impl FromContext<HttpContext> for Request {
     type Error = std::convert::Infallible;
 
-    fn from_request_parts(parts: &RequestPart) -> Result<Self, Self::Error> {
-        let path_params = parts
-            .extensions
-            .get::<PathParams>()
-            .map(|p| p.0.clone())
-            .unwrap_or_default();
-
-        let query_params = parts
-            .uri
-            .query()
-            .and_then(|q| serde_urlencoded::from_str(q).ok())
-            .unwrap_or_default();
-
-        Ok(Self {
-            inner: Arc::new(parts.clone()),
-            path_params,
-            query_params,
-        })
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        Ok(Self::from_parts(ctx.request()))
     }
 }
 
@@ -152,7 +159,7 @@ impl ProviderFactory for RequestFactory {
         _deps: FxHashMap<String, crate::traits_helpers::Injectable>,
     ) -> crate::traits_helpers::Injectable {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
-        let provider = Request::from_request_parts(&parts).expect("infallible");
+        let provider = Request::from_parts(&parts);
         crate::traits_helpers::Injectable::new(
             Arc::new(Box::new(provider) as Box<dyn Provider>),
             vec![],

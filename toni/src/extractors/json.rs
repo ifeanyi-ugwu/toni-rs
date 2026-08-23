@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 
-use super::FromRequest;
+use super::{BodyExtractionError, FromContext, take_body};
+use crate::context::HttpContext;
 use crate::http_helpers::HttpRequest;
 
 /// Extracts and deserializes a JSON request body.
@@ -59,20 +60,26 @@ impl std::fmt::Display for JsonError {
 
 impl std::error::Error for JsonError {}
 
-impl<T: DeserializeOwned + Send> FromRequest for Json<T> {
-    type Error = JsonError;
+impl<T: DeserializeOwned + Send> FromContext<HttpContext> for Json<T> {
+    type Error = BodyExtractionError<JsonError>;
 
-    async fn from_request(req: HttpRequest) -> Result<Self, Self::Error> {
-        let (_, body) = req.into_parts();
-        let bytes = body
-            .collect()
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        read(take_body::<Self>(ctx)?)
             .await
-            .map_err(|e| JsonError::CollectError(e.to_string()))?;
-        if bytes.is_empty() {
-            return Err(JsonError::NotJson);
-        }
-        let value: T = serde_json::from_slice(&bytes)
-            .map_err(|e| JsonError::DeserializeError(e.to_string()))?;
-        Ok(Json(value))
+            .map_err(BodyExtractionError::Extract)
     }
+}
+
+async fn read<T: DeserializeOwned>(req: HttpRequest) -> Result<Json<T>, JsonError> {
+    let (_, body) = req.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|e| JsonError::CollectError(e.to_string()))?;
+    if bytes.is_empty() {
+        return Err(JsonError::NotJson);
+    }
+    let value: T =
+        serde_json::from_slice(&bytes).map_err(|e| JsonError::DeserializeError(e.to_string()))?;
+    Ok(Json(value))
 }
