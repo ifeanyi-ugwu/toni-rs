@@ -138,13 +138,3 @@ impl<T: serde::de::DeserializeOwned + Send> FromContext<HttpContext> for super::
         extract_body::<Self>(ctx).await
     }
 }
-
-impl<E: FromRequest + super::ValidatableExtractor + Send> FromContext<HttpContext>
-    for super::Validated<E>
-{
-    type Error = BodyExtractionError<<Self as FromRequest>::Error>;
-
-    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
-        extract_body::<Self>(ctx).await
-    }
-}

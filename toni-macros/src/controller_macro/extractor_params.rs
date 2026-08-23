@@ -42,8 +42,12 @@ pub enum ExtractorKind {
     Bytes,
     /// BodyStream extractor (streaming body) — body-consuming
     BodyStream,
-    /// Validated<T> extractor — body-consuming
-    Validated,
+    /// `Validated<T>` — reads whatever `T` reads, so it takes the body only when
+    /// the extractor it wraps does.
+    Validated {
+        /// The kind of the extractor being validated
+        inner_kind: Box<ExtractorKind>,
+    },
     /// HttpRequest (not an extractor, just passed through — body-consuming)
     HttpRequest,
     /// Request extractor — parts-only
@@ -78,9 +82,9 @@ impl ExtractorKind {
             | ExtractorKind::Body
             | ExtractorKind::Bytes
             | ExtractorKind::BodyStream
-            | ExtractorKind::Validated
             | ExtractorKind::HttpRequest => true,
-            ExtractorKind::Optional { inner_kind, .. } => inner_kind.takes_the_body(),
+            ExtractorKind::Optional { inner_kind, .. }
+            | ExtractorKind::Validated { inner_kind } => inner_kind.takes_the_body(),
             _ => false,
         }
     }
@@ -171,6 +175,17 @@ fn reject_second_body_extractor(params: &[ExtractorParam]) -> Result<()> {
     ))
 }
 
+/// The `T` in `Wrapper<T>`, when the type is written with one.
+fn first_type_argument(segment: &syn::PathSegment) -> Option<Type> {
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    match args.args.first() {
+        Some(syn::GenericArgument::Type(inner)) => Some(inner.clone()),
+        _ => None,
+    }
+}
+
 /// Detect what kind of extractor a type is
 fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
     // `&HttpContext` is the only reference a handler may take — every extractor
@@ -192,18 +207,26 @@ fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
         if let Some(segment) = type_path.path.segments.last() {
             let type_name = segment.ident.to_string();
 
+            // Both wrappers defer to what they wrap, so an unreadable inner type
+            // leaves nothing to defer to: `Unknown`, which is not counted as a
+            // body consumer.
             if type_name == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
-                        let inner_kind = detect_extractor_kind(inner_type);
-                        return ExtractorKind::Optional {
-                            inner_kind: Box::new(inner_kind),
-                            inner_type: inner_type.clone(),
-                        };
-                    }
-                }
-                // Can't extract the inner type — treat as Unknown.
-                return ExtractorKind::Unknown;
+                let Some(inner_type) = first_type_argument(segment) else {
+                    return ExtractorKind::Unknown;
+                };
+                return ExtractorKind::Optional {
+                    inner_kind: Box::new(detect_extractor_kind(&inner_type)),
+                    inner_type,
+                };
+            }
+
+            if type_name == "Validated" {
+                let Some(inner_type) = first_type_argument(segment) else {
+                    return ExtractorKind::Unknown;
+                };
+                return ExtractorKind::Validated {
+                    inner_kind: Box::new(detect_extractor_kind(&inner_type)),
+                };
             }
 
             return match type_name.as_str() {
@@ -213,7 +236,6 @@ fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
                 "Body" => ExtractorKind::Body,
                 "Bytes" => ExtractorKind::Bytes,
                 "BodyStream" => ExtractorKind::BodyStream,
-                "Validated" => ExtractorKind::Validated,
                 "Multipart" => ExtractorKind::Body,
                 "HttpRequest" => ExtractorKind::HttpRequest,
                 "Request" => ExtractorKind::Request,

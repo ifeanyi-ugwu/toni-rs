@@ -253,3 +253,59 @@ async fn test_typed_path_extractor() {
         .unwrap();
     assert_eq!(resp.status(), 400);
 }
+
+#[derive(Debug, Deserialize, Validate)]
+struct SearchQuery {
+    #[validate(length(min = 3, message = "Query must be at least 3 characters"))]
+    q: String,
+}
+
+#[controller("/wrapped")]
+pub struct WrappedQueryController;
+
+#[routes]
+impl WrappedQueryController {
+    /// `Validated<Query<T>>` reads the query string and nothing else, so a body
+    /// extractor on the same handler still finds a body to read. Wrapping used
+    /// to route the parameter through the body path, which both emptied the body
+    /// and made this signature a compile error.
+    #[post("/search")]
+    fn search(
+        &self,
+        Validated(Query(params)): Validated<Query<SearchQuery>>,
+        Json(dto): Json<CreateUserDto>,
+    ) -> ToniBody {
+        ToniBody::text(format!("q={} name={}", params.q, dto.name))
+    }
+}
+
+#[module(
+    controllers: [WrappedQueryController],
+    providers: [],
+)]
+impl WrappedQueryModule {}
+
+#[tokio_localset_test::localset_test]
+async fn test_validated_query_leaves_the_body_alone() {
+    let server = TestServer::start(WrappedQueryModule).await;
+
+    let resp = server
+        .client()
+        .post(server.url("/wrapped/search?q=rust"))
+        .json(&serde_json::json!({"name": "John Doe", "email": "john@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "q=rust name=John Doe");
+
+    // The query is still validated.
+    let resp = server
+        .client()
+        .post(server.url("/wrapped/search?q=ab"))
+        .json(&serde_json::json!({"name": "John Doe", "email": "john@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
