@@ -53,6 +53,7 @@ mod phase2_provider_macro_autoref;
 mod phase2_use_site_coercion;
 mod provide_macro;
 mod provider_scope;
+mod provider_startup_check;
 mod request_extractor;
 mod request_provider;
 mod request_scope_sharing;
