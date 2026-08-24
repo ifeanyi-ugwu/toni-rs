@@ -306,8 +306,95 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod cargo_invocation {
+    use super::DevArgs;
+    use clap::Parser;
+
+    /// `DevArgs` is a flattened subcommand, so a parser has to host it before
+    /// the flag surface can be exercised.
+    #[derive(Parser)]
+    struct Harness {
+        #[command(flatten)]
+        dev: DevArgs,
+    }
+
+    fn cargo_args(flags: &[&str]) -> Vec<String> {
+        let argv = std::iter::once("toni-dev").chain(flags.iter().copied());
+        Harness::try_parse_from(argv)
+            .expect("flags should parse")
+            .dev
+            .cargo_args()
+    }
+
+    #[test]
+    fn no_flags_run_the_package_default() {
+        assert_eq!(cargo_args(&[]), ["run"]);
+    }
+
+    #[test]
+    fn target_selection_reaches_cargo() {
+        assert_eq!(
+            cargo_args(&["-p", "my-app", "--bin", "server"]),
+            ["run", "--package", "my-app", "--bin", "server"]
+        );
+    }
+
+    #[test]
+    fn feature_selection_reaches_cargo() {
+        assert_eq!(
+            cargo_args(&[
+                "-F",
+                "tls",
+                "--features",
+                "metrics",
+                "--no-default-features"
+            ]),
+            [
+                "run",
+                "--features",
+                "tls",
+                "--features",
+                "metrics",
+                "--no-default-features"
+            ]
+        );
+    }
+
+    /// Cargo stops reading its own flags at the `--`, so a cargo flag placed
+    /// after it reaches the application binary instead — where an unknown
+    /// argument is the application's error to report, not cargo's.
+    #[test]
+    fn cargo_flags_precede_the_app_separator() {
+        let args = cargo_args(&["--example", "demo", "--", "--config", "local.toml"]);
+
+        assert_eq!(
+            args,
+            ["run", "--example", "demo", "--", "--config", "local.toml"]
+        );
+    }
+
+    #[test]
+    fn unmirrored_flags_pass_through_verbatim() {
+        assert_eq!(
+            cargo_args(&["--cargo-arg", "--timings", "--cargo-arg", "--offline"]),
+            ["run", "--timings", "--offline"]
+        );
+    }
+
+    /// Cargo refuses the pair too, but only after the watcher has started and
+    /// on every restart after that.
+    #[test]
+    fn refuses_a_binary_and_an_example_together() {
+        assert!(
+            Harness::try_parse_from(["toni-dev", "--bin", "server", "--example", "demo"]).is_err(),
+            "a run has one target"
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
-mod tests {
+mod socket_handoff {
     use super::{LISTEN_FD, place_listen_fd};
     use std::net::TcpListener;
     use std::os::fd::{AsRawFd, RawFd};
