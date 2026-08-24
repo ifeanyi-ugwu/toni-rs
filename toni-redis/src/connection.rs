@@ -29,11 +29,17 @@ impl ProviderFactory for RedisConnectionFactory {
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> toni::traits_helpers::Injectable {
-        // Configured lazily: the server is contacted by the startup check, so every integration
-        // reaches an unreachable one on the same schedule rather than on its driver's. The
-        // driver's own retry is switched off for the same reason — it would run inside a single
-        // attempt of ours.
-        let config = ConnectionManagerConfig::new().set_number_of_retries(0);
+        // Configured lazily, with the check's deadline handed to the driver: its own connection
+        // timeout is what bounds the probe, so nothing here needs a timer.
+        // The driver's own retry is switched off and each attempt bounded, so the check's
+        // schedule is the only one: left on, its six attempts with exponential backoff overrun
+        // any deadline set here.
+        let mut config = ConnectionManagerConfig::new();
+        if let Some(check) = &self.check {
+            config = config
+                .set_number_of_retries(0)
+                .set_connection_timeout(Some(check.attempt_timeout()));
+        }
 
         // `build` returns the instance directly, so a failure is carried into the provider and
         // reported from `on_module_init`, which can return it.
@@ -112,18 +118,21 @@ impl Provider for RedisConnectionProvider {
             .expect("a configured manager is present whenever there is no init error");
 
         check
-            .run(|| {
-                let mut manager = manager.clone();
-                async move {
-                    redis::cmd("PING")
-                        .query_async::<String>(&mut manager)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| {
-                            crate::redact::describe("failed to reach the server", e, &self.url)
-                        })
-                }
-            })
+            .run(
+                || {
+                    let mut manager = manager.clone();
+                    async move {
+                        redis::cmd("PING")
+                            .query_async::<String>(&mut manager)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| {
+                                crate::redact::describe("failed to reach the server", e, &self.url)
+                            })
+                    }
+                },
+                futures_timer::Delay::new,
+            )
             .await
             .map_err(Into::into)
     }

@@ -47,7 +47,11 @@ where
         //
         // `build` returns the instance directly, so a failure is carried into the provider and
         // reported from `on_module_init`, which can return it.
-        let (pool, init_error) = match PoolOptions::<DB>::new().connect_lazy(&self.url) {
+        let mut options = PoolOptions::<DB>::new();
+        if let Some(check) = &self.check {
+            options = options.acquire_timeout(check.attempt_timeout());
+        }
+        let (pool, init_error) = match options.connect_lazy(&self.url) {
             Ok(pool) => (Some(pool), None),
             Err(e) => (
                 None,
@@ -125,18 +129,25 @@ where
             .expect("a configured pool is present whenever there is no init error");
 
         check
-            .run(|| {
-                let pool = pool.clone();
-                async move {
-                    sqlx::query("SELECT 1")
-                        .execute(&pool)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| {
-                            crate::redact::describe("failed to reach the database", e, &self.url)
-                        })
-                }
-            })
+            .run(
+                || {
+                    let pool = pool.clone();
+                    async move {
+                        sqlx::query("SELECT 1")
+                            .execute(&pool)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| {
+                                crate::redact::describe(
+                                    "failed to reach the database",
+                                    e,
+                                    &self.url,
+                                )
+                            })
+                    }
+                },
+                futures_timer::Delay::new,
+            )
             .await
             .map_err(Into::into)
     }

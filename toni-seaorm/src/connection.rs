@@ -30,11 +30,16 @@ impl ProviderFactory for SeaOrmConnectionFactory {
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> toni::traits_helpers::Injectable {
-        // Configured lazily: the server is contacted by the startup check, so every integration
-        // reaches an unreachable one on the same schedule rather than on its driver's. What is
-        // left here is URL parsing, which needs no network.
+        // Configured lazily, with the check's deadline handed to the driver: sea-orm's own
+        // connect and acquire timeouts are what bound the probe, so nothing here needs a timer.
+        // What is left at build time is URL parsing, which needs no network.
         let mut options = ConnectOptions::new(&self.database_url);
         options.connect_lazy(true);
+        if let Some(check) = &self.check {
+            options
+                .connect_timeout(check.attempt_timeout())
+                .acquire_timeout(check.attempt_timeout());
+        }
 
         // `build` returns the instance directly, so a failure is carried into the provider and
         // reported from `on_module_init`, which can return it.
@@ -116,19 +121,24 @@ impl Provider for SeaOrmConnectionProvider {
             .expect("a configured pool is present whenever there is no init error")
             .clone();
 
+        // Each attempt is bounded by the acquire timeout handed to the driver at build time; the
+        // gaps between them are this check's, so every integration gives up at the same point.
         check
-            .run(|| {
-                let db = db.clone();
-                async move {
-                    db.ping().await.map_err(|e| {
-                        crate::redact::describe(
-                            "failed to reach the database",
-                            e,
-                            &self.database_url,
-                        )
-                    })
-                }
-            })
+            .run(
+                || {
+                    let db = db.clone();
+                    async move {
+                        db.ping().await.map_err(|e| {
+                            crate::redact::describe(
+                                "failed to reach the database",
+                                e,
+                                &self.database_url,
+                            )
+                        })
+                    }
+                },
+                futures_timer::Delay::new,
+            )
             .await
             .map_err(Into::into)
     }

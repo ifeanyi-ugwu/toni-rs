@@ -33,7 +33,13 @@ impl ProviderFactory for MongoConnectionFactory {
         // `build` returns the instance directly, so a failure is carried into the provider and
         // reported from `on_module_init`, which can return it. The driver connects lazily, so
         // only URI parsing and client construction are checked here.
-        let (client, init_error) = match ClientOptions::parse(&self.uri).await {
+        let (client, init_error) = match ClientOptions::parse(&self.uri).await.map(|mut o| {
+            if let Some(check) = &self.check {
+                o.server_selection_timeout = Some(check.attempt_timeout());
+                o.connect_timeout = Some(check.attempt_timeout());
+            }
+            o
+        }) {
             Err(e) => (
                 None,
                 Some(crate::redact::describe("failed to parse URI", e, &self.uri)),
@@ -115,17 +121,20 @@ impl Provider for MongoConnectionProvider {
             .expect("a client is present whenever there is no init error");
 
         check
-            .run(|| {
-                let db = db.clone();
-                async move {
-                    db.run_command(mongodb::bson::doc! { "ping": 1 })
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| {
-                            crate::redact::describe("failed to reach the server", e, &self.uri)
-                        })
-                }
-            })
+            .run(
+                || {
+                    let db = db.clone();
+                    async move {
+                        db.run_command(mongodb::bson::doc! { "ping": 1 })
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| {
+                                crate::redact::describe("failed to reach the server", e, &self.uri)
+                            })
+                    }
+                },
+                futures_timer::Delay::new,
+            )
             .await
             .map_err(Into::into)
     }

@@ -36,6 +36,9 @@ macro_rules! impl_diesel_pool {
                 // `build` returns the instance directly, so a failure is carried into the
                 // provider and reported from `on_module_init`, which can return it. deadpool
                 // opens no connection here, so only the pool configuration is checked.
+                // deadpool returns a failed `create` rather than retrying it, so an attempt is
+                // already bounded by the connection attempt itself and the check supplies the
+                // retry.
                 let (pool, init_error) = match <$pool>::builder(manager).build() {
                     Ok(pool) => (Some(pool), None),
                     Err(e) => (
@@ -108,18 +111,21 @@ macro_rules! impl_diesel_pool {
                     .expect("a built pool is present whenever there is no init error");
 
                 check
-                    .run(|| {
-                        let pool = pool.clone();
-                        async move {
-                            pool.get().await.map(|_| ()).map_err(|e| {
-                                crate::redact::describe(
-                                    "failed to reach the database",
-                                    e,
-                                    &self.url,
-                                )
-                            })
-                        }
-                    })
+                    .run(
+                        || {
+                            let pool = pool.clone();
+                            async move {
+                                pool.get().await.map(|_| ()).map_err(|e| {
+                                    crate::redact::describe(
+                                        "failed to reach the database",
+                                        e,
+                                        &self.url,
+                                    )
+                                })
+                            }
+                        },
+                        futures_timer::Delay::new,
+                    )
                     .await
                     .map_err(Into::into)
             }
