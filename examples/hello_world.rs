@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  GET http://127.0.0.1:3000/hello/json");
     println!();
 
-    let mut app = ToniFactory::new().create_with(AppModule).await;
+    let mut app = ToniFactory::new().create_with(AppModule).await?;
 
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000))
         .unwrap();

@@ -81,7 +81,7 @@ async fn shutdown_signal() -> String {
 async fn main() -> anyhow::Result<()> {
     println!("🚀 Starting server with graceful shutdown support...\n");
 
-    let mut app = ToniFactory::new().create_with(AppModule).await;
+    let mut app = ToniFactory::new().create_with(AppModule).await?;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), ("127.0.0.1", 3000))
         .unwrap();

@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  HTTP   :3001 POST /hello/_/echo, POST /hello/_/count");
     println!("  WS     :3001 /chat        (same-port upgrade via rocket_ws)");
 
-    let mut app = ToniFactory::new().create_with(AppModule).await;
+    let mut app = ToniFactory::new().create_with(AppModule).await?;
 
     app.use_http_adapter(RocketAdapter::new(), ("127.0.0.1", 3001))
         .unwrap();

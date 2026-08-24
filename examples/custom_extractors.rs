@@ -954,7 +954,7 @@ async fn main() -> anyhow::Result<()> {
     use toni::ToniFactory;
     use toni_axum::AxumAdapter;
 
-    let mut app = ToniFactory::create(AppModule).await;
+    let mut app = ToniFactory::create(AppModule).await?;
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000))
         .unwrap();
     app.start().await?;
