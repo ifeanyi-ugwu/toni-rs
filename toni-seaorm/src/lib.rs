@@ -1,3 +1,5 @@
+mod redact;
+
 mod connection;
 #[cfg(feature = "health")]
 pub mod health;

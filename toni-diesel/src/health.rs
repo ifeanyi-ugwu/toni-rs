@@ -67,15 +67,17 @@ macro_rules! impl_diesel_health {
             async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
-                let pool = <$pool>::builder(manager).build().unwrap_or_else(|e| {
-                    panic!(
-                        "toni-diesel health: failed to build pool for '{}': {e}",
-                        self.url
-                    )
-                });
+                let (indicator, init_error) = match <$pool>::builder(manager).build() {
+                    Ok(pool) => (Some($indicator { pool }), None),
+                    Err(e) => (
+                        None,
+                        Some(crate::redact::describe("failed to build pool", e, &self.url)),
+                    ),
+                };
                 Injectable::new(
                     Arc::new(Box::new($provider {
-                        indicator: $indicator { pool },
+                        indicator,
+                        init_error,
                     })),
                     vec![],
                 )
@@ -83,7 +85,9 @@ macro_rules! impl_diesel_health {
         }
 
         struct $provider {
-            indicator: $indicator,
+            indicator: Option<$indicator>,
+            // Set when the pool could not be built; reported from `on_module_init`.
+            init_error: Option<String>,
         }
 
         #[async_trait]
@@ -101,7 +105,14 @@ macro_rules! impl_diesel_health {
                 _params: Vec<Box<dyn Any + Send>>,
                 _ctx: ProviderContext,
             ) -> Box<dyn Any + Send> {
-                Box::new(self.indicator.clone())
+                Box::new(self.indicator.clone().expect("health indicator unavailable"))
+            }
+
+            async fn on_module_init(&self) -> toni::InitResult {
+                match &self.init_error {
+                    Some(message) => Err(message.clone().into()),
+                    None => Ok(()),
+                }
             }
         }
     };

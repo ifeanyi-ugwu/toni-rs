@@ -49,17 +49,21 @@ impl ProviderFactory for SeaOrmHealthIndicatorFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let db = Database::connect(&self.database_url)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "toni-seaorm health: failed to connect to '{}': {e}",
-                    self.database_url
-                )
-            });
+        let (indicator, init_error) = match Database::connect(&self.database_url).await {
+            Ok(db) => (Some(SeaOrmHealthIndicator { db }), None),
+            Err(e) => (
+                None,
+                Some(crate::redact::describe(
+                    "failed to connect",
+                    e,
+                    &self.database_url,
+                )),
+            ),
+        };
         Injectable::new(
             Arc::new(Box::new(SeaOrmHealthProvider {
-                indicator: SeaOrmHealthIndicator { db },
+                indicator,
+                init_error,
             })),
             vec![],
         )
@@ -67,7 +71,9 @@ impl ProviderFactory for SeaOrmHealthIndicatorFactory {
 }
 
 struct SeaOrmHealthProvider {
-    indicator: SeaOrmHealthIndicator,
+    indicator: Option<SeaOrmHealthIndicator>,
+    // Set when the connection could not be established; reported from `on_module_init`.
+    init_error: Option<String>,
 }
 
 #[async_trait]
@@ -85,6 +91,17 @@ impl Provider for SeaOrmHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(self.indicator.clone())
+        Box::new(
+            self.indicator
+                .clone()
+                .expect("health indicator unavailable"),
+        )
+    }
+
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 }

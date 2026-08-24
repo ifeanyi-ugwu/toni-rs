@@ -29,15 +29,24 @@ impl ProviderFactory for SeaOrmConnectionFactory {
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> toni::traits_helpers::Injectable {
-        let db = Database::connect(&self.database_url)
-            .await
-            .unwrap_or_else(|e| {
-                panic!("SeaORM: failed to connect to '{}': {e}", self.database_url)
-            });
+        // `build` returns the instance directly, so a failed connection is carried into the
+        // provider and reported from `on_module_init`, which can return it.
+        let (db, init_error) = match Database::connect(&self.database_url).await {
+            Ok(db) => (Some(db), None),
+            Err(e) => (
+                None,
+                Some(crate::redact::describe(
+                    "failed to connect",
+                    e,
+                    &self.database_url,
+                )),
+            ),
+        };
 
         toni::traits_helpers::Injectable::new(
             Arc::new(Box::new(SeaOrmConnectionProvider {
-                db: Mutex::new(Some(db)),
+                db: Mutex::new(db),
+                init_error,
                 token: self.token.clone(),
             })),
             vec![],
@@ -48,6 +57,9 @@ impl ProviderFactory for SeaOrmConnectionFactory {
 struct SeaOrmConnectionProvider {
     // Option so close() can take ownership on shutdown; Mutex for &self access.
     db: Mutex<Option<DatabaseConnection>>,
+    // Set when the connection could not be established. `on_module_init` returns it, so startup
+    // stops before anything resolves this provider.
+    init_error: Option<String>,
     token: String,
 }
 
@@ -71,9 +83,16 @@ impl Provider for SeaOrmConnectionProvider {
             .db
             .lock()
             .as_ref()
-            .expect("database already closed")
+            .expect("database connection unavailable")
             .clone();
         Box::new(db)
+    }
+
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {
