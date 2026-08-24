@@ -54,7 +54,7 @@ async fn app_close_disconnects_ws_clients_and_stops_http() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(CloseModule).await;
+        let mut app = ToniFactory::create(CloseModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();

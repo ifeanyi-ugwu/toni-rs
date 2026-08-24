@@ -85,7 +85,7 @@ async fn start(module: impl toni::ModuleMetadata + 'static) -> Bound {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut app = ToniFactory::create(module).await.unwrap();
         app.use_http_adapter(RocketAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();

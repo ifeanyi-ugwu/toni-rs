@@ -48,7 +48,7 @@ async fn case_serves_on_caller_socket(adapter: impl toni::WebSocketAdapter) {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(AdoptedModule).await;
+        let mut app = ToniFactory::create(AdoptedModule).await.unwrap();
         app.use_websocket_adapter(adapter).unwrap();
         app.use_websocket_listener(DECLARED_PORT, listener).unwrap();
         let bound = app.bind().await.unwrap();

@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     let factory = ToniFactory::new();
-    let mut app = factory.create_with(ChatModule).await;
+    let mut app = factory.create_with(ChatModule).await?;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), ("127.0.0.1", 8080))
         .unwrap();

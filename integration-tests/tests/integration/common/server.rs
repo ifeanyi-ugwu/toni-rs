@@ -55,7 +55,7 @@ impl TestServer {
 
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
-            let mut app = factory.create_with(module).await;
+            let mut app = factory.create_with(module).await.unwrap();
             app.use_http_adapter(adapter, target).unwrap();
             let bound = app.bind().await.unwrap();
             let addr = bound.http.expect("HTTP adapter not bound");

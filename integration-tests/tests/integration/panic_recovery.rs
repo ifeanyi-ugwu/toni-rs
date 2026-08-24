@@ -80,7 +80,7 @@ async fn start_app(
         for o in observers {
             factory.use_global_error_observer(o);
         }
-        let mut app = factory.create_with(module).await;
+        let mut app = factory.create_with(module).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();

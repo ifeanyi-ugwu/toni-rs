@@ -90,7 +90,7 @@ impl TestModule {}
 async fn test_attribute_syntax_runtime() {
     use toni::toni_factory::ToniFactory;
 
-    let app = ToniFactory::create(TestModule).await;
+    let app = ToniFactory::create(TestModule).await.unwrap();
 
     let simple = app
         .get::<SimpleService>()

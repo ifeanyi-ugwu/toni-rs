@@ -188,14 +188,14 @@ async fn main() -> anyhow::Result<()> {
     let local = tokio::task::LocalSet::new();
 
     local.spawn_local(async {
-        let mut app = ToniFactory::new().create_with(PatternModule).await;
+        let mut app = ToniFactory::new().create_with(PatternModule).await.unwrap();
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", 4000))
             .unwrap();
         app.start().await.unwrap();
     });
 
     local.spawn_local(async {
-        let mut app = ToniFactory::new().create_with(PatternModule).await;
+        let mut app = ToniFactory::new().create_with(PatternModule).await.unwrap();
         app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 4001))
             .unwrap();
         app.start().await.unwrap();
@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
 
     local.spawn_local(async {
         let addr: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        let mut app = ToniFactory::new().create_with(GrpcModule).await;
+        let mut app = ToniFactory::new().create_with(GrpcModule).await.unwrap();
         app.use_grpc_adapter(toni_grpc::GrpcAdapter::new(addr))
             .unwrap();
         app.start().await.unwrap();

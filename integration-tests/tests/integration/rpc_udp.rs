@@ -27,7 +27,7 @@ async fn start_rpc_server(module: impl toni::ModuleMetadata + 'static) -> u16 {
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut app = ToniFactory::create(module).await.unwrap();
         app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -221,7 +221,7 @@ async fn udp_app_shutdown_stops_the_recv_loop() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(UdpRpcModule).await;
+        let mut app = ToniFactory::create(UdpRpcModule).await.unwrap();
         app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -402,7 +402,7 @@ async fn udp_in_flight_request_completes_during_drain() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowUdpModule).await;
+        let mut app = ToniFactory::create(SlowUdpModule).await.unwrap();
         app.use_rpc_adapter(toni_udp::UdpAdapter::new("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();
@@ -452,7 +452,7 @@ async fn udp_drain_aborts_after_timeout() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowUdpModule).await;
+        let mut app = ToniFactory::create(SlowUdpModule).await.unwrap();
         let adapter =
             toni_udp::UdpAdapter::new("127.0.0.1", 0).with_drain_timeout(Duration::from_millis(50));
         app.use_rpc_adapter(adapter).unwrap();
@@ -495,7 +495,7 @@ async fn udp_backpressure_rejects_excess_and_releases_after_completion() {
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowUdpModule).await;
+        let mut app = ToniFactory::create(SlowUdpModule).await.unwrap();
         let adapter = toni_udp::UdpAdapter::new("127.0.0.1", 0).with_max_inflight(1);
         app.use_rpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();

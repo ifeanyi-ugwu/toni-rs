@@ -121,7 +121,7 @@ async fn full_integration() {
     tokio::task::LocalSet::new()
         .run_until(async move {
             tokio::task::spawn_local(async move {
-                let mut app = ToniFactory::new().create_with(TestModule).await;
+                let mut app = ToniFactory::new().create_with(TestModule).await.unwrap();
                 app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", app_port))
                     .unwrap();
                 app.start().await.unwrap();

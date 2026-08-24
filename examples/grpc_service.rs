@@ -209,7 +209,7 @@ async fn main() {
             let addr: SocketAddr = "127.0.0.1:50051".parse().unwrap();
             let adapter = toni_grpc::GrpcAdapter::new(addr);
 
-            let mut app = ToniFactory::create(GrpcExampleModule).await;
+            let mut app = ToniFactory::create(GrpcExampleModule).await.unwrap();
             app.use_grpc_adapter(adapter).unwrap();
             tracing::info!("gRPC server listening on 127.0.0.1:50051");
             app.start().await.expect("server failed to start");

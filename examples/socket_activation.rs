@@ -53,7 +53,7 @@ fn http_target() -> anyhow::Result<BindTarget> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut app = ToniFactory::new().create_with(AppModule).await;
+    let mut app = ToniFactory::new().create_with(AppModule).await?;
     app.use_http_adapter(toni_axum::AxumAdapter::new(), http_target()?)?;
 
     let bound = app.bind().await?;

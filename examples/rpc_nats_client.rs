@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  POST /order/ship   {{\"order_id\":1001}}    → fire-and-forget via RpcClient");
     println!();
 
-    let mut app = ToniFactory::new().create_with(OrdersModule).await;
+    let mut app = ToniFactory::new().create_with(OrdersModule).await?;
 
     app.use_http_adapter(toni_axum::AxumAdapter::new(), ("127.0.0.1", 8080))
         .unwrap();

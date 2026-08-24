@@ -182,7 +182,7 @@ mod tests {
     async fn test_di_resolves() {
         // Verify the module wires correctly: UserService (singleton) must resolve,
         // and its business logic must be callable without an HTTP server.
-        let app = ToniFactory::create(TestModule).await;
+        let app = ToniFactory::create(TestModule).await.unwrap();
 
         let service = app
             .get::<UserService>()

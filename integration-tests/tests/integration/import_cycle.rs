@@ -39,7 +39,7 @@ impl AppModule {}
 
 #[tokio::test]
 async fn mutual_import_cycle_still_instantiates_both_modules() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let a = app
         .get::<ServiceA>()
@@ -93,7 +93,7 @@ impl AppModuleCd {}
 
 #[tokio::test]
 async fn cross_module_dependency_through_import_cycle_resolves() {
-    let app = ToniFactory::create(AppModuleCd).await;
+    let app = ToniFactory::create(AppModuleCd).await.unwrap();
 
     let c = app
         .get::<ServiceC>()

@@ -19,7 +19,7 @@
 //!
 //! ```text
 //! tracing_subscriber::fmt().json().init();
-//! let app = ToniFactory::create(AppModule).await;
+//! let app = ToniFactory::create(AppModule).await?;
 //! ```
 //!
 //! To compile the default logger out entirely, disable the crate's default
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  GET http://127.0.0.1:3000/hello");
     println!();
 
-    let mut app = ToniFactory::create(AppModule).await;
+    let mut app = ToniFactory::create(AppModule).await?;
 
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000))
         .unwrap();

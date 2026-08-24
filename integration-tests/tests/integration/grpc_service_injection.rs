@@ -6,8 +6,6 @@ use futures_util::Stream;
 use toni::*;
 use toni_macros::{grpc_methods, grpc_service, new};
 
-use crate::common::panic_message;
-
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
 }
@@ -86,9 +84,13 @@ impl AppModule {}
 ///
 /// The other half of the refusal is not reachable from here: listing a dispatch target in
 /// `providers:` does not compile, because the macro emits no provider factory for one.
-#[test]
-fn a_grpc_service_is_not_resolvable_as_a_dependency() {
-    let message = panic_message(|| ToniFactory::create_application_context(AppModule));
+#[tokio::test]
+async fn a_grpc_service_is_not_resolvable_as_a_dependency() {
+    let message = ToniFactory::create_application_context(AppModule)
+        .await
+        .err()
+        .expect("an injected dispatch target must fail initialization")
+        .to_string();
 
     assert!(
         message.contains("Dependency not found"),

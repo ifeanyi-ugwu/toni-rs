@@ -269,7 +269,7 @@ async fn start_app(
         if let Some(handler) = chain_handler {
             factory.use_global_http_error_handler(handler);
         }
-        let mut app = factory.create_with(module).await;
+        let mut app = factory.create_with(module).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();

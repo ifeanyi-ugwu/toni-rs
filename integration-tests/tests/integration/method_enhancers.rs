@@ -253,7 +253,7 @@ async fn start_rpc_server(module: impl toni::ModuleMetadata + 'static) -> u16 {
     let port = pick_free_port().await;
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut app = ToniFactory::create(module).await.unwrap();
         app.use_rpc_adapter(toni_tcp::TcpAdapter::new("127.0.0.1", port))
             .unwrap();
         app.start().await.unwrap();

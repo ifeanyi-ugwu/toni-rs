@@ -379,7 +379,7 @@ async fn websocket_separate_port_end_to_end() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(PingModule).await;
+        let mut app = ToniFactory::create(PingModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
@@ -427,7 +427,7 @@ async fn separate_port_close_stops_ws_server() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(PingModule).await;
+        let mut app = ToniFactory::create(PingModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())
@@ -512,7 +512,7 @@ async fn gateway_port_zero_binds_separately_from_http_port_zero() {
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(ZeroPortModule).await;
+        let mut app = ToniFactory::create(ZeroPortModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         app.use_websocket_adapter(TungsteniteAdapter::new())

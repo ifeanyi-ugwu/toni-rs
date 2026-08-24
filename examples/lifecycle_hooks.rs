@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut ctx = ToniFactory::new()
         .create_application_context_with(AppModule)
-        .await;
+        .await?;
 
     println!("\nGetting service from DI container...\n");
 

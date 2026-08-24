@@ -64,7 +64,7 @@ impl HookModule {
 async fn startup_hooks_fire_in_order() {
     get_log().lock().unwrap().clear();
 
-    let mut app = ToniFactory::create(HookModule).await;
+    let mut app = ToniFactory::create(HookModule).await.unwrap();
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();
@@ -101,7 +101,7 @@ async fn path_qualified_module_hook_attr_fires() {
         }
     }
 
-    let _app = ToniFactory::create(QualifiedHookModule).await;
+    let _app = ToniFactory::create(QualifiedHookModule).await.unwrap();
     assert_eq!(qualified_log().lock().unwrap().clone(), vec!["module:init"]);
 }
 
@@ -134,7 +134,7 @@ impl RpcHookModule {}
 async fn an_rpc_controller_still_gets_its_startup_hooks() {
     get_log().lock().unwrap().clear();
 
-    let mut app = ToniFactory::create(RpcHookModule).await;
+    let mut app = ToniFactory::create(RpcHookModule).await.unwrap();
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     // The declared patterns need a transport to reach: `bind()` refuses an RPC controller with
@@ -239,7 +239,7 @@ impl GrpcHookModule {}
 async fn a_grpc_service_still_gets_its_startup_hooks() {
     get_log().lock().unwrap().clear();
 
-    let mut app = ToniFactory::create(GrpcHookModule).await;
+    let mut app = ToniFactory::create(GrpcHookModule).await.unwrap();
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();
@@ -279,7 +279,9 @@ impl ContextHookModule {}
 async fn an_application_context_runs_its_controllers_shutdown_hooks() {
     get_log().lock().unwrap().clear();
 
-    let mut ctx = ToniFactory::create_application_context(ContextHookModule).await;
+    let mut ctx = ToniFactory::create_application_context(ContextHookModule)
+        .await
+        .unwrap();
     ctx.close().await;
 
     let log = get_log().lock().unwrap().clone();
@@ -298,7 +300,7 @@ async fn an_application_context_runs_its_controllers_shutdown_hooks() {
 async fn an_application_runs_its_controllers_teardown_hooks_once() {
     get_log().lock().unwrap().clear();
 
-    let mut app = ToniFactory::create(ContextHookModule).await;
+    let mut app = ToniFactory::create(ContextHookModule).await.unwrap();
     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();

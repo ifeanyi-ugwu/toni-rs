@@ -36,7 +36,7 @@
 //!     let local = tokio::task::LocalSet::new();
 //!     local.run_until(async move {
 //!         let addr: SocketAddr = "127.0.0.1:50051".parse().unwrap();
-//!         let mut app = ToniFactory::create(AppModule).await;
+//!         let mut app = ToniFactory::create(AppModule).await.unwrap();
 //!         app.use_grpc_adapter(toni_grpc::GrpcAdapter::new(addr)).unwrap();
 //!         app.start().await.unwrap();
 //!     }).await;

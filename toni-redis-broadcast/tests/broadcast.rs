@@ -17,7 +17,9 @@ fn make_client() -> (Arc<dyn WsSink>, mpsc::Receiver<WsMessage>) {
 }
 
 async fn boot(url: &str) -> (toni::ToniApplicationContext, RedisBroadcastService) {
-    let app = ToniFactory::create_application_context(RedisBroadcastModule::for_root(url)).await;
+    let app = ToniFactory::create_application_context(RedisBroadcastModule::for_root(url))
+        .await
+        .unwrap();
     let rbs = app
         .get::<RedisBroadcastService>()
         .await

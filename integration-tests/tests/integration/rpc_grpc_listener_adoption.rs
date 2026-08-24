@@ -44,7 +44,7 @@ async fn start_rpc_on(adapter: impl toni::RpcAdapter) -> SocketAddr {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(AdoptionModule).await;
+        let mut app = ToniFactory::create(AdoptionModule).await.unwrap();
         app.use_rpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let _ = addr_tx.send(bound.rpc.expect("RPC adapter must report its address"));
@@ -136,7 +136,7 @@ async fn grpc_serves_on_caller_supplied_listener() {
     let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(EmptyModule).await;
+        let mut app = ToniFactory::create(EmptyModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let _ = addr_tx.send(bound.grpc.expect("gRPC adapter must report its address"));

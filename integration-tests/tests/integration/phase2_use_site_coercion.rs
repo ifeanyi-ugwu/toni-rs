@@ -67,7 +67,9 @@ fn ctx_without_admin_header() -> HttpContext {
 
 #[tokio_localset_test::localset_test]
 async fn marker_free_guard_resolves_coerces_and_runs() {
-    let app = ToniFactory::create_application_context(GuardModule).await;
+    let app = ToniFactory::create_application_context(GuardModule)
+        .await
+        .unwrap();
 
     // (1) Resolution by concrete type. AdminGuard is built with AuthPolicy injected, despite
     //     carrying no #[guard] marker — it is just a normal provider.

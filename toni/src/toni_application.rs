@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use crate::error::BindError;
+use crate::error::StartupError;
 use anyhow::Result;
 use event_listener::Event;
 
@@ -374,8 +374,8 @@ impl ToniApplication {
     ///
     /// Every transport the application declares must come up. An adapter that
     /// fails to take its handlers or to acquire its socket returns
-    /// [`BindError::Adapter`]; a declaration with nothing registered to serve it
-    /// returns [`BindError::Setup`]. Starting anyway would leave a process that
+    /// [`StartupError::Adapter`]; a declaration with nothing registered to serve it
+    /// returns [`StartupError::Setup`]. Starting anyway would leave a process that
     /// answers less than it advertises while every liveness signal reads
     /// healthy, and `BoundAdapters` cannot express the difference — its `rpc`
     /// field is `None` both for a dead adapter and for a subject-based
@@ -383,7 +383,7 @@ impl ToniApplication {
     ///
     /// Sockets acquired before the failure are closed on the way out, and the
     /// application cannot be bound again.
-    pub async fn bind(&mut self) -> Result<BoundAdapters, BindError> {
+    pub async fn bind(&mut self) -> Result<BoundAdapters, StartupError> {
         self.require_state(AppState::Configuring, "bind")?;
 
         match self.bind_adapters().await {
@@ -405,7 +405,7 @@ impl ToniApplication {
         }
     }
 
-    async fn bind_adapters(&mut self) -> Result<BoundAdapters, BindError> {
+    async fn bind_adapters(&mut self) -> Result<BoundAdapters, StartupError> {
         {
             let mut scanner = crate::scanner::ToniDependenciesScanner::new(
                 self.routes_resolver.container.clone(),
@@ -471,7 +471,7 @@ impl ToniApplication {
                 // trimmed (AdapterContext), so register the trimmed form.
                 let trimmed = crate::http_helpers::trim_trailing_slashes(path);
                 http.register_ws_route(trimmed, callbacks)
-                    .map_err(|source| BindError::Adapter {
+                    .map_err(|source| StartupError::Adapter {
                         transport: "websocket",
                         source: source.into(),
                     })?;
@@ -514,7 +514,7 @@ impl ToniApplication {
                             broadcast_service.clone(),
                         ));
                         ws.register_gateway(ws_port, path, callbacks)
-                            .map_err(|source| BindError::Adapter {
+                            .map_err(|source| StartupError::Adapter {
                                 transport: "websocket",
                                 source: source.into(),
                             })?;
@@ -549,7 +549,7 @@ impl ToniApplication {
                 let handles = adapter
                     .into_lifecycle_handles(targets)
                     .await
-                    .map_err(|source| BindError::Adapter {
+                    .map_err(|source| StartupError::Adapter {
                         transport: "websocket",
                         source: source.into(),
                     })?;
@@ -603,17 +603,18 @@ impl ToniApplication {
             let mut adapter = self.rpc_adapter.take().unwrap();
             adapter
                 .register_handlers(&all_patterns, callbacks)
-                .map_err(|source| BindError::Adapter {
+                .map_err(|source| StartupError::Adapter {
                     transport: "rpc",
                     source: source.into(),
                 })?;
-            let handle = adapter
-                .into_lifecycle()
-                .await
-                .map_err(|source| BindError::Adapter {
-                    transport: "rpc",
-                    source: source.into(),
-                })?;
+            let handle =
+                adapter
+                    .into_lifecycle()
+                    .await
+                    .map_err(|source| StartupError::Adapter {
+                        transport: "rpc",
+                        source: source.into(),
+                    })?;
             rpc_addr = handle.local_addr();
             self.servers.push(Box::new(handle));
         }
@@ -628,17 +629,18 @@ impl ToniApplication {
             let grpc_services = grpc_resolver.resolve()?;
             adapter
                 .register_services(grpc_services)
-                .map_err(|source| BindError::Adapter {
+                .map_err(|source| StartupError::Adapter {
                     transport: "grpc",
                     source: source.into(),
                 })?;
-            let handle = adapter
-                .into_lifecycle()
-                .await
-                .map_err(|source| BindError::Adapter {
-                    transport: "grpc",
-                    source: source.into(),
-                })?;
+            let handle =
+                adapter
+                    .into_lifecycle()
+                    .await
+                    .map_err(|source| StartupError::Adapter {
+                        transport: "grpc",
+                        source: source.into(),
+                    })?;
             grpc_addr = handle.local_addr();
             if let Some(addr) = grpc_addr {
                 tracing::info!(addr = %addr, "gRPC listening");
@@ -659,7 +661,7 @@ impl ToniApplication {
             let handle = http_adapter
                 .into_lifecycle(target, ctx)
                 .await
-                .map_err(|source| BindError::Adapter {
+                .map_err(|source| StartupError::Adapter {
                     transport: "http",
                     source: source.into(),
                 })?;
