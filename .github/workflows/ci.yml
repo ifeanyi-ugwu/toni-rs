@@ -55,7 +55,7 @@ jobs:
       # Hermetic suites only — everything here runs against localhost with no
       # external services. Broker and DB crates keep their service-dependent
       # tests behind feature gates and are compile-checked in the check job.
-      - run: cargo test -p toni --lib --locked
+      - run: cargo test -p toni --lib --features startup-check --locked
       - run: cargo test -p integration-tests --locked
       # Startup-failure reporting and connection-string redaction for the database modules.
       # Hermetic: no server is contacted. Their service-dependent suites stay behind the

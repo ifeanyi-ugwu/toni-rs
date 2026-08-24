@@ -5,7 +5,7 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use toni::{
-    FxHashMap,
+    FxHashMap, StartupCheck,
     traits_helpers::{Injectable, Provider, ProviderContext, ProviderFactory},
 };
 
@@ -17,6 +17,7 @@ macro_rules! impl_diesel_pool {
             // Injection token for this pool: the `Pool<_>` type name for the default
             // (`postgres`/`mysql`), or the caller's chosen name for a named pool.
             pub token: String,
+            pub check: Option<StartupCheck>,
         }
 
         #[async_trait]
@@ -50,6 +51,8 @@ macro_rules! impl_diesel_pool {
                     Arc::new(Box::new($provider {
                         pool,
                         init_error,
+                        check: self.check.clone(),
+                        url: self.url.clone(),
                         token: self.token.clone(),
                     })),
                     vec![],
@@ -62,6 +65,10 @@ macro_rules! impl_diesel_pool {
             // Set when the pool could not be built. `on_module_init` returns it, so startup
             // stops before anything resolves this provider.
             init_error: Option<String>,
+            // `None` when the caller dropped the check: nothing contacts the server before it
+            // is used.
+            check: Option<StartupCheck>,
+            url: String,
             token: String,
         }
 
@@ -84,10 +91,37 @@ macro_rules! impl_diesel_pool {
             }
 
             async fn on_module_init(&self) -> toni::InitResult {
-                match &self.init_error {
-                    Some(message) => Err(message.clone().into()),
-                    None => Ok(()),
+                if let Some(message) = &self.init_error {
+                    return Err(message.clone().into());
                 }
+
+                let Some(check) = &self.check else {
+                    return Ok(());
+                };
+
+                // deadpool opens no connection when it builds, so taking one from the pool is
+                // what makes an unreachable server a startup failure rather than an error on
+                // the first query.
+                let pool = self
+                    .pool
+                    .clone()
+                    .expect("a built pool is present whenever there is no init error");
+
+                check
+                    .run(|| {
+                        let pool = pool.clone();
+                        async move {
+                            pool.get().await.map(|_| ()).map_err(|e| {
+                                crate::redact::describe(
+                                    "failed to reach the database",
+                                    e,
+                                    &self.url,
+                                )
+                            })
+                        }
+                    })
+                    .await
+                    .map_err(Into::into)
             }
 
             async fn on_application_shutdown(&self, _signal: Option<String>) {

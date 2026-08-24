@@ -12,7 +12,7 @@ health = ["dep:toni-terminus", "dep:serde_json", "dep:futures"]
 integration = ["health"]
 
 [dependencies]
-toni = { path = "../toni", default-features = false }
+toni = { path = "../toni", default-features = false, features = ["startup-check"] }
 mongodb = { version = "3" }
 async-trait = "0.1"
 tracing = "0.1"

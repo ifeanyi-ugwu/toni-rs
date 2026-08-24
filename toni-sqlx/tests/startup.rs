@@ -1,7 +1,9 @@
 //! A connection that cannot be established fails startup with a returned error naming the module.
 #![cfg(feature = "postgres")]
 
-use toni::{StartupError, ToniFactory};
+use std::time::Duration;
+
+use toni::{StartupCheck, StartupError, ToniFactory};
 use toni_sqlx::SqlxModule;
 
 #[tokio::test]
@@ -29,4 +31,44 @@ async fn a_connection_that_cannot_be_established_fails_startup() {
         !rendered.contains("secret"),
         "the failure must not echo the connection string, got: {rendered}"
     );
+}
+
+/// The check contacts the server, so an unreachable one fails startup on the configured schedule
+/// rather than on whatever the driver does by itself.
+#[tokio::test]
+async fn an_unreachable_server_fails_startup() {
+    let started = std::time::Instant::now();
+
+    let err = ToniFactory::create_application_context(
+        SqlxModule::postgres("postgres://someone:secret@127.0.0.1:1/app").with_startup_check(
+            StartupCheck::default()
+                .attempts(2)
+                .delay(Duration::from_millis(50))
+                .timeout(Duration::from_millis(400)),
+        ),
+    )
+    .await
+    .err()
+    .expect("an unreachable server must fail startup");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the check must not wait for the driver's own timeout, took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(&err, StartupError::HookFailed { hook, .. } if *hook == "on_module_init"),
+        "expected HookFailed, got: {err}"
+    );
+}
+
+/// Dropping the check starts the application without contacting the server.
+#[tokio::test]
+async fn dropping_the_check_starts_without_contacting_the_server() {
+    ToniFactory::create_application_context(
+        SqlxModule::postgres("postgres://someone:secret@127.0.0.1:1/app").without_startup_check(),
+    )
+    .await
+    .map(|_| ())
+    .expect("an unchecked module must start regardless of the server");
 }
