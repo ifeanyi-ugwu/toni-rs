@@ -47,7 +47,7 @@ impl MongoModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::MongoHealthIndicatorFactory { uri, db_name })
+                .provider(crate::health::MongoHealthIndicatorFactory)
                 .export::<crate::health::MongoHealthIndicator>();
         }
 

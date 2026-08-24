@@ -54,9 +54,7 @@ macro_rules! impl_diesel_health {
             }
         }
 
-        pub(crate) struct $factory {
-            pub url: String,
-        }
+        pub(crate) struct $factory;
 
         #[async_trait]
         impl ProviderFactory for $factory {
@@ -64,30 +62,26 @@ macro_rules! impl_diesel_health {
                 std::any::type_name::<$indicator>().to_string()
             }
 
-            async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-                use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-                let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
-                let (indicator, init_error) = match <$pool>::builder(manager).build() {
-                    Ok(pool) => (Some($indicator { pool }), None),
-                    Err(e) => (
-                        None,
-                        Some(crate::redact::describe("failed to build pool", e, &self.url)),
-                    ),
-                };
-                Injectable::new(
-                    Arc::new(Box::new($provider {
-                        indicator,
-                        init_error,
-                    })),
-                    vec![],
-                )
+            fn get_dependencies(&self) -> Vec<String> {
+                vec![std::any::type_name::<$pool>().to_string()]
+            }
+
+            async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+                let token = std::any::type_name::<$pool>().to_string();
+                let connection = deps
+                    .get(&token)
+                    .expect("the health indicator is registered alongside the pool it checks")
+                    .instance
+                    .clone();
+                Injectable::new(Arc::new(Box::new($provider { connection })), vec![])
             }
         }
 
         struct $provider {
-            indicator: Option<$indicator>,
-            // Set when the pool could not be built; reported from `on_module_init`.
-            init_error: Option<String>,
+            // The registered pool's provider, resolved per request for an indicator rather than
+            // at build time: the pool may have failed, and startup reports that from its own
+            // `on_module_init` before anything can resolve this one.
+            connection: Arc<Box<dyn Provider>>,
         }
 
         #[async_trait]
@@ -105,14 +99,14 @@ macro_rules! impl_diesel_health {
                 _params: Vec<Box<dyn Any + Send>>,
                 _ctx: ProviderContext,
             ) -> Box<dyn Any + Send> {
-                Box::new(self.indicator.clone().expect("health indicator unavailable"))
-            }
-
-            async fn on_module_init(&self) -> toni::InitResult {
-                match &self.init_error {
-                    Some(message) => Err(message.clone().into()),
-                    None => Ok(()),
-                }
+                let resolved = self
+                    .connection
+                    .execute(Vec::new(), ProviderContext::None)
+                    .await;
+                let pool = *resolved
+                    .downcast::<$pool>()
+                    .expect("the registered pool provider yields a Pool");
+                Box::new($indicator { pool })
             }
         }
     };

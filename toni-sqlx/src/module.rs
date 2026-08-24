@@ -28,7 +28,6 @@ impl SqlxModule {
         {
             builder = builder
                 .provider(crate::health::SqlxHealthIndicatorFactory::<Postgres> {
-                    url,
                     _db: PhantomData,
                 })
                 .export::<crate::health::SqlxHealthIndicator<Postgres>>();
@@ -94,10 +93,7 @@ impl SqlxModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::SqlxHealthIndicatorFactory::<MySql> {
-                    url,
-                    _db: PhantomData,
-                })
+                .provider(crate::health::SqlxHealthIndicatorFactory::<MySql> { _db: PhantomData })
                 .export::<crate::health::SqlxHealthIndicator<MySql>>();
         }
 
@@ -137,10 +133,7 @@ impl SqlxModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::SqlxHealthIndicatorFactory::<Sqlite> {
-                    url,
-                    _db: PhantomData,
-                })
+                .provider(crate::health::SqlxHealthIndicatorFactory::<Sqlite> { _db: PhantomData })
                 .export::<crate::health::SqlxHealthIndicator<Sqlite>>();
         }
 

@@ -22,7 +22,7 @@ impl DieselModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::PgHealthIndicatorFactory { url })
+                .provider(crate::health::PgHealthIndicatorFactory)
                 .export::<crate::health::PgHealthIndicator>();
         }
 
@@ -47,7 +47,7 @@ impl DieselModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::MySqlHealthIndicatorFactory { url })
+                .provider(crate::health::MySqlHealthIndicatorFactory)
                 .export::<crate::health::MySqlHealthIndicator>();
         }
 
