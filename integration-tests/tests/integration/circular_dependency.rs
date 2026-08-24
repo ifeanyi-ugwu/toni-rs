@@ -2,8 +2,6 @@
 
 use toni::*;
 
-use crate::common::panic_message;
-
 // Global modules keep the import graph acyclic — both get ordered and reach the injector's
 // Phase-1 stall — while the providers still form a `ServiceA` <-> `ServiceB` cycle. `#[new]`
 // constructor injection consumes each dependency without storing it, so neither struct embeds
@@ -43,9 +41,13 @@ impl AppModule {}
 
 /// A cross-module provider cycle must fail with a diagnostic that names the exact providers in
 /// the cycle, not just the modules involved.
-#[test]
-fn cross_module_provider_cycle_names_the_exact_providers() {
-    let message = panic_message(|| ToniFactory::create_application_context(AppModule));
+#[tokio::test]
+async fn cross_module_provider_cycle_names_the_exact_providers() {
+    let message = ToniFactory::create_application_context(AppModule)
+        .await
+        .err()
+        .expect("a cross-module provider cycle must fail initialization")
+        .to_string();
 
     assert!(
         message.contains("Circular dependency detected between providers"),

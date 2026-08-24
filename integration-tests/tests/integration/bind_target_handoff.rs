@@ -38,7 +38,7 @@ async fn start_generation(listener: TcpListener) -> (std::net::SocketAddr, toni:
 
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(HandoffModule).await;
+        let mut app = ToniFactory::create(HandoffModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), listener).unwrap();
         let bound = app.bind().await.unwrap();
         let _ = addr_tx.send(bound.http.expect("HTTP adapter not bound"));

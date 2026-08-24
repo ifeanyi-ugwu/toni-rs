@@ -122,7 +122,7 @@ impl AppModule {}
 
 #[tokio::test]
 async fn test_module_ref_strict_mode() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     // Get PluginLoader from Module1
     let plugin_loader = app
@@ -141,7 +141,7 @@ async fn test_module_ref_strict_mode() {
 
 #[tokio::test]
 async fn test_module_ref_global_mode() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -159,7 +159,7 @@ async fn test_module_ref_global_mode() {
 
 #[tokio::test]
 async fn test_module_ref_strict_mode_fails_for_non_local_provider() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -177,7 +177,7 @@ async fn test_module_ref_strict_mode_fails_for_non_local_provider() {
 
 #[tokio::test]
 async fn test_module_ref_token_based_resolution() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -196,7 +196,7 @@ async fn test_module_ref_token_based_resolution() {
 
 #[tokio::test]
 async fn test_module_ref_current_module() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -214,7 +214,7 @@ async fn test_module_ref_current_module() {
 
 #[tokio::test]
 async fn test_module_ref_singleton_behavior() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader1 = app
         .get::<PluginLoader>()
@@ -248,7 +248,7 @@ async fn test_module_ref_singleton_behavior() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_module_ref_works_from_any_thread() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -275,7 +275,7 @@ async fn test_module_ref_works_from_any_thread() {
 
 #[tokio::test]
 async fn request_scoped_get_is_refused_not_a_panic() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -295,7 +295,7 @@ async fn request_scoped_get_is_refused_not_a_panic() {
 
 #[tokio::test]
 async fn resolve_builds_a_request_scoped_provider_in_the_execution() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()
@@ -334,7 +334,7 @@ async fn resolve_builds_a_request_scoped_provider_in_the_execution() {
 /// handle and the application context resolve the same instance in one execution.
 #[tokio::test]
 async fn the_module_and_the_application_resolve_into_one_cache() {
-    let app = ToniFactory::create(AppModule).await;
+    let app = ToniFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
         .get::<PluginLoader>()

@@ -244,7 +244,7 @@ async fn boot_guarded() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(GuardedGrpcModule).await;
+        let mut app = ToniFactory::create(GuardedGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -498,7 +498,7 @@ async fn boot_intercepted() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(InterceptedGrpcModule).await;
+        let mut app = ToniFactory::create(InterceptedGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -520,7 +520,7 @@ async fn boot_deny() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(DenyGrpcModule).await;
+        let mut app = ToniFactory::create(DenyGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -552,7 +552,7 @@ where
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(GrpcMacrosModule).await;
+        let mut app = ToniFactory::create(GrpcMacrosModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -975,7 +975,7 @@ async fn boot_error_handled() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(ErrorHandledGrpcModule).await;
+        let mut app = ToniFactory::create(ErrorHandledGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1054,7 +1054,7 @@ async fn boot_panicky() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(PanickyGrpcModule).await;
+        let mut app = ToniFactory::create(PanickyGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1429,7 +1429,7 @@ async fn boot_guard_panic() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(GuardPanicGrpcModule).await;
+        let mut app = ToniFactory::create(GuardPanicGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1451,7 +1451,9 @@ async fn boot_interceptor_panic() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(InterceptorPanicGrpcModule).await;
+        let mut app = ToniFactory::create(InterceptorPanicGrpcModule)
+            .await
+            .unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1613,7 +1615,9 @@ async fn boot_error_handler_panic() -> (u16, toni::ShutdownHandle) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(ErrorHandlerPanicGrpcModule).await;
+        let mut app = ToniFactory::create(ErrorHandlerPanicGrpcModule)
+            .await
+            .unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1732,7 +1736,7 @@ where
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(SlowGrpcModule).await;
+        let mut app = ToniFactory::create(SlowGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -1904,7 +1908,7 @@ async fn grpc_guard_write_reaches_the_handler() {
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(BusGrpcModule).await;
+        let mut app = ToniFactory::create(BusGrpcModule).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let port = bound
@@ -2127,7 +2131,7 @@ where
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut app = ToniFactory::create(module).await.unwrap();
         app.use_grpc_adapter(adapter).unwrap();
         let bound = app.bind().await.unwrap();
         let _ = port_tx.send(

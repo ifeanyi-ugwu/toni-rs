@@ -320,7 +320,7 @@ async fn test_three_level_enhancer_hierarchy() {
             .use_global_http_interceptors(Arc::new(GlobalInterceptor::new()))
             .use_global_http_pipes(Arc::new(GlobalPipe::new()));
 
-        let mut app = factory.create_with(TestModule).await;
+        let mut app = factory.create_with(TestModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", port))
             .unwrap();
         app.start().await.unwrap();

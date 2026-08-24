@@ -70,7 +70,7 @@ impl HttpAdapter for DyingAdapter {
 async fn a_dead_serve_loop_closes_the_application() {
     let (die, dies) = oneshot::channel();
 
-    let mut app = ToniFactory::create(ProbeModule).await;
+    let mut app = ToniFactory::create(ProbeModule).await.unwrap();
     app.use_http_adapter(DyingAdapter { die: dies }, ("127.0.0.1", 0))
         .unwrap();
     app.bind().await.unwrap();

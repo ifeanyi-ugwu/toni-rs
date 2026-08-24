@@ -84,7 +84,7 @@ async fn start_with_catchers(module: impl toni::ModuleMetadata + 'static) -> std
         // `OtherError`; then `guard_catcher` claims it.
         factory.use_global_http_error_handler(Arc::new(guard_catcher));
         factory.use_global_http_error_handler(Arc::new(other_catcher));
-        let mut app = factory.create_with(module).await;
+        let mut app = factory.create_with(module).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         let bound = app.bind().await.unwrap();

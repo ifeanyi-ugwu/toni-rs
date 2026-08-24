@@ -323,8 +323,9 @@ async fn injectable_accepts_path_qualified_clone_derive() {
     #[module(providers: [QualifiedCloneService])]
     struct QualifiedCloneModule {}
 
-    let app =
-        toni::toni_factory::ToniFactory::create_application_context(QualifiedCloneModule).await;
+    let app = toni::toni_factory::ToniFactory::create_application_context(QualifiedCloneModule)
+        .await
+        .unwrap();
     let svc: QualifiedCloneService = app
         .get::<QualifiedCloneService>()
         .await

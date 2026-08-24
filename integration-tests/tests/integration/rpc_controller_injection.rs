@@ -5,8 +5,6 @@ use toni::rpc::{RpcData, RpcError};
 use toni::*;
 use toni_macros::{message_pattern, new, patterns, rpc_controller};
 
-use crate::common::panic_message;
-
 #[rpc_controller]
 pub struct OrdersController {}
 
@@ -38,9 +36,13 @@ impl AppModule {}
 ///
 /// The other half of the refusal is not reachable from here: listing a dispatch target in
 /// `providers:` does not compile, because the macro emits no provider factory for one.
-#[test]
-fn an_rpc_controller_is_not_resolvable_as_a_dependency() {
-    let message = panic_message(|| ToniFactory::create_application_context(AppModule));
+#[tokio::test]
+async fn an_rpc_controller_is_not_resolvable_as_a_dependency() {
+    let message = ToniFactory::create_application_context(AppModule)
+        .await
+        .err()
+        .expect("an injected dispatch target must fail initialization")
+        .to_string();
 
     assert!(
         message.contains("Dependency not found"),

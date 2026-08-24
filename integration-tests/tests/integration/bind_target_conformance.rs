@@ -73,7 +73,10 @@ bind_target_suite!(actix, toni_actix::ActixAdapter::new());
 async fn rocket_refuses_a_pre_bound_listener() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
 
-    let mut app = ToniFactory::new().create_with(BindTargetModule).await;
+    let mut app = ToniFactory::new()
+        .create_with(BindTargetModule)
+        .await
+        .unwrap();
     app.use_http_adapter(toni_rocket::RocketAdapter::new(), listener)
         .unwrap();
 
