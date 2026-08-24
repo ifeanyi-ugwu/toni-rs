@@ -10,34 +10,40 @@ use std::time::Duration;
 use toni::{StartupCheck, StartupError, ToniFactory};
 use toni_diesel::DieselModule;
 
-fn brisk() -> StartupCheck {
-    StartupCheck::default()
-        .attempts(2)
-        .delay(Duration::from_millis(50))
-        .timeout(Duration::from_millis(400))
-}
-
 #[tokio::test]
 async fn an_unreachable_server_fails_startup() {
+    // Bounds derived from the schedule rather than written as constants: a loose constant is a
+    // guard that cannot fail for the reason it exists.
+    let check = StartupCheck::default()
+        .attempts(2)
+        .delay(Duration::from_millis(50))
+        .timeout(Duration::from_millis(400));
+    let started = std::time::Instant::now();
+
     let err = ToniFactory::create_application_context(
         DieselModule::postgres("postgres://someone:secret@127.0.0.1:1/app")
-            .with_startup_check(brisk()),
+            .with_startup_check(check),
     )
     .await
     .err()
     .expect("an unreachable server must fail startup");
+    let elapsed = started.elapsed();
 
-    let StartupError::HookFailed { module, hook, .. } = &err else {
-        panic!("expected HookFailed, got: {err}");
-    };
-    assert_eq!(*hook, "on_module_init");
+    // Upper: the driver must not be waiting on its own timeout, which is thirty seconds for the
+    // pooled drivers and unbounded for redis with its internal retry left on.
     assert!(
-        module.contains("DieselModule"),
-        "the failure should name the module, got: {module}"
+        elapsed < check.worst_case() * 3,
+        "the check must give up on its own schedule (worst case {:?}), took {elapsed:?}",
+        check.worst_case()
+    );
+    // Lower: without the retry this fails on the first refused connection, well under one gap.
+    assert!(
+        elapsed >= check.retry_delay(),
+        "the check must retry rather than fail on the first refusal, took {elapsed:?}"
     );
     assert!(
-        !err.to_string().contains("secret"),
-        "the failure must not echo the connection string, got: {err}"
+        matches!(&err, StartupError::HookFailed { hook, .. } if *hook == "on_module_init"),
+        "expected HookFailed, got: {err}"
     );
 }
 

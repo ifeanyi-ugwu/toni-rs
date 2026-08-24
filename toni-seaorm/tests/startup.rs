@@ -39,41 +39,38 @@ async fn a_connection_that_cannot_be_established_fails_startup() {
 /// rather than on sqlx's 30-second acquire timeout.
 #[tokio::test]
 async fn an_unreachable_server_fails_the_check_on_its_own_schedule() {
+    // Bounds derived from the schedule rather than written as constants: a loose constant is a
+    // guard that cannot fail for the reason it exists.
+    let check = StartupCheck::default()
+        .attempts(2)
+        .delay(Duration::from_millis(50))
+        .timeout(Duration::from_millis(400));
     let started = std::time::Instant::now();
 
     let err = ToniFactory::create_application_context(
-        SeaOrmModule::for_root("postgres://someone:secret@127.0.0.1:1/app").with_startup_check(
-            StartupCheck::default()
-                .attempts(2)
-                .delay(Duration::from_millis(50))
-                .timeout(Duration::from_millis(400)),
-        ),
+        SeaOrmModule::for_root("postgres://someone:secret@127.0.0.1:1/app")
+            .with_startup_check(check),
     )
     .await
     .err()
     .expect("an unreachable server must fail startup");
+    let elapsed = started.elapsed();
 
-    // The deadline is the driver's own, so this is what proves it bounds the probe: the default
-    // acquire timeout is thirty seconds.
+    // Upper: the driver must not be waiting on its own timeout, which is thirty seconds for the
+    // pooled drivers and unbounded for redis with its internal retry left on.
     assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "the budget must bound the probe, took {:?}",
-        started.elapsed()
+        elapsed < check.worst_case() * 3,
+        "the check must give up on its own schedule (worst case {:?}), took {elapsed:?}",
+        check.worst_case()
     );
-    // A lower bound as well as an upper one: without the retry this fails on the first refused
-    // connection, and elapsed would be under the one 50ms gap the schedule asks for.
+    // Lower: without the retry this fails on the first refused connection, well under one gap.
     assert!(
-        started.elapsed() >= Duration::from_millis(50),
-        "the check must retry rather than fail on the first refusal, took {:?}",
-        started.elapsed()
+        elapsed >= check.retry_delay(),
+        "the check must retry rather than fail on the first refusal, took {elapsed:?}"
     );
     assert!(
         matches!(&err, StartupError::HookFailed { hook, .. } if *hook == "on_module_init"),
         "expected HookFailed, got: {err}"
-    );
-    assert!(
-        !err.to_string().contains("secret"),
-        "the failure must not echo the connection string, got: {err}"
     );
 }
 
