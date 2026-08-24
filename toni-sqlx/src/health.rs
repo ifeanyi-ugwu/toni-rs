@@ -62,7 +62,6 @@ where
 // ── DI machinery ─────────────────────────────────────────────────────────────
 
 pub(crate) struct SqlxHealthIndicatorFactory<DB: Database> {
-    pub url: String,
     pub _db: PhantomData<DB>,
 }
 
@@ -81,18 +80,21 @@ where
         std::any::type_name::<SqlxHealthIndicator<DB>>().to_string()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let (indicator, init_error) = match Pool::<DB>::connect(&self.url).await {
-            Ok(pool) => (Some(SqlxHealthIndicator { pool }), None),
-            Err(e) => (
-                None,
-                Some(crate::redact::describe("failed to connect", e, &self.url)),
-            ),
-        };
+    fn get_dependencies(&self) -> Vec<String> {
+        vec![std::any::type_name::<Pool<DB>>().to_string()]
+    }
+
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+        let token = std::any::type_name::<Pool<DB>>().to_string();
+        let connection = deps
+            .get(&token)
+            .expect("the health indicator is registered alongside the pool it checks")
+            .instance
+            .clone();
         Injectable::new(
-            Arc::new(Box::new(SqlxHealthProvider {
-                indicator,
-                init_error,
+            Arc::new(Box::new(SqlxHealthProvider::<DB> {
+                connection,
+                _db: PhantomData,
             })),
             vec![],
         )
@@ -100,9 +102,11 @@ where
 }
 
 struct SqlxHealthProvider<DB: Database> {
-    indicator: Option<SqlxHealthIndicator<DB>>,
-    // Set when the connection could not be established; reported from `on_module_init`.
-    init_error: Option<String>,
+    // The registered pool's provider, resolved per request for an indicator rather than at build
+    // time: the pool may have failed, and startup reports that from its own `on_module_init`
+    // before anything can resolve this one.
+    connection: Arc<Box<dyn Provider>>,
+    _db: PhantomData<DB>,
 }
 
 unsafe impl<DB: Database> Send for SqlxHealthProvider<DB> {}
@@ -129,16 +133,13 @@ where
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(
-            self.indicator
-                .clone()
-                .expect("health indicator unavailable"),
-        )
-    }
-    async fn on_module_init(&self) -> toni::InitResult {
-        match &self.init_error {
-            Some(message) => Err(message.clone().into()),
-            None => Ok(()),
-        }
+        let resolved = self
+            .connection
+            .execute(Vec::new(), ProviderContext::None)
+            .await;
+        let pool = *resolved
+            .downcast::<Pool<DB>>()
+            .expect("the registered pool provider yields a Pool");
+        Box::new(SqlxHealthIndicator { pool })
     }
 }

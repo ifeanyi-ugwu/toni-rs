@@ -38,9 +38,7 @@ impl HealthIndicator for RedisHealthIndicator {
 
 // ── DI machinery ─────────────────────────────────────────────────────────────
 
-pub(crate) struct RedisHealthIndicatorFactory {
-    pub url: String,
-}
+pub(crate) struct RedisHealthIndicatorFactory;
 
 #[async_trait]
 impl ProviderFactory for RedisHealthIndicatorFactory {
@@ -48,34 +46,29 @@ impl ProviderFactory for RedisHealthIndicatorFactory {
         std::any::type_name::<RedisHealthIndicator>().to_string()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let (indicator, init_error) = match redis::Client::open(self.url.as_str()) {
-            Err(e) => (
-                None,
-                Some(crate::redact::describe("invalid URL", e, &self.url)),
-            ),
-            Ok(client) => match ConnectionManager::new(client).await {
-                Ok(manager) => (Some(RedisHealthIndicator { manager }), None),
-                Err(e) => (
-                    None,
-                    Some(crate::redact::describe("failed to connect", e, &self.url)),
-                ),
-            },
-        };
+    fn get_dependencies(&self) -> Vec<String> {
+        vec![std::any::type_name::<ConnectionManager>().to_string()]
+    }
+
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+        let token = std::any::type_name::<ConnectionManager>().to_string();
+        let connection = deps
+            .get(&token)
+            .expect("the health indicator is registered alongside the connection it checks")
+            .instance
+            .clone();
         Injectable::new(
-            Arc::new(Box::new(RedisHealthProvider {
-                indicator,
-                init_error,
-            })),
+            Arc::new(Box::new(RedisHealthProvider { connection })),
             vec![],
         )
     }
 }
 
 struct RedisHealthProvider {
-    indicator: Option<RedisHealthIndicator>,
-    // Set when the connection could not be established; reported from `on_module_init`.
-    init_error: Option<String>,
+    // The registered connection's provider, resolved per request for an indicator rather than at
+    // build time: the connection may have failed, and startup reports that from its own
+    // `on_module_init` before anything can resolve this one.
+    connection: Arc<Box<dyn Provider>>,
 }
 
 #[async_trait]
@@ -93,16 +86,13 @@ impl Provider for RedisHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(
-            self.indicator
-                .clone()
-                .expect("health indicator unavailable"),
-        )
-    }
-    async fn on_module_init(&self) -> toni::InitResult {
-        match &self.init_error {
-            Some(message) => Err(message.clone().into()),
-            None => Ok(()),
-        }
+        let resolved = self
+            .connection
+            .execute(Vec::new(), ProviderContext::None)
+            .await;
+        let manager = *resolved
+            .downcast::<ConnectionManager>()
+            .expect("the registered connection provider yields a ConnectionManager");
+        Box::new(RedisHealthIndicator { manager })
     }
 }

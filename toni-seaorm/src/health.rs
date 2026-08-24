@@ -2,7 +2,7 @@ use std::{any::Any, sync::Arc};
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::DatabaseConnection;
 use toni::{
     FxHashMap,
     traits_helpers::{Injectable, Provider, ProviderContext, ProviderFactory},
@@ -38,9 +38,7 @@ impl HealthIndicator for SeaOrmHealthIndicator {
 
 // ── DI machinery ─────────────────────────────────────────────────────────────
 
-pub(crate) struct SeaOrmHealthIndicatorFactory {
-    pub database_url: String,
-}
+pub(crate) struct SeaOrmHealthIndicatorFactory;
 
 #[async_trait]
 impl ProviderFactory for SeaOrmHealthIndicatorFactory {
@@ -48,32 +46,29 @@ impl ProviderFactory for SeaOrmHealthIndicatorFactory {
         std::any::type_name::<SeaOrmHealthIndicator>().to_string()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let (indicator, init_error) = match Database::connect(&self.database_url).await {
-            Ok(db) => (Some(SeaOrmHealthIndicator { db }), None),
-            Err(e) => (
-                None,
-                Some(crate::redact::describe(
-                    "failed to connect",
-                    e,
-                    &self.database_url,
-                )),
-            ),
-        };
+    fn get_dependencies(&self) -> Vec<String> {
+        vec![std::any::type_name::<DatabaseConnection>().to_string()]
+    }
+
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+        let token = std::any::type_name::<DatabaseConnection>().to_string();
+        let connection = deps
+            .get(&token)
+            .expect("the health indicator is registered alongside the connection it checks")
+            .instance
+            .clone();
         Injectable::new(
-            Arc::new(Box::new(SeaOrmHealthProvider {
-                indicator,
-                init_error,
-            })),
+            Arc::new(Box::new(SeaOrmHealthProvider { connection })),
             vec![],
         )
     }
 }
 
 struct SeaOrmHealthProvider {
-    indicator: Option<SeaOrmHealthIndicator>,
-    // Set when the connection could not be established; reported from `on_module_init`.
-    init_error: Option<String>,
+    // The registered connection's provider, resolved per request for an indicator rather than at
+    // build time: the connection may have failed, and startup reports that from its own
+    // `on_module_init` before anything can resolve this one.
+    connection: Arc<Box<dyn Provider>>,
 }
 
 #[async_trait]
@@ -91,17 +86,13 @@ impl Provider for SeaOrmHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(
-            self.indicator
-                .clone()
-                .expect("health indicator unavailable"),
-        )
-    }
-
-    async fn on_module_init(&self) -> toni::InitResult {
-        match &self.init_error {
-            Some(message) => Err(message.clone().into()),
-            None => Ok(()),
-        }
+        let resolved = self
+            .connection
+            .execute(Vec::new(), ProviderContext::None)
+            .await;
+        let db = *resolved
+            .downcast::<DatabaseConnection>()
+            .expect("the registered connection provider yields a DatabaseConnection");
+        Box::new(SeaOrmHealthIndicator { db })
     }
 }

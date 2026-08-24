@@ -20,7 +20,7 @@ impl RedisModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::RedisHealthIndicatorFactory { url })
+                .provider(crate::health::RedisHealthIndicatorFactory)
                 .export::<crate::health::RedisHealthIndicator>();
         }
 

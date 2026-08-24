@@ -38,10 +38,7 @@ impl HealthIndicator for MongoHealthIndicator {
 
 // ── DI machinery ─────────────────────────────────────────────────────────────
 
-pub(crate) struct MongoHealthIndicatorFactory {
-    pub uri: String,
-    pub db_name: String,
-}
+pub(crate) struct MongoHealthIndicatorFactory;
 
 #[async_trait]
 impl ProviderFactory for MongoHealthIndicatorFactory {
@@ -49,43 +46,29 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
         std::any::type_name::<MongoHealthIndicator>().to_string()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let (indicator, init_error) = match ClientOptions::parse(&self.uri).await {
-            Err(e) => (
-                None,
-                Some(crate::redact::describe("failed to parse URI", e, &self.uri)),
-            ),
-            Ok(options) => match Client::with_options(options) {
-                Ok(client) => (
-                    Some(MongoHealthIndicator {
-                        db: client.database(&self.db_name),
-                    }),
-                    None,
-                ),
-                Err(e) => (
-                    None,
-                    Some(crate::redact::describe(
-                        "failed to create client",
-                        e,
-                        &self.uri,
-                    )),
-                ),
-            },
-        };
+    fn get_dependencies(&self) -> Vec<String> {
+        vec![std::any::type_name::<Database>().to_string()]
+    }
+
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+        let token = std::any::type_name::<Database>().to_string();
+        let connection = deps
+            .get(&token)
+            .expect("the health indicator is registered alongside the connection it checks")
+            .instance
+            .clone();
         Injectable::new(
-            Arc::new(Box::new(MongoHealthProvider {
-                indicator,
-                init_error,
-            })),
+            Arc::new(Box::new(MongoHealthProvider { connection })),
             vec![],
         )
     }
 }
 
 struct MongoHealthProvider {
-    indicator: Option<MongoHealthIndicator>,
-    // Set when the client could not be constructed; reported from `on_module_init`.
-    init_error: Option<String>,
+    // The registered connection's provider, resolved per request for an indicator rather than at
+    // build time: the connection may have failed, and startup reports that from its own
+    // `on_module_init` before anything can resolve this one.
+    connection: Arc<Box<dyn Provider>>,
 }
 
 #[async_trait]
@@ -103,16 +86,13 @@ impl Provider for MongoHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(
-            self.indicator
-                .clone()
-                .expect("health indicator unavailable"),
-        )
-    }
-    async fn on_module_init(&self) -> toni::InitResult {
-        match &self.init_error {
-            Some(message) => Err(message.clone().into()),
-            None => Ok(()),
-        }
+        let resolved = self
+            .connection
+            .execute(Vec::new(), ProviderContext::None)
+            .await;
+        let db = *resolved
+            .downcast::<Database>()
+            .expect("the registered connection provider yields a Database");
+        Box::new(MongoHealthIndicator { db })
     }
 }

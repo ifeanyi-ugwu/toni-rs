@@ -44,7 +44,7 @@ impl SeaOrmModule {
         #[cfg(feature = "health")]
         {
             builder = builder
-                .provider(crate::health::SeaOrmHealthIndicatorFactory { database_url })
+                .provider(crate::health::SeaOrmHealthIndicatorFactory)
                 .export::<crate::health::SeaOrmHealthIndicator>();
         }
 
