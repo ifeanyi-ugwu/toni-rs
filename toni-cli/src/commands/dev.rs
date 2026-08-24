@@ -96,6 +96,35 @@ pub struct DevArgs {
     #[arg(long)]
     release: bool,
 
+    /// Package to run, for a workspace with more than one
+    #[arg(short = 'p', long, value_name = "SPEC")]
+    package: Option<String>,
+
+    /// Run this binary instead of the package default
+    #[arg(long, value_name = "NAME", conflicts_with = "example")]
+    bin: Option<String>,
+
+    /// Run this example instead of a binary
+    #[arg(long, value_name = "NAME")]
+    example: Option<String>,
+
+    /// Features to activate; repeat the flag or comma-separate the list
+    #[arg(short = 'F', long, value_name = "FEATURES")]
+    features: Vec<String>,
+
+    /// Activate every feature of every selected package
+    #[arg(long)]
+    all_features: bool,
+
+    /// Do not activate the `default` feature
+    #[arg(long)]
+    no_default_features: bool,
+
+    /// A cargo flag this command does not mirror, forwarded as given. Repeat
+    /// once per argument: `--cargo-arg --timings --cargo-arg --offline`.
+    #[arg(long, value_name = "ARG", allow_hyphen_values = true)]
+    cargo_arg: Vec<String>,
+
     /// Hold the listening socket here and pass it to every restart, so
     /// requests arriving mid-rebuild queue instead of being refused. The
     /// application must adopt the inherited socket (see the socket_activation
@@ -108,6 +137,46 @@ pub struct DevArgs {
     args: Vec<String>,
 }
 
+impl DevArgs {
+    /// Assemble the cargo invocation the watcher restarts.
+    ///
+    /// Cargo stops reading flags at the `--`, so everything selecting what to
+    /// build has to precede it and everything after it belongs to the
+    /// application binary.
+    fn cargo_args(&self) -> Vec<String> {
+        let mut cargo_args = vec!["run".to_string()];
+        if self.release {
+            cargo_args.push("--release".to_string());
+        }
+        for (flag, selection) in [
+            ("--package", &self.package),
+            ("--bin", &self.bin),
+            ("--example", &self.example),
+        ] {
+            if let Some(name) = selection {
+                cargo_args.push(flag.to_string());
+                cargo_args.push(name.clone());
+            }
+        }
+        for features in &self.features {
+            cargo_args.push("--features".to_string());
+            cargo_args.push(features.clone());
+        }
+        if self.all_features {
+            cargo_args.push("--all-features".to_string());
+        }
+        if self.no_default_features {
+            cargo_args.push("--no-default-features".to_string());
+        }
+        cargo_args.extend(self.cargo_arg.iter().cloned());
+        if !self.args.is_empty() {
+            cargo_args.push("--".to_string());
+            cargo_args.extend(self.args.iter().cloned());
+        }
+        cargo_args
+    }
+}
+
 pub async fn execute(args: DevArgs) -> Result<()> {
     let project_root = std::env::current_dir().context("Failed to read current directory")?;
     if !project_root.join("Cargo.toml").exists() {
@@ -117,14 +186,7 @@ pub async fn execute(args: DevArgs) -> Result<()> {
         ));
     }
 
-    let mut cargo_args = vec!["run".to_string()];
-    if args.release {
-        cargo_args.push("--release".to_string());
-    }
-    if !args.args.is_empty() {
-        cargo_args.push("--".to_string());
-        cargo_args.extend(args.args.iter().cloned());
-    }
+    let cargo_args = args.cargo_args();
     let display_command = format!("cargo {}", cargo_args.join(" "));
 
     // grouped: cargo run spawns the app as a grandchild; signalling the
@@ -244,8 +306,95 @@ pub async fn execute(args: DevArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod cargo_invocation {
+    use super::DevArgs;
+    use clap::Parser;
+
+    /// `DevArgs` is a flattened subcommand, so a parser has to host it before
+    /// the flag surface can be exercised.
+    #[derive(Parser)]
+    struct Harness {
+        #[command(flatten)]
+        dev: DevArgs,
+    }
+
+    fn cargo_args(flags: &[&str]) -> Vec<String> {
+        let argv = std::iter::once("toni-dev").chain(flags.iter().copied());
+        Harness::try_parse_from(argv)
+            .expect("flags should parse")
+            .dev
+            .cargo_args()
+    }
+
+    #[test]
+    fn no_flags_run_the_package_default() {
+        assert_eq!(cargo_args(&[]), ["run"]);
+    }
+
+    #[test]
+    fn target_selection_reaches_cargo() {
+        assert_eq!(
+            cargo_args(&["-p", "my-app", "--bin", "server"]),
+            ["run", "--package", "my-app", "--bin", "server"]
+        );
+    }
+
+    #[test]
+    fn feature_selection_reaches_cargo() {
+        assert_eq!(
+            cargo_args(&[
+                "-F",
+                "tls",
+                "--features",
+                "metrics",
+                "--no-default-features"
+            ]),
+            [
+                "run",
+                "--features",
+                "tls",
+                "--features",
+                "metrics",
+                "--no-default-features"
+            ]
+        );
+    }
+
+    /// Cargo stops reading its own flags at the `--`, so a cargo flag placed
+    /// after it reaches the application binary instead — where an unknown
+    /// argument is the application's error to report, not cargo's.
+    #[test]
+    fn cargo_flags_precede_the_app_separator() {
+        let args = cargo_args(&["--example", "demo", "--", "--config", "local.toml"]);
+
+        assert_eq!(
+            args,
+            ["run", "--example", "demo", "--", "--config", "local.toml"]
+        );
+    }
+
+    #[test]
+    fn unmirrored_flags_pass_through_verbatim() {
+        assert_eq!(
+            cargo_args(&["--cargo-arg", "--timings", "--cargo-arg", "--offline"]),
+            ["run", "--timings", "--offline"]
+        );
+    }
+
+    /// Cargo refuses the pair too, but only after the watcher has started and
+    /// on every restart after that.
+    #[test]
+    fn refuses_a_binary_and_an_example_together() {
+        assert!(
+            Harness::try_parse_from(["toni-dev", "--bin", "server", "--example", "demo"]).is_err(),
+            "a run has one target"
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
-mod tests {
+mod socket_handoff {
     use super::{LISTEN_FD, place_listen_fd};
     use std::net::TcpListener;
     use std::os::fd::{AsRawFd, RawFd};
