@@ -36,13 +36,13 @@ configured to restart on failure has nothing to restart on.
 ### A transport that cannot start fails the bind
 
 An adapter that will not take its handlers, or cannot acquire its socket, returns
-`BindError::Adapter { transport, source }`. The `transport` field names one of `http`, `websocket`,
+`StartupError::Adapter { transport, source }`. The `transport` field names one of `http`, `websocket`,
 `rpc`, `grpc`, so a caller can report which half of a multi-transport application is unavailable
 without parsing a message.
 
 ### A declaration with nothing to serve it fails the bind
 
-The four configuration errors return `BindError::Setup`, naming the call that is missing. Each
+The four configuration errors return `StartupError::Setup`, naming the call that is missing. Each
 describes an application asking for something it never wired: patterns that no transport carries, a
 gateway on a port nothing listens to, a socket nothing will accept on. The distinction from
 `Adapter` is worth keeping — one is an environment that refused, the other is an application that is
@@ -61,7 +61,7 @@ otherwise stay open for as long as the caller holds the application.
 thing — an application with a port conflict would come back as one with no adapters configured.
 `AppState::Failed` makes the second call say what is true instead.
 
-### `BindError` is `#[non_exhaustive]`
+### `StartupError` is `#[non_exhaustive]`
 
 A fifth transport, or a finer split of the existing variants, should not be a breaking change for
 everyone matching on the enum.
@@ -73,7 +73,7 @@ everyone matching on the enum.
 - An application that compiles in more transports than it wires fails at startup rather than serving
   the subset it managed. Deployments that vary by transport choose their module set or their
   adapters per binary, which is a decision made where it can be seen.
-- Downstream code matching on `BindError` needs a wildcard arm.
+- Downstream code matching on `StartupError` needs a wildcard arm.
 - Adapter authors get a stronger contract to write against: an error returned from `register_*` or
   `into_lifecycle` stops the application rather than degrading it.
 

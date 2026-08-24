@@ -100,7 +100,7 @@ async fn start(module: impl toni::ModuleMetadata + 'static, with_ws_adapter: boo
     let (tx, rx) = tokio::sync::oneshot::channel();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(module).await;
+        let mut app = ToniFactory::create(module).await.unwrap();
         app.use_http_adapter(SalvoAdapter::new(), ("127.0.0.1", 0))
             .unwrap();
         if with_ws_adapter {

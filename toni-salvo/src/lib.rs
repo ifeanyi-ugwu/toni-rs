@@ -13,7 +13,8 @@
 //! async fn main() {
 //!     let mut app = ToniFactory::new()
 //!         .create_with(AppModule)
-//!         .await;
+//!         .await
+//!         .unwrap();
 //!     app.use_http_adapter(SalvoAdapter::new(), ("127.0.0.1", 3000)).unwrap();
 //!     // Only needed for `#[websocket_gateway(port = N)]` gateways.
 //!     app.use_websocket_adapter(SalvoAdapter::new()).unwrap();

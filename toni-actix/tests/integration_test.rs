@@ -57,7 +57,7 @@ async fn test_actix_e2e() {
 
     // Spawn server in background
     local.spawn_local(async move {
-        let mut app = ToniFactory::create(TestModule).await;
+        let mut app = ToniFactory::create(TestModule).await.unwrap();
         app.use_http_adapter(ActixAdapter::new(), ("127.0.0.1", port))
             .unwrap();
         app.start().await.unwrap();

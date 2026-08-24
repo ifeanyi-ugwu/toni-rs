@@ -65,7 +65,7 @@ async fn redis_rpc_send_emit_and_metadata() {
     tokio::task::LocalSet::new()
         .run_until(async move {
             tokio::task::spawn_local(async move {
-                let mut app = ToniFactory::new().create_with(MathModule).await;
+                let mut app = ToniFactory::new().create_with(MathModule).await.unwrap();
                 app.use_rpc_adapter(RedisAdapter::new(URL.get().unwrap().clone()))
                     .unwrap();
                 app.bind().await.unwrap();

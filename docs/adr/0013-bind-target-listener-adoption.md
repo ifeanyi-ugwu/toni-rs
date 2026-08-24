@@ -71,7 +71,7 @@ is pinned to refuse at `bind()`.
   and `HttpAdapter::into_lifecycle` takes a `BindTarget`. Both are breaking; every implementation and
   call site is in-tree.
 - Port conflicts still surface at `app.bind()`. Adopting a listener happens at the same point, so a
-  dead inherited socket surfaces there too, as `BindError::Setup`.
+  dead inherited socket surfaces there too, as `StartupError::Setup`.
 - `BoundAdapters` and port-0 resolution are untouched: addresses are read from the socket either way.
 - Serving on an inherited socket is available on axum, poem, salvo, and actix, and unavailable on
   rocket — a capability difference the matrix records, in the company of same-port WebSocket.
