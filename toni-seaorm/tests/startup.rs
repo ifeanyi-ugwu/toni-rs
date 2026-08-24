@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use toni::{StartupError, ToniFactory};
+use toni::{StartupCheck, StartupError, ToniFactory};
 use toni_seaorm::SeaOrmModule;
 
 #[tokio::test]
@@ -43,7 +43,7 @@ async fn an_unreachable_server_fails_the_check_on_its_own_schedule() {
 
     let err = ToniFactory::create_application_context(
         SeaOrmModule::for_root("postgres://someone:secret@127.0.0.1:1/app").with_startup_check(
-            toni::StartupCheck::default()
+            StartupCheck::default()
                 .attempts(2)
                 .delay(Duration::from_millis(50))
                 .timeout(Duration::from_millis(400)),
@@ -53,9 +53,18 @@ async fn an_unreachable_server_fails_the_check_on_its_own_schedule() {
     .err()
     .expect("an unreachable server must fail startup");
 
+    // The deadline is the driver's own, so this is what proves it bounds the probe: the default
+    // acquire timeout is thirty seconds.
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the check must not wait for the driver's own timeout, took {:?}",
+        started.elapsed() < Duration::from_secs(3),
+        "the budget must bound the probe, took {:?}",
+        started.elapsed()
+    );
+    // A lower bound as well as an upper one: without the retry this fails on the first refused
+    // connection, and elapsed would be under the one 50ms gap the schedule asks for.
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "the check must retry rather than fail on the first refusal, took {:?}",
         started.elapsed()
     );
     assert!(
