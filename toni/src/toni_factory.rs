@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::application_context::ToniApplicationContext;
 use crate::context::Metadata;
 use crate::context::{HttpContext, RpcContext, WsContext};
+use crate::error::StartupError;
 use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};
 use crate::middleware::Middleware;
@@ -173,79 +174,84 @@ impl ToniFactory {
 
     /// Shorthand for `ToniFactory::new().create_with(...)` when no factory config is needed
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the module graph fails to initialize — see
-    /// [`create_with`](Self::create_with).
-    pub async fn create(module: impl ModuleMetadata + 'static) -> ToniApplication {
+    /// See [`create_with`](Self::create_with).
+    pub async fn create(
+        module: impl ModuleMetadata + 'static,
+    ) -> Result<ToniApplication, StartupError> {
         Self::new().create_with(module).await
     }
 
     /// Builds the application from the root module, installing the
     /// [default logger](ToniFactory#logging) first.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the module graph fails to initialize: an unresolvable
-    /// dependency, a provider cycle, or a global-export clash between two
-    /// modules. None of these are recoverable at runtime, and the panic unwinds
-    /// so buffered log writers still flush.
-    pub async fn create_with(&self, module: impl ModuleMetadata + 'static) -> ToniApplication {
+    /// [`StartupError::Setup`] when the module graph does not resolve: an
+    /// unresolvable dependency, a provider cycle, or a global-export clash
+    /// between two modules. [`StartupError::HookFailed`] when an
+    /// `on_module_init` hook returns an error, naming the module and hook.
+    ///
+    /// A provider whose factory cannot build its instance panics instead —
+    /// `ProviderFactory::build` returns the instance directly and has nowhere
+    /// to put an error, so a database module that cannot connect ends the
+    /// process here rather than returning.
+    pub async fn create_with(
+        &self,
+        module: impl ModuleMetadata + 'static,
+    ) -> Result<ToniApplication, StartupError> {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
-        match self.initialize(Box::new(module), container.clone()).await {
-            Ok(_) => (),
-            Err(e) => panic!("module initialization failed: {e}"),
-        };
+        self.initialize(Box::new(module), container.clone()).await?;
 
-        ToniApplication::new(container)
+        Ok(ToniApplication::new(container))
     }
 
     /// Standalone DI container for CLI tools, cron jobs, and background
     /// workers. Installs the [default logger](ToniFactory#logging).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the module graph fails to initialize — see
-    /// [`create_with`](Self::create_with).
+    /// See [`create_application_context_with`](Self::create_application_context_with).
     pub async fn create_application_context(
         module: impl ModuleMetadata + 'static,
-    ) -> ToniApplicationContext {
+    ) -> Result<ToniApplicationContext, StartupError> {
         Self::new().create_application_context_with(module).await
     }
 
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the module graph fails to initialize — see
-    /// [`create_with`](Self::create_with). A bootstrap hook that fails is
-    /// logged and does not panic.
+    /// Everything [`create_with`](Self::create_with) reports, plus
+    /// [`StartupError::HookFailed`] for an `on_application_bootstrap` hook.
+    /// An application binds its adapters to reach that phase; a standalone
+    /// context has no bind, so it runs those hooks here.
     pub async fn create_application_context_with(
         &self,
         module: impl ModuleMetadata + 'static,
-    ) -> ToniApplicationContext {
+    ) -> Result<ToniApplicationContext, StartupError> {
         let container = Rc::new(RefCell::new(ToniContainer::new()));
 
-        match self.initialize(Box::new(module), container.clone()).await {
-            Ok(_) => (),
-            Err(e) => panic!("module initialization failed: {e}"),
-        };
+        self.initialize(Box::new(module), container.clone()).await?;
 
         // HTTP adapters trigger bootstrap through their own init; standalone needs it explicitly
         {
             let mut scanner = crate::scanner::ToniDependenciesScanner::new(container.clone());
-            if let Err(e) = scanner.call_bootstrap_hooks().await {
-                tracing::error!(error = %e, "Bootstrap hooks failed");
-            }
+            scanner.call_bootstrap_hooks().await?;
         }
 
-        ToniApplicationContext::new(container)
+        Ok(ToniApplicationContext::new(container))
     }
 
+    /// Returns `StartupError` rather than `anyhow::Error` so that a failing
+    /// `on_module_init` hook keeps its `HookFailed` variant — `?` into an
+    /// `anyhow::Error` would erase the module and hook names the scanner
+    /// attached.
     async fn initialize(
         &self,
         module: Box<dyn ModuleMetadata>,
         container: Rc<RefCell<ToniContainer>>,
-    ) -> Result<()> {
+    ) -> Result<(), StartupError> {
         init_default_logger();
 
         tracing::debug!("Scanning module graph");

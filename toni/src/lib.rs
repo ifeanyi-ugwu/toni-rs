@@ -94,7 +94,7 @@ pub use provider_scope::ProviderScope;
 
 pub use traits_helpers::{ExecutionCache, ModuleMetadata, ProviderContext};
 
-pub use error::{BindError, InitResult};
+pub use error::{InitResult, StartupError};
 pub use errors::{
     Cancelled, Error, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
     PipelineSegment,
