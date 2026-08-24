@@ -37,31 +37,33 @@ async fn a_connection_that_cannot_be_established_fails_startup() {
 /// rather than on whatever the driver does by itself.
 #[tokio::test]
 async fn an_unreachable_server_fails_startup() {
+    // Bounds derived from the schedule rather than written as constants: a loose constant is a
+    // guard that cannot fail for the reason it exists.
+    let check = StartupCheck::default()
+        .attempts(2)
+        .delay(Duration::from_millis(50))
+        .timeout(Duration::from_millis(400));
     let started = std::time::Instant::now();
 
     let err = ToniFactory::create_application_context(
-        SqlxModule::postgres("postgres://someone:secret@127.0.0.1:1/app").with_startup_check(
-            StartupCheck::default()
-                .attempts(2)
-                .delay(Duration::from_millis(50))
-                .timeout(Duration::from_millis(400)),
-        ),
+        SqlxModule::postgres("postgres://someone:secret@127.0.0.1:1/app").with_startup_check(check),
     )
     .await
     .err()
     .expect("an unreachable server must fail startup");
+    let elapsed = started.elapsed();
 
+    // Upper: the driver must not be waiting on its own timeout, which is thirty seconds for the
+    // pooled drivers and unbounded for redis with its internal retry left on.
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the check must not wait for the driver's own timeout, took {:?}",
-        started.elapsed()
+        elapsed < check.worst_case() * 3,
+        "the check must give up on its own schedule (worst case {:?}), took {elapsed:?}",
+        check.worst_case()
     );
-    // A lower bound as well as an upper one: without the retry this fails on the first refused
-    // connection, and elapsed would be under the one 50ms gap the schedule asks for.
+    // Lower: without the retry this fails on the first refused connection, well under one gap.
     assert!(
-        started.elapsed() >= Duration::from_millis(50),
-        "the check must retry rather than fail on the first refusal, took {:?}",
-        started.elapsed()
+        elapsed >= check.retry_delay(),
+        "the check must retry rather than fail on the first refusal, took {elapsed:?}"
     );
     assert!(
         matches!(&err, StartupError::HookFailed { hook, .. } if *hook == "on_module_init"),
