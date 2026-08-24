@@ -381,7 +381,12 @@ impl ToniApplication {
     /// field is `None` both for a dead adapter and for a subject-based
     /// transport that has no address to report.
     ///
-    /// Sockets acquired before the failure are closed on the way out, and the
+    /// Every adapter is asked to take what the application declares before any of
+    /// them is asked for a socket, so a declaration that cannot work fails with
+    /// nothing acquired. An application that is wrong therefore reports that
+    /// before an environment that is busy.
+    ///
+    /// Sockets acquired before a failure are closed on the way out, and the
     /// application cannot be bound again.
     pub async fn bind(&mut self) -> Result<BoundAdapters, StartupError> {
         self.require_state(AppState::Configuring, "bind")?;
@@ -405,6 +410,13 @@ impl ToniApplication {
         }
     }
 
+    /// Registration, then acquisition — never interleaved.
+    ///
+    /// Every adapter is asked to take what the application declares before any of them is asked
+    /// for a socket, so a declaration that cannot work fails with nothing acquired and the
+    /// teardown in [`bind`](ToniApplication::bind) only ever handles sockets. It also fixes the
+    /// order failures are reported in: an application that is wrong reports that before an
+    /// environment that is busy.
     async fn bind_adapters(&mut self) -> Result<BoundAdapters, StartupError> {
         {
             let mut scanner = crate::scanner::ToniDependenciesScanner::new(
@@ -415,6 +427,9 @@ impl ToniApplication {
 
         self.discover_gateways()?;
         self.discover_rpc_controllers()?;
+
+        // ── Registration ────────────────────────────────────────────────────
+        // Nothing below this point until the acquisition section touches a socket.
 
         // For a pre-bound Listener target the hint is the actual bound port,
         // so a gateway declaring that port number still rides the HTTP
@@ -480,13 +495,13 @@ impl ToniApplication {
             }
         }
 
-        let mut ws_addrs: Vec<SocketAddr> = vec![];
-
-        // Wire separate-port gateways into the standalone WS adapter.
-        // The adapter is moved into `SharedWsAdapter` so each per-port handle
-        // can call close() idempotently.
-        if !separate_port.is_empty() {
-            if self.ws_adapter.is_none() {
+        // Wire separate-port gateways into the standalone WS adapter, and work out
+        // which socket each declared port gets. The adapter is consumed further
+        // down; here it only takes its gateways.
+        let ws_targets: Option<Vec<(u16, BindTarget)>> = if separate_port.is_empty() {
+            None
+        } else {
+            let Some(ws) = self.ws_adapter.as_mut() else {
                 let declared: Vec<String> = separate_port
                     .iter()
                     .map(|(path, gw)| format!("{path} (port {})", gw.get_port().unwrap_or(0)))
@@ -497,70 +512,51 @@ impl ToniApplication {
                     declared.join(", ")
                 )
                 .into());
+            };
+
+            for (path, gateway) in &separate_port {
+                if let Some(ws_port) = gateway.get_port() {
+                    let client_map = broadcast_service
+                        .as_ref()
+                        .map(|bs| bs.ws_client_map())
+                        .unwrap_or_else(|| Arc::new(WsClientMap::new()));
+                    let callbacks = Arc::new(make_ws_callbacks(
+                        gateway.clone(),
+                        client_map,
+                        broadcast_service.clone(),
+                    ));
+                    ws.register_gateway(ws_port, path, callbacks)
+                        .map_err(|source| StartupError::Adapter {
+                            transport: "websocket",
+                            source: source.into(),
+                        })?;
+                    tracing::debug!(port = ws_port, path, "WebSocket gateway registered");
+                    gateway.call_after_init().await;
+                }
             }
 
-            // Register all paths on the adapter while we still own it.
-            {
-                let ws = self.ws_adapter.as_mut().unwrap();
-                for (path, gateway) in &separate_port {
-                    if let Some(ws_port) = gateway.get_port() {
-                        let client_map = broadcast_service
-                            .as_ref()
-                            .map(|bs| bs.ws_client_map())
-                            .unwrap_or_else(|| Arc::new(WsClientMap::new()));
-                        let callbacks = Arc::new(make_ws_callbacks(
-                            gateway.clone(),
-                            client_map,
-                            broadcast_service.clone(),
-                        ));
-                        ws.register_gateway(ws_port, path, callbacks)
-                            .map_err(|source| StartupError::Adapter {
-                                transport: "websocket",
-                                source: source.into(),
-                            })?;
-                        tracing::debug!(port = ws_port, path, "WebSocket gateway registered");
-                        gateway.call_after_init().await;
+            // Collect every unique port that has at least one gateway. A gateway
+            // keeps its declared port as its key even when the caller supplied a
+            // socket listening elsewhere — the key selects the gateway, the target
+            // says where to listen.
+            let mut seen: HashSet<u16> = HashSet::new();
+            let mut targets: Vec<(u16, BindTarget)> = vec![];
+            for (_, gw) in &separate_port {
+                if let Some(ws_port) = gw.get_port() {
+                    if seen.insert(ws_port) {
+                        let target = self
+                            .ws_targets
+                            .remove(&ws_port)
+                            .unwrap_or(BindTarget::Addr {
+                                hostname: hostname.clone(),
+                                port: ws_port,
+                            });
+                        targets.push((ws_port, target));
                     }
-                }
-
-                // Collect every unique port that has at least one
-                // gateway, then consume the adapter to produce one
-                // lifecycle handle per port. A gateway keeps its declared
-                // port as its key even when the caller supplied a socket
-                // listening elsewhere — the key selects the gateway, the
-                // target says where to listen.
-                let mut seen: HashSet<u16> = HashSet::new();
-                let mut targets: Vec<(u16, BindTarget)> = vec![];
-                for (_, gw) in &separate_port {
-                    if let Some(ws_port) = gw.get_port() {
-                        if seen.insert(ws_port) {
-                            let target =
-                                self.ws_targets
-                                    .remove(&ws_port)
-                                    .unwrap_or(BindTarget::Addr {
-                                        hostname: hostname.clone(),
-                                        port: ws_port,
-                                    });
-                            targets.push((ws_port, target));
-                        }
-                    }
-                }
-                let adapter = self.ws_adapter.take().unwrap();
-                let handles = adapter
-                    .into_lifecycle_handles(targets)
-                    .await
-                    .map_err(|source| StartupError::Adapter {
-                        transport: "websocket",
-                        source: source.into(),
-                    })?;
-                for handle in handles {
-                    let addr = handle.local_addr();
-                    tracing::info!(addr = %addr, "WebSocket listening");
-                    ws_addrs.push(addr);
-                    self.servers.push(Box::new(handle));
                 }
             }
-        }
+            Some(targets)
+        };
 
         // A socket left here matches no gateway, so nothing will ever accept
         // on it.
@@ -577,9 +573,10 @@ impl ToniApplication {
             .into());
         }
 
-        // Wire RPC controllers into the RPC adapter.
-        let mut rpc_addr: Option<SocketAddr> = None;
-        if !self.rpc_controllers.is_empty() {
+        // Hand the RPC adapter its patterns. It is consumed further down.
+        let rpc_adapter = if self.rpc_controllers.is_empty() {
+            None
+        } else {
             if self.rpc_adapter.is_none() {
                 return Err(anyhow::anyhow!(
                     "{} RPC controller(s) declare patterns, but no RPC adapter is registered; \
@@ -607,6 +604,52 @@ impl ToniApplication {
                     transport: "rpc",
                     source: source.into(),
                 })?;
+            Some(adapter)
+        };
+
+        // Hand the gRPC adapter its services. Services declared with
+        // `#[grpc_service]` + `#[grpc_methods]` are picked up from the DI
+        // container; users may also wire services directly on the adapter via
+        // its own `add_service` builder before `use_grpc_adapter`.
+        let grpc_adapter = if let Some(mut adapter) = self.grpc_adapter.take() {
+            let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
+            let grpc_services = grpc_resolver.resolve()?;
+            adapter
+                .register_services(grpc_services)
+                .map_err(|source| StartupError::Adapter {
+                    transport: "grpc",
+                    source: source.into(),
+                })?;
+            Some(adapter)
+        } else {
+            None
+        };
+
+        // ── Acquisition ─────────────────────────────────────────────────────
+        // Every adapter has taken what it was given; from here sockets are opened.
+
+        let mut ws_addrs: Vec<SocketAddr> = vec![];
+        if let Some(targets) = ws_targets {
+            // The adapter is moved into `SharedWsAdapter` so each per-port handle
+            // can call close() idempotently.
+            let adapter = self.ws_adapter.take().unwrap();
+            let handles = adapter
+                .into_lifecycle_handles(targets)
+                .await
+                .map_err(|source| StartupError::Adapter {
+                    transport: "websocket",
+                    source: source.into(),
+                })?;
+            for handle in handles {
+                let addr = handle.local_addr();
+                tracing::info!(addr = %addr, "WebSocket listening");
+                ws_addrs.push(addr);
+                self.servers.push(Box::new(handle));
+            }
+        }
+
+        let mut rpc_addr: Option<SocketAddr> = None;
+        if let Some(adapter) = rpc_adapter {
             let handle =
                 adapter
                     .into_lifecycle()
@@ -619,20 +662,8 @@ impl ToniApplication {
             self.servers.push(Box::new(handle));
         }
 
-        // Wire the gRPC adapter. Services declared with `#[grpc_service]` +
-        // `#[grpc_methods]` are picked up from the DI container; users may
-        // also wire services directly on the adapter via its own
-        // `add_service` builder before `use_grpc_adapter`.
         let mut grpc_addr: Option<SocketAddr> = None;
-        if let Some(mut adapter) = self.grpc_adapter.take() {
-            let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
-            let grpc_services = grpc_resolver.resolve()?;
-            adapter
-                .register_services(grpc_services)
-                .map_err(|source| StartupError::Adapter {
-                    transport: "grpc",
-                    source: source.into(),
-                })?;
+        if let Some(adapter) = grpc_adapter {
             let handle =
                 adapter
                     .into_lifecycle()
