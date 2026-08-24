@@ -186,6 +186,10 @@ impl ToniFactory {
     /// Builds the application from the root module, installing the
     /// [default logger](ToniFactory#logging) first.
     ///
+    /// The first of three startup phases: this one resolves the graph and confirms the outbound
+    /// dependencies it declares. See [`ToniApplication`] for where the
+    /// other two begin.
+    ///
     /// # Errors
     ///
     /// [`StartupError::Setup`] when the module graph does not resolve: an

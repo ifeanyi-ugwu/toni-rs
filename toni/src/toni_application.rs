@@ -142,6 +142,23 @@ struct BoundState {
     serve_futures: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 
+/// An application built from a module graph, holding the adapters it serves on.
+///
+/// Startup runs in three phases, each with its own failure class:
+///
+/// - [`ToniFactory::create`](crate::ToniFactory::create) builds the graph, constructs its
+///   providers and runs their `on_module_init` hooks — where an integration confirms the
+///   **outbound** dependencies it needs will answer. Fails when the graph does not resolve, or a
+///   dependency is unreachable.
+/// - [`bind`](Self::bind) runs `on_application_bootstrap`, then takes the **inbound** sockets this
+///   process serves on. Fails when a declared transport has no adapter to serve it, or the OS
+///   refuses an address.
+/// - [`run`](Self::run) drives the serve loops until shutdown.
+///
+/// Keeping the last two apart is what lets a caller read [`BoundAdapters`] before anything is
+/// served: the address the OS assigned for port 0, a readiness gate opened once the sockets are
+/// live, a socket handed to a replacement process. Fused, a bound address would be unobservable
+/// until the process was already serving.
 pub struct ToniApplication {
     // Adapters live here in `Configuring` state, before `bind()` consumes
     // them into lifecycle handles. After `bind()` succeeds these are all
