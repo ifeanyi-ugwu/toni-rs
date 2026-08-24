@@ -41,3 +41,4 @@ the history is part of the value.
 - [0023 — Extraction is one trait, and body-freedom is a convention](0023-extraction-is-one-trait.md)
 - [0024 — An application binds every transport it declares, or none](0024-bind-every-declared-transport-or-none.md)
 - [0025 — An API is infallible only where its call site cannot hold an error](0025-infallible-only-where-the-call-site-cannot-hold-an-error.md)
+- [0026 — Connectivity is verified by an explicit check, not by the driver's own dial](0026-startup-checks-are-explicit-and-uniform.md)

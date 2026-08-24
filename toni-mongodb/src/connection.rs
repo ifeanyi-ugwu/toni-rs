@@ -3,7 +3,7 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 use mongodb::{Client, Database, options::ClientOptions};
 use toni::{
-    FxHashMap,
+    FxHashMap, StartupCheck,
     traits_helpers::{Provider, ProviderContext, ProviderFactory},
 };
 
@@ -13,6 +13,7 @@ pub(crate) struct MongoConnectionFactory {
     // Injection token for this connection: the `Database` type name for the default
     // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
     pub token: String,
+    pub check: Option<StartupCheck>,
 }
 
 #[async_trait]
@@ -32,7 +33,13 @@ impl ProviderFactory for MongoConnectionFactory {
         // `build` returns the instance directly, so a failure is carried into the provider and
         // reported from `on_module_init`, which can return it. The driver connects lazily, so
         // only URI parsing and client construction are checked here.
-        let (client, init_error) = match ClientOptions::parse(&self.uri).await {
+        let (client, init_error) = match ClientOptions::parse(&self.uri).await.map(|mut o| {
+            if let Some(check) = &self.check {
+                o.server_selection_timeout = Some(check.attempt_timeout());
+                o.connect_timeout = Some(check.attempt_timeout());
+            }
+            o
+        }) {
             Err(e) => (
                 None,
                 Some(crate::redact::describe("failed to parse URI", e, &self.uri)),
@@ -56,6 +63,8 @@ impl ProviderFactory for MongoConnectionFactory {
                 client,
                 db,
                 init_error,
+                check: self.check.clone(),
+                uri: self.uri.clone(),
                 token: self.token.clone(),
             })),
             vec![],
@@ -70,6 +79,9 @@ struct MongoConnectionProvider {
     // Set when the client could not be constructed. `on_module_init` returns it, so startup stops
     // before anything resolves this provider.
     init_error: Option<String>,
+    // `None` when the caller dropped the check: nothing contacts the server before it is used.
+    check: Option<StartupCheck>,
+    uri: String,
     token: String,
 }
 
@@ -93,10 +105,38 @@ impl Provider for MongoConnectionProvider {
     }
 
     async fn on_module_init(&self) -> toni::InitResult {
-        match &self.init_error {
-            Some(message) => Err(message.clone().into()),
-            None => Ok(()),
+        if let Some(message) = &self.init_error {
+            return Err(message.clone().into());
         }
+
+        let Some(check) = &self.check else {
+            return Ok(());
+        };
+
+        // The driver connects on first use, so this ping is what makes an unreachable server a
+        // startup failure rather than an error on the first query.
+        let db = self
+            .db
+            .clone()
+            .expect("a client is present whenever there is no init error");
+
+        check
+            .run(
+                || {
+                    let db = db.clone();
+                    async move {
+                        db.run_command(mongodb::bson::doc! { "ping": 1 })
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| {
+                                crate::redact::describe("failed to reach the server", e, &self.uri)
+                            })
+                    }
+                },
+                futures_timer::Delay::new,
+            )
+            .await
+            .map_err(Into::into)
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {

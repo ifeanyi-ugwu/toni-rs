@@ -1,30 +1,33 @@
 use redis::aio::ConnectionManager;
-use toni::DynamicModule;
+use toni::{CheckedModule, DynamicModule, StartupCheck};
 
 use crate::connection::RedisConnectionFactory;
 
 pub struct RedisModule;
 
 impl RedisModule {
-    pub fn for_root(url: impl Into<String>) -> DynamicModule {
+    pub fn for_root(url: impl Into<String>) -> CheckedModule {
         let url: String = url.into();
 
-        #[allow(unused_mut)]
-        let mut builder = DynamicModule::builder("RedisModule")
-            .provider(RedisConnectionFactory {
-                url: url.clone(),
-                token: std::any::type_name::<ConnectionManager>().to_string(),
-            })
-            .export::<ConnectionManager>();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            #[allow(unused_mut)]
+            let mut builder = DynamicModule::builder("RedisModule")
+                .provider(RedisConnectionFactory {
+                    url: url.clone(),
+                    token: std::any::type_name::<ConnectionManager>().to_string(),
+                    check,
+                })
+                .export::<ConnectionManager>();
 
-        #[cfg(feature = "health")]
-        {
-            builder = builder
-                .provider(crate::health::RedisHealthIndicatorFactory)
-                .export::<crate::health::RedisHealthIndicator>();
-        }
+            #[cfg(feature = "health")]
+            {
+                builder = builder
+                    .provider(crate::health::RedisHealthIndicatorFactory)
+                    .export::<crate::health::RedisHealthIndicator>();
+            }
 
-        builder.global().build()
+            builder.global().build()
+        })
     }
 
     /// Register a second, named Redis connection.
@@ -52,15 +55,20 @@ impl RedisModule {
     /// The name is a global identifier: two connections cannot share one, and reusing a name
     /// across integrations is refused at startup. The connection only is registered — the health
     /// indicator is attached to the default `for_root` connection.
-    pub fn for_root_named(name: impl Into<String>, url: impl Into<String>) -> DynamicModule {
+    pub fn for_root_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
         let name: String = name.into();
-        DynamicModule::builder(format!("RedisModule::{name}"))
-            .provider(RedisConnectionFactory {
-                url: url.into(),
-                token: name.clone(),
-            })
-            .export_token(name)
-            .global()
-            .build()
+        let url: String = url.into();
+
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            DynamicModule::builder(format!("RedisModule::{name}"))
+                .provider(RedisConnectionFactory {
+                    url: url.clone(),
+                    token: name.clone(),
+                    check,
+                })
+                .export_token(name.clone())
+                .global()
+                .build()
+        })
     }
 }

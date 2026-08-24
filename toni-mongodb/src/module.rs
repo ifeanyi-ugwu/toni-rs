@@ -1,5 +1,5 @@
 use mongodb::Database;
-use toni::DynamicModule;
+use toni::{CheckedModule, DynamicModule, StartupCheck};
 
 use crate::connection::MongoConnectionFactory;
 
@@ -31,27 +31,30 @@ impl MongoModule {
     ///     }
     /// }
     /// ```
-    pub fn for_root(uri: impl Into<String>, db_name: impl Into<String>) -> DynamicModule {
+    pub fn for_root(uri: impl Into<String>, db_name: impl Into<String>) -> CheckedModule {
         let uri: String = uri.into();
         let db_name: String = db_name.into();
 
-        #[allow(unused_mut)]
-        let mut builder = DynamicModule::builder("MongoModule")
-            .provider(MongoConnectionFactory {
-                uri: uri.clone(),
-                db_name: db_name.clone(),
-                token: std::any::type_name::<Database>().to_string(),
-            })
-            .export::<Database>();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            #[allow(unused_mut)]
+            let mut builder = DynamicModule::builder("MongoModule")
+                .provider(MongoConnectionFactory {
+                    uri: uri.clone(),
+                    db_name: db_name.clone(),
+                    token: std::any::type_name::<Database>().to_string(),
+                    check,
+                })
+                .export::<Database>();
 
-        #[cfg(feature = "health")]
-        {
-            builder = builder
-                .provider(crate::health::MongoHealthIndicatorFactory)
-                .export::<crate::health::MongoHealthIndicator>();
-        }
+            #[cfg(feature = "health")]
+            {
+                builder = builder
+                    .provider(crate::health::MongoHealthIndicatorFactory)
+                    .export::<crate::health::MongoHealthIndicator>();
+            }
 
-        builder.global().build()
+            builder.global().build()
+        })
     }
 
     /// Register a second, named MongoDB database.
@@ -83,16 +86,21 @@ impl MongoModule {
         name: impl Into<String>,
         uri: impl Into<String>,
         db_name: impl Into<String>,
-    ) -> DynamicModule {
+    ) -> CheckedModule {
         let name: String = name.into();
-        DynamicModule::builder(format!("MongoModule::{name}"))
-            .provider(MongoConnectionFactory {
-                uri: uri.into(),
-                db_name: db_name.into(),
-                token: name.clone(),
-            })
-            .export_token(name)
-            .global()
-            .build()
+        let uri: String = uri.into();
+        let db_name: String = db_name.into();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            DynamicModule::builder(format!("MongoModule::{name}"))
+                .provider(MongoConnectionFactory {
+                    uri: uri.clone(),
+                    db_name: db_name.clone(),
+                    token: name.clone(),
+                    check,
+                })
+                .export_token(name.clone())
+                .global()
+                .build()
+        })
     }
 }

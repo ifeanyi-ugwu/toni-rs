@@ -2538,6 +2538,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+
+[[package]]
 name = "futures-util"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7908,6 +7914,7 @@ dependencies = [
  "bytes",
  "event-listener 5.4.1",
  "futures",
+ "futures-executor",
  "http 1.4.2",
  "http-body 1.0.1",
  "http-body-util",
@@ -8018,6 +8025,7 @@ dependencies = [
  "diesel",
  "diesel-async",
  "futures",
+ "futures-timer",
  "reqwest 0.13.4",
  "serde_json",
  "testcontainers",
@@ -8123,6 +8131,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "mongodb",
  "reqwest 0.13.4",
  "serde_json",
@@ -8213,6 +8222,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "redis",
  "reqwest 0.13.4",
  "serde_json",
@@ -8306,6 +8316,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "parking_lot",
  "reqwest 0.13.4",
  "sea-orm",
@@ -8325,6 +8336,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "parking_lot",
  "reqwest 0.13.4",
  "serde_json",

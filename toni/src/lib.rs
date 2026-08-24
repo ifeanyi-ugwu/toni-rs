@@ -4,6 +4,7 @@ mod application_context;
 pub mod builtin_module;
 pub mod context;
 mod error;
+mod startup_check;
 pub use context::{
     CancellationToken, GrpcContext, HandlerContext, HttpContext, RpcContext, StandaloneContext,
     WsContext,
@@ -99,6 +100,7 @@ pub use errors::{
     Cancelled, Error, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
     PipelineSegment,
 };
+pub use startup_check::StartupCheck;
 
 // Re-export trait so users wont have to import manually
 pub use extractors::{BodyStream, FromContext, take_body};
@@ -106,7 +108,7 @@ pub use extractors::{BodyStream, FromContext, take_body};
 // Re-export macros
 pub use toni_macros::*;
 
-pub use module_helpers::DynamicModule;
+pub use module_helpers::{CheckedModule, DynamicModule};
 pub use toni_application::{BoundAdapters, ShutdownHandle, ToniApplication};
 pub use toni_factory::ToniFactory;
 

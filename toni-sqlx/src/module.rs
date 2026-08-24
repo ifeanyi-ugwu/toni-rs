@@ -2,7 +2,7 @@
 use std::marker::PhantomData;
 
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
-use toni::DynamicModule;
+use toni::{CheckedModule, DynamicModule, StartupCheck};
 
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use crate::pool::SqlxPoolFactory;
@@ -11,29 +11,32 @@ pub struct SqlxModule;
 
 impl SqlxModule {
     #[cfg(feature = "postgres")]
-    pub fn postgres(url: impl Into<String>) -> DynamicModule {
+    pub fn postgres(url: impl Into<String>) -> CheckedModule {
         use sqlx::{Pool, Postgres};
         let url: String = url.into();
 
-        #[allow(unused_mut)]
-        let mut builder = DynamicModule::builder("SqlxModule::postgres")
-            .provider(SqlxPoolFactory::<Postgres> {
-                url: url.clone(),
-                token: std::any::type_name::<Pool<Postgres>>().to_string(),
-                _db: PhantomData,
-            })
-            .export::<Pool<Postgres>>();
-
-        #[cfg(feature = "health")]
-        {
-            builder = builder
-                .provider(crate::health::SqlxHealthIndicatorFactory::<Postgres> {
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            #[allow(unused_mut)]
+            let mut builder = DynamicModule::builder("SqlxModule::postgres")
+                .provider(SqlxPoolFactory::<Postgres> {
+                    url: url.clone(),
+                    token: std::any::type_name::<Pool<Postgres>>().to_string(),
+                    check,
                     _db: PhantomData,
                 })
-                .export::<crate::health::SqlxHealthIndicator<Postgres>>();
-        }
+                .export::<Pool<Postgres>>();
 
-        builder.global().build()
+            #[cfg(feature = "health")]
+            {
+                builder = builder
+                    .provider(crate::health::SqlxHealthIndicatorFactory::<Postgres> {
+                        _db: PhantomData,
+                    })
+                    .export::<crate::health::SqlxHealthIndicator<Postgres>>();
+            }
+
+            builder.global().build()
+        })
     }
 
     /// Register a second, named Postgres pool.
@@ -62,97 +65,119 @@ impl SqlxModule {
     /// integrations is refused at startup. The pool only is registered — the health indicator is
     /// attached to the default `postgres` pool.
     #[cfg(feature = "postgres")]
-    pub fn postgres_named(name: impl Into<String>, url: impl Into<String>) -> DynamicModule {
+    pub fn postgres_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
         use sqlx::Postgres;
         let name: String = name.into();
-        DynamicModule::builder(format!("SqlxModule::postgres::{name}"))
-            .provider(SqlxPoolFactory::<Postgres> {
-                url: url.into(),
-                token: name.clone(),
-                _db: PhantomData,
-            })
-            .export_token(name)
-            .global()
-            .build()
+        let url: String = url.into();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            DynamicModule::builder(format!("SqlxModule::postgres::{name}"))
+                .provider(SqlxPoolFactory::<Postgres> {
+                    url: url.clone(),
+                    token: name.clone(),
+                    check,
+                    _db: PhantomData,
+                })
+                .export_token(name.clone())
+                .global()
+                .build()
+        })
     }
 
     #[cfg(feature = "mysql")]
-    pub fn mysql(url: impl Into<String>) -> DynamicModule {
+    pub fn mysql(url: impl Into<String>) -> CheckedModule {
         use sqlx::{MySql, Pool};
         let url: String = url.into();
 
-        #[allow(unused_mut)]
-        let mut builder = DynamicModule::builder("SqlxModule::mysql")
-            .provider(SqlxPoolFactory::<MySql> {
-                url: url.clone(),
-                token: std::any::type_name::<Pool<MySql>>().to_string(),
-                _db: PhantomData,
-            })
-            .export::<Pool<MySql>>();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            #[allow(unused_mut)]
+            let mut builder = DynamicModule::builder("SqlxModule::mysql")
+                .provider(SqlxPoolFactory::<MySql> {
+                    url: url.clone(),
+                    token: std::any::type_name::<Pool<MySql>>().to_string(),
+                    check,
+                    _db: PhantomData,
+                })
+                .export::<Pool<MySql>>();
 
-        #[cfg(feature = "health")]
-        {
-            builder = builder
-                .provider(crate::health::SqlxHealthIndicatorFactory::<MySql> { _db: PhantomData })
-                .export::<crate::health::SqlxHealthIndicator<MySql>>();
-        }
+            #[cfg(feature = "health")]
+            {
+                builder = builder
+                    .provider(crate::health::SqlxHealthIndicatorFactory::<MySql> {
+                        _db: PhantomData,
+                    })
+                    .export::<crate::health::SqlxHealthIndicator<MySql>>();
+            }
 
-        builder.global().build()
+            builder.global().build()
+        })
     }
 
     /// Register a second, named MySQL pool. See [`SqlxModule::postgres_named`].
     #[cfg(feature = "mysql")]
-    pub fn mysql_named(name: impl Into<String>, url: impl Into<String>) -> DynamicModule {
+    pub fn mysql_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
         use sqlx::MySql;
         let name: String = name.into();
-        DynamicModule::builder(format!("SqlxModule::mysql::{name}"))
-            .provider(SqlxPoolFactory::<MySql> {
-                url: url.into(),
-                token: name.clone(),
-                _db: PhantomData,
-            })
-            .export_token(name)
-            .global()
-            .build()
+        let url: String = url.into();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            DynamicModule::builder(format!("SqlxModule::mysql::{name}"))
+                .provider(SqlxPoolFactory::<MySql> {
+                    url: url.clone(),
+                    token: name.clone(),
+                    check,
+                    _db: PhantomData,
+                })
+                .export_token(name.clone())
+                .global()
+                .build()
+        })
     }
 
     #[cfg(feature = "sqlite")]
-    pub fn sqlite(url: impl Into<String>) -> DynamicModule {
+    pub fn sqlite(url: impl Into<String>) -> CheckedModule {
         use sqlx::{Pool, Sqlite};
         let url: String = url.into();
 
-        #[allow(unused_mut)]
-        let mut builder = DynamicModule::builder("SqlxModule::sqlite")
-            .provider(SqlxPoolFactory::<Sqlite> {
-                url: url.clone(),
-                token: std::any::type_name::<Pool<Sqlite>>().to_string(),
-                _db: PhantomData,
-            })
-            .export::<Pool<Sqlite>>();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            #[allow(unused_mut)]
+            let mut builder = DynamicModule::builder("SqlxModule::sqlite")
+                .provider(SqlxPoolFactory::<Sqlite> {
+                    url: url.clone(),
+                    token: std::any::type_name::<Pool<Sqlite>>().to_string(),
+                    check,
+                    _db: PhantomData,
+                })
+                .export::<Pool<Sqlite>>();
 
-        #[cfg(feature = "health")]
-        {
-            builder = builder
-                .provider(crate::health::SqlxHealthIndicatorFactory::<Sqlite> { _db: PhantomData })
-                .export::<crate::health::SqlxHealthIndicator<Sqlite>>();
-        }
+            #[cfg(feature = "health")]
+            {
+                builder = builder
+                    .provider(crate::health::SqlxHealthIndicatorFactory::<Sqlite> {
+                        _db: PhantomData,
+                    })
+                    .export::<crate::health::SqlxHealthIndicator<Sqlite>>();
+            }
 
-        builder.global().build()
+            builder.global().build()
+        })
     }
 
     /// Register a second, named SQLite pool. See [`SqlxModule::postgres_named`].
     #[cfg(feature = "sqlite")]
-    pub fn sqlite_named(name: impl Into<String>, url: impl Into<String>) -> DynamicModule {
+    pub fn sqlite_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
         use sqlx::Sqlite;
         let name: String = name.into();
-        DynamicModule::builder(format!("SqlxModule::sqlite::{name}"))
-            .provider(SqlxPoolFactory::<Sqlite> {
-                url: url.into(),
-                token: name.clone(),
-                _db: PhantomData,
-            })
-            .export_token(name)
-            .global()
-            .build()
+        let url: String = url.into();
+        CheckedModule::new(move |check: Option<StartupCheck>| {
+            DynamicModule::builder(format!("SqlxModule::sqlite::{name}"))
+                .provider(SqlxPoolFactory::<Sqlite> {
+                    url: url.clone(),
+                    token: name.clone(),
+                    check,
+                    _db: PhantomData,
+                })
+                .export_token(name.clone())
+                .global()
+                .build()
+        })
     }
 }

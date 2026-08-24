@@ -19,6 +19,9 @@ integration = ["health", "postgres", "runtime-tokio-rustls"]
 
 [dependencies]
 toni = { path = "../toni", default-features = false }
+# Timer for the startup check's retry delay. Executor-independent, so core stays free of a
+# runtime and this crate does not acquire one either.
+futures-timer = "3"
 sqlx = { version = "0.8", default-features = false }
 async-trait = "0.1"
 parking_lot = "0.12"

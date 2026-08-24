@@ -35,6 +35,13 @@ impl PrismaModule {
     ///     }
     /// }
     /// ```
+    ///
+    /// # No startup check
+    ///
+    /// The other database integrations verify their server answers before the application serves,
+    /// and report an unreachable one from startup. This one cannot: `connect` returns the generated
+    /// client by value, and there is no operation to call on an arbitrary type to see whether it
+    /// works. A client that cannot reach its database fails where it is first used.
     pub fn for_root<C, F, Fut>(connect: F) -> DynamicModule
     where
         C: Send + Sync + Clone + 'static,
