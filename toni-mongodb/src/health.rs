@@ -50,18 +50,32 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let options = ClientOptions::parse(&self.uri).await.unwrap_or_else(|e| {
-            panic!(
-                "toni-mongodb health: failed to parse URI '{}': {e}",
-                self.uri
-            )
-        });
-        let client = Client::with_options(options)
-            .unwrap_or_else(|e| panic!("toni-mongodb health: failed to create client: {e}"));
-        let db = client.database(&self.db_name);
+        let (indicator, init_error) = match ClientOptions::parse(&self.uri).await {
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("failed to parse URI", e, &self.uri)),
+            ),
+            Ok(options) => match Client::with_options(options) {
+                Ok(client) => (
+                    Some(MongoHealthIndicator {
+                        db: client.database(&self.db_name),
+                    }),
+                    None,
+                ),
+                Err(e) => (
+                    None,
+                    Some(crate::redact::describe(
+                        "failed to create client",
+                        e,
+                        &self.uri,
+                    )),
+                ),
+            },
+        };
         Injectable::new(
             Arc::new(Box::new(MongoHealthProvider {
-                indicator: MongoHealthIndicator { db },
+                indicator,
+                init_error,
             })),
             vec![],
         )
@@ -69,7 +83,9 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
 }
 
 struct MongoHealthProvider {
-    indicator: MongoHealthIndicator,
+    indicator: Option<MongoHealthIndicator>,
+    // Set when the client could not be constructed; reported from `on_module_init`.
+    init_error: Option<String>,
 }
 
 #[async_trait]
@@ -87,6 +103,16 @@ impl Provider for MongoHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(self.indicator.clone())
+        Box::new(
+            self.indicator
+                .clone()
+                .expect("health indicator unavailable"),
+        )
+    }
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 }

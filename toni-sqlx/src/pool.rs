@@ -39,13 +39,20 @@ where
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> Injectable {
-        let pool = Pool::<DB>::connect(&self.url)
-            .await
-            .unwrap_or_else(|e| panic!("toni-sqlx: failed to connect to '{}': {e}", self.url));
+        // `build` returns the instance directly, so a failed connection is carried into the
+        // provider and reported from `on_module_init`, which can return it.
+        let (pool, init_error) = match Pool::<DB>::connect(&self.url).await {
+            Ok(pool) => (Some(pool), None),
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("failed to connect", e, &self.url)),
+            ),
+        };
 
         Injectable::new(
             Arc::new(Box::new(SqlxPoolProvider {
                 pool,
+                init_error,
                 token: self.token.clone(),
             })),
             vec![],
@@ -54,7 +61,10 @@ where
 }
 
 struct SqlxPoolProvider<DB: Database> {
-    pool: Pool<DB>,
+    pool: Option<Pool<DB>>,
+    // Set when the connection could not be established. `on_module_init` returns it, so startup
+    // stops before anything resolves this provider.
+    init_error: Option<String>,
     token: String,
 }
 
@@ -81,10 +91,18 @@ where
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // Pool<DB> is Arc-backed; cloning is cheap and shares the same connection pool.
-        Box::new(self.pool.clone())
+        Box::new(self.pool.clone().expect("database pool unavailable"))
+    }
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {
-        self.pool.close().await;
+        if let Some(pool) = &self.pool {
+            pool.close().await;
+        }
     }
 }

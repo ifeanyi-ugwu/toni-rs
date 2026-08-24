@@ -28,16 +28,26 @@ impl ProviderFactory for RedisConnectionFactory {
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> toni::traits_helpers::Injectable {
-        let client = redis::Client::open(self.url.as_str())
-            .unwrap_or_else(|e| panic!("toni-redis: invalid URL '{}': {e}", self.url));
-
-        let manager = ConnectionManager::new(client)
-            .await
-            .unwrap_or_else(|e| panic!("toni-redis: failed to connect to '{}': {e}", self.url));
+        // `build` returns the instance directly, so a failed connection is carried into the
+        // provider and reported from `on_module_init`, which can return it.
+        let (manager, init_error) = match redis::Client::open(self.url.as_str()) {
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("invalid URL", e, &self.url)),
+            ),
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(manager) => (Some(manager), None),
+                Err(e) => (
+                    None,
+                    Some(crate::redact::describe("failed to connect", e, &self.url)),
+                ),
+            },
+        };
 
         toni::traits_helpers::Injectable::new(
             Arc::new(Box::new(RedisConnectionProvider {
                 manager,
+                init_error,
                 token: self.token.clone(),
             })),
             vec![],
@@ -46,7 +56,10 @@ impl ProviderFactory for RedisConnectionFactory {
 }
 
 struct RedisConnectionProvider {
-    manager: ConnectionManager,
+    manager: Option<ConnectionManager>,
+    // Set when the connection could not be established. `on_module_init` returns it, so startup
+    // stops before anything resolves this provider.
+    init_error: Option<String>,
     token: String,
 }
 
@@ -66,6 +79,12 @@ impl Provider for RedisConnectionProvider {
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // ConnectionManager is Clone (Arc-backed); clones share the same underlying connection.
-        Box::new(self.manager.clone())
+        Box::new(self.manager.clone().expect("redis connection unavailable"))
+    }
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 }

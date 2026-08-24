@@ -57,6 +57,12 @@ jobs:
       # tests behind feature gates and are compile-checked in the check job.
       - run: cargo test -p toni --lib --locked
       - run: cargo test -p integration-tests --locked
+      # Startup-failure reporting and connection-string redaction for the database modules.
+      # Hermetic: no server is contacted. Their service-dependent suites stay behind the
+      # `integration` feature and are compile-checked by the job above.
+      - run: cargo test -p toni-seaorm -p toni-redis -p toni-mongodb --lib --test startup --locked
+      - run: cargo test -p toni-sqlx --features postgres --lib --test startup --locked
+      - run: cargo test -p toni-diesel --features postgres --lib --test startup --locked
 
   scaffold:
     name: cli scaffold

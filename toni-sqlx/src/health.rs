@@ -82,12 +82,17 @@ where
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let pool = Pool::<DB>::connect(&self.url).await.unwrap_or_else(|e| {
-            panic!("toni-sqlx health: failed to connect to '{}': {e}", self.url)
-        });
+        let (indicator, init_error) = match Pool::<DB>::connect(&self.url).await {
+            Ok(pool) => (Some(SqlxHealthIndicator { pool }), None),
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("failed to connect", e, &self.url)),
+            ),
+        };
         Injectable::new(
             Arc::new(Box::new(SqlxHealthProvider {
-                indicator: SqlxHealthIndicator { pool },
+                indicator,
+                init_error,
             })),
             vec![],
         )
@@ -95,7 +100,9 @@ where
 }
 
 struct SqlxHealthProvider<DB: Database> {
-    indicator: SqlxHealthIndicator<DB>,
+    indicator: Option<SqlxHealthIndicator<DB>>,
+    // Set when the connection could not be established; reported from `on_module_init`.
+    init_error: Option<String>,
 }
 
 unsafe impl<DB: Database> Send for SqlxHealthProvider<DB> {}
@@ -122,6 +129,16 @@ where
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(self.indicator.clone())
+        Box::new(
+            self.indicator
+                .clone()
+                .expect("health indicator unavailable"),
+        )
+    }
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 }

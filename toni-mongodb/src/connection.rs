@@ -29,19 +29,33 @@ impl ProviderFactory for MongoConnectionFactory {
         &self,
         _deps: FxHashMap<String, toni::traits_helpers::Injectable>,
     ) -> toni::traits_helpers::Injectable {
-        let options = ClientOptions::parse(&self.uri)
-            .await
-            .unwrap_or_else(|e| panic!("toni-mongodb: failed to parse URI '{}': {e}", self.uri));
-
-        let client = Client::with_options(options)
-            .unwrap_or_else(|e| panic!("toni-mongodb: failed to create client: {e}"));
-
-        let db = client.database(&self.db_name);
+        // `build` returns the instance directly, so a failure is carried into the provider and
+        // reported from `on_module_init`, which can return it. The driver connects lazily, so
+        // only URI parsing and client construction are checked here.
+        let (client, init_error) = match ClientOptions::parse(&self.uri).await {
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("failed to parse URI", e, &self.uri)),
+            ),
+            Ok(options) => match Client::with_options(options) {
+                Ok(client) => (Some(client), None),
+                Err(e) => (
+                    None,
+                    Some(crate::redact::describe(
+                        "failed to create client",
+                        e,
+                        &self.uri,
+                    )),
+                ),
+            },
+        };
+        let db = client.as_ref().map(|c| c.database(&self.db_name));
 
         toni::traits_helpers::Injectable::new(
             Arc::new(Box::new(MongoConnectionProvider {
                 client,
                 db,
+                init_error,
                 token: self.token.clone(),
             })),
             vec![],
@@ -51,8 +65,11 @@ impl ProviderFactory for MongoConnectionFactory {
 
 struct MongoConnectionProvider {
     // Held so shutdown() can be called; Client is Arc-backed and cheap to clone.
-    client: Client,
-    db: Database,
+    client: Option<Client>,
+    db: Option<Database>,
+    // Set when the client could not be constructed. `on_module_init` returns it, so startup stops
+    // before anything resolves this provider.
+    init_error: Option<String>,
     token: String,
 }
 
@@ -72,10 +89,19 @@ impl Provider for MongoConnectionProvider {
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
         // Database is Clone (Arc-backed); cloning shares the same connection pool.
-        Box::new(self.db.clone())
+        Box::new(self.db.clone().expect("mongo database unavailable"))
+    }
+
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 
     async fn on_application_shutdown(&self, _signal: Option<String>) {
-        self.client.clone().shutdown().await;
+        if let Some(client) = self.client.clone() {
+            client.shutdown().await;
+        }
     }
 }

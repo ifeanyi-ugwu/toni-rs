@@ -32,12 +32,24 @@ macro_rules! impl_diesel_pool {
             async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
-                let pool = <$pool>::builder(manager).build().unwrap_or_else(|e| {
-                    panic!("toni-diesel: failed to build pool for '{}': {e}", self.url)
-                });
+                // `build` returns the instance directly, so a failure is carried into the
+                // provider and reported from `on_module_init`, which can return it. deadpool
+                // opens no connection here, so only the pool configuration is checked.
+                let (pool, init_error) = match <$pool>::builder(manager).build() {
+                    Ok(pool) => (Some(pool), None),
+                    Err(e) => (
+                        None,
+                        Some(crate::redact::describe(
+                            "failed to build pool",
+                            e,
+                            &self.url,
+                        )),
+                    ),
+                };
                 Injectable::new(
                     Arc::new(Box::new($provider {
                         pool,
+                        init_error,
                         token: self.token.clone(),
                     })),
                     vec![],
@@ -46,7 +58,10 @@ macro_rules! impl_diesel_pool {
         }
 
         struct $provider {
-            pool: $pool,
+            pool: Option<$pool>,
+            // Set when the pool could not be built. `on_module_init` returns it, so startup
+            // stops before anything resolves this provider.
+            init_error: Option<String>,
             token: String,
         }
 
@@ -65,11 +80,20 @@ macro_rules! impl_diesel_pool {
                 _params: Vec<Box<dyn Any + Send>>,
                 _ctx: ProviderContext,
             ) -> Box<dyn Any + Send> {
-                Box::new(self.pool.clone())
+                Box::new(self.pool.clone().expect("database pool unavailable"))
+            }
+
+            async fn on_module_init(&self) -> toni::InitResult {
+                match &self.init_error {
+                    Some(message) => Err(message.clone().into()),
+                    None => Ok(()),
+                }
             }
 
             async fn on_application_shutdown(&self, _signal: Option<String>) {
-                self.pool.close();
+                if let Some(pool) = &self.pool {
+                    pool.close();
+                }
             }
         }
     };

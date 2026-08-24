@@ -49,17 +49,23 @@ impl ProviderFactory for RedisHealthIndicatorFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        let client = redis::Client::open(self.url.as_str())
-            .unwrap_or_else(|e| panic!("toni-redis health: invalid URL '{}': {e}", self.url));
-        let manager = ConnectionManager::new(client).await.unwrap_or_else(|e| {
-            panic!(
-                "toni-redis health: failed to connect to '{}': {e}",
-                self.url
-            )
-        });
+        let (indicator, init_error) = match redis::Client::open(self.url.as_str()) {
+            Err(e) => (
+                None,
+                Some(crate::redact::describe("invalid URL", e, &self.url)),
+            ),
+            Ok(client) => match ConnectionManager::new(client).await {
+                Ok(manager) => (Some(RedisHealthIndicator { manager }), None),
+                Err(e) => (
+                    None,
+                    Some(crate::redact::describe("failed to connect", e, &self.url)),
+                ),
+            },
+        };
         Injectable::new(
             Arc::new(Box::new(RedisHealthProvider {
-                indicator: RedisHealthIndicator { manager },
+                indicator,
+                init_error,
             })),
             vec![],
         )
@@ -67,7 +73,9 @@ impl ProviderFactory for RedisHealthIndicatorFactory {
 }
 
 struct RedisHealthProvider {
-    indicator: RedisHealthIndicator,
+    indicator: Option<RedisHealthIndicator>,
+    // Set when the connection could not be established; reported from `on_module_init`.
+    init_error: Option<String>,
 }
 
 #[async_trait]
@@ -85,6 +93,16 @@ impl Provider for RedisHealthProvider {
         _params: Vec<Box<dyn Any + Send>>,
         _ctx: ProviderContext,
     ) -> Box<dyn Any + Send> {
-        Box::new(self.indicator.clone())
+        Box::new(
+            self.indicator
+                .clone()
+                .expect("health indicator unavailable"),
+        )
+    }
+    async fn on_module_init(&self) -> toni::InitResult {
+        match &self.init_error {
+            Some(message) => Err(message.clone().into()),
+            None => Ok(()),
+        }
     }
 }
