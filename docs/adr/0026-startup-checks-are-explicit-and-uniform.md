@@ -46,8 +46,9 @@ nothing new.
 against them. An application configures one type regardless of which database it uses, and every
 integration fails on the same schedule.
 
-Drivers that retry internally are told not to: redis's connection manager would otherwise run its
-own six attempts inside one of ours.
+Drivers that retry internally are told not to. Redis's connection manager makes six attempts with
+its own exponential backoff, which overruns any deadline set alongside it: measured against an
+unreachable server, a 600ms bound took 9.46 seconds. Switched off, the same case takes 0.06.
 
 ### It is on by default
 
@@ -72,10 +73,21 @@ two constructors per connection kind, and a `_with` variant of each doubles that
 holds the module built with the current check and rebuilds when the check changes, because the check
 is folded into the provider factories rather than read later.
 
-### `StartupCheck::run` sits behind a feature
+### The driver bounds an attempt; the check spaces them; the timer is injected
 
-Core owns no runtime, and the retry timer needs one. The `startup-check` feature pulls `tokio/time`;
-the integrations enable it, and nobody else acquires a runtime dependency by depending on toni.
+An attempt is bounded by the driver's own connect or acquire timeout, set from the check at build
+time. Only the gap between attempts is the framework's, and `run` takes the sleep it uses as an
+argument. Core depends on no runtime and constructs no timer, and an application whose database is
+up never reaches for one — a probe that answers first time sleeps zero times.
+
+The integrations pass `futures_timer::Delay::new`, which has no dependencies of its own and works
+under any executor or none, verified both ways. Its background thread is spawned on first use, so
+only a startup that actually retries pays for it.
+
+Narrowing a runtime dependency does not substitute for not having one. `tokio = { features =
+["time"] }` looks contained and still panics with *"there is no reactor running"* under any other
+executor, so a feature-gated `tokio/time` would have put a tokio-only method in core and called it
+optional.
 
 ### Prisma does not participate
 
@@ -99,6 +111,14 @@ discovers an unreachable database on first use, and says so in its documentation
 **Uniform eager construction, using each driver's own dial as the check.** Smaller, and it inherits
 three incompatible timeout policies plus one driver that does not dial at all. The knob users would
 then want — how long to wait — is not reachable through a shared API.
+
+**Handing each driver a deadline and probing once, with no retry scheduled here.** No timer anywhere,
+which is why it was tried. It works for sea-orm, sqlx and mongodb, whose pools retry a refused
+connection until the deadline — elapsed tracks the budget exactly. It fails for the other two:
+redis has no total deadline, only attempts and a per-attempt timeout, and deadpool returns a failed
+`create` rather than retrying it. Both would refuse to start against a database that comes up a few
+seconds late, behind an API promising a budget. Silently different behaviour under one name is the
+defect this ADR exists to remove.
 
 **Uniform lazy construction with no check, leaving connectivity to a readiness probe.** The cleanest
 orchestration story: no crash loop, and the application recovers by itself when the database returns.
