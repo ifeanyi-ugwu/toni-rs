@@ -41,6 +41,7 @@ mod lifecycle_hooks;
 mod metadata_overlay;
 mod method_enhancers;
 mod middleware_error;
+mod module_lookup;
 mod module_ref;
 mod modules;
 mod multi_providers;

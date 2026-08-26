@@ -8,7 +8,7 @@ use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 use anyhow::Result;
 
 use crate::{
-    injector::{IntoToken, ToniContainer},
+    injector::{IntoToken, ModuleRef, ToniContainer},
     traits_helpers::{Provider, ProviderContext},
 };
 
@@ -81,6 +81,91 @@ impl ToniApplicationContext {
         let provider = self.provider_in_module(module_token, &token)?;
         ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
+        downcast(
+            provider.execute(vec![], ProviderContext::None).await,
+            &token,
+        )
+    }
+
+    /// The module handle for `M`, found by its identity.
+    ///
+    /// Matches the module whose identity is `token_of::<M>()` exactly, or — for
+    /// a module type that folds a config fingerprint into its identity, like the
+    /// GraphQL modules — the single module whose identity extends that token
+    /// with a fingerprint. Two fingerprinted instances of the same type are
+    /// ambiguous: the error names both, and
+    /// [`get_module_by_name`](Self::get_module_by_name) reaches one when their
+    /// display names differ.
+    ///
+    /// The handle resolves providers in that module's scope, the way an
+    /// injected [`ModuleRef`] does from inside it.
+    pub async fn get_module<M: 'static>(&self) -> Result<ModuleRef> {
+        let wanted = crate::di::token_of::<M>();
+        let id = self.module_id_for(&wanted)?;
+        self.module_ref_for(&id).await
+    }
+
+    /// The module handle for the module whose display name is `name`.
+    ///
+    /// The reach for modules whose identity is not a type: a `DynamicModule` is
+    /// keyed by its base name plus a config fingerprint, so
+    /// [`get_module`](Self::get_module) cannot address it. Ambiguous when the
+    /// same maker was imported twice with different config — the two keep
+    /// distinct identities under one name, and the error names both.
+    pub async fn get_module_by_name(&self, name: &str) -> Result<ModuleRef> {
+        let matches: Vec<String> = {
+            let container = self.container.borrow();
+            container
+                .get_modules_token()
+                .into_iter()
+                .filter(|id| {
+                    container
+                        .get_module_by_token(id)
+                        .map(|m| m.get_metadata().get_name() == name)
+                        .unwrap_or(false)
+                })
+                .collect()
+        };
+
+        match matches.as_slice() {
+            [id] => self.module_ref_for(id).await,
+            [] => Err(anyhow::anyhow!("No module is named '{name}'")),
+            many => Err(anyhow::anyhow!(
+                "Module name '{name}' is ambiguous: {many:?} share it. \
+                 The same module imported with different config keeps distinct identities."
+            )),
+        }
+    }
+
+    /// The identity of the one module matching `wanted`: exact, or the single
+    /// fingerprinted extension (`wanted#…`).
+    fn module_id_for(&self, wanted: &str) -> Result<String> {
+        let container = self.container.borrow();
+        let ids = container.get_modules_token();
+
+        if ids.iter().any(|id| id == wanted) {
+            return Ok(wanted.to_string());
+        }
+
+        let prefix = format!("{wanted}#");
+        let fingerprinted: Vec<&String> = ids.iter().filter(|id| id.starts_with(&prefix)).collect();
+        match fingerprinted.as_slice() {
+            [id] => Ok((*id).clone()),
+            [] => Err(anyhow::anyhow!(
+                "No module has identity '{wanted}'. The module is not imported, \
+                 or its identity is not its type — a DynamicModule is reached with \
+                 `get_module_by_name`."
+            )),
+            many => Err(anyhow::anyhow!(
+                "Module type '{wanted}' is ambiguous: {many:?} share it. \
+                 `get_module_by_name` reaches one when their names differ."
+            )),
+        }
+    }
+
+    async fn module_ref_for(&self, module_id: &str) -> Result<ModuleRef> {
+        let token = crate::di::token_of::<ModuleRef>();
+        let provider = self.provider_in_module(module_id, &token)?;
         downcast(
             provider.execute(vec![], ProviderContext::None).await,
             &token,
