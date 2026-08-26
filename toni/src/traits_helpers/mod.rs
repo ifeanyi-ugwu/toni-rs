@@ -28,9 +28,6 @@ pub use self::interceptor::{Interceptor, InterceptorNext};
 mod guard;
 pub use self::guard::Guard;
 
-mod validator;
-pub use self::validator::validate;
-
 pub mod error_handler;
 pub use self::error_handler::{
     ChainError, DefaultHttpErrorHandler, DefaultRpcErrorHandler, DefaultWsErrorHandler,

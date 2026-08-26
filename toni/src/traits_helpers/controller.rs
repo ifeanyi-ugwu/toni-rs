@@ -6,11 +6,11 @@ use rustc_hash::FxHashMap;
 
 use crate::context::Metadata;
 use crate::errors::HttpError;
-use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart};
+use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse};
 
 use crate::context::HttpContext;
 
-use super::{Guard, HttpErrorHandlerArc, Interceptor, provider::Provider, validate::Validatable};
+use super::{Guard, HttpErrorHandlerArc, Interceptor, provider::Provider};
 
 /// Per-route enhancer manifest — both DI-resolved tokens and direct-instantiation arcs.
 ///
@@ -79,8 +79,6 @@ pub trait Route: Send + Sync {
     fn metadata(&self) -> Arc<Metadata> {
         Arc::new(Metadata::new())
     }
-
-    fn get_body_dto(&self, _req: &RequestPart) -> Option<Box<dyn Validatable>>;
 }
 
 /// A controller: one DI instance exposing its routes and lifecycle hooks.

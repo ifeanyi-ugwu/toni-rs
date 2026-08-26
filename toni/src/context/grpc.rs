@@ -15,7 +15,7 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 ///
 /// Pipes that need to transform the request body are not supported on gRPC
 /// for the same reason — the body is method-typed and there's no
-/// `Box<dyn Validatable>`-shaped place to put it.
+/// typed place to put it.
 ///
 /// The same constraint decides who sees this context at all. A gRPC handler's signature is the
 /// tonic trait's and never includes it, so guards, interceptors and error handlers are the only

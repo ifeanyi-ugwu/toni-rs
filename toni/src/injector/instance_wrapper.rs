@@ -500,23 +500,6 @@ impl InstanceWrapper {
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> HttpResponse {
-        if let Some(dto) = instance.get_body_dto(context.request()) {
-            match dto.validate_dto() {
-                Ok(()) => {}
-                Err(validation_errors) => {
-                    let error_body = serde_json::json!({
-                        "error": "Validation failed",
-                        "details": validation_errors.to_string()
-                    });
-                    return crate::http_helpers::HttpResponse {
-                        body: Some(crate::http_helpers::Body::json(error_body)),
-                        status: 400,
-                        headers: vec![],
-                    };
-                }
-            }
-        }
-
         tracing::trace!("executing controller handler");
         // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
         // and adding `RefUnwindSafe` bounds to user code would be punitive.
