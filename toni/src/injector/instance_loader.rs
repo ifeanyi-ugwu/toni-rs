@@ -16,8 +16,7 @@ use super::{
 use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, Dispatch, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable,
-        Provider, Route,
+        Controller, Dispatch, HttpGuardEntry, HttpInterceptorEntry, Injectable, Provider, Route,
     },
 };
 
@@ -198,7 +197,6 @@ impl ToniInstanceLoader {
         let container = self.container.borrow();
         let app_guard_providers = container.get_app_guard_providers().to_vec();
         let app_interceptor_providers = container.get_app_interceptor_providers().to_vec();
-        let app_pipe_providers = container.get_app_pipe_providers().to_vec();
         drop(container);
 
         for (_, provider_token) in app_guard_providers {
@@ -235,23 +233,6 @@ impl ToniInstanceLoader {
             self.container
                 .borrow_mut()
                 .add_global_http_interceptor(interceptor);
-        }
-
-        for (_, provider_token) in app_pipe_providers {
-            let pipe = self
-                .container
-                .borrow()
-                .get_role_registry()
-                .http_pipes
-                .get(&provider_token)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Provider '{}' with APP_PIPE token does not implement Pipe<HttpContext>",
-                        provider_token
-                    )
-                })?;
-            self.container.borrow_mut().add_global_http_pipe(pipe);
         }
 
         Ok(())
@@ -552,22 +533,6 @@ impl ToniInstanceLoader {
                 .map(HttpInterceptorEntry::Ready),
         );
 
-        let mut pipes: Vec<HttpPipeEntry> = Vec::new();
-        for token in declared.pipe_tokens {
-            let pipe = registry.http_pipes.get(&token).cloned().ok_or_else(|| {
-                anyhow!(
-                    "HTTP Pipe '{}' not found in registry. A pipe registers automatically by \
-                     implementing Pipe<HttpContext>; make sure the provider is in the module's \
-                     `providers` list. For `provider_factory!` under a string/const token, name \
-                     the produced type so it can be detected — annotate the closure's return type \
-                     (`|| -> MyPipe`) or pass a type hint.",
-                    token
-                )
-            })?;
-            pipes.push(pipe);
-        }
-        pipes.extend(declared.pipes.into_iter().map(HttpPipeEntry::Ready));
-
         let mut error_handlers = Vec::new();
         for token in declared.error_handler_tokens {
             let eh = registry
@@ -591,7 +556,6 @@ impl ToniInstanceLoader {
         Ok(EnhancerMetadata {
             guards,
             interceptors,
-            pipes,
             error_handlers,
         })
     }

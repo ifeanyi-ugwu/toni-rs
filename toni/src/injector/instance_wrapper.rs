@@ -12,7 +12,7 @@ use crate::{
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, Interceptor, InterceptorNext, Pipe, Route,
+        Interceptor, InterceptorNext, Route,
     },
 };
 use futures::FutureExt;
@@ -22,7 +22,6 @@ use std::panic::AssertUnwindSafe;
 struct ChainNext {
     interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
     instance: Arc<dyn Route>,
-    pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
     error_handlers: Vec<HttpErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
     metadata: Arc<Metadata>,
@@ -35,7 +34,6 @@ impl InterceptorNext<HttpContext, HttpResponse> for ChainNext {
             context,
             &self.interceptors,
             &self.instance,
-            &self.pipes,
             &self.error_handlers,
             &self.observers,
             &self.metadata,
@@ -48,7 +46,6 @@ pub struct InstanceWrapper {
     instance: Arc<dyn Route>,
     guards: Vec<HttpGuardEntry>,
     interceptors: Vec<HttpInterceptorEntry>,
-    pipes: Vec<HttpPipeEntry>,
     middleware_chain: MiddlewareChain,
     error_handlers: Vec<HttpErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
@@ -69,9 +66,6 @@ impl InstanceWrapper {
         let mut interceptors = global_enhancers.interceptors;
         interceptors.extend(enhancer_metadata.interceptors);
 
-        let mut pipes = global_enhancers.pipes;
-        pipes.extend(enhancer_metadata.pipes);
-
         let mut error_handlers = global_enhancers.error_handlers;
         error_handlers.extend(enhancer_metadata.error_handlers);
 
@@ -81,7 +75,6 @@ impl InstanceWrapper {
             instance,
             guards,
             interceptors,
-            pipes,
             middleware_chain: MiddlewareChain::new(),
             error_handlers,
             error_observers,
@@ -115,7 +108,6 @@ impl InstanceWrapper {
         let instance = self.instance.clone();
         let guards = self.guards.clone();
         let interceptors = self.interceptors.clone();
-        let pipes = self.pipes.clone();
         let error_handlers = self.error_handlers.clone();
         let observers = self.error_observers.clone();
         let metadata = self.metadata.clone();
@@ -129,7 +121,6 @@ impl InstanceWrapper {
                         instance,
                         guards,
                         interceptors,
-                        pipes,
                         error_handlers,
                         observers,
                         metadata,
@@ -219,27 +210,11 @@ impl InstanceWrapper {
         out
     }
 
-    async fn resolve_pipes(
-        entries: &[HttpPipeEntry],
-        ctx: &HttpContext,
-    ) -> Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>> {
-        let mut out = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let p = match entry {
-                HttpPipeEntry::Ready(p) => p.clone(),
-                HttpPipeEntry::Factory(f) => f.create(ctx).await,
-            };
-            out.push(p);
-        }
-        out
-    }
-
     async fn execute_controller_logic(
         req: HttpRequest,
         instance: Arc<dyn Route>,
         guards: Vec<HttpGuardEntry>,
         interceptors: Vec<HttpInterceptorEntry>,
-        pipes: Vec<HttpPipeEntry>,
         error_handlers: Vec<HttpErrorHandlerArc>,
         observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
@@ -251,14 +226,12 @@ impl InstanceWrapper {
 
         let guards = Self::resolve_guards(&guards, &context).await;
         let interceptors = Self::resolve_interceptors(&interceptors, &context).await;
-        let pipes = Self::resolve_pipes(&pipes, &context).await;
 
         let response = Self::run_chain(
             &context,
             instance,
             guards,
             interceptors,
-            pipes,
             error_handlers,
             observers,
             metadata,
@@ -291,7 +264,6 @@ impl InstanceWrapper {
         instance: Arc<dyn Route>,
         guards: Vec<Arc<dyn Guard<HttpContext>>>,
         interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
-        pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
         error_handlers: Vec<HttpErrorHandlerArc>,
         observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
@@ -334,7 +306,6 @@ impl InstanceWrapper {
             context,
             &interceptors,
             &instance,
-            &pipes,
             &error_handlers,
             &observers,
             &metadata,
@@ -464,14 +435,12 @@ impl InstanceWrapper {
         context: &HttpContext,
         interceptors: &[Arc<dyn Interceptor<HttpContext, HttpResponse>>],
         instance: &Arc<dyn Route>,
-        pipes: &[Arc<dyn Pipe<HttpContext, HttpResponse>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
         metadata: &Arc<Metadata>,
     ) -> HttpResponse {
         if interceptors.is_empty() {
-            return Self::execute_handler(context, instance, pipes, error_handlers, observers)
-                .await;
+            return Self::execute_handler(context, instance, error_handlers, observers).await;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
@@ -479,7 +448,6 @@ impl InstanceWrapper {
         let next = ChainNext {
             interceptors: rest.to_vec(),
             instance: instance.clone(),
-            pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
             metadata: metadata.clone(),
@@ -498,7 +466,7 @@ impl InstanceWrapper {
         }
     }
 
-    /// Surface a panicking pre-handler segment (interceptor or pipe)
+    /// Surface a panicking pre-handler segment (an interceptor)
     /// through the existing observer + chain pipeline: lift
     /// `PanicRecovered` into an `HttpError`, run observers, give error
     /// handlers first claim, and fall back to the default rendering. The
@@ -521,7 +489,7 @@ impl InstanceWrapper {
         Self::safe_render(|| HttpError::from(event).to_response(), observers, context).await
     }
 
-    /// Run pipes + handler, then route the result.
+    /// Run the handler, then route the result.
     ///
     /// `Ok` is the answer. On `Err`, observers fan out on the underlying error,
     /// the chain's most-specific handler gets first claim, and
@@ -529,7 +497,6 @@ impl InstanceWrapper {
     async fn execute_handler(
         context: &HttpContext,
         instance: &Arc<dyn Route>,
-        pipes: &[Arc<dyn Pipe<HttpContext, HttpResponse>>],
         error_handlers: &[HttpErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> HttpResponse {
@@ -550,23 +517,7 @@ impl InstanceWrapper {
             }
         }
 
-        for pipe in pipes {
-            // `pipe.process` is sync — `catch_sync` wraps it the same way
-            // `catch_async` wraps async segments. A panic here routes
-            // through the observer + chain pipeline; remaining pipes and
-            // the handler are skipped.
-            match crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
-            {
-                Ok(Some(answer)) => return answer,
-                Ok(None) => {}
-                Err(event) => {
-                    return Self::record_pipeline_panic(context, error_handlers, observers, event)
-                        .await;
-                }
-            }
-        }
-
-        tracing::trace!(pipe_count = pipes.len(), "executing controller handler");
+        tracing::trace!("executing controller handler");
         // `AssertUnwindSafe`: handler bodies aren't required to be unwind-safe
         // and adding `RefUnwindSafe` bounds to user code would be punitive.
         // We trust the application to set its own state to a sane shape after

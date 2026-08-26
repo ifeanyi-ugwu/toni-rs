@@ -10,9 +10,8 @@ use crate::{
     traits_helpers::{
         Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
         GrpcInterceptorEntry, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        HttpPipeEntry, ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
-        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
-        WsInterceptorEntry, WsPipeEntry,
+        ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
+        RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
     },
     websocket::GatewayTrait,
 };
@@ -34,17 +33,14 @@ pub struct ToniContainer {
     /// Global enhancers - applied to every HTTP route's pipeline.
     global_http_guards: Vec<HttpGuardEntry>,
     global_http_interceptors: Vec<HttpInterceptorEntry>,
-    global_http_pipes: Vec<HttpPipeEntry>,
     global_http_error_handlers: Vec<HttpErrorHandlerArc>,
     /// Global enhancers - applied to every RPC controller's pipeline.
     global_rpc_guards: Vec<RpcGuardEntry>,
     global_rpc_interceptors: Vec<RpcInterceptorEntry>,
-    global_rpc_pipes: Vec<RpcPipeEntry>,
     global_rpc_error_handlers: Vec<RpcErrorHandlerArc>,
     /// Global enhancers - applied to every WS gateway's pipeline.
     global_ws_guards: Vec<WsGuardEntry>,
     global_ws_interceptors: Vec<WsInterceptorEntry>,
-    global_ws_pipes: Vec<WsPipeEntry>,
     global_ws_error_handlers: Vec<WsErrorHandlerArc>,
     /// Global enhancers - applied to every gRPC service's pipeline.
     global_grpc_guards: Vec<GrpcGuardEntry>,
@@ -57,7 +53,6 @@ pub struct ToniContainer {
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
     app_interceptor_providers: Vec<(String, String)>,
-    app_pipe_providers: Vec<(String, String)>,
     /// Multi-provider registry: base_token -> Vec<(module_token, provider_token)>.
     /// Populated during the scan phase; the instance loader uses this to collect contributions
     /// into a MultiCollectionProvider after all individual providers are built.
@@ -85,15 +80,12 @@ impl ToniContainer {
             global_provider_tokens: FxHashSet::default(),
             global_http_guards: Vec::new(),
             global_http_interceptors: Vec::new(),
-            global_http_pipes: Vec::new(),
             global_http_error_handlers: Vec::new(),
             global_rpc_guards: Vec::new(),
             global_rpc_interceptors: Vec::new(),
-            global_rpc_pipes: Vec::new(),
             global_rpc_error_handlers: Vec::new(),
             global_ws_guards: Vec::new(),
             global_ws_interceptors: Vec::new(),
-            global_ws_pipes: Vec::new(),
             global_ws_error_handlers: Vec::new(),
             global_grpc_guards: Vec::new(),
             global_grpc_interceptors: Vec::new(),
@@ -101,7 +93,6 @@ impl ToniContainer {
             global_error_observers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
-            app_pipe_providers: Vec::new(),
             multi_providers: FxHashMap::default(),
             multi_collection_providers: FxHashMap::default(),
             role_registry: RoleRegistry::new(),
@@ -116,10 +107,6 @@ impl ToniContainer {
         self.global_http_interceptors.push(interceptor);
     }
 
-    pub fn add_global_http_pipe(&mut self, pipe: HttpPipeEntry) {
-        self.global_http_pipes.push(pipe);
-    }
-
     pub fn add_global_http_error_handler(&mut self, handler: HttpErrorHandlerArc) {
         self.global_http_error_handlers.push(handler);
     }
@@ -130,10 +117,6 @@ impl ToniContainer {
 
     pub fn add_global_rpc_interceptor(&mut self, interceptor: RpcInterceptorEntry) {
         self.global_rpc_interceptors.push(interceptor);
-    }
-
-    pub fn add_global_rpc_pipe(&mut self, pipe: RpcPipeEntry) {
-        self.global_rpc_pipes.push(pipe);
     }
 
     pub fn add_global_rpc_error_handler(&mut self, handler: RpcErrorHandlerArc) {
@@ -148,10 +131,6 @@ impl ToniContainer {
         self.global_rpc_interceptors.clone()
     }
 
-    pub fn get_global_rpc_pipes(&self) -> Vec<RpcPipeEntry> {
-        self.global_rpc_pipes.clone()
-    }
-
     pub fn get_global_rpc_error_handlers(&self) -> Vec<RpcErrorHandlerArc> {
         self.global_rpc_error_handlers.clone()
     }
@@ -164,10 +143,6 @@ impl ToniContainer {
         self.global_ws_interceptors.push(interceptor);
     }
 
-    pub fn add_global_ws_pipe(&mut self, pipe: WsPipeEntry) {
-        self.global_ws_pipes.push(pipe);
-    }
-
     pub fn add_global_ws_error_handler(&mut self, handler: WsErrorHandlerArc) {
         self.global_ws_error_handlers.push(handler);
     }
@@ -178,10 +153,6 @@ impl ToniContainer {
 
     pub fn get_global_ws_interceptors(&self) -> Vec<WsInterceptorEntry> {
         self.global_ws_interceptors.clone()
-    }
-
-    pub fn get_global_ws_pipes(&self) -> Vec<WsPipeEntry> {
-        self.global_ws_pipes.clone()
     }
 
     pub fn get_global_ws_error_handlers(&self) -> Vec<WsErrorHandlerArc> {
@@ -224,7 +195,6 @@ impl ToniContainer {
         EnhancerMetadata {
             guards: self.global_http_guards.clone(),
             interceptors: self.global_http_interceptors.clone(),
-            pipes: self.global_http_pipes.clone(),
             error_handlers: self.global_http_error_handlers.clone(),
         }
     }
@@ -301,9 +271,6 @@ impl ToniContainer {
                         .http_interceptors
                         .insert(token.clone(), i);
                 }
-                ProviderRole::HttpPipe(p) => {
-                    self.role_registry.http_pipes.insert(token.clone(), p);
-                }
                 ProviderRole::HttpErrorHandler(eh) => {
                     self.role_registry
                         .http_error_handlers
@@ -315,9 +282,6 @@ impl ToniContainer {
                 ProviderRole::RpcInterceptor(i) => {
                     self.role_registry.rpc_interceptors.insert(token.clone(), i);
                 }
-                ProviderRole::RpcPipe(p) => {
-                    self.role_registry.rpc_pipes.insert(token.clone(), p);
-                }
                 ProviderRole::RpcErrorHandler(eh) => {
                     self.role_registry
                         .rpc_error_handlers
@@ -328,9 +292,6 @@ impl ToniContainer {
                 }
                 ProviderRole::WsInterceptor(i) => {
                     self.role_registry.ws_interceptors.insert(token.clone(), i);
-                }
-                ProviderRole::WsPipe(p) => {
-                    self.role_registry.ws_pipes.insert(token.clone(), p);
                 }
                 ProviderRole::WsErrorHandler(eh) => {
                     self.role_registry
@@ -758,11 +719,6 @@ impl ToniContainer {
             .push((module_token, provider_token));
     }
 
-    /// Register a provider with APP_PIPE token (during scan phase)
-    pub fn register_app_pipe_provider(&mut self, module_token: String, provider_token: String) {
-        self.app_pipe_providers.push((module_token, provider_token));
-    }
-
     /// Get all APP_GUARD providers (after instances are created)
     pub fn get_app_guard_providers(&self) -> &[(String, String)] {
         &self.app_guard_providers
@@ -771,11 +727,6 @@ impl ToniContainer {
     /// Get all APP_INTERCEPTOR providers (after instances are created)
     pub fn get_app_interceptor_providers(&self) -> &[(String, String)] {
         &self.app_interceptor_providers
-    }
-
-    /// Get all APP_PIPE providers (after instances are created)
-    pub fn get_app_pipe_providers(&self) -> &[(String, String)] {
-        &self.app_pipe_providers
     }
 
     /// Register one multi-provider contribution during the scan phase.

@@ -199,10 +199,6 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
 }
 ```
 
-### Pipes
-
-Pipes (`#[use_pipes]`) are **not** supported on `#[grpc_methods]`. The proto payload is method-typed and can't sit in a non-generic `GrpcContext`, and a metadata-only pipe role adds no expressive power over interceptors. Use an interceptor if you need to mutate `ctx.metadata_mut()` before the handler runs.
-
 ## Streaming
 
 All four call modes work through `#[grpc_methods]` without per-mode setup. Declare the associated streams the tonic-generated trait expects and yield from your handler as usual:

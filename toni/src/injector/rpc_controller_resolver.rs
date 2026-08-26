@@ -5,7 +5,7 @@ use std::rc::Rc;
 use anyhow::{Result, anyhow};
 
 use crate::rpc::{RpcControllerSource, RpcControllerWrapper};
-use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry};
+use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry};
 
 use super::ToniContainer;
 
@@ -35,7 +35,6 @@ impl RpcControllerResolver {
         let enhancers = source.enhancers();
         let guards = self.resolve_guards(enhancers.guard_tokens)?;
         let interceptors = self.resolve_interceptors(enhancers.interceptor_tokens)?;
-        let pipes = self.resolve_pipes(enhancers.pipe_tokens)?;
         let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
         let error_observers = self.container.borrow().get_global_error_observers();
         let metadata = source.metadata();
@@ -44,7 +43,6 @@ impl RpcControllerResolver {
 
         let mut handler_guards: HashMap<String, Vec<RpcGuardEntry>> = HashMap::new();
         let mut handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>> = HashMap::new();
-        let mut handler_pipes: HashMap<String, Vec<RpcPipeEntry>> = HashMap::new();
         let mut handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>> = HashMap::new();
 
         for handler in enhancers.handlers {
@@ -57,10 +55,6 @@ impl RpcControllerResolver {
                 pattern.clone(),
                 self.resolve_handler_interceptors(handler.interceptor_tokens)?,
             );
-            handler_pipes.insert(
-                pattern.clone(),
-                self.resolve_handler_pipes(handler.pipe_tokens)?,
-            );
             handler_error_handlers.insert(
                 pattern.clone(),
                 self.resolve_handler_error_handlers(handler.error_handler_tokens)?,
@@ -71,14 +65,12 @@ impl RpcControllerResolver {
             source,
             guards,
             interceptors,
-            pipes,
             error_handlers,
             error_observers,
             metadata,
             handler_metadata,
             handler_guards,
             handler_interceptors,
-            handler_pipes,
             handler_error_handlers,
         ))
     }
@@ -99,15 +91,6 @@ impl RpcControllerResolver {
             interceptors.push(entry);
         }
         Ok(interceptors)
-    }
-
-    fn resolve_pipes(&self, tokens: Vec<String>) -> Result<Vec<RpcPipeEntry>> {
-        let mut pipes = self.container.borrow().get_global_rpc_pipes();
-        for token in tokens {
-            let entry = self.resolve_pipe_by_token(&token)?;
-            pipes.push(entry);
-        }
-        Ok(pipes)
     }
 
     fn resolve_error_handlers(&self, tokens: Vec<String>) -> Result<Vec<RpcErrorHandlerArc>> {
@@ -156,25 +139,6 @@ impl RpcControllerResolver {
             })
     }
 
-    fn resolve_pipe_by_token(&self, token: &str) -> Result<RpcPipeEntry> {
-        self.container
-            .borrow()
-            .get_role_registry()
-            .rpc_pipes
-            .get(token)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow!(
-                    "RPC Pipe '{}' not found in registry. A pipe registers automatically by \
-                     implementing Pipe<RpcContext>; make sure the provider is in the module's \
-                     `providers` list. For `provider_factory!` under a string/const token, name \
-                     the produced type so it can be detected — annotate the closure's return type \
-                     (`|| -> MyPipe`) or pass a type hint.",
-                    token
-                )
-            })
-    }
-
     fn resolve_error_handler_by_token(&self, token: &str) -> Result<RpcErrorHandlerArc> {
         self.container
             .borrow()
@@ -212,16 +176,6 @@ impl RpcControllerResolver {
             .into_iter()
             .map(|token| {
                 let entry = self.resolve_interceptor_by_token(&token)?;
-                Ok(entry)
-            })
-            .collect()
-    }
-
-    fn resolve_handler_pipes(&self, tokens: Vec<String>) -> Result<Vec<RpcPipeEntry>> {
-        tokens
-            .into_iter()
-            .map(|token| {
-                let entry = self.resolve_pipe_by_token(&token)?;
                 Ok(entry)
             })
             .collect()

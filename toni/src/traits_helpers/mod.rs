@@ -10,13 +10,11 @@ pub use self::provider_context::ProviderContext;
 
 mod provider;
 pub use self::provider::{
-    DynGrpcGuardFactory, DynGrpcInterceptorFactory, DynGrpcPipeFactory, DynHttpGuardFactory,
-    DynHttpInterceptorFactory, DynHttpPipeFactory, DynRpcGuardFactory, DynRpcInterceptorFactory,
-    DynRpcPipeFactory, DynWsGuardFactory, DynWsInterceptorFactory, DynWsPipeFactory,
-    GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, GrpcPipeEntry, HttpErrorHandlerArc,
-    HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, Injectable, Provider, ProviderFactory,
-    ProviderRole, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry,
-    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry, WsPipeEntry,
+    DynGrpcGuardFactory, DynGrpcInterceptorFactory, DynHttpGuardFactory, DynHttpInterceptorFactory,
+    DynRpcGuardFactory, DynRpcInterceptorFactory, DynWsGuardFactory, DynWsInterceptorFactory,
+    GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, HttpErrorHandlerArc, HttpGuardEntry,
+    HttpInterceptorEntry, Injectable, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc,
+    RpcGuardEntry, RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
 };
 
 mod controller;
@@ -29,9 +27,6 @@ pub use self::interceptor::{Interceptor, InterceptorNext};
 
 mod guard;
 pub use self::guard::Guard;
-
-mod pipe;
-pub use self::pipe::Pipe;
 
 mod validator;
 pub use self::validator::validate;

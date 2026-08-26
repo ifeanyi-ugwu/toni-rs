@@ -1,7 +1,7 @@
 //! Integration tests for method-level enhancers on WebSocket gateways and RPC controllers.
 //!
-//! Two comprehensive tests — one per protocol — each verifying all four enhancer
-//! types (guard, interceptor, pipe, error handler) at the handler/pattern level.
+//! Two comprehensive tests — one per protocol — each verifying all three enhancer
+//! types (guard, interceptor, error handler) at the handler/pattern level.
 //!
 //! Each test proves two properties per enhancer type:
 //! - Correctness: the enhancer produces the expected effect on its annotated handler.
@@ -15,7 +15,7 @@ use toni::context::{HandlerContext, RpcContext, WsContext};
 use toni::injectable;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
-use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext, Pipe};
+use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
 use toni_macros::{new, patterns, rpc_controller, subscriptions, websocket_gateway};
 
@@ -23,20 +23,31 @@ use crate::common::TestServer;
 
 // ---- shared (protocol-agnostic) enhancers ------------------------------------
 
-/// Answers instead of letting the handler run — a pipe rejecting its input.
+/// Answers instead of letting the handler run — an interceptor that refuses
+/// its input and never calls `next`.
 #[injectable]
-pub struct AbortPipe {}
-impl AbortPipe {}
+pub struct RefusingInterceptor {}
+impl RefusingInterceptor {}
 
-impl Pipe<RpcContext, RpcHandlerResult> for AbortPipe {
-    fn process(&self, _ctx: &RpcContext) -> Option<RpcHandlerResult> {
-        Some(Err(RpcError::Internal("rejected by pipe".into())))
+#[async_trait]
+impl Interceptor<RpcContext, RpcHandlerResult> for RefusingInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &RpcContext,
+        _next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
+    ) -> RpcHandlerResult {
+        Err(RpcError::Internal("refused".into()))
     }
 }
 
-impl Pipe<WsContext, WsHandlerResult> for AbortPipe {
-    fn process(&self, _ctx: &WsContext) -> Option<WsHandlerResult> {
-        Some(Err(WsError::Internal("rejected by pipe".into())))
+#[async_trait]
+impl Interceptor<WsContext, WsHandlerResult> for RefusingInterceptor {
+    async fn intercept(
+        &self,
+        _ctx: &WsContext,
+        _next: Box<dyn InterceptorNext<WsContext, WsHandlerResult>>,
+    ) -> WsHandlerResult {
+        Err(WsError::Internal("refused".into()))
     }
 }
 
@@ -111,7 +122,7 @@ impl Interceptor<WsContext, WsHandlerResult> for WsPrefixInterceptor {
 //
 // Four handlers:
 //   "all"        – guard + interceptor (guard + interceptor correctness + isolation)
-//   "piped"      – pipe (pipe correctness + isolation)
+//   "refused"    – interceptor answering in place of the handler
 //   "recovering" – error handler (error handler correctness + isolation)
 //   "plain"      – no enhancers (shared isolation control for all three above)
 
@@ -131,9 +142,9 @@ impl WsMethodEnhancersGateway {
         Ok(WsMessage::text("all-ok").into())
     }
 
-    #[subscribe_message("piped")]
-    #[use_pipes(AbortPipe)]
-    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
+    #[subscribe_message("refused")]
+    #[use_interceptors(RefusingInterceptor)]
+    async fn on_refused(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
         Ok(WsMessage::text("should-not-reach").into())
     }
 
@@ -149,7 +160,7 @@ impl WsMethodEnhancersGateway {
     }
 }
 
-#[module(providers: [WsAllowGuard, WsPrefixInterceptor, AbortPipe, RecoveryErrorHandler, WsMethodEnhancersGateway])]
+#[module(providers: [WsAllowGuard, WsPrefixInterceptor, RefusingInterceptor, RecoveryErrorHandler, WsMethodEnhancersGateway])]
 impl WsMethodEnhancersModule {}
 
 // ---- RPC enhancers -----------------------------------------------------------
@@ -215,9 +226,9 @@ impl RpcMethodEnhancersController {
         Ok(RpcData::json(serde_json::json!("all-ok")))
     }
 
-    #[message_pattern("rpc.piped")]
-    #[use_pipes(AbortPipe)]
-    async fn piped(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
+    #[message_pattern("rpc.refused")]
+    #[use_interceptors(RefusingInterceptor)]
+    async fn refused(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
         Ok(RpcData::json(serde_json::json!("should-not-reach")))
     }
 
@@ -233,7 +244,7 @@ impl RpcMethodEnhancersController {
     }
 }
 
-#[module(controllers: [RpcMethodEnhancersController], providers: [RpcAllowGuard, RpcPrefixInterceptor, AbortPipe, RecoveryErrorHandler])]
+#[module(controllers: [RpcMethodEnhancersController], providers: [RpcAllowGuard, RpcPrefixInterceptor, RefusingInterceptor, RecoveryErrorHandler])]
 impl RpcMethodEnhancersModule {}
 
 // ---- TCP helpers -------------------------------------------------------------
@@ -301,7 +312,7 @@ async fn tcp_rpc(port: u16, pattern: &str, data: serde_json::Value) -> serde_jso
 ///
 /// With `x-allow: ok` in the handshake:
 ///   "all"        → guard passes + interceptor prefixes → "prefixed:all-ok"
-///   "piped"      → pipe aborts → error frame
+///   "refused"    → interceptor answers → error frame
 ///   "recovering" → handler errors, error handler recovers → "recovered"
 ///   "plain"      → no enhancers → "plain-ok"  (isolation: nothing leaked)
 ///
@@ -339,13 +350,16 @@ async fn ws_method_level_enhancers_work() {
         assert_eq!(reply.to_text().unwrap(), "prefixed:all-ok");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
-            r#"{"event":"piped"}"#.to_string().into(),
+            r#"{"event":"refused"}"#.to_string().into(),
         ))
         .await
         .unwrap();
         let reply = ws.next().await.unwrap().unwrap();
         let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
-        assert!(json.get("error").is_some(), "pipe should have aborted");
+        assert!(
+            json.get("error").is_some(),
+            "the interceptor should have answered"
+        );
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             r#"{"event":"recovering"}"#.to_string().into(),
@@ -403,7 +417,7 @@ async fn ws_method_level_enhancers_work() {
 ///   - `{"allow":"ok"}` → guard passes, interceptor prefixes → "prefixed:all-ok"
 ///   - `{}`             → guard blocks → Forbidden
 ///
-/// "rpc.piped"      → pipe aborts → err frame
+/// "rpc.refused"    → interceptor answers → err frame
 /// "rpc.recovering" → handler errors; chain claims via RecoveryErrorHandler
 ///                    → "recovered"
 /// "rpc.plain"      → "plain-ok" always  (isolation control)
@@ -417,8 +431,11 @@ async fn rpc_method_level_enhancers_work() {
     let resp = tcp_rpc(port, "rpc.all", serde_json::json!({})).await;
     assert_eq!(resp["err"]["status"], "forbidden");
 
-    let resp = tcp_rpc(port, "rpc.piped", serde_json::json!({})).await;
-    assert!(resp.get("err").is_some(), "pipe should have aborted");
+    let resp = tcp_rpc(port, "rpc.refused", serde_json::json!({})).await;
+    assert!(
+        resp.get("err").is_some(),
+        "the interceptor should have answered"
+    );
 
     // User-handler `Err(RpcError::Internal)` flows through the chain;
     // the method-level `RecoveryErrorHandler` claims it and replaces the

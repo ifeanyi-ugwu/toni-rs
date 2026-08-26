@@ -1,7 +1,7 @@
 //! Type-safe DI tokens for identifying providers
 //!
 //! Tokens are used to identify providers in the DI container, especially for
-//! built-in framework providers like guards, interceptors, pipes, and middleware.
+//! built-in framework providers like guards, interceptors, and middleware.
 
 use std::marker::PhantomData;
 
@@ -82,10 +82,6 @@ pub const APP_GUARD: Token<()> = Token::new("__TONI_APP_GUARD__");
 // Interceptor token for global interceptors
 // Usage: container.add_provider(APP_INTERCEPTOR, MyGlobalInterceptor)
 pub const APP_INTERCEPTOR: Token<()> = Token::new("__TONI_APP_INTERCEPTOR__");
-
-// Pipe token for global pipes
-// Usage: container.add_provider(APP_PIPE, MyGlobalPipe)
-pub const APP_PIPE: Token<()> = Token::new("__TONI_APP_PIPE__");
 
 // Middleware token for global middleware
 // Usage: container.add_provider(APP_MIDDLEWARE, MyGlobalMiddleware)

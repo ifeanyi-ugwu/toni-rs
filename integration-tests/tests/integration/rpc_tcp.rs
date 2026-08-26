@@ -24,7 +24,7 @@ use toni::injectable;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
-    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
+    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext,
 };
 use toni_macros::{new, patterns, rpc_controller, set_metadata};
 
@@ -656,75 +656,6 @@ async fn rpc_interceptor_panic_surfaces_as_envelope_and_keeps_connection_alive()
     assert_eq!(payload["status"], "error");
     assert_eq!(payload["kind"], "Internal");
     assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Middleware));
-
-    let resp = tcp_rpc_timeout(
-        port,
-        "rpc.safe",
-        serde_json::json!({}),
-        Duration::from_millis(500),
-    )
-    .await
-    .expect("safe handler should reply");
-    assert_eq!(resp["response"], "safe-ok");
-}
-
-#[injectable]
-pub struct PanickingRpcPipe {}
-impl PanickingRpcPipe {}
-
-impl Pipe<RpcContext, RpcHandlerResult> for PanickingRpcPipe {
-    fn process(&self, _ctx: &RpcContext) -> Option<RpcHandlerResult> {
-        panic!("rpc pipe kaboom");
-        None
-    }
-}
-
-#[rpc_controller]
-pub struct RpcPipePanicController {}
-#[patterns]
-impl RpcPipePanicController {
-    #[new]
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    #[message_pattern("rpc.piped")]
-    #[use_pipes(PanickingRpcPipe)]
-    async fn piped(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
-        Ok(RpcData::json(serde_json::json!("unreachable")))
-    }
-
-    #[message_pattern("rpc.safe")]
-    async fn safe(&self, _d: RpcData, _c: &RpcContext) -> Result<RpcData, RpcError> {
-        Ok(RpcData::json(serde_json::json!("safe-ok")))
-    }
-}
-
-#[module(controllers: [RpcPipePanicController], providers: [PanickingRpcPipe])]
-impl RpcPipePanicModule {}
-
-#[tokio_localset_test::localset_test]
-async fn rpc_pipe_panic_surfaces_as_envelope_and_keeps_connection_alive() {
-    let count = Arc::new(AtomicUsize::new(0));
-    let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(RpcSegmentObserver {
-        count: count.clone(),
-        captured: captured.clone(),
-    });
-    let port = start_rpc_server_with_observers(RpcPipePanicModule, vec![observer]).await;
-
-    let resp = tcp_rpc_timeout(
-        port,
-        "rpc.piped",
-        serde_json::json!({}),
-        Duration::from_millis(500),
-    )
-    .await
-    .expect("pipe panic must produce a reply, not hang");
-    let payload = &resp["response"];
-    assert_eq!(payload["status"], "error");
-    assert_eq!(payload["kind"], "Internal");
-    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Pipe));
 
     let resp = tcp_rpc_timeout(
         port,

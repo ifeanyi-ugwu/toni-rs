@@ -440,7 +440,6 @@ fn enhancer_vecs(
 fn enhancers_method(enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>) -> TokenStream {
     let (guard_tokens, guard_instances) = enhancer_vecs(enhancer_infos, "guards");
     let (interceptor_tokens, interceptor_instances) = enhancer_vecs(enhancer_infos, "interceptors");
-    let (pipe_tokens, pipe_instances) = enhancer_vecs(enhancer_infos, "pipes");
     let (error_handler_tokens, error_handler_instances) =
         enhancer_vecs(enhancer_infos, "error_handlers");
 
@@ -449,11 +448,9 @@ fn enhancers_method(enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>) -> Toke
             ::toni::traits_helpers::ControllerEnhancers {
                 guard_tokens: vec![#(#guard_tokens),*],
                 interceptor_tokens: vec![#(#interceptor_tokens),*],
-                pipe_tokens: vec![#(#pipe_tokens),*],
                 error_handler_tokens: vec![#(#error_handler_tokens),*],
                 guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
                 interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
-                pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
                 error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
             }
         }

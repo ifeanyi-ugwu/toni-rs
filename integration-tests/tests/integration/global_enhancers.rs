@@ -13,14 +13,13 @@ use std::sync::{Arc, Mutex};
 use toni::async_trait;
 use toni::http_helpers::HttpResponse;
 use toni::{
-    controller, get, module, routes, use_guards, use_interceptors, use_pipes, Body as ToniBody,
-    ToniFactory,
+    controller, get, module, routes, use_guards, use_interceptors, Body as ToniBody, ToniFactory,
 };
 use toni_axum::AxumAdapter;
 
 use toni::context::HttpContext;
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
-use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, Pipe};
+use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 
 // ============================================================================
 // EXECUTION ORDER TRACKER
@@ -182,55 +181,6 @@ impl Interceptor<HttpContext, HttpResponse> for MethodInterceptor {
 }
 
 // ============================================================================
-// PIPE IMPLEMENTATIONS
-// ============================================================================
-
-pub struct GlobalPipe;
-
-impl GlobalPipe {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Pipe<HttpContext, HttpResponse> for GlobalPipe {
-    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
-        get_tracker().track("pipe:global");
-        None
-    }
-}
-
-pub struct ControllerPipe;
-
-impl ControllerPipe {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Pipe<HttpContext, HttpResponse> for ControllerPipe {
-    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
-        get_tracker().track("pipe:controller");
-        None
-    }
-}
-
-pub struct MethodPipe;
-
-impl MethodPipe {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Pipe<HttpContext, HttpResponse> for MethodPipe {
-    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
-        get_tracker().track("pipe:method");
-        None
-    }
-}
-
-// ============================================================================
 // MIDDLEWARE IMPLEMENTATION
 // ============================================================================
 
@@ -262,7 +212,6 @@ pub struct TestController {}
 #[routes]
 #[use_guards(ControllerGuard{})]
 #[use_interceptors(ControllerInterceptor{})]
-#[use_pipes(ControllerPipe{})]
 impl TestController {
     /// Endpoint with all three levels:
     /// - Global (from ToniFactory)
@@ -270,7 +219,6 @@ impl TestController {
     /// - Method (from this method)
     #[use_guards(MethodGuard{})]
     #[use_interceptors(MethodInterceptor{})]
-    #[use_pipes(MethodPipe{})]
     #[get("/three-level")]
     fn three_level_endpoint(&self) -> ToniBody {
         get_tracker().track("controller:three_level");
@@ -317,8 +265,7 @@ async fn test_three_level_enhancer_hierarchy() {
         factory
             .use_global_middleware(Arc::new(GlobalMiddleware::new()))
             .use_global_http_guards(Arc::new(GlobalGuard::new()))
-            .use_global_http_interceptors(Arc::new(GlobalInterceptor::new()))
-            .use_global_http_pipes(Arc::new(GlobalPipe::new()));
+            .use_global_http_interceptors(Arc::new(GlobalInterceptor::new()));
 
         let mut app = factory.create_with(TestModule).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", port))
@@ -362,21 +309,16 @@ async fn test_three_level_enhancer_hierarchy() {
             assert_eq!(order[5], "interceptor:controller:before");
             assert_eq!(order[6], "interceptor:method:before");
 
-            // Pipes execute in order
-            assert_eq!(order[7], "pipe:global");
-            assert_eq!(order[8], "pipe:controller");
-            assert_eq!(order[9], "pipe:method");
-
             // Controller
-            assert_eq!(order[10], "controller:three_level");
+            assert_eq!(order[7], "controller:three_level");
 
             // Interceptors after (reverse order)
-            assert_eq!(order[11], "interceptor:method:after");
-            assert_eq!(order[12], "interceptor:controller:after");
-            assert_eq!(order[13], "interceptor:global:after");
+            assert_eq!(order[8], "interceptor:method:after");
+            assert_eq!(order[9], "interceptor:controller:after");
+            assert_eq!(order[10], "interceptor:global:after");
 
             // Global middleware closes last, after the whole pipeline unwinds
-            assert_eq!(order[14], "middleware:global:after");
+            assert_eq!(order[11], "middleware:global:after");
 
             // ================================================================
             // TEST 2: Two-level hierarchy (global + controller only)
@@ -401,12 +343,10 @@ async fn test_three_level_enhancer_hierarchy() {
             assert_eq!(order[2], "guard:controller");
             assert_eq!(order[3], "interceptor:global:before");
             assert_eq!(order[4], "interceptor:controller:before");
-            assert_eq!(order[5], "pipe:global");
-            assert_eq!(order[6], "pipe:controller");
-            assert_eq!(order[7], "controller:two_level");
-            assert_eq!(order[8], "interceptor:controller:after");
-            assert_eq!(order[9], "interceptor:global:after");
-            assert_eq!(order[10], "middleware:global:after");
+            assert_eq!(order[5], "controller:two_level");
+            assert_eq!(order[6], "interceptor:controller:after");
+            assert_eq!(order[7], "interceptor:global:after");
+            assert_eq!(order[8], "middleware:global:after");
 
             // ================================================================
             // TEST 3: Duplicate enhancers (GlobalGuard appears twice)

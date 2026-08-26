@@ -10,25 +10,21 @@ use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart
 
 use crate::context::HttpContext;
 
-use super::{
-    Guard, HttpErrorHandlerArc, Interceptor, Pipe, provider::Provider, validate::Validatable,
-};
+use super::{Guard, HttpErrorHandlerArc, Interceptor, provider::Provider, validate::Validatable};
 
 /// Per-route enhancer manifest — both DI-resolved tokens and direct-instantiation arcs.
 ///
 /// `*_tokens` come from `#[use_guards(MyGuard)]`-style attributes that resolve via
-/// the DI container; `guards` / `interceptors` / `pipes` / `error_handlers` come
+/// the DI container; `guards` / `interceptors` / `error_handlers` come
 /// from `#[use_guards(MyGuard{})]`-style attributes that bypass DI and instantiate
 /// the enhancer inline.
 #[derive(Default)]
 pub struct ControllerEnhancers {
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
     pub guards: Vec<Arc<dyn Guard<HttpContext>>>,
     pub interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
-    pub pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }
 

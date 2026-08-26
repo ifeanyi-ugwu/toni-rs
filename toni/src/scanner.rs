@@ -117,7 +117,6 @@ impl ToniDependenciesScanner {
             let count = providers.len();
             let mut app_guards: usize = 0;
             let mut app_interceptors: usize = 0;
-            let mut app_pipes: usize = 0;
             for provider in providers {
                 let provider_token = provider.get_token();
 
@@ -136,12 +135,6 @@ impl ToniDependenciesScanner {
                             module_token.clone(),
                             provider_type_token,
                         );
-                    }
-                    "__TONI_APP_PIPE__" => {
-                        app_pipes += 1;
-                        let provider_type_token = provider.get_token();
-                        container
-                            .register_app_pipe_provider(module_token.clone(), provider_type_token);
                     }
                     _ => {}
                 }
@@ -162,7 +155,6 @@ impl ToniDependenciesScanner {
                 count,
                 app_guards,
                 app_interceptors,
-                app_pipes,
                 "providers registered"
             );
         };

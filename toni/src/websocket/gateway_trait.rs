@@ -15,7 +15,6 @@ use super::{DisconnectReason, WsClient, WsError, WsHandlerOutput};
 pub struct GatewayEnhancers {
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
     pub handlers: Vec<GatewayHandlerEnhancers>,
 }
@@ -26,7 +25,6 @@ pub struct GatewayHandlerEnhancers {
     pub event: String,
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
 }
 

@@ -14,7 +14,6 @@ use super::RpcControllerTrait;
 pub struct RpcEnhancers {
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
     pub handlers: Vec<RpcHandlerEnhancers>,
 }
@@ -25,7 +24,6 @@ pub struct RpcHandlerEnhancers {
     pub pattern: String,
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
 }
 

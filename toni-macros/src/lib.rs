@@ -265,68 +265,6 @@ pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
     unconsumed_enhancer_error("use_interceptors", item)
 }
 
-/// Applies pipes to route handlers or controllers for data transformation and validation.
-///
-/// Pipes process request data before it reaches the route handler. Common uses include
-/// validation, transformation, sanitization, and parsing.
-///
-/// # Syntax
-///
-/// - **Type name only** - Requires the pipe to be registered in DI container:
-///   ```rust,ignore
-///   #[use_pipes(ValidationPipe)]
-///   ```
-///
-/// - **Struct literal** - Directly instantiates the pipe:
-///   ```rust,ignore
-///   #[use_pipes(TransformPipe{})]
-///   #[use_pipes(ValidationPipe { strict: true })]
-///   ```
-///
-/// - **Constructor call** - Directly calls the constructor:
-///   ```rust,ignore
-///   #[use_pipes(ValidationPipe::new(strict_mode))]
-///   ```
-///
-/// # Examples
-///
-/// **Method-level pipes:**
-/// ```rust,ignore
-/// #[use_pipes(ValidationPipe{}, TransformPipe{})]
-/// #[post("/users")]
-/// fn create_user(&self, req: HttpRequest) -> HttpResponse {
-///     // Request data is validated and transformed
-/// }
-/// ```
-///
-/// **Controller-level pipes (applies to all methods):**
-/// ```rust,ignore
-/// #[routes]
-/// #[use_pipes(ValidationPipe{})]
-/// impl MyController {
-///     // All methods validate request data
-/// }
-/// ```
-///
-/// # Placement
-///
-/// Consumed by the handler macro — see [`macro@use_guards`]: it must sit below `#[routes]` (or
-/// its transport counterpart) on the handler impl, or on a handler method inside it; anywhere
-/// it goes unconsumed is a compile error.
-///
-/// # Execution Order
-///
-/// Pipes execute in hierarchical order:
-/// 1. Global pipes (registered via `ToniFactory`)
-/// 2. Controller-level pipes
-/// 3. Method-level pipes
-///
-/// Within each level, pipes execute in the order specified.
-#[proc_macro_attribute]
-pub fn use_pipes(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    unconsumed_enhancer_error("use_pipes", item)
-}
-
 /// Applies error handlers to route handlers or controllers for custom error processing.
 ///
 /// Error handlers catch errors from route handlers and return custom HTTP responses.

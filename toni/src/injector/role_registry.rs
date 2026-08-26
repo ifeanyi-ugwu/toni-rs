@@ -7,9 +7,9 @@ use crate::{
     rpc::RpcControllerSource,
     traits_helpers::{
         GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, HttpErrorHandlerArc,
-        HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry, ProviderRole, RpcErrorHandlerArc,
-        RpcGuardEntry, RpcInterceptorEntry, RpcPipeEntry, WsErrorHandlerArc, WsGuardEntry,
-        WsInterceptorEntry, WsPipeEntry, middleware::Middleware,
+        HttpGuardEntry, HttpInterceptorEntry, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
+        RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+        middleware::Middleware,
     },
     websocket::GatewayTrait,
 };
@@ -17,17 +17,14 @@ use crate::{
 pub(crate) struct RoleRegistry {
     pub http_guards: FxHashMap<String, HttpGuardEntry>,
     pub http_interceptors: FxHashMap<String, HttpInterceptorEntry>,
-    pub http_pipes: FxHashMap<String, HttpPipeEntry>,
     pub http_error_handlers: FxHashMap<String, HttpErrorHandlerArc>,
 
     pub rpc_guards: FxHashMap<String, RpcGuardEntry>,
     pub rpc_interceptors: FxHashMap<String, RpcInterceptorEntry>,
-    pub rpc_pipes: FxHashMap<String, RpcPipeEntry>,
     pub rpc_error_handlers: FxHashMap<String, RpcErrorHandlerArc>,
 
     pub ws_guards: FxHashMap<String, WsGuardEntry>,
     pub ws_interceptors: FxHashMap<String, WsInterceptorEntry>,
-    pub ws_pipes: FxHashMap<String, WsPipeEntry>,
     pub ws_error_handlers: FxHashMap<String, WsErrorHandlerArc>,
 
     pub grpc_guards: FxHashMap<String, GrpcGuardEntry>,
@@ -48,15 +45,12 @@ impl RoleRegistry {
         Self {
             http_guards: FxHashMap::default(),
             http_interceptors: FxHashMap::default(),
-            http_pipes: FxHashMap::default(),
             http_error_handlers: FxHashMap::default(),
             rpc_guards: FxHashMap::default(),
             rpc_interceptors: FxHashMap::default(),
-            rpc_pipes: FxHashMap::default(),
             rpc_error_handlers: FxHashMap::default(),
             ws_guards: FxHashMap::default(),
             ws_interceptors: FxHashMap::default(),
-            ws_pipes: FxHashMap::default(),
             ws_error_handlers: FxHashMap::default(),
             grpc_guards: FxHashMap::default(),
             grpc_interceptors: FxHashMap::default(),
@@ -81,9 +75,6 @@ impl RoleRegistry {
         if let Some(i) = self.http_interceptors.get(token) {
             roles.push(ProviderRole::HttpInterceptor(i.clone()));
         }
-        if let Some(p) = self.http_pipes.get(token) {
-            roles.push(ProviderRole::HttpPipe(p.clone()));
-        }
         if let Some(eh) = self.http_error_handlers.get(token) {
             roles.push(ProviderRole::HttpErrorHandler(eh.clone()));
         }
@@ -94,9 +85,6 @@ impl RoleRegistry {
         if let Some(i) = self.rpc_interceptors.get(token) {
             roles.push(ProviderRole::RpcInterceptor(i.clone()));
         }
-        if let Some(p) = self.rpc_pipes.get(token) {
-            roles.push(ProviderRole::RpcPipe(p.clone()));
-        }
         if let Some(eh) = self.rpc_error_handlers.get(token) {
             roles.push(ProviderRole::RpcErrorHandler(eh.clone()));
         }
@@ -106,9 +94,6 @@ impl RoleRegistry {
         }
         if let Some(i) = self.ws_interceptors.get(token) {
             roles.push(ProviderRole::WsInterceptor(i.clone()));
-        }
-        if let Some(p) = self.ws_pipes.get(token) {
-            roles.push(ProviderRole::WsPipe(p.clone()));
         }
         if let Some(eh) = self.ws_error_handlers.get(token) {
             roles.push(ProviderRole::WsErrorHandler(eh.clone()));

@@ -1,6 +1,4 @@
-use crate::traits_helpers::{
-    HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, HttpPipeEntry,
-};
+use crate::traits_helpers::{HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry};
 
 /// Resolved HTTP enhancer pipeline for a single route.
 ///
@@ -9,6 +7,5 @@ use crate::traits_helpers::{
 pub struct EnhancerMetadata {
     pub guards: Vec<HttpGuardEntry>,
     pub interceptors: Vec<HttpInterceptorEntry>,
-    pub pipes: Vec<HttpPipeEntry>,
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }

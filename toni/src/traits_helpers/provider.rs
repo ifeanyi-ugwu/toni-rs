@@ -3,7 +3,7 @@ use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
-use super::{ErrorHandler, Guard, Interceptor, Pipe, ProviderContext, middleware::Middleware};
+use super::{ErrorHandler, Guard, Interceptor, ProviderContext, middleware::Middleware};
 use crate::{
     ProviderScope,
     context::{GrpcContext, HttpContext, RpcContext, WsContext},
@@ -54,8 +54,7 @@ macro_rules! transport_factory_types {
     (
         $context:ty, $answer:ty,
         $guard_factory:ident, $guard_entry:ident,
-        $interceptor_factory:ident, $interceptor_entry:ident,
-        $pipe_factory:ident, $pipe_entry:ident
+        $interceptor_factory:ident, $interceptor_entry:ident
     ) => {
         pub trait $guard_factory: Send + Sync {
             fn create<'a>(
@@ -88,23 +87,6 @@ macro_rules! transport_factory_types {
             Ready(Arc<dyn Interceptor<$context, $answer>>),
             Factory(Arc<dyn $interceptor_factory>),
         }
-
-        pub trait $pipe_factory: Send + Sync {
-            fn create<'a>(
-                &'a self,
-                ctx: &'a $context,
-            ) -> Pin<
-                Box<
-                    dyn Future<Output = Arc<dyn Pipe<$context, $answer> + Send + Sync>> + Send + 'a,
-                >,
-            >;
-        }
-
-        #[derive(Clone)]
-        pub enum $pipe_entry {
-            Ready(Arc<dyn Pipe<$context, $answer>>),
-            Factory(Arc<dyn $pipe_factory>),
-        }
     };
 }
 
@@ -114,9 +96,7 @@ transport_factory_types!(
     DynHttpGuardFactory,
     HttpGuardEntry,
     DynHttpInterceptorFactory,
-    HttpInterceptorEntry,
-    DynHttpPipeFactory,
-    HttpPipeEntry
+    HttpInterceptorEntry
 );
 
 transport_factory_types!(
@@ -125,9 +105,7 @@ transport_factory_types!(
     DynRpcGuardFactory,
     RpcGuardEntry,
     DynRpcInterceptorFactory,
-    RpcInterceptorEntry,
-    DynRpcPipeFactory,
-    RpcPipeEntry
+    RpcInterceptorEntry
 );
 
 transport_factory_types!(
@@ -136,9 +114,7 @@ transport_factory_types!(
     DynWsGuardFactory,
     WsGuardEntry,
     DynWsInterceptorFactory,
-    WsInterceptorEntry,
-    DynWsPipeFactory,
-    WsPipeEntry
+    WsInterceptorEntry
 );
 
 transport_factory_types!(
@@ -147,9 +123,7 @@ transport_factory_types!(
     DynGrpcGuardFactory,
     GrpcGuardEntry,
     DynGrpcInterceptorFactory,
-    GrpcInterceptorEntry,
-    DynGrpcPipeFactory,
-    GrpcPipeEntry
+    GrpcInterceptorEntry
 );
 
 pub type HttpErrorHandlerArc = Arc<dyn ErrorHandler<HttpContext, HttpResponse>>;
@@ -166,17 +140,14 @@ pub type GrpcErrorHandlerArc = Arc<dyn ErrorHandler<GrpcContext, crate::grpc_sta
 pub enum ProviderRole {
     HttpGuard(HttpGuardEntry),
     HttpInterceptor(HttpInterceptorEntry),
-    HttpPipe(HttpPipeEntry),
     HttpErrorHandler(HttpErrorHandlerArc),
 
     RpcGuard(RpcGuardEntry),
     RpcInterceptor(RpcInterceptorEntry),
-    RpcPipe(RpcPipeEntry),
     RpcErrorHandler(RpcErrorHandlerArc),
 
     WsGuard(WsGuardEntry),
     WsInterceptor(WsInterceptorEntry),
-    WsPipe(WsPipeEntry),
     WsErrorHandler(WsErrorHandlerArc),
 
     GrpcGuard(GrpcGuardEntry),

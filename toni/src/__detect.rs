@@ -1,7 +1,7 @@
 //! Compile-time detection of which enhancer traits a provider implements.
 //!
 //! The generated provider factory uses these probes to populate role registrations without a
-//! `#[guard]`/`#[interceptor]`/`#[pipe]`/`#[error_handler]` marker: the fact that a type
+//! `#[guard]`/`#[interceptor]`/`#[error_handler]` marker: the fact that a type
 //! `impl`s `Guard<HttpContext>` is the declaration.
 //!
 //! Each probe pairs an inherent method — present only when `T: SomeTrait` — with a blanket trait
@@ -24,7 +24,7 @@ use crate::grpc_status::GrpcStatus;
 use crate::http_helpers::HttpResponse;
 use crate::rpc::RpcData;
 use crate::traits_helpers::middleware::Middleware;
-use crate::traits_helpers::{ErrorHandler, Guard, Interceptor, Pipe};
+use crate::traits_helpers::{ErrorHandler, Guard, Interceptor};
 use crate::websocket::WsMessage;
 
 /// Define a probe: an inherent `detect` (gated on `$bound`) that coerces to `Arc<$out>`, shadowing
@@ -101,25 +101,6 @@ probe!(
     GrpcInterceptorProbeFallback,
     Interceptor<GrpcContext, crate::GrpcHandlerResult>,
     dyn Interceptor<GrpcContext, crate::GrpcHandlerResult>
-);
-
-probe!(
-    HttpPipeProbe,
-    HttpPipeProbeFallback,
-    Pipe<HttpContext, HttpResponse>,
-    dyn Pipe<HttpContext, HttpResponse>
-);
-probe!(
-    RpcPipeProbe,
-    RpcPipeProbeFallback,
-    Pipe<RpcContext, crate::rpc::RpcHandlerResult>,
-    dyn Pipe<RpcContext, crate::rpc::RpcHandlerResult>
-);
-probe!(
-    WsPipeProbe,
-    WsPipeProbeFallback,
-    Pipe<WsContext, crate::websocket::WsHandlerResult>,
-    dyn Pipe<WsContext, crate::websocket::WsHandlerResult>
 );
 
 probe!(HttpErrorHandlerProbe, HttpErrorHandlerProbeFallback, ErrorHandler<HttpContext, HttpResponse>, dyn ErrorHandler<HttpContext, HttpResponse>);
@@ -199,14 +180,6 @@ type_probe!(
     Interceptor<GrpcContext, crate::GrpcHandlerResult>
 );
 
-type_probe!(
-    HttpPipeTypeProbe,
-    HttpPipeTypeProbeFallback,
-    Pipe<HttpContext, HttpResponse>
-);
-type_probe!(RpcPipeTypeProbe, RpcPipeTypeProbeFallback, Pipe<RpcContext, crate::rpc::RpcHandlerResult>);
-type_probe!(WsPipeTypeProbe, WsPipeTypeProbeFallback, Pipe<WsContext, crate::websocket::WsHandlerResult>);
-
 /// Brings every fallback trait into scope so the inline `detect()` / `is()` calls resolve.
 /// Glob-import this once where the probe calls are emitted; method resolution is by receiver type,
 /// so the many same-named methods never collide.
@@ -215,12 +188,10 @@ pub mod prelude {
         GrpcErrorHandlerProbeFallback, GrpcGuardProbeFallback, GrpcGuardTypeProbeFallback,
         GrpcInterceptorProbeFallback, GrpcInterceptorTypeProbeFallback,
         HttpErrorHandlerProbeFallback, HttpGuardProbeFallback, HttpGuardTypeProbeFallback,
-        HttpInterceptorProbeFallback, HttpInterceptorTypeProbeFallback, HttpPipeProbeFallback,
-        HttpPipeTypeProbeFallback, MiddlewareProbeFallback, RpcErrorHandlerProbeFallback,
-        RpcGuardProbeFallback, RpcGuardTypeProbeFallback, RpcInterceptorProbeFallback,
-        RpcInterceptorTypeProbeFallback, RpcPipeProbeFallback, RpcPipeTypeProbeFallback,
-        WsErrorHandlerProbeFallback, WsGuardProbeFallback, WsGuardTypeProbeFallback,
-        WsInterceptorProbeFallback, WsInterceptorTypeProbeFallback, WsPipeProbeFallback,
-        WsPipeTypeProbeFallback,
+        HttpInterceptorProbeFallback, HttpInterceptorTypeProbeFallback, MiddlewareProbeFallback,
+        RpcErrorHandlerProbeFallback, RpcGuardProbeFallback, RpcGuardTypeProbeFallback,
+        RpcInterceptorProbeFallback, RpcInterceptorTypeProbeFallback, WsErrorHandlerProbeFallback,
+        WsGuardProbeFallback, WsGuardTypeProbeFallback, WsInterceptorProbeFallback,
+        WsInterceptorTypeProbeFallback,
     };
 }

@@ -190,7 +190,6 @@ fn build_enhancers_fn(
 
     let guard_tokens = tokens_for(&ctrl_infos, "guards");
     let interceptor_tokens = tokens_for(&ctrl_infos, "interceptors");
-    let pipe_tokens = tokens_for(&ctrl_infos, "pipes");
     let error_handler_tokens = tokens_for(&ctrl_infos, "error_handlers");
 
     let mut handler_entries: Vec<TokenStream> = Vec::new();
@@ -202,9 +201,8 @@ fn build_enhancers_fn(
         let infos = create_enhancer_infos(method_enhancers_attr, Vec::new())?;
         let hg = tokens_for(&infos, "guards");
         let hi = tokens_for(&infos, "interceptors");
-        let hp = tokens_for(&infos, "pipes");
         let he = tokens_for(&infos, "error_handlers");
-        if hg.is_empty() && hi.is_empty() && hp.is_empty() && he.is_empty() {
+        if hg.is_empty() && hi.is_empty() && he.is_empty() {
             continue;
         }
         handler_entries.push(quote! {
@@ -212,7 +210,6 @@ fn build_enhancers_fn(
                 pattern: #pattern.to_string(),
                 guard_tokens: vec![#(#hg),*],
                 interceptor_tokens: vec![#(#hi),*],
-                pipe_tokens: vec![#(#hp),*],
                 error_handler_tokens: vec![#(#he),*],
             }
         });
@@ -225,7 +222,6 @@ fn build_enhancers_fn(
             ::toni::rpc::RpcEnhancers {
                 guard_tokens: vec![#(#guard_tokens),*],
                 interceptor_tokens: vec![#(#interceptor_tokens),*],
-                pipe_tokens: vec![#(#pipe_tokens),*],
                 error_handler_tokens: vec![#(#error_handler_tokens),*],
                 handlers: vec![#(#handler_entries),*],
             }
