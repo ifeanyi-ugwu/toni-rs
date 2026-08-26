@@ -16,7 +16,7 @@ pub(crate) struct BroadcastServiceProvider {
 #[async_trait]
 impl Provider for BroadcastServiceProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        crate::di::token_of::<BroadcastService>()
     }
 
     async fn execute(
@@ -28,7 +28,7 @@ impl Provider for BroadcastServiceProvider {
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        crate::di::token_of::<BroadcastService>()
     }
 
     fn get_scope(&self) -> ProviderScope {
@@ -49,7 +49,7 @@ pub(crate) struct BroadcastServiceManager;
 #[async_trait]
 impl ProviderFactory for BroadcastServiceManager {
     fn get_token(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        crate::di::token_of::<BroadcastService>()
     }
 
     async fn build(

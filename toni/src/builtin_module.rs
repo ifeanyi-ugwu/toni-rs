@@ -41,8 +41,8 @@ impl ModuleMetadata for BuiltinModule {
 
     fn exports(&self) -> Option<Vec<String>> {
         Some(vec![
-            std::any::type_name::<crate::request::Request>().to_string(),
-            std::any::type_name::<crate::context::Extensions>().to_string(),
+            crate::di::token_of::<crate::request::Request>(),
+            crate::di::token_of::<crate::context::Extensions>(),
         ])
     }
 }

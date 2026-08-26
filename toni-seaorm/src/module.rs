@@ -38,7 +38,7 @@ impl SeaOrmModule {
             let mut builder = DynamicModule::builder("SeaOrmModule")
                 .provider(SeaOrmConnectionFactory {
                     database_url: database_url.clone(),
-                    token: std::any::type_name::<DatabaseConnection>().to_string(),
+                    token: toni::di::token_of::<DatabaseConnection>(),
                     check,
                 })
                 .export::<DatabaseConnection>();

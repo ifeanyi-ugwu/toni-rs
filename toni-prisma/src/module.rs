@@ -51,10 +51,10 @@ impl PrismaModule {
         DynamicModule::builder("PrismaModule")
             .provider(PrismaClientFactory::<C, F, Fut> {
                 connect,
-                token: std::any::type_name::<C>().to_string(),
+                token: toni::di::token_of::<C>(),
                 _client: PhantomData,
             })
-            .export_token(std::any::type_name::<C>())
+            .export_token(toni::di::token_of::<C>())
             .global()
             .build()
     }

@@ -84,10 +84,10 @@ impl DynamicModuleBuilder {
         self
     }
 
-    /// Export a provider by its Rust type. Uses `std::any::type_name::<T>()` as the token,
-    /// which matches how `#[injectable]`-generated factories register their tokens.
+    /// Export a provider by its Rust type. Uses [`token_of`](crate::di::token_of) as the
+    /// token, which matches how `#[injectable]`-generated factories register theirs.
     pub fn export<T: 'static>(mut self) -> Self {
-        self.exports.push(std::any::type_name::<T>().to_string());
+        self.exports.push(crate::di::token_of::<T>());
         self
     }
 

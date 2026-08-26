@@ -1,25 +1,31 @@
-//! Type-safe DI tokens for identifying providers
-//!
-//! Tokens are used to identify providers in the DI container, especially for
-//! built-in framework providers like guards, interceptors, and middleware.
+//! DI tokens: the canonical type-derived key, named const tokens, and the
+//! conversion trait the lookup APIs accept.
 
 use std::marker::PhantomData;
 
-/// A type-safe token for identifying providers in the DI container
+/// The canonical DI token for a type: its fully-qualified `type_name`, base and
+/// generic parameters alike.
 ///
-/// The token carries both a string name and a phantom type parameter to ensure
-/// type safety when retrieving providers.
+/// This is the one definition of a type-derived token. Every site that turns a
+/// type into a container key — macro-generated registration and injection,
+/// `resolve`, exports, library provider factories — goes through here, so the
+/// two sides of a lookup can only agree. `type_name` output is not stable
+/// across compiler versions, but a token never leaves the process: the same
+/// binary computes both sides, which is all the equality needs.
+pub fn token_of<T: ?Sized>() -> String {
+    std::any::type_name::<T>().to_string()
+}
+
+/// A named token for identifying providers in the DI container.
+///
+/// The type parameter documents what the token resolves to; retrieval is still
+/// by name, so the parameter is not enforced at the lookup site.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
 /// use toni::di::Token;
-/// use toni::traits_helpers::Guard;
 ///
-/// // Framework-provided token for guards
-/// pub const APP_GUARD: Token<dyn Guard> = Token::new("__TONI_APP_GUARD__");
-///
-/// // Custom token
 /// pub const MY_SERVICE: Token<MyService> = Token::new("MY_SERVICE");
 /// ```
 pub struct Token<T: ?Sized> {
@@ -39,7 +45,7 @@ impl<T: ?Sized> Token<T> {
     }
 
     /// Returns the string name of this token
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         self.name
     }
 }
@@ -73,7 +79,31 @@ impl<T: ?Sized> std::hash::Hash for Token<T> {
     }
 }
 
-// Framework constants - these will be used for global enhancers
+/// Conversion into a DI container key, accepted by the by-token lookup APIs
+/// (`get_by_token`, `resolve_by_token`).
+pub trait IntoToken {
+    fn into_token(self) -> String;
+}
+
+impl IntoToken for &str {
+    fn into_token(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoToken for String {
+    fn into_token(self) -> String {
+        self
+    }
+}
+
+impl<T: ?Sized> IntoToken for Token<T> {
+    fn into_token(self) -> String {
+        self.name().to_string()
+    }
+}
+
+// Tokens the scanner recognizes as global-enhancer registrations.
 
 // Guard token for global guards
 // Usage: container.add_provider(APP_GUARD, MyGlobalGuard)

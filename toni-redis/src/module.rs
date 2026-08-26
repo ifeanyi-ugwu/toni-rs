@@ -14,7 +14,7 @@ impl RedisModule {
             let mut builder = DynamicModule::builder("RedisModule")
                 .provider(RedisConnectionFactory {
                     url: url.clone(),
-                    token: std::any::type_name::<ConnectionManager>().to_string(),
+                    token: toni::di::token_of::<ConnectionManager>(),
                     check,
                 })
                 .export::<ConnectionManager>();

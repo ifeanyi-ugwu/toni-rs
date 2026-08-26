@@ -23,7 +23,7 @@ pub enum DependencySource {
 pub struct DependencyInfo {
     pub fields: Vec<(Ident, Type, TokenStream)>,
     // (field_name, full_type, lookup_token_expr)
-    // Example: (config, ConfigService<AppConfig>, quote!{format!("ConfigService<{}>", std::any::type_name::<AppConfig>())})
+    // Example: (config, ConfigService<AppConfig>, quote!{::toni::di::token_of::<ConfigService<AppConfig>>()})
     // These are fields marked with #[inject]
     pub owned_fields: Vec<(Ident, Type, Option<Expr>)>,
     // (field_name, type, default_expr)
@@ -38,7 +38,7 @@ pub struct DependencyInfo {
     // Parameters of the constructor method (init or new())
     // These are automatically extracted from the method signature
     // Example: fn new(config: ConfigService<AppConfig>) -> Self
-    //   → [(config, ConfigService<AppConfig>, quote!{format!("ConfigService<{}>", ...)})]
+    //   → [(config, ConfigService<AppConfig>, quote!{::toni::di::token_of::<ConfigService<AppConfig>>()})]
     pub unique_types: HashSet<String>,
 
     /// Indicates how dependencies are specified

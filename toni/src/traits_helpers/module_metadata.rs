@@ -220,7 +220,7 @@ impl MiddlewareConsumer {
     where
         M: 'static,
     {
-        let token = std::any::type_name::<M>().to_string();
+        let token = crate::di::token_of::<M>();
         self.current_middleware_tokens.push(token);
         MiddlewareConfigProxy { consumer: self }
     }
@@ -349,7 +349,7 @@ impl<'a> MiddlewareConfigProxy<'a> {
     where
         M: 'static,
     {
-        let token = std::any::type_name::<M>().to_string();
+        let token = crate::di::token_of::<M>();
         self.consumer.current_middleware_tokens.push(token);
         self
     }

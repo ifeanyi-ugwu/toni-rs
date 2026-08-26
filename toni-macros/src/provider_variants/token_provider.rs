@@ -60,8 +60,7 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
     };
 
     // Generate unique struct names based on token
-    let token_display = token.display_name();
-    let sanitized_name = token_display.replace(['\"', ' ', '-', '.', ':', '/'], "_");
+    let sanitized_name = token.sanitized_ident();
     let wrapper_factory_name = format_ident!("__ToniTokenProviderFactory_{}", sanitized_name);
 
     let expanded = quote! {

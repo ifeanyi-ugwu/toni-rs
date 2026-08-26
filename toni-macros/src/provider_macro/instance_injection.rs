@@ -468,11 +468,11 @@ fn generate_singleton_provider(
             }
 
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_token_factory(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
@@ -620,11 +620,11 @@ fn generate_request_provider(
             }
 
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_token_factory(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
@@ -718,11 +718,11 @@ fn generate_transient_provider(
             }
 
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_token_factory(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
@@ -1226,7 +1226,7 @@ fn generate_singleton_factory(
         #[::toni::async_trait]
         impl ::toni::traits_helpers::ProviderFactory for #factory_name {
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_dependencies(&self) -> Vec<String> {
@@ -1696,7 +1696,7 @@ fn generate_request_factory(
         #[::toni::async_trait]
         impl ::toni::traits_helpers::ProviderFactory for #factory_name {
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_dependencies(&self) -> Vec<String> {
@@ -1782,7 +1782,7 @@ fn generate_transient_factory(
         #[::toni::async_trait]
         impl ::toni::traits_helpers::ProviderFactory for #factory_name {
             fn get_token(&self) -> String {
-                ::std::any::type_name::<#struct_name>().to_string()
+                ::toni::di::token_of::<#struct_name>()
             }
 
             fn get_dependencies(&self) -> Vec<String> {

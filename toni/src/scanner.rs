@@ -121,14 +121,16 @@ impl ToniDependenciesScanner {
                 let provider_token = provider.get_token();
 
                 // Detect APP_* token providers and register them separately
+                const APP_GUARD_NAME: &str = crate::di::APP_GUARD.name();
+                const APP_INTERCEPTOR_NAME: &str = crate::di::APP_INTERCEPTOR.name();
                 match provider_token.as_str() {
-                    "__TONI_APP_GUARD__" => {
+                    APP_GUARD_NAME => {
                         app_guards += 1;
                         let provider_type_token = provider.get_token();
                         container
                             .register_app_guard_provider(module_token.clone(), provider_type_token);
                     }
-                    "__TONI_APP_INTERCEPTOR__" => {
+                    APP_INTERCEPTOR_NAME => {
                         app_interceptors += 1;
                         let provider_type_token = provider.get_token();
                         container.register_app_interceptor_provider(

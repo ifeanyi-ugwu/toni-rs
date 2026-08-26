@@ -5,4 +5,4 @@
 
 pub mod token;
 
-pub use token::{APP_GUARD, APP_INTERCEPTOR, APP_MIDDLEWARE, Token};
+pub use token::{APP_GUARD, APP_INTERCEPTOR, APP_MIDDLEWARE, IntoToken, Token, token_of};

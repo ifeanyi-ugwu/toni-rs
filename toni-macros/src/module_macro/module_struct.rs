@@ -313,7 +313,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn get_id(&self) -> String {
                 // Fully-qualified type name: collision-free registry key. Two same-named module
                 // types in different paths stay distinct; the bare ident is display only.
-                ::std::any::type_name::<Self>().to_string()
+                ::toni::di::token_of::<Self>()
             }
             fn get_name(&self) -> String {
                 #input_name.to_string()
@@ -331,7 +331,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Some(vec![#(Box::new(#providers)),*])
             }
             fn exports(&self) -> Option<Vec<String>> {
-                Some(vec![#(::std::any::type_name::<#exports>().to_string()),*])
+                Some(vec![#(::toni::di::token_of::<#exports>()),*])
             }
 
             // Include user-defined configure_middleware if present

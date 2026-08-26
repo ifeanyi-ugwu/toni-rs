@@ -177,7 +177,7 @@ pub(crate) struct HealthCheckServiceFactory;
 #[async_trait]
 impl ProviderFactory for HealthCheckServiceFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<HealthCheckService>().to_string()
+        toni::di::token_of::<HealthCheckService>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -190,11 +190,11 @@ struct HealthCheckServiceProvider;
 #[async_trait]
 impl Provider for HealthCheckServiceProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<HealthCheckService>().to_string()
+        toni::di::token_of::<HealthCheckService>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<HealthCheckService>().to_string()
+        toni::di::token_of::<HealthCheckService>()
     }
 
     async fn execute(

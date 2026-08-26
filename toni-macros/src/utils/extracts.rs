@@ -161,14 +161,10 @@ pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
     Err(Error::new(ty.span(), "Invalid type"))
 }
 
-/// Extracts a type token expression that preserves generic parameters at runtime.
-/// For non-generic types, returns a simple string literal.
-/// For generic types, generates a runtime type_name call.
-///
-/// Examples:
-/// - `MyService` → `"MyService".to_string()`
-/// - `ConfigService<T>` → `format!("ConfigService<{}>", std::any::type_name::<T>())`
-/// - `HashMap<K, V>` → `format!("HashMap<{}, {}>", std::any::type_name::<K>(), std::any::type_name::<V>())`
+/// Extracts a type token expression: a call to `toni::di::token_of` with the
+/// written type, resolved in the caller's scope. The compiler canonicalizes the
+/// spelling — qualified paths, aliases, and generic parameters all produce the
+/// fully-qualified name the registration side uses.
 pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
     // Handle references by unwrapping to inner type
     let actual_type = if let Type::Reference(TypeReference { elem, .. }) = ty {
@@ -177,52 +173,8 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
         ty
     };
 
-    if let Type::Path(type_path) = actual_type {
-        if let Some(segment) = type_path.path.segments.last() {
-            let base_ident = &segment.ident;
-            let base_name = base_ident.to_string();
-
-            // Check if this type has generic arguments
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if !args.args.is_empty() {
-                    // Has generics - generate runtime type_name call
-                    let generic_params: Vec<_> = args
-                        .args
-                        .iter()
-                        .filter_map(|arg| {
-                            if let syn::GenericArgument::Type(inner_ty) = arg {
-                                Some(inner_ty)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    if generic_params.len() == 1 {
-                        // Single generic parameter
-                        let param_ty = generic_params[0];
-                        return Ok(quote! {
-                            format!("{}<{}>", #base_name, std::any::type_name::<#param_ty>())
-                        });
-                    } else {
-                        // Multiple generic parameters - build comma-separated list
-                        let type_name_calls: Vec<TokenStream> = generic_params
-                            .iter()
-                            .map(|param_ty| {
-                                quote! { std::any::type_name::<#param_ty>() }
-                            })
-                            .collect();
-
-                        return Ok(quote! {
-                            format!("{}<{}>", #base_name, [#(#type_name_calls),*].join(", "))
-                        });
-                    }
-                }
-            }
-
-            // No generics - use std::any::type_name for full path
-            return Ok(quote! { ::std::any::type_name::<#base_ident>().to_string() });
-        }
+    if let Type::Path(_) = actual_type {
+        return Ok(quote! { ::toni::di::token_of::<#actual_type>() });
     }
 
     Err(syn::Error::new_spanned(

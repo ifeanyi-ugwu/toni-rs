@@ -44,8 +44,7 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
     let existing_token_expr = existing_token.to_token_expr();
 
     // Generate unique struct names based on alias token
-    let token_display = alias_token.display_name();
-    let sanitized_name = token_display.replace(['\"', ' ', '-', '.', ':', '/'], "_");
+    let sanitized_name = alias_token.sanitized_ident();
     let provider_name = format_ident!("__ToniAliasProvider_{}", sanitized_name);
     let factory_name = format_ident!("__ToniAliasProviderFactory_{}", sanitized_name);
 

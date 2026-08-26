@@ -16,7 +16,7 @@ impl DieselModule {
             let mut builder = DynamicModule::builder("DieselModule::postgres")
                 .provider(PgPoolFactory {
                     url: url.clone(),
-                    token: std::any::type_name::<Pool<AsyncPgConnection>>().to_string(),
+                    token: toni::di::token_of::<Pool<AsyncPgConnection>>(),
                     check,
                 })
                 .export::<Pool<AsyncPgConnection>>();
@@ -44,7 +44,7 @@ impl DieselModule {
             let mut builder = DynamicModule::builder("DieselModule::mysql")
                 .provider(MySqlPoolFactory {
                     url: url.clone(),
-                    token: std::any::type_name::<Pool<AsyncMysqlConnection>>().to_string(),
+                    token: toni::di::token_of::<Pool<AsyncMysqlConnection>>(),
                     check,
                 })
                 .export::<Pool<AsyncMysqlConnection>>();

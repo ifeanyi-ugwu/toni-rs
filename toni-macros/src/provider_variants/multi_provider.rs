@@ -205,7 +205,7 @@ fn generate_type_multi(
                     format!(
                         "__toni_multi__{}__{}",
                         #base_token_expr,
-                        ::std::any::type_name::<#concrete_type>()
+                        ::toni::di::token_of::<#concrete_type>()
                     )
                 }
 
@@ -237,7 +237,7 @@ fn generate_type_multi(
                     let synthetic_token = format!(
                         "__toni_multi__{}__{}",
                         #base_token_expr,
-                        ::std::any::type_name::<#concrete_type>()
+                        ::toni::di::token_of::<#concrete_type>()
                     );
                     let base_token = #base_token_expr;
                     ::toni::traits_helpers::Injectable::new(
@@ -490,7 +490,7 @@ fn generate_token_provider_multi(
                     format!(
                         "__toni_multi__{}__{}",
                         #base_token_expr,
-                        ::std::any::type_name::<#concrete_type>()
+                        ::toni::di::token_of::<#concrete_type>()
                     )
                 }
 
@@ -522,7 +522,7 @@ fn generate_token_provider_multi(
                     let synthetic_token = format!(
                         "__toni_multi__{}__{}",
                         #base_token_expr,
-                        ::std::any::type_name::<#concrete_type>()
+                        ::toni::di::token_of::<#concrete_type>()
                     );
                     let base_token = #base_token_expr;
                     ::toni::traits_helpers::Injectable::new(

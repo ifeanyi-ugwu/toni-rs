@@ -25,7 +25,7 @@ pub(crate) struct SharedBroadcastServiceProviderFactory {
 #[async_trait]
 impl ProviderFactory for SharedBroadcastServiceProviderFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        toni::di::token_of::<BroadcastService>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -45,11 +45,11 @@ struct SharedBroadcastServiceProvider {
 #[async_trait]
 impl Provider for SharedBroadcastServiceProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        toni::di::token_of::<BroadcastService>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<BroadcastService>().to_string()
+        toni::di::token_of::<BroadcastService>()
     }
 
     async fn execute(
@@ -87,7 +87,7 @@ fn make_process_id() -> String {
 #[async_trait]
 impl ProviderFactory for RedisBroadcastServiceFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<RedisBroadcastService>().to_string()
+        toni::di::token_of::<RedisBroadcastService>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -172,11 +172,11 @@ struct RedisBroadcastServiceProvider {
 #[async_trait]
 impl Provider for RedisBroadcastServiceProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<RedisBroadcastService>().to_string()
+        toni::di::token_of::<RedisBroadcastService>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<RedisBroadcastService>().to_string()
+        toni::di::token_of::<RedisBroadcastService>()
     }
 
     async fn execute(
