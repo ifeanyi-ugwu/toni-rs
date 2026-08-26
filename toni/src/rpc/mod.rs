@@ -19,6 +19,5 @@ pub use rpc_data::RpcData;
 pub use rpc_error::RpcError;
 
 /// What an RPC call answers with — the value the pipeline returns and the `R`
-/// of [`Interceptor`](crate::traits_helpers::Interceptor) and
-/// [`Pipe`](crate::traits_helpers::Pipe) on this transport.
+/// of [`Interceptor`](crate::traits_helpers::Interceptor) on this transport.
 pub type RpcHandlerResult = Result<Option<RpcData>, RpcError>;

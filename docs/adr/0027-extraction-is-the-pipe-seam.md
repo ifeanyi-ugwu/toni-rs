@@ -112,6 +112,9 @@ permanent `None` are removed. What it modelled is `Validated<E>`.
 - An extraction failure on RPC or WebSocket renders as `Internal`, where a pipe could answer with any
   error it liked. This is how every extraction failure on those transports already rendered — the
   removal inherits it rather than causing it, and correcting the kind is its own change.
+- ADR-0016's treatment of `Pipe` is superseded: the sections deciding that a pipe answers by
+  returning `Some`, and that a pipe's answer is the reply rather than an error to render, describe a
+  role that no longer exists. The rest of 0016 stands.
 
 ## Roads not taken
 

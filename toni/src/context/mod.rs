@@ -3,7 +3,7 @@
 //! Each transport (HTTP, RPC, WebSocket) has its own concrete context type
 //! with transport-specific fields. They all implement [`HandlerContext`], the
 //! universal interface that lets a single enhancer (guard / interceptor /
-//! pipe / error handler) be written for one transport, all transports, or a
+//! error handler) be written for one transport, all transports, or a
 //! chosen subset.
 
 mod cancellation;

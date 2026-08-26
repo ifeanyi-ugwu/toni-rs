@@ -25,7 +25,7 @@ use crate::{
 
 /// Structural roles the surrounding macro assigns to a provider.
 ///
-/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are NOT here — those
+/// Enhancer roles (guard / interceptor / error-handler / middleware) are NOT here — those
 /// are detected from the type's trait impls via `toni::__detect` at the factory. These three are
 /// driven by the structural macros (`#[websocket_gateway]` / `#[rpc_controller]` / `#[grpc_service]`),
 /// which generate the corresponding trait impl and routing, so the macro that emits them already
@@ -338,7 +338,7 @@ fn generate_provider_wrapper(
 /// `instance: Arc<StructName>` is boxed. Returns a `TokenStream` that pushes
 /// each role the struct implements onto a `__roles: Vec<ProviderRole>` local.
 ///
-/// Enhancer roles (guard / interceptor / pipe / error-handler / middleware) are detected from the
+/// Enhancer roles (guard / interceptor / error-handler / middleware) are detected from the
 /// type itself via `toni::__detect` probes — the `impl Guard<HttpContext> for T` is the declaration,
 /// no marker required. The gateway role stays flag-driven: it comes from the structural macro that
 /// also generates the trait impl and routing. The rpc-controller and grpc-service roles are pushed

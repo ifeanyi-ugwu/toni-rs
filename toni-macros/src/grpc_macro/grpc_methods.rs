@@ -12,7 +12,7 @@
 //!    and adds `MyServiceServer::new(wrapper)`.
 //!
 //! 3. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper that runs guards
-//!    (and, in later PRs, interceptors / pipes / error handlers) before delegating to the user's
+//!    (and, in later PRs, interceptors / error handlers) before delegating to the user's
 //!    implementation via UFCS: `<MyService as SomeProtoTrait>::method(&inner, req).await`. UFCS
 //!    keeps the user's body verbatim so `Self::SomeStream` associated types, `self.<field>`, and
 //!    any inherent helper calls all resolve naturally.

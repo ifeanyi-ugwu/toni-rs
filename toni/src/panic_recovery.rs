@@ -2,7 +2,7 @@
 //! [`PanicRecovered`] event shape on unwind.
 //!
 //! Each transport's dispatcher wraps user-supplied callbacks — guards,
-//! interceptors, pipes, error handlers, response renderers — in
+//! interceptors, error handlers, response renderers — in
 //! `AssertUnwindSafe(...).catch_unwind()` and converts the payload into a
 //! [`PanicRecovered`] tagged with the matching [`PipelineSegment`]. The
 //! event then flows through the existing observer + error chain rather
@@ -10,7 +10,7 @@
 //!
 //! Two flavours: [`catch_async`] for `Future`-returning callbacks (guards,
 //! interceptors, handlers, error handlers) and [`catch_sync`] for the rare
-//! synchronous segment (today: pipes' `process(&mut C)`).
+//! synchronous segment (today: rendering a response).
 //!
 //! `AssertUnwindSafe` is load-bearing — user code isn't required to be
 //! `UnwindSafe`, and adding that bound to public traits would propagate
@@ -39,7 +39,7 @@ where
 
 /// Invoke a synchronous callback, returning [`PanicRecovered`] tagged with
 /// `segment` on caught unwind. Used for segments whose trait method is
-/// sync (e.g. `Pipe::process`).
+/// sync (e.g. rendering an error to its wire shape).
 pub fn catch_sync<F, T>(segment: PipelineSegment, f: F) -> Result<T, PanicRecovered>
 where
     F: FnOnce() -> T,
