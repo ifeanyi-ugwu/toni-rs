@@ -51,6 +51,6 @@ impl ModuleMetadata for BroadcastModule {
     }
 
     fn exports(&self) -> Option<Vec<String>> {
-        Some(vec![std::any::type_name::<BroadcastService>().to_string()])
+        Some(vec![crate::di::token_of::<BroadcastService>()])
     }
 }

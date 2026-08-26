@@ -125,11 +125,11 @@ impl<T: Clone + Send + Sync + 'static> Extension<T> {
 #[async_trait]
 impl<T: Send + Sync + 'static> Provider for Extension<T> {
     fn get_token(&self) -> String {
-        format!("Extension<{}>", std::any::type_name::<T>())
+        crate::di::token_of::<Extension<T>>()
     }
 
     fn get_token_factory(&self) -> String {
-        format!("Extension<{}>", std::any::type_name::<T>())
+        crate::di::token_of::<Extension<T>>()
     }
 
     async fn execute(
@@ -158,11 +158,11 @@ impl<T: Send + Sync + 'static> Provider for Extension<T> {
 #[async_trait]
 impl Provider for Extensions {
     fn get_token(&self) -> String {
-        std::any::type_name::<Extensions>().to_string()
+        crate::di::token_of::<Extensions>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<Extensions>().to_string()
+        crate::di::token_of::<Extensions>()
     }
 
     async fn execute(
@@ -186,7 +186,7 @@ pub struct ExtensionsFactory;
 #[async_trait]
 impl ProviderFactory for ExtensionsFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<Extensions>().to_string()
+        crate::di::token_of::<Extensions>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -223,7 +223,7 @@ impl<T> Default for ExtensionFactory<T> {
 #[async_trait]
 impl<T: Send + Sync + 'static> ProviderFactory for ExtensionFactory<T> {
     fn get_token(&self) -> String {
-        format!("Extension<{}>", std::any::type_name::<T>())
+        crate::di::token_of::<Extension<T>>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {

@@ -237,7 +237,7 @@ impl<T: Config> ConfigModule<T> {
 // Implement ModuleMetadata for DI system integration
 impl<T: Config> toni::traits_helpers::ModuleMetadata for ConfigModule<T> {
     fn get_id(&self) -> String {
-        format!("ConfigModule<{}>", std::any::type_name::<T>())
+        toni::di::token_of::<Self>()
     }
 
     fn get_name(&self) -> String {
@@ -259,10 +259,7 @@ impl<T: Config> toni::traits_helpers::ModuleMetadata for ConfigModule<T> {
     }
 
     fn exports(&self) -> Option<Vec<String>> {
-        Some(vec![format!(
-            "ConfigService<{}>",
-            std::any::type_name::<T>()
-        )])
+        Some(vec![toni::di::token_of::<ConfigService<T>>()])
     }
 }
 

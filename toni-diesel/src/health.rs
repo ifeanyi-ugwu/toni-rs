@@ -59,15 +59,15 @@ macro_rules! impl_diesel_health {
         #[async_trait]
         impl ProviderFactory for $factory {
             fn get_token(&self) -> String {
-                std::any::type_name::<$indicator>().to_string()
+                toni::di::token_of::<$indicator>()
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                vec![std::any::type_name::<$pool>().to_string()]
+                vec![toni::di::token_of::<$pool>()]
             }
 
             async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-                let token = std::any::type_name::<$pool>().to_string();
+                let token = toni::di::token_of::<$pool>();
                 let connection = deps
                     .get(&token)
                     .expect("the health indicator is registered alongside the pool it checks")
@@ -87,11 +87,11 @@ macro_rules! impl_diesel_health {
         #[async_trait]
         impl Provider for $provider {
             fn get_token(&self) -> String {
-                std::any::type_name::<$indicator>().to_string()
+                toni::di::token_of::<$indicator>()
             }
 
             fn get_token_factory(&self) -> String {
-                std::any::type_name::<$indicator>().to_string()
+                toni::di::token_of::<$indicator>()
             }
 
             async fn execute(

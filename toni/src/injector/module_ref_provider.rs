@@ -37,11 +37,11 @@ impl Provider for ModuleRefProvider {
     }
 
     fn get_token(&self) -> String {
-        std::any::type_name::<ModuleRef>().to_string()
+        crate::di::token_of::<ModuleRef>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<ModuleRef>().to_string()
+        crate::di::token_of::<ModuleRef>()
     }
 
     fn get_scope(&self) -> ProviderScope {

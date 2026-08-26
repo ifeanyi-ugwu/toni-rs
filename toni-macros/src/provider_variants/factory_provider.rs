@@ -275,7 +275,7 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
     let dep_resolutions: Vec<_> = deps
         .iter()
         .map(|(param_name, param_type)| {
-            let type_token = quote! { std::any::type_name::<#param_type>().to_string() };
+            let type_token = quote! { ::toni::di::token_of::<#param_type>() };
             quote! {
                 let #param_name = {
                     let provider = _dependencies
@@ -306,11 +306,10 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
 
     let dep_tokens: Vec<_> = deps
         .iter()
-        .map(|(_, param_type)| quote! { std::any::type_name::<#param_type>().to_string() })
+        .map(|(_, param_type)| quote! { ::toni::di::token_of::<#param_type>() })
         .collect();
 
-    let token_display = token.display_name();
-    let sanitized_name = token_display.replace(['\"', ' ', '-', '.', ':', '/'], "_");
+    let sanitized_name = token.sanitized_ident();
     let factory_name = format_ident!("__ToniFactoryProviderFactory_{}", sanitized_name);
     let provider_name = format_ident!("__ToniFactoryProvider_{}", sanitized_name);
 

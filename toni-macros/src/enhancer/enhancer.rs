@@ -69,10 +69,7 @@ pub fn create_enhancer_infos(
                 }
             } else {
                 // Type-name syntax: generate type token
-                (
-                    quote! { std::any::type_name::<#type_ident>().to_string() },
-                    quote! {},
-                )
+                (quote! { ::toni::di::token_of::<#type_ident>() }, quote! {})
             };
 
             let info = EnhancerInfo {

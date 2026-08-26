@@ -152,7 +152,7 @@ pub(crate) struct HttpHealthIndicatorFactory;
 #[async_trait]
 impl ProviderFactory for HttpHealthIndicatorFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<HttpHealthIndicator>().to_string()
+        toni::di::token_of::<HttpHealthIndicator>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -170,11 +170,11 @@ struct HttpHealthIndicatorProvider {
 #[async_trait]
 impl Provider for HttpHealthIndicatorProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<HttpHealthIndicator>().to_string()
+        toni::di::token_of::<HttpHealthIndicator>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<HttpHealthIndicator>().to_string()
+        toni::di::token_of::<HttpHealthIndicator>()
     }
 
     async fn execute(

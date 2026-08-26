@@ -26,7 +26,7 @@ impl<T: 'static> TypeToken<T> {
 
 impl<T: 'static> IntoToken for TypeToken<T> {
     fn into_token(self) -> String {
-        std::any::type_name::<T>().to_string()
+        crate::di::token_of::<T>()
     }
 }
 

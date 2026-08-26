@@ -116,7 +116,7 @@ pub(crate) struct DiskHealthIndicatorFactory;
 #[async_trait]
 impl ProviderFactory for DiskHealthIndicatorFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<DiskHealthIndicator>().to_string()
+        toni::di::token_of::<DiskHealthIndicator>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
@@ -129,11 +129,11 @@ struct DiskHealthIndicatorProvider;
 #[async_trait]
 impl Provider for DiskHealthIndicatorProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<DiskHealthIndicator>().to_string()
+        toni::di::token_of::<DiskHealthIndicator>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<DiskHealthIndicator>().to_string()
+        toni::di::token_of::<DiskHealthIndicator>()
     }
 
     async fn execute(

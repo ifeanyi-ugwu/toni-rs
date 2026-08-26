@@ -71,6 +71,7 @@ mod serve_loop_death;
 mod sse;
 mod static_methods;
 mod streaming;
+mod token_format;
 mod tower_compat;
 mod trailing_slash_conformance;
 mod validated_transports;

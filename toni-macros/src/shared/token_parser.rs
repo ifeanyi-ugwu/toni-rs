@@ -19,7 +19,7 @@ impl TokenType {
         match self {
             TokenType::String(s) => quote! { #s.to_string() },
             TokenType::Type(path) => quote! {
-                std::any::type_name::<#path>().to_string()
+                ::toni::di::token_of::<#path>()
             },
             TokenType::Const(path) => {
                 // Support both Token<T> consts and string consts
@@ -64,6 +64,14 @@ impl TokenType {
             TokenType::Type(path) => quote!(#path).to_string(),
             TokenType::Const(path) => quote!(#path).to_string(),
         }
+    }
+
+    /// The display name reduced to identifier characters, for generated struct names.
+    pub fn sanitized_ident(&self) -> String {
+        self.display_name()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect()
     }
 }
 

@@ -52,7 +52,7 @@ pub struct Request {
 #[async_trait]
 impl Provider for Request {
     fn get_token(&self) -> String {
-        std::any::type_name::<Request>().to_string()
+        crate::di::token_of::<Request>()
     }
 
     async fn execute(
@@ -73,7 +73,7 @@ impl Provider for Request {
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<Request>().to_string()
+        crate::di::token_of::<Request>()
     }
 
     fn get_scope(&self) -> ProviderScope {
@@ -151,7 +151,7 @@ pub struct RequestFactory;
 #[async_trait]
 impl ProviderFactory for RequestFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<Request>().to_string()
+        crate::di::token_of::<Request>()
     }
 
     async fn build(

@@ -41,7 +41,7 @@ impl MongoModule {
                 .provider(MongoConnectionFactory {
                     uri: uri.clone(),
                     db_name: db_name.clone(),
-                    token: std::any::type_name::<Database>().to_string(),
+                    token: toni::di::token_of::<Database>(),
                     check,
                 })
                 .export::<Database>();

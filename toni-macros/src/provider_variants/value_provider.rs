@@ -95,8 +95,7 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
     let token_expr = token.to_token_expr();
 
     // Generate unique struct names based on token for this specific provider instance
-    let token_display = token.display_name();
-    let sanitized_name = token_display.replace(['\"', ' ', '-', '.', ':', '/'], "_");
+    let sanitized_name = token.sanitized_ident();
     let provider_name = format_ident!("__ToniValueProvider_{}", sanitized_name);
     let factory_name = format_ident!("__ToniValueProviderFactory_{}", sanitized_name);
 

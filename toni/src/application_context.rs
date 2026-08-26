@@ -65,7 +65,7 @@ impl ToniApplicationContext {
 
     /// Returns an instance of `T` from the DI container, searching across all modules
     pub async fn get<T: 'static>(&self) -> Result<T> {
-        let token = std::any::type_name::<T>().to_string();
+        let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
         ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
@@ -77,7 +77,7 @@ impl ToniApplicationContext {
 
     /// Returns an instance of `T` from a specific module's scope in the DI container
     pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T> {
-        let token = std::any::type_name::<T>().to_string();
+        let token = crate::di::token_of::<T>();
         let provider = self.provider_in_module(module_token, &token)?;
         ProviderContext::None.ensure_can_build(provider.get_scope(), &token)?;
 
@@ -137,7 +137,7 @@ impl ToniApplicationContext {
     /// let service = ctx.resolve::<RequestService>(&execution).await?;
     /// ```
     pub async fn resolve<T: 'static>(&self, execution: &ProviderContext) -> Result<T> {
-        let token = std::any::type_name::<T>().to_string();
+        let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
         execution.ensure_can_build(provider.get_scope(), &token)?;
 

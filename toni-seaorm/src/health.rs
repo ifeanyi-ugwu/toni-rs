@@ -43,15 +43,15 @@ pub(crate) struct SeaOrmHealthIndicatorFactory;
 #[async_trait]
 impl ProviderFactory for SeaOrmHealthIndicatorFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<SeaOrmHealthIndicator>().to_string()
+        toni::di::token_of::<SeaOrmHealthIndicator>()
     }
 
     fn get_dependencies(&self) -> Vec<String> {
-        vec![std::any::type_name::<DatabaseConnection>().to_string()]
+        vec![toni::di::token_of::<DatabaseConnection>()]
     }
 
     async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let token = std::any::type_name::<DatabaseConnection>().to_string();
+        let token = toni::di::token_of::<DatabaseConnection>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
@@ -74,11 +74,11 @@ struct SeaOrmHealthProvider {
 #[async_trait]
 impl Provider for SeaOrmHealthProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<SeaOrmHealthIndicator>().to_string()
+        toni::di::token_of::<SeaOrmHealthIndicator>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<SeaOrmHealthIndicator>().to_string()
+        toni::di::token_of::<SeaOrmHealthIndicator>()
     }
 
     async fn execute(

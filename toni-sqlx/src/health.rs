@@ -77,15 +77,15 @@ where
     Pool<DB>: Send + Sync + Clone + 'static,
 {
     fn get_token(&self) -> String {
-        std::any::type_name::<SqlxHealthIndicator<DB>>().to_string()
+        toni::di::token_of::<SqlxHealthIndicator<DB>>()
     }
 
     fn get_dependencies(&self) -> Vec<String> {
-        vec![std::any::type_name::<Pool<DB>>().to_string()]
+        vec![toni::di::token_of::<Pool<DB>>()]
     }
 
     async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let token = std::any::type_name::<Pool<DB>>().to_string();
+        let token = toni::di::token_of::<Pool<DB>>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the pool it checks")
@@ -121,11 +121,11 @@ where
     Pool<DB>: Send + Sync + Clone + 'static,
 {
     fn get_token(&self) -> String {
-        std::any::type_name::<SqlxHealthIndicator<DB>>().to_string()
+        toni::di::token_of::<SqlxHealthIndicator<DB>>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<SqlxHealthIndicator<DB>>().to_string()
+        toni::di::token_of::<SqlxHealthIndicator<DB>>()
     }
 
     async fn execute(

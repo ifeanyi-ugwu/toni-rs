@@ -43,15 +43,15 @@ pub(crate) struct MongoHealthIndicatorFactory;
 #[async_trait]
 impl ProviderFactory for MongoHealthIndicatorFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<MongoHealthIndicator>().to_string()
+        toni::di::token_of::<MongoHealthIndicator>()
     }
 
     fn get_dependencies(&self) -> Vec<String> {
-        vec![std::any::type_name::<Database>().to_string()]
+        vec![toni::di::token_of::<Database>()]
     }
 
     async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let token = std::any::type_name::<Database>().to_string();
+        let token = toni::di::token_of::<Database>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
@@ -74,11 +74,11 @@ struct MongoHealthProvider {
 #[async_trait]
 impl Provider for MongoHealthProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<MongoHealthIndicator>().to_string()
+        toni::di::token_of::<MongoHealthIndicator>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<MongoHealthIndicator>().to_string()
+        toni::di::token_of::<MongoHealthIndicator>()
     }
 
     async fn execute(

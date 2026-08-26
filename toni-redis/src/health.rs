@@ -43,15 +43,15 @@ pub(crate) struct RedisHealthIndicatorFactory;
 #[async_trait]
 impl ProviderFactory for RedisHealthIndicatorFactory {
     fn get_token(&self) -> String {
-        std::any::type_name::<RedisHealthIndicator>().to_string()
+        toni::di::token_of::<RedisHealthIndicator>()
     }
 
     fn get_dependencies(&self) -> Vec<String> {
-        vec![std::any::type_name::<ConnectionManager>().to_string()]
+        vec![toni::di::token_of::<ConnectionManager>()]
     }
 
     async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let token = std::any::type_name::<ConnectionManager>().to_string();
+        let token = toni::di::token_of::<ConnectionManager>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
@@ -74,11 +74,11 @@ struct RedisHealthProvider {
 #[async_trait]
 impl Provider for RedisHealthProvider {
     fn get_token(&self) -> String {
-        std::any::type_name::<RedisHealthIndicator>().to_string()
+        toni::di::token_of::<RedisHealthIndicator>()
     }
 
     fn get_token_factory(&self) -> String {
-        std::any::type_name::<RedisHealthIndicator>().to_string()
+        toni::di::token_of::<RedisHealthIndicator>()
     }
 
     async fn execute(

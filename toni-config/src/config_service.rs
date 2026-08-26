@@ -84,12 +84,11 @@ impl<T: Config> Provider for ConfigService<T> {
     }
 
     fn get_token(&self) -> String {
-        // Return full generic type to support multiple configs of same service
-        format!("ConfigService<{}>", std::any::type_name::<T>())
+        toni::di::token_of::<ConfigService<T>>()
     }
 
     fn get_token_factory(&self) -> String {
-        format!("ConfigService<{}>", std::any::type_name::<T>())
+        toni::di::token_of::<ConfigService<T>>()
     }
 }
 
@@ -111,7 +110,7 @@ impl<T: Config> ConfigServiceFactory<T> {
 #[async_trait]
 impl<T: Config + Clone + Send + Sync + 'static> ProviderFactory for ConfigServiceFactory<T> {
     fn get_token(&self) -> String {
-        format!("ConfigService<{}>", std::any::type_name::<T>())
+        toni::di::token_of::<ConfigService<T>>()
     }
 
     async fn build(

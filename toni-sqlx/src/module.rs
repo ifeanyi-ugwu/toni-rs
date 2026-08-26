@@ -20,7 +20,7 @@ impl SqlxModule {
             let mut builder = DynamicModule::builder("SqlxModule::postgres")
                 .provider(SqlxPoolFactory::<Postgres> {
                     url: url.clone(),
-                    token: std::any::type_name::<Pool<Postgres>>().to_string(),
+                    token: toni::di::token_of::<Pool<Postgres>>(),
                     check,
                     _db: PhantomData,
                 })
@@ -93,7 +93,7 @@ impl SqlxModule {
             let mut builder = DynamicModule::builder("SqlxModule::mysql")
                 .provider(SqlxPoolFactory::<MySql> {
                     url: url.clone(),
-                    token: std::any::type_name::<Pool<MySql>>().to_string(),
+                    token: toni::di::token_of::<Pool<MySql>>(),
                     check,
                     _db: PhantomData,
                 })
@@ -142,7 +142,7 @@ impl SqlxModule {
             let mut builder = DynamicModule::builder("SqlxModule::sqlite")
                 .provider(SqlxPoolFactory::<Sqlite> {
                     url: url.clone(),
-                    token: std::any::type_name::<Pool<Sqlite>>().to_string(),
+                    token: toni::di::token_of::<Pool<Sqlite>>(),
                     check,
                     _db: PhantomData,
                 })
