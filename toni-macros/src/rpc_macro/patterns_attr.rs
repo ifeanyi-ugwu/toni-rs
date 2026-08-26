@@ -288,10 +288,11 @@ fn is_rpc_data(ty: &syn::Type) -> bool {
 
 /// Extraction for a handler's parameters, in signature order.
 ///
-/// Anything the framework knows — `RpcData`, `Extensions`, `Payload<T>` — is a
-/// `FromContext<RpcContext>`. A parameter of any other type is the call's
-/// payload, deserialised into it: the convention RPC handlers have always used,
-/// now one case among several rather than the only shape a handler can take.
+/// Anything the framework knows — `RpcData`, `Extensions`, `Payload<T>`,
+/// `Validated<Payload<T>>` — is a `FromContext<RpcContext>`. A parameter of any
+/// other type is the call's payload, deserialised into it: the convention RPC
+/// handlers have always used, now one case among several rather than the only
+/// shape a handler can take.
 ///
 /// `&RpcContext` passes through, reborrowed at the call so
 /// they hold no borrow across the extractions before them.
@@ -369,7 +370,7 @@ fn is_known_extractor(ty: &syn::Type) -> bool {
     type_path.path.segments.last().is_some_and(|s| {
         matches!(
             s.ident.to_string().as_str(),
-            "RpcData" | "Extensions" | "Payload"
+            "RpcData" | "Extensions" | "Payload" | "Validated"
         )
     })
 }
