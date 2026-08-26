@@ -56,8 +56,8 @@ name = "gateway_http_bridge"
 path = "gateway_http_bridge.rs"
 
 [[example]]
-name = "pipes_complete_guide"
-path = "pipes_complete_guide.rs"
+name = "validation_complete_guide"
+path = "validation_complete_guide.rs"
 
 [[example]]
 name = "middleware_examples"
