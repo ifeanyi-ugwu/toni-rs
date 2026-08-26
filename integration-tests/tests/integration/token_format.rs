@@ -196,6 +196,8 @@ mod const_token_lookup {
     async fn a_token_const_reaches_a_string_registration() {
         let app = ToniFactory::create(TestModule).await.unwrap();
 
+        // The const's parameter fixes the result type: binding this to anything
+        // but String is a compile error.
         let value: String = app
             .get_by_token(NAMED_VALUE)
             .await

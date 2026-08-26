@@ -81,23 +81,28 @@ impl<T: ?Sized> std::hash::Hash for Token<T> {
 
 /// Conversion into a DI container key, accepted by the by-token lookup APIs
 /// (`get_by_token`, `resolve_by_token`).
-pub trait IntoToken {
+///
+/// `T` is the type the key claims to resolve to. A string claims any type —
+/// `get_by_token::<T>("NAME")` chooses `T` at the call site, as before. A
+/// [`Token<T>`] claims only its own parameter, so the lookup's result type is
+/// inferred from the const and a mismatched ask is a compile error.
+pub trait IntoToken<T: ?Sized = ()> {
     fn into_token(self) -> String;
 }
 
-impl IntoToken for &str {
+impl<T: ?Sized> IntoToken<T> for &str {
     fn into_token(self) -> String {
         self.to_string()
     }
 }
 
-impl IntoToken for String {
+impl<T: ?Sized> IntoToken<T> for String {
     fn into_token(self) -> String {
         self
     }
 }
 
-impl<T: ?Sized> IntoToken for Token<T> {
+impl<T: ?Sized> IntoToken<T> for Token<T> {
     fn into_token(self) -> String {
         self.name().to_string()
     }
