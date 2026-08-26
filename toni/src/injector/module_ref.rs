@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use anyhow::Result;
 use rustc_hash::FxHashMap;
 
-use super::token::IntoToken;
+use crate::di::token::IntoToken;
 use crate::traits_helpers::{Provider, ProviderContext};
 
 pub type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>;

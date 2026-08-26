@@ -178,3 +178,28 @@ mod qualified_path_inject {
         assert_eq!(consumer.service.label, "qualified");
     }
 }
+
+/// A `Token` const is a key like any other: the by-token lookup APIs accept it
+/// directly.
+mod const_token_lookup {
+    use super::*;
+    use toni::di::Token;
+
+    const NAMED_VALUE: Token<String> = Token::new("NAMED_VALUE");
+
+    #[module(
+        providers: [provider_value!("NAMED_VALUE", "held".to_string())],
+    )]
+    impl TestModule {}
+
+    #[tokio::test]
+    async fn a_token_const_reaches_a_string_registration() {
+        let app = ToniFactory::create(TestModule).await.unwrap();
+
+        let value: String = app
+            .get_by_token(NAMED_VALUE)
+            .await
+            .expect("the const names the same key the registration used");
+        assert_eq!(value, "held");
+    }
+}

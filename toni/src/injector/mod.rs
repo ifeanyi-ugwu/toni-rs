@@ -12,8 +12,7 @@ pub use self::dependency_graph::{DependencyGraph, find_dependency_cycle};
 mod instance_wrapper;
 pub use self::instance_wrapper::InstanceWrapper;
 
-pub mod token;
-pub use self::token::IntoToken;
+pub use crate::di::token::IntoToken;
 
 mod module_ref;
 pub use self::module_ref::{ModuleRef, ProviderStore};
