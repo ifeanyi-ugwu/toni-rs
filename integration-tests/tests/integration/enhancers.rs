@@ -2,10 +2,10 @@ use crate::common::{ExecutionOrder, TestServer};
 use toni::async_trait;
 use toni::context::{HandlerContext, HttpContext};
 use toni::traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle};
-use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer, Pipe};
+use toni::traits_helpers::{Guard, Interceptor, InterceptorNext, MiddlewareConsumer};
 use toni::{
     controller, get, injectable, module, post, provider_factory, provider_token, provider_value,
-    routes, use_guards, use_interceptors, use_pipes, Body as ToniBody, HttpResponse,
+    routes, use_guards, use_interceptors, Body as ToniBody, HttpResponse,
 };
 
 pub struct OrderTrackerMiddleware {
@@ -148,19 +148,26 @@ impl Interceptor<HttpContext, HttpResponse> for LoggingInterceptor {
     }
 }
 
-pub struct ValidationPipe {
+/// Refuses the request with a 400 when the header marks it invalid, and never
+/// calls `next` — an interceptor answering in place of the handler.
+pub struct ValidationInterceptor {
     tracker: ExecutionOrder,
 }
 
-impl ValidationPipe {
+impl ValidationInterceptor {
     pub fn new(tracker: ExecutionOrder) -> Self {
         Self { tracker }
     }
 }
 
-impl Pipe<HttpContext, HttpResponse> for ValidationPipe {
-    fn process(&self, context: &HttpContext) -> Option<HttpResponse> {
-        self.tracker.track("pipe:validation");
+#[async_trait]
+impl Interceptor<HttpContext, HttpResponse> for ValidationInterceptor {
+    async fn intercept(
+        &self,
+        context: &HttpContext,
+        next: Box<dyn InterceptorNext<HttpContext, HttpResponse>>,
+    ) -> HttpResponse {
+        self.tracker.track("interceptor:validation");
         let is_invalid = context
             .request()
             .headers
@@ -173,26 +180,9 @@ impl Pipe<HttpContext, HttpResponse> for ValidationPipe {
             let mut response = HttpResponse::new();
             response.status = 400;
             response.body = Some(ToniBody::text("Validation failed".to_string()));
-            return Some(response);
+            return response;
         }
-        None
-    }
-}
-
-pub struct TransformPipe {
-    tracker: ExecutionOrder,
-}
-
-impl TransformPipe {
-    pub fn new(tracker: ExecutionOrder) -> Self {
-        Self { tracker }
-    }
-}
-
-impl Pipe<HttpContext, HttpResponse> for TransformPipe {
-    fn process(&self, _context: &HttpContext) -> Option<HttpResponse> {
-        self.tracker.track("pipe:transform");
-        None
+        next.run(context).await
     }
 }
 
@@ -233,7 +223,6 @@ async fn enhancers_execution_order() {
     impl EnhancerController {
         #[use_guards(AdminGuard::new(get_tracker()))]
         #[use_interceptors(LoggingInterceptor::new("method", get_tracker()))]
-        #[use_pipes(ValidationPipe::new(get_tracker()), TransformPipe::new(get_tracker()))]
         #[get("/protected")]
         fn protected_endpoint(&self) -> ToniBody {
             self.tracker.track("controller:protected");
@@ -247,8 +236,10 @@ async fn enhancers_execution_order() {
             ToniBody::text("Authenticated resource".to_string())
         }
 
-        #[use_interceptors(LoggingInterceptor::new("validate", get_tracker()))]
-        #[use_pipes(ValidationPipe::new(get_tracker()), TransformPipe::new(get_tracker()))]
+        #[use_interceptors(
+            LoggingInterceptor::new("validate", get_tracker()),
+            ValidationInterceptor::new(get_tracker())
+        )]
         #[post("/validate")]
         fn validate_endpoint(&self) -> ToniBody {
             self.tracker.track("controller:validate");

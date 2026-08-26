@@ -67,7 +67,7 @@ impl NextHandle {
 ///
 /// ```text
 /// request → global middleware → routing → module middleware → guards
-///         → interceptors → pipes → controller
+///         → interceptors → controller
 /// ```
 ///
 /// ## Body access

@@ -1,4 +1,3 @@
-use quote::quote;
 use syn::{Attribute, Ident};
 
 fn is_http_method(segment: &Ident) -> bool {
@@ -32,10 +31,4 @@ pub fn attr_to_string(attr: &Attribute) -> Result<String, ()> {
         Some(s) => Ok(s),
         None => Err(()),
     }
-}
-
-pub fn create_extract_body_dto_token_stream(
-    _body_dto: &Ident,
-) -> syn::Result<proc_macro2::TokenStream> {
-    Ok(quote! { None })
 }

@@ -166,13 +166,6 @@ where
     fn get_method(&self) -> HttpMethod {
         HttpMethod::POST
     }
-
-    fn get_body_dto(
-        &self,
-        _req: &toni::RequestPart,
-    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
-        None // GraphQL doesn't use DTO validation (uses GraphQL schema validation)
-    }
 }
 
 impl<Query, Mutation, Subscription, Ctx> GraphQLPostController<Query, Mutation, Subscription, Ctx>
@@ -270,12 +263,5 @@ impl Route for GraphQLPlaygroundController {
 
     fn get_method(&self) -> HttpMethod {
         HttpMethod::GET
-    }
-
-    fn get_body_dto(
-        &self,
-        _req: &toni::RequestPart,
-    ) -> Option<Box<dyn toni::traits_helpers::validate::Validatable>> {
-        None // Playground doesn't use DTO validation
     }
 }

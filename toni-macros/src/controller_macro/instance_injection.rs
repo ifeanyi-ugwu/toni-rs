@@ -254,19 +254,19 @@ fn generate_controller_wrapper(
         .any(|p| !matches!(p.kind, ExtractorKind::HttpRequest | ExtractorKind::Unknown));
     let use_extractors = has_extractors || marker_params.is_empty();
 
-    let (method_call, marker_params_extraction, body_dto_token_stream) = if use_extractors {
+    let (method_call, marker_params_extraction) = if use_extractors {
         let (extractions, call_args) = generate_extractor_extractions(&extractor_params)?;
         let method_call = if is_static_method {
             generate_extractor_static_method_call(method, struct_name, &call_args)?
         } else {
             generate_extractor_method_call(method, &call_args)?
         };
-        (method_call, extractions, None)
+        (method_call, extractions)
     } else {
         let method_call =
             generate_method_call(method, &marker_params, struct_name, is_static_method)?;
-        let (extractions, body_dto) = generate_marker_params_extraction(&marker_params)?;
-        (method_call, extractions, body_dto)
+        let extractions = generate_marker_params_extraction(&marker_params)?;
+        (method_call, extractions)
     };
 
     let method_call = if is_sse {
@@ -289,7 +289,6 @@ fn generate_controller_wrapper(
         &method_call,
         &enhancer_infos,
         &marker_params_extraction,
-        &body_dto_token_stream,
         &metadata_exprs,
         scope,
         is_static_method,
@@ -349,11 +348,8 @@ fn generate_method_call(
     })
 }
 
-fn generate_marker_params_extraction(
-    marker_params: &[MarkerParam],
-) -> Result<(Vec<TokenStream>, Option<TokenStream>)> {
+fn generate_marker_params_extraction(marker_params: &[MarkerParam]) -> Result<Vec<TokenStream>> {
     let mut extractions = Vec::new();
-    let body_dto_token_stream = None;
 
     for marker_param in marker_params {
         match marker_param.marker_name.as_str() {
@@ -364,7 +360,7 @@ fn generate_marker_params_extraction(
         }
     }
 
-    Ok((extractions, body_dto_token_stream))
+    Ok(extractions)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -376,7 +372,6 @@ fn generate_controller_wrapper_code(
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
-    body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
     scope: ControllerScope,
     is_static_method: bool,
@@ -391,7 +386,6 @@ fn generate_controller_wrapper_code(
             method_call,
             enhancer_infos,
             marker_params_extraction,
-            body_dto_token_stream,
             metadata_exprs,
             is_static_method,
             returns_result,
@@ -404,7 +398,6 @@ fn generate_controller_wrapper_code(
             method_call,
             enhancer_infos,
             marker_params_extraction,
-            body_dto_token_stream,
             metadata_exprs,
             is_static_method,
             returns_result,
@@ -440,7 +433,6 @@ fn enhancer_vecs(
 fn enhancers_method(enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>) -> TokenStream {
     let (guard_tokens, guard_instances) = enhancer_vecs(enhancer_infos, "guards");
     let (interceptor_tokens, interceptor_instances) = enhancer_vecs(enhancer_infos, "interceptors");
-    let (pipe_tokens, pipe_instances) = enhancer_vecs(enhancer_infos, "pipes");
     let (error_handler_tokens, error_handler_instances) =
         enhancer_vecs(enhancer_infos, "error_handlers");
 
@@ -449,11 +441,9 @@ fn enhancers_method(enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>) -> Toke
             ::toni::traits_helpers::ControllerEnhancers {
                 guard_tokens: vec![#(#guard_tokens),*],
                 interceptor_tokens: vec![#(#interceptor_tokens),*],
-                pipe_tokens: vec![#(#pipe_tokens),*],
                 error_handler_tokens: vec![#(#error_handler_tokens),*],
                 guards: vec![#(::std::sync::Arc::new(#guard_instances)),*],
                 interceptors: vec![#(::std::sync::Arc::new(#interceptor_instances)),*],
-                pipes: vec![#(::std::sync::Arc::new(#pipe_instances)),*],
                 error_handlers: vec![#(::std::sync::Arc::new(#error_handler_instances)),*],
             }
         }
@@ -475,14 +465,9 @@ fn route_common_methods(
     http_method: &str,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     metadata_exprs: &[TokenStream],
-    body_dto_token_stream: &Option<TokenStream>,
 ) -> TokenStream {
     let enhancers = enhancers_method(enhancer_infos);
     let get_path = get_path_method(struct_name, route_path);
-    let body_dto_stream = body_dto_token_stream
-        .clone()
-        .unwrap_or_else(|| quote! { None });
-
     quote! {
         fn get_method(&self) -> ::toni::http_helpers::HttpMethod {
             ::toni::http_helpers::HttpMethod::from_string(#http_method).unwrap()
@@ -498,9 +483,6 @@ fn route_common_methods(
             ::std::sync::Arc::new(metadata)
         }
 
-        fn get_body_dto(&self, _req: &::toni::http_helpers::RequestPart) -> Option<Box<dyn ::toni::traits_helpers::validate::Validatable>> {
-            #body_dto_stream
-        }
     }
 }
 
@@ -514,7 +496,6 @@ fn generate_singleton_controller_wrapper(
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
-    body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
     is_static_method: bool,
     returns_result: bool,
@@ -541,7 +522,6 @@ fn generate_singleton_controller_wrapper(
         http_method,
         enhancer_infos,
         metadata_exprs,
-        body_dto_token_stream,
     );
 
     quote! {
@@ -586,7 +566,6 @@ fn generate_request_controller_wrapper(
     method_call: &TokenStream,
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
-    body_dto_token_stream: &Option<TokenStream>,
     metadata_exprs: &[TokenStream],
     is_static_method: bool,
     returns_result: bool,
@@ -624,7 +603,6 @@ fn generate_request_controller_wrapper(
         http_method,
         enhancer_infos,
         metadata_exprs,
-        body_dto_token_stream,
     );
 
     quote! {

@@ -9,7 +9,7 @@ use super::HandlerContext;
 /// A typed per-message key-value bag, shared by everything handling that message.
 ///
 /// Values are keyed by their concrete type. A guard that authenticates the
-/// caller inserts an `AuthUser`; an interceptor, a pipe, or the handler itself
+/// caller inserts an `AuthUser`; an interceptor, or the handler itself,
 /// reads it back without coupling to the guard's type.
 ///
 /// This is a handle, not the storage. Cloning it — or cloning the request parts

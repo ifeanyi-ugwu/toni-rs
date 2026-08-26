@@ -13,7 +13,7 @@ use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
 use toni::injectable;
 use toni::module;
 use toni::traits_helpers::{
-    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe,
+    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext,
 };
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni_macros::{new, subscriptions, websocket_gateway};
@@ -278,73 +278,6 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
     assert_eq!(json["status"], "error");
     assert_eq!(json["kind"], "Internal");
     assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Middleware));
-
-    ws.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
-        .await
-        .unwrap();
-    let reply = ws.next().await.unwrap().unwrap();
-    assert_eq!(reply.to_text().unwrap(), "safe-ok");
-}
-
-#[injectable]
-pub struct PanickingWsPipe {}
-impl PanickingWsPipe {}
-
-impl Pipe<WsContext, WsHandlerResult> for PanickingWsPipe {
-    fn process(&self, _ctx: &WsContext) -> Option<WsHandlerResult> {
-        panic!("ws pipe kaboom");
-        None
-    }
-}
-
-#[websocket_gateway("/ws-pipe-panic")]
-pub struct WsPipePanicGateway {}
-#[subscriptions]
-impl WsPipePanicGateway {
-    #[new]
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    #[subscribe_message("piped")]
-    #[use_pipes(PanickingWsPipe)]
-    async fn on_piped(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
-        Ok(WsMessage::text("unreachable").into())
-    }
-
-    #[subscribe_message("safe")]
-    async fn on_safe(&self, _c: WsClient, _m: WsMessage) -> WsHandlerResult {
-        Ok(WsMessage::text("safe-ok").into())
-    }
-}
-
-#[module(providers: [PanickingWsPipe, WsPipePanicGateway])]
-impl WsPipePanicModule {}
-
-#[tokio_localset_test::localset_test]
-async fn ws_pipe_panic_renders_envelope_and_keeps_connection_alive() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-
-    let count = Arc::new(AtomicUsize::new(0));
-    let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(WsSegmentObserver {
-        count: count.clone(),
-        captured: captured.clone(),
-    });
-    let port = start_ws_server_with_observers(WsPipePanicModule, vec![observer]).await;
-
-    let url = format!("ws://127.0.0.1:{}/ws-pipe-panic", port);
-    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    ws.send(Message::Text(r#"{"event":"piped"}"#.to_string().into()))
-        .await
-        .unwrap();
-
-    let reply = ws.next().await.unwrap().unwrap();
-    let json: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
-    assert_eq!(json["status"], "error");
-    assert_eq!(json["kind"], "Internal");
-    assert_eq!(*captured.lock().unwrap(), Some(PipelineSegment::Pipe));
 
     ws.send(Message::Text(r#"{"event":"safe"}"#.to_string().into()))
         .await

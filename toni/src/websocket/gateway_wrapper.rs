@@ -9,8 +9,8 @@ use crate::context::WsContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
-    ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, WsErrorHandlerArc, WsGuardEntry,
-    WsInterceptorEntry, WsPipeEntry,
+    ErrorObserver, Guard, Interceptor, InterceptorNext, WsErrorHandlerArc, WsGuardEntry,
+    WsInterceptorEntry,
 };
 
 use super::{
@@ -65,7 +65,6 @@ impl Drop for ScopedStream {
 struct WsChainNext {
     interceptors: Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>>,
     gateway: Arc<Box<dyn GatewayTrait>>,
-    pipes: Vec<Arc<dyn Pipe<WsContext, WsHandlerResult>>>,
     error_handlers: Vec<WsErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
 }
@@ -77,7 +76,6 @@ impl InterceptorNext<WsContext, WsHandlerResult> for WsChainNext {
             context,
             &self.interceptors,
             &self.gateway,
-            &self.pipes,
             &self.error_handlers,
             &self.observers,
         )
@@ -86,12 +84,11 @@ impl InterceptorNext<WsContext, WsHandlerResult> for WsChainNext {
 }
 
 /// Parallel to `InstanceWrapper` on the HTTP side — wraps a gateway with the full
-/// guard/interceptor/pipe pipeline and tracks its own connected clients.
+/// guard/interceptor pipeline and tracks its own connected clients.
 pub struct GatewayWrapper {
     gateway: Arc<Box<dyn GatewayTrait>>,
     guards: Vec<WsGuardEntry>,
     interceptors: Vec<WsInterceptorEntry>,
-    pipes: Vec<WsPipeEntry>,
     error_handlers: Vec<WsErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
     metadata: Arc<Metadata>,
@@ -100,7 +97,6 @@ pub struct GatewayWrapper {
     handler_metadata: HashMap<String, Arc<Metadata>>,
     handler_guards: HashMap<String, Vec<WsGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
-    handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
     handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>>,
     /// Active client connections (client_id => WsClient). A client carries the session scoped to
     /// its connection, so there is nothing to keep beside it.
@@ -112,28 +108,24 @@ impl GatewayWrapper {
         gateway: Arc<Box<dyn GatewayTrait>>,
         guards: Vec<WsGuardEntry>,
         interceptors: Vec<WsInterceptorEntry>,
-        pipes: Vec<WsPipeEntry>,
         error_handlers: Vec<WsErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
         handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<WsGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<WsInterceptorEntry>>,
-        handler_pipes: HashMap<String, Vec<WsPipeEntry>>,
         handler_error_handlers: HashMap<String, Vec<WsErrorHandlerArc>>,
     ) -> Self {
         Self {
             gateway,
             guards,
             interceptors,
-            pipes,
             error_handlers,
             error_observers,
             metadata,
             handler_metadata,
             handler_guards,
             handler_interceptors,
-            handler_pipes,
             handler_error_handlers,
             clients: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -246,10 +238,6 @@ impl GatewayWrapper {
         if let Some(h) = self.handler_interceptors.get(&event) {
             all_interceptors.extend_from_slice(h);
         }
-        let mut all_pipes = self.pipes.clone();
-        if let Some(h) = self.handler_pipes.get(&event) {
-            all_pipes.extend_from_slice(h);
-        }
         let mut all_error_handlers = self.error_handlers.clone();
         if let Some(h) = self.handler_error_handlers.get(&event) {
             all_error_handlers.extend_from_slice(h);
@@ -289,13 +277,11 @@ impl GatewayWrapper {
         }
 
         let interceptors = Self::resolve_interceptors(&all_interceptors, &context).await;
-        let pipes = Self::resolve_pipes(&all_pipes, &context).await;
 
         let answer = Self::execute_with_interceptors(
             &context,
             &interceptors,
             &self.gateway,
-            &pipes,
             &all_error_handlers,
             &self.error_observers,
         )
@@ -346,26 +332,10 @@ impl GatewayWrapper {
         out
     }
 
-    async fn resolve_pipes(
-        entries: &[WsPipeEntry],
-        ctx: &WsContext,
-    ) -> Vec<Arc<dyn Pipe<WsContext, WsHandlerResult>>> {
-        let mut out = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let p = match entry {
-                WsPipeEntry::Ready(p) => p.clone(),
-                WsPipeEntry::Factory(f) => f.create(ctx).await,
-            };
-            out.push(p);
-        }
-        out
-    }
-
     async fn execute_with_interceptors(
         context: &WsContext,
         interceptors: &[Arc<dyn Interceptor<WsContext, WsHandlerResult>>],
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> WsHandlerResult {
@@ -373,7 +343,6 @@ impl GatewayWrapper {
             return Self::execute_handler_with_error_handling(
                 context,
                 gateway,
-                pipes,
                 error_handlers,
                 observers,
             )
@@ -385,7 +354,6 @@ impl GatewayWrapper {
         let next = WsChainNext {
             interceptors: rest.to_vec(),
             gateway: gateway.clone(),
-            pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
         };
@@ -403,7 +371,7 @@ impl GatewayWrapper {
         }
     }
 
-    /// Surface a panicking pre-handler segment (interceptor; pipes flow
+    /// Surface a panicking pre-handler segment (an interceptor; it flows
     /// through `execute_handler`'s `ExecutionResult::Err` instead) through
     /// the existing observer + chain pipeline so it cannot tear down the
     /// connection. Fan to observers, give error handlers first claim,
@@ -427,7 +395,7 @@ impl GatewayWrapper {
         Ok(WsHandlerOutput::Single(msg))
     }
 
-    /// Run pipes + handler, then route the outcome.
+    /// Run the handler, then route the outcome.
     ///
     /// `Ok` is the answer, streams included. On `Err`, observers fan out on the
     /// underlying error, the chain's most-specific handler gets first claim,
@@ -435,26 +403,9 @@ impl GatewayWrapper {
     async fn execute_handler_with_error_handling(
         context: &WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
-        pipes: &[Arc<dyn Pipe<WsContext, WsHandlerResult>>],
         error_handlers: &[WsErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> WsHandlerResult {
-        for pipe in pipes {
-            // `pipe.process` is sync — `catch_sync` wraps it the same way
-            // `catch_async` wraps async segments. A panic routes through the
-            // observer + chain pipeline below; remaining pipes and the handler
-            // are skipped.
-            match crate::panic_recovery::catch_sync(PipelineSegment::Pipe, || pipe.process(context))
-            {
-                Ok(Some(answer)) => return answer,
-                Ok(None) => {}
-                Err(event) => {
-                    return Self::record_pipeline_panic(context, error_handlers, observers, event)
-                        .await;
-                }
-            }
-        }
-
         match Self::execute_handler(context, gateway).await {
             ExecutionResult::Ok(output) => Ok(output),
             ExecutionResult::Err(ws_err) => {
@@ -684,9 +635,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            vec![],
             Arc::new(Metadata::new()),
-            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),

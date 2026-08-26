@@ -6,29 +6,25 @@ use rustc_hash::FxHashMap;
 
 use crate::context::Metadata;
 use crate::errors::HttpError;
-use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse, RequestPart};
+use crate::http_helpers::{ExecutionResult, HttpMethod, HttpResponse};
 
 use crate::context::HttpContext;
 
-use super::{
-    Guard, HttpErrorHandlerArc, Interceptor, Pipe, provider::Provider, validate::Validatable,
-};
+use super::{Guard, HttpErrorHandlerArc, Interceptor, provider::Provider};
 
 /// Per-route enhancer manifest — both DI-resolved tokens and direct-instantiation arcs.
 ///
 /// `*_tokens` come from `#[use_guards(MyGuard)]`-style attributes that resolve via
-/// the DI container; `guards` / `interceptors` / `pipes` / `error_handlers` come
+/// the DI container; `guards` / `interceptors` / `error_handlers` come
 /// from `#[use_guards(MyGuard{})]`-style attributes that bypass DI and instantiate
 /// the enhancer inline.
 #[derive(Default)]
 pub struct ControllerEnhancers {
     pub guard_tokens: Vec<String>,
     pub interceptor_tokens: Vec<String>,
-    pub pipe_tokens: Vec<String>,
     pub error_handler_tokens: Vec<String>,
     pub guards: Vec<Arc<dyn Guard<HttpContext>>>,
     pub interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
-    pub pipes: Vec<Arc<dyn Pipe<HttpContext, HttpResponse>>>,
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }
 
@@ -83,8 +79,6 @@ pub trait Route: Send + Sync {
     fn metadata(&self) -> Arc<Metadata> {
         Arc::new(Metadata::new())
     }
-
-    fn get_body_dto(&self, _req: &RequestPart) -> Option<Box<dyn Validatable>>;
 }
 
 /// A controller: one DI instance exposing its routes and lifecycle hooks.

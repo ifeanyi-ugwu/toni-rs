@@ -1,7 +1,7 @@
 //! Single source of truth for the per-transport enhancer emission shape.
 //!
-//! Three transports × three enhancer roles (Guard / Interceptor / Pipe) gives
-//! nine `EnhancerKind` variants. Three transports × ErrorHandler gives three
+//! Three transports × two enhancer roles (Guard / Interceptor) gives six
+//! `EnhancerKind` variants, plus gRPC's two. Three transports × ErrorHandler gives three
 //! `ErrorHandlerKind` variants. ErrorHandlers don't have entry-wrapping or
 //! dyn-factory shapes, so they're a separate small kind to keep `EnhancerKind`
 //! uniform.
@@ -17,13 +17,10 @@ use quote::quote;
 pub enum EnhancerKind {
     HttpGuard,
     HttpInterceptor,
-    HttpPipe,
     RpcGuard,
     RpcInterceptor,
-    RpcPipe,
     WsGuard,
     WsInterceptor,
-    WsPipe,
     GrpcGuard,
     GrpcInterceptor,
 }
@@ -60,18 +57,15 @@ pub struct ErrorHandlerSpec {
 }
 
 impl EnhancerKind {
-    pub fn all() -> [EnhancerKind; 11] {
+    pub fn all() -> [EnhancerKind; 8] {
         use EnhancerKind::*;
         [
             HttpGuard,
             HttpInterceptor,
-            HttpPipe,
             RpcGuard,
             RpcInterceptor,
-            RpcPipe,
             WsGuard,
             WsInterceptor,
-            WsPipe,
             GrpcGuard,
             GrpcInterceptor,
         ]
@@ -97,15 +91,6 @@ impl EnhancerKind {
                 context_path: quote! { ::toni::context::HttpContext },
                 provider_ctx_variant: quote! { ::toni::ProviderContext::Http },
             },
-            EnhancerKind::HttpPipe => EnhancerSpec {
-                role_variant: quote! { ::toni::traits_helpers::ProviderRole::HttpPipe },
-                entry_path: quote! { ::toni::traits_helpers::HttpPipeEntry },
-                trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::HttpContext, ::toni::http_helpers::HttpResponse> },
-                dyn_factory_trait: quote! { ::toni::traits_helpers::DynHttpPipeFactory },
-                factory_suffix: "HttpPipe",
-                context_path: quote! { ::toni::context::HttpContext },
-                provider_ctx_variant: quote! { ::toni::ProviderContext::Http },
-            },
             EnhancerKind::RpcGuard => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcGuard },
                 entry_path: quote! { ::toni::traits_helpers::RpcGuardEntry },
@@ -124,15 +109,6 @@ impl EnhancerKind {
                 context_path: quote! { ::toni::context::RpcContext },
                 provider_ctx_variant: quote! { ::toni::ProviderContext::Rpc },
             },
-            EnhancerKind::RpcPipe => EnhancerSpec {
-                role_variant: quote! { ::toni::traits_helpers::ProviderRole::RpcPipe },
-                entry_path: quote! { ::toni::traits_helpers::RpcPipeEntry },
-                trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::RpcContext, ::toni::rpc::RpcHandlerResult> },
-                dyn_factory_trait: quote! { ::toni::traits_helpers::DynRpcPipeFactory },
-                factory_suffix: "RpcPipe",
-                context_path: quote! { ::toni::context::RpcContext },
-                provider_ctx_variant: quote! { ::toni::ProviderContext::Rpc },
-            },
             EnhancerKind::WsGuard => EnhancerSpec {
                 role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsGuard },
                 entry_path: quote! { ::toni::traits_helpers::WsGuardEntry },
@@ -148,15 +124,6 @@ impl EnhancerKind {
                 trait_path: quote! { ::toni::traits_helpers::Interceptor<::toni::context::WsContext, ::toni::websocket::WsHandlerResult> },
                 dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsInterceptorFactory },
                 factory_suffix: "WsInterceptor",
-                context_path: quote! { ::toni::context::WsContext },
-                provider_ctx_variant: quote! { ::toni::ProviderContext::WebSocket },
-            },
-            EnhancerKind::WsPipe => EnhancerSpec {
-                role_variant: quote! { ::toni::traits_helpers::ProviderRole::WsPipe },
-                entry_path: quote! { ::toni::traits_helpers::WsPipeEntry },
-                trait_path: quote! { ::toni::traits_helpers::Pipe<::toni::context::WsContext, ::toni::websocket::WsHandlerResult> },
-                dyn_factory_trait: quote! { ::toni::traits_helpers::DynWsPipeFactory },
-                factory_suffix: "WsPipe",
                 context_path: quote! { ::toni::context::WsContext },
                 provider_ctx_variant: quote! { ::toni::ProviderContext::WebSocket },
             },
@@ -217,7 +184,7 @@ impl ErrorHandlerKind {
 /// nothing — see the `__detect` module docs).
 ///
 /// Shared by every singleton role-registration site: the `#[injectable]` factory and the caching
-/// `provider_factory!` factory. Middleware, the nine guard/interceptor/pipe
+/// `provider_factory!` factory. Middleware, the eight guard/interceptor
 /// kinds, and the four error-handler kinds are each probed; only implemented ones register.
 pub fn value_probe_detection() -> TokenStream {
     let mut detects = vec![quote! {

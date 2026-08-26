@@ -8,7 +8,7 @@ pub type BoxFuture<T> = Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 /// `register_route`.
 ///
 /// Each `Arc<dyn RequestHandler>` wraps one route's pipeline: route-scoped
-/// middleware → guards → interceptors → pipes → controller.  The adapter
+/// middleware → guards → interceptors → controller.  The adapter
 /// stores these at bootstrap and dispatches to the matching one at request
 /// time.
 pub trait RequestHandler: Send + Sync + 'static {

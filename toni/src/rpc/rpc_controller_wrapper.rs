@@ -8,8 +8,8 @@ use crate::context::RpcContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
-    ErrorObserver, Guard, Interceptor, InterceptorNext, Pipe, RpcErrorHandlerArc, RpcGuardEntry,
-    RpcInterceptorEntry, RpcPipeEntry,
+    ErrorObserver, Guard, Interceptor, InterceptorNext, RpcErrorHandlerArc, RpcGuardEntry,
+    RpcInterceptorEntry,
 };
 
 use super::{RpcControllerSource, RpcData, RpcError, RpcHandlerResult};
@@ -19,7 +19,6 @@ use std::panic::AssertUnwindSafe;
 struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>>,
     source: Arc<dyn RpcControllerSource>,
-    pipes: Vec<Arc<dyn Pipe<RpcContext, RpcHandlerResult>>>,
     error_handlers: Vec<RpcErrorHandlerArc>,
     observers: Vec<Arc<dyn ErrorObserver>>,
 }
@@ -31,7 +30,6 @@ impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
             context,
             &self.interceptors,
             &self.source,
-            &self.pipes,
             &self.error_handlers,
             &self.observers,
         )
@@ -39,12 +37,11 @@ impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
     }
 }
 
-/// Wraps an [`RpcControllerSource`] with the full guard/interceptor/pipe pipeline.
+/// Wraps an [`RpcControllerSource`] with the full guard/interceptor pipeline.
 pub struct RpcControllerWrapper {
     source: Arc<dyn RpcControllerSource>,
     guards: Vec<RpcGuardEntry>,
     interceptors: Vec<RpcInterceptorEntry>,
-    pipes: Vec<RpcPipeEntry>,
     error_handlers: Vec<RpcErrorHandlerArc>,
     error_observers: Vec<Arc<dyn ErrorObserver>>,
     metadata: Arc<Metadata>,
@@ -53,7 +50,6 @@ pub struct RpcControllerWrapper {
     handler_metadata: HashMap<String, Arc<Metadata>>,
     handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
     handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
-    handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
     handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>>,
 }
 
@@ -62,28 +58,24 @@ impl RpcControllerWrapper {
         source: Arc<dyn RpcControllerSource>,
         guards: Vec<RpcGuardEntry>,
         interceptors: Vec<RpcInterceptorEntry>,
-        pipes: Vec<RpcPipeEntry>,
         error_handlers: Vec<RpcErrorHandlerArc>,
         error_observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
         handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
         handler_interceptors: HashMap<String, Vec<RpcInterceptorEntry>>,
-        handler_pipes: HashMap<String, Vec<RpcPipeEntry>>,
         handler_error_handlers: HashMap<String, Vec<RpcErrorHandlerArc>>,
     ) -> Self {
         Self {
             source,
             guards,
             interceptors,
-            pipes,
             error_handlers,
             error_observers,
             metadata,
             handler_metadata,
             handler_guards,
             handler_interceptors,
-            handler_pipes,
             handler_error_handlers,
         }
     }
@@ -117,10 +109,6 @@ impl RpcControllerWrapper {
         let mut all_interceptors = self.interceptors.clone();
         if let Some(h) = self.handler_interceptors.get(&pattern) {
             all_interceptors.extend_from_slice(h);
-        }
-        let mut all_pipes = self.pipes.clone();
-        if let Some(h) = self.handler_pipes.get(&pattern) {
-            all_pipes.extend_from_slice(h);
         }
         let mut all_error_handlers = self.error_handlers.clone();
         if let Some(h) = self.handler_error_handlers.get(&pattern) {
@@ -156,12 +144,10 @@ impl RpcControllerWrapper {
         }
 
         let interceptors = Self::resolve_interceptors(&all_interceptors, &ctx).await;
-        let pipes = Self::resolve_pipes(&all_pipes, &ctx).await;
         Self::execute_with_interceptors(
             &ctx,
             &interceptors,
             &self.source,
-            &pipes,
             &all_error_handlers,
             &observers,
         )
@@ -274,31 +260,15 @@ impl RpcControllerWrapper {
         out
     }
 
-    async fn resolve_pipes(
-        entries: &[RpcPipeEntry],
-        ctx: &RpcContext,
-    ) -> Vec<Arc<dyn Pipe<RpcContext, RpcHandlerResult>>> {
-        let mut out = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let p = match entry {
-                RpcPipeEntry::Ready(p) => p.clone(),
-                RpcPipeEntry::Factory(f) => f.create(ctx).await,
-            };
-            out.push(p);
-        }
-        out
-    }
-
     async fn execute_with_interceptors(
         context: &RpcContext,
         interceptors: &[Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>],
         source: &Arc<dyn RpcControllerSource>,
-        pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> RpcHandlerResult {
         if interceptors.is_empty() {
-            return Self::execute_handler(context, source, pipes, error_handlers, observers).await;
+            return Self::execute_handler(context, source, error_handlers, observers).await;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
@@ -306,7 +276,6 @@ impl RpcControllerWrapper {
         let next = RpcChainNext {
             interceptors: rest.to_vec(),
             source: source.clone(),
-            pipes: pipes.to_vec(),
             error_handlers: error_handlers.to_vec(),
             observers: observers.to_vec(),
         };
@@ -324,7 +293,7 @@ impl RpcControllerWrapper {
         }
     }
 
-    /// Surface a panicking pre-handler segment (interceptor or pipe)
+    /// Surface a panicking pre-handler segment (an interceptor)
     /// through the existing observer + chain pipeline: fan to observers,
     /// give error handlers first claim, and fall back to a wire-`Err`
     /// Internal envelope.
@@ -347,7 +316,7 @@ impl RpcControllerWrapper {
         Ok(Some(data))
     }
 
-    /// Run pipes + handler, then route the result.
+    /// Run the handler, then route the result.
     ///
     /// `Ok` is the answer. On `Err`, observers fan out on the underlying error,
     /// the chain's most-specific handler gets first claim, and
@@ -355,29 +324,11 @@ impl RpcControllerWrapper {
     async fn execute_handler(
         context: &RpcContext,
         source: &Arc<dyn RpcControllerSource>,
-        pipes: &[Arc<dyn Pipe<RpcContext, RpcHandlerResult>>],
         error_handlers: &[RpcErrorHandlerArc],
         observers: &[Arc<dyn ErrorObserver>],
     ) -> RpcHandlerResult {
-        for pipe in pipes {
-            // `pipe.process` is sync — `catch_sync` wraps it the same way
-            // `catch_async` wraps async segments. A panic routes through
-            // the observer + chain pipeline; remaining pipes and the
-            // handler are skipped.
-            match crate::panic_recovery::catch_sync(crate::errors::PipelineSegment::Pipe, || {
-                pipe.process(context)
-            }) {
-                Ok(Some(answer)) => return answer,
-                Ok(None) => {}
-                Err(event) => {
-                    return Self::record_pipeline_panic(context, error_handlers, observers, event)
-                        .await;
-                }
-            }
-        }
-
         // The instance is asked for here and nowhere earlier: a guard that rejects, an
-        // interceptor that answers, or a pipe that aborts never builds a controller. Construction
+        // interceptor that answers never builds a controller. Construction
         // sits inside the same `catch_unwind` as the handler body, so a panicking `#[new]` renders
         // an envelope instead of tearing down the dispatcher.
         let exec_result = AssertUnwindSafe(async {

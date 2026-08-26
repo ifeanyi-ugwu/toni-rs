@@ -209,7 +209,6 @@ fn build_enhancers_fn(
     };
     let guard_tokens = tokens_for("guards");
     let interceptor_tokens = tokens_for("interceptors");
-    let pipe_tokens = tokens_for("pipes");
     let error_handler_tokens = tokens_for("error_handlers");
 
     let mut handler_entries: Vec<TokenStream> = Vec::new();
@@ -231,9 +230,8 @@ fn build_enhancers_fn(
         };
         let hg = htokens_for("guards");
         let hi = htokens_for("interceptors");
-        let hp = htokens_for("pipes");
         let he = htokens_for("error_handlers");
-        if hg.is_empty() && hi.is_empty() && hp.is_empty() && he.is_empty() {
+        if hg.is_empty() && hi.is_empty() && he.is_empty() {
             continue;
         }
         handler_entries.push(quote! {
@@ -241,7 +239,6 @@ fn build_enhancers_fn(
                 event: #event.to_string(),
                 guard_tokens: vec![#(#hg),*],
                 interceptor_tokens: vec![#(#hi),*],
-                pipe_tokens: vec![#(#hp),*],
                 error_handler_tokens: vec![#(#he),*],
             }
         });
@@ -254,7 +251,6 @@ fn build_enhancers_fn(
             ::toni::GatewayEnhancers {
                 guard_tokens: vec![#(#guard_tokens),*],
                 interceptor_tokens: vec![#(#interceptor_tokens),*],
-                pipe_tokens: vec![#(#pipe_tokens),*],
                 error_handler_tokens: vec![#(#error_handler_tokens),*],
                 handlers: vec![#(#handler_entries),*],
             }

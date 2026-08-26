@@ -18,8 +18,7 @@ use super::{CancellationToken, Extensions, HandlerContext, Metadata, shared::Sha
 ///
 /// Answering is not done here. A handler returns its response, and an enhancer
 /// that wants to answer without reaching the handler returns one too — see
-/// [`Interceptor`](crate::traits_helpers::Interceptor) and
-/// [`Pipe`](crate::traits_helpers::Pipe).
+/// [`Interceptor`](crate::traits_helpers::Interceptor).
 #[derive(Clone)]
 pub struct HttpContext {
     inner: Arc<HttpInner>,

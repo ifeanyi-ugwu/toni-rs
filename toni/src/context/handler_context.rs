@@ -9,7 +9,7 @@ use crate::traits_helpers::ExecutionCache;
 ///
 /// Each transport (HTTP, RPC, gRPC, WebSocket) has its own concrete context
 /// type with transport-specific fields; they all implement this trait so that
-/// **universal** enhancers (guards, interceptors, pipes, error handlers) can
+/// **universal** enhancers (guards, interceptors, error handlers) can
 /// be written once via a blanket impl over `C: HandlerContext`.
 ///
 /// Methods on this trait are deliberately limited to what every transport can

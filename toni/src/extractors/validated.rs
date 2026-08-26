@@ -3,15 +3,20 @@
 use validator::Validate;
 
 use super::FromContext;
-use crate::context::HttpContext;
+use crate::context::HandlerContext;
 
 /// Runs `validator` over what the inner extractor produced, before the handler
 /// sees it.
 ///
-/// Wraps any extractor implementing [`ValidatableExtractor`] — `Json`, `Body`,
-/// `Query`, `Path` — and reads only what that extractor reads. So
-/// `Validated<Query<T>>` leaves the body for a body extractor on the same
-/// handler.
+/// Wraps any extractor implementing [`ValidatableExtractor`] and reads only
+/// what that extractor reads. So `Validated<Query<T>>` leaves the body for a
+/// body extractor on the same handler.
+///
+/// The wrapper is not HTTP-only: it is a [`FromContext<C>`] for whatever
+/// context the inner extractor reads from. `Validated<Json<T>>` on HTTP and
+/// `Validated<Payload<T>>` on WebSocket or RPC are the same wrapper over
+/// different inner extractors, and a mismatch — `Validated<Query<T>>` in a
+/// WebSocket handler — is a trait-bound error.
 ///
 /// # Example
 ///
@@ -121,13 +126,23 @@ impl<T: Validate> ValidatableExtractor for super::body::Body<T> {
     }
 }
 
-impl<E> FromContext<HttpContext> for Validated<E>
+// Implement for Payload<T> where T: Validate — the WebSocket and RPC spelling.
+impl<T: Validate> ValidatableExtractor for super::Payload<T> {
+    type Inner = T;
+
+    fn get_inner(&self) -> &Self::Inner {
+        &self.0
+    }
+}
+
+impl<C, E> FromContext<C> for Validated<E>
 where
-    E: FromContext<HttpContext> + ValidatableExtractor,
+    C: HandlerContext,
+    E: FromContext<C> + ValidatableExtractor,
 {
     type Error = ValidationError;
 
-    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+    async fn extract(ctx: &C) -> Result<Self, Self::Error> {
         let extracted = E::extract(ctx)
             .await
             .map_err(|e| ValidationError::ExtractionError(e.to_string()))?;
