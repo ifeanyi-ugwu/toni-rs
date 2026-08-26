@@ -326,10 +326,6 @@ where
         format!("GraphQLSubscriptionGateway_{}", self.path)
     }
 
-    fn get_token_factory(&self) -> String {
-        format!("GraphQLSubscriptionGatewayFactory_{}", self.path)
-    }
-
     fn get_scope(&self) -> ProviderScope {
         ProviderScope::Singleton
     }

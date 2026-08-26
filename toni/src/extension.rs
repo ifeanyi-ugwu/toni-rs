@@ -128,10 +128,6 @@ impl<T: Send + Sync + 'static> Provider for Extension<T> {
         crate::di::token_of::<Extension<T>>()
     }
 
-    fn get_token_factory(&self) -> String {
-        crate::di::token_of::<Extension<T>>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
@@ -158,10 +154,6 @@ impl<T: Send + Sync + 'static> Provider for Extension<T> {
 #[async_trait]
 impl Provider for Extensions {
     fn get_token(&self) -> String {
-        crate::di::token_of::<Extensions>()
-    }
-
-    fn get_token_factory(&self) -> String {
         crate::di::token_of::<Extensions>()
     }
 

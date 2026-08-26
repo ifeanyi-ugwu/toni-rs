@@ -24,10 +24,6 @@ impl Provider for MultiCollectionProvider {
         self.token.clone()
     }
 
-    fn get_token_factory(&self) -> String {
-        self.token.clone()
-    }
-
     fn get_scope(&self) -> ProviderScope {
         ProviderScope::Singleton
     }

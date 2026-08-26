@@ -133,10 +133,6 @@ impl Provider for MemoryHealthIndicatorProvider {
         toni::di::token_of::<MemoryHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<MemoryHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

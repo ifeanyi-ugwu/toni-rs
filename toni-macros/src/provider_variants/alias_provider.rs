@@ -66,9 +66,6 @@ pub fn handle_provider_alias(input: TokenStream) -> Result<TokenStream> {
                     #alias_token_expr
                 }
 
-                fn get_token_factory(&self) -> String {
-                    #alias_token_expr
-                }
 
                 fn get_scope(&self) -> toni::ProviderScope {
                     // Inherit scope from target provider

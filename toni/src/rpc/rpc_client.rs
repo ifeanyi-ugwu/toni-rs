@@ -240,10 +240,6 @@ impl Provider for RpcClient {
         crate::di::token_of::<Self>()
     }
 
-    fn get_token_factory(&self) -> String {
-        crate::di::token_of::<Self>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

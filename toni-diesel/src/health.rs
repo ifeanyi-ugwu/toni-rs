@@ -90,9 +90,6 @@ macro_rules! impl_diesel_health {
                 toni::di::token_of::<$indicator>()
             }
 
-            fn get_token_factory(&self) -> String {
-                toni::di::token_of::<$indicator>()
-            }
 
             async fn execute(
                 &self,

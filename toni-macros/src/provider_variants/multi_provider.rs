@@ -147,9 +147,6 @@ fn contrib_provider_tokens(
             fn get_token(&self) -> ::std::string::String {
                 self.synthetic_token.clone()
             }
-            fn get_token_factory(&self) -> ::std::string::String {
-                self.synthetic_token.clone()
-            }
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Singleton
             }
