@@ -361,9 +361,9 @@ impl ToniInstanceLoader {
         let mut container = self.container.borrow_mut();
         let mut providers_tokens = Vec::new();
         for (provider_instance_token, injectable) in providers_instances {
-            let token_factory = injectable.instance.get_token_factory().clone();
+            let token = injectable.instance.get_token().clone();
             container.add_provider_instance(module_token, injectable.instance, injectable.roles)?;
-            providers_tokens.push((token_factory, provider_instance_token));
+            providers_tokens.push((token, provider_instance_token));
         }
 
         self.resolve_exports(module_token, providers_tokens, container)?;

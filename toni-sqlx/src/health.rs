@@ -124,10 +124,6 @@ where
         toni::di::token_of::<SqlxHealthIndicator<DB>>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<SqlxHealthIndicator<DB>>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

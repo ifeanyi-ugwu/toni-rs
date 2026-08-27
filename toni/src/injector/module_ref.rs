@@ -98,7 +98,7 @@ impl ModuleRef {
     /// // Global: searches current module, then globally
     /// let key: String = module_ref.get_by_token("SHARED_SECRET").global().await?;
     /// ```
-    pub fn get_by_token<T: 'static>(&self, token: impl IntoToken) -> ModuleRefQuery<'_, T> {
+    pub fn get_by_token<T: 'static>(&self, token: impl IntoToken<T>) -> ModuleRefQuery<'_, T> {
         ModuleRefQuery {
             module_ref: self,
             token: token.into_token(),
@@ -140,7 +140,7 @@ impl ModuleRef {
     /// The token counterpart of [`resolve`](Self::resolve).
     pub fn resolve_by_token<T: 'static>(
         &self,
-        token: impl IntoToken,
+        token: impl IntoToken<T>,
         execution: &ProviderContext,
     ) -> ModuleRefQuery<'_, T> {
         ModuleRefQuery {

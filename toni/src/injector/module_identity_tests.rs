@@ -54,9 +54,6 @@ impl Provider for FakeProvider {
     fn get_token(&self) -> String {
         self.token.clone()
     }
-    fn get_token_factory(&self) -> String {
-        self.token.clone()
-    }
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

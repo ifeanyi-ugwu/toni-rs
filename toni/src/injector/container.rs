@@ -259,7 +259,7 @@ impl ToniContainer {
         provider_instance: Arc<Box<dyn Provider>>,
         roles: Vec<ProviderRole>,
     ) -> Result<()> {
-        let token = provider_instance.get_token_factory();
+        let token = provider_instance.get_token();
 
         for role in roles {
             match role {

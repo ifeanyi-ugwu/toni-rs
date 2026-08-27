@@ -72,10 +72,6 @@ impl Provider for Request {
         Box::new(instance)
     }
 
-    fn get_token_factory(&self) -> String {
-        crate::di::token_of::<Request>()
-    }
-
     fn get_scope(&self) -> ProviderScope {
         ProviderScope::Request
     }

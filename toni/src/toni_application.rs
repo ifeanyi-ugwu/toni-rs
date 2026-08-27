@@ -345,7 +345,7 @@ impl ToniApplication {
 
     /// Returns an instance from the DI container by token rather than type; use when providers
     /// are registered with a custom token.
-    pub async fn get_by_token<T: 'static>(&self, token: impl IntoToken) -> Result<T> {
+    pub async fn get_by_token<T: 'static>(&self, token: impl IntoToken<T>) -> Result<T> {
         self.context.get_by_token::<T>(token).await
     }
 
@@ -353,7 +353,7 @@ impl ToniApplication {
     pub async fn get_from_by_token<T: 'static>(
         &self,
         module_token: &str,
-        token: impl IntoToken,
+        token: impl IntoToken<T>,
     ) -> Result<T> {
         self.context
             .get_from_by_token::<T>(module_token, token)
@@ -388,7 +388,7 @@ impl ToniApplication {
     /// Resolves a provider by token in an execution.
     pub async fn resolve_by_token<T: 'static>(
         &self,
-        token: impl IntoToken,
+        token: impl IntoToken<T>,
         execution: &crate::traits_helpers::ProviderContext,
     ) -> Result<T> {
         self.context.resolve_by_token::<T>(token, execution).await

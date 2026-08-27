@@ -77,10 +77,6 @@ impl Provider for SeaOrmHealthProvider {
         toni::di::token_of::<SeaOrmHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<SeaOrmHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
