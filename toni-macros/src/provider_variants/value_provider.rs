@@ -114,9 +114,6 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                         #token_expr
                     }
 
-                    fn get_token_factory(&self) -> String {
-                        #token_expr
-                    }
 
                     fn get_scope(&self) -> toni::ProviderScope {
                         toni::ProviderScope::Singleton
@@ -195,7 +192,6 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                 #[toni::async_trait]
                 impl toni::traits_helpers::Provider for #provider_name {
                     fn get_token(&self) -> String { #token_expr }
-                    fn get_token_factory(&self) -> String { #token_expr }
                     fn get_scope(&self) -> toni::ProviderScope { toni::ProviderScope::Singleton }
 
                     async fn execute(
@@ -255,7 +251,6 @@ pub fn handle_provider_value(input: TokenStream) -> Result<TokenStream> {
                         #[toni::async_trait]
                         impl toni::traits_helpers::Provider for #provider_name {
                             fn get_token(&self) -> String { #token_expr }
-                            fn get_token_factory(&self) -> String { #token_expr }
                             fn get_scope(&self) -> toni::ProviderScope { toni::ProviderScope::Singleton }
 
                             async fn execute(

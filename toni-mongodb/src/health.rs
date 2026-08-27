@@ -77,10 +77,6 @@ impl Provider for MongoHealthProvider {
         toni::di::token_of::<MongoHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<MongoHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

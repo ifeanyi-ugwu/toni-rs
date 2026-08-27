@@ -45,10 +45,6 @@ impl Provider for ProbeProvider {
         TOKEN.to_string()
     }
 
-    fn get_token_factory(&self) -> String {
-        TOKEN.to_string()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

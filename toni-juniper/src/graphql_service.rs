@@ -231,10 +231,6 @@ where
         "GraphQLService".to_string()
     }
 
-    fn get_token_factory(&self) -> String {
-        "GraphQLServiceFactory".to_string()
-    }
-
     async fn execute(
         &self,
         _deps: Vec<Box<dyn std::any::Any + Send>>,

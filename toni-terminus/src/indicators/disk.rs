@@ -132,10 +132,6 @@ impl Provider for DiskHealthIndicatorProvider {
         toni::di::token_of::<DiskHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<DiskHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

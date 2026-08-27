@@ -23,7 +23,6 @@ pub trait Provider: Send + Sync {
         params: Vec<Box<dyn Any + Send>>,
         ctx: ProviderContext,
     ) -> Box<dyn Any + Send>;
-    fn get_token_factory(&self) -> String;
     fn get_scope(&self) -> ProviderScope {
         ProviderScope::Singleton
     }

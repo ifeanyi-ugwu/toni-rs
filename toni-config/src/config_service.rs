@@ -86,10 +86,6 @@ impl<T: Config> Provider for ConfigService<T> {
     fn get_token(&self) -> String {
         toni::di::token_of::<ConfigService<T>>()
     }
-
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<ConfigService<T>>()
-    }
 }
 
 // ============================================================================

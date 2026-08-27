@@ -97,9 +97,6 @@ pub fn handle_provider_token(input: TokenStream) -> Result<TokenStream> {
                             self.custom_token.clone()
                         }
 
-                        fn get_token_factory(&self) -> String {
-                            self.custom_token.clone()
-                        }
 
                         fn get_scope(&self) -> toni::ProviderScope {
                             self.inner_provider.get_scope()

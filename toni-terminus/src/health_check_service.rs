@@ -193,10 +193,6 @@ impl Provider for HealthCheckServiceProvider {
         toni::di::token_of::<HealthCheckService>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<HealthCheckService>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

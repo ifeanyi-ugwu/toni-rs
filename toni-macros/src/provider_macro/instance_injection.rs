@@ -471,9 +471,6 @@ fn generate_singleton_provider(
                 ::toni::di::token_of::<#struct_name>()
             }
 
-            fn get_token_factory(&self) -> String {
-                ::toni::di::token_of::<#struct_name>()
-            }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Singleton
@@ -623,9 +620,6 @@ fn generate_request_provider(
                 ::toni::di::token_of::<#struct_name>()
             }
 
-            fn get_token_factory(&self) -> String {
-                ::toni::di::token_of::<#struct_name>()
-            }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Request
@@ -721,9 +715,6 @@ fn generate_transient_provider(
                 ::toni::di::token_of::<#struct_name>()
             }
 
-            fn get_token_factory(&self) -> String {
-                ::toni::di::token_of::<#struct_name>()
-            }
 
             fn get_scope(&self) -> ::toni::ProviderScope {
                 ::toni::ProviderScope::Transient
