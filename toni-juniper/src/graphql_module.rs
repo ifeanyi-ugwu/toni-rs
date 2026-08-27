@@ -170,12 +170,13 @@ where
     Subscription::TypeInfo: Send + Sync,
 {
     fn get_id(&self) -> String {
-        format!(
-            "GraphQLModule<{},{},{}>",
-            std::any::type_name::<Query>(),
-            std::any::type_name::<Mutation>(),
-            std::any::type_name::<Subscription>(),
-        )
+        // Full type identity (context builder included) plus a fingerprint of the
+        // value config — the same identity model as the async-graphql module and
+        // `DynamicModule`: only an identical import dedups.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.path, self.playground).hash(&mut hasher);
+        format!("{}#{:016x}", toni::di::token_of::<Self>(), hasher.finish())
     }
 
     fn get_name(&self) -> String {
