@@ -360,6 +360,18 @@ impl ToniApplication {
             .await
     }
 
+    /// The module handle for `M`, found by its identity. See
+    /// [`ToniApplicationContext::get_module`](crate::application_context::ToniApplicationContext::get_module).
+    pub async fn get_module<M: 'static>(&self) -> Result<crate::injector::ModuleRef> {
+        self.context.get_module::<M>().await
+    }
+
+    /// The module handle for the module whose display name is `name`. See
+    /// [`ToniApplicationContext::get_module_by_name`](crate::application_context::ToniApplicationContext::get_module_by_name).
+    pub async fn get_module_by_name(&self, name: &str) -> Result<crate::injector::ModuleRef> {
+        self.context.get_module_by_name(name).await
+    }
+
     /// Resolves a provider `T` in an execution.
     ///
     /// Everything resolved in one execution shares its cache, so a request-scoped
