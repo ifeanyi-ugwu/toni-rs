@@ -169,18 +169,11 @@ where
     Mutation::TypeInfo: Send + Sync,
     Subscription::TypeInfo: Send + Sync,
 {
-    fn get_id(&self) -> String {
-        // Full type identity (context builder included) plus a fingerprint of the
-        // value config — the same identity model as the async-graphql module and
-        // `DynamicModule`: only an identical import dedups.
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (&self.path, self.playground).hash(&mut hasher);
-        format!("{}#{:016x}", toni::di::token_of::<Self>(), hasher.finish())
-    }
-
-    fn get_name(&self) -> String {
-        "GraphQLModule".to_string()
+    fn identity(&self) -> toni::ModuleIdentity {
+        // Full type (context builder included) plus the value config — the same
+        // identity model as the async-graphql module and `DynamicModule`: only
+        // an identical import dedups.
+        toni::ModuleIdentity::of_type::<Self>().fingerprinted(&(&self.path, self.playground))
     }
 
     fn providers(&self) -> Option<Vec<Box<dyn ProviderFactory>>> {

@@ -108,7 +108,7 @@ pub use extractors::{BodyStream, FromContext, take_body};
 // Re-export macros
 pub use toni_macros::*;
 
-pub use module_helpers::{CheckedModule, DynamicModule};
+pub use module_helpers::{CheckedModule, DynamicModule, ModuleIdentity};
 pub use toni_application::{BoundAdapters, ShutdownHandle, ToniApplication};
 pub use toni_factory::ToniFactory;
 

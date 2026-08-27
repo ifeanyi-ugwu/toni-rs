@@ -123,14 +123,30 @@ async fn two_fingerprinted_modules_of_one_type_are_ambiguous() {
     );
 }
 
-/// A `DynamicModule` has a string identity, so it is reached by name.
+/// A `DynamicModule`'s identity base is its builder-given name; the base
+/// alone reaches it.
 #[tokio::test]
-async fn a_dynamic_module_is_found_by_name() {
+async fn a_dynamic_module_is_found_by_its_base() {
     let app = ToniFactory::create(AppModule).await.unwrap();
 
-    let dyn_module = app.get_module_by_name("LookupDyn").await.unwrap();
+    let dyn_module = app.get_module_by_id("LookupDyn").await.unwrap();
     let value: u32 = dyn_module.get_by_token("LOOKUP_VALUE").await.unwrap();
     assert_eq!(value, 7);
+}
+
+/// The full key an ambiguity error prints is an address: identity derives
+/// from config, so a module value built with the same config renders the key
+/// that reaches the imported one.
+#[tokio::test]
+async fn a_full_key_reaches_one_of_two_same_type_modules() {
+    use toni::traits_helpers::ModuleMetadata;
+
+    let app = ToniFactory::create(TwoGqlModule).await.unwrap();
+
+    let key = gql("/gql-one").identity().key();
+    app.get_module_by_id(&key)
+        .await
+        .expect("the rendered key addresses the module it fingerprints");
 }
 
 pub struct NeverImported;
@@ -149,7 +165,7 @@ async fn an_unimported_type_is_a_named_error() {
         "the error must name the missing identity, got: {err}"
     );
 
-    app.get_module_by_name("NoSuchName")
+    app.get_module_by_id("NoSuchBase")
         .await
-        .expect_err("nothing is named this");
+        .expect_err("nothing carries this base");
 }

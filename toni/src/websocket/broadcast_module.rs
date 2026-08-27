@@ -26,12 +26,8 @@ impl BroadcastModule {
 }
 
 impl ModuleMetadata for BroadcastModule {
-    fn get_id(&self) -> String {
-        "ToniBroadcastModule".to_string()
-    }
-
-    fn get_name(&self) -> String {
-        "ToniBroadcastModule".to_string()
+    fn identity(&self) -> crate::ModuleIdentity {
+        crate::ModuleIdentity::named("ToniBroadcastModule")
     }
 
     fn is_global(&self) -> bool {

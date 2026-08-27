@@ -65,12 +65,8 @@ impl CheckedModule {
 }
 
 impl ModuleMetadata for CheckedModule {
-    fn get_id(&self) -> String {
-        self.built.get_id()
-    }
-
-    fn get_name(&self) -> String {
-        self.built.get_name()
+    fn identity(&self) -> crate::ModuleIdentity {
+        self.built.identity()
     }
 
     fn is_global(&self) -> bool {
