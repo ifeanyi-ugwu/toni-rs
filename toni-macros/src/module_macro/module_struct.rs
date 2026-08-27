@@ -310,13 +310,8 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #[::toni::async_trait(?Send)]
         impl ::toni::traits_helpers::ModuleMetadata for #input_ident {
-            fn get_id(&self) -> String {
-                // Fully-qualified type name: collision-free registry key. Two same-named module
-                // types in different paths stay distinct; the bare ident is display only.
-                ::toni::di::token_of::<Self>()
-            }
-            fn get_name(&self) -> String {
-                #input_name.to_string()
+            fn identity(&self) -> ::toni::ModuleIdentity {
+                ::toni::ModuleIdentity::of_type::<Self>()
             }
             fn is_global(&self) -> bool {
                 #is_global

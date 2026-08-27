@@ -9,6 +9,7 @@ use anyhow::Result;
 
 use crate::{
     injector::{IntoToken, ModuleRef, ToniContainer},
+    module_helpers::ModuleIdentity,
     traits_helpers::{Provider, ProviderContext},
 };
 
@@ -89,76 +90,58 @@ impl ToniApplicationContext {
 
     /// The module handle for `M`, found by its identity.
     ///
-    /// Matches the module whose identity is `token_of::<M>()` exactly, or — for
-    /// a module type that folds a config fingerprint into its identity, like the
-    /// GraphQL modules — the single module whose identity extends that token
-    /// with a fingerprint. Two fingerprinted instances of the same type are
-    /// ambiguous: the error names both, and
-    /// [`get_module_by_name`](Self::get_module_by_name) reaches one when their
-    /// display names differ.
+    /// Matches the module whose identity base is `token_of::<M>()`,
+    /// fingerprinted or not. Two fingerprinted instances of one type are
+    /// ambiguous: the error lists their full keys, and
+    /// [`get_module_by_id`](Self::get_module_by_id) takes one.
     ///
     /// The handle resolves providers in that module's scope, the way an
     /// injected [`ModuleRef`] does from inside it.
     pub async fn get_module<M: 'static>(&self) -> Result<ModuleRef> {
-        let wanted = crate::di::token_of::<M>();
-        let id = self.module_id_for(&wanted)?;
-        self.module_ref_for(&id).await
+        let base = crate::di::token_of::<M>();
+        let key = self.module_key_for_base(&base)?;
+        self.module_ref_for(&key).await
     }
 
-    /// The module handle for the module whose display name is `name`.
+    /// The module handle for the module whose identity key or base is `id`.
     ///
-    /// The reach for modules whose identity is not a type: a `DynamicModule` is
-    /// keyed by its base name plus a config fingerprint, so
-    /// [`get_module`](Self::get_module) cannot address it. Ambiguous when the
-    /// same maker was imported twice with different config — the two keep
-    /// distinct identities under one name, and the error names both.
-    pub async fn get_module_by_name(&self, name: &str) -> Result<ModuleRef> {
-        let matches: Vec<String> = {
-            let container = self.container.borrow();
-            container
-                .get_modules_token()
-                .into_iter()
-                .filter(|id| {
-                    container
-                        .get_module_by_token(id)
-                        .map(|m| m.get_metadata().get_name() == name)
-                        .unwrap_or(false)
-                })
-                .collect()
+    /// A full key (`base#<16 hex digits>`, as the ambiguity errors print)
+    /// matches exactly. A bare base — a `DynamicModule`'s builder-given name,
+    /// or a type path — matches whichever module carries it, and is ambiguous
+    /// when two configs of one maker share it.
+    pub async fn get_module_by_id(&self, id: &str) -> Result<ModuleRef> {
+        let exact = self
+            .container
+            .borrow()
+            .get_modules_token()
+            .into_iter()
+            .find(|key| key == id);
+        let key = match exact {
+            Some(key) => key,
+            None => self.module_key_for_base(id)?,
         };
-
-        match matches.as_slice() {
-            [id] => self.module_ref_for(id).await,
-            [] => Err(anyhow::anyhow!("No module is named '{name}'")),
-            many => Err(anyhow::anyhow!(
-                "Module name '{name}' is ambiguous: {many:?} share it. \
-                 The same module imported with different config keeps distinct identities."
-            )),
-        }
+        self.module_ref_for(&key).await
     }
 
-    /// The identity of the one module matching `wanted`: exact, or the single
-    /// fingerprinted extension (`wanted#…`).
-    fn module_id_for(&self, wanted: &str) -> Result<String> {
+    /// The key of the one module whose identity base is `base`.
+    fn module_key_for_base(&self, base: &str) -> Result<String> {
         let container = self.container.borrow();
-        let ids = container.get_modules_token();
+        let keys = container.get_modules_token();
 
-        if ids.iter().any(|id| id == wanted) {
-            return Ok(wanted.to_string());
-        }
-
-        let prefix = format!("{wanted}#");
-        let fingerprinted: Vec<&String> = ids.iter().filter(|id| id.starts_with(&prefix)).collect();
-        match fingerprinted.as_slice() {
-            [id] => Ok((*id).clone()),
+        let matches: Vec<&String> = keys
+            .iter()
+            .filter(|key| ModuleIdentity::parse(key).base() == base)
+            .collect();
+        match matches.as_slice() {
+            [key] => Ok((*key).clone()),
             [] => Err(anyhow::anyhow!(
-                "No module has identity '{wanted}'. The module is not imported, \
-                 or its identity is not its type — a DynamicModule is reached with \
-                 `get_module_by_name`."
+                "No module has identity '{base}'. The module is not imported, \
+                 or its identity base differs — a DynamicModule's base is the \
+                 name its builder was given."
             )),
             many => Err(anyhow::anyhow!(
-                "Module type '{wanted}' is ambiguous: {many:?} share it. \
-                 `get_module_by_name` reaches one when their names differ."
+                "Module identity '{base}' is ambiguous: {many:?} share the \
+                 base. Pass one full key to `get_module_by_id`."
             )),
         }
     }

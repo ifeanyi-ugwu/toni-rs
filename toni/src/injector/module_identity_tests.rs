@@ -79,11 +79,8 @@ impl Root {
 
 #[async_trait(?Send)]
 impl ModuleMetadata for Root {
-    fn get_id(&self) -> String {
-        "test::Root".into()
-    }
-    fn get_name(&self) -> String {
-        "Root".into()
+    fn identity(&self) -> crate::ModuleIdentity {
+        crate::ModuleIdentity::named("test::Root")
     }
     fn imports(&self) -> Option<Vec<Box<dyn ModuleMetadata>>> {
         self.imports.lock().take()
@@ -121,8 +118,7 @@ fn no_hint_keeps_base_identity() {
             hint: None,
         })
         .build();
-    assert_eq!(m.get_id(), "Mod");
-    assert_eq!(m.get_name(), "Mod");
+    assert_eq!(m.identity().key(), "Mod");
 }
 
 #[test]
@@ -132,12 +128,12 @@ fn same_config_shares_identity_but_different_config_splits_it() {
     let b = conn_module("Conn", "conn", "postgres://b");
 
     // Same base + same config → same identity (a diamond import dedups).
-    assert_eq!(a.get_id(), a_again.get_id());
+    assert_eq!(a.identity().key(), a_again.identity().key());
     // Same base + different config → distinct identities (both survive to the clash check).
-    assert_ne!(a.get_id(), b.get_id());
-    // Display name is the base regardless of fingerprint.
-    assert_eq!(a.get_name(), "Conn");
-    assert!(a.get_id().starts_with("Conn#"));
+    assert_ne!(a.identity().key(), b.identity().key());
+    // The base survives in the key, ahead of the fingerprint.
+    assert_eq!(a.identity().base(), "Conn");
+    assert!(a.identity().key().starts_with("Conn#"));
 }
 
 // ── Mechanism 4: add_module dedups on identity ───────────────────────────────────────────────

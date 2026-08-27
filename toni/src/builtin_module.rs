@@ -15,12 +15,8 @@ use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 pub struct BuiltinModule;
 
 impl ModuleMetadata for BuiltinModule {
-    fn get_id(&self) -> String {
-        "ToniBuiltinModule".to_string()
-    }
-
-    fn get_name(&self) -> String {
-        "ToniBuiltinModule".to_string()
+    fn identity(&self) -> crate::ModuleIdentity {
+        crate::ModuleIdentity::named("ToniBuiltinModule")
     }
 
     fn is_global(&self) -> bool {

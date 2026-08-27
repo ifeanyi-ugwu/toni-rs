@@ -11,8 +11,6 @@ use crate::{
     },
 };
 pub struct Module {
-    _token: String,
-    _name: String,
     controllers: FxHashMap<String, Box<dyn ControllerFactory>>,
     providers: FxHashMap<String, Box<dyn ProviderFactory>>,
     imports: FxHashSet<String>,
@@ -27,10 +25,8 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn new(token: &str, name: &str, metadata: Box<dyn ModuleMetadata>) -> Self {
+    pub fn new(metadata: Box<dyn ModuleMetadata>) -> Self {
         Self {
-            _token: token.to_owned(),
-            _name: name.to_string(),
             controllers: FxHashMap::default(),
             providers: FxHashMap::default(),
             imports: FxHashSet::default(),
@@ -138,14 +134,6 @@ impl Module {
 
     pub fn get_metadata(&self) -> &dyn ModuleMetadata {
         &*self.metadata
-    }
-
-    pub fn _get_name(&self) -> &String {
-        &self._name
-    }
-
-    pub fn _get_token(&self) -> &String {
-        &self._token
     }
 
     pub fn _get_controller_by_token(

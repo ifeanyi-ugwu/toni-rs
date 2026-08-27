@@ -1,13 +1,15 @@
 use super::{ControllerFactory, ProviderFactory};
 use crate::middleware::{IntoRoutePattern, RoutePattern};
+use crate::module_helpers::ModuleIdentity;
 use crate::traits_helpers::middleware::{Middleware, MiddlewareConfiguration};
 use async_trait::async_trait;
 use std::sync::Arc;
 
 #[async_trait(?Send)]
 pub trait ModuleMetadata {
-    fn get_id(&self) -> String;
-    fn get_name(&self) -> String;
+    /// The module's one identity: registry key, display string, and the value
+    /// `get_module_by_id` matches. See [`ModuleIdentity`].
+    fn identity(&self) -> ModuleIdentity;
     fn imports(&self) -> Option<Vec<Box<dyn ModuleMetadata>>>;
     fn controllers(&self) -> Option<Vec<Box<dyn ControllerFactory>>>;
     fn providers(&self) -> Option<Vec<Box<dyn ProviderFactory>>>;
@@ -70,12 +72,8 @@ pub struct GlobalModuleWrapper<T: ModuleMetadata> {
 
 #[async_trait(?Send)]
 impl<T: ModuleMetadata> ModuleMetadata for GlobalModuleWrapper<T> {
-    fn get_id(&self) -> String {
-        self.inner.get_id()
-    }
-
-    fn get_name(&self) -> String {
-        self.inner.get_name()
+    fn identity(&self) -> ModuleIdentity {
+        self.inner.identity()
     }
 
     fn is_global(&self) -> bool {

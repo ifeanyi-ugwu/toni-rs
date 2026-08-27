@@ -201,20 +201,16 @@ where
     Subscription: SubscriptionType + 'static,
     Ctx: ContextBuilder,
 {
-    fn get_id(&self) -> String {
-        // Full type identity (context builder included) plus a fingerprint of the
-        // value config, so two imports differing in either are distinct modules:
-        // colliding on the path surfaces as a duplicate-route bind error, and
-        // different paths mount as two endpoints. Only an identical import dedups
-        // as a diamond. Same identity model as `DynamicModule` (base + hint hash).
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (&self.path, self.playground_enabled, &self.subscription_path).hash(&mut hasher);
-        format!("{}#{:016x}", toni::di::token_of::<Self>(), hasher.finish())
-    }
-
-    fn get_name(&self) -> String {
-        "GraphQLModule".to_string()
+    fn identity(&self) -> toni::ModuleIdentity {
+        // Full type (context builder included) plus the value config, so two
+        // imports differing in either are distinct modules: colliding on the
+        // path surfaces as a duplicate-route bind error, and different paths
+        // mount as two endpoints. Only an identical import dedups as a diamond.
+        toni::ModuleIdentity::of_type::<Self>().fingerprinted(&(
+            &self.path,
+            self.playground_enabled,
+            &self.subscription_path,
+        ))
     }
 
     fn providers(&self) -> Option<Vec<Box<dyn ProviderFactory>>> {

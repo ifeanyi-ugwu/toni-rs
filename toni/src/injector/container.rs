@@ -200,16 +200,16 @@ impl ToniContainer {
     }
 
     pub fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) -> Result<()> {
-        let token: String = module_metadata.get_id();
-        // The token is the full identity (type name for static modules, base + config fingerprint
-        // for dynamic ones). A repeat is the same module reached through a second import path — a
-        // diamond — so dedup instead of overwriting. Distinct modules that resolve to the same
-        // exported provider token are caught later, at global-provider registration.
+        let token: String = module_metadata.identity().key();
+        // The token is the full identity key (type name for static modules, base + config
+        // fingerprint for dynamic ones). A repeat is the same module reached through a second
+        // import path — a diamond — so dedup instead of overwriting. Distinct modules that
+        // resolve to the same exported provider token are caught later, at global-provider
+        // registration.
         if self.modules.contains_key(&token) {
             return Ok(());
         }
-        let name: String = module_metadata.get_name();
-        let module = Module::new(&token, &name, module_metadata);
+        let module = Module::new(module_metadata);
         self.modules.insert(token, module);
         Ok(())
     }
@@ -622,7 +622,7 @@ impl ToniContainer {
                 .ok_or_else(|| anyhow!("Module not found: {}", module_token))?;
             (
                 module.get_metadata().is_global(),
-                module.get_metadata().get_name(),
+                module.get_metadata().identity().key(),
                 module.get_exports_instances_tokens().clone(),
             )
         };

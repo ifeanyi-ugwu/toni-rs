@@ -44,3 +44,4 @@ the history is part of the value.
 - [0026 — Connectivity is verified by an explicit check, not by the driver's own dial](0026-startup-checks-are-explicit-and-uniform.md)
 - [0027 — Extraction is the seam a pipe was reaching for](0027-extraction-is-the-pipe-seam.md)
 - [0028 — A type's DI token is its full `type_name`, produced by one function](0028-one-token-format-one-owner.md)
+- [0029 — A module has one identity, and display derives from it](0029-one-module-identity.md)

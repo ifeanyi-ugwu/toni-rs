@@ -236,12 +236,8 @@ impl<T: Config> ConfigModule<T> {
 
 // Implement ModuleMetadata for DI system integration
 impl<T: Config> toni::traits_helpers::ModuleMetadata for ConfigModule<T> {
-    fn get_id(&self) -> String {
-        toni::di::token_of::<Self>()
-    }
-
-    fn get_name(&self) -> String {
-        format!("ConfigModule<{}>", std::any::type_name::<T>())
+    fn identity(&self) -> toni::ModuleIdentity {
+        toni::ModuleIdentity::of_type::<Self>()
     }
 
     fn imports(&self) -> Option<Vec<Box<dyn toni::traits_helpers::ModuleMetadata>>> {

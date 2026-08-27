@@ -27,11 +27,10 @@ impl ToniDependenciesScanner {
         let mut stack: Vec<Box<dyn ModuleMetadata>> = vec![module];
 
         while let Some(default_module) = stack.pop() {
-            let module_id = default_module.get_id();
-            tracing::debug!(module = %default_module.get_name(), "scanning module");
-            // Dedup on the full identity (get_id), not the display name: two distinct module
-            // types can share a short name, and two dynamic modules with different config share
-            // a base name but not an identity. Keying on get_id keeps both cases correct.
+            let module_id = default_module.identity().key();
+            tracing::debug!(module = %module_id, "scanning module");
+            // Dedup on the full key: two dynamic modules with different config share a base
+            // but not a fingerprint, and both must survive to the clash check.
             ctx_registry.push(module_id.clone());
 
             let modules_imported = default_module.imports().unwrap_or_default();
@@ -39,7 +38,7 @@ impl ToniDependenciesScanner {
             let mut modules_imported_tokens = vec![];
 
             for module_imported in modules_imported {
-                let imported_id = module_imported.get_id();
+                let imported_id = module_imported.identity().key();
                 modules_imported_tokens.push(imported_id.clone());
 
                 if ctx_registry.iter().any(|seen| seen == &imported_id) {

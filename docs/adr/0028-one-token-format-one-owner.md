@@ -45,8 +45,9 @@ generics uniformly. No macro, and no library, string-formats a token.
 Module identity keys derive from the same function where they carry the same information:
 `#[module]` identities were already `type_name::<Self>()`, and `ConfigModule<T>::get_id` now is too,
 so a future lookup-modules-by-type cannot reproduce the token mismatch in the module namespace.
-(`GraphQLModule`'s identity deliberately excludes its context-builder parameter and keeps its
-hand-built id; folding it into `token_of::<Self>()` would change which modules dedup.)
+(`GraphQLModule`'s identity originally kept its hand-built id, excluding the context-builder
+parameter, because folding `Ctx` in would change which modules dedup. Superseded: the identity now
+includes the full type and a config fingerprint — ADR-0029.)
 
 `type_name` output is not guaranteed stable across compiler versions, and does not need to be: a
 token never leaves the process, and one binary computes both sides of every comparison.

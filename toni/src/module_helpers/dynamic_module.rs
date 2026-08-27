@@ -2,6 +2,8 @@ use parking_lot::Mutex;
 
 use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 
+use super::ModuleIdentity;
+
 /// A module whose providers and exports are determined at runtime rather than compile time.
 ///
 /// Integration crates (e.g. `toni-seaorm`) use this to implement `forRoot`/`forFeature`-style
@@ -27,12 +29,10 @@ use crate::traits_helpers::{ControllerFactory, ModuleMetadata, ProviderFactory};
 /// pub struct AppModule;
 /// ```
 pub struct DynamicModule {
-    // Base name (`SeaOrmModule`, `SeaOrmModule::primary`): display and clash grouping.
-    id: String,
-    // Registry key: base name plus a fingerprint of the providers' `identity_hint`s. Two calls to
-    // the same maker with identical config collapse to one identity (a diamond import); with
-    // different config they stay distinct so the downstream export-token clash surfaces.
-    identity: String,
+    // Base name plus a fingerprint of the providers' `identity_hint`s. Two calls to the same
+    // maker with identical config collapse to one identity (a diamond import); with different
+    // config they stay distinct so the downstream export-token clash surfaces.
+    identity: ModuleIdentity,
     // Wrapped in Mutex<Option<...>> so ownership can be moved out on the first call to
     // providers(), which takes &self. The scanner calls providers() exactly once per module
     // during scan_modules_for_dependencies, so draining on first call is safe.
@@ -42,12 +42,8 @@ pub struct DynamicModule {
 }
 
 impl ModuleMetadata for DynamicModule {
-    fn get_id(&self) -> String {
+    fn identity(&self) -> ModuleIdentity {
         self.identity.clone()
-    }
-
-    fn get_name(&self) -> String {
-        self.id.clone()
     }
 
     fn is_global(&self) -> bool {
@@ -106,7 +102,6 @@ impl DynamicModuleBuilder {
     pub fn build(self) -> DynamicModule {
         let identity = derive_identity(&self.id, &self.providers);
         DynamicModule {
-            id: self.id,
             identity,
             providers: Mutex::new(Some(self.providers)),
             exports: self.exports,
@@ -121,19 +116,13 @@ impl DynamicModuleBuilder {
 /// preserving the pre-fingerprint behavior. Hints are sorted so identity is independent of
 /// provider declaration order, then hashed so configuration values (which may hold credentials)
 /// never appear verbatim in a key that surfaces in logs and error messages.
-fn derive_identity(base: &str, providers: &[Box<dyn ProviderFactory>]) -> String {
-    use std::hash::{Hash, Hasher};
-
+fn derive_identity(base: &str, providers: &[Box<dyn ProviderFactory>]) -> ModuleIdentity {
     let mut hints: Vec<String> = providers.iter().filter_map(|p| p.identity_hint()).collect();
     if hints.is_empty() {
-        return base.to_string();
+        return ModuleIdentity::named(base);
     }
     hints.sort();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for hint in &hints {
-        hint.hash(&mut hasher);
-    }
-    format!("{base}#{:016x}", hasher.finish())
+    ModuleIdentity::named(base).fingerprinted(&hints)
 }
 
 impl DynamicModule {
