@@ -77,10 +77,6 @@ impl Provider for RedisHealthProvider {
         toni::di::token_of::<RedisHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<RedisHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

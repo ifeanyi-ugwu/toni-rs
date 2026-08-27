@@ -173,10 +173,6 @@ impl Provider for HttpHealthIndicatorProvider {
         toni::di::token_of::<HttpHealthIndicator>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<HttpHealthIndicator>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,

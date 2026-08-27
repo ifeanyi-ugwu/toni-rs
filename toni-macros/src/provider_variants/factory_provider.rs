@@ -185,7 +185,6 @@ fn generate_caching_provider(
         #[toni::async_trait]
         impl<__T: #type_bounds> toni::traits_helpers::Provider for #provider_name<__T> {
             fn get_token(&self) -> String { #token_expr }
-            fn get_token_factory(&self) -> String { #token_expr }
             fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
 
             async fn execute(
@@ -361,7 +360,6 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                 #[toni::async_trait]
                 impl toni::traits_helpers::Provider for FactoryProviderWithDeps {
                     fn get_token(&self) -> String { #token_expr }
-                    fn get_token_factory(&self) -> String { #token_expr }
                     fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
 
                     async fn execute(
@@ -397,7 +395,6 @@ pub fn handle_provider_factory(input: TokenStream) -> Result<TokenStream> {
                 #[toni::async_trait]
                 impl toni::traits_helpers::Provider for FactoryProviderWithDeps {
                     fn get_token(&self) -> String { #token_expr }
-                    fn get_token_factory(&self) -> String { #token_expr }
                     fn get_scope(&self) -> toni::ProviderScope { #scope_expr }
 
                     async fn execute(

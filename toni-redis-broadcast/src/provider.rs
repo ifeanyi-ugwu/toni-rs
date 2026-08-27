@@ -48,10 +48,6 @@ impl Provider for SharedBroadcastServiceProvider {
         toni::di::token_of::<BroadcastService>()
     }
 
-    fn get_token_factory(&self) -> String {
-        toni::di::token_of::<BroadcastService>()
-    }
-
     async fn execute(
         &self,
         _params: Vec<Box<dyn Any + Send>>,
@@ -172,10 +168,6 @@ struct RedisBroadcastServiceProvider {
 #[async_trait]
 impl Provider for RedisBroadcastServiceProvider {
     fn get_token(&self) -> String {
-        toni::di::token_of::<RedisBroadcastService>()
-    }
-
-    fn get_token_factory(&self) -> String {
         toni::di::token_of::<RedisBroadcastService>()
     }
 

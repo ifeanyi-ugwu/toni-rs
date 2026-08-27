@@ -81,10 +81,6 @@ macro_rules! impl_diesel_pool {
                 self.token.clone()
             }
 
-            fn get_token_factory(&self) -> String {
-                self.token.clone()
-            }
-
             async fn execute(
                 &self,
                 _params: Vec<Box<dyn Any + Send>>,

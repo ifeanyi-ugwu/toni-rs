@@ -27,10 +27,6 @@ impl Provider for BroadcastServiceProvider {
         Box::new(self.instance.clone())
     }
 
-    fn get_token_factory(&self) -> String {
-        crate::di::token_of::<BroadcastService>()
-    }
-
     fn get_scope(&self) -> ProviderScope {
         ProviderScope::Singleton
     }
