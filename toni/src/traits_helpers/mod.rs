@@ -22,6 +22,9 @@ pub use self::controller::{
     Controller, ControllerEnhancers, ControllerFactory, ControllerInstance, Dispatch, Route,
 };
 
+mod dispatch_source;
+pub use self::dispatch_source::{DispatchSource, request_scoped_dependencies};
+
 mod interceptor;
 pub use self::interceptor::{Interceptor, InterceptorNext};
 
