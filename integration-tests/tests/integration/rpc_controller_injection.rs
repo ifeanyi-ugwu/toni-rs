@@ -8,6 +8,14 @@ use toni_macros::{message_pattern, new, patterns, rpc_controller};
 #[rpc_controller]
 pub struct OrdersController {}
 
+// The injectable's derived Clone needs the field type Clone; without this impl the test stops at
+// that compile error instead of reaching the resolution refusal it pins.
+impl Clone for OrdersController {
+    fn clone(&self) -> Self {
+        Self {}
+    }
+}
+
 #[patterns]
 impl OrdersController {
     #[new]
