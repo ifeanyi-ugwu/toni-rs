@@ -1,6 +1,6 @@
 # 0031 — One attribute declares a controller, and its handlers name the transport
 
-Status: proposed
+Status: accepted
 
 ## Context
 

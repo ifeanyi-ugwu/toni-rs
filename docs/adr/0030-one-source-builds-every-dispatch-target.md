@@ -1,6 +1,6 @@
 # 0030 — One source builds every dispatch target, and enhancer tokens resolve at create
 
-Status: proposed
+Status: accepted
 
 ## Context
 
