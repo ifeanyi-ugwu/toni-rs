@@ -17,8 +17,7 @@ use toni::{
     ToniFactory,
 };
 use toni_macros::{
-    message_pattern, new, patterns, rpc_controller, subscribe_message, subscriptions,
-    websocket_gateway,
+    controller, message_pattern, new, patterns, subscribe_message, subscriptions, websocket_gateway,
 };
 
 /// Never bound by anything else; the gateway's own socket is what this test watches for.
@@ -40,7 +39,7 @@ impl EventsGateway {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {}
 
 #[patterns]

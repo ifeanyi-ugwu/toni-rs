@@ -640,7 +640,7 @@ impl ToniApplication {
         };
 
         // Hand the gRPC adapter its services. Services declared with
-        // `#[grpc_service]` + `#[grpc_methods]` are picked up from the DI
+        // `#[controller]` + `#[grpc_methods]` are picked up from the DI
         // container; users may also wire services directly on the adapter via
         // its own `add_service` builder before `use_grpc_adapter`.
         let grpc_adapter = if let Some(mut adapter) = self.grpc_adapter.take() {

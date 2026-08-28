@@ -3,9 +3,9 @@
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
 use toni::*;
-use toni_macros::{message_pattern, new, patterns, rpc_controller};
+use toni_macros::{controller, message_pattern, new, patterns};
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {}
 
 // The injectable's derived Clone needs the field type Clone; without this impl the test stops at

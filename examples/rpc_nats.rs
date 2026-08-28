@@ -20,7 +20,7 @@
 //   nats pub order.shipped '{"order_id":1001}'
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, new, patterns, rpc_controller};
+use toni_macros::{controller, injectable, module, new, patterns};
 
 // ============================================================================
 // Service
@@ -43,7 +43,7 @@ impl OrdersService {
 // RPC controller
 // ============================================================================
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {
     #[inject]
     service: OrdersService,

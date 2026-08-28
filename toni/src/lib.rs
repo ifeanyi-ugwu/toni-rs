@@ -14,9 +14,9 @@ pub mod __construct;
 #[doc(hidden)]
 pub mod __detect;
 #[doc(hidden)]
-pub mod __lifecycle;
+pub mod __dispatch;
 #[doc(hidden)]
-pub mod __route;
+pub mod __lifecycle;
 #[doc(hidden)]
 pub mod __rpc;
 #[doc(hidden)]

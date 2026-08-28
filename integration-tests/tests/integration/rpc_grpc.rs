@@ -21,9 +21,8 @@ use tonic_health::ServingStatus;
 async fn grpc_adapter_seam_round_trip_and_shuts_down() {
     use toni::toni_factory::ToniFactory;
 
-    // Empty module — gRPC services are added directly to the adapter for
-    // now (no `#[grpc_service]` macro yet). The framework still requires a
-    // module to construct an app.
+    // Empty module — this test adds its gRPC service directly on the
+    // adapter. The framework still requires a module to construct an app.
     #[toni::module()]
     struct EmptyModule;
 

@@ -1,6 +1,6 @@
 // RPC controller example using the UDP transport adapter.
 //
-// Mirrors `rpc_controller.rs` (TCP) but speaks UDP. Wire protocol: one JSON
+// Mirrors `controller.rs` (TCP) but speaks UDP. Wire protocol: one JSON
 // object per datagram on port 4000.
 //
 // Test with netcat (BSD nc on macOS supports `-u`):
@@ -20,7 +20,7 @@
 //     | nc -u -w1 127.0.0.1 4000
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, new, patterns, rpc_controller};
+use toni_macros::{controller, injectable, module, new, patterns};
 
 #[injectable]
 pub struct OrdersService {}
@@ -35,7 +35,7 @@ impl OrdersService {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {
     #[inject]
     service: OrdersService,

@@ -1,10 +1,10 @@
-//! Bridge between a `#[rpc_controller]` struct and its optional `#[patterns]` impl.
+//! Bridge between a `#[controller]` struct and its `#[patterns]` impl.
 //!
-//! `#[rpc_controller]` emits `handle_message` on the struct and a `RpcControllerSource` companion
+//! `#[patterns]` emits `handle_message` on the struct and a `RpcControllerSource` companion
 //! carrying the patterns and the enhancer tokens; all three delegate to `Self::__toni_rpc_*` at the
-//! concrete type. `#[patterns]` emits inherent `__toni_rpc_*` fns that out-rank the defaults below.
-//! RPC has no connection hooks, so all three are derived from the impl scan — `#[patterns]` is pure
-//! aggregation, and a controller without it registers but routes nothing.
+//! concrete type, through the inherent `__toni_rpc_*` fns that out-rank the defaults below.
+//! RPC has no connection hooks, so all three are derived from the impl scan — `#[patterns]` is
+//! pure aggregation.
 //!
 //! What a controller *declares* — its patterns and its enhancer tokens — takes no receiver, because
 //! the framework has to read it at startup to register the controller, and a request-scoped

@@ -15,13 +15,13 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
+use toni::{controller, module, new, patterns, RpcClient, ToniFactory};
 use toni_rabbitmq::{RabbitMqAdapter, RabbitMqClientTransport};
 
 static URI: OnceLock<String> = OnceLock::new();
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller]
+#[controller]
 pub struct MathController {}
 #[patterns]
 impl MathController {

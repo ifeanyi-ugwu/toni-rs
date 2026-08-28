@@ -1,12 +1,12 @@
 //! `#[patterns]` — the impl-side pattern router for an RPC controller.
 //!
-//! Pairs with `#[rpc_controller]` on the struct. Scans the impl for `#[message_pattern]` (request-
-//! response) and `#[event_pattern]` (fire-and-forget) handlers and the controller- and handler-level
-//! enhancer attrs, and emits inherent `__toni_rpc_*` fns that out-rank the `RpcHandlersBridge`
-//! defaults at the concrete-type call sites in the generated `RpcControllerTrait` impl. RPC has no
-//! connection hooks, so this is pure aggregation: the pattern list, the `handle_message` match, and
-//! the enhancers descriptor all come from the impl scan. It leaves `#[new]` and `#[on_*]` intact for
-//! their own macros.
+//! Pairs with `#[controller]` on the struct, and is what makes the controller RPC: it emits the
+//! `__toni_dispatch` shadow answering `Dispatch::Rpc`, the `RpcControllerTrait` impl, and the
+//! source companion. It scans the impl for `#[message_pattern]` (request-response) and
+//! `#[event_pattern]` (fire-and-forget) handlers and the controller- and handler-level enhancer
+//! attrs, and emits inherent `__toni_rpc_*` fns that out-rank the `RpcHandlersBridge` defaults at
+//! the concrete-type call sites in the `RpcControllerTrait` impl. RPC has no connection hooks, so
+//! the scan is pure aggregation. It leaves `#[new]` and `#[on_*]` intact for their own macros.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -106,7 +106,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
 
     // Re-emit the impl with the consumed pattern markers and enhancer attrs stripped. `#[new]` and
     // the `#[on_*]` lifecycle attrs are LEFT intact so their own macros form the bridges that
-    // `#[rpc_controller]`'s provider wiring dispatches through.
+    // `#[controller]`'s wiring dispatches through.
     let mut impl_def = impl_block.clone();
     impl_def
         .attrs
@@ -122,6 +122,9 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         }
     }
 
+    let struct_token = struct_name.to_string();
+    let source_name = rpc_source_ident(&struct_name);
+
     Ok(quote! {
         #[allow(dead_code)]
         #impl_def
@@ -131,6 +134,25 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             #[allow(non_snake_case, clippy::all)]
             fn __toni_rpc_patterns() -> Vec<String> {
                 vec![#(#all_patterns.to_string()),*]
+            }
+
+            /// Shadows the `DispatchBridge` default: this controller dispatches RPC patterns.
+            #[doc(hidden)]
+            #[allow(non_snake_case, clippy::all)]
+            pub fn __toni_dispatch(
+                source: &::toni::traits_helpers::DispatchSource<#struct_name>,
+            ) -> ::toni::traits_helpers::Dispatch {
+                // The route prefix is HTTP's argument; patterns cannot use one.
+                if !<#struct_name>::__toni_prefix().is_empty() {
+                    ::toni::tracing::warn!(
+                        controller = #struct_token,
+                        prefix = <#struct_name>::__toni_prefix(),
+                        "controller dispatches RPC patterns; the route prefix is unused"
+                    );
+                }
+                ::toni::traits_helpers::Dispatch::Rpc(
+                    ::std::sync::Arc::new(#source_name(source.clone())),
+                )
             }
 
             #metadata_fns
@@ -159,7 +181,75 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
 
             #enhancers_impl
         }
+
+        #[::toni::async_trait]
+        impl ::toni::rpc::RpcControllerTrait for #struct_name {
+            async fn handle_message(
+                &self,
+                ctx: &::toni::context::RpcContext,
+            ) -> ::toni::http_helpers::ExecutionResult<
+                ::std::option::Option<::toni::rpc::RpcData>,
+                ::toni::rpc::RpcError,
+            > {
+                use ::toni::__rpc::RpcHandlersBridge as _;
+                <Self>::__toni_rpc_handle_message(self, ctx).await
+            }
+        }
+
+        #[doc(hidden)]
+        pub struct #source_name(::toni::traits_helpers::DispatchSource<#struct_name>);
+
+        #[::toni::async_trait]
+        impl ::toni::rpc::RpcControllerSource for #source_name {
+            fn get_token(&self) -> String {
+                #struct_token.to_string()
+            }
+
+            fn get_patterns(&self) -> Vec<String> {
+                use ::toni::__rpc::RpcHandlersBridge as _;
+                <#struct_name>::__toni_rpc_patterns()
+            }
+
+            fn enhancers(&self) -> ::toni::rpc::RpcEnhancers {
+                use ::toni::__rpc::RpcHandlersBridge as _;
+                <#struct_name>::__toni_rpc_enhancers()
+            }
+
+            fn metadata(&self) -> ::std::sync::Arc<::toni::context::Metadata> {
+                use ::toni::__rpc::RpcHandlersBridge as _;
+                ::std::sync::Arc::new(<#struct_name>::__toni_rpc_metadata())
+            }
+
+            fn handler_metadata(
+                &self,
+            ) -> Vec<(String, ::std::sync::Arc<::toni::context::Metadata>)> {
+                use ::toni::__rpc::RpcHandlersBridge as _;
+                <#struct_name>::__toni_rpc_handler_metadata()
+                    .into_iter()
+                    .map(|(__p, __m)| (__p, ::std::sync::Arc::new(__m)))
+                    .collect()
+            }
+
+            async fn instance(
+                &self,
+                ctx: &::toni::context::RpcContext,
+            ) -> ::std::sync::Arc<dyn ::toni::rpc::RpcControllerTrait> {
+                self.0
+                    .instance(::toni::ProviderContext::Rpc(ctx.clone()))
+                    .await
+            }
+        }
     })
+}
+
+/// The `RpcControllerSource` companion generated beside the controller — a newtype over
+/// `DispatchSource<Struct>`, local to the expansion crate because a foreign trait cannot be
+/// implemented on the foreign `DispatchSource` directly.
+fn rpc_source_ident(struct_name: &syn::Ident) -> syn::Ident {
+    syn::Ident::new(
+        &format!("{}RpcControllerSource", struct_name),
+        struct_name.span(),
+    )
 }
 
 /// Collect controller-level and per-handler enhancer tokens into the `__toni_rpc_enhancers` inherent
