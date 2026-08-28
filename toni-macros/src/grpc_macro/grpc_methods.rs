@@ -33,7 +33,9 @@ use crate::enhancer::enhancer::{
 use crate::shared::attr_is;
 use crate::shared::set_metadata::{merged_metadata_exprs, metadata_ctor};
 
-/// The `GrpcServiceSource` companion generated beside the service struct.
+/// The `GrpcServiceSource` companion generated beside the service struct — a newtype over
+/// `DispatchSource<Service>`, local to the expansion crate because a foreign trait cannot be
+/// implemented on the foreign `DispatchSource` directly.
 pub fn grpc_source_ident(self_ident: &syn::Ident) -> syn::Ident {
     format_ident!("{}GrpcServiceSource", self_ident)
 }
@@ -355,7 +357,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         #[doc(hidden)]
         #[derive(::std::clone::Clone)]
         pub struct #wrapper_ident {
-            source: #source_ident,
+            source: ::toni::traits_helpers::DispatchSource<#self_ident>,
             enhancers: ::std::sync::Arc<::toni::adapter::ResolvedGrpcEnhancers>,
         }
 
@@ -370,47 +372,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     // ── The source companion, and `GrpcServiceSource` on it ────────────────
     let grpc_trait_impl = quote! {
         #[doc(hidden)]
-        #[derive(::std::clone::Clone)]
-        pub enum #source_ident {
-            /// Built at startup and shared by every call.
-            Singleton(::std::sync::Arc<#self_ident>),
-            /// The service's own provider, resolved inside the call being served.
-            PerCall(::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>),
-        }
-
-        impl #source_ident {
-            /// The service serving `ctx`.
-            ///
-            /// Inherent rather than a trait method: the wrapper delegates through UFCS at the
-            /// concrete type, so what comes back has to be the service itself.
-            #[doc(hidden)]
-            pub async fn instance(
-                &self,
-                ctx: &::toni::context::GrpcContext,
-            ) -> ::std::sync::Arc<#self_ident> {
-                match self {
-                    Self::Singleton(__instance) => __instance.clone(),
-                    Self::PerCall(__provider) => {
-                        // The provider caches in the execution, so a service asked for twice in one
-                        // call is built once; init/bootstrap fire on the instance the call is served
-                        // by, as they do for a request-scoped HTTP controller.
-                        let __any = __provider
-                            .execute(vec![], ::toni::ProviderContext::Grpc(ctx.clone()))
-                            .await;
-                        let __concrete = *__any.downcast::<#self_ident>().unwrap_or_else(|_| panic!(
-                            "gRPC service '{}' resolved to a different type",
-                            #token
-                        ));
-                        {
-                            use ::toni::__lifecycle::LifecycleBridge as _;
-                            let _ = #self_ident::__toni_lc_on_init(&__concrete).await;
-                            let _ = #self_ident::__toni_lc_on_bootstrap(&__concrete).await;
-                        }
-                        ::std::sync::Arc::new(__concrete)
-                    }
-                }
-            }
-        }
+        pub struct #source_ident(::toni::traits_helpers::DispatchSource<#self_ident>);
 
         impl ::toni::adapter::GrpcServiceSource for #source_ident {
             fn token(&self) -> ::std::string::String {
@@ -434,7 +396,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                     ::tonic::service::RoutesBuilder,
                 >() {
                     let __wrapper = #wrapper_ident {
-                        source: self.clone(),
+                        source: self.0.clone(),
                         enhancers,
                     };
                     builder.add_service(#server_path::new(__wrapper));
@@ -596,7 +558,9 @@ fn build_wrapper_method(
                     // body, so a panicking constructor renders a status rather than tearing down
                     // the connection.
                     let __caught = ::toni::grpc_runtime::catch_handler_panic(async move {
-                        let __inner = __source.instance(&__build_ctx).await;
+                        let __inner = __source
+                            .instance(::toni::ProviderContext::Grpc(__build_ctx))
+                            .await;
                         <#self_ident as #trait_path>::#method_ident(
                             &__inner, #(#forward_args),*
                         ).await

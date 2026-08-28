@@ -21,6 +21,14 @@ impl OrdersGrpcService {
     }
 }
 
+// The injectable's derived Clone needs the field type Clone; without this impl the test stops at
+// that compile error instead of reaching the resolution refusal it pins.
+impl Clone for OrdersGrpcService {
+    fn clone(&self) -> Self {
+        Self {}
+    }
+}
+
 #[grpc_methods]
 #[tonic::async_trait]
 impl Orders for OrdersGrpcService {

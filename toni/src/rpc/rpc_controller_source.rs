@@ -7,7 +7,7 @@ use crate::context::RpcContext;
 
 use super::RpcControllerTrait;
 
-/// The enhancer tokens an RPC controller declares, resolved once at registration. Controller-level
+/// The enhancer tokens an RPC controller declares, resolved once at create. Controller-level
 /// tokens apply to every handler; each `handlers` entry adds tokens for one pattern. A flat
 /// descriptor instead of a dozen accessor methods — the macro builds it, the resolver reads it once.
 #[derive(Default)]
@@ -64,5 +64,5 @@ pub trait RpcControllerSource: Send + Sync {
     /// A singleton answers with the instance built at startup. A request-scoped one is built
     /// inside `ctx`'s execution, so its request-scoped dependencies resolve against that
     /// execution's cache and are shared with whatever else in the call already asked for them.
-    async fn instance(&self, ctx: &RpcContext) -> Arc<Box<dyn RpcControllerTrait>>;
+    async fn instance(&self, ctx: &RpcContext) -> Arc<dyn RpcControllerTrait>;
 }

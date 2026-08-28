@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,17 +25,6 @@ pub struct ControllerEnhancers {
     pub guards: Vec<Arc<dyn Guard<HttpContext>>>,
     pub interceptors: Vec<Arc<dyn Interceptor<HttpContext, HttpResponse>>>,
     pub error_handlers: Vec<HttpErrorHandlerArc>,
-}
-
-/// How a controller's instance is held for the lifetime of its routes.
-///
-/// `Singleton` carries the instance built once at startup; every route shares it.
-/// `Request` carries the resolved dependency map and the controller is rebuilt on
-/// each request — used when an (implicit or explicit) singleton controller depends
-/// on request-scoped providers, or when the controller is explicitly request-scoped.
-pub enum ControllerInstance {
-    Singleton(Arc<dyn Any + Send + Sync>),
-    Request(FxHashMap<String, Arc<Box<dyn Provider>>>),
 }
 
 /// What a controller hands over to be dispatched on.

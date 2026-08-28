@@ -1,0 +1,167 @@
+#![allow(dead_code)]
+
+use std::pin::Pin;
+
+use futures_util::Stream;
+use toni::context::{GrpcContext, RpcContext};
+use toni::rpc::{RpcData, RpcError};
+use toni::traits_helpers::Guard;
+use toni::*;
+use toni_macros::{
+    grpc_methods, grpc_service, message_pattern, new, patterns, rpc_controller, use_guards,
+};
+
+mod orders_pb {
+    tonic::include_proto!("toni_test.orders");
+}
+
+// `OrdersServer` reads as unused here — `#[grpc_methods]` names it in the code it emits.
+use orders_pb::orders_server::{Orders, OrdersServer};
+
+// Real guard types that are absent from every `providers:` list, so their tokens resolve
+// against nothing in the role registry.
+
+#[injectable]
+pub struct UnregisteredRpcGuard {}
+impl UnregisteredRpcGuard {}
+
+#[async_trait]
+impl Guard<RpcContext> for UnregisteredRpcGuard {
+    async fn can_activate(&self, _ctx: &RpcContext) -> bool {
+        true
+    }
+}
+
+#[injectable]
+pub struct UnregisteredGrpcGuard {}
+impl UnregisteredGrpcGuard {}
+
+#[async_trait]
+impl Guard<GrpcContext> for UnregisteredGrpcGuard {
+    async fn can_activate(&self, _ctx: &GrpcContext) -> bool {
+        true
+    }
+}
+
+// ---- RPC ---------------------------------------------------------------------
+
+#[rpc_controller]
+pub struct GuardedOrdersController {}
+
+#[patterns]
+#[use_guards(UnregisteredRpcGuard)]
+impl GuardedOrdersController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("orders.get")]
+    async fn get(&self, data: RpcData) -> Result<RpcData, RpcError> {
+        Ok(data)
+    }
+}
+
+#[module(controllers: [GuardedOrdersController])]
+impl RpcAppModule {}
+
+/// Enhancer tokens resolve while instances load, so a token naming a guard no module provides
+/// fails `create()` — before any adapter or socket exists.
+#[tokio::test]
+async fn a_misdeclared_rpc_enhancer_token_fails_create() {
+    let message = ToniFactory::create_application_context(RpcAppModule)
+        .await
+        .err()
+        .expect("a misdeclared enhancer token must fail create")
+        .to_string();
+
+    assert!(
+        message.contains("not found in registry"),
+        "expected an unresolved-enhancer failure, got:\n{message}"
+    );
+    assert!(
+        message.contains("UnregisteredRpcGuard"),
+        "the failure should name the guard, got:\n{message}"
+    );
+}
+
+// ---- gRPC --------------------------------------------------------------------
+
+#[grpc_service(pub struct GuardedGrpcService {})]
+impl GuardedGrpcService {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[grpc_methods]
+#[use_guards(UnregisteredGrpcGuard)]
+#[tonic::async_trait]
+impl Orders for GuardedGrpcService {
+    async fn create(
+        &self,
+        _request: tonic::Request<orders_pb::CreateOrderRequest>,
+    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+            id: 1,
+            status: "ok".to_string(),
+        }))
+    }
+
+    type WatchProgressStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
+
+    async fn watch_progress(
+        &self,
+        _request: tonic::Request<orders_pb::WatchRequest>,
+    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+
+    async fn bulk_create(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
+    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
+        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+            created: 0,
+            first_id: 0,
+        }))
+    }
+
+    type ChatStream =
+        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
+
+    async fn chat(
+        &self,
+        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
+    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
+        Ok(tonic::Response::new(
+            Box::pin(futures_util::stream::empty()),
+        ))
+    }
+}
+
+#[module(controllers: [GuardedGrpcService])]
+impl GrpcAppModule {}
+
+/// The same phase pin on the gRPC path, which resolves through its own resolver.
+#[tokio::test]
+async fn a_misdeclared_grpc_enhancer_token_fails_create() {
+    let message = ToniFactory::create_application_context(GrpcAppModule)
+        .await
+        .err()
+        .expect("a misdeclared enhancer token must fail create")
+        .to_string();
+
+    assert!(
+        message.contains("not found in registry"),
+        "expected an unresolved-enhancer failure, got:\n{message}"
+    );
+    assert!(
+        message.contains("UnregisteredGrpcGuard"),
+        "the failure should name the guard, got:\n{message}"
+    );
+}

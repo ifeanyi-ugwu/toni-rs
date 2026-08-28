@@ -423,8 +423,11 @@ impl ToniInstanceLoader {
         module_token: String,
         controllers: Vec<Arc<dyn Controller>>,
     ) -> Result<()> {
-        // Phase A: expand each controller into its dispatch under an immutable borrow. Only HTTP
-        // resolves its enhancers here; RPC and gRPC declare tokens their own resolvers read at bind.
+        // Phase A: expand each controller into its dispatch under an immutable borrow, resolving
+        // every transport's enhancer tokens against the role registry — a misdeclared token fails
+        // create(), whatever the transport.
+        let rpc_resolver = super::RpcControllerResolver::new(self.container.clone());
+        let grpc_resolver = super::GrpcServiceResolver::new(self.container.clone());
         type ResolvedController = (Arc<dyn Controller>, ResolvedDispatch);
         let resolved: Vec<ResolvedController> = controllers
             .into_iter()
@@ -439,8 +442,13 @@ impl ToniInstanceLoader {
                             })
                             .collect::<Result<Vec<_>>>()?,
                     ),
-                    Dispatch::Rpc(source) => ResolvedDispatch::Rpc(source),
-                    Dispatch::Grpc(source) => ResolvedDispatch::Grpc(source),
+                    Dispatch::Rpc(source) => {
+                        ResolvedDispatch::Rpc(Arc::new(rpc_resolver.wrap_controller(source)?))
+                    }
+                    Dispatch::Grpc(source) => {
+                        let enhancers = grpc_resolver.resolve_for(source.as_ref())?;
+                        ResolvedDispatch::Grpc(source, Arc::new(enhancers))
+                    }
                 };
                 Ok((controller, dispatch))
             })
@@ -463,8 +471,12 @@ impl ToniInstanceLoader {
                         )?;
                     }
                 }
-                ResolvedDispatch::Rpc(source) => container_mut.add_rpc_controller_source(source),
-                ResolvedDispatch::Grpc(source) => container_mut.add_grpc_service_source(source),
+                ResolvedDispatch::Rpc(wrapper) => {
+                    container_mut.add_rpc_controller(token.clone(), wrapper)
+                }
+                ResolvedDispatch::Grpc(source, enhancers) => {
+                    container_mut.add_grpc_service(token.clone(), (source, enhancers))
+                }
             }
         }
         Ok(())
@@ -698,9 +710,12 @@ impl ToniInstanceLoader {
     }
 }
 
-/// `Dispatch` with HTTP's enhancers already resolved — the shape Phase B stores from.
+/// `Dispatch` with enhancer tokens already resolved — the shape Phase B stores from.
 enum ResolvedDispatch {
     Http(Vec<(Arc<dyn Route>, EnhancerMetadata)>),
-    Rpc(Arc<dyn crate::rpc::RpcControllerSource>),
-    Grpc(Arc<dyn crate::adapter::GrpcServiceSource>),
+    Rpc(Arc<crate::rpc::RpcControllerWrapper>),
+    Grpc(
+        Arc<dyn crate::adapter::GrpcServiceSource>,
+        Arc<crate::adapter::ResolvedGrpcEnhancers>,
+    ),
 }

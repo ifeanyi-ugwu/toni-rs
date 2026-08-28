@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
@@ -10,10 +9,11 @@ use crate::traits_helpers::{GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptor
 
 use super::ToniContainer;
 
-/// Resolves the per-service enhancer bundle from the role registry by token.
-/// Mirrors [`RpcControllerResolver`](super::RpcControllerResolver) — the
-/// adapter receives a `(service, enhancers)` pair per service and forwards
-/// `enhancers` into [`GrpcServiceSource::register_with`].
+/// Resolves one gRPC service's enhancer bundle from the role registry by token.
+/// Mirrors [`RpcControllerResolver`](super::RpcControllerResolver) — called by the instance
+/// loader while services are stored, so a misdeclared token fails `create()`. Bind hands the
+/// stored `(service, enhancers)` pair to the adapter, which forwards `enhancers` into
+/// [`GrpcServiceSource::register_with`].
 pub struct GrpcServiceResolver {
     container: Rc<RefCell<ToniContainer>>,
 }
@@ -23,18 +23,7 @@ impl GrpcServiceResolver {
         Self { container }
     }
 
-    pub fn resolve(&self) -> Result<Vec<(Arc<dyn GrpcServiceSource>, Arc<ResolvedGrpcEnhancers>)>> {
-        let services = self.container.borrow().get_grpc_services().clone();
-        services
-            .into_values()
-            .map(|svc| {
-                let enhancers = self.resolve_for(svc.as_ref())?;
-                Ok((svc, Arc::new(enhancers)))
-            })
-            .collect()
-    }
-
-    fn resolve_for(&self, svc: &dyn GrpcServiceSource) -> Result<ResolvedGrpcEnhancers> {
+    pub(crate) fn resolve_for(&self, svc: &dyn GrpcServiceSource) -> Result<ResolvedGrpcEnhancers> {
         let guards = self.resolve_guards(svc.get_guard_tokens())?;
         let interceptors = self.resolve_interceptors(svc.get_interceptor_tokens())?;
         let error_handlers = self.resolve_error_handlers(svc.get_error_handler_tokens())?;

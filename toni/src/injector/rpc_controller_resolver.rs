@@ -9,6 +9,9 @@ use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEnt
 
 use super::ToniContainer;
 
+/// Resolves one RPC controller's enhancer tokens into a ready-to-serve
+/// `RpcControllerWrapper`. Called by the instance loader while controllers are stored, so a
+/// misdeclared token fails `create()`; bind hands the stored wrapper to the adapter.
 pub struct RpcControllerResolver {
     container: Rc<RefCell<ToniContainer>>,
 }
@@ -18,17 +21,7 @@ impl RpcControllerResolver {
         Self { container }
     }
 
-    pub fn resolve(&self) -> Result<Vec<std::sync::Arc<RpcControllerWrapper>>> {
-        let raw = self.container.borrow().get_rpc_controllers().clone();
-        raw.into_values()
-            .map(|source| {
-                let wrapper = self.wrap_controller(source)?;
-                Ok(std::sync::Arc::new(wrapper))
-            })
-            .collect()
-    }
-
-    fn wrap_controller(
+    pub(crate) fn wrap_controller(
         &self,
         source: std::sync::Arc<dyn RpcControllerSource>,
     ) -> Result<RpcControllerWrapper> {
