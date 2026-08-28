@@ -22,9 +22,7 @@ use crate::{
         server_lifecycle::ServerLifecycle,
     },
     application_context::ToniApplicationContext,
-    injector::{
-        GatewayResolver, IntoToken, ToniContainer,
-    },
+    injector::{GatewayResolver, IntoToken, ToniContainer},
     router::RoutesResolver,
     rpc::{RpcCallInfo, RpcControllerWrapper, RpcData, RpcError},
     websocket::{

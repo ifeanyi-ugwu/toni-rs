@@ -442,9 +442,9 @@ impl ToniInstanceLoader {
                             })
                             .collect::<Result<Vec<_>>>()?,
                     ),
-                    Dispatch::Rpc(source) => ResolvedDispatch::Rpc(Arc::new(
-                        rpc_resolver.wrap_controller(source)?,
-                    )),
+                    Dispatch::Rpc(source) => {
+                        ResolvedDispatch::Rpc(Arc::new(rpc_resolver.wrap_controller(source)?))
+                    }
                     Dispatch::Grpc(source) => {
                         let enhancers = grpc_resolver.resolve_for(source.as_ref())?;
                         ResolvedDispatch::Grpc(source, Arc::new(enhancers))

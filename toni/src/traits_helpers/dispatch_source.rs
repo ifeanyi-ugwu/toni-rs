@@ -62,9 +62,9 @@ pub fn request_scoped_dependencies(
     declared
         .iter()
         .filter(|token| {
-            dependencies
-                .get(*token)
-                .is_some_and(|provider| matches!(provider.get_scope(), crate::ProviderScope::Request))
+            dependencies.get(*token).is_some_and(|provider| {
+                matches!(provider.get_scope(), crate::ProviderScope::Request)
+            })
         })
         .cloned()
         .collect()
