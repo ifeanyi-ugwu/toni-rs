@@ -129,6 +129,9 @@ resolves its instance where its transport hands control back — inside `Route::
 `execute_handler`, inside the tonic wrapper's delegate. Those points are not interchangeable, and no
 common shape is imposed on them here.
 
+Superseded by [ADR-0030](0030-one-source-builds-every-dispatch-target.md): one source type encodes
+the fork on every transport, and only the call sites remain per transport.
+
 ## Consequences
 
 - Breaking for every module declaring an RPC controller or a gRPC service: the entry moves from
@@ -142,7 +145,9 @@ common shape is imposed on them here.
   already means a variant in.
 - Enhancer-token resolution keeps its per-transport timing: HTTP resolves at init while building
   routes, RPC and gRPC resolve at bind. One declaration path does not make one resolution moment, and
-  unifying that is a separate question.
+  unifying that is a separate question — answered by
+  [ADR-0030](0030-one-source-builds-every-dispatch-target.md): tokens resolve at create on every
+  transport.
 - The refusal diagnostic degrades to not-found, by decision.
 
 ## Roads not taken
