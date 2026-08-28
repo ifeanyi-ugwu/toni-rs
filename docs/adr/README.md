@@ -46,3 +46,4 @@ the history is part of the value.
 - [0028 — A type's DI token is its full `type_name`, produced by one function](0028-one-token-format-one-owner.md)
 - [0029 — A module has one identity, and display derives from it](0029-one-module-identity.md)
 - [0030 — One source builds every dispatch target, and enhancer tokens resolve at create](0030-one-source-builds-every-dispatch-target.md)
+- [0031 — One attribute declares a controller, and its handlers name the transport](0031-one-controller-attribute.md)
