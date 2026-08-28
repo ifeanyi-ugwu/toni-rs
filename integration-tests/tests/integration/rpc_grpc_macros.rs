@@ -1,7 +1,7 @@
-//! End-to-end coverage for the `#[grpc_service]` + `#[grpc_methods]` macros:
+//! End-to-end coverage for the `#[controller]` + `#[grpc_methods]` macros:
 //!
-//! - `#[grpc_service]` on a struct + its inherent impl makes it an injectable
-//!   DI provider that the framework discovers as a gRPC service.
+//! - `#[controller]` on the struct declares a dispatch target that the
+//!   framework discovers as a gRPC service.
 //! - `#[grpc_methods]` on the proto-trait impl emits a `GrpcServiceSource`
 //!   that wraps the service in the inferred `*Server` and registers it with
 //!   the framework's gRPC adapter at bind time.
@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, new, set_metadata};
+use toni_macros::{controller, grpc_methods, injectable, module, new, set_metadata};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -45,9 +45,12 @@ impl OrdersCounter {
     }
 }
 
-#[grpc_service(pub struct OrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct OrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl OrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }
@@ -168,9 +171,12 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AdminGuard {
     }
 }
 
-#[grpc_service(pub struct GuardedOrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct GuardedOrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl GuardedOrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }
@@ -355,9 +361,12 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
     }
 }
 
-#[grpc_service(pub struct InterceptedOrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct InterceptedOrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl InterceptedOrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }
@@ -429,9 +438,12 @@ struct InterceptedGrpcModule;
 /// Same shape as the deny module below but with `MethodInterceptor` swapped
 /// for `DenyInterceptor` on the `create` method, so the short-circuit test
 /// has an isolated server.
-#[grpc_service(pub struct DenyOrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct DenyOrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl DenyOrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }
@@ -906,9 +918,12 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     }
 }
 
-#[grpc_service(pub struct ErrorHandledOrdersGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct ErrorHandledOrdersGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl ErrorHandledOrdersGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -992,9 +1007,12 @@ async fn boot_error_handled() -> (u16, toni::ShutdownHandle) {
 
 /// `create` panics. No error handler registered, so the framework's
 /// default panic recovery is what produces the wire reply.
-#[grpc_service(pub struct PanickyOrdersGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct PanickyOrdersGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl PanickyOrdersGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -1285,9 +1303,12 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for PanickingGrpcGuard {
     }
 }
 
-#[grpc_service(pub struct GuardPanicGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct GuardPanicGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl GuardPanicGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -1363,9 +1384,12 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
     }
 }
 
-#[grpc_service(pub struct InterceptorPanicGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct InterceptorPanicGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl InterceptorPanicGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -1552,9 +1576,12 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus>
     }
 }
 
-#[grpc_service(pub struct ErrorHandlerPanicGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct ErrorHandlerPanicGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl ErrorHandlerPanicGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -1663,9 +1690,12 @@ async fn grpc_panic_in_error_handler_continues_chain_to_default_rendering() {
 /// `create` parks long enough that the test's parallel calls overlap.
 /// No other method matters for the backpressure test — only this one
 /// is invoked.
-#[grpc_service(pub struct SlowOrdersGrpcService {
-    #[inject] _counter: OrdersCounter,
-})]
+#[controller]
+pub struct SlowOrdersGrpcService {
+    #[inject]
+    _counter: OrdersCounter,
+}
+
 impl SlowOrdersGrpcService {
     pub fn new(_counter: OrdersCounter) -> Self {
         Self { _counter }
@@ -1835,7 +1865,9 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for BusGuard {
     }
 }
 
-#[grpc_service(pub struct BusOrdersGrpcService {})]
+#[controller]
+pub struct BusOrdersGrpcService {}
+
 impl BusOrdersGrpcService {
     #[new]
     pub fn new() -> Self {
@@ -1986,10 +2018,14 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for GrpcCallScopedGuard {
 /// Numbers each service construction.
 static PER_CALL_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
 
-#[grpc_service(scope = "request", pub struct PerCallGrpcService {
-    #[inject] scoped: GrpcCallScoped,
-    #[default(0)] build: u64,
-})]
+#[controller(scope = "request")]
+pub struct PerCallGrpcService {
+    #[inject]
+    scoped: GrpcCallScoped,
+    #[default(0)]
+    build: u64,
+}
+
 impl PerCallGrpcService {
     #[new]
     pub fn new(scoped: GrpcCallScoped) -> Self {
@@ -2058,9 +2094,12 @@ struct PerCallGrpcModule;
 /// Numbers each construction of the singleton service below.
 static SINGLETON_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
 
-#[grpc_service(pub struct SingletonGrpcService {
-    #[default(0)] build: u64,
-})]
+#[controller]
+pub struct SingletonGrpcService {
+    #[default(0)]
+    build: u64,
+}
+
 impl SingletonGrpcService {
     #[new]
     pub fn new() -> Self {
@@ -2147,7 +2186,7 @@ where
     (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
 }
 
-/// `#[grpc_service(scope = "request", …)]` builds the service inside the call it
+/// `#[controller(scope = "request")]` builds the service inside the call it
 /// serves: a fresh one per call, and its request-scoped dependency is the
 /// instance the call already holds rather than a second one.
 #[tokio_localset_test::localset_test]
@@ -2272,9 +2311,12 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for RecordDeclared {
     }
 }
 
-#[grpc_service(pub struct MetaGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct MetaGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl MetaGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }

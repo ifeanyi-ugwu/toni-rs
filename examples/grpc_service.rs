@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, new};
+use toni_macros::{controller, grpc_methods, injectable, module, new};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -152,16 +152,19 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
 
 // ─── Service ────────────────────────────────────────────────────────────────
 //
-// `#[grpc_service]` registers the struct as a singleton DI injectable; the
+// `#[controller]` declares the service as a dispatch target; the
 // `#[inject]`-annotated fields are resolved from the module's providers
 // list. `#[grpc_methods]` wraps the proto-trait impl with the enhancer
 // pipeline declared via the `#[use_*]` attributes — at bind time the
 // framework registers the wrapper with tonic so every inbound call
 // flows through guards → interceptors → user code → error handlers.
 
-#[grpc_service(pub struct OrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct OrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl OrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }

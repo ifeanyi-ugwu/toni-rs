@@ -43,7 +43,7 @@ use toni::http_helpers::{Body, HttpResponse};
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
-use toni::{controller, get, injectable, module, patterns, post, routes, rpc_controller};
+use toni::{controller, get, injectable, module, patterns, post, routes};
 use toni_macros::{new, subscriptions, websocket_gateway};
 use validator::Validate;
 
@@ -381,7 +381,7 @@ impl CatalogGateway {
 // RPC
 
 /// And over the payload of a call. One DTO, one set of rules, three transports.
-#[rpc_controller]
+#[controller]
 pub struct CatalogRpcController {}
 
 #[patterns]

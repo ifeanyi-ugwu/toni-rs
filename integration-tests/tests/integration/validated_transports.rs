@@ -13,7 +13,7 @@ use toni::extractors::{Payload, Validated};
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
-use toni_macros::{new, patterns, rpc_controller, subscriptions, websocket_gateway};
+use toni_macros::{controller, new, patterns, subscriptions, websocket_gateway};
 use validator::Validate;
 
 use crate::common::TestServer;
@@ -51,7 +51,7 @@ impl ValidatedWsModule {}
 
 // ---- RPC ---------------------------------------------------------------------
 
-#[rpc_controller]
+#[controller]
 pub struct ValidatedRpcController {}
 
 #[patterns]

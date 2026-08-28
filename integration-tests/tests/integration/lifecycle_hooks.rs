@@ -15,9 +15,7 @@ use toni::{
     injectable, module, on_application_bootstrap, on_module_init, toni_factory::ToniFactory,
 };
 use toni_axum::AxumAdapter;
-use toni_macros::{
-    controller, on_application_shutdown, on_module_destroy, patterns, routes, rpc_controller,
-};
+use toni_macros::{controller, on_application_shutdown, on_module_destroy, patterns, routes};
 use toni_tcp::TcpAdapter;
 
 static EVENT_LOG: OnceLock<Arc<Mutex<Vec<&'static str>>>> = OnceLock::new();
@@ -105,7 +103,7 @@ async fn path_qualified_module_hook_attr_fires() {
     assert_eq!(qualified_log().lock().unwrap().clone(), vec!["module:init"]);
 }
 
-#[rpc_controller]
+#[controller]
 pub struct HookedRpcController {}
 
 #[patterns]
@@ -155,7 +153,9 @@ mod orders_pb {
     tonic::include_proto!("toni_test.orders");
 }
 
-#[toni_macros::grpc_service(pub struct HookedGrpcService {})]
+#[toni_macros::controller]
+pub struct HookedGrpcService {}
+
 impl HookedGrpcService {
     #[toni_macros::new]
     pub fn new() -> Self {

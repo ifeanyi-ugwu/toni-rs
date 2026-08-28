@@ -17,7 +17,7 @@ use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{ErrorHandler, Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerOutput, WsHandlerResult, WsMessage};
-use toni_macros::{new, patterns, rpc_controller, subscriptions, websocket_gateway};
+use toni_macros::{controller, new, patterns, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
@@ -210,7 +210,7 @@ impl Interceptor<RpcContext, RpcHandlerResult> for RpcPrefixInterceptor {
 //
 // Same four-handler shape as the WS gateway.
 
-#[rpc_controller]
+#[controller]
 pub struct RpcMethodEnhancersController {}
 #[patterns]
 impl RpcMethodEnhancersController {

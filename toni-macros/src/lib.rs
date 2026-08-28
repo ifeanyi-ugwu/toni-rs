@@ -702,16 +702,15 @@ pub fn subscribe_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
 // RPC CONTROLLER MACROS
 // ============================================================================
 
-/// RPC controller macro for defining message pattern handlers.
+/// Pattern handlers for a controller — what makes a `#[controller]` struct dispatch RPC.
 ///
-/// Similar to `#[websocket_gateway]` but for RPC transports (TCP, NATS, Kafka, etc.). Placed on the
-/// struct, like `#[injectable]`: `#[inject]` fields are dependencies; the pattern handlers live in a
-/// sibling `#[patterns]` impl. Implements `RpcControllerTrait` and routes incoming messages by pattern.
+/// Place it on the struct's impl; the `#[message_pattern]` and `#[event_pattern]` methods are
+/// scanned into the pattern router.
 ///
 /// # Syntax
 ///
 /// ```rust,ignore
-/// #[rpc_controller]
+/// #[controller]
 /// pub struct OrdersController {}
 ///
 /// #[patterns]
@@ -724,29 +723,9 @@ pub fn subscribe_message(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// # Scope
-///
-/// `#[rpc_controller(scope = "request")]` builds the controller inside each call it serves, so a
-/// dependency that belongs to the call reaches it. A controller that declares no scope is built
-/// once at startup, unless one of its dependencies is request-scoped — then it is elevated to the
-/// same per-call construction with a warning naming the dependency.
-///
-/// # Declaration
-///
 /// The struct goes in its module's `controllers:` list, beside HTTP controllers. A controller is
 /// reached by pattern and cannot be injected: what a holder would get is decided by the
 /// controller's own dependencies. Put shared behaviour in a provider and inject that.
-#[proc_macro_attribute]
-pub fn rpc_controller(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = proc_macro2::TokenStream::from(attr);
-    let item = proc_macro2::TokenStream::from(item);
-    let output = rpc_macro::rpc_controller_attr::handle_rpc_controller(attr, item);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-/// Pattern handlers for a `#[rpc_controller]` struct. Place it on the struct's `impl`; the
-/// `#[message_pattern]` and `#[event_pattern]` methods are scanned into the pattern router. Pairs
-/// with `#[rpc_controller]` on the struct.
 #[proc_macro_attribute]
 pub fn patterns(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = proc_macro2::TokenStream::from(item);
@@ -790,47 +769,9 @@ pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 // gRPC SERVICE MACROS
 // ============================================================================
 
-/// Declares a struct as a gRPC service that the framework discovers and
-/// registers with the gRPC adapter at bind time.
-///
-/// Lives on the struct declaration plus its inherent impl block (parallel
-/// to `#[rpc_controller]`). The proto trait impl gets `#[grpc_methods]`
-/// separately.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[grpc_service(pub struct OrdersGrpcService { #[inject] repo: OrdersRepo })]
-/// impl OrdersGrpcService {
-///     pub fn new(repo: ::std::sync::Arc<OrdersRepo>) -> Self { Self { repo } }
-/// }
-///
-/// #[grpc_methods]
-/// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
-/// ```
-///
-/// # Scope
-///
-/// `#[grpc_service(scope = "request", …)]` builds the service inside each call it serves, so a
-/// dependency that belongs to the call reaches it. A service that declares no scope is built once
-/// at startup, unless one of its dependencies is request-scoped — then it is elevated to the same
-/// per-call construction with a warning naming the dependency.
-///
-/// # Declaration
-///
-/// The struct goes in its module's `controllers:` list, beside HTTP controllers. A service is
-/// reached by its transport and cannot be injected: what a holder would get is decided by the
-/// service's own dependencies. Put shared behaviour in a provider and inject that.
-#[proc_macro_attribute]
-pub fn grpc_service(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = proc_macro2::TokenStream::from(attr);
-    let item = proc_macro2::TokenStream::from(item);
-    let output = grpc_macro::grpc_service::handle_grpc_service(attr, item);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
 /// Annotates `impl SomeProtoTrait for YourService` with the wiring that
-/// makes the service register itself with the gRPC adapter.
+/// makes the service register itself with the gRPC adapter — what makes a
+/// `#[controller]` struct dispatch gRPC.
 ///
 /// The wrapping `*Server` type is inferred from the proto trait's name
 /// (`OrdersService` → `OrdersServer` in the same parent path). Override

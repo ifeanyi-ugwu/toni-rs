@@ -1,7 +1,7 @@
 // RPC controller example using the TCP transport adapter.
 //
 // This example demonstrates:
-// 1. Defining an RPC controller with #[rpc_controller]
+// 1. Defining an RPC controller with #[controller]
 // 2. Request-response handlers via #[message_pattern]
 // 3. Fire-and-forget handlers via #[event_pattern]
 // 4. Returning errors — the adapter sends an error envelope back to the caller
@@ -28,7 +28,7 @@
 //   echo '{"pattern":"order.shipped","data":{"order_id":1001}}' | nc 127.0.0.1 4000
 
 use toni::ToniFactory;
-use toni_macros::{injectable, module, new, patterns, rpc_controller};
+use toni_macros::{controller, injectable, module, new, patterns};
 
 // ============================================================================
 // Service
@@ -51,7 +51,7 @@ impl OrdersService {
 // RPC controller
 // ============================================================================
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {
     #[inject]
     service: OrdersService,

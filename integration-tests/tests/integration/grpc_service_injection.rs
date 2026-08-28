@@ -4,7 +4,7 @@ use std::pin::Pin;
 
 use futures_util::Stream;
 use toni::*;
-use toni_macros::{grpc_methods, grpc_service, new};
+use toni_macros::{controller, grpc_methods, new};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -13,7 +13,9 @@ mod orders_pb {
 // `OrdersServer` reads as unused here — `#[grpc_methods]` names it in the code it emits.
 use orders_pb::orders_server::{Orders, OrdersServer};
 
-#[grpc_service(pub struct OrdersGrpcService {})]
+#[controller]
+pub struct OrdersGrpcService {}
+
 impl OrdersGrpcService {
     #[new]
     pub fn new() -> Self {

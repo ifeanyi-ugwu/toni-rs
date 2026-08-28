@@ -17,9 +17,9 @@ use toni::context::RpcContext;
 use toni::module;
 use toni::rpc::{RpcData, RpcError};
 use toni::toni_factory::ToniFactory;
-use toni_macros::{message_pattern, new, patterns, rpc_controller};
+use toni_macros::{controller, message_pattern, new, patterns};
 
-#[rpc_controller]
+#[controller]
 pub struct AdoptionController {}
 
 #[patterns]

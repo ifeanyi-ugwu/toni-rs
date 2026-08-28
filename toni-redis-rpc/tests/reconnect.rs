@@ -19,12 +19,12 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 use toni::context::RpcContext;
 use toni::rpc::{RpcData, RpcError};
-use toni::{module, new, patterns, rpc_controller, RpcClient, ToniFactory};
+use toni::{controller, module, new, patterns, RpcClient, ToniFactory};
 use toni_redis_rpc::{RedisAdapter, RedisClientTransport};
 
 static URL: OnceLock<String> = OnceLock::new();
 
-#[rpc_controller]
+#[controller]
 pub struct EchoController {}
 #[patterns]
 impl EchoController {

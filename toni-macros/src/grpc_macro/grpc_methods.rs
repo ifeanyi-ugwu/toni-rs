@@ -374,6 +374,27 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         #[doc(hidden)]
         pub struct #source_ident(::toni::traits_helpers::DispatchSource<#self_ident>);
 
+        impl #self_ident {
+            /// Shadows the `DispatchBridge` default: this controller dispatches gRPC.
+            #[doc(hidden)]
+            #[allow(non_snake_case, clippy::all)]
+            pub fn __toni_dispatch(
+                source: &::toni::traits_helpers::DispatchSource<#self_ident>,
+            ) -> ::toni::traits_helpers::Dispatch {
+                // The route prefix is HTTP's argument; a gRPC service cannot use one.
+                if !<#self_ident>::__toni_prefix().is_empty() {
+                    ::toni::tracing::warn!(
+                        controller = #token,
+                        prefix = <#self_ident>::__toni_prefix(),
+                        "controller dispatches gRPC; the route prefix is unused"
+                    );
+                }
+                ::toni::traits_helpers::Dispatch::Grpc(
+                    ::std::sync::Arc::new(#source_ident(source.clone())),
+                )
+            }
+        }
+
         impl ::toni::adapter::GrpcServiceSource for #source_ident {
             fn token(&self) -> ::std::string::String {
                 #token.to_string()

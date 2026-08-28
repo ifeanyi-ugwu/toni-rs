@@ -180,7 +180,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
         &mut self,
         services: Vec<(Arc<dyn GrpcServiceSource>, Arc<ResolvedGrpcEnhancers>)>,
     ) -> Result<()> {
-        // Framework-discovered services (`#[grpc_service]` + `#[grpc_methods]`)
+        // Framework-discovered services (`#[controller]` + `#[grpc_methods]`)
         // each know how to wrap themselves in their tonic `*Server` — hand
         // them the same `RoutesBuilder` already accumulating any
         // user-`add_service`'d entries, plus the resolved enhancer bundle so

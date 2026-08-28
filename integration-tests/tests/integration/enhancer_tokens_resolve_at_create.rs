@@ -7,9 +7,7 @@ use toni::context::{GrpcContext, RpcContext};
 use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::Guard;
 use toni::*;
-use toni_macros::{
-    grpc_methods, grpc_service, message_pattern, new, patterns, rpc_controller, use_guards,
-};
+use toni_macros::{controller, grpc_methods, message_pattern, new, patterns, use_guards};
 
 mod orders_pb {
     tonic::include_proto!("toni_test.orders");
@@ -45,7 +43,7 @@ impl Guard<GrpcContext> for UnregisteredGrpcGuard {
 
 // ---- RPC ---------------------------------------------------------------------
 
-#[rpc_controller]
+#[controller]
 pub struct GuardedOrdersController {}
 
 #[patterns]
@@ -87,7 +85,9 @@ async fn a_misdeclared_rpc_enhancer_token_fails_create() {
 
 // ---- gRPC --------------------------------------------------------------------
 
-#[grpc_service(pub struct GuardedGrpcService {})]
+#[controller]
+pub struct GuardedGrpcService {}
+
 impl GuardedGrpcService {
     #[new]
     pub fn new() -> Self {

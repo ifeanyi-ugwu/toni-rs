@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module, new, patterns, rpc_controller};
+use toni_macros::{controller, grpc_methods, injectable, module, new, patterns};
 
 mod orders_pb {
     tonic::include_proto!("toni_examples.orders");
@@ -57,7 +57,7 @@ use orders_pb::orders_server::{Orders, OrdersServer};
 
 // ─── TCP / UDP — pattern-based ──────────────────────────────────────────────
 
-#[rpc_controller]
+#[controller]
 pub struct OrdersController {}
 #[patterns]
 impl OrdersController {
@@ -114,9 +114,12 @@ impl OrdersCounter {
     }
 }
 
-#[grpc_service(pub struct OrdersGrpcService {
-    #[inject] counter: OrdersCounter,
-})]
+#[controller]
+pub struct OrdersGrpcService {
+    #[inject]
+    counter: OrdersCounter,
+}
+
 impl OrdersGrpcService {
     pub fn new(counter: OrdersCounter) -> Self {
         Self { counter }

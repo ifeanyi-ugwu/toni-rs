@@ -2,7 +2,7 @@
 //!
 //! Drives a [`tonic`](https://docs.rs/tonic) server through Toni's bind /
 //! serve / drain lifecycle. Services declared with the framework's
-//! `#[grpc_service]` + `#[grpc_methods]` macros are discovered via DI and
+//! `#[controller]` + `#[grpc_methods]` macros are discovered via DI and
 //! wrapped with the enhancer pipeline (guards / interceptors / error
 //! handlers + panic recovery) before being handed to tonic — there is no
 //! manual `*Server::new(handler)` step in user code.
@@ -12,14 +12,16 @@
 //! ```ignore
 //! use std::net::SocketAddr;
 //! use toni::ToniFactory;
-//! use toni_macros::{grpc_methods, grpc_service, injectable, module};
+//! use toni_macros::{controller, grpc_methods, injectable, module};
 //!
 //! mod orders_pb {
 //!     tonic::include_proto!("toni_examples.orders");
 //! }
 //! use orders_pb::orders_server::{Orders, OrdersServer};
 //!
-//! #[grpc_service(pub struct OrdersGrpcService {})]
+//! #[controller]
+//! pub struct OrdersGrpcService {}
+//!
 //! impl OrdersGrpcService {
 //!     pub fn new() -> Self { Self {} }
 //! }
@@ -46,7 +48,7 @@
 //! # Mixing DI-registered and manually-added services
 //!
 //! [`GrpcAdapter::add_service`] accepts any tonic-generated service handle,
-//! so a non-DI service can sit alongside `#[grpc_service]`-registered ones:
+//! so a non-DI service can sit alongside the DI-registered ones:
 //!
 //! ```ignore
 //! let adapter = toni_grpc::GrpcAdapter::new(addr)

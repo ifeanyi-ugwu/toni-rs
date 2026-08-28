@@ -8,14 +8,12 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, ItemImpl, ItemStruct, Result, Type};
+use syn::{Ident, ItemStruct, Result, Type};
 
 use crate::{
     shared::{
         dependency_info::DependencyInfo,
-        lifecycle_hooks::{
-            LifecycleHooks, detect_lifecycle_hooks, reject_lifecycle_hooks, strip_lifecycle_attrs,
-        },
+        lifecycle_hooks::{LifecycleHooks, reject_lifecycle_hooks},
         scope_parser::ProviderScope,
     },
     utils::extracts::{
@@ -27,7 +25,7 @@ use crate::{
 ///
 /// Enhancer roles (guard / interceptor / error-handler / middleware) are NOT here — those
 /// are detected from the type's trait impls via `toni::__detect` at the factory. These three are
-/// driven by the structural macros (`#[websocket_gateway]` / `#[rpc_controller]` / `#[grpc_service]`),
+/// driven by the structural macros (`#[websocket_gateway]`),
 /// which generate the corresponding trait impl and routing, so the macro that emits them already
 /// knows the role.
 #[derive(Debug, Clone, Default)]
@@ -35,118 +33,6 @@ pub struct EnhancerTraits {
     pub is_gateway: bool,
 }
 
-/// The DI wiring for a `#[grpc_service]`: the re-emitted struct and impl, the lifecycle forwarders
-/// scanned off that impl, and the controller system its declaration expands to.
-///
-/// `struct_def` is `None` when the struct is defined separately above the impl block.
-/// In that case the macro does not re-emit or modify the struct; the user owns it entirely
-/// and must derive `Clone` themselves.
-pub fn generate_grpc_service_wiring(
-    struct_def: Option<&ItemStruct>,
-    impl_block: &ItemImpl,
-    dependencies: &DependencyInfo,
-    request_scoped: bool,
-) -> Result<TokenStream> {
-    let struct_name = match struct_def {
-        Some(s) => s.ident.clone(),
-        None => crate::utils::extracts::extract_impl_self_ident(impl_block)?,
-    };
-
-    let struct_emit = struct_def.map(|s| {
-        let s = add_inject_fields(s);
-        quote! { #[allow(dead_code)] #s }
-    });
-
-    let mut impl_def = impl_block.clone();
-    for item in impl_def.items.iter_mut() {
-        if let syn::ImplItem::Fn(method) = item {
-            crate::markers_params::remove_marker_controller_fn::remove_marker_in_controller_fn_args(
-                method,
-            );
-        }
-    }
-    let impl_def = strip_lifecycle_attrs(&impl_def);
-
-    let lifecycle_hooks = detect_lifecycle_hooks(impl_block);
-
-    // A dispatch target can be built per call, and the per-call path has no `Provider` of its own to
-    // hang hooks on — it reaches them through the bridge, like a request-scoped HTTP controller. So
-    // the scanned hooks are re-emitted as the inherent forwarders the bridge dispatches to, and the
-    // controller object calls the same names.
-    let lifecycle_forwarders = generate_lifecycle_forwarders(&struct_name, &lifecycle_hooks);
-    let controller_system =
-        generate_grpc_service_system(&struct_name, dependencies, request_scoped);
-
-    Ok(quote! {
-        #struct_emit
-
-        #[allow(dead_code)]
-        #impl_def
-
-        #lifecycle_forwarders
-        #controller_system
-    })
-}
-
-/// Re-emit scanned lifecycle hooks as the inherent `__toni_lc_*` forwarders that shadow the blanket
-/// `LifecycleBridge` no-ops — the same shape `#[on_module_init]` and friends emit for `#[injectable]`
-/// structs, which never run here because the enclosing attribute consumes them. A hook the struct
-/// does not declare is left to the blanket default.
-fn generate_lifecycle_forwarders(struct_name: &Ident, hooks: &LifecycleHooks) -> TokenStream {
-    let mut methods = Vec::new();
-
-    if let Some(method) = &hooks.on_module_init {
-        methods.push(quote! {
-            async fn __toni_lc_on_init(&self) -> ::toni::InitResult { self.#method().await }
-        });
-    }
-    if let Some(method) = &hooks.on_application_bootstrap {
-        methods.push(quote! {
-            async fn __toni_lc_on_bootstrap(&self) -> ::toni::InitResult { self.#method().await }
-        });
-    }
-    if let Some(method) = &hooks.on_module_destroy {
-        methods.push(quote! {
-            async fn __toni_lc_on_destroy(&self) { self.#method().await; }
-        });
-    }
-    if let Some(method) = &hooks.before_application_shutdown {
-        methods.push(quote! {
-            async fn __toni_lc_before_shutdown(&self, signal: Option<String>) {
-                self.#method(signal).await;
-            }
-        });
-    }
-    if let Some(method) = &hooks.on_application_shutdown {
-        methods.push(quote! {
-            async fn __toni_lc_on_shutdown(&self, signal: Option<String>) {
-                self.#method(signal).await;
-            }
-        });
-    }
-
-    if methods.is_empty() {
-        return quote! {};
-    }
-
-    quote! {
-        #[doc(hidden)]
-        #[allow(non_snake_case, clippy::all)]
-        impl #struct_name {
-            #(#methods)*
-        }
-    }
-}
-
-/// Emit the provider + factory + accessor for `struct_def` — the `#[injectable]` codegen. The caller
-/// (`provider_attr`) re-emits the struct itself; this contributes only the DI wiring beside it.
-///
-/// Dependencies are declared as `#[inject]` fields. By default the instance is assembled as
-/// a struct literal (`#[default(...)]` for owned state). With `init = "new"`, construction is
-/// redirected through `Self::new(deps…)` instead — the resolved `#[inject]` fields are passed
-/// in declaration order. This codegen never sees the impl, so a missing or mis-typed `new`
-/// surfaces as an ordinary compile error at the generated call.
-///
 /// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`
 /// and reach this path via the `toni::__construct` / `toni::__lifecycle` bridges — the provider
 /// wrapper dispatches to them without this codegen needing to see the methods.
@@ -164,7 +50,7 @@ pub fn generate_provider_from_struct(
 }
 
 /// Same struct-only DI wiring as [`generate_provider_from_struct`], but with the provider role
-/// preset by the caller. The structural macros (`#[websocket_gateway]` / `#[rpc_controller]`) own
+/// preset by the caller. The structural macros (`#[websocket_gateway]`) own
 /// their role and emit the matching trait impl themselves, so they pass `is_gateway` / `is_rpc_*`
 /// here while still field-injecting and dispatching construction/lifecycle through the bridges.
 pub fn generate_provider_from_struct_with_traits(
@@ -223,6 +109,9 @@ pub fn generate_provider_from_struct_with_traits(
 /// This is an acceptable limitation because:
 /// - Macros process attributes linearly and cannot look ahead to future impl blocks
 /// - Compile errors are clear when conflicts occur
+/// Re-emit the struct deriving only `InjectFields`. Dispatch targets take this path: nothing
+/// clones one, so no `Clone` derive is forced and non-`Clone` fields are legal.
+
 /// Re-emit the struct deriving only `InjectFields`. Dispatch targets take this path: nothing
 /// clones one, so no `Clone` derive is forced and non-`Clone` fields are legal.
 pub fn add_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
@@ -639,75 +528,25 @@ fn generate_request_provider(
     }
 }
 
-/// The instance-construction expression a dispatch provider evaluates: the `#[new]` constructor
-/// through the `CtorBridge` when one exists, else field injection. `self.dependencies` and
-/// `__exec_ctx` are in scope at the splice site.
-pub(crate) fn dispatch_build_expr(
-    struct_name: &Ident,
-    dependencies: &DependencyInfo,
-) -> TokenStream {
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
-    let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
-    quote! {{
-        use ::toni::__construct::CtorBridge as _;
-        match <#struct_name>::__toni_ctor_build(&self.dependencies, __exec_ctx.clone()) {
-            ::std::option::Option::Some(__fut) => __fut.await,
-            ::std::option::Option::None => {
-                #(#field_resolutions)*
-                #instantiation
-            }
-        }
-    }}
-}
-
-/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with `Arc<T>`, caches
-/// that `Arc` in the execution, and fires init/bootstrap at the build site, where hook resolution
-/// sees the concrete type. Nothing clones the target, so the struct needs no `Clone`.
-/// What a dispatch target's construction cannot share: how to name its object, list its declared
-/// dependency tokens, build one instance, warn on elevation, and hand over a `Dispatch`. One
-/// [`generate_dispatch_system`] call turns this into the whole construction machine.
-pub(crate) struct DispatchTarget<'a> {
-    pub struct_name: &'a Ident,
-    /// `…ControllerObject` / `…RpcControllerObject` / `…GrpcServiceObject`.
-    pub object_name: Ident,
-    /// Fn body: the declared dependency tokens, `Vec<String>`.
-    pub declared_deps: TokenStream,
-    /// Expr: whether the target declares `scope = "request"` itself.
-    pub force_request: TokenStream,
-    /// Stmt: the elevation warning, naming the attribute the user wrote. `__request_deps` is in
-    /// scope at the splice site.
-    pub elevation_warn: TokenStream,
-    /// Expr: build one instance from `dependencies` at `ProviderContext::None` (startup).
-    pub build_singleton: TokenStream,
-    /// Expr: build one instance from `self.dependencies` inside `__exec_ctx` (per call).
-    pub build_per_call: TokenStream,
-    /// Fn body: the `Dispatch` this target hands over, reading `self.source`.
-    pub dispatch: TokenStream,
-}
-
-/// The construction machine behind every dispatch target, emitted once per struct: the per-call
-/// provider its source resolves from, the `Controller` object the module holds (lifecycle hooks
-/// reaching the `Singleton` arm), the `ControllerFactory` whose `build` runs the elevation scan
-/// and settles the `DispatchSource` variant, and the accessor `controllers: [Foo]` expands to.
-pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStream {
-    let DispatchTarget {
-        struct_name,
-        object_name,
-        declared_deps,
-        force_request,
-        elevation_warn,
-        build_singleton,
-        build_per_call,
-        dispatch,
-    } = target;
+/// The construction machine behind every dispatch target, emitted once per `#[controller]`
+/// struct: the per-call provider its source resolves from, the `Controller` object the module
+/// holds (lifecycle hooks reaching the `Singleton` arm), the `ControllerFactory` whose `build`
+/// runs the elevation scan and settles the `DispatchSource` variant, and the accessor
+/// `controllers: [Foo]` expands to. The transport is not named here: `dispatch()` resolves
+/// through the `DispatchBridge`, which the handler-impl macro shadows.
+pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
     let per_call_provider = request_provider_ident(struct_name);
+    let object_name = Ident::new(
+        &format!("{}ControllerObject", struct_name),
+        struct_name.span(),
+    );
     let factory_name = Ident::new(
         &format!("{}ControllerFactory", struct_name),
         struct_name.span(),
     );
     let struct_token = struct_name.to_string();
 
-    let provider = generate_dispatch_provider(struct_name, &per_call_provider, &build_per_call);
+    let provider = generate_dispatch_provider(struct_name, &per_call_provider);
 
     // Hooks fire on the instance every call shares. A target built per call has no such
     // instance; its provider fires init/bootstrap on each one it builds.
@@ -742,7 +581,8 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
             }
 
             fn dispatch(&self) -> ::toni::traits_helpers::Dispatch {
-                #dispatch
+                use ::toni::__dispatch::DispatchBridge as _;
+                <#struct_name>::__toni_dispatch(&self.source)
             }
 
             async fn on_module_init(&self) -> ::toni::InitResult {
@@ -773,7 +613,7 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
             }
 
             fn get_dependencies(&self) -> Vec<String> {
-                #declared_deps
+                <#struct_name>::__toni_dependencies()
             }
 
             async fn build(
@@ -783,7 +623,7 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
                     ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>,
                 >,
             ) -> ::std::sync::Arc<dyn ::toni::traits_helpers::Controller> {
-                let __force_request: bool = #force_request;
+                let __force_request: bool = <#struct_name>::__toni_is_request_scoped();
                 let __declared =
                     <Self as ::toni::traits_helpers::ControllerFactory>::get_dependencies(self);
                 let __request_deps = ::toni::traits_helpers::request_scoped_dependencies(
@@ -792,7 +632,12 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
                 );
 
                 if !__force_request && !__request_deps.is_empty() {
-                    #elevation_warn
+                    ::toni::tracing::warn!(
+                        controller = #struct_token,
+                        request_scoped_deps = ?__request_deps,
+                        "Controller automatically elevated to request scope due to request-scoped \
+                         providers. Silence this by declaring #[controller(scope = \"request\")]."
+                    );
                 }
 
                 let __source = if __force_request || !__request_deps.is_empty() {
@@ -802,9 +647,13 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
                     )
                 } else {
                     // Built at startup, outside any execution, and shared by every call.
-                    ::toni::traits_helpers::DispatchSource::Singleton(
-                        ::std::sync::Arc::new(#build_singleton),
-                    )
+                    ::toni::traits_helpers::DispatchSource::Singleton(::std::sync::Arc::new(
+                        <#struct_name>::__toni_build_from_deps(
+                            &dependencies,
+                            ::toni::ProviderContext::None,
+                        )
+                        .await,
+                    ))
                 };
 
                 ::std::sync::Arc::new(#object_name { source: __source })
@@ -820,10 +669,13 @@ pub(crate) fn generate_dispatch_system(target: DispatchTarget<'_>) -> TokenStrea
     }
 }
 
+/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with `Arc<T>`, caches
+/// that `Arc` in the execution, fires init/bootstrap at the build site where hook resolution sees
+/// the concrete type, and builds through the struct's `__toni_build_from_deps` bridge. Nothing
+/// clones the target, so the struct needs no `Clone`.
 pub(crate) fn generate_dispatch_provider(
     struct_name: &Ident,
     provider_name: &Ident,
-    build_expr: &TokenStream,
 ) -> TokenStream {
     quote! {
         struct #provider_name {
@@ -855,7 +707,11 @@ pub(crate) fn generate_dispatch_provider(
                 }
                 // `__exec_ctx` threads into the build, so a request-scoped dependency resolves
                 // in the same execution and is shared rather than rebuilt.
-                let __instance = #build_expr;
+                let __instance = <#struct_name>::__toni_build_from_deps(
+                    &self.dependencies,
+                    __exec_ctx.clone(),
+                )
+                .await;
                 let __instance = ::std::sync::Arc::new(__instance);
                 // Hooks complete before the cache holds the instance, so nothing is handed a
                 // pre-init one.
@@ -1510,117 +1366,6 @@ fn generate_singleton_factory(
             }
         }
     }
-}
-
-/// The declared dependency tokens for a target constructed through the `CtorBridge`: the `#[new]`
-/// constructor's tokens when one exists, else the `#[inject]` field tokens.
-fn ctor_declared_deps(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
-    let dependency_tokens: Vec<_> = dependencies
-        .constructor_params
-        .iter()
-        .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .chain(
-            dependencies
-                .fields
-                .iter()
-                .map(|(_, _, lookup_token_expr)| lookup_token_expr),
-        )
-        .collect();
-    quote! {
-        use ::toni::__construct::CtorBridge as _;
-        <#struct_name>::__toni_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
-    }
-}
-
-/// Build one instance at startup, outside any execution: the `#[new]` constructor through the
-/// `CtorBridge` when one exists, else field injection against the factory's `dependencies`.
-fn ctor_build_singleton(struct_name: &Ident, dependencies: &DependencyInfo) -> TokenStream {
-    let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
-    let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
-    quote! {{
-        use ::toni::__construct::CtorBridge as _;
-        match <#struct_name>::__toni_ctor_build(&dependencies, ::toni::ProviderContext::None) {
-            ::std::option::Option::Some(__fut) => __fut.await,
-            ::std::option::Option::None => {
-                #(#field_resolutions)*
-                #instantiation
-            }
-        }
-    }}
-}
-
-/// An RPC controller's construction machine — the shared system, configured with the RPC object
-/// name, the RPC elevation warning, and a `Dispatch::Rpc` carrying the source companion.
-pub fn generate_rpc_controller_system(
-    struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    request_scoped: bool,
-) -> TokenStream {
-    let source_name = crate::rpc_macro::rpc_controller_attr::rpc_source_ident(struct_name);
-    let struct_token = struct_name.to_string();
-
-    generate_dispatch_system(DispatchTarget {
-        struct_name,
-        object_name: Ident::new(
-            &format!("{}RpcControllerObject", struct_name),
-            struct_name.span(),
-        ),
-        declared_deps: ctor_declared_deps(struct_name, dependencies),
-        force_request: quote! { #request_scoped },
-        elevation_warn: quote! {
-            ::toni::tracing::warn!(
-                rpc_controller = #struct_token,
-                request_scoped_deps = ?__request_deps,
-                "RPC controller automatically elevated to request scope due to \
-                 request-scoped providers. Silence this by declaring \
-                 #[rpc_controller(scope = \"request\")]."
-            );
-        },
-        build_singleton: ctor_build_singleton(struct_name, dependencies),
-        build_per_call: dispatch_build_expr(struct_name, dependencies),
-        dispatch: quote! {
-            ::toni::traits_helpers::Dispatch::Rpc(
-                ::std::sync::Arc::new(#source_name(self.source.clone())),
-            )
-        },
-    })
-}
-
-/// A gRPC service's construction machine — the shared system, configured with the gRPC object
-/// name, the gRPC elevation warning, and a `Dispatch::Grpc` carrying the source companion.
-fn generate_grpc_service_system(
-    struct_name: &Ident,
-    dependencies: &DependencyInfo,
-    request_scoped: bool,
-) -> TokenStream {
-    let source_name = crate::grpc_macro::grpc_methods::grpc_source_ident(struct_name);
-    let struct_token = struct_name.to_string();
-
-    generate_dispatch_system(DispatchTarget {
-        struct_name,
-        object_name: Ident::new(
-            &format!("{}GrpcServiceObject", struct_name),
-            struct_name.span(),
-        ),
-        declared_deps: ctor_declared_deps(struct_name, dependencies),
-        force_request: quote! { #request_scoped },
-        elevation_warn: quote! {
-            ::toni::tracing::warn!(
-                grpc_service = #struct_token,
-                request_scoped_deps = ?__request_deps,
-                "gRPC service automatically elevated to request scope due to \
-                 request-scoped providers. Silence this by declaring \
-                 #[grpc_service(scope = \"request\", ...)]."
-            );
-        },
-        build_singleton: ctor_build_singleton(struct_name, dependencies),
-        build_per_call: dispatch_build_expr(struct_name, dependencies),
-        dispatch: quote! {
-            ::toni::traits_helpers::Dispatch::Grpc(
-                ::std::sync::Arc::new(#source_name(self.source.clone())),
-            )
-        },
-    })
 }
 
 fn generate_request_factory(

@@ -9,7 +9,7 @@ use super::RpcData;
 ///
 /// Everything the framework reads before a call arrives — patterns, enhancer tokens — lives on
 /// [`RpcControllerSource`](super::RpcControllerSource) instead, so an instance is needed only for
-/// the duration of a call. Implement via `#[rpc_controller]`.
+/// the duration of a call. Implement via `#[patterns]`.
 #[async_trait]
 pub trait RpcControllerTrait: Send + Sync {
     /// Route an inbound message to the right per-pattern handler.

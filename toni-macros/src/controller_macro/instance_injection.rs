@@ -3,9 +3,10 @@
 //! `#[controller("/p")]` on the struct ([controller_attr]) emits the DI bridges
 //! (`__toni_build_from_deps` / `__toni_dependencies` / `__toni_prefix` / `__toni_is_request_scoped`).
 //! `#[routes]` on the impl — this module — scans the handler methods and emits one `Route` wrapper
-//! per handler method plus the shadowing `__toni_routes` that builds them around the controller's
-//! `DispatchSource`. Each wrapper resolves its instance through the source at call time, so one
-//! wrapper set serves both the shared-singleton and the built-per-request controller.
+//! per handler method plus the shadowing `__toni_dispatch` that answers `Dispatch::Http` with
+//! them, built around the controller's `DispatchSource`. Each wrapper resolves its instance
+//! through the source at call time, so one wrapper set serves both the shared-singleton and the
+//! built-per-request controller.
 //!
 //! The two sides never see each other's item; they meet at the concrete type through the inherent
 //! bridge fns. A missing `#[controller]` struct surfaces as "no associated function `__toni_build_from_deps`".
@@ -63,7 +64,7 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
     // the struct bridges.
     let (wrappers, metadata) = generate_controller_wrappers(impl_block, struct_name)?;
 
-    let toni_routes = generate_toni_routes(struct_name, &metadata);
+    let toni_dispatch = generate_toni_dispatch(struct_name, &metadata);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -71,13 +72,13 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
 
         #(#wrappers)*
 
-        #toni_routes
+        #toni_dispatch
     })
 }
 
-/// Emit the controller's inherent `__toni_routes`, which shadows the `RoutesBridge` empty default.
-/// Builds the per-route wrappers, each holding a clone of the controller's source.
-fn generate_toni_routes(struct_name: &Ident, metadata: &[MetadataInfo]) -> TokenStream {
+/// Emit the controller's inherent `__toni_dispatch`, which shadows the `DispatchBridge` default
+/// and names HTTP: one route wrapper per handler, each holding a clone of the controller's source.
+fn generate_toni_dispatch(struct_name: &Ident, metadata: &[MetadataInfo]) -> TokenStream {
     let route_ty = quote! { ::std::sync::Arc<dyn ::toni::traits_helpers::Route> };
 
     let creations: Vec<_> = metadata
@@ -96,11 +97,11 @@ fn generate_toni_routes(struct_name: &Ident, metadata: &[MetadataInfo]) -> Token
         impl #struct_name {
             #[doc(hidden)]
             #[allow(non_snake_case, clippy::all)]
-            pub fn __toni_routes(
+            pub fn __toni_dispatch(
                 source: &::toni::traits_helpers::DispatchSource<#struct_name>,
-            ) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Route>> {
+            ) -> ::toni::traits_helpers::Dispatch {
                 let _ = source;
-                vec![#(#creations),*]
+                ::toni::traits_helpers::Dispatch::Http(vec![#(#creations),*])
             }
         }
     }

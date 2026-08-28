@@ -26,7 +26,7 @@ use toni::rpc::{RpcData, RpcError};
 use toni::traits_helpers::{
     ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext,
 };
-use toni_macros::{new, patterns, rpc_controller, set_metadata};
+use toni_macros::{controller, new, patterns, set_metadata};
 
 /// Spawn an app with the TCP RPC adapter on an OS-assigned port and wait
 /// for `app.bind().await` to surface the listening address before returning.
@@ -113,7 +113,7 @@ async fn tcp_rpc_timeout(
     serde_json::from_str(line.trim()).ok()
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcPanicController {}
 #[patterns]
 impl RpcPanicController {
@@ -172,7 +172,7 @@ async fn rpc_handler_panic_returns_error_and_keeps_connection_alive() {
     assert_eq!(resp.unwrap()["response"], "safe-ok");
 }
 
-#[rpc_controller]
+#[controller]
 pub struct ShutdownTcpController {}
 #[patterns]
 impl ShutdownTcpController {
@@ -251,7 +251,7 @@ async fn tcp_app_shutdown_stops_the_accept_loop() {
     );
 }
 
-#[rpc_controller]
+#[controller]
 pub struct SlowTcpController {}
 #[patterns]
 impl SlowTcpController {
@@ -473,7 +473,7 @@ struct EchoReply {
     repeated: String,
 }
 
-#[rpc_controller]
+#[controller]
 pub struct TypedPayloadController {}
 #[patterns]
 impl TypedPayloadController {
@@ -537,7 +537,7 @@ impl Guard<RpcContext> for PanickingRpcGuard {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcGuardPanicController {}
 #[patterns]
 impl RpcGuardPanicController {
@@ -608,7 +608,7 @@ impl Interceptor<RpcContext, RpcHandlerResult> for PanickingRpcInterceptor {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcInterceptorPanicController {}
 #[patterns]
 impl RpcInterceptorPanicController {
@@ -679,7 +679,7 @@ impl ErrorHandler<RpcContext, RpcData> for PanickingRpcErrorHandler {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcErrorHandlerPanicController {}
 #[patterns]
 impl RpcErrorHandlerPanicController {
@@ -753,7 +753,7 @@ impl toni::Error for RpcRenderBomb {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcRenderPanicController {}
 #[patterns]
 impl RpcRenderPanicController {
@@ -802,7 +802,7 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
 // Metadata set on the client builder must ride the TCP frame's `metadata`
 // field and surface in the handler's RpcContext.
 
-#[rpc_controller]
+#[controller]
 pub struct TcpMetaController {}
 #[patterns]
 impl TcpMetaController {
@@ -841,19 +841,27 @@ async fn tcp_client_metadata_reaches_handler() {
     );
 }
 
-// A `#[rpc_controller]` with no `#[patterns]` impl: the `RpcHandlersBridge` defaults answer, so it
-// is a complete provider that routes no patterns. The absence of an impl block is the point.
-#[rpc_controller]
+// A `#[patterns]` impl with no handlers: the controller is RPC — the impl names the transport —
+// and routes no patterns. The absence of handlers is the point.
+#[controller]
 pub struct BareRpcController {}
+
+#[patterns]
+impl BareRpcController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 #[module(controllers: [BareRpcController])]
 impl BareRpcModule {}
 
-/// The self-sufficiency guarantee: `#[rpc_controller]` alone is valid and `#[patterns]` only adds
-/// handlers. An app whose only controller is bare starts, and every pattern is unrouted — the
-/// bridge's empty pattern list leaves the dispatch index with nothing in it.
+/// The self-sufficiency guarantee: an empty `#[patterns]` impl is a valid RPC controller and
+/// handlers only add routes. An app whose only controller routes nothing still starts, and every
+/// pattern is unrouted — the empty pattern list leaves the dispatch index with nothing in it.
 #[tokio_localset_test::localset_test]
-async fn bare_rpc_controller_registers_with_no_patterns() {
+async fn an_empty_patterns_impl_registers_no_patterns() {
     let port = start_rpc_server(BareRpcModule).await;
 
     let resp = tcp_rpc_timeout(
@@ -884,7 +892,7 @@ impl Guard<RpcContext> for RpcAuthGuard {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct RpcBusController {}
 
 #[patterns]
@@ -956,7 +964,7 @@ impl Guard<RpcContext> for ShapeGuard {
     }
 }
 
-#[rpc_controller]
+#[controller]
 pub struct ShapeController {}
 
 #[patterns]
@@ -1099,7 +1107,7 @@ pub struct SeenA(usize);
 #[derive(Clone)]
 pub struct SeenB(usize);
 
-#[rpc_controller]
+#[controller]
 pub struct ScopedRpcController {}
 
 #[patterns]
@@ -1205,7 +1213,7 @@ impl Guard<RpcContext> for CallScopedGuard {
 /// Numbers each controller construction.
 static PER_CALL_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller(scope = "request")]
+#[controller(scope = "request")]
 pub struct PerCallRpcController {
     #[inject]
     scoped: CallScoped,
@@ -1240,7 +1248,7 @@ impl PerCallRpcModule {}
 /// Numbers each construction of the singleton controller below.
 static SINGLETON_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 
-#[rpc_controller]
+#[controller]
 pub struct SingletonRpcController {
     #[default(0)]
     build: usize,
@@ -1264,7 +1272,7 @@ impl SingletonRpcController {
 #[module(controllers: [SingletonRpcController])]
 impl SingletonRpcModule {}
 
-/// `#[rpc_controller(scope = "request")]` builds the controller inside the call it
+/// `#[controller(scope = "request")]` builds the controller inside the call it
 /// serves: a fresh one per message, and its request-scoped dependency is the
 /// instance the call already holds rather than a second one.
 #[tokio_localset_test::localset_test]
@@ -1342,7 +1350,7 @@ async fn a_singleton_rpc_controller_is_built_once() {
 static ELEVATED_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 
 /// Declares no scope, and depends on a request-scoped provider.
-#[rpc_controller]
+#[controller]
 pub struct ElevatedRpcController {
     #[inject]
     scoped: CallScoped,
@@ -1374,7 +1382,7 @@ impl ElevatedRpcModule {}
 
 /// A controller that declares no scope but depends on a request-scoped provider is elevated rather
 /// than refused. Registering this used to abort at startup: a singleton cannot hold something that
-/// belongs to one call, and `#[rpc_controller]` had no other scope to offer.
+/// belongs to one call, and `#[controller]` had no other scope to offer.
 #[tokio_localset_test::localset_test]
 async fn an_rpc_controller_elevates_to_request_scope() {
     let port = start_rpc_server(ElevatedRpcModule).await;
@@ -1416,7 +1424,7 @@ pub struct Tier(&'static str);
 #[derive(Clone)]
 pub struct Audience(&'static str);
 
-#[rpc_controller]
+#[controller]
 pub struct MetaRpcController {}
 
 /// Both entries apply to every pattern below unless one overrides them.

@@ -13,12 +13,11 @@ use toni::websocket::{WsClient, WsHandlerResult, WsMessage};
 use toni::{module, StartupError, ToniFactory};
 use toni_axum::AxumAdapter;
 use toni_macros::{
-    message_pattern, new, patterns, rpc_controller, subscribe_message, subscriptions,
-    websocket_gateway,
+    controller, message_pattern, new, patterns, subscribe_message, subscriptions, websocket_gateway,
 };
 use toni_tcp::TcpAdapter;
 
-#[rpc_controller]
+#[controller]
 pub struct EchoController {}
 
 #[patterns]

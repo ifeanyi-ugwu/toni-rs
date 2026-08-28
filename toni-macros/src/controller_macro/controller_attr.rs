@@ -9,17 +9,15 @@
 //! the `ControllerFactory`, the `Controller` object, the per-call provider its `DispatchSource`
 //! resolves from, and four inherent bridge fns (build-from-deps, the dependency token list, the
 //! route prefix, and whether the controller is explicitly request-scoped). The object's
-//! `dispatch()` goes through the `RoutesBridge`, whose default is empty — so a controller with no
-//! `#[routes]` impl is valid and exposes no routes. `#[routes]` only adds the per-route wrappers
-//! and the shadowing `__toni_routes`.
+//! `dispatch()` goes through the `DispatchBridge`, whose default dispatches nothing — so a
+//! controller with no handler impl is valid, and the handler impl (`#[routes]`, `#[patterns]`,
+//! `#[grpc_methods]`) names the transport by shadowing `__toni_dispatch`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Fields, Ident, ItemStruct, Result, Type, parse2};
 
-use crate::provider_macro::instance_injection::{
-    DispatchTarget, add_inject_fields, generate_dispatch_system,
-};
+use crate::provider_macro::instance_injection::{add_inject_fields, generate_dispatch_system};
 use crate::shared::dependency_info::DependencyInfo;
 use crate::shared::scope_parser::{ControllerArgs, ControllerScope};
 use crate::utils::extracts::extract_struct_dependencies;
@@ -56,35 +54,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
         &path,
         is_request,
     );
-    let struct_token = struct_name.to_string();
-    let system = generate_dispatch_system(DispatchTarget {
-        struct_name: &struct_name,
-        object_name: Ident::new(
-            &format!("{}ControllerObject", struct_name),
-            struct_name.span(),
-        ),
-        declared_deps: quote! { <#struct_name>::__toni_dependencies() },
-        force_request: quote! { <#struct_name>::__toni_is_request_scoped() },
-        elevation_warn: quote! {
-            ::toni::tracing::warn!(
-                controller = #struct_token,
-                request_scoped_deps = ?__request_deps,
-                "Controller automatically elevated to request scope due to request-scoped \
-                 providers. Silence this by declaring #[controller(scope = \"request\")]."
-            );
-        },
-        build_singleton: quote! {
-            <#struct_name>::__toni_build_from_deps(&dependencies, ::toni::ProviderContext::None)
-                .await
-        },
-        build_per_call: quote! {
-            <#struct_name>::__toni_build_from_deps(&self.dependencies, __exec_ctx.clone()).await
-        },
-        dispatch: quote! {
-            use ::toni::__route::RoutesBridge as _;
-            ::toni::traits_helpers::Dispatch::Http(<#struct_name>::__toni_routes(&self.source))
-        },
-    });
+    let system = generate_dispatch_system(&struct_name);
 
     Ok(quote! {
         #[allow(dead_code)]
