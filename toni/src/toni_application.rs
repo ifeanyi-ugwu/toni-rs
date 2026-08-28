@@ -23,7 +23,7 @@ use crate::{
     },
     application_context::ToniApplicationContext,
     injector::{
-        GatewayResolver, GrpcServiceResolver, IntoToken, RpcControllerResolver, ToniContainer,
+        GatewayResolver, IntoToken, ToniContainer,
     },
     router::RoutesResolver,
     rpc::{RpcCallInfo, RpcControllerWrapper, RpcData, RpcError},
@@ -319,9 +319,16 @@ impl ToniApplication {
         Ok(())
     }
 
-    fn discover_rpc_controllers(&mut self) -> Result<()> {
-        let resolver = RpcControllerResolver::new(self.routes_resolver.container.clone());
-        self.rpc_controllers = resolver.resolve()?;
+    fn discover_rpc_controllers(&mut self) {
+        // Wrappers are stored fully resolved at create; this only collects them for the adapter.
+        self.rpc_controllers = self
+            .routes_resolver
+            .container
+            .borrow()
+            .get_rpc_controllers()
+            .values()
+            .cloned()
+            .collect();
 
         if !self.rpc_controllers.is_empty() {
             tracing::debug!(
@@ -329,8 +336,6 @@ impl ToniApplication {
                 "RPC controllers discovered"
             );
         }
-
-        Ok(())
     }
 
     /// Returns an instance of `T` from the DI container, searching across all modules.
@@ -455,7 +460,7 @@ impl ToniApplication {
         }
 
         self.discover_gateways()?;
-        self.discover_rpc_controllers()?;
+        self.discover_rpc_controllers();
 
         // ── Registration ────────────────────────────────────────────────────
         // Nothing below this point until the acquisition section touches a socket.
@@ -641,8 +646,15 @@ impl ToniApplication {
         // container; users may also wire services directly on the adapter via
         // its own `add_service` builder before `use_grpc_adapter`.
         let grpc_adapter = if let Some(mut adapter) = self.grpc_adapter.take() {
-            let grpc_resolver = GrpcServiceResolver::new(self.routes_resolver.container.clone());
-            let grpc_services = grpc_resolver.resolve()?;
+            // Bundles are stored fully resolved at create; this only hands them to the adapter.
+            let grpc_services: Vec<_> = self
+                .routes_resolver
+                .container
+                .borrow()
+                .get_grpc_services()
+                .values()
+                .cloned()
+                .collect();
             adapter
                 .register_services(grpc_services)
                 .map_err(|source| StartupError::Adapter {

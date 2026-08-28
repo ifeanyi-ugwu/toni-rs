@@ -5,7 +5,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     middleware::MiddlewareManager,
-    rpc::RpcControllerSource,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
         Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
@@ -342,25 +341,26 @@ impl ToniContainer {
         Ok(module_ref.get_providers_instances().values().collect())
     }
 
-    /// Register an RPC controller's source under its own token. Called from the controller path,
-    /// which is where every dispatch target is declared.
-    pub(crate) fn add_rpc_controller_source(
+    /// Register an RPC controller's resolved wrapper under its token. Called from the controller
+    /// path at create, with enhancer tokens already resolved against the role registry.
+    pub(crate) fn add_rpc_controller(
         &mut self,
-        source: Arc<dyn crate::rpc::RpcControllerSource>,
+        token: String,
+        wrapper: Arc<crate::rpc::RpcControllerWrapper>,
     ) {
-        self.role_registry
-            .rpc_controllers
-            .insert(source.get_token(), source);
+        self.role_registry.rpc_controllers.insert(token, wrapper);
     }
 
-    /// Register a gRPC service's source under its own token.
-    pub(crate) fn add_grpc_service_source(
+    /// Register a gRPC service and its resolved enhancer bundle under the service's token.
+    pub(crate) fn add_grpc_service(
         &mut self,
-        source: Arc<dyn crate::adapter::GrpcServiceSource>,
+        token: String,
+        service: (
+            Arc<dyn crate::adapter::GrpcServiceSource>,
+            Arc<crate::adapter::ResolvedGrpcEnhancers>,
+        ),
     ) {
-        self.role_registry
-            .grpc_services
-            .insert(source.token(), source);
+        self.role_registry.grpc_services.insert(token, service);
     }
 
     pub(crate) fn get_role_registry(&self) -> &RoleRegistry {
@@ -378,13 +378,19 @@ impl ToniContainer {
         &self.role_registry.gateways
     }
 
-    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<dyn RpcControllerSource>> {
+    pub fn get_rpc_controllers(&self) -> &FxHashMap<String, Arc<crate::rpc::RpcControllerWrapper>> {
         &self.role_registry.rpc_controllers
     }
 
     pub fn get_grpc_services(
         &self,
-    ) -> &FxHashMap<String, Arc<dyn crate::adapter::GrpcServiceSource>> {
+    ) -> &FxHashMap<
+        String,
+        (
+            Arc<dyn crate::adapter::GrpcServiceSource>,
+            Arc<crate::adapter::ResolvedGrpcEnhancers>,
+        ),
+    > {
         &self.role_registry.grpc_services
     }
 

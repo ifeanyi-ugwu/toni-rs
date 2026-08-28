@@ -18,6 +18,7 @@ mod cors;
 mod di_core;
 mod di_providers;
 mod di_validation;
+mod enhancer_tokens_resolve_at_create;
 mod enhancers;
 mod enhancers_di;
 mod error_derive;
