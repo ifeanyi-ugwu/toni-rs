@@ -639,17 +639,35 @@ fn generate_request_provider(
     }
 }
 
+/// The instance-construction expression a dispatch provider evaluates: the `#[new]` constructor
+/// through the `CtorBridge` when one exists, else field injection. `self.dependencies` and
+/// `__exec_ctx` are in scope at the splice site.
+pub(crate) fn dispatch_build_expr(
+    struct_name: &Ident,
+    dependencies: &DependencyInfo,
+) -> TokenStream {
+    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+    let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
+    quote! {{
+        use ::toni::__construct::CtorBridge as _;
+        match <#struct_name>::__toni_ctor_build(&self.dependencies, __exec_ctx.clone()) {
+            ::std::option::Option::Some(__fut) => __fut.await,
+            ::std::option::Option::None => {
+                #(#field_resolutions)*
+                #instantiation
+            }
+        }
+    }}
+}
+
 /// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with `Arc<T>`, caches
 /// that `Arc` in the execution, and fires init/bootstrap at the build site, where hook resolution
 /// sees the concrete type. Nothing clones the target, so the struct needs no `Clone`.
 pub(crate) fn generate_dispatch_provider(
     struct_name: &Ident,
     provider_name: &Ident,
-    dependencies: &DependencyInfo,
+    build_expr: &TokenStream,
 ) -> TokenStream {
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
-    let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
-
     quote! {
         struct #provider_name {
             dependencies: ::toni::FxHashMap<
@@ -665,7 +683,6 @@ pub(crate) fn generate_dispatch_provider(
                 _params: Vec<Box<dyn ::std::any::Any + Send>>,
                 _ctx: ::toni::ProviderContext,
             ) -> Box<dyn ::std::any::Any + Send> {
-                use ::toni::__construct::CtorBridge as _;
                 let __exec_ctx = _ctx;
                 if __exec_ctx.cache().is_none() {
                     panic!(
@@ -679,18 +696,9 @@ pub(crate) fn generate_dispatch_provider(
                 {
                     return Box::new(__cached);
                 }
-                // Thread the execution on, so a request-scoped dependency resolves in the
-                // same one and is shared rather than rebuilt.
-                let __instance = match <#struct_name>::__toni_ctor_build(
-                    &self.dependencies,
-                    __exec_ctx.clone(),
-                ) {
-                    ::std::option::Option::Some(__fut) => __fut.await,
-                    ::std::option::Option::None => {
-                        #(#field_resolutions)*
-                        #instantiation
-                    }
-                };
+                // `__exec_ctx` threads into the build, so a request-scoped dependency resolves
+                // in the same execution and is shared rather than rebuilt.
+                let __instance = #build_expr;
                 let __instance = ::std::sync::Arc::new(__instance);
                 // Hooks complete before the cache holds the instance, so nothing is handed a
                 // pre-init one.
@@ -1376,7 +1384,8 @@ pub fn generate_rpc_controller_system(
     );
     let struct_token = struct_name.to_string();
 
-    let provider = generate_dispatch_provider(struct_name, &per_call_provider, dependencies);
+    let build_expr = dispatch_build_expr(struct_name, dependencies);
+    let provider = generate_dispatch_provider(struct_name, &per_call_provider, &build_expr);
 
     let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
     let instantiation = struct_instantiation(struct_name, dependencies, &field_names);
@@ -1546,7 +1555,8 @@ fn generate_grpc_service_system(
     );
     let struct_token = struct_name.to_string();
 
-    let provider = generate_dispatch_provider(struct_name, &per_call_provider, dependencies);
+    let build_expr = dispatch_build_expr(struct_name, dependencies);
+    let provider = generate_dispatch_provider(struct_name, &per_call_provider, &build_expr);
 
     let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
     let instantiation = struct_instantiation(struct_name, dependencies, &field_names);

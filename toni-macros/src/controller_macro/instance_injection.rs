@@ -2,15 +2,12 @@
 //!
 //! `#[controller("/p")]` on the struct ([controller_attr]) emits the DI bridges
 //! (`__toni_build_from_deps` / `__toni_dependencies` / `__toni_prefix` / `__toni_is_request_scoped`).
-//! `#[routes]` on the impl — this module — scans the handler methods and emits:
+//! `#[routes]` on the impl — this module — scans the handler methods and emits one `Route` wrapper
+//! per handler method plus the shadowing `__toni_routes` that builds them around the controller's
+//! `DispatchSource`. Each wrapper resolves its instance through the source at call time, so one
+//! wrapper set serves both the shared-singleton and the built-per-request controller.
 //!
-//! 1. one `Route` wrapper per handler method (singleton + request variants),
-//! 2. the `…ControllerObject` (`Controller`) whose `routes()` yields them and whose lifecycle hooks
-//!    delegate to the built instance,
-//! 3. the `…ControllerFactory` whose `build()` resolves scope/elevation at runtime and constructs the
-//!    instance through `Self::__toni_build_from_deps`.
-//!
-//! The two sides never see each other's item; they meet at the concrete type through those inherent
+//! The two sides never see each other's item; they meet at the concrete type through the inherent
 //! bridge fns. A missing `#[controller]` struct surfaces as "no associated function `__toni_build_from_deps`".
 
 use proc_macro2::TokenStream;
@@ -31,7 +28,7 @@ use crate::{
         get_marker_params::MarkerParam,
     },
     shared::set_metadata::get_metadata_exprs,
-    shared::{attr_is, metadata_info::MetadataInfo, scope_parser::ControllerScope},
+    shared::{attr_is, metadata_info::MetadataInfo},
     utils::controller_utils::attr_to_string,
 };
 
@@ -61,56 +58,36 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
         }
     }
 
-    // Both wrapper sets are generated; the factory picks the state at runtime and `__toni_routes`
-    // builds the matching set. Construction and the route prefix are delegated to the struct bridges.
-    let (singleton_wrappers, singleton_metadata) =
-        generate_controller_wrappers(impl_block, struct_name, ControllerScope::Singleton)?;
-    let (request_wrappers, request_metadata) =
-        generate_controller_wrappers(impl_block, struct_name, ControllerScope::Request)?;
+    // One wrapper set serves both scopes: each wrapper holds the controller's `DispatchSource`
+    // and resolves its instance at call time. Construction and the route prefix are delegated to
+    // the struct bridges.
+    let (wrappers, metadata) = generate_controller_wrappers(impl_block, struct_name)?;
 
-    let toni_routes = generate_toni_routes(struct_name, &singleton_metadata, &request_metadata);
+    let toni_routes = generate_toni_routes(struct_name, &metadata);
 
     Ok(quote! {
         #[allow(dead_code)]
         #impl_def
 
-        #(#singleton_wrappers)*
-        #(#request_wrappers)*
+        #(#wrappers)*
 
         #toni_routes
     })
 }
 
 /// Emit the controller's inherent `__toni_routes`, which shadows the `RoutesBridge` empty default.
-/// Builds the per-route wrappers for the resolved state — the shared singleton instance, or the
-/// dependency map for the per-request rebuild.
-fn generate_toni_routes(
-    struct_name: &Ident,
-    singleton_metadata: &[MetadataInfo],
-    request_metadata: &[MetadataInfo],
-) -> TokenStream {
+/// Builds the per-route wrappers, each holding a clone of the controller's source.
+fn generate_toni_routes(struct_name: &Ident, metadata: &[MetadataInfo]) -> TokenStream {
     let route_ty = quote! { ::std::sync::Arc<dyn ::toni::traits_helpers::Route> };
 
-    let singleton_creations: Vec<_> = singleton_metadata
+    let creations: Vec<_> = metadata
         .iter()
         .map(|metadata| {
             let controller_name = &metadata.struct_name;
             if metadata.is_static {
                 quote! { ::std::sync::Arc::new(#controller_name {}) as #route_ty }
             } else {
-                quote! { ::std::sync::Arc::new(#controller_name { instance: inst.clone() }) as #route_ty }
-            }
-        })
-        .collect();
-
-    let request_creations: Vec<_> = request_metadata
-        .iter()
-        .map(|metadata| {
-            let controller_name = &metadata.struct_name;
-            if metadata.is_static {
-                quote! { ::std::sync::Arc::new(#controller_name {}) as #route_ty }
-            } else {
-                quote! { ::std::sync::Arc::new(#controller_name { dependencies: deps.clone() }) as #route_ty }
+                quote! { ::std::sync::Arc::new(#controller_name { source: source.clone() }) as #route_ty }
             }
         })
         .collect();
@@ -120,18 +97,10 @@ fn generate_toni_routes(
             #[doc(hidden)]
             #[allow(non_snake_case, clippy::all)]
             pub fn __toni_routes(
-                state: &::toni::traits_helpers::ControllerInstance,
+                source: &::toni::traits_helpers::DispatchSource<#struct_name>,
             ) -> Vec<::std::sync::Arc<dyn ::toni::traits_helpers::Route>> {
-                match state {
-                    ::toni::traits_helpers::ControllerInstance::Singleton(inst) => {
-                        let _ = inst;
-                        vec![#(#singleton_creations),*]
-                    }
-                    ::toni::traits_helpers::ControllerInstance::Request(deps) => {
-                        let _ = deps;
-                        vec![#(#request_creations),*]
-                    }
-                }
+                let _ = source;
+                vec![#(#creations),*]
             }
         }
     }
@@ -140,7 +109,6 @@ fn generate_toni_routes(
 fn generate_controller_wrappers(
     impl_block: &ItemImpl,
     struct_name: &Ident,
-    scope: ControllerScope,
 ) -> Result<(Vec<TokenStream>, Vec<MetadataInfo>)> {
     let mut wrappers = Vec::new();
     let mut metadata_list = Vec::new();
@@ -162,7 +130,6 @@ fn generate_controller_wrappers(
                     method_enhancers_attr,
                     &controller_metadata_exprs,
                     marker_params,
-                    scope,
                 )?;
 
                 wrappers.push(wrapper);
@@ -206,7 +173,6 @@ fn generate_controller_wrapper(
     method_enhancers_attr: Vec<(&Ident, &Attribute)>,
     controller_metadata_exprs: &[TokenStream],
     marker_params: Vec<MarkerParam>,
-    scope: ControllerScope,
 ) -> Result<(TokenStream, MetadataInfo)> {
     let is_sse = attr_is(http_method_attr, "sse");
 
@@ -225,16 +191,11 @@ fn generate_controller_wrapper(
     let route_path = route_path_lit.value();
 
     let method_name = &method.sig.ident;
-    let scope_suffix = match scope {
-        ControllerScope::Singleton => "",
-        ControllerScope::Request => "Request",
-    };
     let controller_name = Ident::new(
         &format!(
-            "{}{}Controller{}",
+            "{}{}Controller",
             struct_name,
             capitalize_first(method_name.to_string()),
-            scope_suffix
         ),
         method_name.span(),
     );
@@ -281,7 +242,7 @@ fn generate_controller_wrapper(
 
     let returns_result = returns_result_type(&method.sig.output);
 
-    let wrapper = generate_controller_wrapper_code(
+    let wrapper = generate_route_wrapper(
         &controller_name,
         struct_name,
         &route_path,
@@ -290,7 +251,6 @@ fn generate_controller_wrapper(
         &enhancer_infos,
         &marker_params_extraction,
         &metadata_exprs,
-        scope,
         is_static_method,
         returns_result,
     );
@@ -363,8 +323,11 @@ fn generate_marker_params_extraction(marker_params: &[MarkerParam]) -> Result<Ve
     Ok(extractions)
 }
 
+// One wrapper per handler method: it holds the controller's `DispatchSource` and resolves the
+// instance at call time — a shared singleton answers immediately, a per-call source builds inside
+// this request's execution.
 #[allow(clippy::too_many_arguments)]
-fn generate_controller_wrapper_code(
+fn generate_route_wrapper(
     controller_name: &Ident,
     struct_name: &Ident,
     route_path: &str,
@@ -373,35 +336,65 @@ fn generate_controller_wrapper_code(
     enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
     marker_params_extraction: &[TokenStream],
     metadata_exprs: &[TokenStream],
-    scope: ControllerScope,
     is_static_method: bool,
     returns_result: bool,
 ) -> TokenStream {
-    match scope {
-        ControllerScope::Singleton => generate_singleton_controller_wrapper(
-            controller_name,
-            struct_name,
-            route_path,
-            http_method,
-            method_call,
-            enhancer_infos,
-            marker_params_extraction,
-            metadata_exprs,
-            is_static_method,
-            returns_result,
-        ),
-        ControllerScope::Request => generate_request_controller_wrapper(
-            controller_name,
-            struct_name,
-            route_path,
-            http_method,
-            method_call,
-            enhancer_infos,
-            marker_params_extraction,
-            metadata_exprs,
-            is_static_method,
-            returns_result,
-        ),
+    let (struct_fields, resolve_instance) = if is_static_method {
+        (quote! {}, quote! {})
+    } else {
+        (
+            quote! {
+                source: ::toni::traits_helpers::DispatchSource<#struct_name>,
+            },
+            // Resolve the instance before the extractors run: a per-call build reads
+            // request-scoped dependencies through the context, while a body extractor
+            // may move the request out of it.
+            quote! {
+                let controller = self.source
+                    .instance(::toni::ProviderContext::Http(__ctx.clone()))
+                    .await;
+            },
+        )
+    };
+
+    let exec_body = exec_body_for(method_call, returns_result);
+    let common = route_common_methods(
+        struct_name,
+        route_path,
+        http_method,
+        enhancer_infos,
+        metadata_exprs,
+    );
+
+    quote! {
+        struct #controller_name {
+            #struct_fields
+        }
+
+        #[::toni::async_trait]
+        impl ::toni::traits_helpers::Route for #controller_name {
+            async fn execute(
+                &self,
+                __ctx: &::toni::context::HttpContext,
+            ) -> ::toni::http_helpers::ExecutionResult<
+                ::toni::http_helpers::HttpResponse,
+                ::toni::errors::HttpError,
+            > {
+                // Cloned, not borrowed: building a request-scoped dependency holds
+                // the parts across an await, and the extractions below need the
+                // context back exclusively.
+                let _req_parts = __ctx.request().clone();
+
+                #resolve_instance
+
+                #(#marker_params_extraction)*
+
+                use ::toni::http_helpers::IntoResponse;
+                #exec_body
+            }
+
+            #common
+        }
     }
 }
 
@@ -486,177 +479,6 @@ fn route_common_methods(
     }
 }
 
-// Singleton route wrapper — shares the controller instance built once at startup.
-#[allow(clippy::too_many_arguments)]
-fn generate_singleton_controller_wrapper(
-    controller_name: &Ident,
-    struct_name: &Ident,
-    route_path: &str,
-    http_method: &str,
-    method_call: &TokenStream,
-    enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
-    marker_params_extraction: &[TokenStream],
-    metadata_exprs: &[TokenStream],
-    is_static_method: bool,
-    returns_result: bool,
-) -> TokenStream {
-    let (struct_fields, instance_downcast) = if is_static_method {
-        (quote! {}, quote! {})
-    } else {
-        (
-            quote! {
-                instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync>,
-            },
-            quote! {
-                let controller = self.instance
-                    .downcast_ref::<#struct_name>()
-                    .expect("Failed to downcast controller instance");
-            },
-        )
-    };
-
-    let exec_body = exec_body_for(method_call, returns_result);
-    let common = route_common_methods(
-        struct_name,
-        route_path,
-        http_method,
-        enhancer_infos,
-        metadata_exprs,
-    );
-
-    quote! {
-        struct #controller_name {
-            #struct_fields
-        }
-
-        #[::toni::async_trait]
-        impl ::toni::traits_helpers::Route for #controller_name {
-            async fn execute(
-                &self,
-                __ctx: &::toni::context::HttpContext,
-            ) -> ::toni::http_helpers::ExecutionResult<
-                ::toni::http_helpers::HttpResponse,
-                ::toni::errors::HttpError,
-            > {
-                // Cloned, not borrowed: building a request-scoped dependency holds
-                // the parts across an await, and the extractions below need the
-                // context back exclusively.
-                let _req_parts = __ctx.request().clone();
-
-                #(#marker_params_extraction)*
-
-                #instance_downcast
-
-                use ::toni::http_helpers::IntoResponse;
-                #exec_body
-            }
-
-            #common
-        }
-    }
-}
-
-// Request-scoped route wrapper — rebuilds the controller instance per request via the struct bridge.
-#[allow(clippy::too_many_arguments)]
-fn generate_request_controller_wrapper(
-    controller_name: &Ident,
-    struct_name: &Ident,
-    route_path: &str,
-    http_method: &str,
-    method_call: &TokenStream,
-    enhancer_infos: &HashMap<String, Vec<EnhancerInfo>>,
-    marker_params_extraction: &[TokenStream],
-    metadata_exprs: &[TokenStream],
-    is_static_method: bool,
-    returns_result: bool,
-) -> TokenStream {
-    let (struct_fields, build_instance) = if is_static_method {
-        (quote! {}, quote! {})
-    } else {
-        (
-            quote! {
-                dependencies: ::toni::FxHashMap<
-                    String,
-                    ::std::sync::Arc<Box<dyn ::toni::traits_helpers::Provider>>
-                >,
-            },
-            // Rebuild per request, then fire init/bootstrap on the fresh instance through the
-            // lifecycle bridge (no-op when the controller declares no such hooks).
-            quote! {
-                let controller = #struct_name::__toni_build_from_deps(
-                    &self.dependencies,
-                    ::toni::ProviderContext::Http(__ctx.clone()),
-                ).await;
-                {
-                    use ::toni::__lifecycle::LifecycleBridge as _;
-                    let _ = #struct_name::__toni_lc_on_init(&controller).await;
-                    let _ = #struct_name::__toni_lc_on_bootstrap(&controller).await;
-                }
-            },
-        )
-    };
-
-    let exec_body = exec_body_for(method_call, returns_result);
-    let common = route_common_methods(
-        struct_name,
-        route_path,
-        http_method,
-        enhancer_infos,
-        metadata_exprs,
-    );
-
-    quote! {
-        struct #controller_name {
-            #struct_fields
-        }
-
-        #[::toni::async_trait]
-        impl ::toni::traits_helpers::Route for #controller_name {
-            async fn execute(
-                &self,
-                __ctx: &::toni::context::HttpContext,
-            ) -> ::toni::http_helpers::ExecutionResult<
-                ::toni::http_helpers::HttpResponse,
-                ::toni::errors::HttpError,
-            > {
-                // Cloned, not borrowed: building a request-scoped dependency holds
-                // the parts across an await, and the extractions below need the
-                // context back exclusively.
-                let _req_parts = __ctx.request().clone();
-
-                // Build the instance before the extractors run: building only borrows `_req_parts`
-                // (for resolving a request-scoped dependency), while a body extractor may move it.
-                #build_instance
-
-                #(#marker_params_extraction)*
-
-                use ::toni::http_helpers::IntoResponse;
-                #exec_body
-            }
-
-            #common
-        }
-    }
-}
-
-fn capitalize_first(s: String) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            }
-        })
-        .collect()
-}
-
-/// Body of the wrapper's `execute` for a user method.
-///
-/// `Result<T, E>` returns are pattern-matched so the typed `E` flows through the dispatcher as the
-/// transport's handler error type — `HttpError` here. `Into::into` calls the `From<E: Error> for
-/// HttpError` blanket so the user's domain error is lifted automatically. Plain `T` returns wrap
-/// directly in `ExecutionResult::Ok`.
 fn exec_body_for(method_call: &TokenStream, returns_result: bool) -> TokenStream {
     if returns_result {
         quote! {
@@ -728,4 +550,16 @@ fn sse_stream_is_fallible(output: &syn::ReturnType) -> bool {
         }
     }
     false
+}
+
+fn capitalize_first(s: String) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect()
 }

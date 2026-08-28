@@ -28,17 +28,6 @@ pub struct ControllerEnhancers {
     pub error_handlers: Vec<HttpErrorHandlerArc>,
 }
 
-/// How a controller's instance is held for the lifetime of its routes.
-///
-/// `Singleton` carries the instance built once at startup; every route shares it.
-/// `Request` carries the resolved dependency map and the controller is rebuilt on
-/// each request — used when an (implicit or explicit) singleton controller depends
-/// on request-scoped providers, or when the controller is explicitly request-scoped.
-pub enum ControllerInstance {
-    Singleton(Arc<dyn Any + Send + Sync>),
-    Request(FxHashMap<String, Arc<Box<dyn Provider>>>),
-}
-
 /// What a controller hands over to be dispatched on.
 ///
 /// The one place the transports differ. HTTP dispatches on routes keyed by path and method, RPC on a

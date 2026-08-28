@@ -5,18 +5,21 @@
 //! `toni::__construct` / `toni::__lifecycle` bridges. The route handlers live in a sibling
 //! `#[routes] impl` block, which the struct attribute never sees.
 //!
-//! This attribute produces a complete controller: the re-emitted struct (with `Clone`/`InjectFields`),
-//! the `ControllerFactory`, the `Controller` object, and four inherent bridge fns (build-from-deps,
-//! the dependency token list, the route prefix, and whether the controller is explicitly
-//! request-scoped). The object's `routes()` dispatches through the `RoutesBridge`, whose default is
-//! empty — so a controller with no `#[routes]` impl is valid and exposes no routes. `#[routes]` only
-//! adds the per-route wrappers and the shadowing `__toni_routes`.
+//! This attribute produces a complete controller: the re-emitted struct (with `InjectFields`),
+//! the `ControllerFactory`, the `Controller` object, the per-call provider its `DispatchSource`
+//! resolves from, and four inherent bridge fns (build-from-deps, the dependency token list, the
+//! route prefix, and whether the controller is explicitly request-scoped). The object's
+//! `dispatch()` goes through the `RoutesBridge`, whose default is empty — so a controller with no
+//! `#[routes]` impl is valid and exposes no routes. `#[routes]` only adds the per-route wrappers
+//! and the shadowing `__toni_routes`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Fields, Ident, ItemStruct, Result, Type, parse2};
 
-use crate::provider_macro::instance_injection::add_clone_and_inject_fields;
+use crate::provider_macro::instance_injection::{
+    add_inject_fields, generate_dispatch_provider, request_provider_ident,
+};
 use crate::shared::dependency_info::DependencyInfo;
 use crate::shared::scope_parser::{ControllerArgs, ControllerScope};
 use crate::utils::extracts::extract_struct_dependencies;
@@ -45,13 +48,21 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
     let is_request = matches!(args.scope, ControllerScope::Request);
     let dependencies = extract_struct_dependencies(&struct_def)?;
 
-    let emitted_struct = add_clone_and_inject_fields(&struct_def);
+    let emitted_struct = add_inject_fields(&struct_def);
     let bridges = generate_bridges(
         &struct_name,
         &struct_def.fields,
         &dependencies,
         &path,
         is_request,
+    );
+    let build_expr = quote! {
+        <#struct_name>::__toni_build_from_deps(&self.dependencies, __exec_ctx.clone()).await
+    };
+    let provider = generate_dispatch_provider(
+        &struct_name,
+        &request_provider_ident(&struct_name),
+        &build_expr,
     );
     let object = generate_controller_object(&struct_name);
     let factory = generate_factory(&struct_name);
@@ -62,6 +73,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
         #emitted_struct
 
         #bridges
+        #provider
         #object
         #factory
         #accessor
@@ -84,30 +96,28 @@ fn generate_controller_object(struct_name: &Ident) -> TokenStream {
     let object_name = controller_object_ident(struct_name);
     let struct_token = struct_name.to_string();
 
-    // Each shutdown/init hook: fire on the singleton instance via the bridge; no-op for the request
-    // path (no persistent instance — the request route wrapper fires init/bootstrap per request).
+    // Each shutdown/init hook: fire on the singleton instance via the bridge; no-op for the
+    // per-call path (no persistent instance — the provider fires init/bootstrap per request).
     let on_singleton = |call: TokenStream| {
         quote! {
-            if let ::toni::traits_helpers::ControllerInstance::Singleton(__inst) = &self.state {
-                if let Some(__c) = __inst.downcast_ref::<#struct_name>() {
-                    use ::toni::__lifecycle::LifecycleBridge as _;
-                    #call
-                }
+            if let ::toni::traits_helpers::DispatchSource::Singleton(__inst) = &self.source {
+                use ::toni::__lifecycle::LifecycleBridge as _;
+                #call
             }
         }
     };
-    let init_body = on_singleton(quote! { return #struct_name::__toni_lc_on_init(__c).await; });
+    let init_body = on_singleton(quote! { return #struct_name::__toni_lc_on_init(__inst).await; });
     let boot_body =
-        on_singleton(quote! { return #struct_name::__toni_lc_on_bootstrap(__c).await; });
-    let destroy_body = on_singleton(quote! { #struct_name::__toni_lc_on_destroy(__c).await; });
+        on_singleton(quote! { return #struct_name::__toni_lc_on_bootstrap(__inst).await; });
+    let destroy_body = on_singleton(quote! { #struct_name::__toni_lc_on_destroy(__inst).await; });
     let before_body =
-        on_singleton(quote! { #struct_name::__toni_lc_before_shutdown(__c, signal).await; });
+        on_singleton(quote! { #struct_name::__toni_lc_before_shutdown(__inst, signal).await; });
     let shutdown_body =
-        on_singleton(quote! { #struct_name::__toni_lc_on_shutdown(__c, signal).await; });
+        on_singleton(quote! { #struct_name::__toni_lc_on_shutdown(__inst, signal).await; });
 
     quote! {
         pub struct #object_name {
-            state: ::toni::traits_helpers::ControllerInstance,
+            source: ::toni::traits_helpers::DispatchSource<#struct_name>,
         }
 
         #[::toni::async_trait]
@@ -119,7 +129,7 @@ fn generate_controller_object(struct_name: &Ident) -> TokenStream {
             fn dispatch(&self) -> ::toni::traits_helpers::Dispatch {
                 use ::toni::__route::RoutesBridge as _;
                 ::toni::traits_helpers::Dispatch::Http(
-                    <#struct_name>::__toni_routes(&self.state)
+                    <#struct_name>::__toni_routes(&self.source)
                 )
             }
 
@@ -154,6 +164,7 @@ fn generate_factory(struct_name: &Ident) -> TokenStream {
         struct_name.span(),
     );
     let object_name = controller_object_ident(struct_name);
+    let per_call_provider = request_provider_ident(struct_name);
     let struct_token = struct_name.to_string();
 
     quote! {
@@ -178,38 +189,37 @@ fn generate_factory(struct_name: &Ident) -> TokenStream {
             ) -> ::std::sync::Arc<dyn ::toni::traits_helpers::Controller> {
                 let force_request = <#struct_name>::__toni_is_request_scoped();
 
-                let mut request_deps: Vec<String> = Vec::new();
-                for __token in <#struct_name>::__toni_dependencies() {
-                    if let Some(__provider) = dependencies.get(&__token) {
-                        if matches!(__provider.get_scope(), ::toni::ProviderScope::Request) {
-                            request_deps.push(__token);
-                        }
-                    }
-                }
+                let __declared = <#struct_name>::__toni_dependencies();
+                let __request_deps = ::toni::traits_helpers::request_scoped_dependencies(
+                    &__declared,
+                    &dependencies,
+                );
 
-                if !force_request && !request_deps.is_empty() {
+                if !force_request && !__request_deps.is_empty() {
                     ::toni::tracing::warn!(
                         controller = #struct_token,
-                        request_scoped_deps = ?request_deps,
+                        request_scoped_deps = ?__request_deps,
                         "Controller automatically elevated to request scope due to request-scoped \
                          providers. Silence this by declaring #[controller(scope = \"request\")]."
                     );
                 }
 
-                let state = if force_request || !request_deps.is_empty() {
-                    ::toni::traits_helpers::ControllerInstance::Request(dependencies)
+                let __source = if force_request || !__request_deps.is_empty() {
+                    ::toni::traits_helpers::DispatchSource::PerCall(
+                        ::std::sync::Arc::new(Box::new(#per_call_provider { dependencies })
+                            as Box<dyn ::toni::traits_helpers::Provider>),
+                    )
                 } else {
-                    let controller_instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync> =
-                        ::std::sync::Arc::new(
-                            <#struct_name>::__toni_build_from_deps(
-                                &dependencies,
-                                ::toni::ProviderContext::None,
-                            ).await,
-                        );
-                    ::toni::traits_helpers::ControllerInstance::Singleton(controller_instance)
+                    // Built at startup, outside any execution, and shared by every call.
+                    ::toni::traits_helpers::DispatchSource::Singleton(::std::sync::Arc::new(
+                        <#struct_name>::__toni_build_from_deps(
+                            &dependencies,
+                            ::toni::ProviderContext::None,
+                        ).await,
+                    ))
                 };
 
-                ::std::sync::Arc::new(#object_name { state })
+                ::std::sync::Arc::new(#object_name { source: __source })
             }
         }
     }
