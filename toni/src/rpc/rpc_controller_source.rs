@@ -7,7 +7,7 @@ use crate::context::RpcContext;
 
 use super::RpcControllerTrait;
 
-/// The enhancer tokens an RPC controller declares, resolved once at registration. Controller-level
+/// The enhancer tokens an RPC controller declares, resolved once at create. Controller-level
 /// tokens apply to every handler; each `handlers` entry adds tokens for one pattern. A flat
 /// descriptor instead of a dozen accessor methods — the macro builds it, the resolver reads it once.
 #[derive(Default)]

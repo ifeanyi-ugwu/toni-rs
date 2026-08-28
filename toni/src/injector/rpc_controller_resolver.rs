@@ -10,7 +10,7 @@ use crate::traits_helpers::{RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEnt
 use super::ToniContainer;
 
 /// Resolves one RPC controller's enhancer tokens into a ready-to-serve
-/// [`RpcControllerWrapper`]. Called by the instance loader while controllers are stored, so a
+/// `RpcControllerWrapper`. Called by the instance loader while controllers are stored, so a
 /// misdeclared token fails `create()`; bind hands the stored wrapper to the adapter.
 pub struct RpcControllerResolver {
     container: Rc<RefCell<ToniContainer>>,

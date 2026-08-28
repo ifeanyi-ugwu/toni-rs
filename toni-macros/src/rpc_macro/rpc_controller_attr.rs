@@ -8,14 +8,16 @@
 //! the enhancer tokens without an instance and hands one over when a call arrives. The pattern
 //! handlers live in a sibling `#[patterns] impl`, which the struct attribute never sees.
 //!
-//! A controller with no `#[patterns]` impl is valid: it registers as a provider but routes nothing
-//! (the bridge defaults answer — empty pattern list, `PatternNotFound`, no enhancers).
+//! A controller with no `#[patterns]` impl is valid: it registers as a controller but routes
+//! nothing (the bridge defaults answer — empty pattern list, `PatternNotFound`, no enhancers).
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, ItemStruct, Result, parse2};
 
-use crate::provider_macro::instance_injection::{add_inject_fields, generate_rpc_controller_system};
+use crate::provider_macro::instance_injection::{
+    add_inject_fields, generate_rpc_controller_system,
+};
 use crate::shared::scope_parser::{ControllerScope, RpcControllerArgs};
 use crate::utils::extracts::extract_struct_dependencies;
 

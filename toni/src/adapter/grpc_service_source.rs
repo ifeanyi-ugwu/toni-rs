@@ -1,8 +1,8 @@
 //! What a gRPC service declares, and how it is registered with tonic.
 //!
 //! Each service is declared in its module's `controllers:` list and hands its source over as
-//! `Dispatch::Grpc`. The framework collects the sources at bind time, resolves their declared
-//! enhancer tokens against the role registry, and hands the result back through
+//! `Dispatch::Grpc`. The framework resolves the declared enhancer tokens against the role registry
+//! at create, stores the `(source, enhancers)` pair, and hands it back at bind through
 //! [`register_with`](GrpcServiceSource::register_with) so the macro-generated body can wrap itself
 //! in an enhancer-aware tonic service.
 //!
@@ -22,7 +22,7 @@ use crate::traits_helpers::{
 };
 
 /// Per-service bundle of resolved enhancer instances. Built by the framework
-/// at bind time from the token getters on [`GrpcServiceSource`] and handed to
+/// at create from the token getters on [`GrpcServiceSource`] and handed to
 /// [`GrpcServiceSource::register_with`] so the macro-generated wrapper can
 /// invoke them per call without touching the DI container at request time.
 #[derive(Default, Clone)]
