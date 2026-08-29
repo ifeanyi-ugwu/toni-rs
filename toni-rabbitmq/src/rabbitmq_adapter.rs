@@ -78,6 +78,89 @@ impl RpcAdapter for RabbitMqAdapter {
                 .await
                 .unwrap_or_else(|e| panic!("[RabbitMqAdapter] failed to open channel — {e}"));
 
+            // Streaming calls in flight, keyed by correlation id, abortable
+            // by a cancel notice. The fanout exchange delivers every notice
+            // to every instance's own queue; only the instance holding the
+            // call finds a match. The queue is named (per instance) rather
+            // than server-named, and lives on its own channel: lapin's
+            // topology replay cannot redeclare a server-named queue, and a
+            // failed replay closes the channel — which must not take the
+            // pattern consumers with it.
+            let inflight_calls = toni::rpc::wire::Inflight::new();
+            {
+                let cancel_channel = conn.create_channel().await.unwrap_or_else(|e| {
+                    panic!("[RabbitMqAdapter] failed to open the cancel channel — {e}")
+                });
+                cancel_channel
+                    .exchange_declare(
+                        crate::wire::CANCEL_EXCHANGE.into(),
+                        lapin::ExchangeKind::Fanout,
+                        lapin::options::ExchangeDeclareOptions::default(),
+                        FieldTable::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("[RabbitMqAdapter] failed to declare the cancel exchange — {e}")
+                    });
+                let queue_name = format!("{}.{}", crate::wire::CANCEL_EXCHANGE, instance_id());
+                let cancel_queue = cancel_channel
+                    .queue_declare(
+                        queue_name.as_str().into(),
+                        QueueDeclareOptions {
+                            auto_delete: true,
+                            ..Default::default()
+                        },
+                        FieldTable::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("[RabbitMqAdapter] failed to declare the cancel queue — {e}")
+                    });
+                cancel_channel
+                    .queue_bind(
+                        cancel_queue.name().clone(),
+                        crate::wire::CANCEL_EXCHANGE.into(),
+                        "".into(),
+                        lapin::options::QueueBindOptions::default(),
+                        FieldTable::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("[RabbitMqAdapter] failed to bind the cancel queue — {e}")
+                    });
+                let mut cancel_consumer = cancel_channel
+                    .basic_consume(
+                        cancel_queue.name().clone(),
+                        "".into(),
+                        BasicConsumeOptions {
+                            no_ack: true,
+                            ..Default::default()
+                        },
+                        FieldTable::default(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("[RabbitMqAdapter] failed to consume the cancel queue — {e}")
+                    });
+                let inflight_calls = inflight_calls.clone();
+                tokio::spawn(async move {
+                    // Holds the channel open for the consumer's lifetime.
+                    let _cancel_channel = cancel_channel;
+                    while let Some(delivery) = cancel_consumer.next().await {
+                        let Ok(delivery) = delivery else { continue };
+                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&delivery.data)
+                        else {
+                            continue;
+                        };
+                        if v.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                            if let Some(key) = v["key"].as_str() {
+                                inflight_calls.cancel(key);
+                            }
+                        }
+                    }
+                });
+            }
+
             for pattern in &patterns {
                 channel
                     .queue_declare(
@@ -105,7 +188,12 @@ impl RpcAdapter for RabbitMqAdapter {
                     });
 
                 tracing::info!(pattern, "RabbitMqAdapter consuming");
-                tokio::spawn(consume_loop(consumer, channel.clone(), callbacks.clone()));
+                tokio::spawn(consume_loop(
+                    consumer,
+                    channel.clone(),
+                    callbacks.clone(),
+                    inflight_calls.clone(),
+                ));
             }
 
             // Hold the connection open until shutdown; closing it ends every
@@ -129,14 +217,44 @@ async fn consume_loop(
     mut consumer: lapin::Consumer,
     channel: Channel,
     callbacks: Arc<RpcMessageCallbacks>,
+    inflight_calls: toni::rpc::wire::Inflight,
 ) {
     while let Some(delivery) = consumer.next().await {
         let Ok(delivery) = delivery else { continue };
-        tokio::spawn(handle_delivery(
-            delivery,
-            channel.clone(),
-            callbacks.clone(),
-        ));
+
+        // Register a request-shaped call before dispatch so a cancel notice
+        // can abort it mid-handler or mid-drain. A notice racing this
+        // registration is dropped — the cancel channel is best-effort on a
+        // broker.
+        let corr_key = delivery
+            .properties
+            .reply_to()
+            .as_ref()
+            .and(delivery.properties.correlation_id().as_ref())
+            .map(|corr| corr.as_str().to_string());
+        let (abort_slot, guard) = match corr_key {
+            Some(key) => {
+                let abort_slot = Arc::new(std::sync::Mutex::new(None::<tokio::task::AbortHandle>));
+                let slot = abort_slot.clone();
+                let guard = inflight_calls.register(key, move || {
+                    if let Some(handle) = slot.lock().unwrap().take() {
+                        handle.abort();
+                    }
+                });
+                (Some(abort_slot), Some(guard))
+            }
+            None => (None, None),
+        };
+
+        let channel = channel.clone();
+        let callbacks = callbacks.clone();
+        let handle = tokio::spawn(async move {
+            let _guard = guard;
+            handle_delivery(delivery, channel, callbacks).await;
+        });
+        if let Some(slot) = abort_slot {
+            *slot.lock().unwrap() = Some(handle.abort_handle());
+        }
     }
 }
 
@@ -172,6 +290,38 @@ async fn handle_delivery(
     };
 
     let response = match outcome {
+        Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+            toni::rpc::wire::drive_reply_stream(stream, |frame| {
+                let channel = channel.clone();
+                let reply_to = reply_to.clone();
+                let correlation_id = correlation_id.clone();
+                async move {
+                    let mut props = BasicProperties::default();
+                    if let Some(corr) = correlation_id {
+                        props = props.with_correlation_id(corr);
+                    }
+                    channel
+                        .basic_publish(
+                            "".into(),
+                            reply_to.clone(),
+                            BasicPublishOptions::default(),
+                            frame.to_string().as_bytes(),
+                            props,
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| {
+                            tracing::error!(
+                                error = %e,
+                                reply_to = reply_to.as_str(),
+                                "RabbitMqAdapter stream publish error"
+                            );
+                        })
+                }
+            })
+            .await;
+            return;
+        }
         Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
@@ -196,6 +346,17 @@ async fn handle_delivery(
     {
         tracing::error!(error = %e, reply_to = reply_to.as_str(), "RabbitMqAdapter failed to publish reply");
     }
+}
+
+/// Names this instance's cancel queue uniquely, so two instances on one
+/// broker never share one.
+fn instance_id() -> String {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{pid}-{nanos}")
 }
 
 /// Connect with bounded retry (~10 s) so a slow-starting broker doesn't take
