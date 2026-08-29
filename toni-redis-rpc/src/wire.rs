@@ -16,6 +16,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use toni::rpc::RpcData;
 
+/// The channel carrying stream-cancel notices (ADR-0032). Every server
+/// instance subscribes it, so each sees every notice and only the instance
+/// holding the call acts on it.
+pub(crate) const CANCEL_CHANNEL: &str = "toni:rpc:cancel";
+
 /// Published to a handler's pattern channel for every call.
 ///
 /// `reply_to` present means request-response — the server publishes the
