@@ -66,11 +66,28 @@ impl std::fmt::Display for UdpTarget {
 /// Fire-and-forget events (no `id`, or handlers declared with `#[event_pattern]`)
 /// produce no datagram on the wire.
 ///
+/// A streaming reply (ADR-0032) is one datagram per item frame followed by an
+/// end marker, every frame carrying the call's `id`:
+///
+/// ```json
+/// {"id":"<correlation-id>","stream":{...}}
+/// {"id":"<correlation-id>","end":true}
+/// ```
+///
+/// `Binary` items travel base64 under `"stream_b64"`; an abnormal end is
+/// `{"id":…,"end":true,"err":{"message","status"}}`, including for a stream
+/// item too large for a datagram. The caller abandons an in-flight call by
+/// sending `{"id":"<correlation-id>","cancel":true}`; the driving task is
+/// aborted and the handler's execution hears its cancellation token.
+///
 /// # Caveats (v1)
 ///
 /// - **Unreliable**: datagrams can be lost, duplicated, or reordered. The
 ///   client transport relies on a request timeout — there are no automatic
-///   retries.
+///   retries. For a stream, a lost `end` orphans the caller until its
+///   per-frame timeout, and a lost `cancel` leaves the producer running until
+///   its stream completes; the cancel datagram is the only abandonment signal
+///   a connectionless transport has.
 /// - **Size-bound**: payloads larger than ~65 KiB cannot fit in a single
 ///   datagram. Oversized inbound datagrams are truncated by the kernel and
 ///   the truncated frame is logged and dropped.
@@ -205,6 +222,10 @@ impl RpcAdapter for UdpAdapter {
 
             // Tracks every spawned per-datagram task so close() can drain them.
             let tasks: Arc<Mutex<JoinSet<()>>> = Arc::new(Mutex::new(JoinSet::new()));
+            // Request-shaped calls keyed by `{source}|{id}`, abortable by a
+            // cancel datagram. UDP has no connection, so nothing else can
+            // signal a departed caller.
+            let inflight_calls = wire::Inflight::new();
 
             let mut buf = vec![0u8; MAX_DATAGRAM];
             loop {
@@ -223,7 +244,21 @@ impl RpcAdapter for UdpAdapter {
                                 tracing::warn!(addr = %src, "UdpAdapter possibly truncated datagram");
                             }
 
-                            let payload = buf[..n].to_vec();
+                            let msg: serde_json::Value = match serde_json::from_slice(&buf[..n]) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!(addr = %src, error = %e, "UdpAdapter JSON parse error");
+                                    continue;
+                                }
+                            };
+
+                            if msg.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                                if let Some(id) = msg["id"].as_str() {
+                                    inflight_calls.cancel(&format!("{src}|{id}"));
+                                }
+                                continue;
+                            }
+
                             let socket = socket.clone();
                             let callbacks = callbacks.clone();
 
@@ -234,17 +269,44 @@ impl RpcAdapter for UdpAdapter {
                                 Some(sem) => match sem.clone().try_acquire_owned() {
                                     Ok(p) => Some(p),
                                     Err(_) => {
-                                        reject_overloaded(&socket, src, &payload).await;
+                                        reject_overloaded(&socket, src, &msg).await;
                                         continue;
                                     }
                                 },
                                 None => None,
                             };
 
-                            tasks.lock().await.spawn(async move {
+                            // Register before dispatch so a cancel datagram can
+                            // arrive as early as the one after the request. The
+                            // recv loop is sequential, so the abort slot is
+                            // filled before any cancel for this id is read.
+                            let (abort_slot, guard) = match msg["id"].as_str() {
+                                Some(id) => {
+                                    let abort_slot = Arc::new(std::sync::Mutex::new(
+                                        None::<tokio::task::AbortHandle>,
+                                    ));
+                                    let slot = abort_slot.clone();
+                                    let guard = inflight_calls.register(
+                                        format!("{src}|{id}"),
+                                        move || {
+                                            if let Some(handle) = slot.lock().unwrap().take() {
+                                                handle.abort();
+                                            }
+                                        },
+                                    );
+                                    (Some(abort_slot), Some(guard))
+                                }
+                                None => (None, None),
+                            };
+
+                            let handle = tasks.lock().await.spawn(async move {
                                 let _permit = permit;
-                                handle_datagram(socket, src, payload, callbacks).await;
+                                let _guard = guard;
+                                handle_datagram(socket, src, msg, callbacks).await;
                             });
+                            if let Some(slot) = abort_slot {
+                                *slot.lock().unwrap() = Some(handle);
+                            }
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "UdpAdapter recv error");
@@ -306,10 +368,8 @@ async fn drain_tasks(tasks: Arc<Mutex<JoinSet<()>>>, drain_timeout: Option<Durat
 /// Send an `"overloaded"` error frame to the source if the inbound datagram
 /// has an `id` (request-response). Fire-and-forget messages are dropped with
 /// a log line — there's no caller waiting to be notified.
-async fn reject_overloaded(socket: &UdpSocket, src: std::net::SocketAddr, payload: &[u8]) {
-    let id: Option<String> = serde_json::from_slice::<serde_json::Value>(payload)
-        .ok()
-        .and_then(|v| v["id"].as_str().map(|s| s.to_string()));
+async fn reject_overloaded(socket: &UdpSocket, src: std::net::SocketAddr, msg: &serde_json::Value) {
+    let id: Option<String> = msg["id"].as_str().map(|s| s.to_string());
 
     let Some(id) = id else {
         tracing::warn!(addr = %src, "UdpAdapter dropping fire-and-forget datagram: at capacity");
@@ -329,17 +389,9 @@ async fn reject_overloaded(socket: &UdpSocket, src: std::net::SocketAddr, payloa
 async fn handle_datagram(
     socket: Arc<UdpSocket>,
     src: std::net::SocketAddr,
-    payload: Vec<u8>,
+    msg: serde_json::Value,
     callbacks: Arc<RpcMessageCallbacks>,
 ) {
-    let msg: serde_json::Value = match serde_json::from_slice(&payload) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(addr = %src, error = %e, "UdpAdapter JSON parse error");
-            return;
-        }
-    };
-
     let pattern = msg["pattern"].as_str().unwrap_or("").to_string();
     let data = RpcData::Json(msg["data"].clone());
     // `id` present → caller expects a response
@@ -373,6 +425,40 @@ async fn handle_datagram(
             Err(_) => {
                 tracing::error!("RPC handler panicked; returning error to caller");
                 wire::frame_panic().into_json_value()
+            }
+            Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+                wire::drive_reply_stream(stream, |mut frame| {
+                    let socket = socket.clone();
+                    let id = id.clone();
+                    async move {
+                        frame["id"] = serde_json::Value::String(id.clone());
+                        let bytes = frame.to_string().into_bytes();
+                        if bytes.len() > MAX_DATAGRAM {
+                            // An item a datagram cannot carry ends the stream
+                            // loudly — a dropped frame mid-stream would read as
+                            // a gap the caller cannot distinguish from loss.
+                            tracing::error!(
+                                len = bytes.len(),
+                                "UdpAdapter stream item exceeds max datagram size; ending stream"
+                            );
+                            let end = serde_json::json!({
+                                "id": id,
+                                "end": true,
+                                "err": {
+                                    "message": "stream item exceeds datagram size",
+                                    "status": "error"
+                                }
+                            });
+                            let _ = socket.send_to(end.to_string().as_bytes(), src).await;
+                            return Err(());
+                        }
+                        socket.send_to(&bytes, src).await.map(|_| ()).map_err(|e| {
+                            tracing::error!(error = %e, "UdpAdapter stream send error");
+                        })
+                    }
+                })
+                .await;
+                return;
             }
             Ok(outcome) => wire::frame_response(outcome).into_json_value(),
         };
