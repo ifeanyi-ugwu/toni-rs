@@ -47,3 +47,4 @@ the history is part of the value.
 - [0029 — A module has one identity, and display derives from it](0029-one-module-identity.md)
 - [0030 — One source builds every dispatch target, and enhancer tokens resolve at create](0030-one-source-builds-every-dispatch-target.md)
 - [0031 — One attribute declares a controller, and its handlers name the transport](0031-one-controller-attribute.md)
+- [0032 — An RPC reply can be a stream, and the execution rides it](0032-a-reply-can-be-a-stream.md)
