@@ -7,7 +7,8 @@ use futures::StreamExt;
 use tokio::sync::{oneshot, OnceCell};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
-use crate::wire::{parse_response, RequestEnvelope};
+use crate::wire::RequestEnvelope;
+use toni::rpc::wire::parse_response;
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
 

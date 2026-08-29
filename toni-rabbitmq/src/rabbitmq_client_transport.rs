@@ -10,7 +10,8 @@ use lapin::{BasicProperties, Channel, Connection};
 use tokio::sync::{oneshot, OnceCell};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
-use crate::wire::{data_to_bytes, parse_response};
+use crate::wire::data_to_bytes;
+use toni::rpc::wire::parse_response;
 
 /// RabbitMQ direct reply-to pseudo-queue. Publishing with this as `reply_to`
 /// tells the broker to route the reply straight back to this connection's

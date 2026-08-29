@@ -4,7 +4,8 @@ use anyhow::Result;
 use futures::{FutureExt, StreamExt};
 use toni::{RpcAdapter, RpcCallInfo, RpcData, RpcMessageCallbacks};
 
-use crate::wire::{frame_panic, frame_response, RequestEnvelope};
+use crate::wire::RequestEnvelope;
+use toni::rpc::wire::{frame_panic, frame_response};
 
 /// Redis Pub/Sub transport adapter for the Toni RPC gateway.
 ///
@@ -219,10 +220,10 @@ async fn handle_message(
     };
 
     let response = match outcome {
-        Ok(outcome) => frame_response(outcome),
+        Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
-            frame_panic()
+            frame_panic().into_bytes()
         }
     };
 

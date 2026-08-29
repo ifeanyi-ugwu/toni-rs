@@ -8,7 +8,8 @@ use rumqttc::v5::mqttbytes::QoS;
 use rumqttc::v5::{AsyncClient, Event, MqttOptions};
 use toni::{RpcAdapter, RpcCallInfo, RpcMessageCallbacks};
 
-use crate::wire::{bytes_to_data, frame_panic, frame_response, user_properties_to_metadata};
+use crate::wire::{bytes_to_data, user_properties_to_metadata};
+use toni::rpc::wire::{frame_panic, frame_response};
 
 /// MQTT v5 transport adapter for the Toni RPC gateway.
 ///
@@ -150,10 +151,10 @@ async fn handle_publish(
     };
 
     let response = match outcome {
-        Ok(outcome) => frame_response(outcome),
+        Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
-            frame_panic()
+            frame_panic().into_bytes()
         }
     };
 

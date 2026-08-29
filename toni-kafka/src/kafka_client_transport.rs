@@ -11,7 +11,8 @@ use rdkafka::util::Timeout;
 use tokio::sync::{oneshot, OnceCell};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
-use crate::wire::{build_headers, header_str, parse_response, HEADER_CORRELATION_ID};
+use crate::wire::{build_headers, header_str, HEADER_CORRELATION_ID};
+use toni::rpc::wire::parse_response;
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
 

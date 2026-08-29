@@ -9,7 +9,8 @@ use rumqttc::v5::{AsyncClient, Event, MqttOptions};
 use tokio::sync::{oneshot, OnceCell};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
-use crate::wire::{data_to_bytes, parse_response};
+use crate::wire::data_to_bytes;
+use toni::rpc::wire::parse_response;
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
 

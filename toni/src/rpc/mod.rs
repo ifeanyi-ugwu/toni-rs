@@ -7,6 +7,7 @@ mod rpc_controller_trait;
 mod rpc_controller_wrapper;
 mod rpc_data;
 mod rpc_error;
+pub mod wire;
 
 pub use extractors::PayloadError;
 pub use rpc_call_info::RpcCallInfo;
