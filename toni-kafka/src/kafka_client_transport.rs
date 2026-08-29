@@ -3,18 +3,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::SinkExt;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use tokio::sync::{oneshot, OnceCell};
+use tokio::sync::{mpsc, oneshot, OnceCell};
+use toni::rpc::wire::{self, ReplyFrame};
+use toni::rpc::{ReplySink, RpcReplyStream};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 use crate::wire::{build_headers, header_str, HEADER_CORRELATION_ID};
-use toni::rpc::wire::parse_response;
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
+/// One awaited call in the correlation map.
+enum PendingSlot {
+    /// A `send()` call: consumed by the first reply carrying its id.
+    Single(oneshot::Sender<Vec<u8>>),
+    /// An `open_stream()` call: fed frame by frame until a terminal frame,
+    /// which removes the entry and thereby closes this sender.
+    Stream(mpsc::UnboundedSender<ReplyFrame>),
+}
+
+type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 
 /// Apache Kafka transport for [`RpcClient`].
 ///
@@ -113,9 +124,25 @@ impl KafkaClientTransport {
                                     continue;
                                 };
                                 let payload = msg.payload().map(|p| p.to_vec()).unwrap_or_default();
-                                let tx = router_pending.lock().unwrap().remove(&corr_id);
-                                if let Some(tx) = tx {
-                                    let _ = tx.send(payload);
+                                let mut pending = router_pending.lock().unwrap();
+                                match pending.get(&corr_id) {
+                                    None => {}
+                                    Some(PendingSlot::Single(_)) => {
+                                        let Some(PendingSlot::Single(tx)) =
+                                            pending.remove(&corr_id)
+                                        else {
+                                            unreachable!("slot variant checked above");
+                                        };
+                                        let _ = tx.send(payload);
+                                    }
+                                    Some(PendingSlot::Stream(tx)) => {
+                                        let frame = wire::parse_reply_frame(&payload);
+                                        let terminal = !matches!(frame, ReplyFrame::Item(_));
+                                        let _ = tx.send(frame);
+                                        if terminal {
+                                            pending.remove(&corr_id);
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -153,9 +180,20 @@ impl RpcClientTransport for KafkaClientTransport {
     ) -> Result<RpcData, RpcClientError> {
         let shared = self.shared().await?;
 
-        let corr_id = shared.counter.fetch_add(1, Ordering::Relaxed).to_string();
+        // The reply topic is unique to this client, so prefixing the counter
+        // with it keeps correlation ids globally unique — the server's cancel
+        // registry is shared by every caller.
+        let corr_id = format!(
+            "{}:{}",
+            shared.reply_topic,
+            shared.counter.fetch_add(1, Ordering::Relaxed)
+        );
         let (tx, rx) = oneshot::channel();
-        shared.pending.lock().unwrap().insert(corr_id.clone(), tx);
+        shared
+            .pending
+            .lock()
+            .unwrap()
+            .insert(corr_id.clone(), PendingSlot::Single(tx));
 
         let payload = crate::wire::data_to_bytes(data);
         let headers = build_headers(Some(&shared.reply_topic), Some(&corr_id), &metadata);
@@ -174,7 +212,14 @@ impl RpcClientTransport for KafkaClientTransport {
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(bytes)) => parse_response(&bytes),
+            Ok(Ok(bytes)) => match wire::parse_reply_frame(&bytes) {
+                ReplyFrame::Single(result) => result,
+                ReplyFrame::Item(_) | ReplyFrame::End | ReplyFrame::EndErr { .. } => {
+                    Err(RpcClientError::Transport(
+                        "streaming reply to a single-reply call — use stream()".to_string(),
+                    ))
+                }
+            },
             Ok(Err(_)) => Err(RpcClientError::Transport(
                 "reply router stopped".to_string(),
             )),
@@ -183,6 +228,59 @@ impl RpcClientTransport for KafkaClientTransport {
                 Err(RpcClientError::Timeout)
             }
         }
+    }
+
+    async fn open_stream(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcReplyStream, RpcClientError> {
+        let shared = self.shared().await?;
+
+        let corr_id = format!(
+            "{}:{}",
+            shared.reply_topic,
+            shared.counter.fetch_add(1, Ordering::Relaxed)
+        );
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel();
+        shared
+            .pending
+            .lock()
+            .unwrap()
+            .insert(corr_id.clone(), PendingSlot::Stream(raw_tx));
+
+        let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
+        let (sink, stream) = RpcReplyStream::channel(32, move || {
+            let _ = cancel_tx.send(());
+        });
+        tokio::spawn(forward_stream(
+            raw_rx,
+            sink,
+            cancel_rx,
+            self.timeout,
+            shared.producer.clone(),
+            shared.pending.clone(),
+            corr_id.clone(),
+        ));
+
+        let payload = crate::wire::data_to_bytes(data);
+        let headers = build_headers(Some(&shared.reply_topic), Some(&corr_id), &metadata);
+        let record = FutureRecord::to(pattern)
+            .key(&corr_id)
+            .payload(&payload)
+            .headers(headers);
+
+        if let Err((e, _)) = shared
+            .producer
+            .send(record, Timeout::After(Duration::from_secs(5)))
+            .await
+        {
+            shared.pending.lock().unwrap().remove(&corr_id);
+            return Err(RpcClientError::Transport(e.to_string()));
+        }
+
+        Ok(stream)
     }
 
     async fn emit(
@@ -207,6 +305,72 @@ impl RpcClientTransport for KafkaClientTransport {
             .await
             .map(|_| ())
             .map_err(|(e, _)| RpcClientError::Transport(e.to_string()))
+    }
+}
+
+/// Feed one streaming call's frames from the reply router into the caller's
+/// [`RpcReplyStream`], enforcing the per-frame gap deadline. A dropped stream
+/// or an expired gap produces the cancel notice so the server stops
+/// producing.
+async fn forward_stream(
+    mut raw_rx: mpsc::UnboundedReceiver<ReplyFrame>,
+    mut sink: ReplySink,
+    mut cancel_rx: mpsc::UnboundedReceiver<()>,
+    gap: Duration,
+    producer: FutureProducer,
+    pending: Pending,
+    corr_id: String,
+) {
+    let publish_cancel = |producer: FutureProducer, corr_id: String| async move {
+        let notice = wire::frame_cancel(&corr_id).to_string();
+        let record = FutureRecord::to(crate::wire::CANCEL_TOPIC)
+            .key(&corr_id)
+            .payload(&notice);
+        if let Err((e, _)) = producer
+            .send(record, Timeout::After(Duration::from_secs(5)))
+            .await
+        {
+            tracing::debug!(error = %e, "KafkaClientTransport cancel publish failed");
+        }
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => {
+                pending.lock().unwrap().remove(&corr_id);
+                publish_cancel(producer.clone(), corr_id.clone()).await;
+                break;
+            }
+            next = tokio::time::timeout(gap, raw_rx.recv()) => match next {
+                Ok(Some(ReplyFrame::Item(data))) => {
+                    let _ = sink.send(Ok(data)).await;
+                }
+                // A single-reply answer to a stream call: one item, then the
+                // end.
+                Ok(Some(ReplyFrame::Single(result))) => {
+                    let _ = sink.send(result).await;
+                    break;
+                }
+                Ok(Some(ReplyFrame::End)) => break,
+                Ok(Some(ReplyFrame::EndErr { message, status })) => {
+                    let _ = sink.send(Err(RpcClientError::Remote { message, status })).await;
+                    break;
+                }
+                Ok(None) => {
+                    let _ = sink
+                        .send(Err(RpcClientError::Transport("reply router stopped".to_string())))
+                        .await;
+                    break;
+                }
+                Err(_) => {
+                    let _ = sink.send(Err(RpcClientError::Timeout)).await;
+                    pending.lock().unwrap().remove(&corr_id);
+                    publish_cancel(producer.clone(), corr_id.clone()).await;
+                    break;
+                }
+            }
+        }
     }
 }
 

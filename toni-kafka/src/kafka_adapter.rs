@@ -97,13 +97,59 @@ impl RpcAdapter for KafkaAdapter {
 
             // Create the handler topics up front so the subscribe below assigns
             // their partitions immediately rather than after a metadata refresh.
-            crate::wire::ensure_topics(&brokers, &patterns).await;
+            let mut created = patterns.clone();
+            created.push(crate::wire::CANCEL_TOPIC.to_string());
+            crate::wire::ensure_topics(&brokers, &created).await;
 
             let topics: Vec<&str> = patterns.iter().map(String::as_str).collect();
             consumer
                 .subscribe(&topics)
                 .unwrap_or_else(|e| panic!("[KafkaAdapter] subscribe failed — {e}"));
             tracing::info!(?patterns, "KafkaAdapter subscribed");
+
+            // Streaming calls in flight, keyed by correlation id, abortable
+            // by a cancel notice. The cancel consumer runs in a unique
+            // per-instance group: instances in the pattern group share the
+            // request partitions, but every instance must see every notice
+            // because only the one holding the call can act on it.
+            let inflight_calls = toni::rpc::wire::Inflight::new();
+            {
+                let cancel_consumer: StreamConsumer = ClientConfig::new()
+                    .set("bootstrap.servers", &brokers)
+                    .set("group.id", format!("toni-rpc-cancel-{}", instance_id()))
+                    .set("auto.offset.reset", "latest")
+                    .set("enable.auto.commit", "true")
+                    .create()
+                    .unwrap_or_else(|e| {
+                        panic!("[KafkaAdapter] cancel consumer create failed — {e}")
+                    });
+                cancel_consumer
+                    .subscribe(&[crate::wire::CANCEL_TOPIC])
+                    .unwrap_or_else(|e| panic!("[KafkaAdapter] cancel subscribe failed — {e}"));
+                let inflight_calls = inflight_calls.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match cancel_consumer.recv().await {
+                            Ok(msg) => {
+                                let payload = msg.payload().unwrap_or_default();
+                                let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload)
+                                else {
+                                    continue;
+                                };
+                                if v.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                                    if let Some(key) = v["key"].as_str() {
+                                        inflight_calls.cancel(key);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "KafkaAdapter cancel recv error; retrying");
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            }
+                        }
+                    }
+                });
+            }
 
             loop {
                 tokio::select! {
@@ -121,10 +167,44 @@ impl RpcAdapter for KafkaAdapter {
                                 let correlation_id = header_str(msg.headers(), HEADER_CORRELATION_ID);
                                 let metadata = metadata_from_headers(msg.headers());
 
-                                tokio::spawn(handle_message(
-                                    pattern, payload, reply_to, correlation_id, metadata,
-                                    callbacks.clone(), producer.clone(),
-                                ));
+                                // Register a request-shaped call before dispatch
+                                // so a cancel notice can abort it mid-handler or
+                                // mid-drain. A notice racing this registration is
+                                // dropped — the cancel channel is best-effort on
+                                // a broker.
+                                let corr_key = reply_to
+                                    .as_ref()
+                                    .and(correlation_id.as_ref())
+                                    .cloned();
+                                let (abort_slot, guard) = match corr_key {
+                                    Some(key) => {
+                                        let abort_slot = Arc::new(std::sync::Mutex::new(
+                                            None::<tokio::task::AbortHandle>,
+                                        ));
+                                        let slot = abort_slot.clone();
+                                        let guard = inflight_calls.register(key, move || {
+                                            if let Some(handle) = slot.lock().unwrap().take() {
+                                                handle.abort();
+                                            }
+                                        });
+                                        (Some(abort_slot), Some(guard))
+                                    }
+                                    None => (None, None),
+                                };
+
+                                let callbacks = callbacks.clone();
+                                let producer = producer.clone();
+                                let handle = tokio::spawn(async move {
+                                    let _guard = guard;
+                                    handle_message(
+                                        pattern, payload, reply_to, correlation_id, metadata,
+                                        callbacks, producer,
+                                    )
+                                    .await;
+                                });
+                                if let Some(slot) = abort_slot {
+                                    *slot.lock().unwrap() = Some(handle.abort_handle());
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "KafkaAdapter recv error; retrying");
@@ -145,6 +225,17 @@ impl RpcAdapter for KafkaAdapter {
             },
         ))
     }
+}
+
+/// Names this instance's cancel consumer group uniquely, so two instances on
+/// one broker never share one.
+fn instance_id() -> String {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{pid}-{nanos}")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -173,6 +264,33 @@ async fn handle_message(
     };
 
     let response = match outcome {
+        Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+            toni::rpc::wire::drive_reply_stream(stream, |frame| {
+                let producer = producer.clone();
+                let reply_to = reply_to.clone();
+                let correlation_id = correlation_id.clone();
+                async move {
+                    let headers = build_headers(None, correlation_id.as_deref(), &HashMap::new());
+                    // Keyed by correlation id: every frame of one call lands
+                    // on one partition, which is what keeps them ordered.
+                    let key = correlation_id.unwrap_or_default();
+                    let payload = frame.to_string();
+                    let record = FutureRecord::to(&reply_to)
+                        .key(&key)
+                        .payload(&payload)
+                        .headers(headers);
+                    producer
+                        .send(record, Timeout::After(Duration::from_secs(5)))
+                        .await
+                        .map(|_| ())
+                        .map_err(|(e, _)| {
+                            tracing::error!(error = %e, reply_to, "KafkaAdapter stream publish error");
+                        })
+                }
+            })
+            .await;
+            return;
+        }
         Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");

@@ -132,3 +132,138 @@ async fn kafka_rpc_send_emit_and_metadata() {
         })
         .await;
 }
+
+#[controller]
+pub struct StreamController {}
+#[patterns]
+impl StreamController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("count.stream")]
+    async fn count(&self, _d: RpcData) -> toni::rpc::RpcHandlerResult {
+        use futures::StreamExt;
+        // 50 items: every frame of one call is keyed by its correlation id,
+        // so ordering across a real broker is what this pins.
+        Ok(toni::rpc::RpcHandlerOutput::Stream(
+            futures::stream::iter((1..=50).map(|n| Ok(RpcData::json(serde_json::json!(n)))))
+                .boxed(),
+        ))
+    }
+
+    #[message_pattern("probe.cancel")]
+    async fn probe_cancel(&self, _d: RpcData, ctx: &RpcContext) -> toni::rpc::RpcHandlerResult {
+        use futures::StreamExt;
+        use toni::context::HandlerContext;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<RpcData, RpcError>>(1);
+        let token = ctx.cancellation().clone();
+        tokio::spawn(async move {
+            let mut n = 0u32;
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        STREAM_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
+                        n += 1;
+                        if tx.send(Ok(RpcData::json(serde_json::json!(n)))).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(toni::rpc::RpcHandlerOutput::Stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx).boxed(),
+        ))
+    }
+}
+
+#[module(controllers: [StreamController])]
+impl StreamModule {}
+
+static STREAM_BROKERS: OnceLock<String> = OnceLock::new();
+static STREAM_CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tokio::test]
+async fn kafka_rpc_streams_and_cancels() {
+    use futures::StreamExt;
+
+    let container = Kafka::default().start().await.unwrap();
+    let port = container.get_host_port_ipv4(KAFKA_PORT).await.unwrap();
+    let brokers = format!("127.0.0.1:{port}");
+    STREAM_BROKERS.set(brokers.clone()).ok();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            tokio::task::spawn_local(async move {
+                let mut app = ToniFactory::new().create_with(StreamModule).await.unwrap();
+                app.use_rpc_adapter(
+                    KafkaAdapter::new(STREAM_BROKERS.get().unwrap().clone())
+                        .with_group_id("toni-rpc-stream-test"),
+                )
+                .unwrap();
+                app.bind().await.unwrap();
+                app.run().await;
+            });
+
+            let client = RpcClient::new(
+                KafkaClientTransport::new(brokers.clone()).with_timeout(Duration::from_secs(5)),
+            );
+
+            // The server's group rebalances after spawn; probe with retries
+            // so a slow broker does not flake the run.
+            let mut items: Vec<i64> = Vec::new();
+            for _ in 0..40u8 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if let Ok(stream) = client
+                    .stream("count.stream", RpcData::json(serde_json::json!(null)))
+                    .await
+                {
+                    items = stream
+                        .filter_map(|item| async move {
+                            item.ok().and_then(|d| d.as_json().and_then(|v| v.as_i64()))
+                        })
+                        .collect()
+                        .await;
+                    if !items.is_empty() {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(items, (1..=50).collect::<Vec<i64>>());
+
+            // Dropping the reply stream produces the cancel notice; the
+            // producer observes the execution's cancellation token.
+            let mut stream = client
+                .stream("probe.cancel", RpcData::json(serde_json::json!(null)))
+                .await
+                .unwrap();
+            let mut got_first = false;
+            for _ in 0..40u8 {
+                match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+                    Ok(Some(Ok(_))) => {
+                        got_first = true;
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+            assert!(got_first, "first item");
+            drop(stream);
+
+            let mut cancelled = false;
+            for _ in 0..60u8 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if STREAM_CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+                    cancelled = true;
+                    break;
+                }
+            }
+            assert!(cancelled, "producer never observed the cancellation token");
+        })
+        .await;
+}
