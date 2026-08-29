@@ -135,3 +135,124 @@ async fn mqtt_rpc_send_emit_and_metadata() {
         })
         .await;
 }
+
+#[controller]
+pub struct StreamController {}
+#[patterns]
+impl StreamController {
+    #[new]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[message_pattern("count.stream")]
+    async fn count(&self, _d: RpcData) -> toni::rpc::RpcHandlerResult {
+        use futures::StreamExt;
+        Ok(toni::rpc::RpcHandlerOutput::Stream(
+            futures::stream::iter((1..=3).map(|n| Ok(RpcData::json(serde_json::json!(n))))).boxed(),
+        ))
+    }
+
+    #[message_pattern("probe.cancel")]
+    async fn probe_cancel(&self, _d: RpcData, ctx: &RpcContext) -> toni::rpc::RpcHandlerResult {
+        use futures::StreamExt;
+        use toni::context::HandlerContext;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<RpcData, RpcError>>(1);
+        let token = ctx.cancellation().clone();
+        tokio::spawn(async move {
+            let mut n = 0u32;
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        STREAM_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
+                        n += 1;
+                        if tx.send(Ok(RpcData::json(serde_json::json!(n)))).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(toni::rpc::RpcHandlerOutput::Stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx).boxed(),
+        ))
+    }
+}
+
+#[module(controllers: [StreamController])]
+impl StreamModule {}
+
+static STREAM_HOST_PORT: OnceLock<u16> = OnceLock::new();
+static STREAM_CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tokio::test]
+async fn mqtt_rpc_streams_and_cancels() {
+    use futures::StreamExt;
+
+    let container = Mosquitto::default().start().await.unwrap();
+    let port = container.get_host_port_ipv4(1883).await.unwrap();
+    STREAM_HOST_PORT.set(port).ok();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            tokio::task::spawn_local(async move {
+                let mut app = ToniFactory::new().create_with(StreamModule).await.unwrap();
+                app.use_rpc_adapter(MqttAdapter::new(
+                    "127.0.0.1",
+                    *STREAM_HOST_PORT.get().unwrap(),
+                ))
+                .unwrap();
+                app.bind().await.unwrap();
+                app.run().await;
+            });
+
+            let client = RpcClient::new(
+                MqttClientTransport::new("127.0.0.1", port).with_timeout(Duration::from_secs(2)),
+            );
+
+            // The server subscribes asynchronously after spawn; probe with
+            // retries so a slow broker does not flake the run.
+            let mut items: Vec<i64> = Vec::new();
+            for _ in 0..30u8 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if let Ok(stream) = client
+                    .stream("count.stream", RpcData::json(serde_json::json!(null)))
+                    .await
+                {
+                    items = stream
+                        .filter_map(|item| async move {
+                            item.ok().and_then(|d| d.as_json().and_then(|v| v.as_i64()))
+                        })
+                        .collect()
+                        .await;
+                    if !items.is_empty() {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(items, vec![1, 2, 3]);
+
+            // Dropping the reply stream publishes the cancel notice; the
+            // producer observes the execution's cancellation token.
+            let mut stream = client
+                .stream("probe.cancel", RpcData::json(serde_json::json!(null)))
+                .await
+                .unwrap();
+            assert!(stream.next().await.is_some(), "first item");
+            drop(stream);
+
+            let mut cancelled = false;
+            for _ in 0..40u8 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if STREAM_CANCELLED.load(std::sync::atomic::Ordering::SeqCst) {
+                    cancelled = true;
+                    break;
+                }
+            }
+            assert!(cancelled, "producer never observed the cancellation token");
+        })
+        .await;
+}

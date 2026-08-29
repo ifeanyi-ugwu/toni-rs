@@ -8156,6 +8156,7 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+ "tokio-stream",
  "toni",
  "tracing",
 ]

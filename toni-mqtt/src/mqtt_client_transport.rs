@@ -3,16 +3,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::SinkExt;
 use rumqttc::v5::mqttbytes::v5::{Packet, PublishProperties};
 use rumqttc::v5::mqttbytes::QoS;
 use rumqttc::v5::{AsyncClient, Event, MqttOptions};
-use tokio::sync::{oneshot, OnceCell};
+use tokio::sync::{mpsc, oneshot, OnceCell};
+use toni::rpc::wire::{self, ReplyFrame};
+use toni::rpc::{ReplySink, RpcReplyStream};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 use crate::wire::data_to_bytes;
-use toni::rpc::wire::parse_response;
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<u8>>>>>;
+/// One awaited call in the correlation map.
+enum PendingSlot {
+    /// A `send()` call: consumed by the first reply carrying its id.
+    Single(oneshot::Sender<Vec<u8>>),
+    /// An `open_stream()` call: fed frame by frame until a terminal frame,
+    /// which removes the entry and thereby closes this sender.
+    Stream(mpsc::UnboundedSender<ReplyFrame>),
+}
+
+type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 
 /// MQTT v5 transport for [`RpcClient`].
 ///
@@ -115,9 +126,26 @@ impl MqttClientTransport {
                                 let corr = p.properties.and_then(|pr| pr.correlation_data);
                                 if let Some(corr) = corr {
                                     let corr_id = String::from_utf8_lossy(&corr).to_string();
-                                    let tx = router_pending.lock().unwrap().remove(&corr_id);
-                                    if let Some(tx) = tx {
-                                        let _ = tx.send(p.payload.to_vec());
+                                    let mut pending = router_pending.lock().unwrap();
+                                    match pending.get(&corr_id) {
+                                        None => {}
+                                        Some(PendingSlot::Single(_)) => {
+                                            let Some(PendingSlot::Single(tx)) =
+                                                pending.remove(&corr_id)
+                                            else {
+                                                unreachable!("slot variant checked above");
+                                            };
+                                            let _ = tx.send(p.payload.to_vec());
+                                        }
+                                        Some(PendingSlot::Stream(tx)) => {
+                                            let frame = wire::parse_reply_frame(&p.payload);
+                                            let terminal =
+                                                !matches!(frame, ReplyFrame::Item(_));
+                                            let _ = tx.send(frame);
+                                            if terminal {
+                                                pending.remove(&corr_id);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -161,9 +189,20 @@ impl RpcClientTransport for MqttClientTransport {
     ) -> Result<RpcData, RpcClientError> {
         let shared = self.shared().await?;
 
-        let corr_id = shared.counter.fetch_add(1, Ordering::Relaxed).to_string();
+        // The reply topic is unique to this client, so prefixing the counter
+        // with it keeps correlation ids globally unique — the server's cancel
+        // registry is shared by every caller.
+        let corr_id = format!(
+            "{}:{}",
+            shared.reply_topic,
+            shared.counter.fetch_add(1, Ordering::Relaxed)
+        );
         let (tx, rx) = oneshot::channel();
-        shared.pending.lock().unwrap().insert(corr_id.clone(), tx);
+        shared
+            .pending
+            .lock()
+            .unwrap()
+            .insert(corr_id.clone(), PendingSlot::Single(tx));
 
         let props = PublishProperties {
             response_topic: Some(shared.reply_topic.clone()),
@@ -182,7 +221,14 @@ impl RpcClientTransport for MqttClientTransport {
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(bytes)) => parse_response(&bytes),
+            Ok(Ok(bytes)) => match wire::parse_reply_frame(&bytes) {
+                ReplyFrame::Single(result) => result,
+                ReplyFrame::Item(_) | ReplyFrame::End | ReplyFrame::EndErr { .. } => {
+                    Err(RpcClientError::Transport(
+                        "streaming reply to a single-reply call — use stream()".to_string(),
+                    ))
+                }
+            },
             Ok(Err(_)) => Err(RpcClientError::Transport(
                 "reply router stopped".to_string(),
             )),
@@ -191,6 +237,59 @@ impl RpcClientTransport for MqttClientTransport {
                 Err(RpcClientError::Timeout)
             }
         }
+    }
+
+    async fn open_stream(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcReplyStream, RpcClientError> {
+        let shared = self.shared().await?;
+
+        let corr_id = format!(
+            "{}:{}",
+            shared.reply_topic,
+            shared.counter.fetch_add(1, Ordering::Relaxed)
+        );
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel();
+        shared
+            .pending
+            .lock()
+            .unwrap()
+            .insert(corr_id.clone(), PendingSlot::Stream(raw_tx));
+
+        let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<()>();
+        let (sink, stream) = RpcReplyStream::channel(32, move || {
+            let _ = cancel_tx.send(());
+        });
+        tokio::spawn(forward_stream(
+            raw_rx,
+            sink,
+            cancel_rx,
+            self.timeout,
+            shared.client.clone(),
+            shared.pending.clone(),
+            corr_id.clone(),
+        ));
+
+        let props = PublishProperties {
+            response_topic: Some(shared.reply_topic.clone()),
+            correlation_data: Some(corr_id.clone().into_bytes().into()),
+            user_properties: metadata.into_iter().collect(),
+            ..Default::default()
+        };
+
+        if let Err(e) = shared
+            .client
+            .publish_with_properties(pattern, QoS::AtLeastOnce, false, data_to_bytes(data), props)
+            .await
+        {
+            shared.pending.lock().unwrap().remove(&corr_id);
+            return Err(RpcClientError::Transport(e.to_string()));
+        }
+
+        Ok(stream)
     }
 
     async fn emit(
@@ -209,6 +308,69 @@ impl RpcClientTransport for MqttClientTransport {
             .publish_with_properties(pattern, QoS::AtLeastOnce, false, data_to_bytes(data), props)
             .await
             .map_err(|e| RpcClientError::Transport(e.to_string()))
+    }
+}
+
+/// Feed one streaming call's frames from the reply router into the caller's
+/// [`RpcReplyStream`], enforcing the per-frame gap deadline. A dropped stream
+/// or an expired gap publishes the cancel notice so the server stops
+/// producing.
+async fn forward_stream(
+    mut raw_rx: mpsc::UnboundedReceiver<ReplyFrame>,
+    mut sink: ReplySink,
+    mut cancel_rx: mpsc::UnboundedReceiver<()>,
+    gap: Duration,
+    client: AsyncClient,
+    pending: Pending,
+    corr_id: String,
+) {
+    let publish_cancel = |client: AsyncClient, corr_id: String| async move {
+        let notice = wire::frame_cancel(&corr_id).to_string();
+        if let Err(e) = client
+            .publish(crate::wire::CANCEL_TOPIC, QoS::AtLeastOnce, false, notice)
+            .await
+        {
+            tracing::debug!(error = %e, "MqttClientTransport cancel publish failed");
+        }
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => {
+                pending.lock().unwrap().remove(&corr_id);
+                publish_cancel(client.clone(), corr_id.clone()).await;
+                break;
+            }
+            next = tokio::time::timeout(gap, raw_rx.recv()) => match next {
+                Ok(Some(ReplyFrame::Item(data))) => {
+                    let _ = sink.send(Ok(data)).await;
+                }
+                // A single-reply answer to a stream call: one item, then the
+                // end.
+                Ok(Some(ReplyFrame::Single(result))) => {
+                    let _ = sink.send(result).await;
+                    break;
+                }
+                Ok(Some(ReplyFrame::End)) => break,
+                Ok(Some(ReplyFrame::EndErr { message, status })) => {
+                    let _ = sink.send(Err(RpcClientError::Remote { message, status })).await;
+                    break;
+                }
+                Ok(None) => {
+                    let _ = sink
+                        .send(Err(RpcClientError::Transport("reply router stopped".to_string())))
+                        .await;
+                    break;
+                }
+                Err(_) => {
+                    let _ = sink.send(Err(RpcClientError::Timeout)).await;
+                    pending.lock().unwrap().remove(&corr_id);
+                    publish_cancel(client.clone(), corr_id.clone()).await;
+                    break;
+                }
+            }
+        }
     }
 }
 
