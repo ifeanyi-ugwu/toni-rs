@@ -23,6 +23,13 @@ use crate::IntoNatsServers;
 /// **Payload format** (inbound): raw JSON bytes.
 /// **Response format** (outbound): `{"response":<json>}` or `{"err":{"message":"...","status":"..."}}`
 ///
+/// **Streaming** (ADR-0032): a stream answer publishes item frames
+/// (`{"stream":…}`, `{"stream_b64":…}` for `Binary`) to the reply inbox,
+/// closed by `{"end":true}` or `{"end":true,"err":{…}}`. A caller abandons an
+/// in-flight call by publishing `{"cancel":true,"key":"<inbox>"}` to
+/// `toni.rpc.cancel`; every instance sees the notice and the one holding the
+/// call aborts it, firing the execution's cancellation token.
+///
 /// # Example
 ///
 /// ```ignore
@@ -113,9 +120,40 @@ impl RpcAdapter for NatsAdapter {
 
             let mut handles = Vec::new();
 
+            // Streaming calls in flight, keyed by reply inbox, abortable by a
+            // cancel notice.
+            let inflight_calls = wire::Inflight::new();
+            {
+                let mut cancel_sub = client
+                    .subscribe(crate::CANCEL_SUBJECT)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "[NatsAdapter] Failed to subscribe to {} — {}",
+                            crate::CANCEL_SUBJECT,
+                            e
+                        )
+                    });
+                let inflight_calls = inflight_calls.clone();
+                handles.push(tokio::spawn(async move {
+                    while let Some(msg) = cancel_sub.next().await {
+                        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+                        else {
+                            continue;
+                        };
+                        if v.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                            if let Some(key) = v["key"].as_str() {
+                                inflight_calls.cancel(key);
+                            }
+                        }
+                    }
+                }));
+            }
+
             for pattern in patterns {
                 let client = client.clone();
                 let callbacks = callbacks.clone();
+                let inflight_calls = inflight_calls.clone();
 
                 let mut subscriber = client.subscribe(pattern.clone()).await.unwrap_or_else(|e| {
                     panic!("[NatsAdapter] Failed to subscribe to {} — {}", pattern, e)
@@ -132,7 +170,28 @@ impl RpcAdapter for NatsAdapter {
                         let payload = msg.payload.clone();
                         let headers = msg.headers.clone();
 
-                        tokio::spawn(async move {
+                        // Register a request-shaped call before dispatch so a
+                        // cancel notice can abort it mid-handler or mid-drain.
+                        // A notice racing this registration is dropped — the
+                        // cancel channel is best-effort on a broker.
+                        let (abort_slot, guard) = match &reply_to {
+                            Some(inbox) => {
+                                let abort_slot = Arc::new(std::sync::Mutex::new(
+                                    None::<tokio::task::AbortHandle>,
+                                ));
+                                let slot = abort_slot.clone();
+                                let guard = inflight_calls.register(inbox.to_string(), move || {
+                                    if let Some(handle) = slot.lock().unwrap().take() {
+                                        handle.abort();
+                                    }
+                                });
+                                (Some(abort_slot), Some(guard))
+                            }
+                            None => (None, None),
+                        };
+
+                        let handle = tokio::spawn(async move {
+                            let _guard = guard;
                             let data = match serde_json::from_slice::<serde_json::Value>(&payload) {
                                 Ok(v) => RpcData::Json(v),
                                 Err(_) => RpcData::Binary(payload.to_vec()),
@@ -167,6 +226,28 @@ impl RpcAdapter for NatsAdapter {
                                     );
                                     Bytes::from(wire::frame_panic().into_bytes())
                                 }
+                                Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+                                    wire::drive_reply_stream(stream, |frame| {
+                                        let client = client.clone();
+                                        let inbox = inbox.clone();
+                                        async move {
+                                            client
+                                                .publish(
+                                                    inbox,
+                                                    Bytes::from(frame.to_string().into_bytes()),
+                                                )
+                                                .await
+                                                .map_err(|e| {
+                                                    tracing::error!(
+                                                        error = %e,
+                                                        "NatsAdapter stream publish error"
+                                                    );
+                                                })
+                                        }
+                                    })
+                                    .await;
+                                    return;
+                                }
                                 Ok(outcome) => {
                                     Bytes::from(wire::frame_response(outcome).into_bytes())
                                 }
@@ -176,6 +257,9 @@ impl RpcAdapter for NatsAdapter {
                                 tracing::error!(error = %e, "NatsAdapter publish error");
                             }
                         });
+                        if let Some(slot) = abort_slot {
+                            *slot.lock().unwrap() = Some(handle.abort_handle());
+                        }
                     }
                 }));
             }

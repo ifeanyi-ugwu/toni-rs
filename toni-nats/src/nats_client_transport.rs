@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use tokio::sync::OnceCell;
-use toni::rpc::wire::parse_response;
+use toni::rpc::wire::{self, parse_response, ReplyFrame};
+use toni::rpc::{ReplySink, RpcReplyStream};
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 use crate::IntoNatsServers;
@@ -13,6 +15,12 @@ use crate::IntoNatsServers;
 /// Connections are established lazily on the first [`send`] or [`emit`] call so
 /// the struct can be constructed synchronously inside a `provider_value!` or
 /// `provider_factory!` block.
+///
+/// A streaming call (`open_stream`, ADR-0032) subscribes an explicit inbox and
+/// feeds its frames to the caller's [`RpcReplyStream`] until the end marker.
+/// The configured timeout bounds the gap to the next frame, the first
+/// included. Dropping the reply stream before its end publishes a cancel
+/// notice to `toni.rpc.cancel`, aborting the call on the server.
 ///
 /// # Example
 ///
@@ -129,6 +137,103 @@ impl RpcClientTransport for NatsClientTransport {
         };
         result.map_err(|e| RpcClientError::Transport(e.to_string()))
     }
+
+    async fn open_stream(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcReplyStream, RpcClientError> {
+        let client = self.get_or_connect().await?.clone();
+
+        // `send()` stays on the broker's native request; a stream needs an
+        // inbox that outlives the first message, so it is explicit here.
+        let inbox = client.new_inbox();
+        let sub = client
+            .subscribe(inbox.clone())
+            .await
+            .map_err(|e| RpcClientError::Transport(e.to_string()))?;
+
+        let (cancel_tx, cancel_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (sink, stream) = RpcReplyStream::channel(32, move || {
+            let _ = cancel_tx.send(());
+        });
+        tokio::spawn(forward_stream(
+            sub,
+            sink,
+            cancel_rx,
+            self.timeout,
+            client.clone(),
+            inbox.clone(),
+        ));
+
+        let subject = pattern.to_string();
+        let payload = data_to_bytes(data);
+        let result = if metadata.is_empty() {
+            client.publish_with_reply(subject, inbox, payload).await
+        } else {
+            client
+                .publish_with_reply_and_headers(subject, inbox, to_headers(metadata), payload)
+                .await
+        };
+        result.map_err(|e| RpcClientError::Transport(e.to_string()))?;
+
+        Ok(stream)
+    }
+}
+
+/// Feed one streaming call's frames from its inbox subscription into the
+/// caller's [`RpcReplyStream`], enforcing the per-frame gap deadline. A
+/// dropped stream or an expired gap publishes the cancel notice so the server
+/// stops producing.
+async fn forward_stream(
+    mut sub: async_nats::Subscriber,
+    mut sink: ReplySink,
+    mut cancel_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    gap: Duration,
+    client: async_nats::Client,
+    inbox: String,
+) {
+    let cancel_notice = || Bytes::from(wire::frame_cancel(&inbox).to_string().into_bytes());
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => {
+                let _ = client.publish(crate::CANCEL_SUBJECT, cancel_notice()).await;
+                break;
+            }
+            next = tokio::time::timeout(gap, sub.next()) => match next {
+                Ok(Some(msg)) => match wire::parse_reply_frame(&msg.payload) {
+                    ReplyFrame::Item(data) => {
+                        let _ = sink.send(Ok(data)).await;
+                    }
+                    // A single-reply answer to a stream call: one item, then
+                    // the end.
+                    ReplyFrame::Single(result) => {
+                        let _ = sink.send(result).await;
+                        break;
+                    }
+                    ReplyFrame::End => break,
+                    ReplyFrame::EndErr { message, status } => {
+                        let _ = sink.send(Err(RpcClientError::Remote { message, status })).await;
+                        break;
+                    }
+                },
+                Ok(None) => {
+                    let _ = sink
+                        .send(Err(RpcClientError::Transport("connection closed".to_string())))
+                        .await;
+                    break;
+                }
+                Err(_) => {
+                    let _ = sink.send(Err(RpcClientError::Timeout)).await;
+                    let _ = client.publish(crate::CANCEL_SUBJECT, cancel_notice()).await;
+                    break;
+                }
+            }
+        }
+    }
+    let _ = sub.unsubscribe().await;
 }
 
 fn to_headers(metadata: HashMap<String, String>) -> async_nats::HeaderMap {
