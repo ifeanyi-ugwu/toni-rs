@@ -571,7 +571,7 @@ mod tests {
         .boxed();
         let frames = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink = frames.clone();
-        futures::executor::block_on(drive_reply_stream(stream, move |frame| {
+        futures_executor::block_on(drive_reply_stream(stream, move |frame| {
             sink.lock().push(frame);
             async { Ok::<(), ()>(()) }
         }));
@@ -591,7 +591,7 @@ mod tests {
         .boxed();
         let frames = std::sync::Arc::new(Mutex::new(Vec::new()));
         let sink = frames.clone();
-        futures::executor::block_on(drive_reply_stream(stream, move |frame| {
+        futures_executor::block_on(drive_reply_stream(stream, move |frame| {
             sink.lock().push(frame);
             async { Ok::<(), ()>(()) }
         }));
@@ -610,7 +610,7 @@ mod tests {
         .boxed();
         let sent = std::sync::Arc::new(Mutex::new(0u32));
         let counter = sent.clone();
-        futures::executor::block_on(drive_reply_stream(stream, move |_| {
+        futures_executor::block_on(drive_reply_stream(stream, move |_| {
             *counter.lock() += 1;
             async { Err::<(), ()>(()) }
         }));
