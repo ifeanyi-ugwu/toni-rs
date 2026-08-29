@@ -9,4 +9,8 @@ pub enum RpcClientError {
     /// The remote service returned an error envelope.
     #[error("Remote error ({status}): {message}")]
     Remote { message: String, status: String },
+    /// The transport predates the stream grammar and cannot open a streaming
+    /// call.
+    #[error("this transport does not support streaming calls")]
+    StreamingUnsupported,
 }

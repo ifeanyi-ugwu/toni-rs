@@ -2,11 +2,30 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures::StreamExt;
+use futures::stream::BoxStream;
+
 use crate::adapter::RpcClientTransport;
 use crate::async_trait;
 use crate::provider_scope::ProviderScope;
-use crate::rpc::{RpcClientError, RpcData};
+use crate::rpc::{RpcClientError, RpcData, RpcReplyStream};
 use crate::traits_helpers::{Provider, ProviderContext};
+
+/// Map a reply stream's items through `RpcData::parse`, keeping errors in
+/// place.
+fn parse_items<R>(stream: RpcReplyStream) -> BoxStream<'static, Result<R, RpcClientError>>
+where
+    R: serde::de::DeserializeOwned + Send + 'static,
+{
+    stream
+        .map(|item| {
+            item.and_then(|data| {
+                data.parse::<R>()
+                    .map_err(|e| RpcClientError::Transport(e.to_string()))
+            })
+        })
+        .boxed()
+}
 
 /// Injectable handle for calling remote RPC services.
 ///
@@ -128,6 +147,44 @@ impl RpcClient {
             .map_err(|e| RpcClientError::Transport(e.to_string()))
     }
 
+    /// Open a streaming call: one request, many replies (ADR-0032).
+    ///
+    /// Carries no headers — use [`request`](Self::request) to attach them.
+    /// The reply stream yields items until the server's end marker; dropping
+    /// it early sends the call's cancel notice, and the server's producer
+    /// hears its cancellation token. Errors with
+    /// [`StreamingUnsupported`](RpcClientError::StreamingUnsupported) on a
+    /// transport predating the stream grammar.
+    pub async fn stream(
+        &self,
+        pattern: impl AsRef<str>,
+        data: RpcData,
+    ) -> Result<RpcReplyStream, RpcClientError> {
+        self.transport
+            .open_stream(pattern.as_ref(), data, HashMap::new())
+            .await
+    }
+
+    /// Typed streaming call: serializes `data`, opens the stream, and parses
+    /// each item. An item that does not parse yields an `Err` in its place.
+    pub async fn stream_json<T, R>(
+        &self,
+        pattern: impl AsRef<str>,
+        data: &T,
+    ) -> Result<BoxStream<'static, Result<R, RpcClientError>>, RpcClientError>
+    where
+        T: serde::Serialize,
+        R: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let payload =
+            RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let stream = self
+            .transport
+            .open_stream(pattern.as_ref(), payload, HashMap::new())
+            .await?;
+        Ok(parse_items(stream))
+    }
+
     /// Establish the connection to the remote service eagerly.
     ///
     /// Transports are lazy by default — they connect on the first `send` or `emit`.
@@ -232,6 +289,35 @@ impl RpcRequest<'_> {
             .emit(&self.pattern, payload, self.headers)
             .await
     }
+
+    /// Open a streaming call carrying the accumulated headers
+    /// (ADR-0032).
+    pub async fn stream(self, data: RpcData) -> Result<RpcReplyStream, RpcClientError> {
+        self.client
+            .transport
+            .open_stream(&self.pattern, data, self.headers)
+            .await
+    }
+
+    /// Typed streaming call: serializes `data`, opens the stream, and parses
+    /// each item.
+    pub async fn stream_json<T, R>(
+        self,
+        data: &T,
+    ) -> Result<BoxStream<'static, Result<R, RpcClientError>>, RpcClientError>
+    where
+        T: serde::Serialize,
+        R: serde::de::DeserializeOwned + Send + 'static,
+    {
+        let payload =
+            RpcData::from_serialize(data).map_err(|e| RpcClientError::Transport(e.to_string()))?;
+        let stream = self
+            .client
+            .transport
+            .open_stream(&self.pattern, payload, self.headers)
+            .await?;
+        Ok(parse_items(stream))
+    }
 }
 
 #[async_trait]
@@ -262,5 +348,40 @@ impl Provider for RpcClient {
         if let Err(e) = self.close().await {
             tracing::error!(error = %e, "RpcClient close failed at shutdown");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SingleOnly;
+
+    #[async_trait]
+    impl RpcClientTransport for SingleOnly {
+        async fn send(
+            &self,
+            _pattern: &str,
+            data: RpcData,
+            _metadata: HashMap<String, String>,
+        ) -> Result<RpcData, RpcClientError> {
+            Ok(data)
+        }
+
+        async fn emit(
+            &self,
+            _pattern: &str,
+            _data: RpcData,
+            _metadata: HashMap<String, String>,
+        ) -> Result<(), RpcClientError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_transport_without_the_grammar_refuses_a_stream_call() {
+        let client = RpcClient::new(SingleOnly);
+        let result = futures_executor::block_on(client.stream("p", RpcData::text("")));
+        assert!(matches!(result, Err(RpcClientError::StreamingUnsupported)));
     }
 }

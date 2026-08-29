@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 
-use crate::rpc::{RpcClientError, RpcData};
+use crate::rpc::{RpcClientError, RpcData, RpcReplyStream};
 
 /// Interface for RPC client transports.
 ///
@@ -58,4 +58,23 @@ pub trait RpcClientTransport: Send + Sync + 'static {
         data: RpcData,
         metadata: HashMap<String, String>,
     ) -> Result<(), RpcClientError>;
+
+    /// Open a streaming call: one request, many reply frames until the end
+    /// marker (ADR-0032).
+    ///
+    /// Implementations feed items into an [`RpcReplyStream`], enforce their
+    /// `with_timeout` as the per-frame gap (the first frame included), and
+    /// send the cancel notice from the stream's `on_cancel` when the caller
+    /// drops it early. The default answers
+    /// [`RpcClientError::StreamingUnsupported`], so a transport predating the
+    /// grammar keeps compiling — and refuses loudly.
+    async fn open_stream(
+        &self,
+        pattern: &str,
+        data: RpcData,
+        metadata: HashMap<String, String>,
+    ) -> Result<RpcReplyStream, RpcClientError> {
+        let _ = (pattern, data, metadata);
+        Err(RpcClientError::StreamingUnsupported)
+    }
 }

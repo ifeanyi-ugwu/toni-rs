@@ -8,6 +8,7 @@ mod rpc_controller_wrapper;
 mod rpc_data;
 mod rpc_error;
 mod rpc_handler_output;
+mod rpc_reply_stream;
 pub mod wire;
 
 pub use extractors::PayloadError;
@@ -20,6 +21,7 @@ pub(crate) use rpc_controller_wrapper::RpcControllerWrapper;
 pub use rpc_data::RpcData;
 pub use rpc_error::RpcError;
 pub use rpc_handler_output::RpcHandlerOutput;
+pub use rpc_reply_stream::{ReplySink, RpcReplyStream};
 
 /// What an RPC call answers with — the value the pipeline returns and the `R`
 /// of [`Interceptor`](crate::traits_helpers::Interceptor) on this transport.
