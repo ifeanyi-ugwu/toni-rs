@@ -10,6 +10,11 @@ use std::collections::HashMap;
 use lapin::types::{AMQPValue, FieldTable};
 use toni::rpc::RpcData;
 
+/// The fanout exchange carrying stream-cancel notices (ADR-0032). Every
+/// server instance binds its own exclusive queue, so each sees every notice
+/// and only the instance holding the call acts on it.
+pub(crate) const CANCEL_EXCHANGE: &str = "toni.rpc.cancel";
+
 /// Serialize an outbound payload to AMQP body bytes.
 pub(crate) fn data_to_bytes(data: RpcData) -> Vec<u8> {
     match data {
