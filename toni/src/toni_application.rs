@@ -987,14 +987,13 @@ fn make_rpc_callbacks(wrappers: Vec<Arc<RpcControllerWrapper>>) -> RpcMessageCal
     }
     let pattern_map = Arc::new(pattern_map);
 
-    RpcMessageCallbacks::new(move |data: RpcData, ctx: RpcCallInfo| {
+    RpcMessageCallbacks::new(move |data: RpcData, info: RpcCallInfo| {
         let pattern_map = pattern_map.clone();
         Box::pin(async move {
-            let pattern = ctx.pattern.clone();
-            if let Some(wrapper) = pattern_map.get(&pattern) {
-                wrapper.handle_message(data, ctx.headers, pattern).await
+            if let Some(wrapper) = pattern_map.get(&info.pattern) {
+                wrapper.handle_message(data, info).await
             } else {
-                Err(RpcError::PatternNotFound(pattern))
+                Err(RpcError::PatternNotFound(info.pattern))
             }
         })
     })

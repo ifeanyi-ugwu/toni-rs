@@ -19,7 +19,7 @@ pub trait InterceptorNext<C: ?Sized + HandlerContext, R>: Send {
 /// from downstream or from the interceptor itself.
 ///
 /// `R` is what the transport answers with: `HttpResponse` on HTTP,
-/// `Result<Option<RpcData>, RpcError>` on RPC, `Result<Option<WsMessage>,
+/// `Result<RpcHandlerOutput, RpcError>` on RPC, `Result<WsHandlerOutput,
 /// WsError>` on WebSocket, `Result<(), GrpcStatus>` on gRPC.
 #[async_trait]
 pub trait Interceptor<C: ?Sized + HandlerContext, R>: Send + Sync {

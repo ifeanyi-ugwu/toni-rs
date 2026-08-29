@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use crate::context::Metadata;
 use crate::context::RpcContext;
 use crate::http_helpers::ExecutionResult;
-use crate::rpc::{RpcData, RpcEnhancers, RpcError};
+use crate::rpc::{RpcEnhancers, RpcError, RpcHandlerOutput};
 
 /// Blanket "no patterns" defaults, implemented for every type. `#[patterns]` shadows these with
 /// inherent fns of the same name, which win at the concrete-type call site in the generated
@@ -38,7 +38,7 @@ pub trait RpcHandlersBridge {
     async fn __toni_rpc_handle_message(
         &self,
         ctx: &RpcContext,
-    ) -> ExecutionResult<Option<RpcData>, RpcError> {
+    ) -> ExecutionResult<RpcHandlerOutput, RpcError> {
         ExecutionResult::Err(RpcError::PatternNotFound(format!(
             "Unknown pattern: {}",
             ctx.pattern()

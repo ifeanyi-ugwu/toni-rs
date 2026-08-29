@@ -30,9 +30,22 @@ impl RpcContext {
         headers: HashMap<String, String>,
         metadata: Option<Arc<Metadata>>,
     ) -> Self {
+        Self::with_extensions(pattern, data, headers, metadata, Extensions::new())
+    }
+
+    /// Build around a bag that already exists — the adapter seam's bag riding
+    /// the call into the context, so a value the transport inserted is
+    /// readable through `extensions()`.
+    pub fn with_extensions(
+        pattern: impl Into<String>,
+        data: RpcData,
+        headers: HashMap<String, String>,
+        metadata: Option<Arc<Metadata>>,
+        extensions: Extensions,
+    ) -> Self {
         Self {
             inner: Arc::new(RpcInner {
-                shared: SharedState::new(metadata),
+                shared: SharedState::with_extensions(metadata, extensions),
                 pattern: pattern.into(),
                 headers,
                 data,
@@ -62,6 +75,25 @@ impl RpcContext {
 
     pub fn data(&self) -> &RpcData {
         &self.inner.data
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, PartialEq, Debug)]
+    struct Stamp(u8);
+
+    #[test]
+    fn the_adapters_bag_is_the_contexts_bag() {
+        let bag = Extensions::new();
+        bag.insert(Stamp(7));
+        let ctx =
+            RpcContext::with_extensions("p", RpcData::text(""), HashMap::new(), None, bag.clone());
+        assert_eq!(ctx.extensions().get::<Stamp>(), Some(Stamp(7)));
+        ctx.extensions().insert(Stamp(9));
+        assert_eq!(bag.get::<Stamp>(), Some(Stamp(9)));
     }
 }
 
