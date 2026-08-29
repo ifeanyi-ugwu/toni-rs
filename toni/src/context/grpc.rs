@@ -13,11 +13,10 @@ use super::{CancellationToken, Extensions, HandlerContext, shared::SharedState};
 /// enhancer can name without a type parameter: the method path, the
 /// inbound metadata (ASCII headers), and the optional peer address.
 ///
-/// The same constraint decides who sees this context at all. A gRPC handler's signature is the
-/// tonic trait's and never includes it, so guards, interceptors and error handlers are the only
-/// participants that receive one — and the only ones that can read what `#[set_metadata]` declared
-/// on the service. A handler reaches the extension bag instead, through
-/// `Extensions::adopt(request.extensions())`.
+/// The same constraint decides how a handler sees this context at all. A gRPC handler's signature
+/// is the tonic trait's and never includes one, so guards, interceptors and error handlers receive
+/// it as a parameter and a handler takes it off the request instead — [`GrpcContext::of`], or
+/// `Extensions::adopt(request.extensions())` for the bag alone.
 #[derive(Clone)]
 pub struct GrpcContext {
     inner: Arc<GrpcInner>,
@@ -70,6 +69,26 @@ impl GrpcContext {
 
     pub fn peer(&self) -> Option<SocketAddr> {
         self.inner.peer
+    }
+
+    /// The context riding a gRPC request, which is how a handler reaches one.
+    ///
+    /// `#[grpc_methods]` puts it there before the handler runs, so this answers
+    /// `Some` for any service the framework dispatches. A service handed to
+    /// tonic directly through `GrpcAdapter::add_service` has no execution
+    /// behind it and answers `None`.
+    ///
+    /// ```ignore
+    /// async fn watch(&self, request: Request<WatchRequest>)
+    ///     -> Result<Response<Self::WatchStream>, Status>
+    /// {
+    ///     let ctx = GrpcContext::of(request.extensions()).expect("dispatched by toni");
+    ///     let cancelled = ctx.cancellation().clone();
+    ///     // …stop feeding the reply once `cancelled.cancelled()` resolves
+    /// }
+    /// ```
+    pub fn of(carrier: &http::Extensions) -> Option<Self> {
+        carrier.get::<Self>().cloned()
     }
 }
 

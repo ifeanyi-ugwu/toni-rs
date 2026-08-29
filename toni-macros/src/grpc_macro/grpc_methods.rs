@@ -11,11 +11,21 @@
 //!    enhancer-aware wrapper struct, downcasts the registrar to `tonic::service::RoutesBuilder`,
 //!    and adds `MyServiceServer::new(wrapper)`.
 //!
-//! 3. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper that runs guards
-//!    (and, in later PRs, interceptors / error handlers) before delegating to the user's
-//!    implementation via UFCS: `<MyService as SomeProtoTrait>::method(&inner, req).await`. UFCS
-//!    keeps the user's body verbatim so `Self::SomeStream` associated types, `self.<field>`, and
-//!    any inherent helper calls all resolve naturally.
+//! 3. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper that runs guards,
+//!    interceptors and error handlers before delegating to the user's implementation via UFCS:
+//!    `<MyService as SomeProtoTrait>::method(&inner, req).await`. UFCS keeps the user's body
+//!    verbatim so `Self::SomeStream` associated types, `self.<field>`, and any inherent helper
+//!    calls all resolve naturally.
+//!
+//! # Streaming replies
+//!
+//! The wrapper declares its own associated stream types — `ScopedGrpcStream<UserStream>` rather
+//! than an alias of the user's — so a reply that outlives the handler carries the execution with
+//! it and fires its cancellation token if the caller abandons it. A method is streaming when its
+//! response type is written `Self::SomeStream`, which is what tonic-build's trait declares and what
+//! an impl copied from it says. A method that spells the concrete stream type instead is left
+//! aliased and passes through unwrapped: the reply is correct and the call behaves as before, but
+//! nothing feeding that stream learns when the caller goes away.
 //!
 //! By convention the wrapping `*Server` type name is the proto trait's
 //! identifier with `Server` appended (`OrdersService` → `OrdersServer`),
@@ -326,6 +336,20 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         })
         .collect();
 
+    // Which associated types carry a streaming reply, decided by the only
+    // evidence an attribute macro has: a method whose response type is written
+    // `Self::X`. A method that spells the concrete stream type instead leaves
+    // its associated type aliased, so the reply passes through unwrapped and
+    // that method's tail goes uncovered — see this file's header.
+    let assoc_idents: std::collections::HashSet<String> =
+        assoc_types.iter().map(|at| at.ident.to_string()).collect();
+    let mut streaming_assocs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for method in &method_sigs_for_wrapper {
+        if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+            collect_self_assoc(ty, &assoc_idents, &mut streaming_assocs);
+        }
+    }
+
     let wrapper_methods: Vec<TokenStream> = method_sigs_for_wrapper
         .iter()
         .map(|method| {
@@ -344,8 +368,16 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         .map(|at| {
             let ident = &at.ident;
             let generics = &at.generics;
-            quote! {
-                type #ident #generics = <#self_ident as #trait_path>::#ident;
+            if streaming_assocs.contains(&ident.to_string()) {
+                quote! {
+                    type #ident #generics = ::toni::grpc_runtime::ScopedGrpcStream<
+                        <#self_ident as #trait_path>::#ident
+                    >;
+                }
+            } else {
+                quote! {
+                    type #ident #generics = <#self_ident as #trait_path>::#ident;
+                }
             }
         })
         .collect();
@@ -523,15 +555,6 @@ fn build_wrapper_method(
     let output = &sig.output;
     let generics = &sig.generics;
 
-    // The user's return type — used as the side-channel payload so the
-    // typed `Result<Response<_>, Status>` survives the trip through the
-    // chain runner (which can only thread `()` because the response shape
-    // varies per method).
-    let ret_ty = match output {
-        syn::ReturnType::Type(_, ty) => quote! { #ty },
-        syn::ReturnType::Default => quote! { () },
-    };
-
     Ok(quote! {
         #asyncness fn #method_ident #generics (#inputs) #output {
             let __metadata = #req_ident.metadata().iter().filter_map(|kv| match kv {
@@ -556,11 +579,19 @@ fn build_wrapper_method(
             #req_ident.extensions_mut().insert(
                 ::toni::context::HandlerContext::extensions(&__ctx).clone()
             );
+            // The context itself rides the request too, since the signature
+            // cannot carry it: this is where a handler reaches the cancellation
+            // token, the declared metadata, and the execution's cache.
+            #req_ident.extensions_mut().insert(__ctx.clone());
 
             // Two slots so the macro can distinguish a returned reply
             // (Ok or Err) from a caught panic, and feed the panic event
             // (not its synthesized status) to observers + the error chain.
-            let __outcome: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<#ret_ty>>>
+            // Inferred, not spelled: the delegate fills this with the type the
+            // user's method returns, while the signature above names the
+            // wrapper's own associated type. The two differ wherever a
+            // streaming reply is re-typed on the way out.
+            let __outcome: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<_>>>
                 = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
             let __panic: ::std::sync::Arc<::std::sync::Mutex<::std::option::Option<::toni::PanicRecovered>>>
                 = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::option::Option::None));
@@ -634,7 +665,15 @@ fn build_wrapper_method(
                 .take();
             match __taken_outcome {
                 ::std::option::Option::Some(::std::result::Result::Ok(__reply)) => {
-                    ::std::result::Result::Ok(__reply)
+                    // The execution ends when the answer does. A streaming reply
+                    // has produced nothing yet, so the context rides it to the
+                    // last item instead of dying with the handler.
+                    let (__meta, __body, __ext) = __reply.into_parts();
+                    ::std::result::Result::Ok(::tonic::Response::from_parts(
+                        __meta,
+                        ::toni::grpc_runtime::IntoScoped::into_scoped(__body, __ctx.clone()),
+                        __ext,
+                    ))
                 }
                 ::std::option::Option::Some(::std::result::Result::Err(__status)) => {
                     // User-returned `Err(Status)` is offered to the error
@@ -662,6 +701,58 @@ fn build_wrapper_method(
             }
         }
     })
+}
+
+/// Record every `Self::X` in `ty` whose `X` names an associated type of this
+/// impl block, descending through the generic arguments of `Result<_, _>`,
+/// `Response<_>` and anything else wrapping it.
+fn collect_self_assoc(
+    ty: &syn::Type,
+    declared: &std::collections::HashSet<String>,
+    found: &mut std::collections::HashSet<String>,
+) {
+    match ty {
+        syn::Type::Path(tp) => {
+            // `Self::X` — two segments, the first being `Self`.
+            if tp.qself.is_none() && tp.path.segments.len() == 2 {
+                let head = &tp.path.segments[0];
+                let tail = &tp.path.segments[1];
+                if head.ident == "Self" && declared.contains(&tail.ident.to_string()) {
+                    found.insert(tail.ident.to_string());
+                }
+            }
+            // `<Self as Trait>::X`, which normalises to the same type.
+            if let Some(qself) = &tp.qself {
+                if matches!(qself.ty.as_ref(), syn::Type::Path(inner)
+                    if inner.qself.is_none() && inner.path.is_ident("Self"))
+                {
+                    if let Some(last) = tp.path.segments.last() {
+                        if declared.contains(&last.ident.to_string()) {
+                            found.insert(last.ident.to_string());
+                        }
+                    }
+                }
+            }
+            for segment in &tp.path.segments {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner) = arg {
+                            collect_self_assoc(inner, declared, found);
+                        }
+                    }
+                }
+            }
+        }
+        syn::Type::Reference(r) => collect_self_assoc(&r.elem, declared, found),
+        syn::Type::Paren(p) => collect_self_assoc(&p.elem, declared, found),
+        syn::Type::Group(g) => collect_self_assoc(&g.elem, declared, found),
+        syn::Type::Tuple(t) => {
+            for inner in &t.elems {
+                collect_self_assoc(inner, declared, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Convention: `OrdersService` (proto trait) → `OrdersServer` in the same

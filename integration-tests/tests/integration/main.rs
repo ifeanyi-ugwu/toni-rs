@@ -36,6 +36,7 @@ mod graphql_module_identity;
 mod graphql_service_injection;
 mod graphql_subscriptions;
 mod grpc_service_injection;
+mod grpc_tail;
 mod guard_mut_context;
 mod http_e2e;
 mod import_cycle;
