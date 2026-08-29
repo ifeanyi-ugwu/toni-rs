@@ -8052,6 +8052,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "toni",
  "toni-axum",
  "toni-config",

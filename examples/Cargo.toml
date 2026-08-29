@@ -29,6 +29,7 @@ anyhow = "1.0"
 futures = "0.3"
 bytes = "1"
 tracing = "0.1"
+tokio-stream = "0.1"
 listenfd = "1.0.2"
 
 [build-dependencies]
@@ -162,3 +163,7 @@ path = "socket_activation.rs"
 [[example]]
 name = "request_scoped_context"
 path = "request_scoped_context.rs"
+
+[[example]]
+name = "rpc_streaming"
+path = "rpc_streaming.rs"
