@@ -70,6 +70,10 @@ impl RpcAdapter for MqttAdapter {
             opts.set_keep_alive(Duration::from_secs(5));
             let (client, mut eventloop) = AsyncClient::new(opts, 64);
 
+            // Streaming calls in flight, keyed by correlation data, abortable
+            // by a cancel notice on the shared cancel topic.
+            let inflight_calls = toni::rpc::wire::Inflight::new();
+
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -91,9 +95,61 @@ impl RpcAdapter for MqttAdapter {
                                     }
                                     tracing::info!(pattern, "MqttAdapter subscribing");
                                 }
+                                if let Err(e) = client
+                                    .subscribe(crate::wire::CANCEL_TOPIC, QoS::AtLeastOnce)
+                                    .await
+                                {
+                                    tracing::error!(error = %e, "MqttAdapter failed to subscribe the cancel topic");
+                                }
                             }
                             Ok(Event::Incoming(Packet::Publish(publish))) => {
-                                tokio::spawn(handle_publish(publish, client.clone(), callbacks.clone()));
+                                if publish.topic.as_ref() == crate::wire::CANCEL_TOPIC.as_bytes() {
+                                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&publish.payload) {
+                                        if v.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                                            if let Some(key) = v["key"].as_str() {
+                                                inflight_calls.cancel(key);
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                // Register a request-shaped call before dispatch
+                                // so a cancel notice can abort it mid-handler or
+                                // mid-drain. A notice racing this registration is
+                                // dropped — the cancel channel is best-effort on
+                                // a broker.
+                                let corr_key = publish.properties.as_ref().and_then(|p| {
+                                    p.response_topic.as_ref()?;
+                                    p.correlation_data
+                                        .as_ref()
+                                        .map(|c| String::from_utf8_lossy(c).to_string())
+                                });
+                                let (abort_slot, guard) = match corr_key {
+                                    Some(key) => {
+                                        let abort_slot = Arc::new(std::sync::Mutex::new(
+                                            None::<tokio::task::AbortHandle>,
+                                        ));
+                                        let slot = abort_slot.clone();
+                                        let guard = inflight_calls.register(key, move || {
+                                            if let Some(handle) = slot.lock().unwrap().take() {
+                                                handle.abort();
+                                            }
+                                        });
+                                        (Some(abort_slot), Some(guard))
+                                    }
+                                    None => (None, None),
+                                };
+
+                                let publish_client = client.clone();
+                                let publish_callbacks = callbacks.clone();
+                                let handle = tokio::spawn(async move {
+                                    let _guard = guard;
+                                    handle_publish(publish, publish_client, publish_callbacks).await;
+                                });
+                                if let Some(slot) = abort_slot {
+                                    *slot.lock().unwrap() = Some(handle.abort_handle());
+                                }
                             }
                             Ok(_) => {}
                             Err(e) => {
@@ -151,6 +207,33 @@ async fn handle_publish(
     };
 
     let response = match outcome {
+        Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+            toni::rpc::wire::drive_reply_stream(stream, |frame| {
+                let client = client.clone();
+                let response_topic = response_topic.clone();
+                let correlation_data = correlation_data.clone();
+                async move {
+                    let props = PublishProperties {
+                        correlation_data,
+                        ..Default::default()
+                    };
+                    client
+                        .publish_with_properties(
+                            &response_topic,
+                            QoS::AtLeastOnce,
+                            false,
+                            frame.to_string(),
+                            props,
+                        )
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, response_topic, "MqttAdapter stream publish error");
+                        })
+                }
+            })
+            .await;
+            return;
+        }
         Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
