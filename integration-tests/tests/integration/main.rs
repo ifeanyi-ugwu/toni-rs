@@ -68,6 +68,7 @@ mod rpc_grpc;
 mod rpc_grpc_listener_adoption;
 mod rpc_grpc_macros;
 mod rpc_tcp;
+mod rpc_tcp_stream;
 mod rpc_udp;
 mod scope_bubbling;
 mod scoped_enhancers;

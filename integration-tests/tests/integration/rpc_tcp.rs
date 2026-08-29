@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use toni::rpc::{RpcHandlerOutput, RpcHandlerResult};
 
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use toni::async_trait;
 use toni::context::{Extensions, HandlerContext, RpcContext};
@@ -1483,9 +1482,6 @@ async fn declared_metadata_reaches_an_rpc_handler() {
 
 // ---- RpcHandlerOutput passthrough -------------------------------------------
 
-static STREAM_TOKEN: std::sync::Mutex<Option<toni::context::CancellationToken>> =
-    std::sync::Mutex::new(None);
-
 #[controller]
 pub struct RpcOutputController {}
 #[patterns]
@@ -1500,17 +1496,6 @@ impl RpcOutputController {
         Ok(RpcHandlerOutput::Single(RpcData::json(serde_json::json!(
             "explicit-single"
         ))))
-    }
-
-    #[message_pattern("output.stream")]
-    async fn stream(&self, _d: RpcData, ctx: &RpcContext) -> RpcHandlerResult {
-        STREAM_TOKEN
-            .lock()
-            .unwrap()
-            .replace(ctx.cancellation().clone());
-        Ok(RpcHandlerOutput::Stream(
-            futures_util::stream::iter(vec![Ok(RpcData::json(serde_json::json!(1)))]).boxed(),
-        ))
     }
 }
 
@@ -1531,27 +1516,4 @@ async fn an_explicit_single_output_round_trips() {
     .await
     .expect("no reply");
     assert_eq!(v["response"], "explicit-single");
-}
-
-/// Until the TCP adapter speaks the stream grammar, a stream answer is
-/// refused with an `unsupported` wire error — and dropping the scoped stream
-/// fires the execution's cancellation token, so the producer behind it stops.
-#[tokio_localset_test::localset_test]
-async fn a_stream_answer_is_refused_and_its_token_fires() {
-    let port = start_rpc_server(RpcOutputModule).await;
-    let v = tcp_rpc_timeout(
-        port,
-        "output.stream",
-        serde_json::json!(null),
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("no reply");
-    assert_eq!(v["err"]["status"], "unsupported");
-    let token = STREAM_TOKEN
-        .lock()
-        .unwrap()
-        .take()
-        .expect("handler stored the token");
-    assert!(token.is_cancelled());
 }

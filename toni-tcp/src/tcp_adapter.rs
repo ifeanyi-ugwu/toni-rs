@@ -33,6 +33,21 @@ const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Fire-and-forget events (no `id`, or handlers declared with `#[event_pattern]`)
 /// produce no response on the wire.
 ///
+/// A streaming reply (ADR-0032) is item frames followed by an end marker,
+/// every frame carrying the call's `id`:
+///
+/// ```json
+/// {"id":"<correlation-id>","stream":{...}}
+/// {"id":"<correlation-id>","end":true}
+/// ```
+///
+/// `Binary` items travel base64 under `"stream_b64"`; an abnormal end is
+/// `{"id":…,"end":true,"err":{"message","status"}}`. The caller abandons an
+/// in-flight call — mid-handler or mid-stream — by sending
+/// `{"id":"<correlation-id>","cancel":true}`; the driving task is aborted and
+/// the handler's execution hears its cancellation token. A dropped connection
+/// cancels everything the connection still had in flight.
+///
 /// # Graceful shutdown
 ///
 /// On shutdown the accept loop stops, connection
@@ -255,6 +270,10 @@ async fn handle_connection(
     // Shared across per-message spawns on this connection
     let writer = Arc::new(Mutex::new(writer));
     let mut line = String::new();
+    // Request-shaped calls on this connection, keyed by id, abortable by a
+    // cancel frame or by the peer going away.
+    let conn_inflight = wire::Inflight::new();
+    let mut peer_gone = false;
 
     loop {
         line.clear();
@@ -267,7 +286,11 @@ async fn handle_connection(
         };
 
         match read {
-            Ok(0) => break, // clean close
+            Ok(0) => {
+                // clean close
+                peer_gone = true;
+                break;
+            }
             Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
@@ -281,6 +304,13 @@ async fn handle_connection(
                         continue;
                     }
                 };
+
+                if msg.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                    if let Some(id) = msg["id"].as_str() {
+                        conn_inflight.cancel(id);
+                    }
+                    continue;
+                }
 
                 let pattern = msg["pattern"].as_str().unwrap_or("").to_string();
                 let data = RpcData::Json(msg["data"].clone());
@@ -338,10 +368,31 @@ async fn handle_connection(
                 let callbacks = callbacks.clone();
                 let writer = writer.clone();
 
+                // Register a request-shaped call before dispatch, so a cancel
+                // frame can arrive as early as the line after the request. The
+                // abort handle exists only after the spawn; the read loop is
+                // sequential, so the slot is filled before any cancel for this
+                // id can be read.
+                let (abort_slot, guard) = match &id {
+                    Some(id) => {
+                        let abort_slot =
+                            Arc::new(std::sync::Mutex::new(None::<tokio::task::AbortHandle>));
+                        let slot = abort_slot.clone();
+                        let guard = conn_inflight.register(id.clone(), move || {
+                            if let Some(handle) = slot.lock().unwrap().take() {
+                                handle.abort();
+                            }
+                        });
+                        (Some(abort_slot), Some(guard))
+                    }
+                    None => (None, None),
+                };
+
                 let task = async move {
-                    // Permit is held for the lifetime of this task; releases
-                    // on drop when the task completes or is aborted.
+                    // Permit and guard are held for the lifetime of this task;
+                    // both release on drop when it completes or is aborted.
                     let _permit = permit;
+                    let _guard = guard;
                     let outcome = std::panic::AssertUnwindSafe(callbacks.message(data, ctx))
                         .catch_unwind()
                         .await;
@@ -353,30 +404,72 @@ async fn handle_connection(
                         return;
                     };
 
-                    let mut payload_json = match outcome {
+                    match outcome {
                         Err(_) => {
                             tracing::error!("RPC handler panicked; returning error to caller");
-                            wire::frame_panic().into_json_value()
+                            write_frame(&writer, wire::frame_panic().into_json_value(), &id).await;
                         }
-                        Ok(outcome) => wire::frame_response(outcome).into_json_value(),
-                    };
-                    payload_json["id"] = serde_json::Value::String(id);
-
-                    let mut line = payload_json.to_string();
-                    line.push('\n');
-
-                    let mut w = writer.lock().await;
-                    if let Err(e) = w.write_all(line.as_bytes()).await {
-                        tracing::error!(error = %e, "TcpAdapter write error");
+                        Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+                            wire::drive_reply_stream(stream, |mut frame| {
+                                let writer = writer.clone();
+                                let id = id.clone();
+                                async move {
+                                    frame["id"] = serde_json::Value::String(id);
+                                    let mut line = frame.to_string();
+                                    line.push('\n');
+                                    // Lock per frame: a long drain must not
+                                    // starve the connection's other replies.
+                                    let mut w = writer.lock().await;
+                                    w.write_all(line.as_bytes()).await.map_err(|e| {
+                                        tracing::error!(error = %e, "TcpAdapter stream write error");
+                                    })
+                                }
+                            })
+                            .await;
+                        }
+                        Ok(outcome) => {
+                            write_frame(
+                                &writer,
+                                wire::frame_response(outcome).into_json_value(),
+                                &id,
+                            )
+                            .await;
+                        }
                     }
                 };
-                tasks.lock().await.spawn(task.instrument(span));
+                let handle = tasks.lock().await.spawn(task.instrument(span));
+                if let Some(slot) = abort_slot {
+                    *slot.lock().unwrap() = Some(handle);
+                }
             }
             Err(e) => {
                 tracing::error!(addr = %addr, error = %e, "TcpAdapter read error");
+                peer_gone = true;
                 break;
             }
         }
+    }
+
+    // The peer is gone: nothing this connection still owes can be delivered,
+    // and a stream's producer learns only through the token. On shutdown the
+    // in-flight tasks drain instead — serve()'s drain timeout is the backstop.
+    if peer_gone {
+        conn_inflight.cancel_all();
+    }
+}
+
+/// Write one id-spliced reply frame, logging a failed write.
+async fn write_frame(
+    writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    mut frame: serde_json::Value,
+    id: &str,
+) {
+    frame["id"] = serde_json::Value::String(id.to_string());
+    let mut line = frame.to_string();
+    line.push('\n');
+    let mut w = writer.lock().await;
+    if let Err(e) = w.write_all(line.as_bytes()).await {
+        tracing::error!(error = %e, "TcpAdapter write error");
     }
 }
 
