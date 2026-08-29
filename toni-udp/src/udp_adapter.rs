@@ -7,7 +7,8 @@ use futures_util::FutureExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
+use toni::rpc::wire;
+use toni::{async_trait, RpcAdapter, RpcCallInfo, RpcData, RpcMessageCallbacks};
 use tracing::Instrument;
 
 /// Maximum UDP datagram payload (theoretical max minus IPv4 + UDP headers).
@@ -325,18 +326,6 @@ async fn reject_overloaded(socket: &UdpSocket, src: std::net::SocketAddr, payloa
     }
 }
 
-fn error_status(e: &RpcError) -> &'static str {
-    match e {
-        RpcError::PatternNotFound(_) => "not_found",
-        RpcError::Forbidden(_) => "forbidden",
-        RpcError::Internal(_) => "error",
-        RpcError::AppError(_) => unreachable!(
-            "RpcError::AppError is routed to the Ok+envelope frame before \
-             reaching wire-Err framing"
-        ),
-    }
-}
-
 async fn handle_datagram(
     socket: Arc<UdpSocket>,
     src: std::net::SocketAddr,
@@ -380,46 +369,14 @@ async fn handle_datagram(
             return;
         };
 
-        let payload_json = match outcome {
+        let mut payload_json = match outcome {
             Err(_) => {
                 tracing::error!("RPC handler panicked; returning error to caller");
-                serde_json::json!({
-                    "id": id,
-                    "err": { "message": "internal server error", "status": "error" }
-                })
+                wire::frame_panic().into_json_value()
             }
-            Ok(outcome) => match outcome {
-                Ok(Some(reply)) => {
-                    let v = match reply {
-                        RpcData::Json(v) => v,
-                        RpcData::Text(s) => serde_json::Value::String(s),
-                        RpcData::Binary(_) => serde_json::Value::Null,
-                    };
-                    serde_json::json!({ "id": id, "response": v })
-                }
-                Ok(None) => {
-                    // Handler is fire-and-forget (#[event_pattern]) but caller
-                    // sent an id — send an explicit ack so the caller can close
-                    // the pending request rather than timing out.
-                    serde_json::json!({ "id": id, "response": null })
-                }
-                Err(RpcError::AppError(arc)) => {
-                    let v = match toni::rpc::RpcError::AppError(arc).to_data() {
-                        RpcData::Json(v) => v,
-                        RpcData::Text(s) => serde_json::Value::String(s),
-                        RpcData::Binary(_) => serde_json::Value::Null,
-                    };
-                    serde_json::json!({ "id": id, "response": v })
-                }
-                Err(e) => {
-                    let status = error_status(&e);
-                    serde_json::json!({
-                        "id": id,
-                        "err": { "message": e.to_string(), "status": status }
-                    })
-                }
-            },
+            Ok(outcome) => wire::frame_response(outcome).into_json_value(),
         };
+        payload_json["id"] = serde_json::Value::String(id);
 
         let bytes = payload_json.to_string().into_bytes();
         if bytes.len() > MAX_DATAGRAM {

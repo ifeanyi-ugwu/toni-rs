@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::OnceCell;
+use toni::rpc::wire::parse_response;
 use toni::{async_trait, RpcClientError, RpcClientTransport, RpcData};
 
 use crate::IntoNatsServers;
@@ -63,35 +64,6 @@ fn data_to_bytes(data: RpcData) -> Bytes {
         RpcData::Json(v) => Bytes::from(v.to_string()),
         RpcData::Text(s) => Bytes::from(s.into_bytes()),
         RpcData::Binary(b) => Bytes::from(b),
-    }
-}
-
-/// Parse the toni RPC response envelope produced by `NatsAdapter`:
-/// `{"response":<json>}` or `{"err":{"message":"...","status":"..."}}`.
-///
-/// Falls back to raw binary if the payload is not a recognized envelope.
-fn parse_response(bytes: &[u8]) -> Result<RpcData, RpcClientError> {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(v) => {
-            if let Some(response) = v.get("response") {
-                Ok(RpcData::json(response.clone()))
-            } else if let Some(err) = v.get("err") {
-                let message = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error")
-                    .to_string();
-                let status = err
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("error")
-                    .to_string();
-                Err(RpcClientError::Remote { message, status })
-            } else {
-                Ok(RpcData::json(v))
-            }
-        }
-        Err(_) => Ok(RpcData::Binary(bytes.to_vec())),
     }
 }
 

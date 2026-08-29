@@ -3,9 +3,8 @@
 //!
 //! Kafka message headers carry the reply addressing (`toni-reply-to`,
 //! `toni-correlation-id`) and per-call metadata, so the body is just the raw
-//! `RpcData` bytes — the same convention as `toni-nats`. Response framing
-//! (`{"response":…}` / `{"err":{"message","status"}}`) matches the other RPC
-//! transports.
+//! `RpcData` bytes — the same convention as `toni-nats`. Response framing and
+//! parsing are the shared convention in [`toni::rpc::wire`].
 
 use std::collections::HashMap;
 
@@ -13,8 +12,7 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
-use serde_json::json;
-use toni::rpc::{RpcClientError, RpcData, RpcError};
+use toni::rpc::RpcData;
 
 /// Header naming the topic a reply should be published to. Present ⇒
 /// request-response; absent ⇒ fire-and-forget.
@@ -127,89 +125,9 @@ pub(crate) fn metadata_from_headers<H: Headers>(headers: Option<&H>) -> HashMap<
     metadata
 }
 
-pub(crate) fn frame_response(outcome: Result<Option<RpcData>, RpcError>) -> Vec<u8> {
-    match outcome {
-        Ok(Some(RpcData::Binary(b))) => b,
-        Ok(Some(RpcData::Json(v))) => json!({ "response": v }).to_string().into_bytes(),
-        Ok(Some(RpcData::Text(s))) => json!({ "response": s }).to_string().into_bytes(),
-        Ok(None) => json!({ "response": null }).to_string().into_bytes(),
-        Err(RpcError::AppError(arc)) => match RpcError::AppError(arc).to_data() {
-            RpcData::Binary(b) => b,
-            RpcData::Json(v) => json!({ "response": v }).to_string().into_bytes(),
-            RpcData::Text(s) => json!({ "response": s }).to_string().into_bytes(),
-        },
-        Err(e) => json!({
-            "err": { "message": e.to_string(), "status": error_status(&e) }
-        })
-        .to_string()
-        .into_bytes(),
-    }
-}
-
-pub(crate) fn frame_panic() -> Vec<u8> {
-    json!({ "err": { "message": "internal server error", "status": "error" } })
-        .to_string()
-        .into_bytes()
-}
-
-pub(crate) fn parse_response(bytes: &[u8]) -> Result<RpcData, RpcClientError> {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(v) => {
-            if let Some(response) = v.get("response") {
-                Ok(RpcData::json(response.clone()))
-            } else if let Some(err) = v.get("err") {
-                let message = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error")
-                    .to_string();
-                let status = err
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("error")
-                    .to_string();
-                Err(RpcClientError::Remote { message, status })
-            } else {
-                Ok(RpcData::json(v))
-            }
-        }
-        Err(_) => Ok(RpcData::Binary(bytes.to_vec())),
-    }
-}
-
-fn error_status(e: &RpcError) -> &'static str {
-    match e {
-        RpcError::PatternNotFound(_) => "not_found",
-        RpcError::Forbidden(_) => "forbidden",
-        RpcError::Internal(_) => "error",
-        RpcError::AppError(_) => unreachable!(
-            "RpcError::AppError is framed into the Ok+envelope branch before \
-             reaching wire-Err framing"
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_then_parse_is_identity_for_json_response() {
-        let bytes = frame_response(Ok(Some(RpcData::json(json!({"sum": 5})))));
-        assert_eq!(
-            parse_response(&bytes).unwrap().as_json(),
-            Some(&json!({"sum": 5}))
-        );
-    }
-
-    #[test]
-    fn framework_error_parses_back_as_remote() {
-        let bytes = frame_response(Err(RpcError::Forbidden("nope".to_string())));
-        match parse_response(&bytes) {
-            Err(RpcClientError::Remote { status, .. }) => assert_eq!(status, "forbidden"),
-            other => panic!("expected Remote, got {other:?}"),
-        }
-    }
 
     #[test]
     fn metadata_round_trips_through_headers_skipping_control_keys() {

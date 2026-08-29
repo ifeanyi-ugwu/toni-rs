@@ -8,9 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
-use toni::{
-    async_trait, BindTarget, RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks,
-};
+use toni::rpc::wire;
+use toni::{async_trait, BindTarget, RpcAdapter, RpcCallInfo, RpcData, RpcMessageCallbacks};
 use tracing::Instrument;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -243,18 +242,6 @@ async fn drain_tasks(tasks: Arc<Mutex<JoinSet<()>>>, drain_timeout: Option<Durat
     }
 }
 
-fn error_status(e: &RpcError) -> &'static str {
-    match e {
-        RpcError::PatternNotFound(_) => "not_found",
-        RpcError::Forbidden(_) => "forbidden",
-        RpcError::Internal(_) => "error",
-        RpcError::AppError(_) => unreachable!(
-            "RpcError::AppError is routed to the Ok+envelope frame before \
-             reaching wire-Err framing"
-        ),
-    }
-}
-
 async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
@@ -366,46 +353,14 @@ async fn handle_connection(
                         return;
                     };
 
-                    let payload_json = match outcome {
+                    let mut payload_json = match outcome {
                         Err(_) => {
                             tracing::error!("RPC handler panicked; returning error to caller");
-                            serde_json::json!({
-                                "id": id,
-                                "err": { "message": "internal server error", "status": "error" }
-                            })
+                            wire::frame_panic().into_json_value()
                         }
-                        Ok(outcome) => match outcome {
-                            Ok(Some(reply)) => {
-                                let v = match reply {
-                                    RpcData::Json(v) => v,
-                                    RpcData::Text(s) => serde_json::Value::String(s),
-                                    RpcData::Binary(_) => serde_json::Value::Null,
-                                };
-                                serde_json::json!({ "id": id, "response": v })
-                            }
-                            Ok(None) => {
-                                // Handler is fire-and-forget (#[event_pattern]) but
-                                // caller sent an id — send an explicit ack so caller
-                                // can close the pending request rather than timing out.
-                                serde_json::json!({ "id": id, "response": null })
-                            }
-                            Err(RpcError::AppError(arc)) => {
-                                let v = match toni::rpc::RpcError::AppError(arc).to_data() {
-                                    RpcData::Json(v) => v,
-                                    RpcData::Text(s) => serde_json::Value::String(s),
-                                    RpcData::Binary(_) => serde_json::Value::Null,
-                                };
-                                serde_json::json!({ "id": id, "response": v })
-                            }
-                            Err(e) => {
-                                let status = error_status(&e);
-                                serde_json::json!({
-                                    "id": id,
-                                    "err": { "message": e.to_string(), "status": status }
-                                })
-                            }
-                        },
+                        Ok(outcome) => wire::frame_response(outcome).into_json_value(),
                     };
+                    payload_json["id"] = serde_json::Value::String(id);
 
                     let mut line = payload_json.to_string();
                     line.push('\n');

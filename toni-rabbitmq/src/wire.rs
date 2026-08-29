@@ -2,15 +2,13 @@
 //!
 //! AMQP addressing (reply queue, correlation id, metadata headers) lives in
 //! the message properties, so the body is just the raw `RpcData` bytes — the
-//! same convention as `toni-nats`. The response framing
-//! (`{"response":…}` / `{"err":{"message","status"}}`) matches the other RPC
-//! transports so a reader who knows one reads this one for free.
+//! same convention as `toni-nats`. Response framing and parsing are the shared
+//! convention in [`toni::rpc::wire`].
 
 use std::collections::HashMap;
 
 use lapin::types::{AMQPValue, FieldTable};
-use serde_json::json;
-use toni::rpc::{RpcClientError, RpcData, RpcError};
+use toni::rpc::RpcData;
 
 /// Serialize an outbound payload to AMQP body bytes.
 pub(crate) fn data_to_bytes(data: RpcData) -> Vec<u8> {
@@ -58,94 +56,9 @@ fn amqp_value_to_string(value: &AMQPValue) -> Option<String> {
     }
 }
 
-/// Frame a handler outcome into the reply body. `RpcData::Binary` is sent raw
-/// (the client falls back to `Binary` when the body is not a JSON envelope);
-/// everything else is wrapped in `{"response":…}`.
-pub(crate) fn frame_response(outcome: Result<Option<RpcData>, RpcError>) -> Vec<u8> {
-    match outcome {
-        Ok(Some(RpcData::Binary(b))) => b,
-        Ok(Some(RpcData::Json(v))) => json!({ "response": v }).to_string().into_bytes(),
-        Ok(Some(RpcData::Text(s))) => json!({ "response": s }).to_string().into_bytes(),
-        // #[event_pattern] handler but the caller set reply_to — send an ack.
-        Ok(None) => json!({ "response": null }).to_string().into_bytes(),
-        Err(RpcError::AppError(arc)) => match RpcError::AppError(arc).to_data() {
-            RpcData::Binary(b) => b,
-            RpcData::Json(v) => json!({ "response": v }).to_string().into_bytes(),
-            RpcData::Text(s) => json!({ "response": s }).to_string().into_bytes(),
-        },
-        Err(e) => json!({
-            "err": { "message": e.to_string(), "status": error_status(&e) }
-        })
-        .to_string()
-        .into_bytes(),
-    }
-}
-
-/// Reply body for a panicked handler. The panic is logged at the call site.
-pub(crate) fn frame_panic() -> Vec<u8> {
-    json!({ "err": { "message": "internal server error", "status": "error" } })
-        .to_string()
-        .into_bytes()
-}
-
-/// Parse a reply body back into [`RpcData`], unwrapping the
-/// `{"response"}` / `{"err"}` envelope. Falls back to raw `Binary`.
-pub(crate) fn parse_response(bytes: &[u8]) -> Result<RpcData, RpcClientError> {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(v) => {
-            if let Some(response) = v.get("response") {
-                Ok(RpcData::json(response.clone()))
-            } else if let Some(err) = v.get("err") {
-                let message = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error")
-                    .to_string();
-                let status = err
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("error")
-                    .to_string();
-                Err(RpcClientError::Remote { message, status })
-            } else {
-                Ok(RpcData::json(v))
-            }
-        }
-        Err(_) => Ok(RpcData::Binary(bytes.to_vec())),
-    }
-}
-
-fn error_status(e: &RpcError) -> &'static str {
-    match e {
-        RpcError::PatternNotFound(_) => "not_found",
-        RpcError::Forbidden(_) => "forbidden",
-        RpcError::Internal(_) => "error",
-        RpcError::AppError(_) => unreachable!(
-            "RpcError::AppError is framed into the Ok+envelope branch before \
-             reaching wire-Err framing"
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_then_parse_is_identity_for_json_response() {
-        let bytes = frame_response(Ok(Some(RpcData::json(json!({"sum": 5})))));
-        let parsed = parse_response(&bytes).unwrap();
-        assert_eq!(parsed.as_json(), Some(&json!({"sum": 5})));
-    }
-
-    #[test]
-    fn framework_error_parses_back_as_remote() {
-        let bytes = frame_response(Err(RpcError::Forbidden("nope".to_string())));
-        match parse_response(&bytes) {
-            Err(RpcClientError::Remote { status, .. }) => assert_eq!(status, "forbidden"),
-            other => panic!("expected Remote error, got {other:?}"),
-        }
-    }
 
     #[test]
     fn string_headers_become_metadata() {

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};
-use toni::{RpcAdapter, RpcCallInfo, RpcData, RpcError, RpcMessageCallbacks};
+use toni::rpc::wire;
+use toni::{RpcAdapter, RpcCallInfo, RpcData, RpcMessageCallbacks};
 
 use crate::IntoNatsServers;
 
@@ -141,8 +142,7 @@ impl RpcAdapter for NatsAdapter {
                             if let Some(headers) = headers {
                                 for (name, values) in headers.iter() {
                                     if let Some(first) = values.iter().next() {
-                                        ctx.headers
-                                            .insert(name.to_string(), first.to_string());
+                                        ctx.headers.insert(name.to_string(), first.to_string());
                                     }
                                 }
                             }
@@ -165,51 +165,11 @@ impl RpcAdapter for NatsAdapter {
                                     tracing::error!(
                                         "RPC handler panicked; returning error to caller"
                                     );
-                                    Bytes::from(
-                                        serde_json::json!({
-                                            "err": { "message": "internal server error", "status": "error" }
-                                        })
-                                        .to_string(),
-                                    )
+                                    Bytes::from(wire::frame_panic().into_bytes())
                                 }
-                                Ok(outcome) => match outcome {
-                                    Ok(Some(reply_data)) => match reply_data {
-                                        RpcData::Binary(b) => Bytes::from(b),
-                                        RpcData::Json(v) => Bytes::from(
-                                            serde_json::json!({ "response": v }).to_string(),
-                                        ),
-                                        RpcData::Text(s) => Bytes::from(
-                                            serde_json::json!({ "response": s }).to_string(),
-                                        ),
-                                    },
-                                    Ok(None) => {
-                                        // #[event_pattern] handler but caller set a reply-to — send ack.
-                                        Bytes::from(
-                                            serde_json::json!({ "response": null }).to_string(),
-                                        )
-                                    }
-                                    Err(RpcError::AppError(arc)) => {
-                                        let envelope = toni::rpc::RpcError::AppError(arc).to_data();
-                                        match envelope {
-                                            RpcData::Binary(b) => Bytes::from(b),
-                                            RpcData::Json(v) => Bytes::from(
-                                                serde_json::json!({ "response": v }).to_string(),
-                                            ),
-                                            RpcData::Text(s) => Bytes::from(
-                                                serde_json::json!({ "response": s }).to_string(),
-                                            ),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let status = error_status(&e);
-                                        Bytes::from(
-                                            serde_json::json!({
-                                                "err": { "message": e.to_string(), "status": status }
-                                            })
-                                            .to_string(),
-                                        )
-                                    }
-                                },
+                                Ok(outcome) => {
+                                    Bytes::from(wire::frame_response(outcome).into_bytes())
+                                }
                             };
 
                             if let Err(e) = client.publish(inbox, response_bytes).await {
@@ -229,17 +189,5 @@ impl RpcAdapter for NatsAdapter {
         Ok(toni::RpcLifecycleHandle::new(None, serve, || async {
             Ok(())
         }))
-    }
-}
-
-fn error_status(e: &RpcError) -> &'static str {
-    match e {
-        RpcError::PatternNotFound(_) => "not_found",
-        RpcError::Forbidden(_) => "forbidden",
-        RpcError::Internal(_) => "error",
-        RpcError::AppError(_) => unreachable!(
-            "RpcError::AppError is routed to the Ok+envelope frame before \
-             reaching wire-Err framing"
-        ),
     }
 }

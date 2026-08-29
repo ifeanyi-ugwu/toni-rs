@@ -12,9 +12,10 @@ use rdkafka::util::Timeout;
 use toni::{RpcAdapter, RpcCallInfo, RpcMessageCallbacks};
 
 use crate::wire::{
-    build_headers, bytes_to_data, frame_panic, frame_response, header_str, metadata_from_headers,
-    HEADER_CORRELATION_ID, HEADER_REPLY_TO,
+    build_headers, bytes_to_data, header_str, metadata_from_headers, HEADER_CORRELATION_ID,
+    HEADER_REPLY_TO,
 };
+use toni::rpc::wire::{frame_panic, frame_response};
 
 /// Apache Kafka transport adapter for the Toni RPC gateway.
 ///
@@ -172,10 +173,10 @@ async fn handle_message(
     };
 
     let response = match outcome {
-        Ok(outcome) => frame_response(outcome),
+        Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
-            frame_panic()
+            frame_panic().into_bytes()
         }
     };
 
