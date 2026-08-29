@@ -6,10 +6,10 @@
 //! The token is reachable because the context rides the request — a gRPC
 //! handler's signature is the tonic trait's and cannot carry one.
 //!
-//! The last test pins the boundary of the mechanism. `#[grpc_methods]` decides
-//! that a method streams from its response type being written
-//! `Self::SomeStream`; one that spells the concrete type keeps today's
-//! behaviour and stays uncovered.
+//! The last test covers the other legal spelling of a streaming signature.
+//! `#[grpc_methods]` reads the response type where it says `Self::SomeStream`,
+//! and pairs the method with its associated type by name where it does not, so
+//! a service written either way is covered.
 
 #![allow(dead_code)]
 
@@ -40,8 +40,6 @@ static SAW_CANCEL: AtomicBool = AtomicBool::new(false);
 static PRODUCED: AtomicUsize = AtomicUsize::new(0);
 static TOKEN: Mutex<Option<CancellationToken>> = Mutex::new(None);
 static METHOD: Mutex<Option<String>> = Mutex::new(None);
-
-static UNCOVERED_TOKEN: Mutex<Option<CancellationToken>> = Mutex::new(None);
 
 /// Feeds the reply from outside the handler's future, so nothing but the token
 /// can stop it: the send result is dropped, since a closed receiver would
@@ -143,12 +141,12 @@ impl Orders for TailGrpcService {
 #[module(controllers: [TailGrpcService])]
 impl TailGrpcModule {}
 
-// ── the uncovered service: the same reply, spelled without `Self::` ─────────
+// ── the same reply, spelled without `Self::` ───────────────────────────────
 
 #[controller]
-pub struct UncoveredGrpcService {}
+pub struct ConcreteGrpcService {}
 
-impl UncoveredGrpcService {
+impl ConcreteGrpcService {
     #[new]
     pub fn new() -> Self {
         Self {}
@@ -157,7 +155,7 @@ impl UncoveredGrpcService {
 
 #[grpc_methods]
 #[tonic::async_trait]
-impl Orders for UncoveredGrpcService {
+impl Orders for ConcreteGrpcService {
     async fn create(
         &self,
         _request: tonic::Request<tail_pb::CreateOrderRequest>,
@@ -170,15 +168,15 @@ impl Orders for UncoveredGrpcService {
 
     type WatchProgressStream = EventStream;
 
-    /// `EventStream`, not `Self::WatchProgressStream`. Legal, and invisible to
-    /// an attribute macro reading the impl block.
+    /// `EventStream`, not `Self::WatchProgressStream` — legal, and the same type
+    /// after normalisation. The macro reaches it through the method's name.
     async fn watch_progress(
         &self,
         request: tonic::Request<tail_pb::WatchRequest>,
     ) -> Result<tonic::Response<EventStream>, tonic::Status> {
         let context =
             GrpcContext::of(request.extensions()).expect("dispatched through the framework");
-        *UNCOVERED_TOKEN.lock().unwrap() = Some(context.cancellation().clone());
+        *TOKEN.lock().unwrap() = Some(context.cancellation().clone());
         let id = request.into_inner().id;
         Ok(tonic::Response::new(detached_producer(context, id)))
     }
@@ -200,8 +198,8 @@ impl Orders for UncoveredGrpcService {
     }
 }
 
-#[module(controllers: [UncoveredGrpcService])]
-impl UncoveredGrpcModule {}
+#[module(controllers: [ConcreteGrpcService])]
+impl ConcreteGrpcModule {}
 
 // ── harness ────────────────────────────────────────────────────────────────
 
@@ -349,16 +347,16 @@ async fn a_handler_reads_its_context_off_the_request() {
     let _ = tokio::time::timeout(Duration::from_secs(2), shutdown.completed()).await;
 }
 
-/// The documented boundary: a response type spelled without `Self::` leaves the
-/// method's associated type aliased, so the reply is served unwrapped and its
-/// producer is never told. Pinned so a change to the rule shows up here.
+/// The other legal spelling of the same signature. Nothing about the service
+/// differs but the tokens its return type is written with, and the reply is
+/// covered the same way.
 #[serial]
 #[tokio_localset_test::localset_test]
-async fn a_concrete_stream_signature_is_left_uncovered() {
+async fn a_concrete_stream_signature_is_covered_too() {
     SAW_CANCEL.store(false, Ordering::SeqCst);
-    *UNCOVERED_TOKEN.lock().unwrap() = None;
+    PRODUCED.store(0, Ordering::SeqCst);
 
-    let (port, shutdown) = boot(UncoveredGrpcModule).await;
+    let (port, shutdown) = boot(ConcreteGrpcModule).await;
     let mut client = connect(port).await;
 
     let mut stream = client
@@ -368,17 +366,13 @@ async fn a_concrete_stream_signature_is_left_uncovered() {
         .into_inner();
 
     stream.next().await.expect("one item").expect("ok item");
+    assert!(!SAW_CANCEL.load(Ordering::SeqCst));
+
     drop(stream);
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let token = UNCOVERED_TOKEN
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the handler published its token");
     assert!(
-        !token.is_cancelled(),
-        "an unwrapped reply has no producer for the token"
+        saw_cancel_within(Duration::from_secs(2)).await,
+        "a reply named without `Self::` is the same reply"
     );
 
     shutdown.shutdown();

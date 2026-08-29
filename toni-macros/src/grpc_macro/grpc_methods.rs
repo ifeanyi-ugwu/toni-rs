@@ -21,11 +21,16 @@
 //!
 //! The wrapper declares its own associated stream types — `ScopedGrpcStream<UserStream>` rather
 //! than an alias of the user's — so a reply that outlives the handler carries the execution with
-//! it and fires its cancellation token if the caller abandons it. A method is streaming when its
-//! response type is written `Self::SomeStream`, which is what tonic-build's trait declares and what
-//! an impl copied from it says. A method that spells the concrete stream type instead is left
-//! aliased and passes through unwrapped: the reply is correct and the call behaves as before, but
-//! nothing feeding that stream learns when the caller goes away.
+//! it and fires its cancellation token if the caller abandons it.
+//!
+//! Which methods stream is read from two spellings, a signature having two legal ones for the same
+//! type. A response type written `Self::SomeStream` says so directly, and it is what tonic-build
+//! declares. Where a signature names the concrete type, the method pairs with its associated type
+//! by name — `rpc WatchProgress` yields `watch_progress` and `WatchProgressStream` from one
+//! identifier, and the associated type exists only for methods that stream — and the wrapper's
+//! signature restates the payload as `Self::SomeStream`. A hand-written trait naming its associated
+//! type off that convention, whose method also avoids `Self::`, is the shape neither signal
+//! reaches; its reply passes through unwrapped.
 //!
 //! By convention the wrapping `*Server` type name is the proto trait's
 //! identifier with `Server` appended (`OrdersService` → `OrdersServer`),
@@ -336,17 +341,33 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         })
         .collect();
 
-    // Which associated types carry a streaming reply, decided by the only
-    // evidence an attribute macro has: a method whose response type is written
-    // `Self::X`. A method that spells the concrete stream type instead leaves
-    // its associated type aliased, so the reply passes through unwrapped and
-    // that method's tail goes uncovered — see this file's header.
+    // Which associated types carry a streaming reply. Two signals, because an
+    // attribute macro reads spellings and a user has two legal ones for the same
+    // type. A response type written `Self::X` is the direct evidence; where it
+    // names the concrete type instead, the pairing tonic-build creates between a
+    // method and its associated type answers — `rpc WatchProgress` becomes
+    // `watch_progress` and `WatchProgressStream` from one identifier, and the
+    // associated type exists only for methods that stream.
     let assoc_idents: std::collections::HashSet<String> =
         assoc_types.iter().map(|at| at.ident.to_string()).collect();
     let mut streaming_assocs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Methods whose response type has to be restated as `Self::X`, the user's
+    // own spelling having named that type another way.
+    let mut restate_payload: std::collections::HashMap<String, syn::Ident> =
+        std::collections::HashMap::new();
+
     for method in &method_sigs_for_wrapper {
+        let mut named = std::collections::HashSet::new();
         if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-            collect_self_assoc(ty, &assoc_idents, &mut streaming_assocs);
+            collect_self_assoc(ty, &assoc_idents, &mut named);
+        }
+        if !named.is_empty() {
+            streaming_assocs.extend(named);
+            continue;
+        }
+        if let Some(assoc) = pair_by_name(&method.sig.ident, &assoc_types) {
+            streaming_assocs.insert(assoc.to_string());
+            restate_payload.insert(method.sig.ident.to_string(), assoc);
         }
     }
 
@@ -359,6 +380,7 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                 &trait_path,
                 &trait_short,
                 &impl_block.attrs,
+                restate_payload.get(&method.sig.ident.to_string()),
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -488,6 +510,7 @@ fn build_wrapper_method(
     trait_path: &Path,
     trait_short: &str,
     impl_attrs: &[syn::Attribute],
+    restate_payload: Option<&syn::Ident>,
 ) -> Result<TokenStream> {
     let sig = &method.sig;
     let method_name_lit = sig.ident.to_string();
@@ -552,8 +575,19 @@ fn build_wrapper_method(
     let method_ident = &sig.ident;
     let asyncness = sig.asyncness.as_ref();
     let inputs = &sig.inputs;
-    let output = &sig.output;
     let generics = &sig.generics;
+
+    // The wrapper's signature has to name the wrapper's own associated type.
+    // Where the user's spelling named that type another way, it is restated here
+    // rather than copied, leaving the rest of the signature as written.
+    let restated;
+    let output = match restate_payload {
+        Some(assoc) => {
+            restated = restate_response_payload(&sig.output, assoc);
+            &restated
+        }
+        None => &sig.output,
+    };
 
     Ok(quote! {
         #asyncness fn #method_ident #generics (#inputs) #output {
@@ -753,6 +787,69 @@ fn collect_self_assoc(
         }
         _ => {}
     }
+}
+
+/// The associated type tonic-build derived from the same proto identifier as
+/// `method`, if this impl declares one.
+///
+/// `rpc WatchProgress` yields `watch_progress` and `WatchProgressStream`, and the
+/// associated type is emitted only for methods that stream. Comparison drops the
+/// `Stream` suffix and everything case and punctuation carry, so an identifier
+/// holding an acronym or a digit pairs as readily as a plain one.
+fn pair_by_name(method: &syn::Ident, assoc_types: &[&syn::ImplItemType]) -> Option<syn::Ident> {
+    let wanted = squash(&method.to_string());
+    assoc_types.iter().find_map(|at| {
+        let name = at.ident.to_string();
+        let base = name.strip_suffix("Stream")?;
+        (squash(base) == wanted).then(|| at.ident.clone())
+    })
+}
+
+/// Case, underscores and any other punctuation dropped, so `watch_progress` and
+/// `WatchProgress` compare equal.
+fn squash(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// The same return type with the payload of its `Response<_>` replaced by
+/// `Self::#assoc`. The `Result`, the error type and the paths the user wrote
+/// them with are left as they stand.
+fn restate_response_payload(output: &syn::ReturnType, assoc: &syn::Ident) -> syn::ReturnType {
+    let mut restated = output.clone();
+    if let syn::ReturnType::Type(_, ty) = &mut restated {
+        replace_response_arg(ty, assoc);
+    }
+    restated
+}
+
+fn replace_response_arg(ty: &mut syn::Type, assoc: &syn::Ident) -> bool {
+    let syn::Type::Path(tp) = ty else {
+        return false;
+    };
+    for segment in tp.path.segments.iter_mut() {
+        let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments else {
+            continue;
+        };
+        if segment.ident == "Response" {
+            for arg in args.args.iter_mut() {
+                if let syn::GenericArgument::Type(inner) = arg {
+                    *inner = syn::parse_quote!(Self::#assoc);
+                    return true;
+                }
+            }
+        }
+        for arg in args.args.iter_mut() {
+            if let syn::GenericArgument::Type(inner) = arg {
+                if replace_response_arg(inner, assoc) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Convention: `OrdersService` (proto trait) → `OrdersServer` in the same
