@@ -67,7 +67,7 @@ pub use http_helpers::{
 pub use injector::InstanceWrapper;
 pub use rpc::{
     RpcCallInfo, RpcClient, RpcClientError, RpcControllerSource, RpcControllerTrait, RpcData,
-    RpcEnhancers, RpcError, RpcHandlerEnhancers,
+    RpcEnhancers, RpcError, RpcHandlerEnhancers, RpcHandlerOutput, RpcHandlerResult,
 };
 pub use websocket::{
     BroadcastError, BroadcastModule, BroadcastService, BroadcastTarget, ClientId, DisconnectReason,

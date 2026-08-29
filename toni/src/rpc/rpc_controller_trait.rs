@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::context::RpcContext;
 use crate::http_helpers::ExecutionResult;
 
-use super::RpcData;
+use super::RpcHandlerOutput;
 
 /// An RPC controller instance: it answers one message.
 ///
@@ -14,13 +14,13 @@ use super::RpcData;
 pub trait RpcControllerTrait: Send + Sync {
     /// Route an inbound message to the right per-pattern handler.
     ///
-    /// `Ok(Some(reply))` for request-response patterns (`#[message_pattern]`),
-    /// `Ok(None)` for fire-and-forget events (`#[event_pattern]`), and
-    /// `Err` carrying the user's typed error so the dispatcher can fan
-    /// observers + run the chain on it before falling back to
-    /// `RpcError::to_data`.
+    /// `Ok(Single(reply))` or `Ok(Stream(..))` for request-response patterns
+    /// (`#[message_pattern]`), `Ok(Empty)` for fire-and-forget events
+    /// (`#[event_pattern]`), and `Err` carrying the user's typed error so the
+    /// dispatcher can fan observers + run the chain on it before falling back
+    /// to `RpcError::to_data`.
     async fn handle_message(
         &self,
         ctx: &RpcContext,
-    ) -> ExecutionResult<Option<RpcData>, super::RpcError>;
+    ) -> ExecutionResult<RpcHandlerOutput, super::RpcError>;
 }

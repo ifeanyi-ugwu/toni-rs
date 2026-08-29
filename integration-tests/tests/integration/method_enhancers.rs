@@ -8,7 +8,7 @@
 //! - Isolation: a method-level enhancer does not affect sibling handlers ("plain").
 
 use std::time::Duration;
-use toni::rpc::RpcHandlerResult;
+use toni::rpc::{RpcHandlerOutput, RpcHandlerResult};
 
 use toni::async_trait;
 use toni::context::{HandlerContext, RpcContext, WsContext};
@@ -194,13 +194,17 @@ impl Interceptor<RpcContext, RpcHandlerResult> for RpcPrefixInterceptor {
         next: Box<dyn InterceptorNext<RpcContext, RpcHandlerResult>>,
     ) -> RpcHandlerResult {
         let answer = next.run(ctx).await?;
-        let prefixed: Option<String> = answer
-            .as_ref()
-            .and_then(|data| data.as_json())
-            .and_then(|v| v.as_str())
-            .map(|s| format!("prefixed:{}", s));
+        let prefixed: Option<String> = match &answer {
+            RpcHandlerOutput::Single(data) => data
+                .as_json()
+                .and_then(|v| v.as_str())
+                .map(|s| format!("prefixed:{}", s)),
+            _ => None,
+        };
         match prefixed {
-            Some(val) => Ok(Some(RpcData::json(serde_json::json!(val)))),
+            Some(val) => Ok(RpcHandlerOutput::Single(RpcData::json(serde_json::json!(
+                val
+            )))),
             None => Ok(answer),
         }
     }

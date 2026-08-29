@@ -12,9 +12,59 @@ use crate::traits_helpers::{
     RpcInterceptorEntry,
 };
 
-use super::{RpcControllerSource, RpcData, RpcError, RpcHandlerResult};
-use futures::FutureExt;
+use super::{
+    RpcCallInfo, RpcControllerSource, RpcData, RpcError, RpcHandlerOutput, RpcHandlerResult,
+};
+use futures::stream::BoxStream;
+use futures::{FutureExt, StreamExt};
 use std::panic::AssertUnwindSafe;
+
+/// Delegates to the handler's reply stream while owning the execution's
+/// context — cache, extensions, and token stay alive until the last item.
+///
+/// `BoxStream` is `Pin<Box<_>>` and therefore `Unpin`, so the projection
+/// needs no pin machinery.
+struct ScopedRpcStream {
+    inner: BoxStream<'static, Result<RpcData, RpcError>>,
+    context: RpcContext,
+    /// Set once the inner stream answers `None`. An error item does not set
+    /// it: the adapter stops the drain there and drops this un-drained, so
+    /// the producer behind an abnormal end hears the token too.
+    drained: bool,
+}
+
+impl futures::Stream for ScopedRpcStream {
+    type Item = Result<RpcData, RpcError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let polled = std::pin::Pin::new(&mut this.inner).poll_next(cx);
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            this.drained = true;
+        }
+        polled
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// A stream dropped with items still to come is the caller having gone —
+/// disconnect, cancel notice, or shutdown. Nothing else observes that: the
+/// handler returned when it had a stream, and whatever feeds it is not inside
+/// the future the adapter drops.
+impl Drop for ScopedRpcStream {
+    fn drop(&mut self) {
+        if !self.drained {
+            use crate::context::HandlerContext as _;
+            self.context.cancellation().cancel();
+        }
+    }
+}
 
 struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>>,
@@ -84,22 +134,23 @@ impl RpcControllerWrapper {
         self.source.get_patterns()
     }
 
-    pub async fn handle_message(
-        &self,
-        data: RpcData,
-        call_metadata: HashMap<String, String>,
-        pattern: String,
-    ) -> Result<Option<RpcData>, RpcError> {
-        let ctx = RpcContext::new(
+    pub async fn handle_message(&self, data: RpcData, info: RpcCallInfo) -> RpcHandlerResult {
+        let RpcCallInfo {
+            pattern,
+            headers,
+            extensions,
+        } = info;
+        let ctx = RpcContext::with_extensions(
             pattern.clone(),
             data,
-            call_metadata,
+            headers,
             Some(
                 self.handler_metadata
                     .get(&pattern)
                     .unwrap_or(&self.metadata)
                     .clone(),
             ),
+            extensions,
         );
 
         let mut all_guards = self.guards.clone();
@@ -144,14 +195,28 @@ impl RpcControllerWrapper {
         }
 
         let interceptors = Self::resolve_interceptors(&all_interceptors, &ctx).await;
-        Self::execute_with_interceptors(
+        let answer = Self::execute_with_interceptors(
             &ctx,
             &interceptors,
             &self.source,
             &all_error_handlers,
             &observers,
         )
-        .await
+        .await;
+
+        // The execution ends when the answer does. A stream has emitted nothing
+        // at this point, so the context rides it rather than dying here.
+        match answer {
+            Ok(RpcHandlerOutput::Stream(stream)) => Ok(RpcHandlerOutput::Stream(
+                ScopedRpcStream {
+                    inner: stream,
+                    context: ctx,
+                    drained: false,
+                }
+                .boxed(),
+            )),
+            other => other,
+        }
     }
 
     /// Run one chain handler with panic recovery: a panicking
@@ -308,12 +373,12 @@ impl RpcControllerWrapper {
             if let Some(claimed) =
                 Self::try_chain_handler(handler, &event, context, observers).await
             {
-                return Ok(Some(claimed));
+                return Ok(RpcHandlerOutput::Single(claimed));
             }
         }
         let rpc_err = RpcError::from(event);
         let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
-        Ok(Some(data))
+        Ok(RpcHandlerOutput::Single(data))
     }
 
     /// Run the handler, then route the result.
@@ -345,7 +410,7 @@ impl RpcControllerWrapper {
             }
         };
         match exec_result {
-            ExecutionResult::Ok(data) => Ok(data),
+            ExecutionResult::Ok(output) => Ok(output),
             ExecutionResult::Err(rpc_err) => {
                 let observed_err: &(dyn std::error::Error + Send + Sync + 'static) = match &rpc_err
                 {
@@ -357,11 +422,11 @@ impl RpcControllerWrapper {
                     if let Some(claimed) =
                         Self::try_chain_handler(handler, observed_err, context, observers).await
                     {
-                        return Ok(Some(claimed));
+                        return Ok(RpcHandlerOutput::Single(claimed));
                     }
                 }
                 let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
-                Ok(Some(data))
+                Ok(RpcHandlerOutput::Single(data))
             }
         }
     }

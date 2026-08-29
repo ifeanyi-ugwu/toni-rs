@@ -7911,6 +7911,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "bytes",
  "event-listener 5.4.1",
  "futures",

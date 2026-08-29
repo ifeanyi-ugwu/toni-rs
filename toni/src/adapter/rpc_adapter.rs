@@ -5,20 +5,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::rpc::{RpcCallInfo, RpcData, RpcError};
+use crate::rpc::{RpcCallInfo, RpcData, RpcHandlerResult};
 
 /// Callbacks the framework supplies to an RPC adapter.
 ///
-/// The adapter calls `message` for every incoming message. Returning `Some(reply)`
-/// means the caller is waiting for a response (request-response); returning `None`
-/// means the message was fire-and-forget and the adapter should send nothing back.
+/// The adapter calls `message` for every incoming message and frames the
+/// returned [`RpcHandlerResult`](crate::rpc::RpcHandlerResult) —
+/// [`crate::rpc::wire::frame_response`] speaks the shared reply convention.
 pub struct RpcMessageCallbacks {
     on_message: Arc<
-        dyn Fn(
-                RpcData,
-                RpcCallInfo,
-            )
-                -> Pin<Box<dyn Future<Output = Result<Option<RpcData>, RpcError>> + Send>>
+        dyn Fn(RpcData, RpcCallInfo) -> Pin<Box<dyn Future<Output = RpcHandlerResult> + Send>>
             + Send
             + Sync,
     >,
@@ -29,8 +25,7 @@ impl RpcMessageCallbacks {
         on_message: impl Fn(
             RpcData,
             RpcCallInfo,
-        )
-            -> Pin<Box<dyn Future<Output = Result<Option<RpcData>, RpcError>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = RpcHandlerResult> + Send>>
         + Send
         + Sync
         + 'static,
@@ -42,14 +37,12 @@ impl RpcMessageCallbacks {
 
     /// Called by the adapter for each decoded incoming message.
     ///
-    /// - `Ok(Some(reply))` — send this reply (request-response)
-    /// - `Ok(None)` — fire-and-forget, send nothing
+    /// - `Ok(Single(reply))` — send this reply (request-response)
+    /// - `Ok(Empty)` — fire-and-forget, send nothing
+    /// - `Ok(Stream(s))` — drain `s` to the caller frame by frame; dropping it
+    ///   before the end fires the execution's cancellation token
     /// - `Err(e)` — handler or framework error; adapter decides how to serialize it
-    pub async fn message(
-        &self,
-        data: RpcData,
-        context: RpcCallInfo,
-    ) -> Result<Option<RpcData>, RpcError> {
+    pub async fn message(&self, data: RpcData, context: RpcCallInfo) -> RpcHandlerResult {
         (self.on_message)(data, context).await
     }
 }

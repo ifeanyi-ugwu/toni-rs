@@ -49,12 +49,26 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
         .map(|(pattern, method)| {
             let method_name = &method.sig.ident;
             let (extractions, call_args) = handler_params(method);
-            if returns_rpc_data(method) {
+            if returns_rpc_handler_output(method) {
                 quote! {
                     #pattern => {
                         #(#extractions)*
                         match self.#method_name(#(#call_args),*).await {
-                            Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
+                            Ok(__output) => ::toni::http_helpers::ExecutionResult::Ok(__output),
+                            Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
+                                ::std::convert::Into::<::toni::rpc::RpcError>::into(__err),
+                            ),
+                        }
+                    }
+                }
+            } else if returns_rpc_data(method) {
+                quote! {
+                    #pattern => {
+                        #(#extractions)*
+                        match self.#method_name(#(#call_args),*).await {
+                            Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(
+                                ::toni::rpc::RpcHandlerOutput::Single(__data),
+                            ),
                             Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
                                 ::std::convert::Into::<::toni::rpc::RpcError>::into(__err),
                             ),
@@ -67,7 +81,9 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
                         #(#extractions)*
                         match self.#method_name(#(#call_args),*).await {
                             Ok(__result) => match ::toni::rpc::RpcData::from_serialize(&__result) {
-                                Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(Some(__data)),
+                                Ok(__data) => ::toni::http_helpers::ExecutionResult::Ok(
+                                    ::toni::rpc::RpcHandlerOutput::Single(__data),
+                                ),
                                 Err(__e) => ::toni::http_helpers::ExecutionResult::Err(
                                     ::toni::rpc::RpcError::Internal(__e.to_string()),
                                 ),
@@ -91,7 +107,9 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
                 #pattern => {
                     #(#extractions)*
                     match self.#method_name(#(#call_args),*).await {
-                        Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(None),
+                        Ok(()) => ::toni::http_helpers::ExecutionResult::Ok(
+                            ::toni::rpc::RpcHandlerOutput::Empty,
+                        ),
                         Err(__err) => ::toni::http_helpers::ExecutionResult::Err(
                             ::std::convert::Into::<::toni::rpc::RpcError>::into(__err),
                         ),
@@ -163,7 +181,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
                 &self,
                 ctx: &::toni::context::RpcContext,
             ) -> ::toni::http_helpers::ExecutionResult<
-                ::std::option::Option<::toni::rpc::RpcData>,
+                ::toni::rpc::RpcHandlerOutput,
                 ::toni::rpc::RpcError,
             > {
                 let data = ctx.data().clone();
@@ -188,7 +206,7 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
                 &self,
                 ctx: &::toni::context::RpcContext,
             ) -> ::toni::http_helpers::ExecutionResult<
-                ::std::option::Option<::toni::rpc::RpcData>,
+                ::toni::rpc::RpcHandlerOutput,
                 ::toni::rpc::RpcError,
             > {
                 use ::toni::__rpc::RpcHandlersBridge as _;
@@ -459,6 +477,36 @@ fn is_known_extractor(ty: &syn::Type) -> bool {
             "RpcData" | "Extensions" | "Payload" | "Validated"
         )
     })
+}
+
+/// True when a `#[message_pattern]` handler answers with `RpcHandlerOutput` itself — declared as
+/// `-> RpcHandlerResult` or `-> Result<RpcHandlerOutput, E>` — so the generated arm passes the
+/// output through untouched. Checked before [`returns_rpc_data`], which reads any unrecognized
+/// return shape as its passthrough case.
+fn returns_rpc_handler_output(method: &syn::ImplItemFn) -> bool {
+    let syn::ReturnType::Type(_, ty) = &method.sig.output else {
+        return false;
+    };
+    let syn::Type::Path(tp) = ty.as_ref() else {
+        return false;
+    };
+    let Some(seg) = tp.path.segments.last() else {
+        return false;
+    };
+    if seg.ident == "RpcHandlerResult" {
+        return true;
+    }
+    if seg.ident != "Result" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
+        return false;
+    };
+    matches!(inner, syn::Type::Path(p)
+        if p.path.segments.last().is_some_and(|s| s.ident == "RpcHandlerOutput"))
 }
 
 /// True when a `#[message_pattern]` handler's `Ok` arm is `RpcData` (forwarded as-is); any other `T`

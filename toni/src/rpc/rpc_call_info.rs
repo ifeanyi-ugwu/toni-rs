@@ -1,15 +1,14 @@
-use crate::type_map::TypeMap;
+use crate::context::Extensions;
 use std::collections::HashMap;
 
 /// Wire-level call info passed by RPC adapters into the framework dispatcher.
 ///
 /// Carries the pattern (subject / topic / channel / method name), per-call
-/// metadata (NATS headers, TCP envelope fields), and any transport-specific
-/// extensions the adapter wants to surface. Distinct from
+/// metadata (NATS headers, TCP envelope fields), and the extension bag the
+/// execution's context adopts. Distinct from
 /// [`crate::context::RpcContext`], which is the framework-built handler
-/// context and additionally carries route metadata, the typed extensions
-/// bag, the cancellation token, the abort flag, the request data, and the
-/// eventual response.
+/// context carrying declared metadata, the cancellation token, and the
+/// execution cache alongside these fields.
 #[derive(Debug, Clone)]
 pub struct RpcCallInfo {
     /// Transport-specific pattern/topic/channel identifier.
@@ -19,8 +18,10 @@ pub struct RpcCallInfo {
     /// whatever the transport calls them.
     pub headers: HashMap<String, String>,
 
-    /// Type-erased transport-specific extensions.
-    pub extensions: TypeMap,
+    /// Transport-specific extensions. The dispatcher seeds the execution's
+    /// bag with this handle, so a value the adapter inserts here is readable
+    /// through `ctx.extensions()` in guards, interceptors, and the handler.
+    pub extensions: Extensions,
 }
 
 impl RpcCallInfo {
@@ -28,7 +29,7 @@ impl RpcCallInfo {
         Self {
             pattern: pattern.into(),
             headers: HashMap::new(),
-            extensions: TypeMap::new(),
+            extensions: Extensions::new(),
         }
     }
 
