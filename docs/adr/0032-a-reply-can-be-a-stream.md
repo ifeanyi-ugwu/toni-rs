@@ -1,6 +1,6 @@
 # 0032 — An RPC reply can be a stream, and the execution rides it
 
-Status: proposed
+Status: accepted
 
 ## Context
 
