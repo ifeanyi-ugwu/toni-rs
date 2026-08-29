@@ -70,6 +70,7 @@ mod rpc_grpc_macros;
 mod rpc_tcp;
 mod rpc_tcp_stream;
 mod rpc_udp;
+mod rpc_udp_stream;
 mod scope_bubbling;
 mod scoped_enhancers;
 mod serve_loop_death;
