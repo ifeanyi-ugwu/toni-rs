@@ -75,6 +75,10 @@ impl RpcAdapter for RedisAdapter {
             // own; only the pubsub side is reconnected by hand below.
             let (publisher, mut pubsub) = connect_with_retry(&client, &url).await;
 
+            // Streaming calls in flight, keyed by reply channel, abortable by
+            // a cancel notice. Survives pubsub reconnects.
+            let inflight_calls = toni::rpc::wire::Inflight::new();
+
             'reconnect: loop {
                 for pattern in &patterns {
                     if let Err(e) = pubsub.subscribe(pattern).await {
@@ -82,6 +86,9 @@ impl RpcAdapter for RedisAdapter {
                     } else {
                         tracing::info!(pattern, "RedisAdapter subscribed");
                     }
+                }
+                if let Err(e) = pubsub.subscribe(crate::wire::CANCEL_CHANNEL).await {
+                    tracing::error!(error = %e, "RedisAdapter failed to subscribe the cancel channel");
                 }
 
                 let mut stream = pubsub.on_message();
@@ -95,11 +102,61 @@ impl RpcAdapter for RedisAdapter {
                         msg = stream.next() => {
                             match msg {
                                 Some(msg) => {
-                                    let callbacks = callbacks.clone();
-                                    let publisher = publisher.clone();
                                     let channel = msg.get_channel_name().to_string();
                                     let payload = msg.get_payload::<Vec<u8>>().unwrap_or_default();
-                                    tokio::spawn(handle_message(channel, payload, callbacks, publisher));
+
+                                    if channel == crate::wire::CANCEL_CHANNEL {
+                                        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                                            if v.get("cancel").and_then(|c| c.as_bool()) == Some(true) {
+                                                if let Some(key) = v["key"].as_str() {
+                                                    inflight_calls.cancel(key);
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    let (data, reply_to, metadata) = parse_envelope(&payload);
+
+                                    // Register a request-shaped call before
+                                    // dispatch so a cancel notice can abort it
+                                    // mid-handler or mid-drain. A notice racing
+                                    // this registration is dropped — the cancel
+                                    // channel is best-effort on a broker.
+                                    let (abort_slot, guard) = match &reply_to {
+                                        Some(reply_to) => {
+                                            let abort_slot = Arc::new(std::sync::Mutex::new(
+                                                None::<tokio::task::AbortHandle>,
+                                            ));
+                                            let slot = abort_slot.clone();
+                                            let guard = inflight_calls.register(
+                                                reply_to.clone(),
+                                                move || {
+                                                    if let Some(handle) =
+                                                        slot.lock().unwrap().take()
+                                                    {
+                                                        handle.abort();
+                                                    }
+                                                },
+                                            );
+                                            (Some(abort_slot), Some(guard))
+                                        }
+                                        None => (None, None),
+                                    };
+
+                                    let callbacks = callbacks.clone();
+                                    let publisher = publisher.clone();
+                                    let handle = tokio::spawn(async move {
+                                        let _guard = guard;
+                                        handle_message(
+                                            channel, data, reply_to, metadata, callbacks,
+                                            publisher,
+                                        )
+                                        .await;
+                                    });
+                                    if let Some(slot) = abort_slot {
+                                        *slot.lock().unwrap() = Some(handle.abort_handle());
+                                    }
                                 }
                                 // The pubsub connection dropped — its stream ends.
                                 // Redis pubsub has no auto-recovery, so reconnect
@@ -185,26 +242,36 @@ async fn reconnect_pubsub(
     }
 }
 
-async fn handle_message(
-    channel: String,
-    payload: Vec<u8>,
-    callbacks: Arc<RpcMessageCallbacks>,
-    mut publisher: redis::aio::ConnectionManager,
+/// Decode an inbound payload. Our client always wraps the call in an
+/// envelope; a payload that doesn't parse as one is a foreign publisher —
+/// treated as fire-and-forget with the raw bytes as the handler payload.
+fn parse_envelope(
+    payload: &[u8],
+) -> (
+    RpcData,
+    Option<String>,
+    std::collections::HashMap<String, String>,
 ) {
-    // Our client always wraps the call in an envelope. A payload that doesn't
-    // parse as one is a foreign publisher — treat it as fire-and-forget with
-    // the raw bytes as the handler payload.
-    let (data, reply_to, metadata) = match serde_json::from_slice::<RequestEnvelope>(&payload) {
+    match serde_json::from_slice::<RequestEnvelope>(payload) {
         Ok(env) => (env.data, env.reply_to, env.metadata),
         Err(_) => {
-            let data = match serde_json::from_slice::<serde_json::Value>(&payload) {
+            let data = match serde_json::from_slice::<serde_json::Value>(payload) {
                 Ok(v) => RpcData::Json(v),
-                Err(_) => RpcData::Binary(payload),
+                Err(_) => RpcData::Binary(payload.to_vec()),
             };
             (data, None, Default::default())
         }
-    };
+    }
+}
 
+async fn handle_message(
+    channel: String,
+    data: RpcData,
+    reply_to: Option<String>,
+    metadata: std::collections::HashMap<String, String>,
+    callbacks: Arc<RpcMessageCallbacks>,
+    mut publisher: redis::aio::ConnectionManager,
+) {
     let mut ctx = RpcCallInfo::new(channel);
     ctx.headers = metadata;
 
@@ -220,6 +287,24 @@ async fn handle_message(
     };
 
     let response = match outcome {
+        Ok(Ok(toni::RpcHandlerOutput::Stream(stream))) => {
+            toni::rpc::wire::drive_reply_stream(stream, |frame| {
+                let mut publisher = publisher.clone();
+                let reply_to = reply_to.clone();
+                async move {
+                    redis::cmd("PUBLISH")
+                        .arg(&reply_to)
+                        .arg(frame.to_string().into_bytes())
+                        .query_async::<()>(&mut publisher)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, reply_to, "RedisAdapter stream publish error");
+                        })
+                }
+            })
+            .await;
+            return;
+        }
         Ok(outcome) => frame_response(outcome).into_bytes(),
         Err(_) => {
             tracing::error!("RPC handler panicked; returning error to caller");
