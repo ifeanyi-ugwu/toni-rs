@@ -14,6 +14,11 @@ use rdkafka::config::ClientConfig;
 use rdkafka::message::{Header, Headers, OwnedHeaders};
 use toni::rpc::RpcData;
 
+/// The topic carrying stream-cancel notices (ADR-0032). Every server
+/// instance consumes it in its own consumer group, so each sees every notice
+/// and only the instance holding the call acts on it.
+pub(crate) const CANCEL_TOPIC: &str = "toni.rpc.cancel";
+
 /// Header naming the topic a reply should be published to. Present ⇒
 /// request-response; absent ⇒ fire-and-forget.
 pub(crate) const HEADER_REPLY_TO: &str = "toni-reply-to";

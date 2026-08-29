@@ -24,3 +24,4 @@ futures = "0.3"
 testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15.0", features = ["kafka"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = "0.1"
