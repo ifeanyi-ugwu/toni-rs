@@ -8169,7 +8169,10 @@ dependencies = [
  "bytes",
  "futures",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
+ "tokio-stream",
  "toni",
  "tracing",
 ]

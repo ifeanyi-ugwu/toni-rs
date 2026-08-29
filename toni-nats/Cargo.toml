@@ -7,6 +7,10 @@ license = "MIT"
 keywords = ["toni", "nats", "rpc", "framework", "adapter"]
 categories = ["network-programming"]
 
+[features]
+# Gates tests that need a live NATS (via testcontainers + Docker).
+integration = []
+
 [dependencies]
 toni = { path = "../toni", default-features = false }
 async-nats = "0.46"
@@ -16,3 +20,9 @@ anyhow = "1.0"
 tracing = "0.1"
 bytes = "1"
 futures = "0.3"
+
+[dev-dependencies]
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["nats"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = "0.1"
