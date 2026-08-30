@@ -347,3 +347,86 @@ pub fn empty_enhancers() -> Arc<ResolvedGrpcEnhancers> {
         error_observers: Vec::new(),
     })
 }
+
+/// Delegates to a streaming reply while owning the execution's context — cache,
+/// extensions and cancellation token stay alive until the last item.
+///
+/// The `#[grpc_methods]` wrapper declares this as its associated stream type,
+/// so it is the reply tonic serves. `Pin<Box<_>>` rather than a pin projection:
+/// the inner stream is the user's associated type and carries no `Unpin` bound.
+pub struct ScopedGrpcStream<S> {
+    inner: std::pin::Pin<Box<S>>,
+    context: GrpcContext,
+    /// Set once the inner stream answers `None`. An item carrying a `Status`
+    /// does not set it: tonic ends the call there and drops this un-drained, so
+    /// the producer behind an abnormal end hears the token too.
+    drained: bool,
+}
+
+impl<S> ScopedGrpcStream<S> {
+    pub fn new(inner: S, context: GrpcContext) -> Self {
+        Self {
+            inner: Box::pin(inner),
+            context,
+            drained: false,
+        }
+    }
+}
+
+impl<S: futures::Stream> futures::Stream for ScopedGrpcStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let polled = this.inner.as_mut().poll_next(cx);
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            this.drained = true;
+        }
+        polled
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// A stream dropped with items still to come is the caller having gone — a reset
+/// stream, a dead connection, or the drain deadline dropping the server. The
+/// handler returned when it had a stream, so whatever feeds that stream is not
+/// inside a future tonic drops.
+impl<S> Drop for ScopedGrpcStream<S> {
+    fn drop(&mut self) {
+        if !self.drained {
+            use crate::context::HandlerContext as _;
+            self.context.cancellation().cancel();
+        }
+    }
+}
+
+/// Carries a reply from the type the user's method produced to the type the
+/// generated wrapper's signature declares.
+///
+/// The wrapper cannot know per method whether it is re-typing a stream or
+/// passing a message through, and the answer is decided by the target type
+/// alone: a message resolves to the identity impl, a stream whose associated
+/// type the wrapper rewrote resolves to the wrapping one. The two never
+/// overlap, since that would need `S == ScopedGrpcStream<S>`.
+#[doc(hidden)]
+pub trait IntoScoped<Out> {
+    fn into_scoped(self, context: GrpcContext) -> Out;
+}
+
+impl<T> IntoScoped<T> for T {
+    fn into_scoped(self, _context: GrpcContext) -> T {
+        self
+    }
+}
+
+impl<S: futures::Stream> IntoScoped<ScopedGrpcStream<S>> for S {
+    fn into_scoped(self, context: GrpcContext) -> ScopedGrpcStream<S> {
+        ScopedGrpcStream::new(self, context)
+    }
+}

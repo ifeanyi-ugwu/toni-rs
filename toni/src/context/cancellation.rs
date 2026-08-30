@@ -8,8 +8,10 @@ use event_listener::Event;
 /// Created by the framework at the start of an execution and dropped when it
 /// ends. Cheaply cloneable — handles share state via `Arc`.
 ///
-/// Nothing in the framework signals it yet: firing on client disconnect needs a
-/// producer in each adapter, since only the adapter knows the socket died.
+/// Fired when a streaming answer is dropped before its last item — a response
+/// body, a WebSocket stream, an RPC reply stream, a gRPC streaming reply. A
+/// buffered answer never fires it: the handler's future is dropped with the
+/// connection, and nothing that could observe the token is still alive to.
 ///
 /// Toni-native and runtime-agnostic on purpose: toni core does not depend on
 /// any specific async runtime. Adapters that want to bridge into

@@ -48,3 +48,4 @@ the history is part of the value.
 - [0030 — One source builds every dispatch target, and enhancer tokens resolve at create](0030-one-source-builds-every-dispatch-target.md)
 - [0031 — One attribute declares a controller, and its handlers name the transport](0031-one-controller-attribute.md)
 - [0032 — An RPC reply can be a stream, and the execution rides it](0032-a-reply-can-be-a-stream.md)
+- [0033 — A gRPC streaming reply is part of its execution](0033-a-grpc-streaming-reply-is-part-of-its-execution.md)
