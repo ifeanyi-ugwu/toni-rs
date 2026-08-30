@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::application_context::ToniApplicationContext;
 use crate::context::Metadata;
-use crate::context::{HttpContext, RpcContext, WsContext};
+use crate::context::{GrpcContext, HttpContext, RpcContext, WsContext};
 use crate::error::StartupError;
 use crate::http_helpers::HttpResponse;
 use crate::injector::{ToniContainer, ToniInstanceLoader};
@@ -15,9 +15,10 @@ use crate::rpc::RpcData;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
 use crate::traits_helpers::{
-    ErrorHandler, ErrorObserver, Guard, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-    Interceptor, ModuleMetadata, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
-    WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+    ErrorHandler, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, Guard,
+    HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, Interceptor, ModuleMetadata,
+    RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry,
+    WsInterceptorEntry,
 };
 use crate::websocket::WsMessage;
 
@@ -46,6 +47,9 @@ pub struct ToniFactory {
     global_ws_guards: Vec<WsGuardEntry>,
     global_ws_interceptors: Vec<WsInterceptorEntry>,
     global_ws_error_handlers: Vec<WsErrorHandlerArc>,
+    global_grpc_guards: Vec<GrpcGuardEntry>,
+    global_grpc_interceptors: Vec<GrpcInterceptorEntry>,
+    global_grpc_error_handlers: Vec<GrpcErrorHandlerArc>,
     global_error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
@@ -127,6 +131,33 @@ impl ToniFactory {
         handler: Arc<dyn ErrorHandler<WsContext, WsMessage>>,
     ) -> &mut Self {
         self.global_ws_error_handlers.push(handler);
+        self
+    }
+
+    /// Register a global guard that runs on every gRPC method, ahead of the
+    /// service's own and its methods'.
+    pub fn use_global_grpc_guards(&mut self, guard: Arc<dyn Guard<GrpcContext>>) -> &mut Self {
+        self.global_grpc_guards.push(GrpcGuardEntry::Ready(guard));
+        self
+    }
+
+    /// Register a global interceptor that wraps every gRPC method.
+    pub fn use_global_grpc_interceptors(
+        &mut self,
+        interceptor: Arc<dyn Interceptor<GrpcContext, crate::grpc_status::GrpcHandlerResult>>,
+    ) -> &mut Self {
+        self.global_grpc_interceptors
+            .push(GrpcInterceptorEntry::Ready(interceptor));
+        self
+    }
+
+    /// Register a global gRPC error handler. Stacks with service- and
+    /// method-level handlers — the most specific is consulted first.
+    pub fn use_global_grpc_error_handler(
+        &mut self,
+        handler: Arc<dyn ErrorHandler<GrpcContext, crate::grpc_status::GrpcStatus>>,
+    ) -> &mut Self {
+        self.global_grpc_error_handlers.push(handler);
         self
     }
 
@@ -277,6 +308,15 @@ impl ToniFactory {
             }
             for handler in &self.global_ws_error_handlers {
                 container_mut.add_global_ws_error_handler(handler.clone());
+            }
+            for guard in &self.global_grpc_guards {
+                container_mut.add_global_grpc_guard(guard.clone());
+            }
+            for interceptor in &self.global_grpc_interceptors {
+                container_mut.add_global_grpc_interceptor(interceptor.clone());
+            }
+            for handler in &self.global_grpc_error_handlers {
+                container_mut.add_global_grpc_error_handler(handler.clone());
             }
             for observer in &self.global_error_observers {
                 container_mut.add_global_error_observer(observer.clone());
