@@ -46,7 +46,14 @@ impl GrpcContext {
         }
     }
 
-    /// Full method path, e.g. `"orders.OrdersService/CreateOrder"`.
+    /// The method path the call arrived on, as the caller dialled it:
+    /// `package.Service/Method`.
+    ///
+    /// A guard or interceptor matching on it matches what a proto file, a log
+    /// line and a client stub all spell the same way. On a pipeline driven
+    /// without an adapter — a test calling the generated method directly — it
+    /// falls back to the trait and method names as written, which carry no
+    /// package.
     pub fn method(&self) -> &str {
         &self.inner.method
     }

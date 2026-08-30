@@ -11,7 +11,7 @@ pub(crate) mod server_lifecycle;
 pub(crate) mod websocket_adapter;
 pub use adapter_context::AdapterContext;
 pub use bind_target::BindTarget;
-pub use grpc_adapter::GrpcAdapter;
+pub use grpc_adapter::{GrpcAdapter, GrpcMethodPath};
 pub use grpc_service_source::{GrpcServiceSource, ResolvedGrpcEnhancers};
 pub use http_adapter::HttpAdapter;
 pub use lifecycle_handles::{

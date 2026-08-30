@@ -84,6 +84,7 @@
 
 mod drain_layer;
 mod grpc_adapter;
+mod method_path_layer;
 mod tracing_layer;
 
 pub use grpc_adapter::GrpcAdapter;

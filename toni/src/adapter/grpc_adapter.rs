@@ -53,3 +53,24 @@ pub trait GrpcAdapter: Send + Sync + 'static {
         self: Box<Self>,
     ) -> Result<crate::adapter::lifecycle_handles::GrpcLifecycleHandle>;
 }
+
+/// The method path a gRPC call arrived on, put on the request by the adapter.
+///
+/// `/package.Service/Method` as the caller wrote it, minus the leading slash —
+/// the only place that string exists. What an impl block shows is the trait's
+/// Rust name and the method's Rust name, which carry no package and take the
+/// route's casing only by convention; `tonic_build::manual` sets the route name
+/// independently of the Rust one.
+///
+/// `#[grpc_methods]` reads this into [`GrpcContext::method`](crate::context::GrpcContext::method),
+/// so a guard matching on the method path matches what the caller dialled. A
+/// request that reached the pipeline without one — a test driving it directly —
+/// falls back to the name the macro could see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcMethodPath(pub String);
+
+impl GrpcMethodPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}

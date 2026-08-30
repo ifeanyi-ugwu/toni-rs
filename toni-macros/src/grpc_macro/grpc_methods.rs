@@ -615,8 +615,18 @@ fn build_wrapper_method(
                 ::tonic::metadata::KeyAndValueRef::Binary(_, _) => None,
             }).collect::<::std::collections::HashMap<::std::string::String, ::std::string::String>>();
             #declared_metadata
+            // The path the caller dialled, which only the wire carries: an impl
+            // block shows Rust names, no package, and a route casing that holds
+            // by convention rather than by rule. The adapter puts it on the
+            // request; a pipeline driven without one falls back to the names
+            // this macro can see.
+            let __method: ::std::string::String = #req_ident
+                .extensions()
+                .get::<::toni::adapter::GrpcMethodPath>()
+                .map(|__p| __p.as_str().to_string())
+                .unwrap_or_else(|| #method_path_lit.to_string());
             let __ctx = ::toni::context::GrpcContext::new(
-                #method_path_lit,
+                __method,
                 __metadata,
                 #req_ident.remote_addr(),
                 __declared,
