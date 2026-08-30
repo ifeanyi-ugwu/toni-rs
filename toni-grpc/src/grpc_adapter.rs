@@ -15,6 +15,7 @@ use tower::Service;
 use toni::adapter::{GrpcServiceSource, ResolvedGrpcEnhancers};
 use toni::async_trait;
 
+use crate::drain_layer::DrainLayer;
 use crate::tracing_layer::TracingLayer;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -48,6 +49,16 @@ impl std::fmt::Display for GrpcTarget {
         }
     }
 }
+
+/// Ceiling on how long the serve future is given after the drain deadline has
+/// ended every reply. Connections with nothing left in flight close in
+/// milliseconds; this bounds a peer that ignores `GOAWAY`.
+///
+/// The wait is the drain timeout or this, whichever is shorter, so a caller
+/// asking for a fast shutdown gets one: the timeout they set is a statement of
+/// how long shutdown may take, and a constant added after it would answer a
+/// question they did not ask.
+const HARD_STOP_CEILING: Duration = Duration::from_secs(2);
 
 /// gRPC transport adapter for the Toni framework.
 ///
@@ -142,6 +153,10 @@ impl GrpcAdapter {
 
     /// Set how long `close()` waits for in-flight RPCs (including streams)
     /// to finish before aborting them. Pass `None` to wait without bound.
+    ///
+    /// Aborting them ends their replies with `UNAVAILABLE` and leaves the
+    /// connections to close, which is bounded by this same duration (capped at
+    /// two seconds), so `close()` returns within twice what is set here.
     pub fn with_drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.drain_timeout = timeout.into();
         self
@@ -223,6 +238,11 @@ impl toni::GrpcAdapter for GrpcAdapter {
         let shutdown_tonic = self.shutdown_tx.subscribe();
         let shutdown_drain = self.shutdown_tx.subscribe();
 
+        // Flipped when the drain deadline elapses, which ends every reply still
+        // being served. See `drain_layer` for why the connections cannot be
+        // reached directly.
+        let (deadline_tx, deadline_rx) = tokio::sync::watch::channel(false);
+
         let serve = Box::pin(async move {
             // Tonic's shutdown signal: fires when the watch flips to true.
             // From there tonic begins natural drain — completes once every
@@ -252,12 +272,12 @@ impl toni::GrpcAdapter for GrpcAdapter {
             //     immediate `ResourceExhausted` reject; without it,
             //     callers would queue indefinitely and defeat the
             //     OOM-protection point.
-            let mut builder =
-                Server::builder()
-                    .layer(TracingLayer::new())
-                    .layer(tower::util::option_layer(
-                        max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
-                    ));
+            let mut builder = Server::builder()
+                .layer(TracingLayer::new())
+                .layer(DrainLayer::new(deadline_rx))
+                .layer(tower::util::option_layer(
+                    max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
+                ));
             if let Some(n) = max_per_connection {
                 builder = builder.concurrency_limit_per_connection(n);
             }
@@ -284,10 +304,19 @@ impl toni::GrpcAdapter for GrpcAdapter {
                         timeout_ms = drain_timeout.map(|d| d.as_millis() as u64),
                         "GrpcAdapter drain timed out; in-flight streams will see UNAVAILABLE",
                     );
-                    // Dropping `server_fut` by leaving the select arm is the
-                    // abort: hyper closes connections, and any task still
-                    // executing a streaming handler is cancelled when its
-                    // task handle inside tonic gets dropped.
+                    // Ending the replies is the abort. Each closes with
+                    // `UNAVAILABLE`, its connection is left with nothing in
+                    // flight, and tonic's graceful shutdown closes it — so the
+                    // serve future is awaited from here rather than dropped,
+                    // and shutdown reports complete once it is.
+                    let _ = deadline_tx.send(true);
+                    let hard_stop = drain_timeout
+                        .map_or(HARD_STOP_CEILING, |d| d.min(HARD_STOP_CEILING));
+                    if let Ok(Err(e)) =
+                        tokio::time::timeout(hard_stop, &mut server_fut).await
+                    {
+                        tracing::error!(?addr, error = %e, "GrpcAdapter serve error");
+                    }
                 }
             }
         });

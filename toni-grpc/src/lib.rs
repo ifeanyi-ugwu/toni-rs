@@ -63,9 +63,12 @@
 //! # Drain timeout
 //!
 //! On shutdown the framework calls the adapter's `close`, which signals
-//! tonic and starts a drain timer (default 10 s). When the timer elapses
-//! with in-flight calls still running, the serve future is dropped — open
-//! connections close, streaming clients see `UNAVAILABLE`. Configure with
+//! tonic and starts a drain timer (default 10 s). When the timer elapses with
+//! calls still in flight, their replies are ended: each closes with
+//! `UNAVAILABLE`, the connections have nothing left to serve, and tonic's
+//! graceful shutdown closes them. A streaming handler's cancellation token
+//! fires as its reply ends. Closing is bounded by the same timer, so `close()`
+//! returns within twice the drain timeout. Configure with
 //! [`GrpcAdapter::with_drain_timeout`]; pass `None` to wait without bound.
 //!
 //! # Tracing
@@ -79,6 +82,7 @@
 //! API (guards / interceptors / error handlers / panic recovery) and a
 //! runnable end-to-end example.
 
+mod drain_layer;
 mod grpc_adapter;
 mod tracing_layer;
 
