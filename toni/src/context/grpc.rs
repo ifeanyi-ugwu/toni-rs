@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::context::Metadata;
 
@@ -27,6 +28,9 @@ struct GrpcInner {
     method: String,
     headers: HashMap<String, String>,
     peer: Option<SocketAddr>,
+    /// Read from `grpc-timeout` at construction, so every reader sees one
+    /// deadline rather than each recomputing from a clock that has moved.
+    deadline: Option<Instant>,
 }
 
 impl GrpcContext {
@@ -36,12 +40,17 @@ impl GrpcContext {
         peer: Option<SocketAddr>,
         metadata: Option<Arc<Metadata>>,
     ) -> Self {
+        let deadline = headers
+            .get("grpc-timeout")
+            .and_then(|value| parse_grpc_timeout(value))
+            .map(|budget| Instant::now() + budget);
         Self {
             inner: Arc::new(GrpcInner {
                 shared: SharedState::new(metadata),
                 method: method.into(),
                 headers,
                 peer,
+                deadline,
             }),
         }
     }
@@ -116,7 +125,79 @@ impl HandlerContext for GrpcContext {
         &self.inner.shared.cancellation
     }
 
-    // `deadline()` from `grpc-timeout` would be a useful override here but
-    // requires parsing the wire-format timeout suffix; deferred until an
-    // enhancer wants to read it.
+    fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline
+    }
+}
+
+/// Parse the `grpc-timeout` header: up to eight digits followed by a unit.
+///
+/// Defined by the [gRPC HTTP/2 spec][spec]. A value this cannot read is treated
+/// as absent — the call is answered rather than refused over a header the caller
+/// may not know it sent, and tonic refuses the malformed ones it enforces
+/// itself.
+///
+/// [spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
+fn parse_grpc_timeout(value: &str) -> Option<Duration> {
+    let (digits, unit) = value.split_at(value.len().checked_sub(1)?);
+    if digits.is_empty() || digits.len() > 8 {
+        return None;
+    }
+    let amount: u64 = digits.parse().ok()?;
+    match unit {
+        "H" => Some(Duration::from_secs(amount * 60 * 60)),
+        "M" => Some(Duration::from_secs(amount * 60)),
+        "S" => Some(Duration::from_secs(amount)),
+        "m" => Some(Duration::from_millis(amount)),
+        "u" => Some(Duration::from_micros(amount)),
+        "n" => Some(Duration::from_nanos(amount)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_unit_the_spec_defines() {
+        assert_eq!(parse_grpc_timeout("5S"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_grpc_timeout("2H"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_grpc_timeout("3M"), Some(Duration::from_secs(180)));
+        assert_eq!(parse_grpc_timeout("250m"), Some(Duration::from_millis(250)));
+        assert_eq!(parse_grpc_timeout("40u"), Some(Duration::from_micros(40)));
+        assert_eq!(parse_grpc_timeout("7n"), Some(Duration::from_nanos(7)));
+    }
+
+    #[test]
+    fn a_value_the_spec_does_not_define_reads_as_absent() {
+        assert_eq!(parse_grpc_timeout(""), None);
+        assert_eq!(parse_grpc_timeout("S"), None, "no digits");
+        assert_eq!(parse_grpc_timeout("5"), None, "no unit");
+        assert_eq!(parse_grpc_timeout("5X"), None, "unknown unit");
+        assert_eq!(parse_grpc_timeout("-1S"), None, "not a count");
+        assert_eq!(parse_grpc_timeout("123456789S"), None, "over eight digits");
+    }
+
+    #[test]
+    fn a_context_carries_the_deadline_its_headers_named() {
+        let mut headers = HashMap::new();
+        headers.insert("grpc-timeout".to_string(), "5S".to_string());
+        let ctx = GrpcContext::new("pkg.Svc/Method", headers, None, None);
+
+        let remaining = ctx
+            .deadline()
+            .expect("a deadline")
+            .saturating_duration_since(Instant::now());
+        assert!(
+            remaining > Duration::from_secs(4) && remaining <= Duration::from_secs(5),
+            "remaining: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn a_context_without_the_header_carries_none() {
+        let ctx = GrpcContext::new("pkg.Svc/Method", HashMap::new(), None, None);
+        assert!(ctx.deadline().is_none());
+    }
 }
