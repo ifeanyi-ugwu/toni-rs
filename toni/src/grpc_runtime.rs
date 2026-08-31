@@ -96,12 +96,14 @@ async fn run_grpc_guards_inline(
             }
         };
         if !activated {
+            // The chain gets first claim, as it does on HTTP. `run_grpc_error_chain`
+            // fans the event to observers on its way, and an unclaimed refusal
+            // renders as the `PermissionDenied` it always did.
             let event = GuardRejection::new(index);
-            fan_out_observers(&enhancers.error_observers, &event, ctx).await;
-            return Err(GrpcStatus::permission_denied(format!(
-                "guard {} rejected request",
-                index
-            )));
+            let claimed = run_grpc_error_chain(ctx, enhancers, method, &event).await;
+            return Err(claimed.unwrap_or_else(|| {
+                GrpcStatus::permission_denied(format!("guard {} rejected request", index))
+            }));
         }
     }
     Ok(())

@@ -141,6 +141,13 @@ impl GatewayWrapper {
     /// Returns the connect execution's context, which phase 2 finishes. The two phases exist so the
     /// adapter can register the client's sink between them, not because they are separate
     /// executions — a guard's writes have to reach the hook, so they share one context and one bag.
+    ///
+    /// Guards run here and interceptors do not, because a connect is an admission decision rather
+    /// than a call. A guard answers admission, which is its whole contract. An interceptor wraps a
+    /// call and its answer, and an error handler shapes an answer; a connection has none to wrap or
+    /// shape, and refusing one is answered by not opening it. The same rule decides the message
+    /// path: a refused message has an open socket to answer on, so it goes through the chain and
+    /// the caller is told.
     pub async fn begin_connect(&self, client: WsClient) -> Result<WsContext, WsError> {
         // The client was born with its session, so a guard below writes to the store every later
         // execution on this connection reads.
@@ -244,7 +251,7 @@ impl GatewayWrapper {
         }
 
         let guards = Self::resolve_guards(&all_guards, &context).await;
-        for guard in guards.iter() {
+        for (guard_index, guard) in guards.iter().enumerate() {
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
                 guard.can_activate(&context),
@@ -270,9 +277,13 @@ impl GatewayWrapper {
                 }
             };
             if !activated {
-                let err = WsError::AuthFailed("Guard rejected message".into());
-                Self::fan_out_observers(&self.error_observers, &err, &context).await;
-                return Err(err);
+                return Self::record_guard_rejection(
+                    &context,
+                    &all_error_handlers,
+                    &self.error_observers,
+                    crate::errors::GuardRejection::new(guard_index),
+                )
+                .await;
             }
         }
 
@@ -392,6 +403,36 @@ impl GatewayWrapper {
         }
         let ws_err = WsError::from(event);
         let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
+        Ok(WsHandlerOutput::Single(msg))
+    }
+
+    /// Route a guard's refusal through the chain, as HTTP does.
+    ///
+    /// A refused message has an open socket to answer on, so the caller is told
+    /// which is what every other transport does, and a `#[catch(GuardRejection)]`
+    /// handler gets first claim on the shape. Returning the rendered message
+    /// rather than `Err` is what keeps the connection usable: the read loop
+    /// carries on, and the client learns its message went nowhere.
+    async fn record_guard_rejection(
+        context: &WsContext,
+        error_handlers: &[WsErrorHandlerArc],
+        observers: &[Arc<dyn ErrorObserver>],
+        rejection: crate::errors::GuardRejection,
+    ) -> WsHandlerResult {
+        Self::fan_out_observers(observers, &rejection, context).await;
+        for handler in error_handlers.iter().rev() {
+            if let Some(claimed) =
+                Self::try_chain_handler(handler, &rejection, context, observers).await
+            {
+                return Ok(WsHandlerOutput::Single(claimed));
+            }
+        }
+        let msg = Self::safe_render(
+            || super::ws_error::render_error(&rejection),
+            observers,
+            context,
+        )
+        .await;
         Ok(WsHandlerOutput::Single(msg))
     }
 

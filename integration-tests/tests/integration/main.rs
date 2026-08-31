@@ -40,6 +40,7 @@ mod grpc_service_injection;
 mod grpc_stream_optin;
 mod grpc_tail;
 mod guard_mut_context;
+mod guard_rejection_is_an_event;
 mod http_e2e;
 mod import_cycle;
 mod lifecycle_hooks;

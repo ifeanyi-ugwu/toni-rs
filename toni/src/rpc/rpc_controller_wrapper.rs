@@ -188,9 +188,20 @@ impl RpcControllerWrapper {
                 }
             };
             if !activated {
-                let err = RpcError::Forbidden("Guard rejected message".into());
-                Self::fan_out_observers(&observers, &err, &ctx).await;
-                return Err(err);
+                // The chain gets first claim, as it does on HTTP: a
+                // `#[catch(GuardRejection)]` handler reshapes the refusal, and
+                // an unclaimed one renders as the `forbidden` frame it always
+                // did.
+                let rejection = crate::errors::GuardRejection::new(index);
+                Self::fan_out_observers(&observers, &rejection, &ctx).await;
+                for handler in all_error_handlers.iter().rev() {
+                    if let Some(claimed) =
+                        Self::try_chain_handler(handler, &rejection, &ctx, &observers).await
+                    {
+                        return Ok(RpcHandlerOutput::Single(claimed));
+                    }
+                }
+                return Err(RpcError::Forbidden("Guard rejected message".into()));
             }
         }
 

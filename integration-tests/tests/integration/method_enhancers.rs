@@ -395,11 +395,15 @@ async fn ws_method_level_enhancers_work() {
         ))
         .await
         .unwrap();
-        let no_reply = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
-        assert!(
-            no_reply.is_err(),
-            "guard should have silently blocked \"all\""
-        );
+        let refusal = tokio::time::timeout(Duration::from_millis(500), ws.next())
+            .await
+            .expect("a refused message is answered")
+            .expect("the socket stays open")
+            .expect("the frame arrives");
+        let body: serde_json::Value =
+            serde_json::from_str(refusal.to_text().unwrap()).expect("the canonical error envelope");
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["kind"], "Forbidden", "envelope: {body}");
 
         ws.send(tokio_tungstenite::tungstenite::Message::Text(
             r#"{"event":"plain"}"#.to_string().into(),
