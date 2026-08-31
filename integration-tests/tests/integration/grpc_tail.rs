@@ -207,8 +207,16 @@ async fn boot<M>(module: M) -> (u16, toni::ShutdownHandle)
 where
     M: toni::ModuleMetadata + 'static,
 {
+    boot_with(module, |a| a).await
+}
+
+async fn boot_with<M, F>(module: M, configure: F) -> (u16, toni::ShutdownHandle)
+where
+    M: toni::ModuleMetadata + 'static,
+    F: FnOnce(toni_grpc::GrpcAdapter) -> toni_grpc::GrpcAdapter + Send + 'static,
+{
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let adapter = toni_grpc::GrpcAdapter::new(addr);
+    let adapter = configure(toni_grpc::GrpcAdapter::new(addr));
     let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<toni::ShutdownHandle>();
     let local = tokio::task::LocalSet::new();
@@ -377,4 +385,62 @@ async fn a_concrete_stream_signature_is_covered_too() {
 
     shutdown.shutdown();
     let _ = tokio::time::timeout(Duration::from_secs(2), shutdown.completed()).await;
+}
+
+/// Shutdown with a reply still in flight. The deadline ends it rather than
+/// abandoning it: tonic serves each connection from a detached task, so a reply
+/// that never finishes would otherwise outlive the shutdown that reported
+/// itself complete.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn the_drain_deadline_ends_a_reply_it_cannot_wait_for() {
+    SAW_CANCEL.store(false, Ordering::SeqCst);
+    PRODUCED.store(0, Ordering::SeqCst);
+
+    let (port, shutdown) = boot_with(TailGrpcModule, |a| {
+        a.with_drain_timeout(Duration::from_millis(300))
+    })
+    .await;
+    let mut client = connect(port).await;
+
+    let mut stream = client
+        .watch_progress(tail_pb::WatchRequest { id: 7 })
+        .await
+        .expect("server-streaming call must succeed")
+        .into_inner();
+
+    stream.next().await.expect("one item").expect("ok item");
+
+    shutdown.shutdown();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), shutdown.completed())
+            .await
+            .is_ok(),
+        "shutdown must complete rather than report complete while still serving"
+    );
+
+    // The caller is told why, rather than losing the connection under it.
+    let ending = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match stream.next().await {
+                Some(Ok(_)) => continue,
+                other => return other,
+            }
+        }
+    })
+    .await
+    .expect("the reply must end");
+
+    match ending {
+        Some(Err(status)) => assert_eq!(status.code(), tonic::Code::Unavailable),
+        other => panic!(
+            "expected UNAVAILABLE, got {:?}",
+            other.map(|r| r.map(|_| ()))
+        ),
+    }
+
+    assert!(
+        saw_cancel_within(Duration::from_secs(2)).await,
+        "ending the reply must reach the task feeding it"
+    );
 }
