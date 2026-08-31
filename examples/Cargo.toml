@@ -125,6 +125,10 @@ name = "rpc_tracing"
 path = "rpc_tracing.rs"
 
 [[example]]
+name = "grpc_client"
+path = "grpc_client.rs"
+
+[[example]]
 name = "grpc_service"
 path = "grpc_service.rs"
 
