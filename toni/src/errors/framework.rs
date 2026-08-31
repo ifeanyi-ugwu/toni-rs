@@ -60,6 +60,43 @@ impl Error for GuardRejection {
     }
 }
 
+/// Emitted when nothing was registered to answer a call — an RPC pattern no
+/// controller claims, a WebSocket event no handler subscribes to.
+///
+/// The condition an operator most wants to see, since it usually means a caller
+/// and a server disagree about what exists. Carries the target as the caller
+/// named it; `kind()` is `NotFound`.
+#[derive(Debug)]
+pub struct Unrouted {
+    pub target: String,
+}
+
+impl Unrouted {
+    pub fn new(target: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
+
+impl fmt::Display for Unrouted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "nothing handles {}", self.target)
+    }
+}
+
+impl std::error::Error for Unrouted {}
+
+impl Error for Unrouted {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::NotFound
+    }
+
+    fn message(&self) -> Cow<'_, str> {
+        Cow::Owned(format!("nothing handles {}", self.target))
+    }
+}
+
 /// Emitted when a middleware returned `Err` before the request reached the
 /// route handler. Carries the failing error's message; `kind()` is
 /// `Internal`.

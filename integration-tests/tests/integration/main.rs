@@ -85,6 +85,7 @@ mod streaming;
 mod token_format;
 mod tower_compat;
 mod trailing_slash_conformance;
+mod unrouted_is_an_event;
 mod validated_transports;
 mod websocket_broadcast;
 mod websocket_e2e;

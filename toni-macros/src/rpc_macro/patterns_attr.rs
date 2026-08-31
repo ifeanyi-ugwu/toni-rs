@@ -189,10 +189,14 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
                 match ctx.pattern() {
                     #(#message_arms)*
                     #(#event_arms)*
+                    // A typed event, so a `#[catch(Unrouted)]` handler can claim
+                    // it. This arm answers a pattern the controller was
+                    // registered for but has no method behind; the dispatcher
+                    // raises the same event for a pattern no controller claims.
                     _ => ::toni::http_helpers::ExecutionResult::Err(
-                        ::toni::rpc::RpcError::PatternNotFound(
-                            format!("Unknown pattern: {}", ctx.pattern()),
-                        ),
+                        ::toni::rpc::RpcError::AppError(::std::sync::Arc::new(
+                            ::toni::errors::Unrouted::new(ctx.pattern()),
+                        )),
                     ),
                 }
             }
