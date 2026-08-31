@@ -628,7 +628,18 @@ impl ToniApplication {
                 tracing::debug!(pattern = %pattern, "RPC pattern registered");
             }
 
-            let callbacks = Arc::new(make_rpc_callbacks(self.rpc_controllers.clone()));
+            let (rpc_global_handlers, rpc_global_observers) = {
+                let container = self.routes_resolver.container.borrow();
+                (
+                    container.get_global_rpc_error_handlers(),
+                    container.get_global_error_observers(),
+                )
+            };
+            let callbacks = Arc::new(make_rpc_callbacks(
+                self.rpc_controllers.clone(),
+                rpc_global_handlers,
+                rpc_global_observers,
+            ));
             let mut adapter = self.rpc_adapter.take().unwrap();
             adapter
                 .register_handlers(&all_patterns, callbacks)
@@ -978,7 +989,15 @@ fn make_ws_callbacks(
 ///
 /// Constructs a pattern → wrapper index at call time so the hot path
 /// (per-message dispatch) is a single HashMap lookup.
-fn make_rpc_callbacks(wrappers: Vec<Arc<RpcControllerWrapper>>) -> RpcMessageCallbacks {
+///
+/// The globals are threaded in for the miss: a pattern no controller claims has
+/// no wrapper to run, and without them the one call an operator most wants to
+/// hear about would be the only one nothing observes.
+fn make_rpc_callbacks(
+    wrappers: Vec<Arc<RpcControllerWrapper>>,
+    global_error_handlers: Vec<crate::traits_helpers::RpcErrorHandlerArc>,
+    global_observers: Vec<Arc<dyn crate::traits_helpers::ErrorObserver>>,
+) -> RpcMessageCallbacks {
     let mut pattern_map: HashMap<String, Arc<RpcControllerWrapper>> = HashMap::new();
     for wrapper in &wrappers {
         for pattern in wrapper.get_patterns() {
@@ -987,14 +1006,46 @@ fn make_rpc_callbacks(wrappers: Vec<Arc<RpcControllerWrapper>>) -> RpcMessageCal
     }
     let pattern_map = Arc::new(pattern_map);
 
+    use crate::context::RpcContext;
+    use crate::rpc::RpcHandlerOutput;
+
+    let global_error_handlers = Arc::new(global_error_handlers);
+    let global_observers = Arc::new(global_observers);
+
     RpcMessageCallbacks::new(move |data: RpcData, info: RpcCallInfo| {
         let pattern_map = pattern_map.clone();
+        let global_error_handlers = global_error_handlers.clone();
+        let global_observers = global_observers.clone();
         Box::pin(async move {
             if let Some(wrapper) = pattern_map.get(&info.pattern) {
-                wrapper.handle_message(data, info).await
-            } else {
-                Err(RpcError::PatternNotFound(info.pattern))
+                return wrapper.handle_message(data, info).await;
             }
+
+            // A context is built for the miss so the event has somewhere to be
+            // observed from, and so a handler that claims it can read the
+            // headers the caller sent.
+            let event = crate::errors::Unrouted::new(info.pattern.clone());
+            let ctx = RpcContext::with_extensions(
+                info.pattern.clone(),
+                data,
+                info.headers,
+                None,
+                info.extensions,
+            );
+            RpcControllerWrapper::fan_out_observers(&global_observers, &event, &ctx).await;
+            for handler in global_error_handlers.iter().rev() {
+                if let Some(claimed) = RpcControllerWrapper::try_chain_handler(
+                    handler,
+                    &event,
+                    &ctx,
+                    &global_observers,
+                )
+                .await
+                {
+                    return Ok(RpcHandlerOutput::Single(claimed));
+                }
+            }
+            Err(RpcError::PatternNotFound(info.pattern))
         })
     })
 }

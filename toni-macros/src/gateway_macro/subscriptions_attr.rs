@@ -86,8 +86,13 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
                 let __event = ::std::string::String::from(__ctx.event());
                 match __event.as_str() {
                     #(#match_arms)*
+                    // A typed event, so a `#[catch(Unrouted)]` handler can claim
+                    // it. Unclaimed it renders the `NotFound` envelope it always
+                    // did.
                     _ => ::toni::http_helpers::ExecutionResult::Err(
-                        ::toni::WsError::EventNotFound(format!("Unknown event: {}", __event)),
+                        ::toni::WsError::AppError(::std::sync::Arc::new(
+                            ::toni::errors::Unrouted::new(__event),
+                        )),
                     ),
                 }
             }

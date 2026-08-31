@@ -57,9 +57,11 @@ pub trait WsHandlersBridge {
         &self,
         ctx: &WsContext,
     ) -> ExecutionResult<WsHandlerOutput, WsError> {
-        ExecutionResult::Err(WsError::EventNotFound(format!(
-            "Unknown event: {}",
-            ctx.event()
+        // A typed event rather than a bare `WsError`, so a
+        // `#[catch(Unrouted)]` handler can claim it. Unclaimed it renders
+        // the same `NotFound` envelope it always did.
+        ExecutionResult::Err(WsError::AppError(std::sync::Arc::new(
+            crate::errors::Unrouted::new(ctx.event()),
         )))
     }
 

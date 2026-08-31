@@ -266,7 +266,7 @@ impl RpcControllerWrapper {
         RpcData::text("Internal Server Error")
     }
 
-    async fn try_chain_handler(
+    pub(crate) async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &RpcContext,
@@ -286,7 +286,7 @@ impl RpcControllerWrapper {
         }
     }
 
-    async fn fan_out_observers(
+    pub(crate) async fn fan_out_observers(
         observers: &[Arc<dyn ErrorObserver>],
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &RpcContext,
