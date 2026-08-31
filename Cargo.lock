@@ -3676,6 +3676,7 @@ dependencies = [
  "toni-tungstenite",
  "toni-udp",
  "tonic",
+ "tonic-build",
  "tonic-health",
  "tonic-prost",
  "tonic-prost-build",

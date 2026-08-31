@@ -28,9 +28,18 @@
 //! declares. Where a signature names the concrete type, the method pairs with its associated type
 //! by name — `rpc WatchProgress` yields `watch_progress` and `WatchProgressStream` from one
 //! identifier, and the associated type exists only for methods that stream — and the wrapper's
-//! signature restates the payload as `Self::SomeStream`. A hand-written trait naming its associated
-//! type off that convention, whose method also avoids `Self::`, is the shape neither signal
-//! reaches; its reply passes through unwrapped.
+//! signature restates the payload as `Self::SomeStream`.
+//!
+//! A trait whose own naming does not connect the two — written by hand, or built through
+//! `tonic_build::manual`, where the Rust name and the route name are set independently — names the
+//! associated type on the method instead:
+//!
+//! ```text
+//! #[stream(StreamProgressStream)]
+//! async fn watch(&self, r: Request<Tick>) -> Result<Response<TickStream>, Status> { … }
+//! ```
+//!
+//! That is read first and overrides both.
 //!
 //! By convention the wrapping `*Server` type name is the proto trait's
 //! identifier with `Server` appended (`OrdersService` → `OrdersServer`),
@@ -216,9 +225,11 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         .retain(|attr| !has_enhancer_attribute(attr) && !attr_is(attr, "set_metadata"));
     for item in user_impl.items.iter_mut() {
         if let syn::ImplItem::Fn(method) = item {
-            method
-                .attrs
-                .retain(|attr| !has_enhancer_attribute(attr) && !attr_is(attr, "set_metadata"));
+            method.attrs.retain(|attr| {
+                !has_enhancer_attribute(attr)
+                    && !attr_is(attr, "set_metadata")
+                    && !attr_is(attr, "stream")
+            });
         }
     }
 
@@ -357,6 +368,11 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         std::collections::HashMap::new();
 
     for method in &method_sigs_for_wrapper {
+        if let Some(assoc) = stream_attr(method, &assoc_idents)? {
+            streaming_assocs.insert(assoc.to_string());
+            restate_payload.insert(method.sig.ident.to_string(), assoc);
+            continue;
+        }
         let mut named = std::collections::HashSet::new();
         if let syn::ReturnType::Type(_, ty) = &method.sig.output {
             collect_self_assoc(ty, &assoc_idents, &mut named);
@@ -787,6 +803,38 @@ fn collect_self_assoc(
         }
         _ => {}
     }
+}
+
+/// The associated type named by `#[stream(...)]` on a method.
+///
+/// The signal for a trait whose own naming does not connect a method to its
+/// stream — one written by hand, or built through `tonic_build::manual`, where
+/// the Rust name and the route name are set independently.
+fn stream_attr(
+    method: &syn::ImplItemFn,
+    declared: &std::collections::HashSet<String>,
+) -> Result<Option<syn::Ident>> {
+    let Some(attr) = method.attrs.iter().find(|a| attr_is(a, "stream")) else {
+        return Ok(None);
+    };
+    let ident: syn::Ident = attr.parse_args().map_err(|_| {
+        syn::Error::new_spanned(
+            attr,
+            "#[stream(...)] takes the associated type this method's reply is typed by, \
+             as in #[stream(WatchProgressStream)]",
+        )
+    })?;
+    if !declared.contains(&ident.to_string()) {
+        return Err(syn::Error::new_spanned(
+            &ident,
+            format!(
+                "`{}` is not an associated type of this impl block; \
+                 #[stream(...)] names the one this method's reply is typed by",
+                ident
+            ),
+        ));
+    }
+    Ok(Some(ident))
 }
 
 /// The associated type tonic-build derived from the same proto identifier as

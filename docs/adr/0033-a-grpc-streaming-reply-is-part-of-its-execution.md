@@ -75,10 +75,19 @@ type only for the methods that stream, so the pairing is a fact about the trait 
 the signature. The wrapper's signature then restates that payload as `Self::SomeStream`, being
 generated text under no obligation to copy the user's.
 
-Neither signal reaches a hand-written trait whose associated type is named off that convention and
-whose method also avoids `Self::` — `type Feed` beside `async fn watch(…) -> Response<Feed>`. Its
-reply passes through unwrapped, which is the behaviour before this change. Reading tonic-build's
-naming is what the macro already does to find the server type from the trait name.
+Neither signal reaches a trait whose own naming does not connect the two: `type Feed` beside
+`async fn watch`, which a hand-written trait may declare and which `tonic_build::manual` produces
+whenever the Rust name and the route name are set independently. Such a method names its associated
+type itself:
+
+```rust
+#[stream(StreamProgressStream)]
+async fn watch(&self, r: Request<Tick>) -> Result<Response<TickStream>, Status> { … }
+```
+
+Read first and overriding both, so the inferred case stays silent and the exceptional case is
+stated where it applies. Reading tonic-build's naming for the inference is what the macro already
+does to find the server type from the trait name.
 
 ## Consequences
 
@@ -95,6 +104,8 @@ naming is what the macro already does to find the server type from the trait nam
   Unary replies cost nothing.
 - A service is covered under either spelling of its streaming signatures, and the wrapper's own
   signature stops being a copy of the user's for the methods it re-types.
+- A trait outside tonic-build's naming is covered by naming its associated type per method, so no
+  service shape is unreachable.
 
 ## Roads not taken
 
