@@ -47,8 +47,11 @@ pub trait HandlerContext: Send + Sync {
     /// The absolute deadline by which the request should be answered, if the
     /// transport carries one.
     ///
-    /// No transport overrides this yet, so it is `None` everywhere. gRPC's
-    /// `grpc-timeout` is the obvious first producer.
+    /// gRPC reads it from the caller's `grpc-timeout`; the other transports
+    /// carry nothing to read, so it is `None` there. It reports rather than
+    /// enforces — on gRPC, tonic already ends an overrunning call with
+    /// `DeadlineExceeded`, so this is how much time is left before that
+    /// happens, which is what a handler needs to decide whether to start.
     fn deadline(&self) -> Option<Instant> {
         None
     }

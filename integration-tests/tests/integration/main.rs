@@ -35,6 +35,7 @@ mod graceful_shutdown;
 mod graphql_module_identity;
 mod graphql_service_injection;
 mod graphql_subscriptions;
+mod grpc_deadline;
 mod grpc_global_enhancers;
 mod grpc_service_injection;
 mod grpc_stream_optin;
