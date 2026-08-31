@@ -177,13 +177,7 @@ async fn a_global_ws_guard_runs_ahead_of_the_gateway_s_own() {
 }
 
 /// Refusing a message stops it before the gateway's own guard is asked, and
-/// tells the caller nothing.
-///
-/// The silence is deliberate today — `toni_application`'s message callback
-/// drops `WsError::AuthFailed` to keep the connection usable — and it is the one
-/// transport that answers a rejection with nothing: HTTP sends 403, RPC a
-/// `forbidden` frame, gRPC `PermissionDenied`. Pinned so the day it changes,
-/// this says so.
+/// answers the caller with the canonical envelope.
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn a_global_ws_guard_rejecting_stops_the_message() {
@@ -194,7 +188,10 @@ async fn a_global_ws_guard_rejecting_stops_the_message() {
     })
     .await;
 
-    assert_eq!(ask(&mut ws, "ping").await, "<no reply>");
+    let refusal: serde_json::Value =
+        serde_json::from_str(&ask(&mut ws, "ping").await).expect("the canonical error envelope");
+    assert_eq!(refusal["status"], "error");
+    assert_eq!(refusal["kind"], "Forbidden", "envelope: {refusal}");
     assert_eq!(
         seen(),
         vec![
