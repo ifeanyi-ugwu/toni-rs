@@ -328,7 +328,9 @@ async fn a_drained_grpc_stream_is_not_cancelled() {
     let _ = tokio::time::timeout(Duration::from_secs(2), shutdown.completed()).await;
 }
 
-/// The request is the only place a gRPC handler can take its context from.
+/// The request is the only place a gRPC handler can take its context from, and
+/// what it finds there names the call the way the wire does — with the package,
+/// and with the route's own casing rather than the Rust method name's.
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn a_handler_reads_its_context_off_the_request() {
@@ -347,8 +349,8 @@ async fn a_handler_reads_its_context_off_the_request() {
 
     assert_eq!(
         METHOD.lock().unwrap().as_deref(),
-        Some("Orders/create"),
-        "the handler must see the context the pipeline built"
+        Some("toni_test.orders.Orders/Create"),
+        "the handler must see the path the caller dialled, not the Rust names"
     );
 
     shutdown.shutdown();

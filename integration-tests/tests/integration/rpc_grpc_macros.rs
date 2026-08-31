@@ -2408,12 +2408,13 @@ async fn declared_metadata_reaches_a_grpc_guard() {
 
     let seen = DECLARED_SEEN.lock().unwrap().clone();
     assert!(
-        seen.iter().any(|s| s == "Orders/create:standard/internal"),
+        seen.iter()
+            .any(|s| s == "toni_test.orders.Orders/Create:standard/internal"),
         "an unannotated method inherits the service's entries: {seen:?}"
     );
     assert!(
         seen.iter()
-            .any(|s| s == "Orders/bulk_create:premium/internal"),
+            .any(|s| s == "toni_test.orders.Orders/BulkCreate:premium/internal"),
         "an annotated method shadows one entry and keeps the rest: {seen:?}"
     );
     shutdown.shutdown();

@@ -16,6 +16,7 @@ use toni::adapter::{GrpcServiceSource, ResolvedGrpcEnhancers};
 use toni::async_trait;
 
 use crate::drain_layer::DrainLayer;
+use crate::method_path_layer::MethodPathLayer;
 use crate::tracing_layer::TracingLayer;
 
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -275,6 +276,7 @@ impl toni::GrpcAdapter for GrpcAdapter {
             let mut builder = Server::builder()
                 .layer(TracingLayer::new())
                 .layer(DrainLayer::new(deadline_rx))
+                .layer(MethodPathLayer::new())
                 .layer(tower::util::option_layer(
                     max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
                 ));
