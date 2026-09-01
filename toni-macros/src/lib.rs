@@ -398,10 +398,11 @@ pub fn use_error_handlers(_attr: TokenStream, item: TokenStream) -> TokenStream 
 /// back with `ctx.metadata()`, which every context carries, so a guard written over
 /// `HandlerContext` reads it on any of them.
 ///
-/// **On gRPC a handler cannot read it.** The tonic trait dictates that signature and never passes
-/// the context, so what a service declares is visible to its guards, interceptors and error
-/// handlers, and not to the method itself. Everywhere else a handler can take the context or an
-/// extractor over it.
+/// On gRPC a handler reaches the context differently rather than not at all. The tonic trait
+/// dictates that signature, so guards, interceptors and error handlers receive one as a parameter
+/// and a handler takes it off the request — `GrpcContext::of(request.extensions())`. What the
+/// service declared is readable either way. Everywhere else a handler takes the context or an
+/// extractor over it as an ordinary parameter.
 ///
 /// A type nothing declared reads back as absent rather than as an error, which is what lets one
 /// guard serve annotated and unannotated handlers alike.
