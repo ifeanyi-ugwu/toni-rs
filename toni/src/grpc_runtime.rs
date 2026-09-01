@@ -113,7 +113,7 @@ async fn run_grpc_guards_inline(
         let activated = match catch_async(PipelineSegment::Guard, guard.can_activate(ctx)).await {
             Ok(b) => b,
             Err(event) => {
-                tracing::error!(guard_index = index, panic = %event.message, "guard panicked");
+                tracing::debug!(guard_index = index, panic = %event.message, "guard panicked");
                 let claimed = run_grpc_error_chain(ctx, enhancers, method, &event).await;
                 return Err(claimed.unwrap_or_else(|| {
                     GrpcStatus::new(

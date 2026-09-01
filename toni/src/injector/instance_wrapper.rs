@@ -269,7 +269,7 @@ impl InstanceWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    tracing::debug!(guard_index = i, "guard panicked");
+                    tracing::debug!(guard_index = i, panic = %event.message, "guard panicked");
                     return Self::handle_framework_event(event, &error_handlers, context).await;
                 }
             };
