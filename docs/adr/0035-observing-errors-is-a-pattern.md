@@ -64,9 +64,9 @@ the fact.
   `toni::errors::Cancelled`.
 - A panicking `#[catch]` handler and a panicking renderer are logged, and the pipeline carries on as
   before: the next handler for the first, a hardcoded envelope for the second.
-- An RPC guard panic is refused at the dispatcher rather than routed through the chain, so the wire
-  `forbidden` frame and the log are the whole of its signal. HTTP and WebSocket route a guard panic
-  through the chain, where `#[catch(PanicRecovered)]` still claims it.
+- A guard panic reaches the chain wherever there is an answer to shape, so `#[catch(PanicRecovered)]`
+  claims it and an unclaimed one renders `Internal`. The exception is a WebSocket connect, which
+  refuses the upgrade and has nothing to shape.
 - `PipelineSegment` stays: it is carried on `PanicRecovered`, which the chain still delivers.
 - Error telemetry has three shapes, all of them already supported: log inside a declining `#[catch]`,
   install a `tracing` layer, or publish and observe in a consumer.

@@ -79,17 +79,20 @@ async fn run_grpc_guards_inline(
 
     let guards = resolve_guards(&all_guards, ctx).await;
     for (index, guard) in guards.iter().enumerate() {
-        // A panic inside `can_activate` is treated as a hard rejection: the
-        // wire response is `PermissionDenied`, matching the semantic of
-        // "guard said no" rather than tearing the request down.
+        // A panicking guard is a bug, not a verdict: the chain gets first
+        // claim on the typed event, and an unclaimed one renders `Internal`
+        // rather than telling the caller its credentials were refused.
         let activated = match catch_async(PipelineSegment::Guard, guard.can_activate(ctx)).await {
             Ok(b) => b,
             Err(event) => {
-                tracing::error!(guard_index = index, panic = %event.message, "guard panicked; refusing the call");
-                return Err(GrpcStatus::permission_denied(format!(
-                    "guard {} panicked: {}",
-                    index, event.message
-                )));
+                tracing::error!(guard_index = index, panic = %event.message, "guard panicked");
+                let claimed = run_grpc_error_chain(ctx, enhancers, method, &event).await;
+                return Err(claimed.unwrap_or_else(|| {
+                    GrpcStatus::new(
+                        crate::grpc_status::GrpcCode::Internal,
+                        format!("guard {} panicked: {}", index, event.message),
+                    )
+                }));
             }
         };
         if !activated {

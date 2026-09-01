@@ -1492,11 +1492,12 @@ async fn boot_interceptor_panic() -> (u16, toni::ShutdownHandle) {
     (port_rx.await.unwrap(), shutdown_rx.await.unwrap())
 }
 
-/// A panicking guard surfaces as `PermissionDenied` rather than tearing
-/// down the connection — matching the "guard said no" semantic. A second
-/// call confirms the server stays up across the catch.
+/// A panicking guard surfaces as `Internal` rather than tearing down the
+/// connection: it is a bug, not the "guard said no" verdict a
+/// `PermissionDenied` would report. A second call confirms the server stays
+/// up across the catch.
 #[tokio_localset_test::localset_test]
-async fn grpc_panic_in_guard_surfaces_as_permission_denied() {
+async fn grpc_panic_in_guard_surfaces_as_internal() {
     let (port, shutdown) = boot_guard_panic().await;
     let mut client = connect(port).await;
 
@@ -1508,7 +1509,7 @@ async fn grpc_panic_in_guard_surfaces_as_permission_denied() {
         .await
         .expect_err("guard panic must produce an Err — not a connection drop");
 
-    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert_eq!(err.code(), tonic::Code::Internal);
     assert!(
         err.message().contains("panicked"),
         "wire message should mention the panic; got {:?}",
@@ -1522,7 +1523,7 @@ async fn grpc_panic_in_guard_surfaces_as_permission_denied() {
         })
         .await
         .expect_err("subsequent guard panic must also surface as Err");
-    assert_eq!(err2.code(), tonic::Code::PermissionDenied);
+    assert_eq!(err2.code(), tonic::Code::Internal);
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(2), shutdown.completed())

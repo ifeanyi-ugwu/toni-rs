@@ -557,7 +557,7 @@ impl RpcGuardPanicController {
 impl RpcGuardPanicModule {}
 
 #[tokio_localset_test::localset_test]
-async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
+async fn rpc_guard_panic_surfaces_as_internal_and_keeps_connection_alive() {
     let port = start_rpc_server(RpcGuardPanicModule).await;
 
     let resp = tcp_rpc_timeout(
@@ -568,9 +568,11 @@ async fn rpc_guard_panic_surfaces_as_forbidden_and_keeps_connection_alive() {
     )
     .await
     .expect("guard panic must produce a reply, not hang");
-    // A guard panic is refused at the dispatcher rather than routed through
-    // the chain, so the `forbidden` frame is the whole of what a caller sees.
-    assert_eq!(resp["err"]["status"], "forbidden");
+    // A panicking guard is a bug, not a verdict: unclaimed, it renders the
+    // same `Internal` envelope a panicking handler does.
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal", "reply: {resp}");
 
     let resp = tcp_rpc_timeout(
         port,
