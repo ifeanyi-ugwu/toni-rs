@@ -9,8 +9,7 @@ use crate::context::WsContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
-    ErrorObserver, Guard, Interceptor, InterceptorNext, WsErrorHandlerArc, WsGuardEntry,
-    WsInterceptorEntry,
+    Guard, Interceptor, InterceptorNext, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
 };
 
 use super::{
@@ -66,7 +65,6 @@ struct WsChainNext {
     interceptors: Vec<Arc<dyn Interceptor<WsContext, WsHandlerResult>>>,
     gateway: Arc<Box<dyn GatewayTrait>>,
     error_handlers: Vec<WsErrorHandlerArc>,
-    observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 #[async_trait]
@@ -77,7 +75,6 @@ impl InterceptorNext<WsContext, WsHandlerResult> for WsChainNext {
             &self.interceptors,
             &self.gateway,
             &self.error_handlers,
-            &self.observers,
         )
         .await
     }
@@ -90,7 +87,6 @@ pub struct GatewayWrapper {
     guards: Vec<WsGuardEntry>,
     interceptors: Vec<WsInterceptorEntry>,
     error_handlers: Vec<WsErrorHandlerArc>,
-    error_observers: Vec<Arc<dyn ErrorObserver>>,
     metadata: Arc<Metadata>,
     /// Per-event metadata, already merged over `metadata` at expansion. An event absent here
     /// declared nothing of its own and reads the gateway's.
@@ -109,7 +105,6 @@ impl GatewayWrapper {
         guards: Vec<WsGuardEntry>,
         interceptors: Vec<WsInterceptorEntry>,
         error_handlers: Vec<WsErrorHandlerArc>,
-        error_observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
         handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<WsGuardEntry>>,
@@ -121,7 +116,6 @@ impl GatewayWrapper {
             guards,
             interceptors,
             error_handlers,
-            error_observers,
             metadata,
             handler_metadata,
             handler_guards,
@@ -161,8 +155,9 @@ impl GatewayWrapper {
         let guards = Self::resolve_guards(&self.guards, &context).await;
         for (i, guard) in guards.iter().enumerate() {
             // A panic in `can_activate` is treated as a hard rejection so the
-            // dispatcher doesn't tear down. Observers see
-            // `PanicRecovered { during: Guard }`; the connection is refused.
+            // dispatcher doesn't tear down: the panic is logged and the
+            // connection is refused. A connect has no chain to route it
+            // through — there is no answer to shape on a refused upgrade.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
                 guard.can_activate(&context),
@@ -171,8 +166,7 @@ impl GatewayWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    tracing::debug!(client_id = %client.id, guard_index = i, "guard panicked during connect");
-                    Self::fan_out_observers(&self.error_observers, &event, &context).await;
+                    tracing::error!(client_id = %client.id, guard_index = i, panic = %event.message, "connect guard panicked; refusing the connection");
                     return Err(WsError::AuthFailed(format!(
                         "guard {} panicked: {}",
                         i, event.message
@@ -181,9 +175,7 @@ impl GatewayWrapper {
             };
             if !activated {
                 tracing::debug!(client_id = %client.id, guard_index = i, "guard rejected WebSocket connection");
-                let err = WsError::AuthFailed("Guard rejected connection".into());
-                Self::fan_out_observers(&self.error_observers, &err, &context).await;
-                return Err(err);
+                return Err(WsError::AuthFailed("Guard rejected connection".into()));
             }
         }
 
@@ -262,25 +254,17 @@ impl GatewayWrapper {
                 Err(event) => {
                     // Guard panic is a developer error, not a rejection
                     // verdict: route through the same path as other
-                    // pipeline panics so observers + chain run once and
-                    // the canonical envelope reaches the client. Without
-                    // this, `WsError::AuthFailed` would silently drop in
-                    // `ToniApplication`'s message callback and the only
-                    // signal would be observer-side.
-                    return Self::record_pipeline_panic(
-                        &context,
-                        &all_error_handlers,
-                        &self.error_observers,
-                        event,
-                    )
-                    .await;
+                    // pipeline panics so the chain runs once and the
+                    // canonical envelope reaches the client. Without this,
+                    // `WsError::AuthFailed` would drop unsent in
+                    // `ToniApplication`'s message callback.
+                    return Self::record_pipeline_panic(&context, &all_error_handlers, event).await;
                 }
             };
             if !activated {
                 return Self::record_guard_rejection(
                     &context,
                     &all_error_handlers,
-                    &self.error_observers,
                     crate::errors::GuardRejection::new(guard_index),
                 )
                 .await;
@@ -294,7 +278,6 @@ impl GatewayWrapper {
             &interceptors,
             &self.gateway,
             &all_error_handlers,
-            &self.error_observers,
         )
         .await;
 
@@ -348,16 +331,10 @@ impl GatewayWrapper {
         interceptors: &[Arc<dyn Interceptor<WsContext, WsHandlerResult>>],
         gateway: &Arc<Box<dyn GatewayTrait>>,
         error_handlers: &[WsErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> WsHandlerResult {
         if interceptors.is_empty() {
-            return Self::execute_handler_with_error_handling(
-                context,
-                gateway,
-                error_handlers,
-                observers,
-            )
-            .await;
+            return Self::execute_handler_with_error_handling(context, gateway, error_handlers)
+                .await;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
@@ -366,7 +343,6 @@ impl GatewayWrapper {
             interceptors: rest.to_vec(),
             gateway: gateway.clone(),
             error_handlers: error_handlers.to_vec(),
-            observers: observers.to_vec(),
         };
 
         match crate::panic_recovery::catch_async(
@@ -376,34 +352,28 @@ impl GatewayWrapper {
         .await
         {
             Ok(answer) => answer,
-            Err(event) => {
-                Self::record_pipeline_panic(context, error_handlers, observers, event).await
-            }
+            Err(event) => Self::record_pipeline_panic(context, error_handlers, event).await,
         }
     }
 
     /// Surface a panicking pre-handler segment (an interceptor; it flows
     /// through `execute_handler`'s `ExecutionResult::Err` instead) through
-    /// the existing observer + chain pipeline so it cannot tear down the
-    /// connection. Fan to observers, give error handlers first claim,
-    /// and fall back to a wire-`Err` frame.
+    /// the chain so it cannot tear down the connection. Error handlers get
+    /// first claim, and the fallback is a wire-`Err` frame.
     async fn record_pipeline_panic(
         context: &WsContext,
         error_handlers: &[WsErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) -> WsHandlerResult {
-        Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
-            if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, context, observers).await
-            {
+            if let Some(claimed) = Self::try_chain_handler(handler, &event, context).await {
                 return Ok(WsHandlerOutput::Single(claimed));
             }
         }
         let ws_err = WsError::from(event);
-        let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
-        Ok(WsHandlerOutput::Single(msg))
+        Ok(WsHandlerOutput::Single(Self::safe_render(|| {
+            ws_err.to_message()
+        })))
     }
 
     /// Route a guard's refusal through the chain, as HTTP does.
@@ -416,36 +386,27 @@ impl GatewayWrapper {
     async fn record_guard_rejection(
         context: &WsContext,
         error_handlers: &[WsErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
         rejection: crate::errors::GuardRejection,
     ) -> WsHandlerResult {
-        Self::fan_out_observers(observers, &rejection, context).await;
         for handler in error_handlers.iter().rev() {
-            if let Some(claimed) =
-                Self::try_chain_handler(handler, &rejection, context, observers).await
-            {
+            if let Some(claimed) = Self::try_chain_handler(handler, &rejection, context).await {
                 return Ok(WsHandlerOutput::Single(claimed));
             }
         }
-        let msg = Self::safe_render(
-            || super::ws_error::render_error(&rejection),
-            observers,
-            context,
-        )
-        .await;
-        Ok(WsHandlerOutput::Single(msg))
+        Ok(WsHandlerOutput::Single(Self::safe_render(|| {
+            super::ws_error::render_error(&rejection)
+        })))
     }
 
     /// Run the handler, then route the outcome.
     ///
-    /// `Ok` is the answer, streams included. On `Err`, observers fan out on the
-    /// underlying error, the chain's most-specific handler gets first claim,
-    /// and `WsError::to_message` is the fallback frame when none claims.
+    /// `Ok` is the answer, streams included. On `Err`, the chain's
+    /// most-specific handler gets first claim on the underlying error, and
+    /// `WsError::to_message` is the fallback frame when none claims.
     async fn execute_handler_with_error_handling(
         context: &WsContext,
         gateway: &Arc<Box<dyn GatewayTrait>>,
         error_handlers: &[WsErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> WsHandlerResult {
         match Self::execute_handler(context, gateway).await {
             ExecutionResult::Ok(output) => Ok(output),
@@ -454,36 +415,24 @@ impl GatewayWrapper {
                     WsError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
-                    if let Some(msg) =
-                        Self::try_chain_handler(handler, observed_err, context, observers).await
+                    if let Some(msg) = Self::try_chain_handler(handler, observed_err, context).await
                     {
                         return Ok(WsHandlerOutput::Single(msg));
                     }
                 }
-                let msg = Self::safe_render(|| ws_err.to_message(), observers, context).await;
-                Ok(WsHandlerOutput::Single(msg))
+                Ok(WsHandlerOutput::Single(Self::safe_render(|| {
+                    ws_err.to_message()
+                })))
             }
         }
     }
 
-    /// Run one chain handler with panic recovery: a panicking
-    /// `handle_error` fans `PanicRecovered { during: ErrorHandler }` to
-    /// observers and returns `None` so the caller continues to the next
-    /// handler. Without this, a single bad chain handler would kill the
-    /// whole error-recovery path and the original error would never
-    /// reach the fallback `to_message` rendering.
     /// Drive `WsError::to_message` with panic recovery — a panic in the
-    /// renderer would close the connection without ever framing an
-    /// outbound error message. Policy: fan
-    /// `PanicRecovered { during: ResponseRendering }` to observers,
-    /// substitute a hardcoded text frame.
-    async fn safe_render<F>(
-        render: F,
-        observers: &[Arc<dyn ErrorObserver>],
-        ctx: &WsContext,
-    ) -> WsMessage
+    /// renderer would close the connection without ever framing an outbound
+    /// error message. Policy: log the panic and substitute a hardcoded text
+    /// frame.
+    fn safe_render<F>(render: F) -> WsMessage
     where
         F: FnOnce() -> WsMessage,
     {
@@ -493,7 +442,7 @@ impl GatewayWrapper {
         ) {
             Ok(msg) => msg,
             Err(panic_event) => {
-                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                tracing::error!(panic = %panic_event.message, "error renderer panicked; falling back to a bare text frame");
                 Self::fallback_internal_message()
             }
         }
@@ -504,11 +453,15 @@ impl GatewayWrapper {
         WsMessage::text("Internal Server Error")
     }
 
+    /// Run one chain handler with panic recovery: a panicking
+    /// `handle_error` is logged and answers `None`, so the caller continues
+    /// to the next handler. Without this, a single bad chain handler would
+    /// kill the whole error-recovery path and the original error would
+    /// never reach the fallback `to_message` rendering.
     async fn try_chain_handler(
         handler: &WsErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &WsContext,
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<WsMessage> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
@@ -518,28 +471,8 @@ impl GatewayWrapper {
         {
             Ok(opt) => opt,
             Err(panic_event) => {
-                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                tracing::error!(error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
                 None
-            }
-        }
-    }
-
-    async fn fan_out_observers(
-        observers: &[Arc<dyn ErrorObserver>],
-        error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &WsContext,
-    ) {
-        for observer in observers {
-            let observe = AssertUnwindSafe(observer.observe(error, ctx));
-            if let Err(payload) = observe.catch_unwind().await {
-                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-                    *s
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.as_str()
-                } else {
-                    "<panic payload was not a string>"
-                };
-                tracing::error!(error = %error, panic = %msg, "error observer panicked");
             }
         }
     }
@@ -672,7 +605,6 @@ mod tests {
 
         GatewayWrapper::new(
             Arc::new(Box::new(TestGateway)),
-            vec![],
             vec![],
             vec![],
             vec![],

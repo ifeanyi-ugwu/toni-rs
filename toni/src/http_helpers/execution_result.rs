@@ -1,10 +1,10 @@
 //! Result shape every transport's controller boundary returns.
 //!
 //! Carries either the rendered response (success path) or the transport's
-//! handler error type (error path). The dispatcher uses the typed error to
-//! fan [`ErrorObserver`](crate::traits_helpers::ErrorObserver)s and run the
-//! [`ErrorHandler`](crate::traits_helpers::ErrorHandler) chain on it; if no
-//! chain handler claims, the error renders itself via the transport's
+//! handler error type (error path). The dispatcher runs the
+//! [`ErrorHandler`](crate::traits_helpers::ErrorHandler) chain on the typed
+//! error; if no chain handler claims, the error renders itself via the
+//! transport's
 //! inherent rendering method (`HttpError::to_response`,
 //! `RpcError::to_data`, `WsError::to_message`).
 //!

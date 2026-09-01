@@ -17,9 +17,7 @@
 
 use std::sync::Arc;
 
-use crate::traits_helpers::{
-    ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry,
-};
+use crate::traits_helpers::{GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry};
 
 /// Per-service bundle of resolved enhancer instances. Built by the framework
 /// at create from the token getters on [`GrpcServiceSource`] and handed to
@@ -44,10 +42,6 @@ pub struct ResolvedGrpcEnhancers {
     /// Method-level error handlers. Composed with service-level into one
     /// reverse-order chain per call.
     pub handler_error_handlers: std::collections::HashMap<String, Vec<GrpcErrorHandlerArc>>,
-    /// Universal error observers — fan out on guard rejections, caught
-    /// panics, and user-returned errs so logging / telemetry sees gRPC
-    /// pipeline events the same way HTTP/RPC/WS do.
-    pub error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 /// A gRPC service's declarations plus its registration hook — implemented by `#[grpc_methods]` on

@@ -1,9 +1,8 @@
 //! Typed events the framework emits when it — not a user handler — is the
 //! source of an error: guard rejections, middleware failures, panic
-//! recovery, client give-up. They implement [`crate::errors::Error`]
-//! and flow through the same observer + chain pipeline as user errors;
-//! chain handlers and observers can downcast to the concrete event to react
-//! to the underlying cause.
+//! recovery. They implement [`crate::errors::Error`] and flow through the
+//! same error-handler chain as user errors, so a `#[catch]` handler can
+//! downcast to the concrete event and react to the underlying cause.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -132,8 +131,8 @@ impl Error for MiddlewareFailure {
 }
 
 /// Where in the request pipeline a panic was caught. Carried on
-/// [`PanicRecovered`] so observers and chain handlers can branch on the
-/// site without parsing the message.
+/// [`PanicRecovered`] so chain handlers can branch on the site without
+/// parsing the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PipelineSegment {
@@ -234,41 +233,6 @@ impl std::error::Error for PanicRecovered {}
 impl Error for PanicRecovered {
     fn kind(&self) -> ErrorKind {
         ErrorKind::Internal
-    }
-}
-
-/// Emitted when the framework detected the client gave up — disconnect
-/// before the handler finished, or a deadline / cancellation token
-/// firing. Observer-only by convention: there's no response to override
-/// because the client isn't listening anymore.
-#[derive(Debug, Clone)]
-pub struct Cancelled {
-    pub reason: String,
-}
-
-impl Cancelled {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-}
-
-impl fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "request cancelled: {}", self.reason)
-    }
-}
-
-impl std::error::Error for Cancelled {}
-
-impl Error for Cancelled {
-    fn kind(&self) -> ErrorKind {
-        // Cancelled is observer-only by convention; if it ever does flow
-        // through the chain and nothing claims, this is the most honest
-        // surface code: 499 isn't an option in our taxonomy and wrapping
-        // it as a 500 would lie about server failure.
-        ErrorKind::Unavailable
     }
 }
 

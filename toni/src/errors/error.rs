@@ -92,8 +92,8 @@ impl ErrorKind {
 }
 
 /// The framework's error contract — `std::error::Error` plus the metadata
-/// the toni pipeline needs (`kind` for chain dispatch, observer routing,
-/// and rendering; `message`; `details`).
+/// the toni pipeline needs (`kind` for chain dispatch and rendering;
+/// `message`; `details`).
 ///
 /// Implementing `Error` makes the type renderable on every transport via
 /// the per-transport `From<E: Error>` blankets — it `?`-flows into

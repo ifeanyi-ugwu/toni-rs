@@ -34,6 +34,3 @@ pub use self::error_handler::{
     ChainError, DefaultHttpErrorHandler, DefaultRpcErrorHandler, DefaultWsErrorHandler,
     ErrorHandler,
 };
-
-pub mod error_observer;
-pub use self::error_observer::ErrorObserver;

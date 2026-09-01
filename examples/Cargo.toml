@@ -19,6 +19,7 @@ toni-config = { path = "../toni-config" }
 toni-tcp = { path = "../toni-tcp" }
 toni-udp = { path = "../toni-udp" }
 toni-nats = { path = "../toni-nats" }
+toni-rabbitmq = { path = "../toni-rabbitmq" }
 toni-grpc = { path = "../toni-grpc" }
 tonic = "0.14"
 tonic-prost = "0.14"
@@ -171,3 +172,7 @@ path = "request_scoped_context.rs"
 [[example]]
 name = "rpc_streaming"
 path = "rpc_streaming.rs"
+
+[[example]]
+name = "error_telemetry"
+path = "error_telemetry.rs"

@@ -17,8 +17,8 @@ pub trait RpcControllerTrait: Send + Sync {
     /// `Ok(Single(reply))` or `Ok(Stream(..))` for request-response patterns
     /// (`#[message_pattern]`), `Ok(Empty)` for fire-and-forget events
     /// (`#[event_pattern]`), and `Err` carrying the user's typed error so the
-    /// dispatcher can fan observers + run the chain on it before falling back
-    /// to `RpcError::to_data`.
+    /// dispatcher can run the chain on it before falling back to
+    /// `RpcError::to_data`.
     async fn handle_message(
         &self,
         ctx: &RpcContext,

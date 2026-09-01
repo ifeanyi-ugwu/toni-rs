@@ -58,13 +58,11 @@ impl GatewayResolver {
             );
         }
 
-        let error_observers = self.container.borrow().get_global_error_observers();
         Ok(GatewayWrapper::new(
             gateway,
             guards,
             interceptors,
             error_handlers,
-            error_observers,
             metadata,
             handler_metadata,
             handler_guards,

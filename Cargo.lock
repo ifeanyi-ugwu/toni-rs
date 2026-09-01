@@ -8076,6 +8076,7 @@ dependencies = [
  "toni-macros",
  "toni-nats",
  "toni-poem",
+ "toni-rabbitmq",
  "toni-rocket",
  "toni-salvo",
  "toni-tcp",

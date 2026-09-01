@@ -29,7 +29,6 @@ impl RpcControllerResolver {
         let guards = self.resolve_guards(enhancers.guard_tokens)?;
         let interceptors = self.resolve_interceptors(enhancers.interceptor_tokens)?;
         let error_handlers = self.resolve_error_handlers(enhancers.error_handler_tokens)?;
-        let error_observers = self.container.borrow().get_global_error_observers();
         let metadata = source.metadata();
         let handler_metadata: HashMap<String, std::sync::Arc<crate::context::Metadata>> =
             source.handler_metadata().into_iter().collect();
@@ -59,7 +58,6 @@ impl RpcControllerResolver {
             guards,
             interceptors,
             error_handlers,
-            error_observers,
             metadata,
             handler_metadata,
             handler_guards,

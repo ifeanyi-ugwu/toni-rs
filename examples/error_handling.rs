@@ -151,10 +151,11 @@ impl Guard<HttpContext> for AuthGuard {
 
 // ---- #[catch] escape hatch: reshape guard-rejection 4xx --------------------
 //
-// User errors render directly through the active transport. The chain only fires for framework-
-// generated events — `GuardRejection`, `MiddlewareFailure`, etc. A `#[catch]`
-// registered on a controller dispatches on the typed event and reshapes the
-// response.
+// The chain sees both user errors and framework-generated events —
+// `GuardRejection`, `MiddlewareFailure`, `PanicRecovered`. A `#[catch]`
+// registered on a controller dispatches on the typed error and reshapes the
+// response; returning `None` declines it and leaves the canonical rendering
+// in place.
 
 #[catch(toni::errors::GuardRejection)]
 async fn auth_failure(err: &toni::errors::GuardRejection, _ctx: &HttpContext) -> HttpResponse {

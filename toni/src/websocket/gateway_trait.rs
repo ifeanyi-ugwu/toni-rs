@@ -90,9 +90,8 @@ pub trait GatewayTrait: Send + Sync {
     /// Route message to appropriate handler based on event name.
     ///
     /// `Ok(WsHandlerOutput)` for the success path (Empty / Single / Stream);
-    /// `Err` carries the user's typed error so the dispatcher can fan
-    /// observers + run the chain on it before falling back to
-    /// `WsError::to_message`.
+    /// `Err` carries the user's typed error so the dispatcher can run the
+    /// chain on it before falling back to `WsError::to_message`.
     async fn handle_event(&self, ctx: &WsContext) -> ExecutionResult<WsHandlerOutput, WsError>;
 
     /// What the gateway declares for every handler, before any handler adds to it.
