@@ -38,6 +38,7 @@ mod graphql_subscriptions;
 mod grpc_client_injection;
 mod grpc_deadline;
 mod grpc_global_enhancers;
+mod grpc_reflection;
 mod grpc_service_injection;
 mod grpc_stream_optin;
 mod grpc_tail;

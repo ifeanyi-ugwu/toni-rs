@@ -60,6 +60,40 @@
 //! straight through to tonic. Services registered via DI go through guards,
 //! interceptors, error handlers, and the panic catcher.
 //!
+//! # Reflection and health
+//!
+//! Both are ordinary services, so both arrive through `add_service` rather than
+//! through anything this crate owns. Reflection lets `grpcurl` and its kin
+//! explore the server without a local `.proto`:
+//!
+//! ```ignore
+//! // build.rs — write the compiled schema somewhere the binary can read it
+//! let descriptor = PathBuf::from(env::var("OUT_DIR")?).join("orders_descriptor.bin");
+//! tonic_prost_build::configure()
+//!     .file_descriptor_set_path(&descriptor)
+//!     .compile_protos(&["proto/orders.proto"], &["proto"])?;
+//!
+//! // main.rs
+//! const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/orders_descriptor.bin"));
+//!
+//! let reflection = tonic_reflection::server::Builder::configure()
+//!     .register_encoded_file_descriptor_set(DESCRIPTOR)
+//!     .build_v1()?;
+//! let adapter = toni_grpc::GrpcAdapter::new(addr).add_service(reflection);
+//! ```
+//!
+//! `grpcurl -plaintext 127.0.0.1:50051 list` then answers with the services
+//! the framework registered from `#[grpc_methods]`, since reflection and DI
+//! discovery reach the same route set.
+//!
+//! Register the versions the callers need: newer tooling speaks
+//! `grpc.reflection.v1`, older speaks `v1alpha`, and `build_v1alpha()` is the
+//! other constructor. Which schemas a server exposes is a policy decision,
+//! which is why it is written out rather than switched on.
+//!
+//! `tonic-health` works the same way — `tonic_health::server::health_reporter()`
+//! hands back a service and a reporter, and the service goes to `add_service`.
+//!
 //! # Drain timeout
 //!
 //! On shutdown the framework calls the adapter's `close`, which signals
