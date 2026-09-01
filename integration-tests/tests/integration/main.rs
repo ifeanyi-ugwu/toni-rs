@@ -43,6 +43,7 @@ mod grpc_stream_optin;
 mod grpc_tail;
 mod grpc_tls;
 mod guard_mut_context;
+mod guard_panic_is_an_event;
 mod guard_rejection_is_an_event;
 mod http_e2e;
 mod import_cycle;
