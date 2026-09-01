@@ -265,7 +265,7 @@ pub async fn run_grpc_error_chain(
     if let Some(per_method) = enhancers.handler_error_handlers.get(method) {
         all.extend_from_slice(per_method);
     }
-    for handler in all.iter().rev() {
+    for (position, handler) in all.iter().rev().enumerate() {
         // Wrap the chain handler so a panicking `handle_error` doesn't
         // kill the rest of the chain (and lose the original error).
         // Policy: log the panic, treat it as a `None` claim, move on to
@@ -279,7 +279,7 @@ pub async fn run_grpc_error_chain(
             Ok(Some(claimed)) => return Some(claimed),
             Ok(None) => continue,
             Err(panic_event) => {
-                tracing::error!(error = %err, panic = %panic_event.message, "error handler panicked; trying the next one");
+                tracing::error!(chain_position = position, error = %err, panic = %panic_event.message, "error handler panicked; trying the next one");
             }
         }
     }
