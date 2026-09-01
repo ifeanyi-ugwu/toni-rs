@@ -7,6 +7,12 @@ license = "MIT"
 keywords = ["toni", "grpc", "tonic", "framework", "adapter"]
 categories = ["network-programming"]
 
+[features]
+# TLS mirrors tonic's own backend choice rather than picking one: `tls_config`
+# needs a crypto provider, and which one is the deployment's call.
+tls-ring = ["tonic/tls-ring"]
+tls-aws-lc = ["tonic/tls-aws-lc"]
+
 [dependencies]
 toni = { path = "../toni", default-features = false }
 tonic = "0.14"

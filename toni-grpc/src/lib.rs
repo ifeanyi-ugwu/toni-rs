@@ -93,6 +93,26 @@
 //!
 //! `tonic-health` works the same way — `tonic_health::server::health_reporter()`
 //! hands back a service and a reporter, and the service goes to `add_service`.
+//! # TLS
+//!
+//! [`GrpcAdapter::with_tls`] takes `tonic::transport::ServerTlsConfig` as it is.
+//! Where certificates come from, how they rotate and whether client
+//! certificates are demanded differ per deployment, so the configuration is
+//! passed through rather than wrapped — mTLS is `ServerTlsConfig::client_ca_root`,
+//! and the rest of the surface is tonic's.
+//!
+//! ```ignore
+//! let identity = Identity::from_pem(fs::read("server.pem")?, fs::read("server.key")?);
+//! let adapter = toni_grpc::GrpcAdapter::new(addr)
+//!     .with_tls(ServerTlsConfig::new().identity(identity));
+//! ```
+//!
+//! The acceptor is built during `app.bind()`, so an unreadable certificate
+//! fails startup rather than the first connection.
+//!
+//! Enable `tls-ring` or `tls-aws-lc` — the same crypto-provider choice tonic
+//! asks for, left where the deployment can make it. With both enabled tonic
+//! resolves to ring.
 //!
 //! # Drain timeout
 //!

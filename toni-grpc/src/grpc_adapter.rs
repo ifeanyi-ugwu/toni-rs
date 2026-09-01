@@ -94,6 +94,11 @@ pub struct GrpcAdapter {
     /// one slow client monopolise its own connection without starving
     /// others even when the global cap isn't hit.
     max_per_connection: Option<usize>,
+    /// Applied to the tonic `Server` before its routes, and validated at
+    /// bind — a certificate the process cannot load is a startup failure, not
+    /// a surprise on the first connection.
+    #[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+    tls: Option<tonic::transport::ServerTlsConfig>,
     /// Two consumers subscribe: tonic's `serve_with_incoming_shutdown` (so
     /// it begins natural drain), and the drain-timeout guard (so the deadline
     /// timer starts only *after* shutdown is signalled, not at startup).
@@ -127,6 +132,8 @@ impl GrpcAdapter {
             drain_timeout: Some(DEFAULT_DRAIN_TIMEOUT),
             max_inflight: None,
             max_per_connection: None,
+            #[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+            tls: None,
             shutdown_tx: Arc::new(tx),
         }
     }
@@ -188,6 +195,27 @@ impl GrpcAdapter {
         self.max_per_connection = max.into();
         self
     }
+
+    /// Serve over TLS, with the configuration tonic defines.
+    ///
+    /// Taken verbatim rather than wrapped: where certificates come from, how
+    /// they rotate and whether client certificates are demanded are deployment
+    /// questions, and a builder of this framework's own would answer them for
+    /// the deployment. mTLS is `ServerTlsConfig::client_ca_root`, and the rest
+    /// of the surface is tonic's.
+    ///
+    /// The configuration is turned into an acceptor during `app.bind()`, so a
+    /// certificate that cannot be read fails startup rather than the first
+    /// connection.
+    ///
+    /// Requires the `tls-ring` or `tls-aws-lc` feature, which chooses the
+    /// crypto provider — the same choice tonic asks for, left where the
+    /// deployment can make it.
+    #[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+    pub fn with_tls(mut self, config: tonic::transport::ServerTlsConfig) -> Self {
+        self.tls = Some(config);
+        self
+    }
 }
 
 #[async_trait]
@@ -244,6 +272,43 @@ impl toni::GrpcAdapter for GrpcAdapter {
         // reached directly.
         let (deadline_tx, deadline_rx) = tokio::sync::watch::channel(false);
 
+        // Backpressure stack:
+        //   - `GlobalConcurrencyLimitLayer` caps in-flight requests
+        //     across all connections. `tower::util::option_layer`
+        //     keeps the builder's type constant whether or not the
+        //     cap is set (would otherwise vary with each `.layer()`
+        //     call, breaking the conditional builder).
+        //   - tonic's `concurrency_limit_per_connection` adds a
+        //     per-connection cap (returns `Self`, so chainable).
+        //   - `load_shed(true)` flips at-cap `NotReady` into an
+        //     immediate `ResourceExhausted` reject; without it,
+        //     callers would queue indefinitely and defeat the
+        //     OOM-protection point.
+        //
+        // Built here rather than inside the serve future so a TLS configuration
+        // that cannot be turned into an acceptor fails `app.bind()` — the
+        // refuse-or-none contract of ADR-0024 — instead of killing the serve
+        // task after the socket is already open.
+        let mut builder = Server::builder()
+            .layer(TracingLayer::new())
+            .layer(DrainLayer::new(deadline_rx))
+            .layer(MethodPathLayer::new())
+            .layer(tower::util::option_layer(
+                max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
+            ));
+        if let Some(n) = max_per_connection {
+            builder = builder.concurrency_limit_per_connection(n);
+        }
+        if max_inflight.is_some() || max_per_connection.is_some() {
+            builder = builder.load_shed(true);
+        }
+        #[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+        if let Some(tls) = self.tls.take() {
+            builder = builder
+                .tls_config(tls)
+                .context("GrpcAdapter: TLS configuration could not be accepted")?;
+        }
+
         let serve = Box::pin(async move {
             // Tonic's shutdown signal: fires when the watch flips to true.
             // From there tonic begins natural drain — completes once every
@@ -260,32 +325,6 @@ impl toni::GrpcAdapter for GrpcAdapter {
                     None => std::future::pending::<()>().await,
                 }
             };
-
-            // Backpressure stack:
-            //   - `GlobalConcurrencyLimitLayer` caps in-flight requests
-            //     across all connections. `tower::util::option_layer`
-            //     keeps the builder's type constant whether or not the
-            //     cap is set (would otherwise vary with each `.layer()`
-            //     call, breaking the conditional builder).
-            //   - tonic's `concurrency_limit_per_connection` adds a
-            //     per-connection cap (returns `Self`, so chainable).
-            //   - `load_shed(true)` flips at-cap `NotReady` into an
-            //     immediate `ResourceExhausted` reject; without it,
-            //     callers would queue indefinitely and defeat the
-            //     OOM-protection point.
-            let mut builder = Server::builder()
-                .layer(TracingLayer::new())
-                .layer(DrainLayer::new(deadline_rx))
-                .layer(MethodPathLayer::new())
-                .layer(tower::util::option_layer(
-                    max_inflight.map(tower::limit::GlobalConcurrencyLimitLayer::new),
-                ));
-            if let Some(n) = max_per_connection {
-                builder = builder.concurrency_limit_per_connection(n);
-            }
-            if max_inflight.is_some() || max_per_connection.is_some() {
-                builder = builder.load_shed(true);
-            }
 
             let server_fut = builder
                 .add_routes(routes)
