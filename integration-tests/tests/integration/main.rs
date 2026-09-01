@@ -64,6 +64,7 @@ mod phase2_marker_free_e2e;
 mod phase2_new_ctor;
 mod phase2_provider_macro_autoref;
 mod phase2_use_site_coercion;
+mod pipeline_panic_is_an_event;
 mod provide_macro;
 mod provider_scope;
 mod provider_startup_check;
