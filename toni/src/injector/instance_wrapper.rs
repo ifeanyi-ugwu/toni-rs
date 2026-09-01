@@ -142,9 +142,9 @@ impl InstanceWrapper {
                 let stub = http::Request::builder().body(()).unwrap();
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
                 let event = MiddlewareFailure::new(e.to_string());
-                for handler in self.error_handlers.iter().rev() {
+                for (position, handler) in self.error_handlers.iter().rev().enumerate() {
                     if let Some(response) =
-                        Self::try_chain_handler(handler, &event, &error_ctx).await
+                        Self::try_chain_handler(handler, &event, &error_ctx, position).await
                     {
                         return response;
                     }
@@ -288,8 +288,8 @@ impl InstanceWrapper {
     where
         E: Error,
     {
-        for handler in error_handlers.iter().rev() {
-            if let Some(handled) = Self::try_chain_handler(handler, &event, ctx).await {
+        for (position, handler) in error_handlers.iter().rev().enumerate() {
+            if let Some(handled) = Self::try_chain_handler(handler, &event, ctx, position).await {
                 return handled;
             }
         }
@@ -318,12 +318,21 @@ impl InstanceWrapper {
     }
 
     /// Minimal hardcoded 500 used when the regular renderer panics.
-    /// Built with simple constructors that don't themselves render
-    /// user-supplied data, so a recursive panic here is structurally
-    /// impossible.
+    ///
+    /// The envelope is a string literal rather than a rendered value: the
+    /// renderer that just panicked was calling the error's own `kind()` and
+    /// `message()`, and this calls neither, so a recursive panic here is
+    /// structurally impossible. It keeps the canonical shape because a client
+    /// decoding `{statusCode, message, error}` should not meet a different
+    /// body on the one path it cannot anticipate.
     fn fallback_500_response() -> HttpResponse {
         HttpResponse {
-            body: Some(crate::http_helpers::Body::text("Internal Server Error")),
+            body: Some(
+                crate::http_helpers::Body::text(
+                    r#"{"statusCode":500,"message":"Internal Server Error","error":"Internal Server Error"}"#,
+                )
+                .with_content_type("application/json"),
+            ),
             status: 500,
             headers: vec![],
         }
@@ -334,10 +343,15 @@ impl InstanceWrapper {
     /// to the next handler. Without this, a single bad chain handler would
     /// kill the whole error-recovery path and the original error would
     /// never reach the fallback rendering.
+    ///
+    /// `position` counts from the most specific handler — the chain runs
+    /// method, then controller, then global — and is logged so a panic names
+    /// which registration it came from.
     async fn try_chain_handler(
         handler: &HttpErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &HttpContext,
+        position: usize,
     ) -> Option<HttpResponse> {
         match crate::panic_recovery::catch_async(
             PipelineSegment::ErrorHandler,
@@ -347,7 +361,7 @@ impl InstanceWrapper {
         {
             Ok(opt) => opt,
             Err(panic_event) => {
-                tracing::error!(error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
+                tracing::error!(chain_position = position, error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
                 None
             }
         }
@@ -394,8 +408,9 @@ impl InstanceWrapper {
         error_handlers: &[HttpErrorHandlerArc],
         event: PanicRecovered,
     ) -> HttpResponse {
-        for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = Self::try_chain_handler(handler, &event, context).await {
+        for (position, handler) in error_handlers.iter().rev().enumerate() {
+            if let Some(claimed) = Self::try_chain_handler(handler, &event, context, position).await
+            {
                 return claimed;
             }
         }
@@ -443,9 +458,9 @@ impl InstanceWrapper {
                     HttpError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                for handler in error_handlers.iter().rev() {
+                for (position, handler) in error_handlers.iter().rev().enumerate() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, context).await
+                        Self::try_chain_handler(handler, observed_err, context, position).await
                     {
                         return claimed;
                     }

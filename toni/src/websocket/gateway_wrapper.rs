@@ -365,8 +365,9 @@ impl GatewayWrapper {
         error_handlers: &[WsErrorHandlerArc],
         event: PanicRecovered,
     ) -> WsHandlerResult {
-        for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = Self::try_chain_handler(handler, &event, context).await {
+        for (position, handler) in error_handlers.iter().rev().enumerate() {
+            if let Some(claimed) = Self::try_chain_handler(handler, &event, context, position).await
+            {
                 return Ok(WsHandlerOutput::Single(claimed));
             }
         }
@@ -388,8 +389,10 @@ impl GatewayWrapper {
         error_handlers: &[WsErrorHandlerArc],
         rejection: crate::errors::GuardRejection,
     ) -> WsHandlerResult {
-        for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = Self::try_chain_handler(handler, &rejection, context).await {
+        for (position, handler) in error_handlers.iter().rev().enumerate() {
+            if let Some(claimed) =
+                Self::try_chain_handler(handler, &rejection, context, position).await
+            {
                 return Ok(WsHandlerOutput::Single(claimed));
             }
         }
@@ -415,8 +418,9 @@ impl GatewayWrapper {
                     WsError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                for handler in error_handlers.iter().rev() {
-                    if let Some(msg) = Self::try_chain_handler(handler, observed_err, context).await
+                for (position, handler) in error_handlers.iter().rev().enumerate() {
+                    if let Some(msg) =
+                        Self::try_chain_handler(handler, observed_err, context, position).await
                     {
                         return Ok(WsHandlerOutput::Single(msg));
                     }
@@ -449,8 +453,13 @@ impl GatewayWrapper {
     }
 
     /// Hardcoded fallback frame when the regular renderer panics.
+    ///
+    /// A string literal, so none of the user code the renderer was calling
+    /// runs again. It keeps the canonical envelope: a frame carries no content
+    /// type, so a bare string would reach the client's decoder as text where
+    /// every other error frame is an object.
     fn fallback_internal_message() -> WsMessage {
-        WsMessage::text("Internal Server Error")
+        WsMessage::text(r#"{"status":"error","kind":"Internal","message":"Internal Server Error"}"#)
     }
 
     /// Run one chain handler with panic recovery: a panicking
@@ -458,10 +467,15 @@ impl GatewayWrapper {
     /// to the next handler. Without this, a single bad chain handler would
     /// kill the whole error-recovery path and the original error would
     /// never reach the fallback `to_message` rendering.
+    ///
+    /// `position` counts from the most specific handler — the chain runs
+    /// event, then gateway, then global — and is logged so a panic names which
+    /// registration it came from.
     async fn try_chain_handler(
         handler: &WsErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &WsContext,
+        position: usize,
     ) -> Option<WsMessage> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
@@ -471,7 +485,7 @@ impl GatewayWrapper {
         {
             Ok(opt) => opt,
             Err(panic_event) => {
-                tracing::error!(error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
+                tracing::error!(chain_position = position, error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
                 None
             }
         }

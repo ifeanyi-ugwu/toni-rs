@@ -1025,9 +1025,9 @@ fn make_rpc_callbacks(
                 None,
                 info.extensions,
             );
-            for handler in global_error_handlers.iter().rev() {
+            for (position, handler) in global_error_handlers.iter().rev().enumerate() {
                 if let Some(claimed) =
-                    RpcControllerWrapper::try_chain_handler(handler, &event, &ctx).await
+                    RpcControllerWrapper::try_chain_handler(handler, &event, &ctx, position).await
                 {
                     return Ok(RpcHandlerOutput::Single(claimed));
                 }

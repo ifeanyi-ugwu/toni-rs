@@ -183,8 +183,9 @@ impl RpcControllerWrapper {
                 // an unclaimed one renders as the `forbidden` frame it always
                 // did.
                 let rejection = crate::errors::GuardRejection::new(index);
-                for handler in all_error_handlers.iter().rev() {
-                    if let Some(claimed) = Self::try_chain_handler(handler, &rejection, &ctx).await
+                for (position, handler) in all_error_handlers.iter().rev().enumerate() {
+                    if let Some(claimed) =
+                        Self::try_chain_handler(handler, &rejection, &ctx, position).await
                     {
                         return Ok(RpcHandlerOutput::Single(claimed));
                     }
@@ -233,9 +234,17 @@ impl RpcControllerWrapper {
     }
 
     /// Hardcoded fallback envelope when the regular renderer panics.
-    /// Uses [`RpcData::text`] so no user-supplied serialiser runs.
+    ///
+    /// Built from static values, so none of the user code the renderer was
+    /// calling runs again. It keeps the canonical envelope: an RPC frame
+    /// carries no content type, so a bare string would reach the caller's
+    /// decoder as a JSON string where every other reply is an object.
     fn fallback_internal_data() -> RpcData {
-        RpcData::text("Internal Server Error")
+        RpcData::json(serde_json::json!({
+            "status": "error",
+            "kind": "Internal",
+            "message": "Internal Server Error",
+        }))
     }
 
     /// Run one chain handler with panic recovery: a panicking
@@ -243,10 +252,15 @@ impl RpcControllerWrapper {
     /// to the next handler. Without this, a single bad chain handler would
     /// kill the whole error-recovery path and the original error would
     /// never reach the fallback `to_data` rendering.
+    ///
+    /// `position` counts from the most specific handler — the chain runs
+    /// pattern, then controller, then global — and is logged so a panic names
+    /// which registration it came from.
     pub(crate) async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &RpcContext,
+        position: usize,
     ) -> Option<RpcData> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
@@ -256,7 +270,7 @@ impl RpcControllerWrapper {
         {
             Ok(opt) => opt,
             Err(panic_event) => {
-                tracing::error!(error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
+                tracing::error!(chain_position = position, error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
                 None
             }
         }
@@ -329,8 +343,9 @@ impl RpcControllerWrapper {
         error_handlers: &[RpcErrorHandlerArc],
         event: PanicRecovered,
     ) -> RpcHandlerResult {
-        for handler in error_handlers.iter().rev() {
-            if let Some(claimed) = Self::try_chain_handler(handler, &event, context).await {
+        for (position, handler) in error_handlers.iter().rev().enumerate() {
+            if let Some(claimed) = Self::try_chain_handler(handler, &event, context, position).await
+            {
                 return Ok(RpcHandlerOutput::Single(claimed));
             }
         }
@@ -375,9 +390,9 @@ impl RpcControllerWrapper {
                     RpcError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                for handler in error_handlers.iter().rev() {
+                for (position, handler) in error_handlers.iter().rev().enumerate() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, context).await
+                        Self::try_chain_handler(handler, observed_err, context, position).await
                     {
                         return Ok(RpcHandlerOutput::Single(claimed));
                     }
