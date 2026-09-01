@@ -5,7 +5,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::set_var("PROTOC", protoc);
     }
-    tonic_prost_build::compile_protos("proto/orders.proto")?;
+    // The descriptor set is what a reflection service serves: the compiled
+    // schema, so a client can discover the API without holding the `.proto`.
+    let descriptor =
+        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("orders_descriptor.bin");
+    tonic_prost_build::configure()
+        .file_descriptor_set_path(&descriptor)
+        .compile_protos(&["proto/orders.proto"], &["proto"])?;
 
     // A service whose Rust method name and route name diverge, which the proto
     // path cannot produce: prost derives one from the other. `grpc_stream_optin`

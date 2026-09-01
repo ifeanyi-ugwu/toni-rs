@@ -26,6 +26,7 @@ toni-grpc = { path = "../toni-grpc" }
 tonic = "0.14"
 tonic-health = "0.14"
 tonic-prost = "0.14"
+tonic-reflection = "0.14"
 prost = "0.14"
 toni-async-graphql = { path = "../toni-async-graphql" }
 # Direct dependency required by the async-graphql derive macros: they emit
