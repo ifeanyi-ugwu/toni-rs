@@ -161,8 +161,10 @@ impl RpcControllerWrapper {
         }
         let guards = Self::resolve_guards(&all_guards, &ctx).await;
         for (index, guard) in guards.iter().enumerate() {
-            // Treat a panic in `can_activate` as a hard rejection: the caller
-            // gets `RpcError::Forbidden` instead of a torn-down dispatcher.
+            // A panicking guard is a bug, not a verdict: it takes the same
+            // route as any other pipeline panic, so `#[catch(PanicRecovered)]`
+            // claims it and an unclaimed one renders `Internal` rather than
+            // telling the caller its credentials were refused.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
                 guard.can_activate(&ctx),
@@ -171,11 +173,8 @@ impl RpcControllerWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    tracing::error!(guard_index = index, panic = %event.message, "guard panicked; refusing the call");
-                    return Err(RpcError::Forbidden(format!(
-                        "guard {} panicked: {}",
-                        index, event.message
-                    )));
+                    tracing::error!(guard_index = index, panic = %event.message, "guard panicked");
+                    return Self::record_pipeline_panic(&ctx, &all_error_handlers, event).await;
                 }
             };
             if !activated {
