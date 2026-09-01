@@ -96,10 +96,14 @@ impl Orders for TailGrpcService {
         let context =
             GrpcContext::of(request.extensions()).expect("dispatched through the framework");
         *METHOD.lock().unwrap() = Some(context.method().to_string());
-        Ok(tonic::Response::new(tail_pb::CreateOrderResponse {
+        let mut reply = tonic::Response::new(tail_pb::CreateOrderResponse {
             id: 1,
             status: "ok".to_string(),
-        }))
+        });
+        reply
+            .metadata_mut()
+            .insert("x-served-by", "toni".parse().unwrap());
+        Ok(reply)
     }
 
     type WatchProgressStream = EventStream;
@@ -445,4 +449,36 @@ async fn the_drain_deadline_ends_a_reply_it_cannot_wait_for() {
         saw_cancel_within(Duration::from_secs(2)).await,
         "ending the reply must reach the task feeding it"
     );
+}
+
+/// The wrapper takes every reply apart and rebuilds it — `into_parts` to
+/// re-type a stream, `from_parts` to hand it back — so what a handler attached
+/// to the reply has to survive the trip. A unary reply is the case where the
+/// rebuild does nothing, and is therefore the one where losing something would
+/// go unnoticed.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn metadata_a_handler_sets_on_its_reply_reaches_the_caller() {
+    let (port, shutdown) = boot(TailGrpcModule).await;
+    let mut client = connect(port).await;
+
+    let reply = client
+        .create(tail_pb::CreateOrderRequest {
+            item: "keyboard".to_string(),
+            qty: 1,
+        })
+        .await
+        .expect("unary call must succeed");
+
+    assert_eq!(
+        reply
+            .metadata()
+            .get("x-served-by")
+            .map(|value| value.to_str().unwrap()),
+        Some("toni"),
+        "the wrapper must return the reply's metadata, not only its body"
+    );
+
+    shutdown.shutdown();
+    let _ = tokio::time::timeout(Duration::from_secs(2), shutdown.completed()).await;
 }
