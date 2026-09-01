@@ -776,10 +776,13 @@ async fn rpc_renderer_panic_falls_back_to_safe_envelope() {
     )
     .await
     .expect("renderer panic must produce a fallback envelope, not hang");
-    // Fallback envelope is the hardcoded `RpcData::text("Internal Server Error")`.
     // The renderer runs below the chain, so its panic is logged and nothing
-    // else — this envelope is the only signal the caller gets.
-    assert_eq!(resp["response"], "Internal Server Error");
+    // else — this envelope is the only signal the caller gets, and it carries
+    // the canonical shape rather than a bare string.
+    let payload = &resp["response"];
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["kind"], "Internal");
+    assert_eq!(payload["message"], "Internal Server Error", "reply: {resp}");
 }
 
 // ---- Metadata round-trip -----------------------------------------------------

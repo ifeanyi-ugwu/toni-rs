@@ -401,8 +401,12 @@ async fn ws_renderer_panic_falls_back_to_safe_envelope() {
         .unwrap();
 
     let reply = ws.next().await.unwrap().unwrap();
-    // Fallback frame is the hardcoded `WsMessage::text("Internal Server Error")`.
     // The renderer runs below the chain, so its panic is logged and nothing
-    // else — this frame is the only signal the client gets.
-    assert_eq!(reply.to_text().unwrap(), "Internal Server Error");
+    // else — this frame is the only signal the client gets, and it carries the
+    // canonical envelope rather than a bare string.
+    let json: serde_json::Value =
+        serde_json::from_str(reply.to_text().unwrap()).expect("the fallback must be JSON");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["kind"], "Internal");
+    assert_eq!(json["message"], "Internal Server Error", "frame: {json}");
 }

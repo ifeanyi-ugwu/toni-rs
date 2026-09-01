@@ -449,8 +449,13 @@ impl GatewayWrapper {
     }
 
     /// Hardcoded fallback frame when the regular renderer panics.
+    ///
+    /// A string literal, so none of the user code the renderer was calling
+    /// runs again. It keeps the canonical envelope: a frame carries no content
+    /// type, so a bare string would reach the client's decoder as text where
+    /// every other error frame is an object.
     fn fallback_internal_message() -> WsMessage {
-        WsMessage::text("Internal Server Error")
+        WsMessage::text(r#"{"status":"error","kind":"Internal","message":"Internal Server Error"}"#)
     }
 
     /// Run one chain handler with panic recovery: a panicking

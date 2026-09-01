@@ -334,9 +334,9 @@ impl toni::Error for RenderBomb {
 
 /// A panicking renderer must not tear down the connection. It runs below the
 /// chain — the last thing between the framework and the wire — so the policy
-/// is to log it and substitute a hardcoded minimal 500 envelope. That envelope
-/// is built from simple constructors that don't render user data, so a
-/// recursive panic here is structurally impossible.
+/// is to log it and substitute a hardcoded 500. The envelope is a literal, so
+/// none of the user code that just panicked runs again, and it keeps the
+/// canonical shape a client decodes on every other path.
 #[tokio_localset_test::localset_test]
 async fn panicking_renderer_falls_back_to_safe_envelope() {
     #[controller("/api")]
@@ -359,12 +359,16 @@ async fn panicking_renderer_falls_back_to_safe_envelope() {
         .await
         .unwrap();
 
-    // Fallback envelope.
+    // Fallback envelope, in the canonical shape and declared as JSON.
     assert_eq!(resp.status().as_u16(), 500);
-
-    let body = resp.text().await.unwrap();
     assert_eq!(
-        body, "Internal Server Error",
-        "fallback envelope must be the hardcoded minimal body, got: {body}",
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
     );
+
+    let body: serde_json::Value = resp.json().await.expect("the fallback must be JSON");
+    assert_eq!(body["statusCode"], 500);
+    assert_eq!(body["message"], "Internal Server Error", "body: {body}");
 }

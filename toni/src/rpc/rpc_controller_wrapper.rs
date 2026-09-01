@@ -233,9 +233,17 @@ impl RpcControllerWrapper {
     }
 
     /// Hardcoded fallback envelope when the regular renderer panics.
-    /// Uses [`RpcData::text`] so no user-supplied serialiser runs.
+    ///
+    /// Built from static values, so none of the user code the renderer was
+    /// calling runs again. It keeps the canonical envelope: an RPC frame
+    /// carries no content type, so a bare string would reach the caller's
+    /// decoder as a JSON string where every other reply is an object.
     fn fallback_internal_data() -> RpcData {
-        RpcData::text("Internal Server Error")
+        RpcData::json(serde_json::json!({
+            "status": "error",
+            "kind": "Internal",
+            "message": "Internal Server Error",
+        }))
     }
 
     /// Run one chain handler with panic recovery: a panicking

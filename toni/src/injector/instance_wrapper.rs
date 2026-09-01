@@ -318,12 +318,21 @@ impl InstanceWrapper {
     }
 
     /// Minimal hardcoded 500 used when the regular renderer panics.
-    /// Built with simple constructors that don't themselves render
-    /// user-supplied data, so a recursive panic here is structurally
-    /// impossible.
+    ///
+    /// The envelope is a string literal rather than a rendered value: the
+    /// renderer that just panicked was calling the error's own `kind()` and
+    /// `message()`, and this calls neither, so a recursive panic here is
+    /// structurally impossible. It keeps the canonical shape because a client
+    /// decoding `{statusCode, message, error}` should not meet a different
+    /// body on the one path it cannot anticipate.
     fn fallback_500_response() -> HttpResponse {
         HttpResponse {
-            body: Some(crate::http_helpers::Body::text("Internal Server Error")),
+            body: Some(
+                crate::http_helpers::Body::text(
+                    r#"{"statusCode":500,"message":"Internal Server Error","error":"Internal Server Error"}"#,
+                )
+                .with_content_type("application/json"),
+            ),
             status: 500,
             headers: vec![],
         }
