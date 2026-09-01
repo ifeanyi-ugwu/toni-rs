@@ -9,7 +9,5 @@ pub mod framework;
 pub mod http_error;
 
 pub use error::{Error, ErrorKind};
-pub use framework::{
-    Cancelled, GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment, Unrouted,
-};
+pub use framework::{GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment, Unrouted};
 pub use http_error::{HttpError, http_reason, http_status};

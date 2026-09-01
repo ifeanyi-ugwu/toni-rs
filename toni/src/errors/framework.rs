@@ -236,41 +236,6 @@ impl Error for PanicRecovered {
     }
 }
 
-/// Emitted when the framework detected the client gave up — disconnect
-/// before the handler finished, or a deadline / cancellation token
-/// firing. Observer-only by convention: there's no response to override
-/// because the client isn't listening anymore.
-#[derive(Debug, Clone)]
-pub struct Cancelled {
-    pub reason: String,
-}
-
-impl Cancelled {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-}
-
-impl fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "request cancelled: {}", self.reason)
-    }
-}
-
-impl std::error::Error for Cancelled {}
-
-impl Error for Cancelled {
-    fn kind(&self) -> ErrorKind {
-        // Cancelled is observer-only by convention; if it ever does flow
-        // through the chain and nothing claims, this is the most honest
-        // surface code: 499 isn't an option in our taxonomy and wrapping
-        // it as a 500 would lie about server failure.
-        ErrorKind::Unavailable
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

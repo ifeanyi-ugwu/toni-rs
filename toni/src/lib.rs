@@ -98,8 +98,7 @@ pub use traits_helpers::{ExecutionCache, ModuleMetadata, ProviderContext};
 
 pub use error::{InitResult, StartupError};
 pub use errors::{
-    Cancelled, Error, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered,
-    PipelineSegment,
+    Error, ErrorKind, GuardRejection, HttpError, MiddlewareFailure, PanicRecovered, PipelineSegment,
 };
 pub use startup_check::StartupCheck;
 
