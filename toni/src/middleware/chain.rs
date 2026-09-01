@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use crate::{
+    errors::PipelineSegment,
     http_helpers::{HttpRequest, HttpResponse},
     traits_helpers::middleware::{Middleware, MiddlewareResult, NextHandle, NextInternal},
 };
@@ -53,9 +54,22 @@ impl ChainLink {
 
 #[async_trait]
 impl NextInternal for ChainLink {
+    /// A panicking `handle` becomes an `Err` carrying the typed event, which
+    /// the dispatcher offers to the error chain. Without this the unwind
+    /// escapes into the adapter, where a middleware — the one role a user
+    /// writes that sits outside the dispatcher — could tear down the
+    /// connection.
     async fn run_internal(self: Box<Self>, req: HttpRequest) -> MiddlewareResult {
         let next_handle = NextHandle::new(req, self.next);
-        self.middleware.handle(next_handle).await
+        match crate::panic_recovery::catch_async(
+            PipelineSegment::Middleware,
+            self.middleware.handle(next_handle),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(event) => Err(Box::new(event)),
+        }
     }
 }
 

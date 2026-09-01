@@ -141,6 +141,22 @@ impl InstanceWrapper {
                 // from a minimal request so error handlers still get a typed context.
                 let stub = http::Request::builder().body(()).unwrap();
                 let error_ctx = HttpContext::from_parts(stub.into_parts().0);
+
+                // A caught middleware panic keeps its own type through the
+                // chain, so `#[catch(PanicRecovered)]` matches it the way it
+                // matches one from a guard or an interceptor.
+                let e = match e.downcast::<PanicRecovered>() {
+                    Ok(panic) => {
+                        return Self::handle_framework_event(
+                            *panic,
+                            &self.error_handlers,
+                            &error_ctx,
+                        )
+                        .await;
+                    }
+                    Err(e) => e,
+                };
+
                 let event = MiddlewareFailure::new(e.to_string());
                 for (position, handler) in self.error_handlers.iter().rev().enumerate() {
                     if let Some(response) =
