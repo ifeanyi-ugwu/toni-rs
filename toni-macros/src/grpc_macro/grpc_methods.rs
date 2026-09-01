@@ -646,7 +646,7 @@ fn build_wrapper_method(
 
             // Two slots so the macro can distinguish a returned reply
             // (Ok or Err) from a caught panic, and feed the panic event
-            // (not its synthesized status) to observers + the error chain.
+            // (not its synthesized status) to the error chain.
             // Inferred, not spelled: the delegate fills this with the type the
             // user's method returns, while the signature above names the
             // wrapper's own associated type. The two differ wherever a
@@ -696,8 +696,8 @@ fn build_wrapper_method(
             }
 
             // Caught panic: route the typed `PanicRecovered` through the
-            // error chain so observers see it. Chain falls back to
-            // `Internal` carrying the panic message. The take is bound to
+            // error chain so a `#[catch]` handler can claim it. Chain falls
+            // back to `Internal` carrying the panic message. The take is bound to
             // a local so the `MutexGuard` is dropped before the `.await`
             // — holding it across would make the wrapper future `!Send`.
             let __taken_panic = __panic

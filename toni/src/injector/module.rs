@@ -69,7 +69,6 @@ impl Module {
         route: Arc<dyn Route>,
         enhancer_metadata: EnhancerMetadata,
         global_enhancers: EnhancerMetadata,
-        error_observers: Vec<Arc<dyn crate::traits_helpers::ErrorObserver>>,
     ) {
         let key = format!(
             "{}::{} {}",
@@ -77,8 +76,7 @@ impl Module {
             route.get_method().as_str(),
             route.get_path()
         );
-        let instance_wrapper =
-            InstanceWrapper::new(route, enhancer_metadata, global_enhancers, error_observers);
+        let instance_wrapper = InstanceWrapper::new(route, enhancer_metadata, global_enhancers);
         self.controllers_instances
             .insert(key, Arc::new(instance_wrapper));
     }

@@ -7,10 +7,10 @@ use crate::{
     middleware::MiddlewareManager,
     structs_helpers::EnhancerMetadata,
     traits_helpers::{
-        Controller, ControllerFactory, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry,
-        GrpcInterceptorEntry, HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry,
-        ModuleMetadata, Provider, ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry,
-        RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
+        Controller, ControllerFactory, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry,
+        HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, ModuleMetadata, Provider,
+        ProviderFactory, ProviderRole, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
+        WsErrorHandlerArc, WsGuardEntry, WsInterceptorEntry,
     },
     websocket::GatewayTrait,
 };
@@ -45,9 +45,6 @@ pub struct ToniContainer {
     global_grpc_guards: Vec<GrpcGuardEntry>,
     global_grpc_interceptors: Vec<GrpcInterceptorEntry>,
     global_grpc_error_handlers: Vec<GrpcErrorHandlerArc>,
-    /// Universal error observers — fire on any framework-generated error
-    /// across every transport.
-    global_error_observers: Vec<Arc<dyn ErrorObserver>>,
     /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
     /// These will be resolved to global enhancers after DI container is built
     app_guard_providers: Vec<(String, String)>,
@@ -89,7 +86,6 @@ impl ToniContainer {
             global_grpc_guards: Vec::new(),
             global_grpc_interceptors: Vec::new(),
             global_grpc_error_handlers: Vec::new(),
-            global_error_observers: Vec::new(),
             app_guard_providers: Vec::new(),
             app_interceptor_providers: Vec::new(),
             multi_providers: FxHashMap::default(),
@@ -180,14 +176,6 @@ impl ToniContainer {
 
     pub fn get_global_grpc_error_handlers(&self) -> Vec<GrpcErrorHandlerArc> {
         self.global_grpc_error_handlers.clone()
-    }
-
-    pub fn add_global_error_observer(&mut self, observer: Arc<dyn ErrorObserver>) {
-        self.global_error_observers.push(observer);
-    }
-
-    pub fn get_global_error_observers(&self) -> Vec<Arc<dyn ErrorObserver>> {
-        self.global_error_observers.clone()
     }
 
     pub fn get_global_enhancers(&self) -> EnhancerMetadata {
@@ -426,18 +414,11 @@ impl ToniContainer {
         enhancer_metadata: EnhancerMetadata,
     ) -> Result<()> {
         let global_enhancers = self.get_global_enhancers();
-        let error_observers = self.get_global_error_observers();
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
             .ok_or_else(|| anyhow!("Module not found"))?;
-        module_ref.add_route_instance(
-            controller_token,
-            route,
-            enhancer_metadata,
-            global_enhancers,
-            error_observers,
-        );
+        module_ref.add_route_instance(controller_token, route, enhancer_metadata, global_enhancers);
         Ok(())
     }
 

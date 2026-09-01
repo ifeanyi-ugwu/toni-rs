@@ -8,8 +8,7 @@ use crate::context::RpcContext;
 use crate::errors::{PanicRecovered, PipelineSegment};
 use crate::http_helpers::ExecutionResult;
 use crate::traits_helpers::{
-    ErrorObserver, Guard, Interceptor, InterceptorNext, RpcErrorHandlerArc, RpcGuardEntry,
-    RpcInterceptorEntry,
+    Guard, Interceptor, InterceptorNext, RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry,
 };
 
 use super::{
@@ -70,7 +69,6 @@ struct RpcChainNext {
     interceptors: Vec<Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>>,
     source: Arc<dyn RpcControllerSource>,
     error_handlers: Vec<RpcErrorHandlerArc>,
-    observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 #[async_trait]
@@ -81,7 +79,6 @@ impl InterceptorNext<RpcContext, RpcHandlerResult> for RpcChainNext {
             &self.interceptors,
             &self.source,
             &self.error_handlers,
-            &self.observers,
         )
         .await
     }
@@ -93,7 +90,6 @@ pub struct RpcControllerWrapper {
     guards: Vec<RpcGuardEntry>,
     interceptors: Vec<RpcInterceptorEntry>,
     error_handlers: Vec<RpcErrorHandlerArc>,
-    error_observers: Vec<Arc<dyn ErrorObserver>>,
     metadata: Arc<Metadata>,
     /// Per-pattern metadata, already merged over `metadata` at expansion. A pattern absent
     /// here declared nothing of its own and reads the controller's.
@@ -109,7 +105,6 @@ impl RpcControllerWrapper {
         guards: Vec<RpcGuardEntry>,
         interceptors: Vec<RpcInterceptorEntry>,
         error_handlers: Vec<RpcErrorHandlerArc>,
-        error_observers: Vec<Arc<dyn ErrorObserver>>,
         metadata: Arc<Metadata>,
         handler_metadata: HashMap<String, Arc<Metadata>>,
         handler_guards: HashMap<String, Vec<RpcGuardEntry>>,
@@ -121,7 +116,6 @@ impl RpcControllerWrapper {
             guards,
             interceptors,
             error_handlers,
-            error_observers,
             metadata,
             handler_metadata,
             handler_guards,
@@ -165,13 +159,10 @@ impl RpcControllerWrapper {
         if let Some(h) = self.handler_error_handlers.get(&pattern) {
             all_error_handlers.extend_from_slice(h);
         }
-        let observers = self.error_observers.clone();
-
         let guards = Self::resolve_guards(&all_guards, &ctx).await;
         for (index, guard) in guards.iter().enumerate() {
-            // Treat a panic in `can_activate` as a hard rejection: observers
-            // see `PanicRecovered { during: Guard }` and the caller gets
-            // `RpcError::Forbidden` instead of a torn-down dispatcher.
+            // Treat a panic in `can_activate` as a hard rejection: the caller
+            // gets `RpcError::Forbidden` instead of a torn-down dispatcher.
             let activated = match crate::panic_recovery::catch_async(
                 crate::errors::PipelineSegment::Guard,
                 guard.can_activate(&ctx),
@@ -180,7 +171,7 @@ impl RpcControllerWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    Self::fan_out_observers(&observers, &event, &ctx).await;
+                    tracing::error!(guard_index = index, panic = %event.message, "guard panicked; refusing the call");
                     return Err(RpcError::Forbidden(format!(
                         "guard {} panicked: {}",
                         index, event.message
@@ -193,10 +184,8 @@ impl RpcControllerWrapper {
                 // an unclaimed one renders as the `forbidden` frame it always
                 // did.
                 let rejection = crate::errors::GuardRejection::new(index);
-                Self::fan_out_observers(&observers, &rejection, &ctx).await;
                 for handler in all_error_handlers.iter().rev() {
-                    if let Some(claimed) =
-                        Self::try_chain_handler(handler, &rejection, &ctx, &observers).await
+                    if let Some(claimed) = Self::try_chain_handler(handler, &rejection, &ctx).await
                     {
                         return Ok(RpcHandlerOutput::Single(claimed));
                     }
@@ -206,14 +195,9 @@ impl RpcControllerWrapper {
         }
 
         let interceptors = Self::resolve_interceptors(&all_interceptors, &ctx).await;
-        let answer = Self::execute_with_interceptors(
-            &ctx,
-            &interceptors,
-            &self.source,
-            &all_error_handlers,
-            &observers,
-        )
-        .await;
+        let answer =
+            Self::execute_with_interceptors(&ctx, &interceptors, &self.source, &all_error_handlers)
+                .await;
 
         // The execution ends when the answer does. A stream has emitted nothing
         // at this point, so the context rides it rather than dying here.
@@ -230,21 +214,10 @@ impl RpcControllerWrapper {
         }
     }
 
-    /// Run one chain handler with panic recovery: a panicking
-    /// `handle_error` fans `PanicRecovered { during: ErrorHandler }` to
-    /// observers and returns `None` so the caller continues to the next
-    /// handler. Without this, a single bad chain handler would kill the
-    /// whole error-recovery path and the original error would never
-    /// reach the fallback `to_data` rendering.
     /// Drive `RpcError::to_data` with panic recovery — a panic in the
-    /// renderer is the last thing the framework can do for the caller,
-    /// so we substitute a hardcoded `Internal` envelope and fan
-    /// `PanicRecovered { during: ResponseRendering }` to observers.
-    async fn safe_render<F>(
-        render: F,
-        observers: &[Arc<dyn ErrorObserver>],
-        ctx: &RpcContext,
-    ) -> RpcData
+    /// renderer is the last thing the framework can do for the caller, so it
+    /// is logged and a hardcoded `Internal` envelope goes out instead.
+    fn safe_render<F>(render: F) -> RpcData
     where
         F: FnOnce() -> RpcData,
     {
@@ -254,7 +227,7 @@ impl RpcControllerWrapper {
         ) {
             Ok(data) => data,
             Err(panic_event) => {
-                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                tracing::error!(panic = %panic_event.message, "error renderer panicked; falling back to a bare Internal envelope");
                 Self::fallback_internal_data()
             }
         }
@@ -266,11 +239,15 @@ impl RpcControllerWrapper {
         RpcData::text("Internal Server Error")
     }
 
+    /// Run one chain handler with panic recovery: a panicking
+    /// `handle_error` is logged and answers `None`, so the caller continues
+    /// to the next handler. Without this, a single bad chain handler would
+    /// kill the whole error-recovery path and the original error would
+    /// never reach the fallback `to_data` rendering.
     pub(crate) async fn try_chain_handler(
         handler: &RpcErrorHandlerArc,
         error: &(dyn std::error::Error + Send + Sync + 'static),
         ctx: &RpcContext,
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> Option<RpcData> {
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::ErrorHandler,
@@ -280,28 +257,8 @@ impl RpcControllerWrapper {
         {
             Ok(opt) => opt,
             Err(panic_event) => {
-                Self::fan_out_observers(observers, &panic_event, ctx).await;
+                tracing::error!(error = %error, panic = %panic_event.message, "error handler panicked; trying the next one");
                 None
-            }
-        }
-    }
-
-    pub(crate) async fn fan_out_observers(
-        observers: &[Arc<dyn ErrorObserver>],
-        error: &(dyn std::error::Error + Send + Sync + 'static),
-        ctx: &RpcContext,
-    ) {
-        for observer in observers {
-            let observe = AssertUnwindSafe(observer.observe(error, ctx));
-            if let Err(payload) = observe.catch_unwind().await {
-                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-                    *s
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.as_str()
-                } else {
-                    "<panic payload was not a string>"
-                };
-                tracing::error!(error = %error, panic = %msg, "error observer panicked");
             }
         }
     }
@@ -341,10 +298,9 @@ impl RpcControllerWrapper {
         interceptors: &[Arc<dyn Interceptor<RpcContext, RpcHandlerResult>>],
         source: &Arc<dyn RpcControllerSource>,
         error_handlers: &[RpcErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> RpcHandlerResult {
         if interceptors.is_empty() {
-            return Self::execute_handler(context, source, error_handlers, observers).await;
+            return Self::execute_handler(context, source, error_handlers).await;
         }
 
         let (first, rest) = interceptors.split_first().unwrap();
@@ -353,7 +309,6 @@ impl RpcControllerWrapper {
             interceptors: rest.to_vec(),
             source: source.clone(),
             error_handlers: error_handlers.to_vec(),
-            observers: observers.to_vec(),
         };
 
         match crate::panic_recovery::catch_async(
@@ -363,45 +318,38 @@ impl RpcControllerWrapper {
         .await
         {
             Ok(answer) => answer,
-            Err(event) => {
-                Self::record_pipeline_panic(context, error_handlers, observers, event).await
-            }
+            Err(event) => Self::record_pipeline_panic(context, error_handlers, event).await,
         }
     }
 
-    /// Surface a panicking pre-handler segment (an interceptor)
-    /// through the existing observer + chain pipeline: fan to observers,
-    /// give error handlers first claim, and fall back to a wire-`Err`
-    /// Internal envelope.
+    /// Surface a panicking pre-handler segment (an interceptor) through the
+    /// chain: error handlers get first claim, and the fallback is a
+    /// wire-`Err` Internal envelope.
     async fn record_pipeline_panic(
         context: &RpcContext,
         error_handlers: &[RpcErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
         event: PanicRecovered,
     ) -> RpcHandlerResult {
-        Self::fan_out_observers(observers, &event, context).await;
         for handler in error_handlers.iter().rev() {
-            if let Some(claimed) =
-                Self::try_chain_handler(handler, &event, context, observers).await
-            {
+            if let Some(claimed) = Self::try_chain_handler(handler, &event, context).await {
                 return Ok(RpcHandlerOutput::Single(claimed));
             }
         }
         let rpc_err = RpcError::from(event);
-        let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
-        Ok(RpcHandlerOutput::Single(data))
+        Ok(RpcHandlerOutput::Single(Self::safe_render(|| {
+            rpc_err.to_data()
+        })))
     }
 
     /// Run the handler, then route the result.
     ///
-    /// `Ok` is the answer. On `Err`, observers fan out on the underlying error,
-    /// the chain's most-specific handler gets first claim, and
-    /// `RpcError::to_data` is the fallback envelope when none claims.
+    /// `Ok` is the answer. On `Err`, the chain's most-specific handler gets
+    /// first claim on the underlying error, and `RpcError::to_data` is the
+    /// fallback envelope when none claims.
     async fn execute_handler(
         context: &RpcContext,
         source: &Arc<dyn RpcControllerSource>,
         error_handlers: &[RpcErrorHandlerArc],
-        observers: &[Arc<dyn ErrorObserver>],
     ) -> RpcHandlerResult {
         // The instance is asked for here and nowhere earlier: a guard that rejects, an
         // interceptor that answers never builds a controller. Construction
@@ -428,16 +376,16 @@ impl RpcControllerWrapper {
                     RpcError::AppError(e) => e.as_ref(),
                     other => other,
                 };
-                Self::fan_out_observers(observers, observed_err, context).await;
                 for handler in error_handlers.iter().rev() {
                     if let Some(claimed) =
-                        Self::try_chain_handler(handler, observed_err, context, observers).await
+                        Self::try_chain_handler(handler, observed_err, context).await
                     {
                         return Ok(RpcHandlerOutput::Single(claimed));
                     }
                 }
-                let data = Self::safe_render(|| rpc_err.to_data(), observers, context).await;
-                Ok(RpcHandlerOutput::Single(data))
+                Ok(RpcHandlerOutput::Single(Self::safe_render(|| {
+                    rpc_err.to_data()
+                })))
             }
         }
     }

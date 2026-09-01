@@ -5,8 +5,8 @@
 //! interceptors, error handlers, response renderers — in
 //! `AssertUnwindSafe(...).catch_unwind()` and converts the payload into a
 //! [`PanicRecovered`] tagged with the matching [`PipelineSegment`]. The
-//! event then flows through the existing observer + error chain rather
-//! than escaping the dispatcher and tearing down the request.
+//! event then flows through the error chain rather than escaping the
+//! dispatcher and tearing down the request.
 //!
 //! Two flavours: [`catch_async`] for `Future`-returning callbacks (guards,
 //! interceptors, handlers, error handlers) and [`catch_sync`] for the rare

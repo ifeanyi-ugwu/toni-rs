@@ -45,8 +45,7 @@ pub enum Dispatch {
 #[async_trait]
 pub trait Route: Send + Sync {
     /// Run the user handler and return either the rendered success response
-    /// or the user's typed error preserved for the dispatcher's observer +
-    /// chain pipeline.
+    /// or the user's typed error preserved for the dispatcher's chain.
     ///
     /// `ctx` is shared: a context is a handle several participants in one
     /// execution hold at once, and the request body — the only part needing

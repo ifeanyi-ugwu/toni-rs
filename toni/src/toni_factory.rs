@@ -15,15 +15,15 @@ use crate::rpc::RpcData;
 use crate::scanner::ToniDependenciesScanner;
 use crate::toni_application::ToniApplication;
 use crate::traits_helpers::{
-    ErrorHandler, ErrorObserver, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, Guard,
+    ErrorHandler, GrpcErrorHandlerArc, GrpcGuardEntry, GrpcInterceptorEntry, Guard,
     HttpErrorHandlerArc, HttpGuardEntry, HttpInterceptorEntry, Interceptor, ModuleMetadata,
     RpcErrorHandlerArc, RpcGuardEntry, RpcInterceptorEntry, WsErrorHandlerArc, WsGuardEntry,
     WsInterceptorEntry,
 };
 use crate::websocket::WsMessage;
 
-/// Entry point for building a toni application: registers global middleware,
-/// enhancers, and observers, then constructs the DI container from a root
+/// Entry point for building a toni application: registers global middleware
+/// and enhancers, then constructs the DI container from a root
 /// module via [`create_with`](Self::create_with) or
 /// [`create_application_context_with`](Self::create_application_context_with).
 ///
@@ -50,7 +50,6 @@ pub struct ToniFactory {
     global_grpc_guards: Vec<GrpcGuardEntry>,
     global_grpc_interceptors: Vec<GrpcInterceptorEntry>,
     global_grpc_error_handlers: Vec<GrpcErrorHandlerArc>,
-    global_error_observers: Vec<Arc<dyn ErrorObserver>>,
 }
 
 impl ToniFactory {
@@ -158,19 +157,6 @@ impl ToniFactory {
         handler: Arc<dyn ErrorHandler<GrpcContext, crate::grpc_status::GrpcStatus>>,
     ) -> &mut Self {
         self.global_grpc_error_handlers.push(handler);
-        self
-    }
-
-    /// Register a transport-agnostic observer that fires whenever a
-    /// framework-generated error reaches the chain (guard rejections,
-    /// missing routes, panic recovery). Observers are fire-and-forget
-    /// — they don't shape the response.
-    ///
-    /// User-handler errors render directly through the active transport and
-    /// don't pass through observers; if you need to log those, override
-    /// the rendering method on your error type.
-    pub fn use_global_error_observer(&mut self, observer: Arc<dyn ErrorObserver>) -> &mut Self {
-        self.global_error_observers.push(observer);
         self
     }
 
@@ -317,9 +303,6 @@ impl ToniFactory {
             }
             for handler in &self.global_grpc_error_handlers {
                 container_mut.add_global_grpc_error_handler(handler.clone());
-            }
-            for observer in &self.global_error_observers {
-                container_mut.add_global_error_observer(observer.clone());
             }
         }
 

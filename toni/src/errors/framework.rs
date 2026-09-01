@@ -1,9 +1,8 @@
 //! Typed events the framework emits when it — not a user handler — is the
 //! source of an error: guard rejections, middleware failures, panic
-//! recovery, client give-up. They implement [`crate::errors::Error`]
-//! and flow through the same observer + chain pipeline as user errors;
-//! chain handlers and observers can downcast to the concrete event to react
-//! to the underlying cause.
+//! recovery. They implement [`crate::errors::Error`] and flow through the
+//! same error-handler chain as user errors, so a `#[catch]` handler can
+//! downcast to the concrete event and react to the underlying cause.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -132,8 +131,8 @@ impl Error for MiddlewareFailure {
 }
 
 /// Where in the request pipeline a panic was caught. Carried on
-/// [`PanicRecovered`] so observers and chain handlers can branch on the
-/// site without parsing the message.
+/// [`PanicRecovered`] so chain handlers can branch on the site without
+/// parsing the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PipelineSegment {

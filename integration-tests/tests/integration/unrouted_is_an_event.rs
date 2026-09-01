@@ -1,27 +1,25 @@
 //! Nothing handled the call, and that is a `Unrouted` event.
 //!
 //! An RPC pattern no controller claims used to be refused at the dispatcher
-//! with no context built, so no observer fanned and no error handler was
-//! consulted — the one call an operator most wants to hear about was the only
-//! one nothing could see. A WebSocket event no handler subscribes to reached the
-//! chain already, but as a bare `WsError`, so a catcher had to match a transport
-//! type rather than the condition.
+//! with no context built, so no error handler was consulted — the one call an
+//! operator most wants to hear about was the only one nothing could claim. A
+//! WebSocket event no handler subscribes to reached the chain already, but as a
+//! bare `WsError`, so a catcher had to match a transport type rather than the
+//! condition.
 //!
 //! Unclaimed, both render exactly what they rendered before.
 
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
-use toni::async_trait;
 use toni::context::{RpcContext, WsContext};
 use toni::errors::Unrouted;
 use toni::rpc::{RpcData, RpcHandlerOutput, RpcHandlerResult};
 use toni::toni_factory::ToniFactory;
-use toni::traits_helpers::ErrorObserver;
 use toni::websocket::{WsHandlerResult, WsMessage};
 use toni::{catch, module, Error};
 use toni_macros::{
@@ -29,22 +27,6 @@ use toni_macros::{
 };
 
 use crate::common::TestServer;
-
-static OBSERVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Records every framework error it is handed, by display.
-struct RecordingObserver;
-
-#[async_trait]
-impl ErrorObserver for RecordingObserver {
-    async fn observe<'a>(
-        &'a self,
-        error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
-    ) {
-        OBSERVED.lock().unwrap().push(error.to_string());
-    }
-}
 
 #[catch(Unrouted)]
 async fn rpc_unrouted(err: &Unrouted, _ctx: &RpcContext) -> RpcData {
@@ -117,25 +99,7 @@ async fn call(port: u16, pattern: &str) -> serde_json::Value {
     serde_json::from_str(&line).expect("the reply must be JSON")
 }
 
-/// The miss reaches an observer, which is what it never did.
-#[serial]
-#[tokio_localset_test::localset_test]
-async fn an_unrouted_rpc_pattern_reaches_the_observers() {
-    OBSERVED.lock().unwrap().clear();
-
-    let port = boot_rpc(|f| {
-        f.use_global_error_observer(Arc::new(RecordingObserver));
-    })
-    .await;
-    call(port, "nobody.claims.this").await;
-
-    assert_eq!(
-        OBSERVED.lock().unwrap().clone(),
-        vec!["nothing handles nobody.claims.this"]
-    );
-}
-
-/// And a handler can claim it, which means the chain was reached.
+/// A handler can claim the miss, which means the chain was reached.
 #[serial]
 #[tokio_localset_test::localset_test]
 async fn an_unrouted_rpc_pattern_is_claimable() {

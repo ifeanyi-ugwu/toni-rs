@@ -46,8 +46,6 @@ impl GrpcServiceResolver {
             );
         }
 
-        let error_observers = self.container.borrow().get_global_error_observers();
-
         Ok(ResolvedGrpcEnhancers {
             guards,
             handler_guards,
@@ -55,7 +53,6 @@ impl GrpcServiceResolver {
             handler_interceptors,
             error_handlers,
             handler_error_handlers,
-            error_observers,
         })
     }
 

@@ -23,7 +23,6 @@ mod enhancers;
 mod enhancers_di;
 mod error_derive;
 mod error_handler;
-mod error_observer;
 mod extension_bus;
 mod extension_di;
 mod extensions_and_from_request;

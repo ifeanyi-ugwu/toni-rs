@@ -12,19 +12,17 @@ use toni::context::WsContext;
 use toni::errors::{ErrorKind, PanicRecovered, PipelineSegment};
 use toni::injectable;
 use toni::module;
-use toni::traits_helpers::{
-    ChainError, ErrorHandler, ErrorObserver, Guard, Interceptor, InterceptorNext,
-};
+use toni::traits_helpers::{ChainError, ErrorHandler, Guard, Interceptor, InterceptorNext};
 use toni::websocket::{WsClient, WsError, WsHandlerResult, WsMessage};
 use toni_macros::{new, subscriptions, websocket_gateway};
 
 use crate::common::TestServer;
 
-/// Start an Axum-backed app with the supplied global error observers wired
+/// Start an Axum-backed app with the supplied global WS error handlers wired
 /// before bootstrap.
-async fn start_ws_server_with_observers(
+async fn start_ws_server_with_handlers(
     module: impl toni::ModuleMetadata + 'static,
-    observers: Vec<Arc<dyn ErrorObserver>>,
+    handlers: Vec<Arc<dyn ErrorHandler<WsContext, WsMessage>>>,
 ) -> u16 {
     use toni::toni_factory::ToniFactory;
     use toni_axum::AxumAdapter;
@@ -33,8 +31,8 @@ async fn start_ws_server_with_observers(
     let local = tokio::task::LocalSet::new();
     local.spawn_local(async move {
         let mut factory = ToniFactory::new();
-        for o in observers {
-            factory.use_global_error_observer(o);
+        for h in handlers {
+            factory.use_global_ws_error_handler(h);
         }
         let mut app = factory.create_with(module).await.unwrap();
         app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 0))
@@ -49,24 +47,21 @@ async fn start_ws_server_with_observers(
     port_rx.await.unwrap()
 }
 
-/// Captures the most recent `PanicRecovered.during` seen by the global
-/// error observer chain.
-struct WsSegmentObserver {
+/// Global chain handler that records the `PanicRecovered.during` it is
+/// handed and declines, so the default rendering still answers the client.
+struct WsSegmentRecorder {
     count: Arc<AtomicUsize>,
     captured: Arc<std::sync::Mutex<Option<PipelineSegment>>>,
 }
 
 #[async_trait]
-impl ErrorObserver for WsSegmentObserver {
-    async fn observe<'a>(
-        &'a self,
-        error: &'a (dyn std::error::Error + Send + Sync + 'static),
-        _ctx: &'a (dyn toni::context::HandlerContext + 'a),
-    ) {
+impl ErrorHandler<WsContext, WsMessage> for WsSegmentRecorder {
+    async fn handle_error(&self, error: ChainError<'_>, _ctx: &WsContext) -> Option<WsMessage> {
         self.count.fetch_add(1, Ordering::SeqCst);
         if let Some(p) = error.downcast_ref::<PanicRecovered>() {
             *self.captured.lock().unwrap() = Some(p.during);
         }
+        None
     }
 }
 
@@ -188,11 +183,11 @@ async fn ws_guard_panic_renders_envelope_and_keeps_connection_alive() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(WsSegmentObserver {
+    let recorder = Arc::new(WsSegmentRecorder {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(WsGuardPanicModule, vec![observer]).await;
+    let port = start_ws_server_with_handlers(WsGuardPanicModule, vec![recorder]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-guard-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -259,11 +254,11 @@ async fn ws_interceptor_panic_renders_envelope_and_keeps_connection_alive() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(WsSegmentObserver {
+    let recorder = Arc::new(WsSegmentRecorder {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(WsInterceptorPanicModule, vec![observer]).await;
+    let port = start_ws_server_with_handlers(WsInterceptorPanicModule, vec![recorder]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-interceptor-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -323,11 +318,11 @@ async fn ws_error_handler_panic_continues_chain_to_default_rendering() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(WsSegmentObserver {
+    let recorder = Arc::new(WsSegmentRecorder {
         count: count.clone(),
         captured: captured.clone(),
     });
-    let port = start_ws_server_with_observers(WsErrorHandlerPanicModule, vec![observer]).await;
+    let port = start_ws_server_with_handlers(WsErrorHandlerPanicModule, vec![recorder]).await;
 
     let url = format!("ws://127.0.0.1:{}/ws-eh-panic", port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -342,12 +337,13 @@ async fn ws_error_handler_panic_continues_chain_to_default_rendering() {
     assert_eq!(json["status"], "error");
     assert_eq!(json["kind"], "Internal");
 
-    // Observer fired for both the original HandlerBody panic and the
-    // chain ErrorHandler panic; the captured segment is the most recent.
-    assert!(count.load(Ordering::SeqCst) >= 2);
+    // The chain survived the panicking handler: the global recorder that sits
+    // behind it still saw the original handler panic. The panic inside the
+    // handler itself reaches no handler — it is logged and nothing else.
+    assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(
         *captured.lock().unwrap(),
-        Some(PipelineSegment::ErrorHandler)
+        Some(PipelineSegment::HandlerBody)
     );
 }
 
@@ -396,15 +392,9 @@ async fn ws_renderer_panic_falls_back_to_safe_envelope() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
-    let count = Arc::new(AtomicUsize::new(0));
-    let captured = Arc::new(std::sync::Mutex::new(None));
-    let observer = Arc::new(WsSegmentObserver {
-        count: count.clone(),
-        captured: captured.clone(),
-    });
-    let port = start_ws_server_with_observers(WsRenderPanicModule, vec![observer]).await;
+    let server = TestServer::start(WsRenderPanicModule).await;
 
-    let url = format!("ws://127.0.0.1:{}/ws-render-panic", port);
+    let url = format!("ws://127.0.0.1:{}/ws-render-panic", server.port);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     ws.send(Message::Text(r#"{"event":"render"}"#.to_string().into()))
         .await
@@ -412,9 +402,7 @@ async fn ws_renderer_panic_falls_back_to_safe_envelope() {
 
     let reply = ws.next().await.unwrap().unwrap();
     // Fallback frame is the hardcoded `WsMessage::text("Internal Server Error")`.
+    // The renderer runs below the chain, so its panic is logged and nothing
+    // else — this frame is the only signal the client gets.
     assert_eq!(reply.to_text().unwrap(), "Internal Server Error");
-    assert_eq!(
-        *captured.lock().unwrap(),
-        Some(PipelineSegment::ResponseRendering),
-    );
 }
