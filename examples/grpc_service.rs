@@ -26,8 +26,8 @@
 //!     -import-path examples/proto \
 //!     127.0.0.1:50051 toni_examples.orders.Orders/Create
 //!
-//! # qty=0 — handler returns InvalidArgument with `invalid-qty:0`; the
-//! # error handler matches that substring and remaps to FailedPrecondition.
+//! # qty=0 — the handler fails with an `InvalidQty` domain error; the error
+//! # handler downcasts it and remaps to FailedPrecondition.
 //! grpcurl -plaintext \
 //!     -H 'authorization: Bearer secret-token' \
 //!     -d '{"item":"keyboard","qty":0}' \
@@ -50,6 +50,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toni::ToniFactory;
+use toni_grpc::GrpcFail;
 use toni_macros::{controller, grpc_methods, injectable, module, new};
 
 mod orders_pb {
@@ -104,6 +105,25 @@ impl std::error::Error for OutOfStock {}
 impl toni::Error for OutOfStock {
     fn kind(&self) -> toni::ErrorKind {
         toni::ErrorKind::Conflict
+    }
+}
+
+#[derive(Debug)]
+struct InvalidQty {
+    qty: u32,
+}
+
+impl std::fmt::Display for InvalidQty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "qty must be positive, got {}", self.qty)
+    }
+}
+
+impl std::error::Error for InvalidQty {}
+
+impl toni::Error for InvalidQty {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::BadRequest
     }
 }
 
@@ -175,14 +195,15 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
         error: toni::traits_helpers::ChainError<'_>,
         _ctx: &toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
-        if error.to_string().contains("invalid-qty") {
-            Some(toni::GrpcStatus::new(
-                toni::GrpcCode::FailedPrecondition,
-                "qty must be positive",
-            ))
-        } else {
-            None
-        }
+        // The handler failed through `ctx.fail`, which parks the domain error
+        // on the execution, so the chain is handed `InvalidQty` itself rather
+        // than the status it maps to. Without that, this would be matching on
+        // a substring of the message.
+        let invalid = error.downcast_ref::<InvalidQty>()?;
+        Some(toni::GrpcStatus::new(
+            toni::GrpcCode::FailedPrecondition,
+            format!("qty must be positive, got {}", invalid.qty),
+        ))
     }
 }
 
@@ -217,18 +238,18 @@ impl Orders for OrdersGrpcService {
         &self,
         request: tonic::Request<orders_pb::CreateOrderRequest>,
     ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        let ctx = toni::GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
         let req = request.into_inner();
         if req.qty == 0 {
-            // The error handler matches on this substring and remaps to
-            // FailedPrecondition. With the handler removed, the original
-            // InvalidArgument status would pass through to the wire.
-            return Err(tonic::Status::invalid_argument(format!(
-                "invalid-qty:{}",
-                req.qty
-            )));
+            // `fail` answers with the status `BadRequest` maps to and leaves
+            // the error where the chain can still see its type. With the
+            // handler removed, that InvalidArgument reaches the wire.
+            return Err(ctx.fail(InvalidQty { qty: req.qty }));
         }
         if req.item == "unobtainium" {
-            return Err(toni_grpc::to_status(OutOfStock {
+            // No chain handler claims this one, so the mapped code is the
+            // answer: `Conflict` is ABORTED.
+            return Err(ctx.fail(OutOfStock {
                 item: req.item.clone(),
             }));
         }
