@@ -173,7 +173,7 @@ impl RpcControllerWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    tracing::error!(guard_index = index, panic = %event.message, "guard panicked");
+                    tracing::debug!(guard_index = index, panic = %event.message, "guard panicked");
                     return Self::record_pipeline_panic(&ctx, &all_error_handlers, event).await;
                 }
             };

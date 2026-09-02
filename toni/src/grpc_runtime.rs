@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -53,8 +53,36 @@ where
     }
     let interceptors = resolve_interceptors(&all_interceptors, ctx).await;
 
-    execute_with_interceptors(ctx, &interceptors, delegate).await
+    // An interceptor panic is caught deep in the link chain, where neither the
+    // enhancers nor the method name are in scope. The slot carries the event
+    // back out to here, which has both, so the chain gets first claim on it —
+    // the same side-channel the generated wrapper uses for a handler panic.
+    let panicked: PanicSlot = Arc::new(Mutex::new(None));
+    let answer = execute_with_interceptors(ctx, &interceptors, panicked.clone(), delegate).await;
+
+    // Bound to a local: the guard must drop before the `.await` below, or the
+    // future stops being `Send`.
+    let caught = panicked
+        .lock()
+        .expect("interceptor panic slot poisoned")
+        .take();
+    match caught {
+        Some(event) => {
+            let claimed = run_grpc_error_chain(ctx, enhancers, method, &event).await;
+            Err(claimed.unwrap_or_else(|| {
+                GrpcStatus::new(
+                    crate::grpc_status::GrpcCode::Internal,
+                    format!("interceptor panicked: {}", event.message),
+                )
+            }))
+        }
+        None => answer,
+    }
 }
+
+/// Carries a caught interceptor panic out of the link chain to
+/// [`run_grpc_pipeline`], which holds what the error chain needs.
+type PanicSlot = Arc<Mutex<Option<crate::errors::PanicRecovered>>>;
 
 /// Guards-only entry point — same shape as PR #1 shipped, retained for
 /// services that declare no interceptors so the macro can skip the
@@ -85,7 +113,7 @@ async fn run_grpc_guards_inline(
         let activated = match catch_async(PipelineSegment::Guard, guard.can_activate(ctx)).await {
             Ok(b) => b,
             Err(event) => {
-                tracing::error!(guard_index = index, panic = %event.message, "guard panicked");
+                tracing::debug!(guard_index = index, panic = %event.message, "guard panicked");
                 let claimed = run_grpc_error_chain(ctx, enhancers, method, &event).await;
                 return Err(claimed.unwrap_or_else(|| {
                     GrpcStatus::new(
@@ -115,6 +143,7 @@ async fn run_grpc_guards_inline(
 async fn execute_with_interceptors<D, Fut>(
     ctx: &GrpcContext,
     interceptors: &[Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>],
+    panicked: PanicSlot,
     delegate: D,
 ) -> GrpcHandlerResult
 where
@@ -126,7 +155,7 @@ where
         return Ok(());
     }
 
-    let next = build_next(&interceptors[1..], delegate);
+    let next = build_next(&interceptors[1..], panicked.clone(), delegate);
     match catch_async(
         PipelineSegment::Middleware,
         interceptors[0].intercept(ctx, next),
@@ -134,12 +163,13 @@ where
     .await
     {
         Ok(answer) => answer,
-        Err(event) => record_interceptor_panic(event),
+        Err(event) => record_interceptor_panic(&panicked, event),
     }
 }
 
 fn build_next<D, Fut>(
     rest: &[Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>],
+    panicked: PanicSlot,
     delegate: D,
 ) -> Box<dyn InterceptorNext<GrpcContext, GrpcHandlerResult>>
 where
@@ -154,16 +184,24 @@ where
         Box::new(LinkNext {
             head: rest[0].clone(),
             rest: rest[1..].to_vec(),
+            panicked,
             delegate: Some(delegate),
         })
     }
 }
 
-fn record_interceptor_panic(event: crate::errors::PanicRecovered) -> GrpcHandlerResult {
-    Err(GrpcStatus::new(
+/// Stash the event for [`run_grpc_pipeline`] to route, and answer with the
+/// status it renders when nothing claims it.
+fn record_interceptor_panic(
+    panicked: &PanicSlot,
+    event: crate::errors::PanicRecovered,
+) -> GrpcHandlerResult {
+    let status = GrpcStatus::new(
         crate::grpc_status::GrpcCode::Internal,
         format!("interceptor panicked: {}", event.message),
-    ))
+    );
+    *panicked.lock().expect("interceptor panic slot poisoned") = Some(event);
+    Err(status)
 }
 
 /// Innermost link: invokes the user delegate.
@@ -189,6 +227,7 @@ where
 struct LinkNext<D> {
     head: Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>,
     rest: Vec<Arc<dyn Interceptor<GrpcContext, GrpcHandlerResult>>>,
+    panicked: PanicSlot,
     delegate: Option<D>,
 }
 
@@ -201,11 +240,11 @@ where
     async fn run(mut self: Box<Self>, ctx: &GrpcContext) -> GrpcHandlerResult {
         match self.delegate.take() {
             Some(delegate) => {
-                let next = build_next(&self.rest, delegate);
+                let next = build_next(&self.rest, self.panicked.clone(), delegate);
                 match catch_async(PipelineSegment::Middleware, self.head.intercept(ctx, next)).await
                 {
                     Ok(answer) => answer,
-                    Err(event) => record_interceptor_panic(event),
+                    Err(event) => record_interceptor_panic(&self.panicked, event),
                 }
             }
             None => Ok(()),

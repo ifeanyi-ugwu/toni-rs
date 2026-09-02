@@ -258,6 +258,7 @@ impl GatewayWrapper {
                     // canonical envelope reaches the client. Without this,
                     // `WsError::AuthFailed` would drop unsent in
                     // `ToniApplication`'s message callback.
+                    tracing::debug!(guard_index = guard_index, panic = %event.message, "guard panicked");
                     return Self::record_pipeline_panic(&context, &all_error_handlers, event).await;
                 }
             };
