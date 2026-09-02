@@ -249,6 +249,26 @@ async fn graphql_ws_rejects_missing_subprotocol() {
     assert!(msgs.is_empty());
 }
 
+/// The refusal carries 4406, the code graphql-transport-ws reserves for a
+/// subprotocol it cannot speak, and no envelope: a client that has not agreed
+/// on the grammar has nothing to parse one with.
+#[tokio_localset_test::localset_test]
+async fn graphql_ws_refusal_closes_with_4406() {
+    let server = TestServer::start(GqlModule).await;
+    let mut ws = connect_ws_with_protocol(server.port, None).await;
+
+    let close = loop {
+        match ws.next().await {
+            Some(Ok(Message::Close(frame))) => break frame,
+            Some(Ok(other)) => panic!("expected a close, got {other:?}"),
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    };
+    let code = u16::from(close.expect("the close carries a frame").code);
+
+    assert_eq!(code, 4406);
+}
+
 /// Connections with a wrong sub-protocol value are also rejected.
 #[tokio_localset_test::localset_test]
 async fn graphql_ws_rejects_wrong_subprotocol() {

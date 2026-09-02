@@ -166,11 +166,12 @@ impl GatewayWrapper {
             {
                 Ok(b) => b,
                 Err(event) => {
-                    tracing::error!(client_id = %client.id, guard_index = i, panic = %event.message, "connect guard panicked; refusing the connection");
-                    return Err(WsError::AuthFailed(format!(
-                        "guard {} panicked: {}",
-                        i, event.message
-                    )));
+                    // The refusal reaches the caller as a close frame, so the
+                    // panic is narrated rather than reported. Keeping the event
+                    // typed is what puts an internal-error close code on the
+                    // wire instead of a policy one.
+                    tracing::debug!(client_id = %client.id, guard_index = i, panic = %event.message, "connect guard panicked");
+                    return Err(WsError::from(event));
                 }
             };
             if !activated {
@@ -544,7 +545,7 @@ impl GatewayWrapper {
             WsMessage::Binary(_) => Err(WsError::InvalidMessage(
                 "Binary messages not yet supported for event extraction".into(),
             )),
-            WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Close => Err(
+            WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Close(_) => Err(
                 WsError::InvalidMessage("Control frames don't have events".into()),
             ),
         }

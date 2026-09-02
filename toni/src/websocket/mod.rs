@@ -28,9 +28,9 @@ pub use gateway_wrapper::GatewayWrapper;
 pub use session::Session;
 pub use ws_client::{WsClient, WsHandshake};
 pub(crate) use ws_client_map::WsClientMap;
-pub use ws_error::{DisconnectReason, WsError};
+pub use ws_error::{DisconnectReason, WsError, close_code, refusal_frames};
 pub use ws_handler_output::WsHandlerOutput;
-pub use ws_message::WsMessage;
+pub use ws_message::{CloseFrame, WsMessage};
 
 /// Convenience alias for the return type of `#[subscribe_message]` handlers.
 pub type WsHandlerResult = Result<WsHandlerOutput, WsError>;

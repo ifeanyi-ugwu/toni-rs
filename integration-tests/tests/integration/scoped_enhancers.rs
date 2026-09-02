@@ -248,21 +248,24 @@ async fn ws_request_scoped_guard_uses_handshake_header() {
     let server = TestServer::start(WsGuardModule).await;
     let ws_url = format!("ws://127.0.0.1:{}/guarded-ws", server.port);
 
-    // Without the token — guard rejects, server closes connection immediately.
+    // Without the token — the guard rejects, and the refusal says so before
+    // the socket closes: the canonical envelope, then a policy close code.
     {
         let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
-        let next = ws.next().await;
-        // Server closes the socket; stream yields None or a close frame.
-        let closed = match next {
-            None => true,
-            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => true,
-            Some(Err(_)) => true,
-            _ => false,
-        };
-        assert!(
-            closed,
-            "expected server to close connection when guard rejects"
+        let envelope = ws
+            .next()
+            .await
+            .expect("a refusal frame must arrive")
+            .expect("the frame is readable");
+        let envelope: serde_json::Value =
+            serde_json::from_str(envelope.to_text().expect("a text frame")).expect("an envelope");
+        assert_eq!(envelope["status"], "error", "envelope: {envelope}");
+
+        let closed = matches!(
+            ws.next().await,
+            None | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | Some(Err(_))
         );
+        assert!(closed, "expected the socket to close after the refusal");
     }
 
     // With the correct token — guard passes, ping/pong works.

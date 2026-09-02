@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::errors::Error;
+use crate::errors::{Error, ErrorKind};
 use crate::websocket::WsMessage;
 
 /// WebSocket error variants — framework-emitted kinds plus a wrapper for
@@ -40,6 +40,13 @@ pub enum WsError {
     /// Forwarded from the broadcast subsystem.
     BroadcastError(String),
 
+    /// Refuse the connection with a close code and nothing else on the wire.
+    ///
+    /// For subprotocols that define their own refusal codes — graphql-ws
+    /// closes with 4406 when `Sec-WebSocket-Protocol` is unacceptable — where
+    /// an envelope frame would be noise the client has no grammar for.
+    Refused { code: u16, reason: String },
+
     /// Carries a user-domain error implementing
     /// [`toni::Error`](crate::errors::Error). Constructed by the
     /// [`From<E: Error>`] blanket; handlers don't build this variant by
@@ -63,6 +70,7 @@ impl WsError {
                     Self::AuthFailed(m) => ("Unauthorized", m.as_str()),
                     Self::EventNotFound(m) => ("NotFound", m.as_str()),
                     Self::Internal(m) | Self::BroadcastError(m) => ("Internal", m.as_str()),
+                    Self::Refused { reason, .. } => ("BadRequest", reason.as_str()),
                     Self::AppError(_) => unreachable!(),
                 };
                 let payload = json!({
@@ -73,6 +81,48 @@ impl WsError {
                 WsMessage::text(payload.to_string())
             }
         }
+    }
+}
+
+/// The RFC 6455 close code a refusal carries.
+///
+/// Client-fault refusals close with 1008 (Policy Violation), the code the
+/// protocol reserves for "your message or connection broke a rule"; a caller
+/// asked to slow down gets 1013 (Try Again Later); anything the server got
+/// wrong closes with 1011 (Internal Error). RFC 6455 has no auth-specific
+/// code, which is why an unauthorized connect is also 1008.
+pub fn close_code(err: &WsError) -> u16 {
+    match err {
+        WsError::Refused { code, .. } => *code,
+        WsError::AppError(e) => match e.kind() {
+            ErrorKind::TooManyRequests => 1013,
+            ErrorKind::BadRequest
+            | ErrorKind::Unauthorized
+            | ErrorKind::Forbidden
+            | ErrorKind::NotFound
+            | ErrorKind::Conflict
+            | ErrorKind::UnprocessableEntity => 1008,
+            _ => 1011,
+        },
+        WsError::AuthFailed(_) | WsError::InvalidMessage(_) | WsError::EventNotFound(_) => 1008,
+        _ => 1011,
+    }
+}
+
+/// What a refused connection is answered with: the canonical envelope, then a
+/// close carrying the code for that refusal.
+///
+/// The guards run after the handshake, so there is no HTTP status left to
+/// refuse with — the frames are the only way the caller learns why. Sending
+/// the envelope first gives a machine-readable reason; the close code gives
+/// one a browser can read off its `close` event without parsing anything.
+pub fn refusal_frames(err: &WsError) -> Vec<WsMessage> {
+    match err {
+        WsError::Refused { code, reason } => vec![WsMessage::close_with(*code, reason.clone())],
+        other => vec![
+            other.to_message(),
+            WsMessage::close_with(close_code(other), other.to_string()),
+        ],
     }
 }
 
@@ -101,6 +151,7 @@ impl fmt::Display for WsError {
             Self::EventNotFound(m) => write!(f, "Event not found: {m}"),
             Self::Internal(m) => write!(f, "Internal error: {m}"),
             Self::BroadcastError(m) => write!(f, "Broadcast error: {m}"),
+            Self::Refused { code, reason } => write!(f, "Refused with {code}: {reason}"),
             Self::AppError(e) => write!(f, "{}: {}", e.kind().name(), e.message()),
         }
     }

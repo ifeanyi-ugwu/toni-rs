@@ -17,6 +17,9 @@ pub(crate) fn ws_message_to_poem(msg: WsMessage) -> Result<Message, WsError> {
         WsMessage::Binary(b) => Ok(Message::binary(b)),
         WsMessage::Ping(b) => Ok(Message::ping(b)),
         WsMessage::Pong(b) => Ok(Message::pong(b)),
-        WsMessage::Close => Ok(Message::close()),
+        WsMessage::Close(frame) => Ok(match frame {
+            Some(f) => Message::close_with(f.code, f.reason),
+            None => Message::close(),
+        }),
     }
 }

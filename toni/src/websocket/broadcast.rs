@@ -245,7 +245,7 @@ impl ConnectionManager {
 
         for client_id in &client_ids {
             if let Some(sink) = self.ws_client_map.get_sink(client_id) {
-                let _ = sink.try_send(WsMessage::Close);
+                let _ = sink.try_send(WsMessage::close());
                 tracing::debug!(client_id = %client_id, "Sent close frame");
             }
         }

@@ -84,7 +84,7 @@ impl<T: DeserializeOwned> FromContext<WsContext> for Payload<T> {
             WsMessage::Binary(bytes) => serde_json::from_slice::<T>(bytes),
             WsMessage::Ping(_) => return Err(PayloadError::NotData { frame: "Ping" }),
             WsMessage::Pong(_) => return Err(PayloadError::NotData { frame: "Pong" }),
-            WsMessage::Close => return Err(PayloadError::NotData { frame: "Close" }),
+            WsMessage::Close(_) => return Err(PayloadError::NotData { frame: "Close" }),
         };
         parsed.map(Payload).map_err(PayloadError::Parse)
     }

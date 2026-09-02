@@ -24,6 +24,9 @@ pub(crate) fn ws_message_to_salvo(msg: WsMessage) -> Result<Message, WsError> {
         WsMessage::Binary(data) => Ok(Message::binary(data)),
         WsMessage::Ping(data) => Ok(Message::ping(data)),
         WsMessage::Pong(data) => Ok(Message::pong(data)),
-        WsMessage::Close => Ok(Message::close()),
+        WsMessage::Close(frame) => Ok(match frame {
+            Some(f) => Message::close_with(f.code, f.reason),
+            None => Message::close(),
+        }),
     }
 }

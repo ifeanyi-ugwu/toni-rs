@@ -18,6 +18,11 @@ pub(crate) fn ws_message_to_rocket(msg: WsMessage) -> Result<Message, WsError> {
         WsMessage::Binary(b) => Ok(Message::Binary(b.into())),
         WsMessage::Ping(b) => Ok(Message::Ping(b.into())),
         WsMessage::Pong(b) => Ok(Message::Pong(b.into())),
-        WsMessage::Close => Ok(Message::Close(None)),
+        WsMessage::Close(frame) => Ok(Message::Close(frame.map(|f| {
+            rocket_ws::frame::CloseFrame {
+                code: f.code.into(),
+                reason: f.reason.into(),
+            }
+        }))),
     }
 }

@@ -185,7 +185,16 @@ async fn run_ws_connection(
         .0;
     let client_id = match callbacks.connect(parts, sender.clone()).await {
         Ok(id) => id,
-        Err(_) => return,
+        Err(e) => {
+            tracing::debug!(error = %e, "WebSocket connect rejected by guard or handler");
+            // The handshake is already done, so a refusal is answered the only
+            // way the protocol leaves: the canonical envelope, then a close
+            // carrying the code for it.
+            for frame in toni::websocket::refusal_frames(&e) {
+                let _ = sender.send(frame).await;
+            }
+            return;
+        }
     };
 
     let stream_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
@@ -261,6 +270,11 @@ fn ws_message_to_tungstenite(msg: WsMessage) -> Result<Message> {
         WsMessage::Binary(b) => Ok(Message::Binary(b.into())),
         WsMessage::Ping(d) => Ok(Message::Ping(d.into())),
         WsMessage::Pong(d) => Ok(Message::Pong(d.into())),
-        WsMessage::Close => Ok(Message::Close(None)),
+        WsMessage::Close(frame) => Ok(Message::Close(frame.map(|f| {
+            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: f.code.into(),
+                reason: f.reason.into(),
+            }
+        }))),
     }
 }

@@ -97,6 +97,7 @@ mod validated_transports;
 mod websocket_broadcast;
 mod websocket_e2e;
 mod ws_connect_execution;
+mod ws_connect_refusal;
 mod ws_extractors;
 mod ws_global_enhancers;
 mod ws_handler_stream;
