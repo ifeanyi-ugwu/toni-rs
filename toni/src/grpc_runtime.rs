@@ -325,6 +325,37 @@ pub async fn run_grpc_error_chain(
     None
 }
 
+/// A domain error a handler failed with, parked on the execution so the chain
+/// sees the type rather than the status it was flattened into.
+struct GrpcFailure(Arc<dyn crate::errors::Error + Send + Sync>);
+
+/// Park `error` on the execution and answer with the status its `kind()` maps
+/// to.
+///
+/// gRPC is the one transport where toni does not own the handler's error type:
+/// tonic's trait fixes it to `Status`, which has no room for the error the way
+/// `HttpError::AppError` does. This is that room — `toni_grpc::GrpcFail::fail`
+/// is the call a handler makes, and this is what it does.
+pub fn stash_failure<E: crate::errors::Error>(ctx: &GrpcContext, error: E) -> GrpcStatus {
+    use crate::context::HandlerContext as _;
+
+    let error: Arc<dyn crate::errors::Error + Send + Sync> = Arc::new(error);
+    let status = GrpcStatus::from_error(error.as_ref());
+    ctx.extensions().insert(GrpcFailure(error));
+    status
+}
+
+/// Take the parked failure, if the handler left one.
+///
+/// Called by the `#[grpc_methods]` wrapper on its way to the error chain, so a
+/// `#[catch(MyError)]` handler matches on this transport as it does on the
+/// other three.
+pub fn take_failure(ctx: &GrpcContext) -> Option<Arc<dyn crate::errors::Error + Send + Sync>> {
+    use crate::context::HandlerContext as _;
+
+    ctx.extensions().remove::<GrpcFailure>().map(|f| f.0)
+}
+
 /// Wrap a future in `AssertUnwindSafe(...).catch_unwind()` and surface
 /// the panic payload as a [`PanicRecovered`](crate::errors::PanicRecovered)
 /// event scoped to the

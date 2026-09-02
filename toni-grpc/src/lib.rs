@@ -170,6 +170,58 @@ pub use grpc_adapter::GrpcAdapter;
 /// }
 /// ```
 pub fn to_status<E: toni::Error>(error: E) -> tonic::Status {
-    let status = toni::GrpcStatus::from(error);
+    to_tonic(toni::GrpcStatus::from(error))
+}
+
+fn to_tonic(status: toni::GrpcStatus) -> tonic::Status {
     tonic::Status::new(tonic::Code::from_i32(status.code as i32), status.message)
+}
+
+/// Fail a call with a domain error the error chain can still recognise.
+///
+/// [`to_status`] answers with the right code and loses the type: the chain
+/// receives the `Status` the error was flattened into, so a
+/// `#[catch(OrderError)]` handler never matches. `fail` parks the error on the
+/// execution on its way out, and the `#[grpc_methods]` wrapper hands *that* to
+/// the chain — which is how the other three transports have always behaved,
+/// where the handler's error type is toni's own and carries the value in its
+/// `AppError` variant.
+///
+/// ```ignore
+/// use toni_grpc::GrpcFail;
+///
+/// async fn create(&self, request: Request<CreateOrderRequest>)
+///     -> Result<Response<CreateOrderResponse>, Status>
+/// {
+///     let ctx = GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
+///     Err(ctx.fail(OutOfStock { item: "unobtainium".into() }))
+/// }
+/// ```
+pub trait GrpcFail {
+    /// Park `error` on the execution and answer with its mapped status.
+    fn fail<E: toni::Error>(&self, error: E) -> tonic::Status;
+}
+
+impl GrpcFail for toni::GrpcContext {
+    fn fail<E: toni::Error>(&self, error: E) -> tonic::Status {
+        to_tonic(toni::grpc_runtime::stash_failure(self, error))
+    }
+}
+
+/// The `?`-shaped form of [`GrpcFail::fail`], for a call whose error is
+/// already a `Result`:
+///
+/// ```ignore
+/// use toni_grpc::FailWith;
+///
+/// let order = self.orders.create(req).fail_with(&ctx)?;
+/// ```
+pub trait FailWith<T> {
+    fn fail_with(self, ctx: &toni::GrpcContext) -> Result<T, tonic::Status>;
+}
+
+impl<T, E: toni::Error> FailWith<T> for Result<T, E> {
+    fn fail_with(self, ctx: &toni::GrpcContext) -> Result<T, tonic::Status> {
+        self.map_err(|error| ctx.fail(error))
+    }
 }
