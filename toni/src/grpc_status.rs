@@ -139,9 +139,20 @@ impl From<ErrorKind> for GrpcCode {
 /// and what a `#[catch]`-registered handler returns.
 impl<E: Error> From<E> for GrpcStatus {
     fn from(e: E) -> Self {
+        Self::from_error(&e)
+    }
+}
+
+impl GrpcStatus {
+    /// The status a domain error maps to, read through a reference.
+    ///
+    /// The owned form is [`From`]; this is what the framework calls when it
+    /// holds an error it does not own — a failure parked on the execution,
+    /// for instance.
+    pub fn from_error(error: &(dyn Error + Send + Sync)) -> Self {
         Self {
-            code: grpc_code(e.kind()),
-            message: e.message().into_owned(),
+            code: grpc_code(error.kind()),
+            message: error.message().into_owned(),
         }
     }
 }

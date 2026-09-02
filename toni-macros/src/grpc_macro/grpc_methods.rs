@@ -740,13 +740,29 @@ fn build_wrapper_method(
                     // chain. If a handler claims it, the claimed
                     // `GrpcStatus` becomes the wire reply; otherwise the
                     // original status passes through unchanged.
+                    //
+                    // A handler that failed through `fail` / `fail_with` left
+                    // its domain error on the execution, so the chain is given
+                    // the type rather than the status it flattened into —
+                    // which is what lets `#[catch(MyError)]` match here as it
+                    // does on the other transports.
+                    let __stashed = ::toni::grpc_runtime::take_failure(&__ctx);
                     let __wrapped = ::toni::GrpcStatus {
                         code: ::toni::GrpcCode::from_i32(__status.code() as i32),
                         message: __status.message().to_string(),
                     };
-                    let __mapped = ::toni::grpc_runtime::run_grpc_error_chain(
-                        &__ctx, &self.enhancers, #method_name_lit, &__wrapped,
-                    ).await;
+                    let __mapped = match &__stashed {
+                        ::std::option::Option::Some(__domain) => {
+                            ::toni::grpc_runtime::run_grpc_error_chain(
+                                &__ctx, &self.enhancers, #method_name_lit, __domain.as_ref(),
+                            ).await
+                        }
+                        ::std::option::Option::None => {
+                            ::toni::grpc_runtime::run_grpc_error_chain(
+                                &__ctx, &self.enhancers, #method_name_lit, &__wrapped,
+                            ).await
+                        }
+                    };
                     ::std::result::Result::Err(match __mapped {
                         ::std::option::Option::Some(__grpc) => {
                             let __code = ::tonic::Code::from_i32(__grpc.code as i32);

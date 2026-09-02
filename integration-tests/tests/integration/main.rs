@@ -36,6 +36,7 @@ mod graphql_service_injection;
 mod graphql_subscriptions;
 mod grpc_client_injection;
 mod grpc_deadline;
+mod grpc_domain_error_reaches_the_chain;
 mod grpc_error_lift;
 mod grpc_global_enhancers;
 mod grpc_reflection;
