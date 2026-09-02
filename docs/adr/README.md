@@ -51,3 +51,4 @@ the history is part of the value.
 - [0033 — A gRPC streaming reply is part of its execution](0033-a-grpc-streaming-reply-is-part-of-its-execution.md)
 - [0034 — An integration earns a module when it owns a lifetime](0034-an-integration-earns-a-module-when-it-owns-a-lifetime.md)
 - [0035 — Observing errors is a pattern, not a pipeline role](0035-observing-errors-is-a-pattern.md)
+- [0037 — A gRPC handler hands the chain its error, not the status](0037-a-grpc-handler-hands-the-chain-its-error.md)
