@@ -102,6 +102,11 @@ impl ErrorKind {
 /// [`WsError`](crate::websocket::WsError) automatically. The transport's
 /// handler error type owns the rendering; this trait owns the semantic
 /// vocabulary.
+///
+/// gRPC stops one hop short, because a handler's signature belongs to tonic:
+/// `From<E>` builds a [`GrpcStatus`](crate::GrpcStatus), and
+/// `toni_grpc::to_status` carries that into `tonic::Status`, which the orphan
+/// rule keeps toni from doing on its own.
 pub trait Error: std::error::Error + Send + Sync + 'static {
     /// Coarse classification — drives the canonical envelope on every transport.
     fn kind(&self) -> ErrorKind;
