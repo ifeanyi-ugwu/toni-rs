@@ -34,6 +34,15 @@
 //!     -proto examples/proto/orders.proto \
 //!     -import-path examples/proto \
 //!     127.0.0.1:50051 toni_examples.orders.Orders/Create
+//!
+//! # Out of stock — a domain error carrying `ErrorKind::Conflict`, lifted by
+//! # `toni_grpc::to_status`, which answers ABORTED.
+//! grpcurl -plaintext \
+//!     -H 'authorization: Bearer secret-token' \
+//!     -d '{"item":"unobtainium","qty":1}' \
+//!     -proto examples/proto/orders.proto \
+//!     -import-path examples/proto \
+//!     127.0.0.1:50051 toni_examples.orders.Orders/Create
 //! ```
 
 use std::net::SocketAddr;
@@ -68,6 +77,33 @@ impl OrdersCounter {
 
     fn next_id(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+// ─── Domain error ───────────────────────────────────────────────────────────
+//
+// The same `toni::Error` a handler on any other transport would return. Its
+// `kind()` decides the wire shape everywhere: 409 on HTTP, `Conflict` in the
+// RPC and WebSocket envelopes, ABORTED here. A gRPC handler answers with
+// `tonic::Status` by signature, so the last hop is `toni_grpc::to_status`
+// rather than `?` — the orphan rule keeps toni from writing that conversion.
+
+#[derive(Debug)]
+struct OutOfStock {
+    item: String,
+}
+
+impl std::fmt::Display for OutOfStock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is out of stock", self.item)
+    }
+}
+
+impl std::error::Error for OutOfStock {}
+
+impl toni::Error for OutOfStock {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::Conflict
     }
 }
 
@@ -190,6 +226,11 @@ impl Orders for OrdersGrpcService {
                 "invalid-qty:{}",
                 req.qty
             )));
+        }
+        if req.item == "unobtainium" {
+            return Err(toni_grpc::to_status(OutOfStock {
+                item: req.item.clone(),
+            }));
         }
         let id = self.counter.next_id();
         Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
