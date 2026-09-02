@@ -126,6 +126,10 @@ where
 
     // Reject connections that do not negotiate the graphql-transport-ws sub-protocol.
     // Clients using the graphql-ws library set this automatically; raw clients must set it explicitly.
+    //
+    // The refusal closes with 4406, the code graphql-transport-ws reserves for
+    // an unacceptable subprotocol, and sends nothing else: a client that has
+    // not agreed on the grammar cannot read an envelope written in it.
     async fn on_connect(&self, client: &WsClient, _context: &WsContext) -> Result<(), WsError> {
         let protocol = client
             .handshake
@@ -133,9 +137,10 @@ where
             .get("sec-websocket-protocol")
             .map(|s| s.as_str());
         if protocol != Some("graphql-transport-ws") {
-            return Err(WsError::AuthFailed(
-                "graphql-ws requires Sec-WebSocket-Protocol: graphql-transport-ws".into(),
-            ));
+            return Err(WsError::Refused {
+                code: 4406,
+                reason: "Subprotocol not acceptable".into(),
+            });
         }
         Ok(())
     }

@@ -465,6 +465,12 @@ async fn run_ws_connection(
         Ok(id) => id,
         Err(e) => {
             tracing::debug!(error = %e, "WebSocket connect rejected by guard or handler");
+            // The handshake is already done, so a refusal is answered the only
+            // way the protocol leaves: the canonical envelope, then a close
+            // carrying the code for it.
+            for frame in toni::websocket::refusal_frames(&e) {
+                let _ = sender.send(frame).await;
+            }
             return;
         }
     };

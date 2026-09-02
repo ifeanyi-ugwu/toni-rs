@@ -18,6 +18,11 @@ pub(crate) fn ws_message_to_axum(msg: WsMessage) -> Result<Message, WsError> {
         WsMessage::Binary(data) => Ok(Message::Binary(data.into())),
         WsMessage::Ping(data) => Ok(Message::Ping(data.into())),
         WsMessage::Pong(data) => Ok(Message::Pong(data.into())),
-        WsMessage::Close => Ok(Message::Close(None)),
+        WsMessage::Close(frame) => Ok(Message::Close(frame.map(|f| {
+            axum::extract::ws::CloseFrame {
+                code: f.code,
+                reason: f.reason.into(),
+            }
+        }))),
     }
 }

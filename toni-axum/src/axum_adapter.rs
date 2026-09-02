@@ -122,7 +122,15 @@ async fn run_ws_connection(
 
     let client_id = match callbacks.connect(parts, sender.clone()).await {
         Ok(id) => id,
-        Err(_) => return,
+        Err(e) => {
+            // The handshake is already done, so a refusal is answered the only
+            // way the protocol leaves: the canonical envelope, then a close
+            // carrying the code for it.
+            for frame in toni::websocket::refusal_frames(&e) {
+                let _ = sender.send(frame).await;
+            }
+            return;
+        }
     };
 
     tracing::debug!(client_id = %client_id, "WebSocket connection established");
