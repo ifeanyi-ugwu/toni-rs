@@ -142,3 +142,34 @@ mod method_path_layer;
 mod tracing_layer;
 
 pub use grpc_adapter::GrpcAdapter;
+
+/// Answers a gRPC call with a domain error, mapping its
+/// [`kind`](toni::Error::kind) to the canonical gRPC code.
+///
+/// A gRPC handler's signature belongs to tonic, so it returns
+/// `tonic::Status` and the orphan rule stops toni from implementing
+/// `From<E>` into it. This is that hop, written where both types are
+/// reachable:
+///
+/// ```ignore
+/// async fn create(&self, request: Request<CreateOrderRequest>)
+///     -> Result<Response<CreateOrderResponse>, Status>
+/// {
+///     let order = self.orders.create(request.into_inner()).map_err(toni_grpc::to_status)?;
+///     Ok(Response::new(order.into()))
+/// }
+/// ```
+///
+/// For a bare `?`, give the error type the impl in the crate that owns it:
+///
+/// ```ignore
+/// impl From<OrderError> for tonic::Status {
+///     fn from(e: OrderError) -> Self {
+///         toni_grpc::to_status(e)
+///     }
+/// }
+/// ```
+pub fn to_status<E: toni::Error>(error: E) -> tonic::Status {
+    let status = toni::GrpcStatus::from(error);
+    tonic::Status::new(tonic::Code::from_i32(status.code as i32), status.message)
+}
