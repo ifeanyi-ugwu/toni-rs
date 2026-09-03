@@ -89,6 +89,10 @@ pub use application_context::ToniApplicationContext;
 // Re-export dependencies used in macro-generated code
 // This allows users to only depend on `toni` without needing to add these explicitly
 pub use async_trait::async_trait;
+/// Re-exported for generated code: a streaming gRPC handler's reply is boxed
+/// and mapped in the expansion, which needs a `Stream` path the user's crate
+/// can name without depending on `futures` itself.
+pub use futures;
 pub use rustc_hash::FxHashMap;
 
 // Re-export provider scope
