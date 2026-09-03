@@ -53,3 +53,4 @@ the history is part of the value.
 - [0035 — Observing errors is a pattern, not a pipeline role](0035-observing-errors-is-a-pattern.md)
 - [0036 — A refused WebSocket connection is told why](0036-a-refused-connection-is-told-why.md)
 - [0037 — A gRPC handler hands the chain its error, not the status](0037-a-grpc-handler-hands-the-chain-its-error.md)
+- [0038 — A gRPC handler is written in toni's shapes, and the macro writes tonic's](0038-a-grpc-handler-is-written-in-tonis-shapes.md)
