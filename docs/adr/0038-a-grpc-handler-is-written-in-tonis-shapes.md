@@ -92,6 +92,12 @@ misspelled extractor lands there and fails as a type mismatch against the proto 
 The raw request matters more than it looks: it is what keeps this form from being a subset of what
 the trait impl could express, so nothing is stranded when that form goes.
 
+**A trait that names its stream differently says so on the method.** `#[grpc_stream]` reads the
+associated type from the method — `greet_many` pairs with `GreetManyStream` — which holds because
+tonic-build derives both from one proto identifier. `tonic_build::manual` sets the Rust name and the
+route name independently, so a `watch` there may declare `StreamProgressStream`. The attribute
+carries it: `#[grpc_stream(StreamProgressStream)]`.
+
 **The proto trait is named, not inferred.** A trait impl states it in its header, which is where the
 macro reads it today; an inherent impl has no header, so inference would mean guessing a module path
 and a trait name from the struct's identifier. That guess breaks the first time a service is named
@@ -115,6 +121,10 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 
 - All four call shapes are expressible: unary, server streaming, client streaming and
   bidirectional.
+- A handler's error type implements `toni::Error`. `GrpcStatus` does not, and cannot: it is what a
+  `toni::Error` maps into, and implementing both sides would collide with that blanket. A handler
+  wanting a code no `ErrorKind` reaches — `FailedPrecondition`, `OutOfRange` — takes the raw request
+  and answers `tonic::Status` itself.
 - `Validated<Payload<T>>` is not among the parameters. Proto messages are generated, so there is
   nowhere to hang the `#[validate]` attributes it reads; validation on this transport is a check
   inside the handler.
