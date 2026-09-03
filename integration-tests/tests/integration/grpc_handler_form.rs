@@ -7,8 +7,11 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use serial_test::serial;
-use toni::context::GrpcContext;
+use toni::context::{GrpcContext, HandlerContext};
 use toni::extractors::Payload;
 use toni::toni_factory::ToniFactory;
 use toni::{async_trait, injectable, module, ErrorKind, GrpcCode, GrpcStatus};
@@ -20,6 +23,8 @@ mod greeter_pb {
 
 use greeter_pb::greeter_client::GreeterClient;
 use greeter_pb::greeter_server::{Greeter, GreeterServer};
+
+static SAW_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 struct NoName;
@@ -83,6 +88,57 @@ impl GreeterService {
             message: format!("{} on {}", req.name, ctx.method()),
         })
     }
+
+    /// The execution rides the reply: a stream dropped with items still to
+    /// come fires the token, which the work feeding it can select on.
+    #[grpc_stream]
+    async fn greet_forever(
+        &self,
+        Payload(_req): Payload<greeter_pb::GreetRequest>,
+        ctx: &GrpcContext,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<greeter_pb::GreetReply, NoName>> + Send + 'static,
+        NoName,
+    > {
+        let context = ctx.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                let _ = tx.send(Ok(greeter_pb::GreetReply {
+                    message: "tick".to_string(),
+                }));
+                tokio::select! {
+                    _ = context.cancellation().cancelled() => {
+                        SAW_CANCEL.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
+            }
+        });
+        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+    }
+
+    /// A streaming reply is a stream of the handler's own types. The macro
+    /// declares the associated type tonic asks for and boxes this into it.
+    #[grpc_stream]
+    async fn greet_many(
+        &self,
+        Payload(req): Payload<greeter_pb::GreetRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<greeter_pb::GreetReply, NoName>> + Send + 'static,
+        NoName,
+    > {
+        if req.name.is_empty() {
+            return Err(NoName);
+        }
+        let name = req.name;
+        Ok(futures_util::stream::iter((1..=2).map(move |i| {
+            Ok(greeter_pb::GreetReply {
+                message: format!("{name} {i}"),
+            })
+        })))
+    }
 }
 
 #[module(controllers: [GreeterService], providers: [NoNameHandler])]
@@ -129,6 +185,86 @@ async fn a_handler_answers_with_its_own_reply_type() {
 
     // The context param arrived too: the method path is what the caller dialled.
     assert_eq!(reply.message, "ada on toni_test.orders.Greeter/Greet");
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_streaming_handler_answers_with_its_own_item_type() {
+    use futures_util::StreamExt;
+
+    let mut client = client(boot().await).await;
+
+    let messages: Vec<String> = client
+        .greet_many(greeter_pb::GreetRequest {
+            name: "ada".to_string(),
+        })
+        .await
+        .expect("the call succeeds")
+        .into_inner()
+        .map(|item| item.expect("each item arrives").message)
+        .collect()
+        .await;
+
+    assert_eq!(messages, vec!["ada 1".to_string(), "ada 2".to_string()]);
+}
+
+/// A stream that fails before it opens is an ordinary handler error, so the
+/// chain claims it the way it claims a unary one.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_streaming_handler_that_fails_to_open_reaches_the_chain() {
+    let mut client = client(boot().await).await;
+
+    let err = client
+        .greet_many(greeter_pb::GreetRequest {
+            name: String::new(),
+        })
+        .await
+        .expect_err("an empty name fails the call");
+
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(err.message(), "caught:no-name");
+}
+
+/// The generated associated type is the scoped one, so a reply the caller
+/// abandons tells the work behind it — the guarantee ADR-0033 pins for a
+/// hand-written trait impl, reached here without one.
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn an_abandoned_stream_cancels_the_work_feeding_it() {
+    use futures_util::StreamExt;
+
+    SAW_CANCEL.store(false, Ordering::SeqCst);
+    let mut client = client(boot().await).await;
+
+    let mut stream = client
+        .greet_forever(greeter_pb::GreetRequest {
+            name: "ada".to_string(),
+        })
+        .await
+        .expect("the call succeeds")
+        .into_inner();
+
+    stream.next().await.expect("one item").expect("an ok item");
+    assert!(
+        !SAW_CANCEL.load(Ordering::SeqCst),
+        "a stream still being read must not read as abandoned"
+    );
+
+    drop(stream);
+
+    let mut fired = false;
+    for _ in 0..40 {
+        if SAW_CANCEL.load(Ordering::SeqCst) {
+            fired = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        fired,
+        "the work feeding the reply must learn the caller went"
+    );
 }
 
 #[serial]
