@@ -65,29 +65,80 @@ pub fn grpc_source_ident(self_ident: &syn::Ident) -> syn::Ident {
 }
 
 struct GrpcMethodsArgs {
+    /// The proto trait to implement, named when the macro writes the impl
+    /// itself: `#[grpc_methods(orders_server::Orders)]`. A trait impl states
+    /// it in its own header and leaves this empty.
+    proto_trait: Option<Path>,
     server: Option<Path>,
 }
 
 impl syn::parse::Parse for GrpcMethodsArgs {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
-        if input.is_empty() {
-            return Ok(GrpcMethodsArgs { server: None });
+        let mut proto_trait: Option<Path> = None;
+        let mut server: Option<Path> = None;
+
+        while !input.is_empty() {
+            let fork = input.fork();
+            let keyed = fork
+                .parse::<syn::Ident>()
+                .map(|key| key == "server" && fork.peek(Token![=]))
+                .unwrap_or(false);
+
+            if keyed {
+                let _key: syn::Ident = input.parse()?;
+                let _: Token![=] = input.parse()?;
+                server = Some(input.parse()?);
+            } else {
+                let path: Path = input.parse()?;
+                if proto_trait.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        "#[grpc_methods] takes one proto trait; the second path is unexpected",
+                    ));
+                }
+                proto_trait = Some(path);
+            }
+
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            } else {
+                break;
+            }
         }
-        let key: syn::Ident = input.parse()?;
-        if key != "server" {
-            return Err(syn::Error::new(key.span(), "expected `server = path`"));
-        }
-        let _: Token![=] = input.parse()?;
-        let server: Path = input.parse()?;
+
         Ok(GrpcMethodsArgs {
-            server: Some(server),
+            proto_trait,
+            server,
         })
     }
 }
 
 pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let args = parse2::<GrpcMethodsArgs>(attr)?;
-    let impl_block = parse2::<ItemImpl>(item)?;
+    let written = parse2::<ItemImpl>(item)?;
+
+    // An inherent impl is the form where handlers speak toni's shapes and the
+    // macro writes the proto trait impl. A trait impl is the form where the
+    // user writes tonic's signatures directly.
+    let (impl_block, handlers_impl) = if written.trait_.is_none() {
+        let proto_trait = args.proto_trait.clone().ok_or_else(|| {
+            syn::Error::new_spanned(
+                &written,
+                "#[grpc_methods] on an inherent impl needs the proto trait it serves \
+                 — `#[grpc_methods(orders_server::Orders)]`",
+            )
+        })?;
+        let (generated, handlers) = lower_handlers_impl(&written, &proto_trait)?;
+        (generated, Some(handlers))
+    } else {
+        if let Some(named) = &args.proto_trait {
+            return Err(syn::Error::new_spanned(
+                named,
+                "the impl block already names its proto trait; drop the argument",
+            ));
+        }
+        (written, None)
+    };
 
     let trait_path = impl_block
         .trait_
@@ -503,10 +554,232 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     };
 
     Ok(quote! {
+        #handlers_impl
         #user_impl
         #wrapper_def
         #grpc_trait_impl
     })
+}
+
+/// Split an inherent impl into the handlers as the user wrote them and the
+/// proto trait impl that calls them.
+///
+/// Everything a gRPC handler had to spell out — `Request` in, `Response` out,
+/// a `Status` for an error — is written here instead, so a method reads the
+/// way it does on the other three transports. The handlers keep their bodies
+/// and move to a `__toni_grpc_`-prefixed name, which is what the generated
+/// trait method calls: same name in both impls would leave the call resolving
+/// by inherent-first precedence, and a rename that ever slipped would recurse.
+fn lower_handlers_impl(inherent: &ItemImpl, proto_trait: &Path) -> Result<(ItemImpl, ItemImpl)> {
+    let mut handler_items: Vec<syn::ImplItem> = Vec::new();
+    let mut generated_items: Vec<syn::ImplItem> = Vec::new();
+
+    for item in &inherent.items {
+        let syn::ImplItem::Fn(method) = item else {
+            handler_items.push(item.clone());
+            continue;
+        };
+
+        if !method.attrs.iter().any(|attr| attr_is(attr, "grpc_method")) {
+            handler_items.push(item.clone());
+            continue;
+        }
+
+        let (handler, generated) = lower_handler(method)?;
+        handler_items.push(syn::ImplItem::Fn(handler));
+        generated_items.push(syn::ImplItem::Fn(generated));
+    }
+
+    if generated_items.is_empty() {
+        return Err(syn::Error::new_spanned(
+            inherent,
+            "#[grpc_methods] found no `#[grpc_method]` handler in this impl",
+        ));
+    }
+
+    let self_ty = inherent.self_ty.as_ref();
+
+    let mut handlers = inherent.clone();
+    handlers.items = handler_items;
+    handlers.attrs.retain(|attr| {
+        !has_enhancer_attribute(attr)
+            && !attr_is(attr, "set_metadata")
+            && !attr_is(attr, "grpc_methods")
+    });
+
+    let carried: Vec<&syn::Attribute> = inherent
+        .attrs
+        .iter()
+        .filter(|attr| has_enhancer_attribute(attr) || attr_is(attr, "set_metadata"))
+        .collect();
+
+    let generated: ItemImpl = syn::parse_quote! {
+        #(#carried)*
+        #[::tonic::async_trait]
+        impl #proto_trait for #self_ty {
+            #(#generated_items)*
+        }
+    };
+
+    Ok((generated, handlers))
+}
+
+/// What a handler's parameter asks for.
+enum HandlerParam {
+    /// The request message, as `Payload<T>`.
+    Payload(syn::Type),
+    /// The call's context, as `&GrpcContext`.
+    Context,
+}
+
+/// Rewrite one `#[grpc_method]` handler into itself under a hidden name, plus
+/// the proto-trait method that extracts its arguments and renders its error.
+fn lower_handler(method: &syn::ImplItemFn) -> Result<(syn::ImplItemFn, syn::ImplItemFn)> {
+    let name = &method.sig.ident;
+    let hidden = format_ident!("__toni_grpc_{}", name);
+
+    if method.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &method.sig,
+            "a `#[grpc_method]` handler is async",
+        ));
+    }
+
+    let mut request_ty: Option<syn::Type> = None;
+    let mut call_args: Vec<TokenStream> = Vec::new();
+
+    for arg in method.sig.inputs.iter() {
+        let syn::FnArg::Typed(typed) = arg else {
+            continue;
+        };
+        match classify_param(typed.ty.as_ref())? {
+            HandlerParam::Payload(inner) => {
+                if request_ty.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        typed,
+                        "a gRPC call carries one request message, so one `Payload<T>`",
+                    ));
+                }
+                request_ty = Some(inner);
+                call_args.push(quote! { ::toni::extractors::Payload(__message) });
+            }
+            HandlerParam::Context => call_args.push(quote! {
+                __ctx.as_ref().expect(
+                    "a gRPC context — this method was reached outside toni's dispatch",
+                )
+            }),
+        }
+    }
+
+    let request_ty = request_ty.ok_or_else(|| {
+        syn::Error::new_spanned(
+            &method.sig,
+            "a `#[grpc_method]` handler takes its request as `Payload<T>`",
+        )
+    })?;
+    let response_ty = ok_type_of(&method.sig.output)?;
+
+    let carried: Vec<&syn::Attribute> = method
+        .attrs
+        .iter()
+        .filter(|attr| has_enhancer_attribute(attr) || attr_is(attr, "set_metadata"))
+        .collect();
+
+    let generated: syn::ImplItemFn = syn::parse_quote! {
+        #(#carried)*
+        async fn #name(
+            &self,
+            request: ::tonic::Request<#request_ty>,
+        ) -> ::std::result::Result<::tonic::Response<#response_ty>, ::tonic::Status> {
+            let __ctx = ::toni::context::GrpcContext::of(request.extensions());
+            let __message = request.into_inner();
+            match Self::#hidden(self, #(#call_args),*).await {
+                ::std::result::Result::Ok(__reply) => {
+                    ::std::result::Result::Ok(::tonic::Response::new(__reply))
+                }
+                ::std::result::Result::Err(__err) => {
+                    // Parking the error keeps its type for the chain; without a
+                    // context to park it on there is only the status.
+                    let __status = match __ctx.as_ref() {
+                        ::std::option::Option::Some(__ctx) => {
+                            ::toni::grpc_runtime::stash_failure(__ctx, __err)
+                        }
+                        ::std::option::Option::None => ::toni::GrpcStatus::from(__err),
+                    };
+                    ::std::result::Result::Err(::tonic::Status::new(
+                        ::tonic::Code::from_i32(__status.code as i32),
+                        __status.message,
+                    ))
+                }
+            }
+        }
+    };
+
+    let mut handler = method.clone();
+    handler.sig.ident = hidden;
+    handler.attrs.retain(|attr| {
+        !attr_is(attr, "grpc_method")
+            && !has_enhancer_attribute(attr)
+            && !attr_is(attr, "set_metadata")
+    });
+
+    Ok((handler, generated))
+}
+
+/// Read a parameter's type as what it asks the framework for.
+fn classify_param(ty: &syn::Type) -> Result<HandlerParam> {
+    if let syn::Type::Reference(reference) = ty {
+        if last_segment_is(reference.elem.as_ref(), "GrpcContext") {
+            return Ok(HandlerParam::Context);
+        }
+        return Err(syn::Error::new_spanned(
+            ty,
+            "a `#[grpc_method]` handler takes `Payload<T>` and `&GrpcContext`",
+        ));
+    }
+
+    if let syn::Type::Path(path) = ty
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "Payload"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(HandlerParam::Payload(inner.clone()));
+    }
+
+    Err(syn::Error::new_spanned(
+        ty,
+        "a `#[grpc_method]` handler takes `Payload<T>` and `&GrpcContext`",
+    ))
+}
+
+fn last_segment_is(ty: &syn::Type, name: &str) -> bool {
+    matches!(ty, syn::Type::Path(path)
+        if path.path.segments.last().is_some_and(|segment| segment.ident == name))
+}
+
+/// The `T` of a handler's `Result<T, E>`.
+fn ok_type_of(output: &syn::ReturnType) -> Result<syn::Type> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return Err(syn::Error::new_spanned(
+            output,
+            "a `#[grpc_method]` handler answers with `Result<Reply, YourError>`",
+        ));
+    };
+
+    if let syn::Type::Path(path) = ty.as_ref()
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(ok)) = args.args.first()
+    {
+        return Ok(ok.clone());
+    }
+
+    Err(syn::Error::new_spanned(
+        ty,
+        "a `#[grpc_method]` handler answers with `Result<Reply, YourError>`",
+    ))
 }
 
 /// Build the wrapper's proto-trait method body. Runs the full pipeline
