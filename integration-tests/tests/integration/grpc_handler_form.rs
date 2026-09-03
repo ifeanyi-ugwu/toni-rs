@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serial_test::serial;
 use toni::context::{GrpcContext, HandlerContext};
-use toni::extractors::Payload;
+use toni::extractors::{Inbound, Payload};
 use toni::toni_factory::ToniFactory;
 use toni::{async_trait, injectable, module, ErrorKind, GrpcCode, GrpcStatus};
 use toni_macros::{controller, grpc_methods, new, use_error_handlers};
@@ -113,6 +113,55 @@ impl GreeterService {
                         return;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
+            }
+        });
+        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+    }
+
+    /// The caller's stream arrives as `Inbound<T>`, which yields the message
+    /// type rather than tonic's `Streaming`.
+    #[grpc_method]
+    async fn greet_all(
+        &self,
+        mut inbound: Inbound<greeter_pb::GreetRequest>,
+    ) -> Result<greeter_pb::GreetReply, NoName> {
+        use futures_util::StreamExt;
+
+        let mut names = Vec::new();
+        while let Some(item) = inbound.next().await {
+            let req = item.map_err(|_| NoName)?;
+            names.push(req.name);
+        }
+        if names.is_empty() {
+            return Err(NoName);
+        }
+        Ok(greeter_pb::GreetReply {
+            message: names.join(", "),
+        })
+    }
+
+    /// Both directions at once: an inbound stream and a streaming reply.
+    #[grpc_stream]
+    async fn converse(
+        &self,
+        mut inbound: Inbound<greeter_pb::GreetRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<greeter_pb::GreetReply, NoName>> + Send + 'static,
+        NoName,
+    > {
+        use futures_util::StreamExt;
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(item) = inbound.next().await {
+                let reply = item
+                    .map(|req| greeter_pb::GreetReply {
+                        message: format!("hi {}", req.name),
+                    })
+                    .map_err(|_| NoName);
+                if tx.send(reply).is_err() {
+                    return;
                 }
             }
         });
@@ -265,6 +314,49 @@ async fn an_abandoned_stream_cancels_the_work_feeding_it() {
         fired,
         "the work feeding the reply must learn the caller went"
     );
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_handler_reads_the_caller_s_stream() {
+    let mut client = client(boot().await).await;
+
+    let names = futures_util::stream::iter(["ada", "grace", "edsger"].map(|name| {
+        greeter_pb::GreetRequest {
+            name: name.to_string(),
+        }
+    }));
+
+    let reply = client
+        .greet_all(names)
+        .await
+        .expect("the call succeeds")
+        .into_inner();
+
+    assert_eq!(reply.message, "ada, grace, edsger");
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_handler_answers_each_message_as_it_arrives() {
+    use futures_util::StreamExt;
+
+    let mut client = client(boot().await).await;
+
+    let names = futures_util::stream::iter(["ada", "grace"].map(|name| greeter_pb::GreetRequest {
+        name: name.to_string(),
+    }));
+
+    let messages: Vec<String> = client
+        .converse(names)
+        .await
+        .expect("the call succeeds")
+        .into_inner()
+        .map(|item| item.expect("each item arrives").message)
+        .collect()
+        .await;
+
+    assert_eq!(messages, vec!["hi ada".to_string(), "hi grace".to_string()]);
 }
 
 #[serial]

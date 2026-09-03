@@ -11,6 +11,12 @@ service Greeter {
 
     // A reply with no natural end, for the abandoned-stream case.
     rpc GreetForever (GreetRequest) returns (stream GreetReply);
+
+    // Client streaming: the caller sends names, the server answers once.
+    rpc GreetAll (stream GreetRequest) returns (GreetReply);
+
+    // Bidi: each name is answered as it arrives.
+    rpc Converse (stream GreetRequest) returns (stream GreetReply);
 }
 
 message GreetRequest {
