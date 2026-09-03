@@ -580,8 +580,20 @@ fn lower_handlers_impl(inherent: &ItemImpl, proto_trait: &Path) -> Result<(ItemI
             continue;
         };
 
-        let streams = method.attrs.iter().any(|attr| attr_is(attr, "grpc_stream"));
-        if !streams && !method.attrs.iter().any(|attr| attr_is(attr, "grpc_method")) {
+        // `Some(None)` streams and takes the paired name; `Some(Some(ident))`
+        // streams and names the associated type itself.
+        let streams = match method
+            .attrs
+            .iter()
+            .find(|attr| attr_is(attr, "grpc_stream"))
+        {
+            None => None,
+            Some(attr) => Some(match attr.meta {
+                syn::Meta::Path(_) => None,
+                _ => Some(attr.parse_args::<syn::Ident>()?),
+            }),
+        };
+        if streams.is_none() && !method.attrs.iter().any(|attr| attr_is(attr, "grpc_method")) {
             handler_items.push(item.clone());
             continue;
         }
@@ -654,7 +666,7 @@ enum RequestKind {
 /// for a streaming reply the associated type the trait declares for it.
 fn lower_handler(
     method: &syn::ImplItemFn,
-    streams: bool,
+    streams: Option<Option<syn::Ident>>,
 ) -> Result<(syn::ImplItemFn, Vec<syn::ImplItem>)> {
     let name = &method.sig.ident;
     let hidden = format_ident!("__toni_grpc_{}", name);
@@ -765,10 +777,12 @@ fn lower_handler(
 
     let mut generated: Vec<syn::ImplItem> = Vec::new();
 
-    let generated_fn: syn::ImplItemFn = if streams {
+    let generated_fn: syn::ImplItemFn = if let Some(named_assoc) = streams {
         // tonic names a streaming reply's associated type after the method, and
-        // the trait declares it: `greet_many` pairs with `GreetManyStream`.
-        let assoc = assoc_stream_ident(name);
+        // the trait declares it: `greet_many` pairs with `GreetManyStream`. A
+        // trait built through `tonic_build::manual` sets the Rust name and the
+        // route name independently, so there the method names it instead.
+        let assoc = named_assoc.unwrap_or_else(|| assoc_stream_ident(name));
         let item_ty = stream_item_type(&answer_ty).ok_or_else(|| {
             syn::Error::new_spanned(
                 &method.sig.output,
