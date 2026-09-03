@@ -69,6 +69,20 @@ opening is an ordinary handler error and reaches the chain like any other. An it
 after the answer has begun, so it maps to the code its kind means and goes on the wire — the split
 ADR-0032 records for an RPC reply stream.
 
+**The caller's stream arrives as `Inbound<T>`.** A client-streaming or bidirectional rpc hands the
+handler a stream of the message type:
+
+```rust
+#[grpc_method]
+async fn greet_all(&self, mut inbound: Inbound<GreetRequest>) -> Result<GreetReply, NoName>
+```
+
+Its items fail with a `GrpcStatus` rather than tonic's, so a handler reading one names nothing from
+the wire crate; the conversion happens where the macro unwraps the request. Which of the four call
+shapes a method serves is read entirely from its own signature — `Payload<T>` or `Inbound<T>` for the
+request, `#[grpc_method]` or `#[grpc_stream]` for the reply — so bidirectional is the two streaming
+answers together rather than a third marker.
+
 **The proto trait is named, not inferred.** A trait impl states it in its header, which is where the
 macro reads it today; an inherent impl has no header, so inference would mean guessing a module path
 and a trait name from the struct's identifier. That guess breaks the first time a service is named
@@ -90,11 +104,11 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 
 ## Consequences
 
-- Unary and server-streaming methods, with `Payload<T>` and `&GrpcContext`, as it stands. A trait
-  whose rpcs take a stream is not expressible in this form yet: an inbound stream has no toni-shaped
-  spelling, and a trait impl must satisfy every method the trait declares.
-- The trait-impl form is unchanged and still compiles, so a service reading a client stream keeps
-  writing what it writes today.
+- All four call shapes are expressible: unary, server streaming, client streaming and
+  bidirectional, with `Payload<T>`, `Inbound<T>` and `&GrpcContext` as the parameters a handler
+  takes.
+- The trait-impl form is unchanged and still compiles, so a service written against tonic's
+  signatures keeps working.
 - A streaming reply is boxed once per call. The associated type belongs to the macro rather than the
   handler, which is what lets the wrapper redeclare it as `ScopedGrpcStream` — so a reply the caller
   abandons fires the execution's token here as it does for a hand-written impl (ADR-0033).
