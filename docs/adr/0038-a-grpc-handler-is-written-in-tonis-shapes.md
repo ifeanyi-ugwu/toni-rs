@@ -83,6 +83,15 @@ shapes a method serves is read entirely from its own signature — `Payload<T>` 
 request, `#[grpc_method]` or `#[grpc_stream]` for the reply — so bidirectional is the two streaming
 answers together rather than a third marker.
 
+**What a handler takes.** `Payload<T>` or the message written bare, `Inbound<T>` for the caller's
+stream, `Extensions` for the execution's bag, `&GrpcContext`, and `tonic::Request<T>` for a handler
+that wants the wire shape — trailers, the peer address, the metadata map as it arrived. A parameter
+naming none of those is read as the request message, the way an RPC handler spells its payload; a
+misspelled extractor lands there and fails as a type mismatch against the proto message.
+
+The raw request matters more than it looks: it is what keeps this form from being a subset of what
+the trait impl could express, so nothing is stranded when that form goes.
+
 **The proto trait is named, not inferred.** A trait impl states it in its header, which is where the
 macro reads it today; an inherent impl has no header, so inference would mean guessing a module path
 and a trait name from the struct's identifier. That guess breaks the first time a service is named
@@ -105,8 +114,10 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 ## Consequences
 
 - All four call shapes are expressible: unary, server streaming, client streaming and
-  bidirectional, with `Payload<T>`, `Inbound<T>` and `&GrpcContext` as the parameters a handler
-  takes.
+  bidirectional.
+- `Validated<Payload<T>>` is not among the parameters. Proto messages are generated, so there is
+  nowhere to hang the `#[validate]` attributes it reads; validation on this transport is a check
+  inside the handler.
 - The trait-impl form is unchanged and still compiles, so a service written against tonic's
   signatures keeps working.
 - A streaming reply is boxed once per call. The associated type belongs to the macro rather than the
