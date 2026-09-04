@@ -147,7 +147,8 @@ mod tracing_layer;
 pub use grpc_adapter::GrpcAdapter;
 
 /// Maps a domain error to a `tonic::Status` by its
-/// [`kind`](toni::Error::kind), the way every transport renders one.
+/// [`kind`](toni::Error::kind), the way every transport renders one, and
+/// attaches the error to the status's source slot.
 ///
 /// A `#[grpc_methods]` handler returns its error and the generated method does
 /// this. What is left for a caller is a service written against tonic's own
@@ -174,9 +175,20 @@ pub use grpc_adapter::GrpcAdapter;
 /// }
 /// ```
 pub fn to_status<E: toni::Error>(error: E) -> tonic::Status {
-    to_tonic(toni::GrpcStatus::from(error))
+    to_tonic(toni::GrpcStatus::of(error))
 }
 
+/// The status a `GrpcStatus` renders as, keeping any error it carries on the
+/// answer's source slot.
 fn to_tonic(status: toni::GrpcStatus) -> tonic::Status {
-    tonic::Status::new(tonic::Code::from_i32(status.code as i32), status.message)
+    let mut answer = tonic::Status::new(
+        tonic::Code::from_i32(status.code as i32),
+        status.message.clone(),
+    );
+    if let Some(source) = status.into_source() {
+        answer.set_source(std::sync::Arc::new(toni::grpc_runtime::GrpcFailure::new(
+            source,
+        )));
+    }
+    answer
 }
