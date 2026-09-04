@@ -1,15 +1,14 @@
 //! A domain error answers a gRPC call with its canonical code.
 //!
-//! Every other transport lifts a `toni::Error` through `?`: the handler
-//! returns `Err(OutOfStock)` and the dispatcher renders 409, or the
-//! `Conflict` envelope. gRPC fixes the handler's signature to
-//! `tonic::Status`, and the orphan rule stops toni converting into a foreign
-//! type, so the last hop is explicit — `toni_grpc::to_status`, over the
-//! `kind()` mapping the other transports use.
+//! Every transport renders a `toni::Error` by its `kind()`: `Conflict` is 409
+//! on HTTP, the `Conflict` envelope on RPC and WebSocket, and ABORTED here.
+//! The handler returns `Err(OutOfStock)`; nothing in it names a status.
 
 #![allow(dead_code)]
 
+use crate::common::NotServed;
 use serial_test::serial;
+use toni::extractors::{Inbound, Payload};
 use toni::toni_factory::ToniFactory;
 use toni::{module, ErrorKind};
 use toni_macros::{controller, grpc_methods, new};
@@ -50,44 +49,46 @@ impl LiftGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for LiftGrpcService {
+#[grpc_methods(lift_pb::orders_server::Orders)]
+impl LiftGrpcService {
+    /// The lift the other transports get from `?`: the handler answers with
+    /// its own error and the generated method maps the kind to a code.
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<lift_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<lift_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
-        Err(toni_grpc::to_status(OutOfStock { item: req.item }))
+        Payload(req): Payload<lift_pb::CreateOrderRequest>,
+    ) -> Result<lift_pb::CreateOrderResponse, OutOfStock> {
+        Err(OutOfStock { item: req.item })
     }
 
-    type WatchProgressStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<lift_pb::ProgressEvent, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<lift_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<lift_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<lift_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<lift_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<lift_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<lift_pb::CreateOrderRequest>,
+    ) -> Result<lift_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<lift_pb::ChatMessage, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<lift_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<lift_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<lift_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 

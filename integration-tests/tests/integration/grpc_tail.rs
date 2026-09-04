@@ -21,8 +21,11 @@ use std::time::Duration;
 use futures_util::{Stream, StreamExt};
 use serial_test::serial;
 use toni::context::{CancellationToken, GrpcContext, HandlerContext};
+use toni::extractors::{Inbound, Payload};
 use toni::ToniFactory;
 use toni_macros::{controller, grpc_methods, module, new};
+
+use crate::common::NotServed;
 
 mod tail_pb {
     tonic::include_proto!("toni_test.orders");
@@ -31,10 +34,8 @@ mod tail_pb {
 use tail_pb::orders_client::OrdersClient;
 use tail_pb::orders_server::{Orders, OrdersServer};
 
-type EventStream =
-    Pin<Box<dyn Stream<Item = Result<tail_pb::ProgressEvent, tonic::Status>> + Send>>;
-type ChatEventStream =
-    Pin<Box<dyn Stream<Item = Result<tail_pb::ChatMessage, tonic::Status>> + Send>>;
+type EventStream = Pin<Box<dyn Stream<Item = Result<tail_pb::ProgressEvent, NotServed>> + Send>>;
+type ChatEventStream = Pin<Box<dyn Stream<Item = Result<tail_pb::ChatMessage, NotServed>> + Send>>;
 
 static SAW_CANCEL: AtomicBool = AtomicBool::new(false);
 static PRODUCED: AtomicUsize = AtomicUsize::new(0);
@@ -86,16 +87,17 @@ impl TailGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for TailGrpcService {
+#[grpc_methods(tail_pb::orders_server::Orders)]
+impl TailGrpcService {
+    /// Answers with the response itself, the reply carrying a header that the
+    /// value alone has nowhere to put.
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<tail_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<tail_pb::CreateOrderResponse>, tonic::Status> {
-        let context =
-            GrpcContext::of(request.extensions()).expect("dispatched through the framework");
-        *METHOD.lock().unwrap() = Some(context.method().to_string());
+        Payload(_req): Payload<tail_pb::CreateOrderRequest>,
+        ctx: &GrpcContext,
+    ) -> Result<tonic::Response<tail_pb::CreateOrderResponse>, NotServed> {
+        *METHOD.lock().unwrap() = Some(ctx.method().to_string());
         let mut reply = tonic::Response::new(tail_pb::CreateOrderResponse {
             id: 1,
             status: "ok".to_string(),
@@ -106,104 +108,46 @@ impl Orders for TailGrpcService {
         Ok(reply)
     }
 
-    type WatchProgressStream = EventStream;
-
     /// `id == 0` answers a stream that ends; anything else never does, so a drop
     /// of it can only be the caller having gone.
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        request: tonic::Request<tail_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let context =
-            GrpcContext::of(request.extensions()).expect("dispatched through the framework");
-        *TOKEN.lock().unwrap() = Some(context.cancellation().clone());
-
-        let id = request.into_inner().id;
-        if id == 0 {
-            return Ok(tonic::Response::new(finite_stream()));
+        Payload(req): Payload<tail_pb::WatchRequest>,
+        ctx: &GrpcContext,
+    ) -> Result<
+        impl Stream<Item = Result<tail_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        *TOKEN.lock().unwrap() = Some(ctx.cancellation().clone());
+        if req.id == 0 {
+            return Ok(finite_stream());
         }
-        Ok(tonic::Response::new(detached_producer(context, id)))
+        Ok(detached_producer(ctx.clone(), req.id))
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<tail_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<tail_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<tail_pb::CreateOrderRequest>,
+    ) -> Result<tail_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = ChatEventStream;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<tail_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<tail_pb::ChatMessage>,
+    ) -> Result<
+        impl Stream<Item = Result<tail_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(::std::boxed::Box::pin(futures_util::stream::empty()) as ChatEventStream)
     }
 }
 
 #[module(controllers: [TailGrpcService])]
 impl TailGrpcModule {}
-
-// ── the same reply, spelled without `Self::` ───────────────────────────────
-
-#[controller]
-pub struct ConcreteGrpcService {}
-
-impl ConcreteGrpcService {
-    #[new]
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for ConcreteGrpcService {
-    async fn create(
-        &self,
-        _request: tonic::Request<tail_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<tail_pb::CreateOrderResponse>, tonic::Status> {
-        Ok(tonic::Response::new(tail_pb::CreateOrderResponse {
-            id: 1,
-            status: "ok".to_string(),
-        }))
-    }
-
-    type WatchProgressStream = EventStream;
-
-    /// `EventStream`, not `Self::WatchProgressStream` — legal, and the same type
-    /// after normalisation. The macro reaches it through the method's name.
-    async fn watch_progress(
-        &self,
-        request: tonic::Request<tail_pb::WatchRequest>,
-    ) -> Result<tonic::Response<EventStream>, tonic::Status> {
-        let context =
-            GrpcContext::of(request.extensions()).expect("dispatched through the framework");
-        *TOKEN.lock().unwrap() = Some(context.cancellation().clone());
-        let id = request.into_inner().id;
-        Ok(tonic::Response::new(detached_producer(context, id)))
-    }
-
-    async fn bulk_create(
-        &self,
-        _request: tonic::Request<tonic::Streaming<tail_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<tail_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
-    }
-
-    type ChatStream = ChatEventStream;
-
-    async fn chat(
-        &self,
-        _request: tonic::Request<tonic::Streaming<tail_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
-    }
-}
-
-#[module(controllers: [ConcreteGrpcService])]
-impl ConcreteGrpcModule {}
 
 // ── harness ────────────────────────────────────────────────────────────────
 
@@ -355,38 +299,6 @@ async fn a_handler_reads_its_context_off_the_request() {
         METHOD.lock().unwrap().as_deref(),
         Some("toni_test.orders.Orders/Create"),
         "the handler must see the path the caller dialled, not the Rust names"
-    );
-
-    shutdown.shutdown();
-    let _ = tokio::time::timeout(Duration::from_secs(2), shutdown.completed()).await;
-}
-
-/// The other legal spelling of the same signature. Nothing about the service
-/// differs but the tokens its return type is written with, and the reply is
-/// covered the same way.
-#[serial]
-#[tokio_localset_test::localset_test]
-async fn a_concrete_stream_signature_is_covered_too() {
-    SAW_CANCEL.store(false, Ordering::SeqCst);
-    PRODUCED.store(0, Ordering::SeqCst);
-
-    let (port, shutdown) = boot(ConcreteGrpcModule).await;
-    let mut client = connect(port).await;
-
-    let mut stream = client
-        .watch_progress(tail_pb::WatchRequest { id: 11 })
-        .await
-        .expect("server-streaming call must succeed")
-        .into_inner();
-
-    stream.next().await.expect("one item").expect("ok item");
-    assert!(!SAW_CANCEL.load(Ordering::SeqCst));
-
-    drop(stream);
-
-    assert!(
-        saw_cancel_within(Duration::from_secs(2)).await,
-        "a reply named without `Self::` is the same reply"
     );
 
     shutdown.shutdown();

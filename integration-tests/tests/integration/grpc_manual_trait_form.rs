@@ -22,9 +22,10 @@ use toni::{module, ErrorKind};
 use toni_macros::{controller, grpc_methods, new};
 
 // The manual fixture in `build.rs` names its message types by path, and that
-// path is the other test's module — so this file borrows those rather than
-// including a second copy the trait would not accept.
-use crate::grpc_stream_optin::msgs;
+// path is this module — the generated trait will accept no other.
+pub mod msgs {
+    tonic::include_proto!("toni_test.orders");
+}
 
 mod watch_svc {
     tonic::include_proto!("toni_test.watch.Watcher");

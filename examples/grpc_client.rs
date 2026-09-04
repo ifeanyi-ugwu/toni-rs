@@ -89,20 +89,19 @@ impl OrdersService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for OrdersService {
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl OrdersService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        toni::extractors::Payload(req): toni::extractors::Payload<orders_pb::CreateOrderRequest>,
+    ) -> orders_pb::CreateOrderResponse {
+        orders_pb::CreateOrderResponse {
             id: 1,
             item: req.item.clone(),
             qty: req.qty,
             status: format!("created:{}", req.item),
-        }))
+        }
     }
 }
 

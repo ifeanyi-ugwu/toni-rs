@@ -126,16 +126,33 @@ impl OrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for OrdersGrpcService {
+/// The kind decides the code: `BadRequest` is INVALID_ARGUMENT on the wire.
+#[derive(Debug)]
+struct InvalidQty;
+
+impl std::fmt::Display for InvalidQty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "qty must be positive")
+    }
+}
+
+impl std::error::Error for InvalidQty {}
+
+impl toni::Error for InvalidQty {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::BadRequest
+    }
+}
+
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl OrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
+        toni::extractors::Payload(req): toni::extractors::Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, InvalidQty> {
         if req.qty == 0 {
-            return Err(tonic::Status::invalid_argument("qty must be positive"));
+            return Err(InvalidQty);
         }
         let id = self.counter.next_id();
 
@@ -143,12 +160,12 @@ impl Orders for OrdersGrpcService {
         // that changes operator-side is `transport="grpc"`.
         tracing::info!(item = %req.item, qty = req.qty, "grpc handler called");
 
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             item: req.item,
             qty: req.qty,
             status: "created".to_string(),
-        }))
+        })
     }
 }
 

@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::NotServed;
 use futures_util::{Stream, StreamExt};
+use toni::extractors::{Inbound, Payload};
 use toni::ToniFactory;
 use toni_macros::{controller, grpc_methods, injectable, module, new, set_metadata};
 
@@ -57,85 +59,137 @@ impl OrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for OrdersGrpcService {
+/// The kinds these fixtures answer with. `BadRequest` is INVALID_ARGUMENT on
+/// the wire, which is what the handlers said before they could name an error.
+#[derive(Debug)]
+struct InvalidQty;
+
+impl std::fmt::Display for InvalidQty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "qty must be positive")
+    }
+}
+
+impl std::error::Error for InvalidQty {}
+
+impl toni::Error for InvalidQty {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::BadRequest
+    }
+}
+
+#[derive(Debug)]
+struct UserSaid(String);
+
+impl std::fmt::Display for UserSaid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "user-said: {}", self.0)
+    }
+}
+
+impl std::error::Error for UserSaid {}
+
+impl toni::Error for UserSaid {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::BadRequest
+    }
+}
+
+/// A kind no other seam answers with, so a test reading ABORTED off the wire
+/// knows the handler's own error reached it rather than a generic failure.
+#[derive(Debug)]
+struct HandlerFailed;
+
+impl std::fmt::Display for HandlerFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "original handler error")
+    }
+}
+
+impl std::error::Error for HandlerFailed {}
+
+impl toni::Error for HandlerFailed {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::Conflict
+    }
+}
+
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl OrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, InvalidQty> {
         if req.qty == 0 {
-            return Err(tonic::Status::invalid_argument("qty must be positive"));
+            return Err(InvalidQty);
         }
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let id = request.into_inner().id;
-        let stream = futures_util::stream::iter(["queued", "picked", "shipped"].into_iter().map(
-            move |status| {
-                Ok(orders_pb::ProgressEvent {
-                    id,
-                    status: status.to_string(),
-                })
-            },
-        ));
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        let id = req.id;
+        Ok(futures_util::stream::iter(
+            ["queued", "picked", "shipped"]
+                .into_iter()
+                .map(move |status| {
+                    Ok(orders_pb::ProgressEvent {
+                        id,
+                        status: status.to_string(),
+                    })
+                }),
+        ))
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        let mut stream = request.into_inner();
+        mut inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
         let mut created: u32 = 0;
         let first_id = self.counter.next_id();
         // Reserve subsequent ids contiguously so the response can summarise.
-        while let Some(item) = stream.next().await {
-            let _req = item?;
+        while let Some(item) = inbound.next().await {
+            let _req = item.map_err(|_| NotServed)?;
             if created > 0 {
                 self.counter.next_id();
             }
             created += 1;
         }
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
-            created,
-            first_id,
-        }))
+        Ok(orders_pb::BulkCreateResponse { created, first_id })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let mut inbound = request.into_inner();
+        mut inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
         let counter = self.counter.clone();
-        let outbound = async_stream::stream! {
+        Ok(async_stream::stream! {
             while let Some(msg) = inbound.next().await {
                 match msg {
                     Ok(m) => yield Ok(orders_pb::ChatMessage {
                         text: m.text,
                         id: counter.next_id(),
                     }),
-                    Err(e) => yield Err(e),
+                    Err(_) => yield Err(NotServed),
                 }
             }
-        };
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        })
     }
 }
 
@@ -183,60 +237,61 @@ impl GuardedOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(AuthGuard)]
-impl Orders for GuardedOrdersGrpcService {
+impl GuardedOrdersGrpcService {
+    #[grpc_method]
     #[use_guards(AdminGuard)]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let id = request.into_inner().id;
-        let stream = futures_util::stream::iter(["queued"].into_iter().map(move |status| {
-            Ok(orders_pb::ProgressEvent {
-                id,
-                status: status.to_string(),
-            })
-        }));
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        let id = req.id;
+        Ok(futures_util::stream::iter(["queued"].into_iter().map(
+            move |status| {
+                Ok(orders_pb::ProgressEvent {
+                    id,
+                    status: status.to_string(),
+                })
+            },
+        )))
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let _ = request.into_inner();
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -373,62 +428,63 @@ impl InterceptedOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_interceptors(ServiceInterceptor)]
-impl Orders for InterceptedOrdersGrpcService {
+impl InterceptedOrdersGrpcService {
+    #[grpc_method]
     #[use_interceptors(MethodInterceptor)]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         log_interceptor("handler:run");
-        let req = request.into_inner();
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
+        Payload(req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
         log_interceptor("handler:run");
-        let id = request.into_inner().id;
-        let stream = futures_util::stream::iter(["queued"].into_iter().map(move |status| {
-            Ok(orders_pb::ProgressEvent {
-                id,
-                status: status.to_string(),
-            })
-        }));
-        Ok(tonic::Response::new(Box::pin(stream)))
+        let id = req.id;
+        Ok(futures_util::stream::iter(["queued"].into_iter().map(
+            move |status| {
+                Ok(orders_pb::ProgressEvent {
+                    id,
+                    status: status.to_string(),
+                })
+            },
+        )))
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let _ = request.into_inner();
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -450,53 +506,53 @@ impl DenyOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_interceptors(DenyInterceptor)]
-impl Orders for DenyOrdersGrpcService {
+impl DenyOrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         log_interceptor("handler:run");
-        let req = request.into_inner();
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -930,53 +986,50 @@ impl ErrorHandledOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_error_handlers(ConditionalErrorHandler)]
-impl Orders for ErrorHandledOrdersGrpcService {
+impl ErrorHandledOrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
-        // `item` is echoed into the Err message so the test can steer the
-        // handler's `to_string()` match without crafting a custom error type.
-        Err(tonic::Status::invalid_argument(format!(
-            "user-said: {}",
-            req.item
-        )))
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, UserSaid> {
+        // `item` is echoed into the error so the test can steer the handler's
+        // `to_string()` match without crafting a second error type.
+        Err(UserSaid(req.item))
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1019,46 +1072,47 @@ impl PanickyOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for PanickyOrdersGrpcService {
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl PanickyOrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         panic!("boom from handler")
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1315,50 +1369,51 @@ impl GuardPanicGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(PanickingGrpcGuard)]
-impl Orders for GuardPanicGrpcService {
+impl GuardPanicGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
+        Ok(orders_pb::CreateOrderResponse {
             id: 0,
             status: "unreachable".into(),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1396,50 +1451,51 @@ impl InterceptorPanicGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_interceptors(PanickingGrpcInterceptor)]
-impl Orders for InterceptorPanicGrpcService {
+impl InterceptorPanicGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
+        Ok(orders_pb::CreateOrderResponse {
             id: 0,
             status: "unreachable".into(),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1589,47 +1645,48 @@ impl ErrorHandlerPanicGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_error_handlers(PanickingGrpcErrorHandler)]
-impl Orders for ErrorHandlerPanicGrpcService {
+impl ErrorHandlerPanicGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        Err(tonic::Status::failed_precondition("original handler error"))
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, HandlerFailed> {
+        Err(HandlerFailed)
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1677,7 +1734,7 @@ async fn grpc_panic_in_error_handler_continues_chain_to_default_rendering() {
         .await
         .expect_err("handler returned Err — caller must see Err");
 
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(err.code(), tonic::Code::Aborted);
     assert_eq!(err.message(), "original handler error");
 
     shutdown.shutdown();
@@ -1703,54 +1760,54 @@ impl SlowOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for SlowOrdersGrpcService {
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl SlowOrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         // Long enough for the test's parallel calls to overlap; the
         // load-shed layer should reject the (n+1)th before this sleep
         // finishes.
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let req = request.into_inner();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id: 1,
             status: format!("slow:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        let stream = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        let outbound = futures_util::stream::iter(::std::iter::empty());
-        Ok(tonic::Response::new(Box::pin(outbound)))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -1876,56 +1933,53 @@ impl BusOrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(BusGuard)]
-impl Orders for BusOrdersGrpcService {
+impl BusOrdersGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let who = toni::context::Extensions::adopt(request.extensions())
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+        extensions: toni::context::Extensions,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
+        let who = extensions
             .get::<BusPrincipal>()
             .map(|p| p.0)
             .unwrap_or_else(|| "ABSENT".into());
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
-            id: 1,
-            status: who,
-        }))
+        Ok(orders_pb::CreateOrderResponse { id: 1, status: who })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -2037,55 +2091,53 @@ impl PerCallGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(GrpcCallScopedGuard)]
-impl Orders for PerCallGrpcService {
+impl PerCallGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let guard_saw = toni::context::Extensions::adopt(request.extensions())
-            .get::<GrpcGuardSaw>()
-            .map(|s| s.0);
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+        extensions: toni::context::Extensions,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
+        let guard_saw = extensions.get::<GrpcGuardSaw>().map(|s| s.0);
+        Ok(orders_pb::CreateOrderResponse {
             id: self.build,
             status: format!("{}:{:?}", self.scoped.id(), guard_saw),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -2110,51 +2162,50 @@ impl SingletonGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for SingletonGrpcService {
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl SingletonGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Payload(_req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
+        Ok(orders_pb::CreateOrderResponse {
             id: self.build,
             status: "singleton".to_string(),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Ok(tonic::Response::new(
-            Box::pin(futures_util::stream::empty()),
-        ))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -2325,57 +2376,55 @@ impl MetaGrpcService {
 }
 
 /// Both entries apply to every method below unless one overrides them.
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(RecordDeclared)]
 #[set_metadata(Tier("standard"))]
 #[set_metadata(Audience("internal"))]
-impl Orders for MetaGrpcService {
+impl MetaGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, NotServed> {
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<orders_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Ok(tonic::Response::new(Box::pin(futures_util::stream::iter(
-            ::std::iter::empty(),
-        ))))
+        Payload(_req): Payload<orders_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     #[set_metadata(Tier("premium"))]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<orders_pb::BulkCreateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(orders_pb::BulkCreateResponse {
+        _inbound: Inbound<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::BulkCreateResponse, NotServed> {
+        Ok(orders_pb::BulkCreateResponse {
             created: 0,
             first_id: 0,
-        }))
+        })
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<orders_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<orders_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Ok(tonic::Response::new(Box::pin(futures_util::stream::iter(
-            ::std::iter::empty(),
-        ))))
+        _inbound: Inbound<orders_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<orders_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 

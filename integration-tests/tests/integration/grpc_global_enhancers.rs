@@ -14,8 +14,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::common::NotServed;
 use serial_test::serial;
 use toni::context::GrpcContext;
+use toni::extractors::{Inbound, Payload};
 use toni::traits_helpers::{ChainError, ErrorHandler, Guard, Interceptor, InterceptorNext};
 use toni::ToniFactory;
 use toni::{GrpcHandlerResult, GrpcStatus};
@@ -111,55 +113,71 @@ impl GlobalsGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+/// `BadRequest` is INVALID_ARGUMENT on the wire, which is what this handler
+/// answered with before it could name its own error.
+#[derive(Debug)]
+struct InvalidQty;
+
+impl std::fmt::Display for InvalidQty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "qty must be positive")
+    }
+}
+
+impl std::error::Error for InvalidQty {}
+
+impl toni::Error for InvalidQty {
+    fn kind(&self) -> toni::ErrorKind {
+        toni::ErrorKind::BadRequest
+    }
+}
+
+#[grpc_methods(globals_pb::orders_server::Orders)]
 #[use_guards(ServiceGuard)]
-impl Orders for GlobalsGrpcService {
+impl GlobalsGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<globals_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<globals_pb::CreateOrderResponse>, tonic::Status> {
+        Payload(req): Payload<globals_pb::CreateOrderRequest>,
+    ) -> Result<globals_pb::CreateOrderResponse, InvalidQty> {
         record("handler");
-        let req = request.into_inner();
         if req.qty == 0 {
-            return Err(tonic::Status::invalid_argument("qty must be positive"));
+            return Err(InvalidQty);
         }
-        Ok(tonic::Response::new(globals_pb::CreateOrderResponse {
+        Ok(globals_pb::CreateOrderResponse {
             id: 1,
-            status: format!("created:{}", req.item),
-        }))
+            status: "created".to_string(),
+        })
     }
 
-    type WatchProgressStream = std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<globals_pb::ProgressEvent, tonic::Status>>
-                + Send,
-        >,
-    >;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<globals_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<globals_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<globals_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<globals_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<globals_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<globals_pb::CreateOrderRequest>,
+    ) -> Result<globals_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<globals_pb::ChatMessage, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<globals_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<globals_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<globals_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
