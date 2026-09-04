@@ -8,7 +8,7 @@ Drives a [`tonic`](https://github.com/hyperium/tonic) server through Toni's bind
 
 ## Features
 
-- ✅ **`#[grpc_service]` + `#[grpc_methods]`** — register a tonic-generated service trait impl as a DI provider and have the framework wrap it for you
+- ✅ **`#[controller]` + `#[grpc_methods]`** — write handlers in toni's shapes and have the framework write the tonic trait impl and register it
 - ✅ **Dependency Injection** — `#[inject]` fields resolved from the module's providers at construction
 - ✅ **Guards** (`#[use_guards]`) — per-call boolean check, rejection surfaces as `PermissionDenied`
 - ✅ **Interceptors** (`#[use_interceptors]`) — around-handler chain, can short-circuit with a typed `GrpcStatus`
@@ -63,33 +63,33 @@ message CreateOrderResponse { uint64 id = 1; string status = 2; }
 ```rust
 use std::net::SocketAddr;
 use toni::ToniFactory;
-use toni_macros::{grpc_methods, grpc_service, injectable, module};
+use toni::extractors::Payload;
+use toni_macros::{controller, grpc_methods, injectable, module, new};
 
 mod orders_pb { tonic::include_proto!("toni_examples.orders"); }
-use orders_pb::orders_server::{Orders, OrdersServer};
 
 #[injectable]
 pub struct OrdersCounter {}
 
-#[grpc_service(pub struct OrdersGrpcService {
+#[controller]
+pub struct OrdersGrpcService {
     #[inject] counter: OrdersCounter,
-})]
-impl OrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self { Self { counter } }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for OrdersGrpcService {
+#[grpc_methods(orders_pb::orders_server::Orders)]
+impl OrdersGrpcService {
+    #[new]
+    pub fn new(counter: OrdersCounter) -> Self { Self { counter } }
+
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Payload(req): Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, OrderError> {
+        Ok(orders_pb::CreateOrderResponse {
             id: 1,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 }
 
@@ -122,13 +122,15 @@ grpcurl -plaintext \
 Guards, interceptors, and error handlers are declared as DI providers and applied to a `#[grpc_methods]` impl via `#[use_*]` attributes — at the service level (every method) or per method.
 
 ```rust
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(AuthGuard)]
 #[use_error_handlers(QtyErrorHandler)]
-impl Orders for OrdersGrpcService {
+impl OrdersGrpcService {
+    #[grpc_method]
     #[use_interceptors(LoggingInterceptor)]
-    async fn create(&self, req: tonic::Request<...>) -> Result<..., tonic::Status> {
+    async fn create(&self, Payload(req): Payload<CreateOrderRequest>)
+        -> Result<CreateOrderResponse, OrderError>
+    {
         // your handler
     }
 }
@@ -152,29 +154,31 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 
 ### Interceptors
 
-An interceptor is a provider that implements `Interceptor<GrpcContext>`. The chain wraps the user delegation — `next.run(ctx).await` proceeds; calling `ctx.set_response(Err(GrpcStatus::...))` and skipping `next.run` short-circuits.
+An interceptor is a provider that implements `Interceptor<GrpcContext, GrpcHandlerResult>`. The chain wraps the handler — `next.run(ctx).await` proceeds; returning without calling it short-circuits.
 
 ```rust
 #[injectable]
 pub struct LoggingInterceptor {}
 
 #[toni::async_trait]
-impl toni::traits_helpers::Interceptor<toni::GrpcContext> for LoggingInterceptor {
+impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResult>
+    for LoggingInterceptor {
     async fn intercept(
         &self,
-        ctx: &mut toni::GrpcContext,
-        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext>>,
-    ) {
+        ctx: &toni::GrpcContext,
+        next: Box<dyn toni::traits_helpers::InterceptorNext<toni::GrpcContext, toni::GrpcHandlerResult>>,
+    ) -> toni::GrpcHandlerResult {
         tracing::info!(method = %ctx.method(), "before");
-        next.run(ctx).await;
+        let answer = next.run(ctx).await;
         tracing::info!(method = %ctx.method(), "after");
+        answer
     }
 }
 ```
 
 ### Error handlers
 
-An error handler is a provider that implements `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every user-returned `Err(Status)` (wrapped as `GrpcStatus`) and every caught handler panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the response; `None` lets the next handler in the chain decide, falling back to the original on full miss.
+An error handler is a provider that implements `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every error a handler returned and every caught panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the answer; `None` lets the next handler decide, falling back on full miss to the status the error's kind maps to.
 
 ```rust
 #[injectable]
@@ -187,33 +191,40 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
         error: toni::traits_helpers::ChainError<'_>,
         _ctx: &toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
-        if error.to_string().contains("invalid-qty") {
-            Some(toni::GrpcStatus::new(
-                toni::GrpcCode::FailedPrecondition,
-                "qty must be positive",
-            ))
-        } else {
-            None
-        }
+        let OrderError::InvalidQty { qty } = error.downcast_ref::<OrderError>()? else {
+            return None;
+        };
+        Some(toni::GrpcStatus::new(
+            toni::GrpcCode::FailedPrecondition,
+            format!("qty must be positive, got {qty}"),
+        ))
     }
 }
 ```
 
 ## Streaming
 
-All four call modes work through `#[grpc_methods]` without per-mode setup. Declare the associated streams the tonic-generated trait expects and yield from your handler as usual:
+All four call modes work through `#[grpc_methods]`. Which one a method serves is read from its own signature: `Inbound<T>` for a request the caller streams, `#[grpc_stream]` for a reply the handler streams, both together for bidirectional. The associated stream type the tonic-generated trait declares is written for you.
 
 ```rust
-type WatchProgressStream = Pin<Box<dyn Stream<Item = Result<ProgressEvent, Status>> + Send>>;
-
+#[grpc_stream]
 async fn watch_progress(
     &self,
-    request: tonic::Request<WatchRequest>,
-) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-    let stream = futures_util::stream::iter([/* ... */]);
-    Ok(tonic::Response::new(Box::pin(stream)))
+    Payload(req): Payload<WatchRequest>,
+) -> Result<impl Stream<Item = Result<ProgressEvent, OrderError>> + Send + 'static, OrderError> {
+    Ok(futures_util::stream::iter([/* ... */]))
+}
+
+#[grpc_method]
+async fn bulk_create(&self, mut inbound: Inbound<CreateOrderRequest>)
+    -> Result<BulkCreateResponse, OrderError>
+{
+    while let Some(req) = inbound.next().await { /* ... */ }
+    Ok(BulkCreateResponse { /* ... */ })
 }
 ```
+
+`#[grpc_stream]` reads the associated type's name off the method — `watch_progress` declares `WatchProgressStream` — which is the pairing tonic-build derives from one proto identifier. A trait that names them independently says so: `#[grpc_stream(StreamProgressStream)]`.
 
 Enhancers apply to streaming methods the same way they apply to unary ones. Guards run before the response stream is opened; interceptors wrap the call up to the point the stream is returned; error handlers fire if the handler returns `Err` or panics. Mid-stream errors emitted *inside* the stream itself are produced by your code and pass through unchanged.
 
