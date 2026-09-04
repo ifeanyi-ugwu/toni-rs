@@ -50,6 +50,25 @@ impl GreeterService {
 }
 ```
 
+**A streaming reply is a stream of the handler's own types.** `#[grpc_stream]` marks it:
+
+```rust
+#[grpc_stream]
+async fn greet_many(&self, Payload(req): Payload<GreetRequest>)
+    -> Result<impl Stream<Item = Result<GreetReply, NoName>> + Send + 'static, NoName>
+```
+
+The macro declares the associated type the trait asks for — `greet_many` pairs with
+`GreetManyStream`, the pairing tonic-build makes from one proto identifier — as a boxed stream over
+`Result<Reply, Status>`, and boxes the handler's stream into it. The item type is read from the
+`Item =` binding, which is why the reply is written as `impl Stream<Item = …>` rather than as a
+concrete stream type.
+
+The two errors a stream can carry take different routes. The one that prevents the stream from
+opening is an ordinary handler error and reaches the chain like any other. An item's error arrives
+after the answer has begun, so it maps to the code its kind means and goes on the wire — the split
+ADR-0032 records for an RPC reply stream.
+
 **The proto trait is named, not inferred.** A trait impl states it in its header, which is where the
 macro reads it today; an inherent impl has no header, so inference would mean guessing a module path
 and a trait name from the struct's identifier. That guess breaks the first time a service is named
@@ -71,11 +90,14 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 
 ## Consequences
 
-- Unary methods, `Payload<T>` and `&GrpcContext`, as it stands. A trait carrying streaming methods
-  cannot be served in this form until the macro writes those too: a trait impl must satisfy every
-  method the trait declares.
-- The trait-impl form is unchanged and still compiles, so a service that streams keeps writing what
-  it writes today.
+- Unary and server-streaming methods, with `Payload<T>` and `&GrpcContext`, as it stands. A trait
+  whose rpcs take a stream is not expressible in this form yet: an inbound stream has no toni-shaped
+  spelling, and a trait impl must satisfy every method the trait declares.
+- The trait-impl form is unchanged and still compiles, so a service reading a client stream keeps
+  writing what it writes today.
+- A streaming reply is boxed once per call. The associated type belongs to the macro rather than the
+  handler, which is what lets the wrapper redeclare it as `ScopedGrpcStream` — so a reply the caller
+  abandons fires the execution's token here as it does for a hand-written impl (ADR-0033).
 - **toni now tracks tonic-build's generated trait** — `#[async_trait]` versus native async in traits,
   argument shapes, associated-type naming. ADR-0034 ruled that the framework does not own what the
   ecosystem already defines, weighing a client module that would have wrapped a single constructor
