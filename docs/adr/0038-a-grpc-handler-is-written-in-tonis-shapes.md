@@ -89,8 +89,8 @@ that wants the wire shape — trailers, the peer address, the metadata map as it
 naming none of those is read as the request message, the way an RPC handler spells its payload; a
 misspelled extractor lands there and fails as a type mismatch against the proto message.
 
-The raw request matters more than it looks: it is what keeps this form from being a subset of what
-the trait impl could express, so nothing is stranded when that form goes.
+The raw request is what keeps this form from being a subset of what the trait impl expressed, so
+nothing was stranded when that form was removed.
 
 **A trait that names its stream differently says so on the method.** `#[grpc_stream]` reads the
 associated type from the method — `greet_many` pairs with `GreetManyStream` — which holds because
@@ -129,8 +129,18 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 - `Validated<Payload<T>>` is not among the parameters. Proto messages are generated, so there is
   nowhere to hang the `#[validate]` attributes it reads; validation on this transport is a check
   inside the handler.
-- The trait-impl form is unchanged and still compiles, so a service written against tonic's
-  signatures keeps working.
+- **`GrpcFail::fail` and `FailWith::fail_with` are gone with it.** Both answer with a
+  `tonic::Status`, and no handler can return one — its error type implements `toni::Error`, which
+  `tonic::Status` does not. ADR-0037's mechanism survives them: the generated method parks the error
+  on the execution, so the chain still receives the type. `toni_grpc::to_status` stays, for a service
+  registered through `add_service` and answering outside toni's dispatch.
+- **`#[grpc_methods]` on a trait impl is gone**, and says so: annotating one is an error naming the
+  form to write instead. Two ways to serve the same rpc would have meant two sets of diagnostics and
+  two answers to every question about what a handler may take. A service written against tonic's
+  signatures moves by naming the proto trait in the attribute, dropping `#[tonic::async_trait]` and
+  the `impl Trait for` header, marking each method, and replacing `Request<T>`/`Response<T>` with the
+  message types — or keeps its hand-written impl and registers through `GrpcAdapter::add_service`,
+  outside toni's dispatch and its enhancers.
 - A streaming reply is boxed once per call. The associated type belongs to the macro rather than the
   handler, which is what lets the wrapper redeclare it as `ScopedGrpcStream` — so a reply the caller
   abandons fires the execution's token here as it does for a hand-written impl (ADR-0033).
@@ -139,15 +149,16 @@ ADR-0037's mechanism, now reached without the handler calling anything.
   ecosystem already defines, weighing a client module that would have wrapped a single constructor
   call. The weight is different here: what the wrapping buys is one handler shape across four
   transports, and what it costs is following one crate's generated output.
-- `#[grpc_method]` is a marker the enclosing macro strips, like `#[stream(…)]`. It is not exported and
-  needs no import.
+- `#[grpc_method]` and `#[grpc_stream]` are markers the enclosing macro strips. Neither is exported
+  and neither needs an import.
 
 ## Roads not taken
 
-**Inferring unary versus streaming from the return type.** ADR-0033 already reads streaming out of
-spellings and needed three signals plus `#[stream(…)]` as an escape hatch, because a macro sees
-tokens rather than types. A fourth heuristic would be built on the same sand; a marker costs one word
-and cannot be misread.
+**Inferring unary versus streaming from the return type.** ADR-0033 read streaming out of spellings
+and needed three signals plus an escape-hatch attribute, because a macro sees tokens rather than
+types. A fourth heuristic would have been built on the same sand; a marker costs one word and cannot
+be misread. With the trait-impl form gone, two of those three signals go with it: the generated impl
+names its own associated type, so the marker on the handler is the whole answer.
 
 **Supporting both a marker and inference.** Two spellings for one fact, two code paths, two
 diagnostics, and a decision every author makes once for nothing.
