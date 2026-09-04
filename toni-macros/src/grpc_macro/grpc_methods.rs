@@ -1,6 +1,15 @@
-//! `#[grpc_methods]` — applied to `impl SomeProtoTrait for MyService` blocks.
+//! `#[grpc_methods(proto::Trait)]` — applied to the inherent impl holding a gRPC service's
+//! handlers.
 //!
-//! Emits three things alongside the user's impl block:
+//! A handler is written in toni's shapes — `Payload<T>` or `Inbound<T>` for the request, the reply
+//! message for the answer, a domain error for the failure — and the macro writes tonic's. Each one
+//! is marked `#[grpc_method]` or, for a streaming reply, `#[grpc_stream]`; anything unmarked stays
+//! in the inherent impl, which is where the constructor and `#[on_*]` hooks live.
+//!
+//! Lowering runs first: each handler keeps its body under `__toni_grpc_<name>` and gains a proto
+//! trait method that unwraps the request, calls it, and renders its answer. The hidden name is what
+//! keeps the generated method from resolving to itself. From there the rest of this module sees an
+//! ordinary trait impl, and emits three things alongside it:
 //!
 //! 1. A `MyServiceGrpcServiceSource` companion carrying the service's declarations — its token and
 //!    its enhancer tokens — and an `instance` that answers with the service serving a given call.
@@ -12,39 +21,26 @@
 //!    and adds `MyServiceServer::new(wrapper)`.
 //!
 //! 3. A second `impl SomeProtoTrait for __MyServiceEnhanced` on the wrapper that runs guards,
-//!    interceptors and error handlers before delegating to the user's implementation via UFCS:
-//!    `<MyService as SomeProtoTrait>::method(&inner, req).await`. UFCS keeps the user's body
-//!    verbatim so `Self::SomeStream` associated types, `self.<field>`, and any inherent helper
-//!    calls all resolve naturally.
+//!    interceptors and error handlers before delegating to the generated implementation via UFCS:
+//!    `<MyService as SomeProtoTrait>::method(&inner, req).await`.
 //!
 //! # Streaming replies
 //!
-//! The wrapper declares its own associated stream types — `ScopedGrpcStream<UserStream>` rather
-//! than an alias of the user's — so a reply that outlives the handler carries the execution with
-//! it and fires its cancellation token if the caller abandons it.
+//! The wrapper declares its own associated stream types — `ScopedGrpcStream<GeneratedStream>`
+//! rather than an alias of the generated one — so a reply that outlives the handler carries the
+//! execution with it and fires its cancellation token if the caller abandons it. The generated impl
+//! writes each streaming response as `Self::SomeStream`, so those response types are what say which
+//! methods stream.
 //!
-//! Which methods stream is read from two spellings, a signature having two legal ones for the same
-//! type. A response type written `Self::SomeStream` says so directly, and it is what tonic-build
-//! declares. Where a signature names the concrete type, the method pairs with its associated type
-//! by name — `rpc WatchProgress` yields `watch_progress` and `WatchProgressStream` from one
-//! identifier, and the associated type exists only for methods that stream — and the wrapper's
-//! signature restates the payload as `Self::SomeStream`.
+//! tonic-build derives a method and its associated type from one proto identifier, so `#[grpc_stream]`
+//! reads the name from the method: `watch_progress` declares `WatchProgressStream`. A trait whose
+//! own naming does not connect the two — written by hand, or built through `tonic_build::manual`,
+//! where the Rust name and the route name are set independently — names it on the attribute:
+//! `#[grpc_stream(StreamProgressStream)]`.
 //!
-//! A trait whose own naming does not connect the two — written by hand, or built through
-//! `tonic_build::manual`, where the Rust name and the route name are set independently — names the
-//! associated type on the method instead:
-//!
-//! ```text
-//! #[stream(StreamProgressStream)]
-//! async fn watch(&self, r: Request<Tick>) -> Result<Response<TickStream>, Status> { … }
-//! ```
-//!
-//! That is read first and overrides both.
-//!
-//! By convention the wrapping `*Server` type name is the proto trait's
-//! identifier with `Server` appended (`OrdersService` → `OrdersServer`),
-//! resolved in the trait's parent path. Override with
-//! `#[grpc_methods(server = path::to::OrdersServer)]` when the
+//! By convention the wrapping `*Server` type name is the proto trait's identifier with `Server`
+//! appended (`OrdersService` → `OrdersServer`), resolved in the trait's parent path. Override with
+//! `#[grpc_methods(orders_server::Orders, server = path::to::OrdersServer)]` when the
 //! tonic-generated wrapper lives elsewhere or has a non-standard name.
 
 use proc_macro2::TokenStream;
@@ -117,40 +113,32 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
     let args = parse2::<GrpcMethodsArgs>(attr)?;
     let written = parse2::<ItemImpl>(item)?;
 
-    // An inherent impl is the form where handlers speak toni's shapes and the
-    // macro writes the proto trait impl. A trait impl is the form where the
-    // user writes tonic's signatures directly.
-    let (impl_block, handlers_impl) = if written.trait_.is_none() {
-        let proto_trait = args.proto_trait.clone().ok_or_else(|| {
-            syn::Error::new_spanned(
-                &written,
-                "#[grpc_methods] on an inherent impl needs the proto trait it serves \
-                 — `#[grpc_methods(orders_server::Orders)]`",
-            )
-        })?;
-        let (generated, handlers) = lower_handlers_impl(&written, &proto_trait)?;
-        (generated, Some(handlers))
-    } else {
-        if let Some(named) = &args.proto_trait {
-            return Err(syn::Error::new_spanned(
-                named,
-                "the impl block already names its proto trait; drop the argument",
-            ));
-        }
-        (written, None)
-    };
+    // The handlers live in an inherent impl and speak toni's shapes; the proto
+    // trait impl around them is what this macro writes.
+    if written.trait_.is_some() {
+        return Err(syn::Error::new_spanned(
+            &written,
+            "#[grpc_methods] goes on the inherent impl that holds the handlers, naming the \
+             proto trait it serves — `#[grpc_methods(orders_server::Orders)] impl MyService`. \
+             Each handler takes its request as `Payload<T>` or `Inbound<T>`, answers with the \
+             reply message, and is marked `#[grpc_method]` or `#[grpc_stream]`.",
+        ));
+    }
+
+    let proto_trait = args.proto_trait.clone().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &written,
+            "#[grpc_methods] needs the proto trait it serves \
+             — `#[grpc_methods(orders_server::Orders)]`",
+        )
+    })?;
+    let (impl_block, handlers_impl) = lower_handlers_impl(&written, &proto_trait)?;
 
     let trait_path = impl_block
         .trait_
         .as_ref()
         .map(|(_, path, _)| path.clone())
-        .ok_or_else(|| {
-            syn::Error::new_spanned(
-                &impl_block,
-                "#[grpc_methods] must annotate `impl SomeProtoTrait for YourService` \
-                 — it does nothing on inherent impls",
-            )
-        })?;
+        .expect("the generated impl names the proto trait");
 
     let self_ty = impl_block.self_ty.as_ref();
     let self_ident = match self_ty {
@@ -403,38 +391,16 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
         })
         .collect();
 
-    // Which associated types carry a streaming reply. Two signals, because an
-    // attribute macro reads spellings and a user has two legal ones for the same
-    // type. A response type written `Self::X` is the direct evidence; where it
-    // names the concrete type instead, the pairing tonic-build creates between a
-    // method and its associated type answers — `rpc WatchProgress` becomes
-    // `watch_progress` and `WatchProgressStream` from one identifier, and the
-    // associated type exists only for methods that stream.
+    // Which associated types carry a streaming reply. The generated impl names
+    // each one as `Self::X` in the response type, so the response types are the
+    // whole signal.
     let assoc_idents: std::collections::HashSet<String> =
         assoc_types.iter().map(|at| at.ident.to_string()).collect();
     let mut streaming_assocs: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Methods whose response type has to be restated as `Self::X`, the user's
-    // own spelling having named that type another way.
-    let mut restate_payload: std::collections::HashMap<String, syn::Ident> =
-        std::collections::HashMap::new();
 
     for method in &method_sigs_for_wrapper {
-        if let Some(assoc) = stream_attr(method, &assoc_idents)? {
-            streaming_assocs.insert(assoc.to_string());
-            restate_payload.insert(method.sig.ident.to_string(), assoc);
-            continue;
-        }
-        let mut named = std::collections::HashSet::new();
         if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-            collect_self_assoc(ty, &assoc_idents, &mut named);
-        }
-        if !named.is_empty() {
-            streaming_assocs.extend(named);
-            continue;
-        }
-        if let Some(assoc) = pair_by_name(&method.sig.ident, &assoc_types) {
-            streaming_assocs.insert(assoc.to_string());
-            restate_payload.insert(method.sig.ident.to_string(), assoc);
+            collect_self_assoc(ty, &assoc_idents, &mut streaming_assocs);
         }
     }
 
@@ -447,7 +413,6 @@ pub fn handle_grpc_methods(attr: TokenStream, item: TokenStream) -> Result<Token
                 &trait_path,
                 &trait_short,
                 &impl_block.attrs,
-                restate_payload.get(&method.sig.ident.to_string()),
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -751,7 +716,15 @@ fn lower_handler(
         // The handler is given the request whole, so nothing is unwrapped.
         RequestKind::Raw => quote! {},
     };
-    let answer_ty = ok_type_of(&method.sig.output)?;
+    // A handler that cannot fail answers with the reply itself, as an HTTP
+    // handler returning a bare `Body` does.
+    let (answer_ty, fallible) = answer_type(&method.sig.output)?;
+
+    // A handler that answers `Response<T>` built the reply itself — metadata,
+    // extensions and all — so the generated method passes it through rather
+    // than wrapping the value a second time.
+    let carried_response = response_inner_type(&answer_ty);
+    let answer_ty = carried_response.clone().unwrap_or(answer_ty);
 
     let carried: Vec<&syn::Attribute> = method
         .attrs
@@ -773,6 +746,54 @@ fn lower_handler(
             ::tonic::Code::from_i32(__status.code as i32),
             __status.message,
         ))
+    };
+
+    let wrap_reply = if carried_response.is_some() {
+        quote! { __reply }
+    } else {
+        quote! { ::tonic::Response::new(__reply) }
+    };
+
+    // The stream is boxed either way; a carried response keeps its parts.
+    let wrap_stream = if carried_response.is_some() {
+        quote! {{
+            let (__meta, __body, __ext) = __reply.into_parts();
+            let __mapped = ::toni::futures::StreamExt::map(__body, __map_item);
+            ::tonic::Response::from_parts(__meta, ::std::boxed::Box::pin(__mapped), __ext)
+        }}
+    } else {
+        quote! {{
+            let __mapped = ::toni::futures::StreamExt::map(__reply, __map_item);
+            ::tonic::Response::new(::std::boxed::Box::pin(__mapped))
+        }}
+    };
+
+    let call_unary = if fallible {
+        quote! {
+            match Self::#hidden(self, #(#call_args),*).await {
+                ::std::result::Result::Ok(__reply) => ::std::result::Result::Ok(#wrap_reply),
+                ::std::result::Result::Err(__err) => { #failure }
+            }
+        }
+    } else {
+        quote! {
+            let __reply = Self::#hidden(self, #(#call_args),*).await;
+            ::std::result::Result::Ok(#wrap_reply)
+        }
+    };
+
+    let call_stream = if fallible {
+        quote! {
+            match Self::#hidden(self, #(#call_args),*).await {
+                ::std::result::Result::Ok(__reply) => ::std::result::Result::Ok(#wrap_stream),
+                ::std::result::Result::Err(__err) => { #failure }
+            }
+        }
+    } else {
+        quote! {
+            let __reply = Self::#hidden(self, #(#call_args),*).await;
+            ::std::result::Result::Ok(#wrap_stream)
+        }
     };
 
     let mut generated: Vec<syn::ImplItem> = Vec::new();
@@ -809,27 +830,20 @@ fn lower_handler(
             ) -> ::std::result::Result<::tonic::Response<Self::#assoc>, ::tonic::Status> {
                 let __ctx = ::toni::context::GrpcContext::of(request.extensions());
                 #bind_request
-                match Self::#hidden(self, #(#call_args),*).await {
-                    ::std::result::Result::Ok(__stream) => {
-                        // Each item carries the caller's own error type, which
-                        // reaches the wire as the code its kind means. Only the
-                        // reply that opens the stream reaches the chain — an item
-                        // failing arrives after the answer has begun.
-                        let __mapped = ::toni::futures::StreamExt::map(__stream, |__item| {
-                            ::std::result::Result::map_err(__item, |__err| {
-                                let __status = ::toni::GrpcStatus::from(__err);
-                                ::tonic::Status::new(
-                                    ::tonic::Code::from_i32(__status.code as i32),
-                                    __status.message,
-                                )
-                            })
-                        });
-                        ::std::result::Result::Ok(::tonic::Response::new(
-                            ::std::boxed::Box::pin(__mapped),
-                        ))
-                    }
-                    ::std::result::Result::Err(__err) => { #failure }
-                }
+                // Each item carries the caller's own error type, which reaches
+                // the wire as the code its kind means. Only the reply that opens
+                // the stream reaches the chain — an item failing arrives after
+                // the answer has begun.
+                let __map_item = |__item| {
+                    ::std::result::Result::map_err(__item, |__err| {
+                        let __status = ::toni::GrpcStatus::from(__err);
+                        ::tonic::Status::new(
+                            ::tonic::Code::from_i32(__status.code as i32),
+                            __status.message,
+                        )
+                    })
+                };
+                #call_stream
             }
         }
     } else {
@@ -841,12 +855,7 @@ fn lower_handler(
             ) -> ::std::result::Result<::tonic::Response<#answer_ty>, ::tonic::Status> {
                 let __ctx = ::toni::context::GrpcContext::of(request.extensions());
                 #bind_request
-                match Self::#hidden(self, #(#call_args),*).await {
-                    ::std::result::Result::Ok(__reply) => {
-                        ::std::result::Result::Ok(::tonic::Response::new(__reply))
-                    }
-                    ::std::result::Result::Err(__err) => { #failure }
-                }
+                #call_unary
             }
         }
     };
@@ -925,6 +934,24 @@ fn stream_item_type(ty: &syn::Type) -> Option<syn::Type> {
     })
 }
 
+/// The `T` of a `Response<T>`, when a handler answers with the response itself.
+fn response_inner_type(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Response" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(inner) => Some(inner.clone()),
+        _ => None,
+    })
+}
+
 /// The `T` of a `Result<T, _>` written as a type.
 fn result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
     let syn::Type::Path(path) = ty else {
@@ -994,17 +1021,19 @@ fn last_segment_is(ty: &syn::Type, name: &str) -> bool {
         if path.path.segments.last().is_some_and(|segment| segment.ident == name))
 }
 
-/// The `T` of a handler's `Result<T, E>`.
-fn ok_type_of(output: &syn::ReturnType) -> Result<syn::Type> {
+/// What a handler answers with, and whether it can fail: `Result<T, E>` gives
+/// `T`, and a bare `T` is the reply of a handler that cannot.
+fn answer_type(output: &syn::ReturnType) -> Result<(syn::Type, bool)> {
     let syn::ReturnType::Type(_, ty) = output else {
         return Err(syn::Error::new_spanned(
             output,
-            "a `#[grpc_method]` handler answers with `Result<Reply, YourError>`",
+            "a gRPC handler answers with its reply, or `Result<Reply, YourError>`",
         ));
     };
 
-    result_ok_type(ty).ok_or_else(|| {
-        syn::Error::new_spanned(ty, "a gRPC handler answers with `Result<Reply, YourError>`")
+    Ok(match result_ok_type(ty) {
+        Some(ok) => (ok, true),
+        None => ((**ty).clone(), false),
     })
 }
 
@@ -1025,7 +1054,6 @@ fn build_wrapper_method(
     trait_path: &Path,
     trait_short: &str,
     impl_attrs: &[syn::Attribute],
-    restate_payload: Option<&syn::Ident>,
 ) -> Result<TokenStream> {
     let sig = &method.sig;
     let method_name_lit = sig.ident.to_string();
@@ -1092,17 +1120,7 @@ fn build_wrapper_method(
     let inputs = &sig.inputs;
     let generics = &sig.generics;
 
-    // The wrapper's signature has to name the wrapper's own associated type.
-    // Where the user's spelling named that type another way, it is restated here
-    // rather than copied, leaving the rest of the signature as written.
-    let restated;
-    let output = match restate_payload {
-        Some(assoc) => {
-            restated = restate_response_payload(&sig.output, assoc);
-            &restated
-        }
-        None => &sig.output,
-    };
+    let output = &sig.output;
 
     Ok(quote! {
         #asyncness fn #method_ident #generics (#inputs) #output {
@@ -1235,16 +1253,16 @@ fn build_wrapper_method(
                     ))
                 }
                 ::std::option::Option::Some(::std::result::Result::Err(__status)) => {
-                    // User-returned `Err(Status)` is offered to the error
-                    // chain. If a handler claims it, the claimed
-                    // `GrpcStatus` becomes the wire reply; otherwise the
-                    // original status passes through unchanged.
+                    // A failed call is offered to the error chain. If a
+                    // handler claims it, the claimed `GrpcStatus` becomes the
+                    // wire reply; otherwise the status passes through
+                    // unchanged.
                     //
-                    // A handler that failed through `fail` / `fail_with` left
-                    // its domain error on the execution, so the chain is given
-                    // the type rather than the status it flattened into —
-                    // which is what lets `#[catch(MyError)]` match here as it
-                    // does on the other transports.
+                    // The generated method parked the handler's domain error on
+                    // the execution, so the chain is given the type rather than
+                    // the status it flattened into — which is what lets
+                    // `#[catch(MyError)]` match here as it does on the other
+                    // transports.
                     let __stashed = ::toni::grpc_runtime::take_failure(&__ctx);
                     let __wrapped = ::toni::GrpcStatus {
                         code: ::toni::GrpcCode::from_i32(__status.code() as i32),
@@ -1328,101 +1346,6 @@ fn collect_self_assoc(
         }
         _ => {}
     }
-}
-
-/// The associated type named by `#[stream(...)]` on a method.
-///
-/// The signal for a trait whose own naming does not connect a method to its
-/// stream — one written by hand, or built through `tonic_build::manual`, where
-/// the Rust name and the route name are set independently.
-fn stream_attr(
-    method: &syn::ImplItemFn,
-    declared: &std::collections::HashSet<String>,
-) -> Result<Option<syn::Ident>> {
-    let Some(attr) = method.attrs.iter().find(|a| attr_is(a, "stream")) else {
-        return Ok(None);
-    };
-    let ident: syn::Ident = attr.parse_args().map_err(|_| {
-        syn::Error::new_spanned(
-            attr,
-            "#[stream(...)] takes the associated type this method's reply is typed by, \
-             as in #[stream(WatchProgressStream)]",
-        )
-    })?;
-    if !declared.contains(&ident.to_string()) {
-        return Err(syn::Error::new_spanned(
-            &ident,
-            format!(
-                "`{}` is not an associated type of this impl block; \
-                 #[stream(...)] names the one this method's reply is typed by",
-                ident
-            ),
-        ));
-    }
-    Ok(Some(ident))
-}
-
-/// The associated type tonic-build derived from the same proto identifier as
-/// `method`, if this impl declares one.
-///
-/// `rpc WatchProgress` yields `watch_progress` and `WatchProgressStream`, and the
-/// associated type is emitted only for methods that stream. Comparison drops the
-/// `Stream` suffix and everything case and punctuation carry, so an identifier
-/// holding an acronym or a digit pairs as readily as a plain one.
-fn pair_by_name(method: &syn::Ident, assoc_types: &[&syn::ImplItemType]) -> Option<syn::Ident> {
-    let wanted = squash(&method.to_string());
-    assoc_types.iter().find_map(|at| {
-        let name = at.ident.to_string();
-        let base = name.strip_suffix("Stream")?;
-        (squash(base) == wanted).then(|| at.ident.clone())
-    })
-}
-
-/// Case, underscores and any other punctuation dropped, so `watch_progress` and
-/// `WatchProgress` compare equal.
-fn squash(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
-}
-
-/// The same return type with the payload of its `Response<_>` replaced by
-/// `Self::#assoc`. The `Result`, the error type and the paths the user wrote
-/// them with are left as they stand.
-fn restate_response_payload(output: &syn::ReturnType, assoc: &syn::Ident) -> syn::ReturnType {
-    let mut restated = output.clone();
-    if let syn::ReturnType::Type(_, ty) = &mut restated {
-        replace_response_arg(ty, assoc);
-    }
-    restated
-}
-
-fn replace_response_arg(ty: &mut syn::Type, assoc: &syn::Ident) -> bool {
-    let syn::Type::Path(tp) = ty else {
-        return false;
-    };
-    for segment in tp.path.segments.iter_mut() {
-        let syn::PathArguments::AngleBracketed(args) = &mut segment.arguments else {
-            continue;
-        };
-        if segment.ident == "Response" {
-            for arg in args.args.iter_mut() {
-                if let syn::GenericArgument::Type(inner) = arg {
-                    *inner = syn::parse_quote!(Self::#assoc);
-                    return true;
-                }
-            }
-        }
-        for arg in args.args.iter_mut() {
-            if let syn::GenericArgument::Type(inner) = arg {
-                if replace_response_arg(inner, assoc) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 /// Convention: `OrdersService` (proto trait) → `OrdersServer` in the same

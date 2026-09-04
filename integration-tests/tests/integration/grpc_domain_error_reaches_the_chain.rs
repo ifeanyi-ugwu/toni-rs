@@ -1,18 +1,18 @@
-//! A gRPC handler can hand the chain its domain error, not just a status.
+//! A gRPC handler hands the chain its domain error, not just a status.
 //!
-//! On the other three transports the handler's error type is toni's own, so
-//! the value rides the return in an `AppError` variant and a
-//! `#[catch(MyError)]` handler downcasts it. tonic fixes the gRPC signature to
-//! `Status`, which has no room for the error, so `fail` parks it on the
-//! execution and the wrapper hands that to the chain instead.
+//! On every transport a `#[catch(MyError)]` handler downcasts the value the
+//! handler returned. tonic's generated method answers with a `Status`, which
+//! has no room for the error, so the method the macro writes parks it on the
+//! execution on its way out and the chain is handed that.
 
 #![allow(dead_code)]
 
+use crate::common::NotServed;
 use serial_test::serial;
 use toni::context::GrpcContext;
+use toni::extractors::{Inbound, Payload};
 use toni::toni_factory::ToniFactory;
 use toni::{async_trait, injectable, module, ErrorKind, GrpcCode, GrpcStatus};
-use toni_grpc::{FailWith, GrpcFail};
 use toni_macros::{controller, grpc_methods, new, use_error_handlers};
 
 mod chain_pb {
@@ -79,50 +79,49 @@ impl ClaimedGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(chain_pb::orders_server::Orders)]
 #[use_error_handlers(RestockHandler)]
-impl Orders for ClaimedGrpcService {
+impl ClaimedGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<chain_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<chain_pb::CreateOrderResponse>, tonic::Status> {
-        let ctx = GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
-        let req = request.into_inner();
-        let id = reserve(&req.item).fail_with(&ctx)?;
-        Ok(tonic::Response::new(chain_pb::CreateOrderResponse {
+        Payload(req): Payload<chain_pb::CreateOrderRequest>,
+    ) -> Result<chain_pb::CreateOrderResponse, OutOfStock> {
+        let id = reserve(&req.item)?;
+        Ok(chain_pb::CreateOrderResponse {
             id,
             status: "created".into(),
-        }))
+        })
     }
 
-    type WatchProgressStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<chain_pb::ProgressEvent, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<chain_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<chain_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<chain_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<chain_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<chain_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<chain_pb::CreateOrderRequest>,
+    ) -> Result<chain_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<chain_pb::ChatMessage, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<chain_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<chain_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<chain_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
@@ -141,45 +140,44 @@ impl UnclaimedGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for UnclaimedGrpcService {
+#[grpc_methods(chain_pb::orders_server::Orders)]
+impl UnclaimedGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<chain_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<chain_pb::CreateOrderResponse>, tonic::Status> {
-        let ctx = GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
-        let req = request.into_inner();
-        Err(ctx.fail(OutOfStock { item: req.item }))
+        Payload(req): Payload<chain_pb::CreateOrderRequest>,
+    ) -> Result<chain_pb::CreateOrderResponse, OutOfStock> {
+        Err(OutOfStock { item: req.item })
     }
 
-    type WatchProgressStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<chain_pb::ProgressEvent, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<chain_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<chain_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<chain_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<chain_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<chain_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<chain_pb::CreateOrderRequest>,
+    ) -> Result<chain_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = std::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<chain_pb::ChatMessage, tonic::Status>> + Send>,
-    >;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<chain_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<chain_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<chain_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 

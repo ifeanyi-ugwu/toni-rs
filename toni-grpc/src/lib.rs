@@ -12,23 +12,26 @@
 //! ```ignore
 //! use std::net::SocketAddr;
 //! use toni::ToniFactory;
-//! use toni_macros::{controller, grpc_methods, injectable, module};
+//! use toni::extractors::Payload;
+//! use toni_macros::{controller, grpc_methods, module, new};
 //!
 //! mod orders_pb {
 //!     tonic::include_proto!("toni_examples.orders");
 //! }
-//! use orders_pb::orders_server::{Orders, OrdersServer};
 //!
 //! #[controller]
 //! pub struct OrdersGrpcService {}
 //!
+//! #[grpc_methods(orders_pb::orders_server::Orders)]
 //! impl OrdersGrpcService {
+//!     #[new]
 //!     pub fn new() -> Self { Self {} }
-//! }
 //!
-//! #[grpc_methods]
-//! #[tonic::async_trait]
-//! impl Orders for OrdersGrpcService { /* methods */ }
+//!     #[grpc_method]
+//!     async fn create(&self, Payload(req): Payload<orders_pb::CreateOrderRequest>)
+//!         -> Result<orders_pb::CreateOrderResponse, OrderError>
+//!     { /* … */ }
+//! }
 //!
 //! #[module(controllers: [OrdersGrpcService])]
 //! struct AppModule;
@@ -143,13 +146,14 @@ mod tracing_layer;
 
 pub use grpc_adapter::GrpcAdapter;
 
-/// Answers a gRPC call with a domain error, mapping its
-/// [`kind`](toni::Error::kind) to the canonical gRPC code.
+/// Maps a domain error to a `tonic::Status` by its
+/// [`kind`](toni::Error::kind), the way every transport renders one.
 ///
-/// A gRPC handler's signature belongs to tonic, so it returns
-/// `tonic::Status` and the orphan rule stops toni from implementing
-/// `From<E>` into it. This is that hop, written where both types are
-/// reachable:
+/// A `#[grpc_methods]` handler returns its error and the generated method does
+/// this. What is left for a caller is a service written against tonic's own
+/// trait and registered through [`GrpcAdapter::add_service`], outside toni's
+/// dispatch — the orphan rule stops toni implementing `From<E>` into a foreign
+/// type, so the hop is written where both types are reachable:
 ///
 /// ```ignore
 /// async fn create(&self, request: Request<CreateOrderRequest>)
@@ -175,53 +179,4 @@ pub fn to_status<E: toni::Error>(error: E) -> tonic::Status {
 
 fn to_tonic(status: toni::GrpcStatus) -> tonic::Status {
     tonic::Status::new(tonic::Code::from_i32(status.code as i32), status.message)
-}
-
-/// Fail a call with a domain error the error chain can still recognise.
-///
-/// [`to_status`] answers with the right code and loses the type: the chain
-/// receives the `Status` the error was flattened into, so a
-/// `#[catch(OrderError)]` handler never matches. `fail` parks the error on the
-/// execution on its way out, and the `#[grpc_methods]` wrapper hands *that* to
-/// the chain — which is how the other three transports have always behaved,
-/// where the handler's error type is toni's own and carries the value in its
-/// `AppError` variant.
-///
-/// ```ignore
-/// use toni_grpc::GrpcFail;
-///
-/// async fn create(&self, request: Request<CreateOrderRequest>)
-///     -> Result<Response<CreateOrderResponse>, Status>
-/// {
-///     let ctx = GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
-///     Err(ctx.fail(OutOfStock { item: "unobtainium".into() }))
-/// }
-/// ```
-pub trait GrpcFail {
-    /// Park `error` on the execution and answer with its mapped status.
-    fn fail<E: toni::Error>(&self, error: E) -> tonic::Status;
-}
-
-impl GrpcFail for toni::GrpcContext {
-    fn fail<E: toni::Error>(&self, error: E) -> tonic::Status {
-        to_tonic(toni::grpc_runtime::stash_failure(self, error))
-    }
-}
-
-/// The `?`-shaped form of [`GrpcFail::fail`], for a call whose error is
-/// already a `Result`:
-///
-/// ```ignore
-/// use toni_grpc::FailWith;
-///
-/// let order = self.orders.create(req).fail_with(&ctx)?;
-/// ```
-pub trait FailWith<T> {
-    fn fail_with(self, ctx: &toni::GrpcContext) -> Result<T, tonic::Status>;
-}
-
-impl<T, E: toni::Error> FailWith<T> for Result<T, E> {
-    fn fail_with(self, ctx: &toni::GrpcContext) -> Result<T, tonic::Status> {
-        self.map_err(|error| ctx.fail(error))
-    }
 }

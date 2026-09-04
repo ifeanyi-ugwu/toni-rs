@@ -11,9 +11,11 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::common::NotServed;
 use futures_util::Stream;
 use serial_test::serial;
 use toni::context::{GrpcContext, HandlerContext};
+use toni::extractors::{Inbound, Payload};
 use toni::ToniFactory;
 use toni_macros::{controller, grpc_methods, module, new};
 
@@ -38,51 +40,52 @@ impl DeadlineService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for DeadlineService {
+#[grpc_methods(deadline_pb::orders_server::Orders)]
+impl DeadlineService {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<deadline_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<deadline_pb::CreateOrderResponse>, tonic::Status> {
-        let context =
-            GrpcContext::of(request.extensions()).expect("dispatched through the framework");
+        Payload(_req): Payload<deadline_pb::CreateOrderRequest>,
+        ctx: &GrpcContext,
+    ) -> Result<deadline_pb::CreateOrderResponse, NotServed> {
         *REMAINING.lock().unwrap() = Some(
-            context
-                .deadline()
+            ctx.deadline()
                 .map(|d| d.saturating_duration_since(Instant::now())),
         );
-        Ok(tonic::Response::new(deadline_pb::CreateOrderResponse {
+        Ok(deadline_pb::CreateOrderResponse {
             id: 1,
             status: "ok".to_string(),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<deadline_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<deadline_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<deadline_pb::WatchRequest>,
+    ) -> Result<
+        impl Stream<Item = Result<deadline_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<deadline_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<deadline_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<deadline_pb::CreateOrderRequest>,
+    ) -> Result<deadline_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<deadline_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<deadline_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<deadline_pb::ChatMessage>,
+    ) -> Result<
+        impl Stream<Item = Result<deadline_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 
