@@ -121,10 +121,11 @@ ADR-0037's mechanism, now reached without the handler calling anything.
 
 - All four call shapes are expressible: unary, server streaming, client streaming and
   bidirectional.
-- A handler's error type implements `toni::Error`. `GrpcStatus` does not, and cannot: it is what a
-  `toni::Error` maps into, and implementing both sides would collide with that blanket. A handler
-  wanting a code no `ErrorKind` reaches — `FailedPrecondition`, `OutOfRange` — takes the raw request
-  and answers `tonic::Status` itself.
+- A handler's error type implements `toni::Error`, whatever shape its request takes. `GrpcStatus`
+  does not and cannot — it is what a `toni::Error` maps into, so implementing both sides would
+  collide with that blanket — and `tonic::Status` cannot either, being foreign to every crate that
+  could write the impl. A code no `ErrorKind` reaches, `FailedPrecondition` or `OutOfRange`, is
+  answered by a chain handler claiming the error and returning that `GrpcStatus`.
 - `Validated<Payload<T>>` is not among the parameters. Proto messages are generated, so there is
   nowhere to hang the `#[validate]` attributes it reads; validation on this transport is a check
   inside the handler.
