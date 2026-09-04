@@ -15,8 +15,10 @@
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::common::NotServed;
 use futures_util::{Stream, StreamExt};
 use serial_test::serial;
+use toni::extractors::{Inbound, Payload};
 use toni::ToniFactory;
 use toni_macros::{controller, grpc_methods, module, new};
 use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
@@ -44,45 +46,47 @@ impl ReflectedOrders {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
-impl Orders for ReflectedOrders {
+#[grpc_methods(reflect_pb::orders_server::Orders)]
+impl ReflectedOrders {
+    #[grpc_method]
     async fn create(
         &self,
-        request: tonic::Request<reflect_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<reflect_pb::CreateOrderResponse>, tonic::Status> {
-        let req = request.into_inner();
-        Ok(tonic::Response::new(reflect_pb::CreateOrderResponse {
+        Payload(req): Payload<reflect_pb::CreateOrderRequest>,
+    ) -> Result<reflect_pb::CreateOrderResponse, NotServed> {
+        Ok(reflect_pb::CreateOrderResponse {
             id: 1,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 
-    type WatchProgressStream =
-        Pin<Box<dyn Stream<Item = Result<reflect_pb::ProgressEvent, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<reflect_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<reflect_pb::WatchRequest>,
+    ) -> Result<
+        impl Stream<Item = Result<reflect_pb::ProgressEvent, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<reflect_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<reflect_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<reflect_pb::CreateOrderRequest>,
+    ) -> Result<reflect_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream =
-        Pin<Box<dyn Stream<Item = Result<reflect_pb::ChatMessage, tonic::Status>> + Send>>;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<reflect_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<reflect_pb::ChatMessage>,
+    ) -> Result<
+        impl Stream<Item = Result<reflect_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 

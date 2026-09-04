@@ -5,6 +5,24 @@ package toni_test.orders;
 // One unary rpc, for the handler form where toni writes the trait impl.
 service Greeter {
     rpc Greet (GreetRequest) returns (GreetReply);
+
+    // Server streaming, for the handler form's stream reply.
+    rpc GreetMany (GreetRequest) returns (stream GreetReply);
+
+    // A reply with no natural end, for the abandoned-stream case.
+    rpc GreetForever (GreetRequest) returns (stream GreetReply);
+
+    // Client streaming: the caller sends names, the server answers once.
+    rpc GreetAll (stream GreetRequest) returns (GreetReply);
+
+    // Bidi: each name is answered as it arrives.
+    rpc Converse (stream GreetRequest) returns (stream GreetReply);
+
+    // Reads its request bare, and the bag beside it.
+    rpc GreetBare (GreetRequest) returns (GreetReply);
+
+    // Takes the whole tonic request, for what the shapes above do not cover.
+    rpc GreetRaw (GreetRequest) returns (GreetReply);
 }
 
 message GreetRequest {

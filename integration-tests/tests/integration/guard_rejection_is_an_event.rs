@@ -14,11 +14,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::NotServed;
 use futures_util::{SinkExt, StreamExt};
 use serial_test::serial;
 use toni::async_trait;
 use toni::context::{GrpcContext, RpcContext, WsContext};
 use toni::errors::GuardRejection;
+use toni::extractors::{Inbound, Payload};
 use toni::rpc::{RpcData, RpcHandlerOutput, RpcHandlerResult};
 use toni::toni_factory::ToniFactory;
 use toni::traits_helpers::Guard;
@@ -219,51 +221,48 @@ impl RejectionGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(rejection_pb::orders_server::Orders)]
 #[use_guards(DenyGrpc)]
 #[use_error_handlers(GrpcCatcher)]
-impl Orders for RejectionGrpcService {
+impl RejectionGrpcService {
+    #[grpc_method]
     async fn create(
         &self,
-        _request: tonic::Request<rejection_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<rejection_pb::CreateOrderResponse>, tonic::Status> {
-        Err(tonic::Status::internal("unreachable"))
+        Payload(_req): Payload<rejection_pb::CreateOrderRequest>,
+    ) -> Result<rejection_pb::CreateOrderResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type WatchProgressStream = std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<rejection_pb::ProgressEvent, tonic::Status>>
-                + Send,
-        >,
-    >;
-
+    #[grpc_stream]
     async fn watch_progress(
         &self,
-        _request: tonic::Request<rejection_pb::WatchRequest>,
-    ) -> Result<tonic::Response<Self::WatchProgressStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        Payload(_req): Payload<rejection_pb::WatchRequest>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<rejection_pb::ProgressEvent, NotServed>>
+            + Send
+            + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 
+    #[grpc_method]
     async fn bulk_create(
         &self,
-        _request: tonic::Request<tonic::Streaming<rejection_pb::CreateOrderRequest>>,
-    ) -> Result<tonic::Response<rejection_pb::BulkCreateResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<rejection_pb::CreateOrderRequest>,
+    ) -> Result<rejection_pb::BulkCreateResponse, NotServed> {
+        Err(NotServed)
     }
 
-    type ChatStream = std::pin::Pin<
-        Box<
-            dyn futures_util::Stream<Item = Result<rejection_pb::ChatMessage, tonic::Status>>
-                + Send,
-        >,
-    >;
-
+    #[grpc_stream]
     async fn chat(
         &self,
-        _request: tonic::Request<tonic::Streaming<rejection_pb::ChatMessage>>,
-    ) -> Result<tonic::Response<Self::ChatStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not part of this test"))
+        _inbound: Inbound<rejection_pb::ChatMessage>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<rejection_pb::ChatMessage, NotServed>> + Send + 'static,
+        NotServed,
+    > {
+        Ok(futures_util::stream::empty())
     }
 }
 

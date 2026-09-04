@@ -332,10 +332,10 @@ struct GrpcFailure(Arc<dyn crate::errors::Error + Send + Sync>);
 /// Park `error` on the execution and answer with the status its `kind()` maps
 /// to.
 ///
-/// gRPC is the one transport where toni does not own the handler's error type:
+/// gRPC is the one transport where the answer's error type is not toni's:
 /// tonic's trait fixes it to `Status`, which has no room for the error the way
-/// `HttpError::AppError` does. This is that room — `toni_grpc::GrpcFail::fail`
-/// is the call a handler makes, and this is what it does.
+/// `HttpError::AppError` does. This is that room. The method `#[grpc_methods]`
+/// writes calls it where the handler's error leaves for the wire.
 pub fn stash_failure<E: crate::errors::Error>(ctx: &GrpcContext, error: E) -> GrpcStatus {
     use crate::context::HandlerContext as _;
 

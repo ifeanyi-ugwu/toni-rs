@@ -770,22 +770,49 @@ pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 // gRPC SERVICE MACROS
 // ============================================================================
 
-/// Annotates `impl SomeProtoTrait for YourService` with the wiring that
-/// makes the service register itself with the gRPC adapter — what makes a
-/// `#[controller]` struct dispatch gRPC.
+/// Serves a proto service from an inherent impl of handlers, and makes the
+/// `#[controller]` struct holding them dispatch gRPC.
 ///
-/// The wrapping `*Server` type is inferred from the proto trait's name
-/// (`OrdersService` → `OrdersServer` in the same parent path). Override
-/// when needed:
+/// The attribute names the proto trait. Each handler is marked `#[grpc_method]`,
+/// or `#[grpc_stream]` where the reply is a stream; anything unmarked — the
+/// constructor, lifecycle hooks, helpers — stays as written.
 ///
 /// ```rust,ignore
-/// #[grpc_methods(server = orders_proto::OrdersServer)]
-/// impl orders_proto::orders_server::Orders for OrdersGrpcService { /* … */ }
+/// #[grpc_methods(orders_proto::orders_server::Orders)]
+/// impl OrdersGrpcService {
+///     #[new]
+///     pub fn new() -> Self { Self {} }
+///
+///     #[grpc_method]
+///     async fn create(&self, Payload(req): Payload<CreateOrderRequest>)
+///         -> Result<CreateOrderResponse, OrderError>
+///     { /* … */ }
+///
+///     #[grpc_stream]
+///     async fn watch(&self, Payload(req): Payload<WatchRequest>)
+///         -> Result<impl Stream<Item = Result<Event, OrderError>> + Send + 'static, OrderError>
+///     { /* … */ }
+/// }
 /// ```
 ///
-/// The annotated impl block is passed through unchanged; a source companion carrying the
-/// service's declarations, its `GrpcServiceSource` impl, and the enhancer-aware wrapper are
-/// emitted alongside it.
+/// A handler takes `Payload<T>` or the message written bare, `Inbound<T>` for the
+/// caller's stream, `Extensions`, `&GrpcContext`, and `tonic::Request<T>` where it
+/// wants the wire shape; it answers with the reply message, or with
+/// `tonic::Response<T>` to set reply metadata itself. Its error implements
+/// `toni::Error`, so `#[catch]` matches it here as on every other transport.
+///
+/// `#[grpc_stream]` reads the trait's associated type from the method name —
+/// `watch` pairs with `WatchStream` — which is the pairing tonic-build derives
+/// from one proto identifier. A trait that names them independently says so:
+/// `#[grpc_stream(StreamProgressStream)]`.
+///
+/// The wrapping `*Server` type is inferred from the proto trait's name
+/// (`OrdersService` → `OrdersServer` in the same parent path). Override when
+/// needed:
+///
+/// ```rust,ignore
+/// #[grpc_methods(orders_proto::orders_server::Orders, server = orders_proto::OrdersServer)]
+/// ```
 #[proc_macro_attribute]
 pub fn grpc_methods(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

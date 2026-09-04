@@ -50,7 +50,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toni::ToniFactory;
-use toni_grpc::GrpcFail;
 use toni_macros::{controller, grpc_methods, injectable, module, new};
 
 mod orders_pb {
@@ -84,48 +83,29 @@ impl OrdersCounter {
 // ─── Domain error ───────────────────────────────────────────────────────────
 //
 // The same `toni::Error` a handler on any other transport would return. Its
-// `kind()` decides the wire shape everywhere: 409 on HTTP, `Conflict` in the
-// RPC and WebSocket envelopes, ABORTED here. A gRPC handler answers with
-// `tonic::Status` by signature, so the last hop is `toni_grpc::to_status`
-// rather than `?` — the orphan rule keeps toni from writing that conversion.
+// `kind()` decides the wire shape everywhere: 400 and 409 on HTTP, `BadRequest`
+// and `Conflict` in the RPC and WebSocket envelopes, INVALID_ARGUMENT and
+// ABORTED here.
 
-#[derive(Debug)]
-struct OutOfStock {
-    item: String,
+#[derive(Debug, toni::Error)]
+enum OrderError {
+    #[error_kind(BadRequest)]
+    InvalidQty { qty: u32 },
+
+    #[error_kind(Conflict)]
+    OutOfStock { item: String },
 }
 
-impl std::fmt::Display for OutOfStock {
+impl std::fmt::Display for OrderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} is out of stock", self.item)
+        match self {
+            Self::InvalidQty { qty } => write!(f, "qty must be positive, got {qty}"),
+            Self::OutOfStock { item } => write!(f, "{item} is out of stock"),
+        }
     }
 }
 
-impl std::error::Error for OutOfStock {}
-
-impl toni::Error for OutOfStock {
-    fn kind(&self) -> toni::ErrorKind {
-        toni::ErrorKind::Conflict
-    }
-}
-
-#[derive(Debug)]
-struct InvalidQty {
-    qty: u32,
-}
-
-impl std::fmt::Display for InvalidQty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "qty must be positive, got {}", self.qty)
-    }
-}
-
-impl std::error::Error for InvalidQty {}
-
-impl toni::Error for InvalidQty {
-    fn kind(&self) -> toni::ErrorKind {
-        toni::ErrorKind::BadRequest
-    }
-}
+impl std::error::Error for OrderError {}
 
 // ─── Guard ──────────────────────────────────────────────────────────────────
 //
@@ -147,10 +127,10 @@ impl toni::traits_helpers::Guard<toni::GrpcContext> for AuthGuard {
 
 // ─── Interceptor ────────────────────────────────────────────────────────────
 //
-// `#[interceptor(grpc)]` registers this as `Interceptor<GrpcContext, GrpcHandlerResult>`. The
-// chain calls `intercept` before the user delegation; calling
-// `next.run(ctx).await` proceeds to the next link (and ultimately the
-// user method); not calling it short-circuits the call.
+// A provider implementing `Interceptor<GrpcContext, GrpcHandlerResult>` is
+// registered as one by that impl. The chain calls `intercept` before the
+// handler; `next.run(ctx).await` proceeds to the next link and ultimately to
+// the handler, and not calling it short-circuits the call.
 
 #[injectable]
 pub struct LoggingInterceptor {}
@@ -177,12 +157,11 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 
 // ─── Error handler ──────────────────────────────────────────────────────────
 //
-// `#[error_handler(grpc)]` registers this as
-// `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every
-// user-returned `Err(Status)` (wrapped as `GrpcStatus`) and every caught
-// handler panic. Returning `Some(...)` claims the response with a new
-// status; `None` lets the next handler in the chain decide, falling back
-// to the original status if none claims.
+// A provider implementing `ErrorHandler<GrpcContext, GrpcStatus>` is
+// registered as one by that impl. The chain offers it every error a handler
+// returned and every caught panic. Returning `Some(...)` claims the answer with
+// a new status; `None` lets the next handler decide, falling back to the status
+// the error's kind maps to if none claims.
 
 #[injectable]
 pub struct QtyErrorHandler {}
@@ -195,14 +174,14 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
         error: toni::traits_helpers::ChainError<'_>,
         _ctx: &toni::GrpcContext,
     ) -> Option<toni::GrpcStatus> {
-        // The handler failed through `ctx.fail`, which parks the domain error
-        // on the execution, so the chain is handed `InvalidQty` itself rather
-        // than the status it maps to. Without that, this would be matching on
-        // a substring of the message.
-        let invalid = error.downcast_ref::<InvalidQty>()?;
+        // The chain is handed the handler's own error, so this matches a
+        // variant rather than a substring of a message.
+        let OrderError::InvalidQty { qty } = error.downcast_ref::<OrderError>()? else {
+            return None;
+        };
         Some(toni::GrpcStatus::new(
             toni::GrpcCode::FailedPrecondition,
-            format!("qty must be positive, got {}", invalid.qty),
+            format!("qty must be positive, got {qty}"),
         ))
     }
 }
@@ -211,8 +190,8 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
 //
 // `#[controller]` declares the service as a dispatch target; the
 // `#[inject]`-annotated fields are resolved from the module's providers
-// list. `#[grpc_methods]` wraps the proto-trait impl with the enhancer
-// pipeline declared via the `#[use_*]` attributes — at bind time the
+// list. `#[grpc_methods]` writes the proto-trait impl around these
+// handlers, with the enhancer pipeline the `#[use_*]` attributes declare — at bind time the
 // framework registers the wrapper with tonic so every inbound call
 // flows through guards → interceptors → user code → error handlers.
 
@@ -228,38 +207,32 @@ impl OrdersGrpcService {
     }
 }
 
-#[grpc_methods]
-#[tonic::async_trait]
+#[grpc_methods(orders_pb::orders_server::Orders)]
 #[use_guards(AuthGuard)]
 #[use_error_handlers(QtyErrorHandler)]
-impl Orders for OrdersGrpcService {
+impl OrdersGrpcService {
+    #[grpc_method]
     #[use_interceptors(LoggingInterceptor)]
     async fn create(
         &self,
-        request: tonic::Request<orders_pb::CreateOrderRequest>,
-    ) -> Result<tonic::Response<orders_pb::CreateOrderResponse>, tonic::Status> {
-        let ctx = toni::GrpcContext::of(request.extensions()).expect("a toni-dispatched call");
-        let req = request.into_inner();
+        toni::extractors::Payload(req): toni::extractors::Payload<orders_pb::CreateOrderRequest>,
+    ) -> Result<orders_pb::CreateOrderResponse, OrderError> {
         if req.qty == 0 {
-            // `fail` answers with the status `BadRequest` maps to and leaves
-            // the error where the chain can still see its type. With the
-            // handler removed, that InvalidArgument reaches the wire.
-            return Err(ctx.fail(InvalidQty { qty: req.qty }));
+            // The chain claims this one and answers FailedPrecondition. With
+            // the handler removed, the kind decides: INVALID_ARGUMENT.
+            return Err(OrderError::InvalidQty { qty: req.qty });
         }
         if req.item == "unobtainium" {
-            // No chain handler claims this one, so the mapped code is the
-            // answer: `Conflict` is ABORTED.
-            return Err(ctx.fail(OutOfStock {
-                item: req.item.clone(),
-            }));
+            // Nothing claims this one, so the kind is the answer: ABORTED.
+            return Err(OrderError::OutOfStock { item: req.item });
         }
         let id = self.counter.next_id();
-        Ok(tonic::Response::new(orders_pb::CreateOrderResponse {
+        Ok(orders_pb::CreateOrderResponse {
             id,
             item: req.item.clone(),
             qty: req.qty,
             status: format!("created:{}", req.item),
-        }))
+        })
     }
 }
 
