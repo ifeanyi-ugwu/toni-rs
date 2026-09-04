@@ -2,6 +2,19 @@ syntax = "proto3";
 
 package toni_test.orders;
 
+// One unary rpc, for the handler form where toni writes the trait impl.
+service Greeter {
+    rpc Greet (GreetRequest) returns (GreetReply);
+}
+
+message GreetRequest {
+    string name = 1;
+}
+
+message GreetReply {
+    string message = 1;
+}
+
 service Orders {
     rpc Create (CreateOrderRequest) returns (CreateOrderResponse);
 
