@@ -629,8 +629,24 @@ fn lower_handlers_impl(inherent: &ItemImpl, proto_trait: &Path) -> Result<(ItemI
 enum HandlerParam {
     /// The request message, as `Payload<T>`.
     Payload(syn::Type),
+    /// The request message, written bare — the spelling RPC handlers use.
+    Bare(syn::Type),
+    /// The messages the caller streams, as `Inbound<T>`.
+    Inbound(syn::Type),
+    /// The whole `tonic::Request<T>`, for a handler that wants the wire shape.
+    Raw(syn::Type),
+    /// The execution's extension bag.
+    Extensions,
     /// The call's context, as `&GrpcContext`.
     Context,
+}
+
+/// How the request reaches the handler, which decides the generated signature.
+#[derive(Clone, Copy, PartialEq)]
+enum RequestKind {
+    Message,
+    Stream,
+    Raw,
 }
 
 /// Rewrite one handler into itself under a hidden name, plus the proto-trait
@@ -650,7 +666,9 @@ fn lower_handler(
         ));
     }
 
-    let mut request_ty: Option<syn::Type> = None;
+    // The request is one message or a stream of them, and which decides both
+    // the generated signature and what the handler is handed.
+    let mut request: Option<(syn::Type, RequestKind)> = None;
     let mut call_args: Vec<TokenStream> = Vec::new();
 
     for arg in method.sig.inputs.iter() {
@@ -659,15 +677,28 @@ fn lower_handler(
         };
         match classify_param(typed.ty.as_ref())? {
             HandlerParam::Payload(inner) => {
-                if request_ty.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        typed,
-                        "a gRPC call carries one request message, so one `Payload<T>`",
-                    ));
-                }
-                request_ty = Some(inner);
+                claim_request(&mut request, (inner, RequestKind::Message), typed)?;
                 call_args.push(quote! { ::toni::extractors::Payload(__message) });
             }
+            HandlerParam::Bare(inner) => {
+                claim_request(&mut request, (inner, RequestKind::Message), typed)?;
+                call_args.push(quote! { __message });
+            }
+            HandlerParam::Inbound(inner) => {
+                claim_request(&mut request, (inner, RequestKind::Stream), typed)?;
+                call_args.push(quote! { __inbound });
+            }
+            HandlerParam::Raw(inner) => {
+                claim_request(&mut request, (inner, RequestKind::Raw), typed)?;
+                call_args.push(quote! { request });
+            }
+            HandlerParam::Extensions => call_args.push(quote! {
+                ::std::clone::Clone::clone(
+                    ::toni::context::HandlerContext::extensions(__ctx.as_ref().expect(
+                        "a gRPC context — this method was reached outside toni's dispatch",
+                    )),
+                )
+            }),
             HandlerParam::Context => call_args.push(quote! {
                 __ctx.as_ref().expect(
                     "a gRPC context — this method was reached outside toni's dispatch",
@@ -676,12 +707,38 @@ fn lower_handler(
         }
     }
 
-    let request_ty = request_ty.ok_or_else(|| {
+    let (request_ty, request_kind) = request.ok_or_else(|| {
         syn::Error::new_spanned(
             &method.sig,
-            "a gRPC handler takes its request as `Payload<T>`",
+            "a gRPC handler takes its request — the message, `Payload<T>`, `Inbound<T>`, \
+             or the whole `tonic::Request<T>`",
         )
     })?;
+
+    let request_arg_ty = match request_kind {
+        RequestKind::Stream => quote! { ::tonic::Streaming<#request_ty> },
+        _ => quote! { #request_ty },
+    };
+
+    // A caller's stream fails with tonic's status; the handler reads toni's, so
+    // the conversion happens here rather than in every handler that reads one.
+    let bind_request = match request_kind {
+        RequestKind::Message => quote! { let __message = request.into_inner(); },
+        RequestKind::Stream => quote! {
+            let __inbound = ::toni::extractors::Inbound::new(
+                ::toni::futures::StreamExt::map(request.into_inner(), |__item| {
+                    ::std::result::Result::map_err(__item, |__status| {
+                        ::toni::GrpcStatus::new(
+                            ::toni::GrpcCode::from_i32(__status.code() as i32),
+                            __status.message().to_string(),
+                        )
+                    })
+                }),
+            );
+        },
+        // The handler is given the request whole, so nothing is unwrapped.
+        RequestKind::Raw => quote! {},
+    };
     let answer_ty = ok_type_of(&method.sig.output)?;
 
     let carried: Vec<&syn::Attribute> = method
@@ -734,10 +791,10 @@ fn lower_handler(
             #(#carried)*
             async fn #name(
                 &self,
-                request: ::tonic::Request<#request_ty>,
+                request: ::tonic::Request<#request_arg_ty>,
             ) -> ::std::result::Result<::tonic::Response<Self::#assoc>, ::tonic::Status> {
                 let __ctx = ::toni::context::GrpcContext::of(request.extensions());
-                let __message = request.into_inner();
+                #bind_request
                 match Self::#hidden(self, #(#call_args),*).await {
                     ::std::result::Result::Ok(__stream) => {
                         // Each item carries the caller's own error type, which
@@ -766,10 +823,10 @@ fn lower_handler(
             #(#carried)*
             async fn #name(
                 &self,
-                request: ::tonic::Request<#request_ty>,
+                request: ::tonic::Request<#request_arg_ty>,
             ) -> ::std::result::Result<::tonic::Response<#answer_ty>, ::tonic::Status> {
                 let __ctx = ::toni::context::GrpcContext::of(request.extensions());
-                let __message = request.into_inner();
+                #bind_request
                 match Self::#hidden(self, #(#call_args),*).await {
                     ::std::result::Result::Ok(__reply) => {
                         ::std::result::Result::Ok(::tonic::Response::new(__reply))
@@ -792,6 +849,22 @@ fn lower_handler(
     });
 
     Ok((handler, generated))
+}
+
+/// Record the parameter that carries the request, refusing a second one.
+fn claim_request(
+    slot: &mut Option<(syn::Type, RequestKind)>,
+    found: (syn::Type, RequestKind),
+    at: &syn::PatType,
+) -> Result<()> {
+    if slot.is_some() {
+        return Err(syn::Error::new_spanned(
+            at,
+            "a gRPC call carries one request, and this handler asks for a second",
+        ));
+    }
+    *slot = Some(found);
+    Ok(())
 }
 
 /// The associated type tonic declares for a streaming method: the method's
@@ -864,23 +937,42 @@ fn classify_param(ty: &syn::Type) -> Result<HandlerParam> {
         }
         return Err(syn::Error::new_spanned(
             ty,
-            "a `#[grpc_method]` handler takes `Payload<T>` and `&GrpcContext`",
+            "the only reference a gRPC handler takes is `&GrpcContext`",
         ));
     }
 
-    if let syn::Type::Path(path) = ty
-        && let Some(segment) = path.path.segments.last()
-        && segment.ident == "Payload"
-        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-    {
-        return Ok(HandlerParam::Payload(inner.clone()));
+    let syn::Type::Path(path) = ty else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "a gRPC handler takes its request, `Extensions`, or `&GrpcContext`",
+        ));
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return Err(syn::Error::new_spanned(ty, "a parameter type with no name"));
+    };
+
+    if segment.ident == "Extensions" {
+        return Ok(HandlerParam::Extensions);
     }
 
-    Err(syn::Error::new_spanned(
-        ty,
-        "a `#[grpc_method]` handler takes `Payload<T>` and `&GrpcContext`",
-    ))
+    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        if segment.ident == "Payload" {
+            return Ok(HandlerParam::Payload(inner.clone()));
+        }
+        if segment.ident == "Inbound" {
+            return Ok(HandlerParam::Inbound(inner.clone()));
+        }
+        if segment.ident == "Request" {
+            return Ok(HandlerParam::Raw(inner.clone()));
+        }
+    }
+
+    // Anything else names the request message, which is how an RPC handler
+    // spells its payload. A misspelled extractor lands here and fails as a
+    // type mismatch against the proto message.
+    Ok(HandlerParam::Bare(ty.clone()))
 }
 
 fn last_segment_is(ty: &syn::Type, name: &str) -> bool {
