@@ -18,8 +18,11 @@ service Greeter {
     // Bidi: each name is answered as it arrives.
     rpc Converse (stream GreetRequest) returns (stream GreetReply);
 
-    // Reads its request bare, and the bag beside it.
-    rpc GreetBare (GreetRequest) returns (GreetReply);
+    // Reads the execution's bag beside its request.
+    rpc GreetWithBag (GreetRequest) returns (GreetReply);
+
+    // Names its request through an alias the macro cannot resolve.
+    rpc GreetAliased (GreetRequest) returns (GreetReply);
 
     // Takes the whole tonic request, for what the shapes above do not cover.
     rpc GreetRaw (GreetRequest) returns (GreetReply);

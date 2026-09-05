@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serial_test::serial;
 use toni::context::{Extensions, GrpcContext, HandlerContext};
+use toni::extractors::Payload as Aliased;
 use toni::extractors::{Inbound, Payload};
 use toni::toni_factory::ToniFactory;
 use toni::{async_trait, injectable, module, ErrorKind, GrpcCode, GrpcStatus};
@@ -139,9 +140,9 @@ impl GreeterService {
     /// the execution's bag beside it.
     #[grpc_method]
     #[use_guards(MarkGuard)]
-    async fn greet_bare(
+    async fn greet_with_bag(
         &self,
-        req: greeter_pb::GreetRequest,
+        Payload(req): Payload<greeter_pb::GreetRequest>,
         extensions: Extensions,
     ) -> Result<greeter_pb::GreetReply, NoName> {
         // The guard wrote this before the handler ran, so finding it here is
@@ -154,6 +155,19 @@ impl GreeterService {
 
     /// The escape hatch: the whole request, for what the shapes above do not
     /// cover — trailers, peer address, the metadata map as it arrived.
+    /// Spelled through an alias, which a macro reading tokens cannot resolve.
+    /// The request type is asked of `GrpcRequest` instead, so serving this call
+    /// at all says the compiler did the resolving.
+    #[grpc_method]
+    async fn greet_aliased(
+        &self,
+        Aliased(req): Aliased<greeter_pb::GreetRequest>,
+    ) -> Result<greeter_pb::GreetReply, NoName> {
+        Ok(greeter_pb::GreetReply {
+            message: format!("{}:aliased", req.name),
+        })
+    }
+
     #[grpc_method]
     async fn greet_raw(
         &self,
@@ -362,13 +376,31 @@ async fn an_abandoned_stream_cancels_the_work_feeding_it() {
     );
 }
 
+/// The macro reads tokens, so `Aliased` tells it nothing about which message
+/// the wire carries. A reply means the projection resolved it.
 #[serial]
 #[tokio_localset_test::localset_test]
-async fn a_handler_takes_its_request_bare_and_the_bag_beside_it() {
+async fn a_handler_names_its_request_through_an_alias() {
     let mut client = client(boot().await).await;
 
     let reply = client
-        .greet_bare(greeter_pb::GreetRequest {
+        .greet_aliased(greeter_pb::GreetRequest {
+            name: "ada".to_string(),
+        })
+        .await
+        .expect("the call succeeds")
+        .into_inner();
+
+    assert_eq!(reply.message, "ada:aliased");
+}
+
+#[serial]
+#[tokio_localset_test::localset_test]
+async fn a_handler_takes_the_execution_s_bag_beside_its_request() {
+    let mut client = client(boot().await).await;
+
+    let reply = client
+        .greet_with_bag(greeter_pb::GreetRequest {
             name: "ada".to_string(),
         })
         .await
