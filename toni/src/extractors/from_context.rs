@@ -23,7 +23,43 @@ use crate::http_helpers::HttpRequest;
 pub trait FromContext<C: HandlerContext>: Sized {
     type Error: fmt::Display;
 
+    /// Whether extracting this consumes what it reads, leaving nothing for a
+    /// second extractor.
+    ///
+    /// The request body on HTTP, where it may be a stream and there is nothing
+    /// to hand a second reader. Nothing on RPC or WebSocket, where the payload
+    /// is buffered and reads freely.
+    ///
+    /// The handler macros sum this across a handler's parameters and reject two
+    /// consumers at compile time. An extractor that reads the body through
+    /// [`take_body`] and leaves this `false` is not counted, and the second one
+    /// to run fails at request time instead.
+    const CONSUMES: bool = false;
+
     fn extract(ctx: &C) -> impl Future<Output = Result<Self, Self::Error>> + Send;
+}
+
+/// `None` where the inner extractor fails, consuming whatever it consumes.
+impl<C: HandlerContext, T: FromContext<C>> FromContext<C> for Option<T> {
+    type Error = std::convert::Infallible;
+
+    const CONSUMES: bool = T::CONSUMES;
+
+    async fn extract(ctx: &C) -> Result<Self, Self::Error> {
+        Ok(T::extract(ctx).await.ok())
+    }
+}
+
+/// The whole request, body included, under the same single-use rule as any
+/// other body reader.
+impl FromContext<HttpContext> for HttpRequest {
+    type Error = BodyAlreadyRead;
+
+    const CONSUMES: bool = true;
+
+    async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
+        take_body::<Self>(ctx)
+    }
 }
 
 /// Take the request for a body extractor, or report that the body has gone.
@@ -43,10 +79,9 @@ pub trait FromContext<C: HandlerContext>: Sized {
 /// }
 /// ```
 ///
-/// A handler may have only one body extractor. The macro that builds handlers
-/// rejects a second at compile time when it recognises both types; when it
-/// cannot — a custom extractor it has never heard of — the second one to run
-/// fails here.
+/// A handler may have only one body extractor. An extractor that sets
+/// [`FromContext::CONSUMES`] is counted, and a second one is rejected at compile
+/// time; one that reads the body without declaring it reaches here instead.
 pub fn take_body<T>(ctx: &HttpContext) -> Result<HttpRequest, BodyAlreadyRead> {
     match ctx.take_request() {
         Some(req) => Ok(req),

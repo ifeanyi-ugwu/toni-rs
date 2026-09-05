@@ -20,6 +20,7 @@ use crate::{
     controller_macro::extractor_params::{
         ExtractorKind, generate_extractor_extractions, generate_extractor_method_call,
         generate_extractor_static_method_call, get_extractor_params, has_self_receiver,
+        one_body_assertion,
     },
     enhancer::enhancer::{EnhancerInfo, create_enhancer_infos},
     markers_params::{
@@ -210,7 +211,8 @@ fn generate_controller_wrapper(
     let mut metadata_exprs = controller_metadata_exprs.to_vec();
     metadata_exprs.extend(get_metadata_exprs(&method.attrs)?);
 
-    let extractor_params = get_extractor_params(method)?;
+    let (extractor_params, body_markers) = get_extractor_params(method)?;
+    let one_body = one_body_assertion(&extractor_params, &body_markers);
     let has_extractors = extractor_params
         .iter()
         .any(|p| !matches!(p.kind, ExtractorKind::HttpRequest | ExtractorKind::Unknown));
@@ -257,7 +259,10 @@ fn generate_controller_wrapper(
     );
 
     Ok((
-        wrapper,
+        quote! {
+            #one_body
+            #wrapper
+        },
         MetadataInfo {
             struct_name: controller_name,
             dependencies: Vec::new(),

@@ -59,6 +59,8 @@ impl std::error::Error for BytesError {}
 impl FromContext<HttpContext> for Bytes {
     type Error = BodyExtractionError<BytesError>;
 
+    const CONSUMES: bool = true;
+
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         read(take_body::<Self>(ctx)?)
             .await

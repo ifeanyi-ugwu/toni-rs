@@ -65,6 +65,8 @@ impl BodyStream {
 impl FromContext<HttpContext> for BodyStream {
     type Error = BodyExtractionError<Infallible>;
 
+    const CONSUMES: bool = true;
+
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         Ok(read(take_body::<Self>(ctx)?))
     }
