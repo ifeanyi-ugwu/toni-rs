@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use toni::extractors::Payload;
 use toni::{
     controller,
     extractors::{Json, Query},
@@ -96,7 +97,7 @@ impl OrdersRpcController {
     #[message_pattern("order.create")]
     async fn create_order(
         &self,
-        payload: CreateOrderDto,
+        Payload(payload): Payload<CreateOrderDto>,
         _ctx: &toni::context::RpcContext,
     ) -> Result<OrderDto, toni::RpcError> {
         if payload.qty == 0 {
@@ -108,7 +109,7 @@ impl OrdersRpcController {
     #[event_pattern("order.shipped")]
     async fn on_order_shipped(
         &self,
-        payload: ShipOrderDto,
+        Payload(payload): Payload<ShipOrderDto>,
         _ctx: &toni::context::RpcContext,
     ) -> Result<(), toni::RpcError> {
         self.service.handle_shipment(payload.order_id);

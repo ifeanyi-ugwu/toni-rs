@@ -35,6 +35,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
+use toni::extractors::Payload;
 use toni::{
     async_trait,
     context::HttpContext,
@@ -122,7 +123,10 @@ impl ErrorConsumer {
     /// Whatever an inline observer would have done goes here instead. It can
     /// take as long as it likes: nobody is waiting on it.
     #[event_pattern("errors.reported")]
-    async fn on_error_reported(&self, report: serde_json::Value) -> Result<(), RpcError> {
+    async fn on_error_reported(
+        &self,
+        Payload(report): Payload<serde_json::Value>,
+    ) -> Result<(), RpcError> {
         println!(
             "[consumer] {} {} → {}",
             report["method"].as_str().unwrap_or("?"),
