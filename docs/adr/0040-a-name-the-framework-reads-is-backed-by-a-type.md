@@ -5,9 +5,9 @@ Status: proposed
 ## Context
 
 Several macros decide what a handler parameter means by reading the last path segment of its
-written type. `#[patterns]` classifies `Payload`, `RpcData`, `Extensions` and `Validated` that way;
-`#[grpc_methods]` classifies `Payload`, `Inbound`, `Request`, `Extensions` and `&GrpcContext`;
-`#[routes]` classifies the HTTP extractors the same way to decide which parameter reads the body.
+written type. `#[grpc_methods]` classifies `Payload`, `Inbound`, `Request`, `Extensions` and
+`&GrpcContext` that way; `#[routes]` classifies the HTTP extractors the same way to decide which
+parameter reads the body.
 
 A name is not a type. `use toni::extractors::Payload as P` gives a parameter whose segment reads
 `P`, and a handler is free to define its own `Payload`. Either way the classification is wrong, and
@@ -26,8 +26,7 @@ Where that holds today:
 | --- | --- |
 | `Payload<T>` / `Inbound<T>` on gRPC | the parameter receives `toni::extractors::Payload` / `Inbound`, built by the generated method |
 | a bare type on gRPC | it becomes the trait method's request type, so a wrong one fails against the proto trait's signature |
-| `Payload` / `RpcData` / `Extensions` / `Validated` on RPC | the parameter is extracted through `<T as FromContext<RpcContext>>` |
-| a bare type on RPC | it is deserialised into, so it is bound by `DeserializeOwned` |
+| any parameter on RPC or WebSocket | it is extracted through `<T as FromContext<RpcContext>>` / `<T as FromContext<WsContext>>`, so a type with no impl has nothing to extract through |
 | `&GrpcContext` / `&RpcContext` / `&WsContext` | the context is passed by reference at that type |
 
 **Where a name cannot be backed, the type declares the fact instead.** HTTP's one-body rule was the
@@ -105,3 +104,7 @@ having one mechanism rather than two.
 **Rejecting an unrecognised name instead of reading it as the request.** The bare-message form is
 what RPC handlers have always spelled, and on gRPC it is the shorter half of the pair with
 `Payload<T>`. Removing it to make a misspelling louder costs more than it buys.
+
+*Superseded on RPC by [ADR-0041](0041-an-rpc-handler-takes-what-every-handler-takes.md).* The cost
+weighed here was the misspelling alone. What the form also bought was a fork, and a name list to
+select it, which is what made a handler's own `Payload` type read as the framework's.
