@@ -20,6 +20,13 @@ use crate::http_helpers::HttpRequest;
 /// shapes.
 ///
 /// [`HttpContext::request`]: crate::context::HttpContext::request
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an extractor for `{C}`",
+    label = "cannot be extracted from this context",
+    note = "a handler parameter is read from the context it is handed. Take one of the \
+            framework's extractors — `Payload<T>` for a message, `Json<T>` or `Query<T>` on \
+            HTTP — or implement `FromContext<{C}>` for `{Self}`."
+)]
 pub trait FromContext<C: HandlerContext>: Sized {
     type Error: fmt::Display;
 

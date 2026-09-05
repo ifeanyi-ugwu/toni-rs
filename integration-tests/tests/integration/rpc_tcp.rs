@@ -478,7 +478,11 @@ impl TypedPayloadController {
     }
 
     #[message_pattern("typed.echo")]
-    async fn echo(&self, payload: EchoDto, _ctx: &RpcContext) -> Result<EchoReply, RpcError> {
+    async fn echo(
+        &self,
+        Payload(payload): Payload<EchoDto>,
+        _ctx: &RpcContext,
+    ) -> Result<EchoReply, RpcError> {
         Ok(EchoReply {
             repeated: payload.text.repeat(payload.count as usize),
         })

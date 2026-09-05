@@ -396,14 +396,12 @@ fn is_rpc_data(ty: &syn::Type) -> bool {
 
 /// Extraction for a handler's parameters, in signature order.
 ///
-/// Anything the framework knows — `RpcData`, `Extensions`, `Payload<T>`,
-/// `Validated<Payload<T>>` — is a `FromContext<RpcContext>`. A parameter of any
-/// other type is the call's payload, deserialised into it: the convention RPC
-/// handlers have always used, now one case among several rather than the only
-/// shape a handler can take.
+/// Every parameter is a `FromContext<RpcContext>`, so a handler takes what it
+/// needs and the message arrives through an extractor that says so —
+/// `Payload<T>` for the call's data (ADR-0041).
 ///
-/// `&RpcContext` passes through, reborrowed at the call so
-/// they hold no borrow across the extractions before them.
+/// `&RpcContext` passes through, reborrowed at the call so it holds no borrow
+/// across the extractions before it.
 fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStream>) {
     let mut extractions = Vec::new();
     let mut call_args = Vec::new();
@@ -426,31 +424,17 @@ fn handler_params(method: &syn::ImplItemFn) -> (Vec<TokenStream>, Vec<TokenStrea
             continue;
         }
 
-        let extraction = if is_known_extractor(ty) {
-            quote! {
-                let #name = match <#ty as ::toni::extractors::FromContext<
-                    ::toni::context::RpcContext,
-                >>::extract(ctx).await {
-                    ::std::result::Result::Ok(__value) => __value,
-                    ::std::result::Result::Err(__e) => {
-                        return ::toni::http_helpers::ExecutionResult::Err(
-                            ::toni::rpc::RpcError::Internal(__e.to_string()),
-                        );
-                    }
-                };
-            }
-        } else {
-            // The bare-payload convention: deserialise the call's data into it.
-            quote! {
-                let #name = match ctx.data().parse::<#ty>() {
-                    ::std::result::Result::Ok(__value) => __value,
-                    ::std::result::Result::Err(__e) => {
-                        return ::toni::http_helpers::ExecutionResult::Err(
-                            ::toni::rpc::RpcError::Internal(__e.to_string()),
-                        );
-                    }
-                };
-            }
+        let extraction = quote! {
+            let #name = match <#ty as ::toni::extractors::FromContext<
+                ::toni::context::RpcContext,
+            >>::extract(ctx).await {
+                ::std::result::Result::Ok(__value) => __value,
+                ::std::result::Result::Err(__e) => {
+                    return ::toni::http_helpers::ExecutionResult::Err(
+                        ::toni::rpc::RpcError::Internal(__e.to_string()),
+                    );
+                }
+            };
         };
         extractions.push(extraction);
         call_args.push(quote! { #name });
@@ -467,20 +451,6 @@ fn is_rpc_context_ref(ty: &syn::Type) -> bool {
     };
     matches!(&*type_ref.elem, syn::Type::Path(p)
         if p.path.segments.last().is_some_and(|s| s.ident == "RpcContext"))
-}
-
-/// Types with a `FromContext<RpcContext>` impl in the framework. Everything else
-/// is the payload.
-fn is_known_extractor(ty: &syn::Type) -> bool {
-    let syn::Type::Path(type_path) = ty else {
-        return false;
-    };
-    type_path.path.segments.last().is_some_and(|s| {
-        matches!(
-            s.ident.to_string().as_str(),
-            "RpcData" | "Extensions" | "Payload" | "Validated"
-        )
-    })
 }
 
 /// True when a `#[message_pattern]` handler answers with `RpcHandlerOutput` itself — declared as
