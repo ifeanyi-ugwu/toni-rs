@@ -178,7 +178,7 @@ impl toni::traits_helpers::Interceptor<toni::GrpcContext, toni::GrpcHandlerResul
 
 ### Error handlers
 
-An error handler is a provider that implements `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every error a handler returned and every caught panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the answer; `None` lets the next handler decide, falling back on full miss to the status the error's kind maps to.
+An error handler is a provider that implements `ErrorHandler<GrpcContext, GrpcStatus>`. The chain offers it every error a handler returned and every caught panic (as a typed `PanicRecovered`). Returning `Some(GrpcStatus)` claims the answer; `None` lets the next handler decide, falling back on full miss to the status the handler already answered with.
 
 ```rust
 #[injectable]
@@ -200,6 +200,28 @@ impl toni::traits_helpers::ErrorHandler<toni::GrpcContext, toni::GrpcStatus> for
         ))
     }
 }
+```
+
+### Naming a code
+
+`grpc_code` maps the eleven `ErrorKind`s onto the canonical codes. For one outside that table — `FailedPrecondition`, `OutOfRange`, `AlreadyExists` — a handler returns a `GrpcStatus`, which is itself a `toni::Error`:
+
+```rust
+#[grpc_method]
+async fn reserve(&self, Payload(req): Payload<ReserveRequest>)
+    -> Result<ReserveReply, GrpcStatus>
+{
+    if !self.window_open() {
+        return Err(GrpcStatus::new(GrpcCode::FailedPrecondition, "the booking window is closed"));
+    }
+    ...
+}
+```
+
+`caused_by` keeps a domain error on a status whose code was named, so the code goes to the wire and a `#[catch(WindowClosed)]` handler still matches the type:
+
+```rust
+Err(GrpcStatus::new(GrpcCode::OutOfRange, "past the last slot").caused_by(WindowClosed))
 ```
 
 ## Streaming

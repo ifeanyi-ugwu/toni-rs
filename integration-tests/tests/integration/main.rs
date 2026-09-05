@@ -43,6 +43,7 @@ mod grpc_handler_form;
 mod grpc_manual_trait_form;
 mod grpc_reflection;
 mod grpc_service_injection;
+mod grpc_status_names_its_code;
 mod grpc_tail;
 mod grpc_tls;
 mod guard_mut_context;

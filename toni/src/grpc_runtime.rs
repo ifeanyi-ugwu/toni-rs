@@ -325,36 +325,38 @@ pub async fn run_grpc_error_chain(
     None
 }
 
-/// A domain error a handler failed with, parked on the execution so the chain
-/// sees the type rather than the status it was flattened into.
-struct GrpcFailure(Arc<dyn crate::errors::Error + Send + Sync>);
-
-/// Park `error` on the execution and answer with the status its `kind()` maps
-/// to.
+/// Carries a domain error through a `tonic::Status`'s source slot.
 ///
-/// gRPC is the one transport where the answer's error type is not toni's:
-/// tonic's trait fixes it to `Status`, which has no room for the error the way
-/// `HttpError::AppError` does. This is that room. The method `#[grpc_methods]`
-/// writes calls it where the handler's error leaves for the wire.
-pub fn stash_failure<E: crate::errors::Error>(ctx: &GrpcContext, error: E) -> GrpcStatus {
-    use crate::context::HandlerContext as _;
+/// That slot is typed `dyn std::error::Error`, which drops the `Send + Sync`
+/// the error chain needs. Wrapping the error in a concrete type is what lets a
+/// downcast on the way out recover the bound.
+#[derive(Debug)]
+pub struct GrpcFailure(Arc<dyn crate::errors::Error>);
 
-    let error: Arc<dyn crate::errors::Error + Send + Sync> = Arc::new(error);
-    let status = GrpcStatus::from_error(error.as_ref());
-    ctx.extensions().insert(GrpcFailure(error));
-    status
+impl GrpcFailure {
+    pub fn new(error: Arc<dyn crate::errors::Error>) -> Self {
+        Self(error)
+    }
+
+    /// The error a status carries, read off the source slot.
+    ///
+    /// Called by the `#[grpc_methods]` wrapper on its way to the error chain,
+    /// so a `#[catch(MyError)]` handler matches on this transport as it does on
+    /// the other three.
+    pub fn recover(
+        source: Option<&(dyn std::error::Error + 'static)>,
+    ) -> Option<Arc<dyn crate::errors::Error>> {
+        source?.downcast_ref::<Self>().map(|f| f.0.clone())
+    }
 }
 
-/// Take the parked failure, if the handler left one.
-///
-/// Called by the `#[grpc_methods]` wrapper on its way to the error chain, so a
-/// `#[catch(MyError)]` handler matches on this transport as it does on the
-/// other three.
-pub fn take_failure(ctx: &GrpcContext) -> Option<Arc<dyn crate::errors::Error + Send + Sync>> {
-    use crate::context::HandlerContext as _;
-
-    ctx.extensions().remove::<GrpcFailure>().map(|f| f.0)
+impl std::fmt::Display for GrpcFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
+
+impl std::error::Error for GrpcFailure {}
 
 /// Wrap a future in `AssertUnwindSafe(...).catch_unwind()` and surface
 /// the panic payload as a [`PanicRecovered`](crate::errors::PanicRecovered)

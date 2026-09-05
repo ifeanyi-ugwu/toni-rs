@@ -734,18 +734,19 @@ fn lower_handler(
 
     // The error arm is the same whichever shape the reply takes.
     let failure = quote! {
-        // Parking the error keeps its type for the chain; without a
-        // context to park it on there is only the status.
-        let __status = match __ctx.as_ref() {
-            ::std::option::Option::Some(__ctx) => {
-                ::toni::grpc_runtime::stash_failure(__ctx, __err)
-            }
-            ::std::option::Option::None => ::toni::GrpcStatus::from(__err),
-        };
-        ::std::result::Result::Err(::tonic::Status::new(
+        let __status = ::toni::GrpcStatus::of(__err);
+        let mut __answer = ::tonic::Status::new(
             ::tonic::Code::from_i32(__status.code as i32),
-            __status.message,
-        ))
+            __status.message.clone(),
+        );
+        // The domain error rides out on the answer, which is what lets the
+        // chain see its type rather than the status it flattened into.
+        if let ::std::option::Option::Some(__source) = __status.into_source() {
+            __answer.set_source(::std::sync::Arc::new(
+                ::toni::grpc_runtime::GrpcFailure::new(__source),
+            ));
+        }
+        ::std::result::Result::Err(__answer)
     };
 
     let wrap_reply = if carried_response.is_some() {
@@ -836,7 +837,7 @@ fn lower_handler(
                 // the answer has begun.
                 let __map_item = |__item| {
                     ::std::result::Result::map_err(__item, |__err| {
-                        let __status = ::toni::GrpcStatus::from(__err);
+                        let __status = ::toni::GrpcStatus::of(__err);
                         ::tonic::Status::new(
                             ::tonic::Code::from_i32(__status.code as i32),
                             __status.message,
@@ -1258,16 +1259,18 @@ fn build_wrapper_method(
                     // wire reply; otherwise the status passes through
                     // unchanged.
                     //
-                    // The generated method parked the handler's domain error on
-                    // the execution, so the chain is given the type rather than
+                    // The generated method attached the handler's domain error
+                    // to the answer, so the chain is given the type rather than
                     // the status it flattened into — which is what lets
                     // `#[catch(MyError)]` match here as it does on the other
                     // transports.
-                    let __stashed = ::toni::grpc_runtime::take_failure(&__ctx);
-                    let __wrapped = ::toni::GrpcStatus {
-                        code: ::toni::GrpcCode::from_i32(__status.code() as i32),
-                        message: __status.message().to_string(),
-                    };
+                    let __stashed = ::toni::grpc_runtime::GrpcFailure::recover(
+                        ::std::error::Error::source(&__status),
+                    );
+                    let __wrapped = ::toni::GrpcStatus::new(
+                        ::toni::GrpcCode::from_i32(__status.code() as i32),
+                        __status.message().to_string(),
+                    );
                     let __mapped = match &__stashed {
                         ::std::option::Option::Some(__domain) => {
                             ::toni::grpc_runtime::run_grpc_error_chain(
