@@ -142,6 +142,9 @@ where
 {
     type Error = ValidationError;
 
+    /// Validation reads what it wraps, so it consumes what that does.
+    const CONSUMES: bool = E::CONSUMES;
+
     async fn extract(ctx: &C) -> Result<Self, Self::Error> {
         let extracted = E::extract(ctx)
             .await

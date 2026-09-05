@@ -63,6 +63,8 @@ impl std::error::Error for JsonError {}
 impl<T: DeserializeOwned + Send> FromContext<HttpContext> for Json<T> {
     type Error = BodyExtractionError<JsonError>;
 
+    const CONSUMES: bool = true;
+
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         read(take_body::<Self>(ctx)?)
             .await

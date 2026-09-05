@@ -1,12 +1,14 @@
 //! Extractor parameter detection and code generation
 //!
-//! Detects extractor types like `Path<T>`, `Query<T>`, `Json<T>` and
-//! `Validated<T>` to decide which of them reads the body. Extraction itself goes through
-//! `FromContext` whatever the type is.
+//! Extraction goes through `FromContext` whatever the type is. The kinds here
+//! decide the few parameters whose code differs — the context, which is not
+//! extracted, and `Option<T>`, which answers `None` rather than a 400 — while
+//! which parameter reads the body is read off `FromContext::CONSUMES` rather
+//! than off any name.
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{FnArg, Ident, ImplItemFn, Result, Type};
+use syn::{FnArg, Ident, ImplItemFn, Result, Type, parse_quote};
 
 /// Check if a method has a `self` receiver (i.e., is an instance method)
 pub fn has_self_receiver(method: &ImplItemFn) -> bool {
@@ -43,12 +45,8 @@ pub enum ExtractorKind {
     Bytes,
     /// BodyStream extractor (streaming body) — body-consuming
     BodyStream,
-    /// `Validated<T>` — reads whatever `T` reads, so it takes the body only when
-    /// the extractor it wraps does.
-    Validated {
-        /// The kind of the extractor being validated
-        inner_kind: Box<ExtractorKind>,
-    },
+    /// `Validated<T>` — extracted through `FromContext` like the type it wraps.
+    Validated,
     /// HttpRequest (not an extractor, just passed through — body-consuming)
     HttpRequest,
     /// Request extractor — parts-only
@@ -57,38 +55,14 @@ pub enum ExtractorKind {
     Extensions,
     /// `&HttpContext` — the handler context itself, forwarded rather than extracted
     Context,
-    /// Option<T> wrapped extractor (optional extraction)
+    /// `Option<T>` — extracted as `T`, answering `None` where that fails.
     Optional {
-        /// The inner extractor kind
-        inner_kind: Box<ExtractorKind>,
-        /// The inner type T from Option<T>
+        /// The `T` in `Option<T>`
         inner_type: Type,
     },
     /// A type the macro does not recognise — extracted through `FromContext`
     /// like any other, so a custom extractor needs no special handling here.
     Unknown,
-}
-
-impl ExtractorKind {
-    /// Whether this extractor is a *named* body consumer — the ones that
-    /// actually receive the request body.
-    ///
-    /// `Unknown` is excluded even though it is generated on the body-consuming
-    /// path: several `Unknown` parameters are legal, because each is handed an
-    /// empty body so custom parts-only extractors can coexist. Only one of
-    /// these can be served.
-    fn takes_the_body(&self) -> bool {
-        match self {
-            ExtractorKind::Json
-            | ExtractorKind::Body
-            | ExtractorKind::Bytes
-            | ExtractorKind::BodyStream
-            | ExtractorKind::HttpRequest => true,
-            ExtractorKind::Optional { inner_kind, .. }
-            | ExtractorKind::Validated { inner_kind } => inner_kind.takes_the_body(),
-            _ => false,
-        }
-    }
 }
 
 /// Recursively extract parameter name from potentially nested patterns
@@ -111,17 +85,29 @@ pub(crate) fn extract_param_name(pat: &syn::Pat) -> Option<Ident> {
 }
 
 /// Extract extractor parameters from a method signature
-pub fn get_extractor_params(method: &ImplItemFn) -> Result<Vec<ExtractorParam>> {
+pub fn get_extractor_params(
+    method: &ImplItemFn,
+) -> Result<(Vec<ExtractorParam>, Vec<(Ident, Type)>)> {
     let mut params = Vec::new();
+    let mut body_markers: Vec<(Ident, Type)> = Vec::new();
 
     for input in method.sig.inputs.iter() {
         if let FnArg::Typed(pat_type) = input {
-            // Skip parameters with marker attributes (#[body], #[query], #[param])
-            if !pat_type.attrs.is_empty()
-                && pat_type.attrs[0].path().segments.last().is_some_and(|seg| {
+            // A marker names its own source, and its extraction is the marker
+            // machinery's rather than this one's. `#[body]` reads through
+            // `Body<T>`, so the one-body assertion counts it as that.
+            let marker = pat_type.attrs.first().and_then(|attr| {
+                attr.path().segments.last().filter(|seg| {
                     crate::markers_params::remove_marker_controller_fn::is_marker(&seg.ident)
                 })
-            {
+            });
+            if let Some(marker) = marker {
+                if marker.ident == "body"
+                    && let Some(param_name) = extract_param_name(&pat_type.pat)
+                {
+                    let inner = &*pat_type.ty;
+                    body_markers.push((param_name, parse_quote!(::toni::extractors::Body<#inner>)));
+                }
                 continue;
             }
 
@@ -146,34 +132,54 @@ pub fn get_extractor_params(method: &ImplItemFn) -> Result<Vec<ExtractorParam>> 
         }
     }
 
-    reject_second_body_extractor(&params)?;
-
-    Ok(params)
+    Ok((params, body_markers))
 }
 
 /// A request body is read once — it may be a stream, so there is nothing to
 /// hand a second reader.
 ///
-/// The generated code moves the body into the first consumer, so a second one
-/// is already rejected, but as a use-of-moved-value pointing at `#[routes]` and
-/// suggesting `ref #[routes]`. Naming the two parameters is the difference
-/// between a diagnosis and a puzzle.
-fn reject_second_body_extractor(params: &[ExtractorParam]) -> Result<()> {
-    let mut consumers = params.iter().filter(|p| p.kind.takes_the_body());
+/// Which parameter reads it comes off the types rather than their names: each
+/// contributes `<Ty as FromContext<HttpContext>>::CONSUMES`, so an alias, a
+/// wrapper and a custom extractor that declares itself all count the same. One
+/// assertion per pair, because a sum could say only that two of several read
+/// the body while a pair names both.
+pub fn one_body_assertion(
+    params: &[ExtractorParam],
+    body_markers: &[(Ident, Type)],
+) -> TokenStream {
+    let counted: Vec<(&Ident, &Type)> = params
+        .iter()
+        // `&HttpContext` is not extracted, and a reference has no impl to read.
+        .filter(|p| !matches!(p.kind, ExtractorKind::Context))
+        .map(|p| (&p.param_name, &p.param_type))
+        .chain(body_markers.iter().map(|(name, ty)| (name, ty)))
+        .collect();
 
-    let (Some(first), Some(second)) = (consumers.next(), consumers.next()) else {
-        return Ok(());
-    };
+    let mut assertions = Vec::new();
+    for (i, (first_name, first_ty)) in counted.iter().enumerate() {
+        for (second_name, second_ty) in counted.iter().skip(i + 1) {
+            let message = format!(
+                "`{first_name}` and `{second_name}` both read the request body, and it can only \
+                 be read once.\nKeep one of them. If you need more than one view of the body, \
+                 take `Bytes` (or `HttpRequest`) and parse it yourself.",
+            );
+            assertions.push(quote! {
+                const _: () = {
+                    assert!(
+                        !(<#first_ty as ::toni::extractors::FromContext<
+                            ::toni::context::HttpContext,
+                        >>::CONSUMES
+                            && <#second_ty as ::toni::extractors::FromContext<
+                                ::toni::context::HttpContext,
+                            >>::CONSUMES),
+                        #message
+                    );
+                };
+            });
+        }
+    }
 
-    Err(syn::Error::new_spanned(
-        &second.param_type,
-        format!(
-            "`{}` and `{}` both read the request body, and it can only be read once.\n\
-             Keep one of them. If you need more than one view of the body, take \
-             `Bytes` (or `HttpRequest`) and parse it yourself.",
-            first.param_name, second.param_name,
-        ),
-    ))
+    quote! { #(#assertions)* }
 }
 
 /// The `T` in `Wrapper<T>`, when the type is written with one.
@@ -215,19 +221,11 @@ fn detect_extractor_kind(ty: &Type) -> ExtractorKind {
                 let Some(inner_type) = first_type_argument(segment) else {
                     return ExtractorKind::Unknown;
                 };
-                return ExtractorKind::Optional {
-                    inner_kind: Box::new(detect_extractor_kind(&inner_type)),
-                    inner_type,
-                };
+                return ExtractorKind::Optional { inner_type };
             }
 
             if type_name == "Validated" {
-                let Some(inner_type) = first_type_argument(segment) else {
-                    return ExtractorKind::Unknown;
-                };
-                return ExtractorKind::Validated {
-                    inner_kind: Box::new(detect_extractor_kind(&inner_type)),
-                };
+                return ExtractorKind::Validated;
             }
 
             return match type_name.as_str() {
@@ -284,7 +282,7 @@ pub fn generate_extractor_extractions(
             }
 
             // `None` on failure instead of a 400.
-            ExtractorKind::Optional { inner_type, .. } => quote! {
+            ExtractorKind::Optional { inner_type } => quote! {
                 let #param_name = <#inner_type as ::toni::extractors::FromContext<
                     ::toni::context::HttpContext,
                 >>::extract(__ctx).await.ok();
@@ -376,62 +374,77 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn handler(sig: syn::ImplItemFn) -> Result<Vec<ExtractorParam>> {
-        get_extractor_params(&sig)
+    fn assertion_for(sig: syn::ImplItemFn) -> String {
+        let (params, markers) = get_extractor_params(&sig).expect("params parse");
+        one_body_assertion(&params, &markers).to_string()
     }
 
+    /// The pair is asserted whatever the types turn out to be — the assertion
+    /// is what carries the question to the compiler, and `CONSUMES` answers it.
     #[test]
-    fn one_body_extractor_beside_parts_extractors_is_fine() {
-        let ok = handler(parse_quote! {
+    fn every_pair_of_extractors_is_asserted() {
+        let emitted = assertion_for(parse_quote! {
             fn h(&self, Path(id): Path<u32>, q: Query<Filter>, dto: Json<Dto>) {}
         });
-        assert!(ok.is_ok());
+        for pair in [("id", "q"), ("id", "dto"), ("q", "dto")] {
+            assert!(
+                emitted.contains(&format!("`{}` and `{}`", pair.0, pair.1)),
+                "{pair:?} is not asserted: {emitted}"
+            );
+        }
     }
 
     #[test]
-    fn two_body_extractors_are_rejected_by_name() {
-        let msg = match handler(parse_quote! {
+    fn an_assertion_names_both_parameters() {
+        let emitted = assertion_for(parse_quote! {
             fn h(&self, dto: Json<Dto>, raw: Bytes) {}
-        }) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("a body cannot be read twice"),
-        };
-        assert!(msg.contains("dto"), "names the first reader: {msg}");
-        assert!(msg.contains("raw"), "names the second reader: {msg}");
-    }
-
-    /// `Option<Json<T>>` still reads the body, so it counts.
-    #[test]
-    fn an_optional_body_extractor_still_counts() {
+        });
+        assert!(emitted.contains("`dto` and `raw`"), "{emitted}");
+        assert!(emitted.contains("Json"), "reads the first type: {emitted}");
         assert!(
-            handler(parse_quote! {
-                fn h(&self, dto: Option<Json<Dto>>, raw: Bytes) {}
-            })
-            .is_err()
+            emitted.contains("Bytes"),
+            "reads the second type: {emitted}"
         );
     }
 
-    /// `HttpRequest` hands over the whole request, body included.
+    /// A wrapper contributes the type as written; `Option<Json<T>>` forwards
+    /// `CONSUMES` through its own impl rather than through anything here.
     #[test]
-    fn the_raw_request_counts_as_a_reader() {
+    fn a_wrapper_contributes_the_written_type() {
+        let emitted = assertion_for(parse_quote! {
+            fn h(&self, dto: Option<Json<Dto>>, raw: Bytes) {}
+        });
+        assert!(emitted.contains("Option"), "{emitted}");
+        assert!(emitted.contains("`dto` and `raw`"), "{emitted}");
+    }
+
+    /// A `#[body]` marker reads through `Body<T>`, and is counted as that.
+    #[test]
+    fn a_body_marker_is_counted_as_its_extractor() {
+        let emitted = assertion_for(parse_quote! {
+            fn h(&self, dto: Json<Dto>, #[body] raw: String) {}
+        });
+        assert!(emitted.contains("`dto` and `raw`"), "{emitted}");
         assert!(
-            handler(parse_quote! {
-                fn h(&self, req: HttpRequest, raw: Bytes) {}
-            })
-            .is_err()
+            emitted.contains("Body") && emitted.contains("String"),
+            "the marker is counted as `Body<String>`: {emitted}"
         );
     }
 
-    /// Unrecognised types are generated on the body path but handed an empty
-    /// body, so several of them coexist — that is how custom parts-only
-    /// extractors work.
+    /// The context is not extracted, so there is no impl to read it through.
     #[test]
-    fn several_custom_extractors_coexist() {
+    fn the_context_is_not_counted() {
+        let emitted = assertion_for(parse_quote! {
+            fn h(&self, ctx: &HttpContext, dto: Json<Dto>) {}
+        });
         assert!(
-            handler(parse_quote! {
-                fn h(&self, a: MyHeader, b: MyOtherHeader) {}
-            })
-            .is_ok()
+            emitted.is_empty(),
+            "a lone extractor needs no pair: {emitted}"
         );
+    }
+
+    #[test]
+    fn a_lone_parameter_is_asserted_against_nothing() {
+        assert!(assertion_for(parse_quote! { fn h(&self, dto: Json<Dto>) {} }).is_empty());
     }
 }

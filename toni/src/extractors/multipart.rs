@@ -81,6 +81,8 @@ fn body_into_stream(
 impl FromContext<HttpContext> for Multipart {
     type Error = BodyExtractionError<MultipartError>;
 
+    const CONSUMES: bool = true;
+
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         read(take_body::<Self>(ctx)?)
             .await

@@ -82,6 +82,8 @@ fn parse_bytes<T: DeserializeOwned>(bytes: &[u8], content_type: &str) -> Result<
 impl<T: DeserializeOwned + Send> FromContext<HttpContext> for Body<T> {
     type Error = BodyExtractionError<BodyError>;
 
+    const CONSUMES: bool = true;
+
     async fn extract(ctx: &HttpContext) -> Result<Self, Self::Error> {
         read(take_body::<Self>(ctx)?)
             .await
