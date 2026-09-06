@@ -1,6 +1,6 @@
 # 0042 — A gRPC handler asks the type what the wire carries
 
-Status: proposed
+Status: accepted
 
 ## Context
 
@@ -75,6 +75,9 @@ serve.
   ADR-0041's.
 - The request must come first. Every handler in the tree already wrote it there.
 - `#[grpc_stream]` stays. It marks the reply, which no parameter type can tell the macro.
+- `Payload<T>` reads as an extractor on the other three transports and as a request shape here. The
+  spelling is shared and the mechanism is not, which is the price of gRPC being the one transport
+  whose signature toni does not own.
 
 ## Roads not taken
 
@@ -87,3 +90,19 @@ question the moment either has to answer for a wrapper.
 **Leaving gRPC on name-matching.** It is backed and correct. What it costs is a diagnostic pointing
 at an attribute, a fourth way of reading a parameter, and a second implementation of every
 parameter feature the other transports already have.
+
+**Extracting the request from the context like every other parameter.** `Payload<T>` is a
+`FromContext` on the other three transports and a `GrpcRequest` here, which is one spelling with two
+mechanisms. Unifying it means shrinking this trait to `type Arg` alone, putting `request.into_inner()`
+into the `GrpcContext` type-erased, and extracting the request through `FromContext<GrpcContext>`
+like the parameters after it.
+
+It buys the spelling and loses on every other count. A typed move becomes a runtime downcast.
+`tonic::Request<T>` as a parameter stops working, because the context is built *from* that request's
+extensions and cannot hand it back. And the positional rule survives regardless: the macro must name
+the message type in the signature it writes, and only a parameter can tell it which — erasing the
+value does not change where the type comes from.
+
+`GrpcContext` carries the method, the headers, the peer address and the deadline, not the message.
+That is what the comparison turns on, and it is why the request is handed over rather than looked
+up.
