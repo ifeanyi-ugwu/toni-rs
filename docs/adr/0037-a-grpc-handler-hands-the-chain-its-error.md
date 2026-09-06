@@ -1,6 +1,6 @@
 # 0037 — A gRPC handler hands the chain its error, not the status
 
-Status: proposed
+Status: accepted
 
 ## Context
 

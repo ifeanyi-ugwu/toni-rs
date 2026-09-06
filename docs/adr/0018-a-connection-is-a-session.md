@@ -1,6 +1,6 @@
 # 0018 — A WebSocket connection is a session, and a session is a store
 
-Status: proposed
+Status: accepted
 
 ## Context
 

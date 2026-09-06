@@ -1,6 +1,6 @@
 # 0033 — A gRPC streaming reply is part of its execution
 
-Status: proposed
+Status: accepted
 
 ## Context
 

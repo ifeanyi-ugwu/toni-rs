@@ -1,6 +1,6 @@
 # 0035 — Observing errors is a pattern, not a pipeline role
 
-Status: proposed
+Status: accepted
 
 ## Context
 

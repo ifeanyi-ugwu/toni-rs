@@ -1,6 +1,6 @@
 # 0039 — A gRPC status carries the error it came from
 
-Status: proposed
+Status: accepted
 
 Supersedes the mechanism of [ADR-0037](0037-a-grpc-handler-hands-the-chain-its-error.md).
 

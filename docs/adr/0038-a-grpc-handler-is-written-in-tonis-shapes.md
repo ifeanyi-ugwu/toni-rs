@@ -1,6 +1,6 @@
 # 0038 — A gRPC handler is written in toni's shapes, and the macro writes tonic's
 
-Status: proposed
+Status: accepted
 
 ## Context
 
