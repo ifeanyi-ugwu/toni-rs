@@ -141,10 +141,12 @@
 
 mod drain_layer;
 mod grpc_adapter;
+mod grpc_request;
 mod method_path_layer;
 mod tracing_layer;
 
 pub use grpc_adapter::GrpcAdapter;
+pub use grpc_request::GrpcRequest;
 
 /// Maps a domain error to a `tonic::Status` by its
 /// [`kind`](toni::Error::kind), the way every transport renders one, and
