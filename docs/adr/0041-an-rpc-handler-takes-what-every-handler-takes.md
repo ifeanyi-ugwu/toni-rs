@@ -1,6 +1,6 @@
 # 0041 — An RPC handler takes what every other handler takes
 
-Status: proposed
+Status: accepted
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 0021 — Cancellation signals the tail, because the handler is already covered
 
-Status: proposed
+Status: accepted
 
 ## Context
 

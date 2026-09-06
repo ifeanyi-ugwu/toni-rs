@@ -1,6 +1,6 @@
 # 0036 — A refused WebSocket connection is told why
 
-Status: proposed
+Status: accepted
 
 ## Context
 

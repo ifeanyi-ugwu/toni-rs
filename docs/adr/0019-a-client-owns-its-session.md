@@ -1,6 +1,6 @@
 # 0019 — A WebSocket client owns its session; an execution owns its bag
 
-Status: proposed
+Status: accepted
 
 Revises one decision in [ADR-0018](0018-a-connection-is-a-session.md), which put the session behind the
 execution and kept it off `WsClient`. The rest of 0018 stands: the session is a store rather than a

@@ -1,6 +1,6 @@
 # 0040 — A name the framework reads is backed by a type it checks
 
-Status: proposed
+Status: accepted
 
 ## Context
 

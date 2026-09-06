@@ -1,6 +1,6 @@
 # 0034 — An integration earns a module when it owns a lifetime
 
-Status: proposed
+Status: accepted
 
 ## Context
 
