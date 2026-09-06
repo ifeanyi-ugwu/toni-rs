@@ -795,11 +795,14 @@ pub fn event_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// A handler takes `Payload<T>` or the message written bare, `Inbound<T>` for the
-/// caller's stream, `Extensions`, `&GrpcContext`, and `tonic::Request<T>` where it
-/// wants the wire shape; it answers with the reply message, or with
-/// `tonic::Response<T>` to set reply metadata itself. Its error implements
-/// `toni::Error`, so `#[catch]` matches it here as on every other transport.
+/// The request comes first, as `Payload<T>`, `Inbound<T>` for the caller's
+/// stream, or `tonic::Request<T>` where the handler wants the wire shape. Every
+/// parameter after it is a `FromContext<GrpcContext>` — `Extensions`, a custom
+/// extractor — and `&GrpcContext` passes through.
+///
+/// A handler answers with the reply message, or with `tonic::Response<T>` to set
+/// reply metadata itself. Its error implements `toni::Error`, so `#[catch]`
+/// matches it here as on every other transport.
 ///
 /// `#[grpc_stream]` reads the trait's associated type from the method name —
 /// `watch` pairs with `WatchStream` — which is the pairing tonic-build derives

@@ -89,6 +89,11 @@ that wants the wire shape — trailers, the peer address, the metadata map as it
 naming none of those is read as the request message, the way an RPC handler spells its payload; a
 misspelled extractor lands there and fails as a type mismatch against the proto message.
 
+*Superseded by [ADR-0042](0042-a-grpc-handler-asks-the-type-what-the-wire-carries.md).* Reading the
+request off a parameter's name is what the bare-message form rests on, and both are gone: the
+request is the first parameter, its type is asked rather than read, and everything after it is a
+`FromContext<GrpcContext>`.
+
 The raw request is what keeps this form from being a subset of what the trait impl expressed, so
 nothing was stranded when that form was removed.
 
