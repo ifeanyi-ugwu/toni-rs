@@ -1,12 +1,11 @@
-//! Every diagnostic the macros document, executed.
+//! Every diagnostic the macros and the declaration API document, executed.
 //!
 //! These macros' contract with a user is substantially a set of error
 //! messages: what to write instead of `:param`, which two parameters broke the
-//! one-body rule, that a handler impl may name one transport. Each is written
-//! down in the workspace reference and on the docs site, and none of them was
-//! run until this suite. A regression there does not break a build — it
-//! replaces a message that says what to do with one that does not, which is
-//! the entire value of having written a custom diagnostic.
+//! one-body rule, that a handler impl may name one transport. A regression
+//! there does not break a build — it replaces a message that says what to do
+//! with one that does not, which is the entire value of having written a
+//! custom diagnostic.
 //!
 //! Each case is a file that must fail to compile, beside the `.stderr` it must
 //! produce. Regenerate after an intended change:
@@ -16,12 +15,15 @@
 //!     cargo test -p ulo-macros --test diagnostics
 //! ```
 //!
-//! The version matters. Three of these snapshots carry rustc's own rendering
-//! below the macro's text, and rustc rewords its half every few releases, so
-//! CI runs this target on a pinned compiler rather than on `stable` — see the
-//! `diagnostics` job in `.github/workflows/ci.yml`, which holds the version
-//! and the reason. Regenerating on a different compiler produces a snapshot
-//! that only fails in CI.
+//! The version matters. Many of these snapshots carry rustc's own rendering:
+//! below the macro's text, around a `diagnostic::on_unimplemented` message, or
+//! as the whole diagnostic where a case pins that rustc's error lands on the
+//! user's code. rustc rewords it every few releases, and where the phrase a
+//! case pins is rustc's own, a rewording fails `every_case_reaches_its_diagnostic`
+//! as well as the snapshot. CI runs this target on a pinned compiler rather
+//! than on `stable` — see the `diagnostics` job in `.github/workflows/ci.yml`,
+//! which holds the version and the reason. Regenerating on a different
+//! compiler produces a snapshot that only fails in CI.
 //!
 //! Writing a case is not enough on its own. trybuild accepts any stable
 //! output, so a case that stops reaching its diagnostic and starts failing
@@ -80,6 +82,31 @@ const DOCUMENTED: &[(&str, &str)] = &[
     (
         "scope_request_renamed",
         "scope = \"request\" is now scope = \"execution\"",
+    ),
+    ("provide_factory_is_async", "is not an async factory"),
+    (
+        "role_slot_holds_its_role",
+        "the trait bound `u8: ulo::enhancer::Guard<HttpContext>` is not satisfied",
+    ),
+    (
+        "provide_key_holds_the_declared_type",
+        "expected `Arc<u16>`, found `Arc<u32>`",
+    ),
+    (
+        "provide_into_holds_its_trait",
+        "the trait bound `NotAPlugin: Plugin` is not satisfied",
+    ),
+    (
+        "provide_bare_name_is_a_type",
+        "`Unit` has no provider declaration of its own",
+    ),
+    (
+        "provide_key_is_a_type_implementing_key",
+        "`Plain` is not a key",
+    ),
+    (
+        "error_handler_factory_is_singleton",
+        "is built once, not per execution or per resolution",
     ),
     (
         "error_handler_takes_no_closure",

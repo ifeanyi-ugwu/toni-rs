@@ -1,0 +1,26 @@
+error[E0277]: a binding under a slot holding `dyn ulo::enhancer::ErrorHandler<HttpContext, Result<HttpResponse, HttpError>>` is built once, not per execution or per resolution
+  --> tests/diagnostics/error_handler_factory_is_singleton.rs:20:56
+   |
+20 |     let _ = ulo::provide!(OnError => async || Handler).per_execution();
+   |                                                        ^^^^^^^^^^^^^ among trait-object slots, only a guard or interceptor slot is built again
+   |
+   = help: the trait `PerExecution` is not implemented for `dyn ulo::enhancer::ErrorHandler<HttpContext, Result<HttpResponse, HttpError>>`
+   = note: declare the factory as a singleton
+   = help: the following other types implement trait `PerExecution`:
+             dyn ulo::enhancer::Guard<GrpcContext> + std::marker::Send + Sync
+             dyn ulo::enhancer::Guard<GrpcContext>
+             dyn ulo::enhancer::Guard<HttpContext> + std::marker::Send + Sync
+             dyn ulo::enhancer::Guard<HttpContext>
+             dyn ulo::enhancer::Guard<RpcContext> + std::marker::Send + Sync
+             dyn ulo::enhancer::Guard<RpcContext>
+             dyn ulo::enhancer::Guard<WsContext> + std::marker::Send + Sync
+             dyn ulo::enhancer::Guard<WsContext>
+           and $N others
+note: required by a bound in `FactoryBinding::<S, A, F>::per_execution`
+  --> $WORKSPACE/crates/ulo/src/di/binding.rs
+   |
+   |     pub fn per_execution(self) -> ScopedBinding<S, A, F>
+   |            ------------- required by a bound in this associated function
+   |     where
+   |         S: PerExecution,
+   |            ^^^^^^^^^^^^ required by this bound in `FactoryBinding::<S, A, F>::per_execution`

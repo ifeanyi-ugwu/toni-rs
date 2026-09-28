@@ -1,0 +1,44 @@
+error[E0277]: `Unit` has no provider declaration of its own
+ --> tests/diagnostics/provide_bare_name_is_a_type.rs:9:35
+  |
+9 |     let _ = ulo::provide!(Slot => Unit);
+  |                                   ^^^^ a bare path here is a type's own declaration
+  |
+help: the trait `DeclaresProvider` is not implemented for `Unit`
+ --> tests/diagnostics/provide_bare_name_is_a_type.rs:4:1
+  |
+4 | struct Unit;
+  | ^^^^^^^^^^^
+  = note: mark the type `#[injectable]`; in `provide!`, a value held in a const is written `value Unit`
+
+error[E0599]: the method `bind` exists for reference `&&ulo::__di::Keyed<Slot, Declared<Unit>>`, but its trait bounds were not satisfied
+ --> tests/diagnostics/provide_bare_name_is_a_type.rs:9:35
+  |
+4 | struct Unit;
+  | ----------- doesn't satisfy `Unit: DeclaresProvider`
+...
+9 |     let _ = ulo::provide!(Slot => Unit);
+  |                                   ^^^^ method cannot be called on `&&ulo::__di::Keyed<Slot, Declared<Unit>>` due to unsatisfied trait bounds
+  |
+ ::: $WORKSPACE/crates/ulo/src/__di.rs
+  |
+  | pub struct Keyed<K, D> {
+  | ---------------------- doesn't satisfy `_: BindCast`
+  |
+ ::: $WORKSPACE/crates/ulo/src/di/provide.rs
+  |
+  | pub struct Declared<T> {
+  | ---------------------- doesn't satisfy `Declared<Unit>: Declaration`
+  |
+  = note: the following trait bounds were not satisfied:
+          `Unit: DeclaresProvider`
+          which is required by `&ulo::__di::Keyed<Slot, Declared<Unit>>: ulo::__di::BindAsIs`
+          `Declared<Unit>: Declaration`
+          which is required by `&ulo::__di::Keyed<Slot, Declared<Unit>>: ulo::__di::BindAsIs`
+          `Declared<Unit>: Declaration`
+          which is required by `ulo::__di::Keyed<Slot, Declared<Unit>>: ulo::__di::BindCast`
+note: the trait `DeclaresProvider` must be implemented
+ --> $WORKSPACE/crates/ulo/src/di/declares.rs
+  |
+  | pub trait DeclaresProvider {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^

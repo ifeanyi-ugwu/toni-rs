@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `u8: ulo::enhancer::Guard<HttpContext>` is not satisfied
+ --> tests/diagnostics/role_slot_holds_its_role.rs:7:35
+  |
+7 |     let _ = ulo::provide!(Auth => 3u8);
+  |                                   ^^^ the trait `ulo::enhancer::Guard<HttpContext>` is not implemented for `u8`
+  |
+  = note: required for the cast from `Arc<u8>` to `Arc<(dyn ulo::enhancer::Guard<HttpContext> + 'static)>`
