@@ -90,6 +90,7 @@ mod panic_recovery;
 mod param_syntax_conformance;
 mod pipeline_panic_is_an_event;
 mod provide_macro;
+mod provide_values;
 mod provider_macro_role_detection;
 mod provider_scope;
 mod provider_startup_check;

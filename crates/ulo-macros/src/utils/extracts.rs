@@ -162,7 +162,8 @@ pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
 }
 
 /// Extracts a type token expression: a call to `ulo::di::token_of` with the
-/// written type, resolved in the caller's scope. The compiler canonicalizes the
+/// written type, resolved in the caller's scope; for `Arc<dyn T>` and `Vec<Arc<dyn T>>`, with the
+/// trait object `dyn T`. The compiler canonicalizes the
 /// spelling — qualified paths, aliases, and generic parameters all produce the
 /// fully-qualified name the registration side uses.
 pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
@@ -172,6 +173,14 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
     } else {
         ty
     };
+
+    // A collection field `Vec<Arc<dyn T>>` and a binding field `Arc<dyn T>` are keyed by the trait
+    // object as written, which is how `provide!` keys them.
+    if let Some(inner) =
+        extract_vec_arc_dyn_inner(actual_type).or_else(|| extract_arc_dyn_inner(actual_type))
+    {
+        return Ok(quote! { ::ulo::di::token_of::<#inner>() });
+    }
 
     if let Type::Path(_) = actual_type {
         return Ok(quote! { ::ulo::di::token_of::<#actual_type>() });
@@ -185,8 +194,8 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
 
 /// Normalize a trait-object type to always include `+ Send + Sync`.
 ///
-/// Multi-providers store `Arc<dyn Trait + Send + Sync>` internally. When a user writes
-/// `Vec<Arc<dyn Plugin>>` (omitting the bounds), the downcast type must still match.
+/// The comma-form `multi` declarations store `Arc<dyn Trait + Send + Sync>`. When a user writes
+/// `Vec<Arc<dyn Plugin>>` (omitting the bounds), reading those items needs the bounded type.
 pub fn normalize_trait_send_sync(ty: Type) -> Type {
     let Type::TraitObject(mut tobj) = ty else {
         return ty;
@@ -218,6 +227,24 @@ pub fn normalize_trait_send_sync(ty: Type) -> Type {
             }));
     }
     Type::TraitObject(tobj)
+}
+
+/// Returns the inner trait-object type if `ty` is `Arc<dyn Trait...>`, otherwise `None`.
+pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
+    let Type::Path(syn::TypePath { path, .. }) = ty else {
+        return None;
+    };
+    let seg = path.segments.last()?;
+    if seg.ident != "Arc" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    match args.args.first()? {
+        syn::GenericArgument::Type(inner @ Type::TraitObject(_)) => Some(inner.clone()),
+        _ => None,
+    }
 }
 
 /// Returns the inner trait-object type if `ty` is `Vec<Arc<dyn Trait...>>`, otherwise `None`.

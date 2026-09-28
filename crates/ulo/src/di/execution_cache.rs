@@ -26,13 +26,36 @@ use parking_lot::Mutex;
 /// — mutating a plain field mutates only that site's copy.
 pub struct ExecutionCache {
     inner: Mutex<FxHashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    /// Instances keyed by the declaration that built them, for a declaration whose type another
+    /// declaration may also build.
+    keyed: Mutex<FxHashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl ExecutionCache {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(FxHashMap::default()),
+            keyed: Mutex::new(FxHashMap::default()),
         }
+    }
+
+    /// The instance cached under `key`, if one exists.
+    pub(crate) fn get_keyed(&self, key: &str) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.keyed.lock().get(key).cloned()
+    }
+
+    /// Caches `value` under `key`, returning the instance cached first if another resolution got
+    /// there before this one.
+    pub(crate) fn insert_keyed(
+        &self,
+        key: &str,
+        value: Arc<dyn Any + Send + Sync>,
+    ) -> Arc<dyn Any + Send + Sync> {
+        self.keyed
+            .lock()
+            .entry(key.to_string())
+            .or_insert(value)
+            .clone()
     }
 
     /// Returns a clone of the cached instance for `T`, if one exists.

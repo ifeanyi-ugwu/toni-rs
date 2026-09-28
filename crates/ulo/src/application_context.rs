@@ -10,9 +10,9 @@ use std::{any::Any, sync::Arc};
 use crate::error::ResolutionError;
 
 use crate::{
-    di::Execution,
     di::internal::{Container, IntoToken, ModuleLifecycle, ModuleRef},
     di::module::ModuleIdentity,
+    di::{Execution, Key},
     spi::Provider,
 };
 
@@ -153,6 +153,29 @@ impl UloApplicationContext {
         downcast(provider.resolve(Execution::None).await, &token)
     }
 
+    /// Returns the value under the marker `K`, searching across all modules. A slot holding a
+    /// trait object is not reached here: it hands out `Arc<K::Value>`, which a field reads through
+    /// `#[inject(K)]`.
+    pub async fn get_key<K>(&self) -> Result<K::Value, ResolutionError>
+    where
+        K: Key,
+        K::Value: Sized,
+    {
+        self.get_by_token::<K::Value>(crate::di::token_of::<K>())
+            .await
+    }
+
+    /// Returns the value under the marker `K` from a specific module's scope. See
+    /// [`get_key`](Self::get_key).
+    pub async fn get_from_key<K>(&self, module_token: &str) -> Result<K::Value, ResolutionError>
+    where
+        K: Key,
+        K::Value: Sized,
+    {
+        self.get_from_by_token::<K::Value>(module_token, crate::di::token_of::<K>())
+            .await
+    }
+
     /// Returns an instance from the DI container by token rather than type; use when providers are registered with a custom token
     pub async fn get_by_token<T: 'static>(
         &self,
@@ -205,6 +228,17 @@ impl UloApplicationContext {
         execution.ensure_can_build(provider.scope(), &token)?;
 
         downcast(provider.resolve(execution.clone()).await, &token)
+    }
+
+    /// Resolves the value under the marker `K` in an execution. See [`resolve`](Self::resolve)
+    /// and [`get_key`](Self::get_key).
+    pub async fn resolve_key<K>(&self, execution: &Execution) -> Result<K::Value, ResolutionError>
+    where
+        K: Key,
+        K::Value: Sized,
+    {
+        self.resolve_by_token::<K::Value>(crate::di::token_of::<K>(), execution)
+            .await
     }
 
     /// Resolves a provider by token in an execution.

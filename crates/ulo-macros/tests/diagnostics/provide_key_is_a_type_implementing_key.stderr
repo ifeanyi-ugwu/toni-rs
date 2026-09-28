@@ -1,0 +1,44 @@
+error[E0277]: `Plain` is not a key
+ --> tests/diagnostics/provide_key_is_a_type_implementing_key.rs:8:27
+  |
+8 |     let _ = ulo::provide!(Plain => Plain(1));
+  |                           ^^^^^ a key position reads a type implementing `Key`
+  |
+help: the trait `Key` is not implemented for `Plain`
+ --> tests/diagnostics/provide_key_is_a_type_implementing_key.rs:5:1
+  |
+5 | struct Plain(u8);
+  | ^^^^^^^^^^^^
+  = note: a foreign type is named by a marker, `key!(pub Name: Plain)`; a type of this crate takes `#[derive(Key)]`
+note: required by a bound in `ulo::__di::keyed`
+ --> $WORKSPACE/crates/ulo/src/__di.rs
+  |
+  | pub fn keyed<K: Key, D: Declaration>(declaration: D) -> Keyed<K, D> {
+  |                 ^^^ required by this bound in `keyed`
+
+error[E0599]: the method `bind` exists for reference `&&ulo::__di::Keyed<Plain, ValueDeclaration<Plain>>`, but its trait bounds were not satisfied
+ --> tests/diagnostics/provide_key_is_a_type_implementing_key.rs:8:36
+  |
+5 | struct Plain(u8);
+  | ------------ doesn't satisfy `<Plain as Key>::Value = Plain` or `Plain: Key`
+...
+8 |     let _ = ulo::provide!(Plain => Plain(1));
+  |                                    ^^^^^ method cannot be called on `&&ulo::__di::Keyed<Plain, ValueDeclaration<Plain>>` due to unsatisfied trait bounds
+  |
+ ::: $WORKSPACE/crates/ulo/src/__di.rs
+  |
+  | pub struct Keyed<K, D> {
+  | ---------------------- doesn't satisfy `_: BindCast`
+  |
+  = note: the following trait bounds were not satisfied:
+          `<Plain as Key>::Value = Plain`
+          which is required by `&ulo::__di::Keyed<Plain, ValueDeclaration<Plain>>: ulo::__di::BindAsIs`
+          `Plain: Key`
+          which is required by `&ulo::__di::Keyed<Plain, ValueDeclaration<Plain>>: ulo::__di::BindAsIs`
+          `Plain: Key`
+          which is required by `ulo::__di::Keyed<Plain, ValueDeclaration<Plain>>: ulo::__di::BindCast`
+note: the trait `Key` must be implemented
+ --> $WORKSPACE/crates/ulo/src/di/key.rs
+  |
+  | pub trait Key: 'static {
+  | ^^^^^^^^^^^^^^^^^^^^^^

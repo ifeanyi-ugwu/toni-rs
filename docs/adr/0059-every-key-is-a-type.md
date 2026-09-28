@@ -115,9 +115,11 @@ and the module's identity base takes `token_of::<K>()` in place of the name.
 
 - `Token<T>`, `IntoToken`, string keys, `get_by_token`, `get_from_by_token`, `resolve_by_token`,
   `export_token` and the unread `APP_MIDDLEWARE` are deleted. The value API is built without
-  `Many<T>`, `OutputKey<R>`, `DeclarationToken`, `CollectionKey` or the `token` keyword, and `Of<T>`
-  is private to the framework. `Holds` and `HoldsPerExecution` become checks of what is provided
-  against `K::Value`, and `Injects` a check of a field's shape against it.
+  `Many<T>`, `OutputKey<R>`, `Of<T>`, `DeclarationToken`, `CollectionKey` or the `token` keyword.
+  `Holds` becomes a check of what is provided against `K::Value`: the type equality
+  `K: Key<Value = ..>` for a slot holding the declared type, the cast for one holding a trait
+  object. `HoldsPerExecution` becomes `PerExecution`, implemented for the guard and interceptor
+  trait objects, and `Injects` a check of a field's shape against `K::Value`.
 - A named slot costs a marker type, two lines or one `key!` line, where a string was one literal.
 - A key cannot be chosen at runtime, and two crates cannot share a slot by agreeing on a string.
 - A foreign type is bound keyless and injected by bare `#[inject]`. The orphan rule keeps a user

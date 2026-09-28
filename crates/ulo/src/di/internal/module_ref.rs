@@ -6,7 +6,7 @@ use crate::error::ResolutionError;
 use rustc_hash::FxHashMap;
 
 use crate::di::Execution;
-use crate::di::IntoToken;
+use crate::di::{IntoToken, Key};
 use crate::spi::Provider;
 pub(crate) type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>;
 
@@ -84,6 +84,23 @@ impl ModuleRef {
         }
     }
 
+    /// Get the value under the marker `K`. Search mode works as it does for
+    /// [`get`](Self::get). A slot holding a trait object is not reached here; a field reads it
+    /// through `#[inject(K)]`.
+    pub fn get_key<K>(&self) -> ModuleRefQuery<'_, K::Value>
+    where
+        K: Key,
+        K::Value: Sized,
+    {
+        ModuleRefQuery {
+            module_ref: self,
+            token: crate::di::token_of::<K>(),
+            strict: true,
+            execution: Execution::None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     /// Get a provider instance by token
     ///
     /// Accepts any type that implements `IntoToken` (strings, type tokens, etc.).
@@ -129,6 +146,22 @@ impl ModuleRef {
         ModuleRefQuery {
             module_ref: self,
             token: std::any::type_name::<T>().to_string(),
+            strict: true,
+            execution: execution.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Resolve the value under the marker `K` in an execution. See
+    /// [`resolve`](Self::resolve) and [`get_key`](Self::get_key).
+    pub fn resolve_key<K>(&self, execution: &Execution) -> ModuleRefQuery<'_, K::Value>
+    where
+        K: Key,
+        K::Value: Sized,
+    {
+        ModuleRefQuery {
+            module_ref: self,
+            token: crate::di::token_of::<K>(),
             strict: true,
             execution: execution.clone(),
             _phantom: std::marker::PhantomData,

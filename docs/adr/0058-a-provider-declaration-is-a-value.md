@@ -135,9 +135,9 @@ declared with `into`, and a single binding and an `into` on one key fail `create
 (ADR-0057). The unnamed collection is keyed by its element type:
 `#[inject] plugins: Vec<Arc<dyn Plugin>>` asks for the collection `dyn Plugin` the way
 `#[inject] db: Arc<Db>` asks for `Db`. A second collection over one trait is a marker whose `Value`
-is `dyn Plugin`. The macro writes the `Arc<V>` to `Arc<dyn Trait>` cast at the call site and hands
-`Provide::into` the converted item, so no trait needs a declaration to be collected. Contributions
-reach other modules through exports, as single bindings do, in declaration order.
+is `dyn Plugin`. The macro writes the `Arc<V>` to `Arc<dyn Trait>` cast at the call site and passes
+it to the value API beside the declaration, so no trait needs a declaration to be collected.
+Contributions reach other modules through exports, as single bindings do, in declaration order.
 
 **A key names what it holds.** A marker's `Value` fixes what may be provided under it and what a
 field reads from it: `provide!(ApiKey => 42u32)`, where `ApiKey` holds a `String`, fails to compile;

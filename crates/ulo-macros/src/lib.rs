@@ -16,6 +16,7 @@ mod controller_macro;
 mod enhancer;
 mod gateway_macro;
 mod grpc_macro;
+mod key_macro;
 mod markers_params;
 mod middleware_macro;
 mod module_macro;
@@ -548,6 +549,20 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
 }
 
+/// Makes a type writable in a key position, naming its own slot: `impl Key for T { type Value
+/// = T; }`.
+///
+/// A type is provided and injected by its own type without this. It is needed where a position
+/// reads a slot's `Value` through a key, such as `provide!(T => ..)` and the `_key` lookups.
+/// `#[injectable]`, `#[controller]` and `#[websocket_gateway]` implement `Key` already.
+#[proc_macro_derive(Key)]
+pub fn derive_key(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    proc_macro::TokenStream::from(
+        key_macro::derive_key(input).unwrap_or_else(|e| e.to_compile_error()),
+    )
+}
+
 /// Derive `ulo::Error` from an annotated error type.
 ///
 /// Tag the type (or each enum variant) with `#[error_kind(KIND)]`, where
@@ -602,10 +617,53 @@ pub fn provider_token(input: TokenStream) -> TokenStream {
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
+/// Declares a provider: `provide!(key => source)`, or `provide!(into key => source)` for a
+/// contribution to a collection.
+///
+/// What each form builds is a value-API value, so it can equally be written with the value API,
+/// passed to `DynamicModule::builder().provider_factory(..)` or returned from a function.
+///
+/// ```ignore
+/// key!(pub Port: u16);
+/// key!(pub ApiKey: String);
+/// key!(pub Auth: dyn Guard<HttpContext>);
+/// key!(pub Legacy: dyn Plugin);
+///
+/// providers: [
+///     provide!(Port => 3000u16),                                 // a value under a marker
+///     provide!(ApiKey => value key),                             // a value held in a variable
+///     provide!(async |cfg: Config| Db::connect(&cfg.url).await), // keyed by what it builds
+///     provide!(dyn Logger => ConsoleLogger),                     // a trait bound to an implementation
+///     provide!(Auth => HeaderGuard("x-auth")),                   // a guard: the key's `Value` says so
+///     provide!(into dyn Guard<HttpContext> => RateLimit(100)),   // a global HTTP guard
+///     provide!(into dyn Plugin => async |d: Dep| B(d)),          // a contribution, by element type
+///     provide!(into Legacy => A {}),                             // a contribution to a marker's collection
+/// ]
+/// ```
+///
+/// A key is a type: a marker declared with `key!`, a type implementing `Key`, or `dyn Trait` for a
+/// trait object's own slot. A bare path as the source is that type's own declaration, as in
+/// `providers: [Db]`; `value` and `factory` name a value or factory held in a variable or const,
+/// and `alias E` a second name for the binding under `E`. An inline closure is a factory and any
+/// other inline expression a value. A slot holding a trait object hands out `Arc<dyn Trait>`, and
+/// a collection is injected by its element type, `#[inject] plugins: Vec<Arc<dyn Plugin>>`. A
+/// trait object is keyed as written, and the declaration and the field must spell it the same way.
+/// It is held behind `Arc` by a provider shared across threads, so the trait needs `Send + Sync`
+/// as supertraits, or the key is written `dyn Trait + Send + Sync`.
+///
+/// The comma form `provide!(TOKEN, source, marker)` is also accepted.
 #[proc_macro]
 pub fn provide(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
-    let output = provider_variants::handle_provide(input);
+    let output = if provider_variants::provide_expr::is_expr_grammar(&input) {
+        provider_variants::provide_expr::handle_provide_expr(input)
+    } else {
+        // A keyless generic type such as `Repo::<User, Pg>` has top-level commas too; the comma
+        // grammar refusing it is what sends it to this one.
+        provider_variants::handle_provide(input.clone()).or_else(|comma_error| {
+            provider_variants::provide_expr::handle_provide_expr(input).map_err(|_| comma_error)
+        })
+    };
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 
