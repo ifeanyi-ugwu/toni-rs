@@ -1,0 +1,17 @@
+error[E0080]: evaluation panicked: `#[default]` on `Service::limit` never applies: `Service` is built by its `#[new]` constructor, which sets every field; remove `#[default]`, or remove `#[new]` to build `Service` from its fields
+ --> tests/diagnostics/default_beside_new.rs:6:7
+  |
+6 |     #[default(3)]
+  |       ^^^^^^^ evaluation of `_` failed here
+
+error[E0080]: evaluation panicked: `#[default]` on `Api::limit` never applies: `Api` is built by its `#[new]` constructor, which sets every field; remove `#[default]`, or remove `#[new]` to build `Api` from its fields
+  --> tests/diagnostics/default_beside_new.rs:19:7
+   |
+19 |     #[default(3)]
+   |       ^^^^^^^ evaluation of `_` failed here
+
+error[E0080]: evaluation panicked: `#[default]` on `Chat::limit` never applies: `Chat` is built by its `#[new]` constructor, which sets every field; remove `#[default]`, or remove `#[new]` to build `Chat` from its fields
+  --> tests/diagnostics/default_beside_new.rs:32:7
+   |
+32 |     #[default(3)]
+   |       ^^^^^^^ evaluation of `_` failed here
