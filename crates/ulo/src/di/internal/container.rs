@@ -535,7 +535,7 @@ impl Container {
         // Register all exported providers as globally accessible
         for export_token in exports_tokens.iter() {
             // Two distinct global modules exporting the same token is the shape of the
-            // "two connections, no names" mistake: both provide `DatabaseConnection`, and one
+            // "two connections, no markers" mistake: both provide `DatabaseConnection`, and one
             // would silently shadow the other at injection. Refuse it and point at the fix. The
             // owner is keyed by identity, not display name — two dynamic modules with different
             // config share a name but are genuinely different modules.
@@ -546,8 +546,9 @@ impl Container {
                         "provider '{export_token}' is exported globally by two modules \
                          ('{owner_name}' and '{module_name}'). One would silently shadow the other. \
                          If these are separate instances of the same integration, register each \
-                         under a distinct name — integrations expose a named constructor for this \
-                         (e.g. `for_root_named`) — and inject it with `#[inject(\"<name>\")]`."
+                         under a marker of its own — integrations expose a keyed constructor for \
+                         this (e.g. `for_root_keyed::<K>`), `K` declared with `key!` — and inject \
+                         it with `#[inject(K)]`."
                     ).into());
                 }
             }

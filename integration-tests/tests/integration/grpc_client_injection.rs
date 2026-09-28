@@ -15,7 +15,7 @@ use crate::common::NotServed;
 use futures_util::Stream;
 use ulo::extract::Payload;
 use ulo::grpc::extract::Inbound;
-use ulo::{UloFactory, module, provider_factory};
+use ulo::{UloFactory, module, provide};
 use ulo_macros::{controller, get, grpc_methods, new, routes};
 
 mod probe_pb {
@@ -112,7 +112,7 @@ static PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0)
 
 #[module(
     controllers: [CallerController],
-    providers: [provider_factory!(OrdersClient<tonic::transport::Channel>, || {
+    providers: [provide!(async || {
         let port = PORT.load(std::sync::atomic::Ordering::SeqCst);
         // Lazy: no I/O in the factory, so DI construction cannot block on a peer.
         let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))

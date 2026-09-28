@@ -1,7 +1,7 @@
 use crate::connection::RedisConnectionFactory;
 use redis::aio::ConnectionManager;
 use ulo::StartupCheck;
-use ulo::di::{CheckedModule, DynamicModule};
+use ulo::di::{CheckedModule, DynamicModule, Key, token_of};
 
 pub struct RedisModule;
 
@@ -30,43 +30,44 @@ impl RedisModule {
         })
     }
 
-    /// Register a second, named Redis connection.
+    /// Register a second Redis connection, under the marker `K`.
     ///
-    /// `for_root` provides one `ConnectionManager` injectable by type. When an application needs
-    /// more than one connection, each additional one is registered under a name and injected by
-    /// that name — the type alone can no longer tell them apart.
+    /// `for_root` provides one `ConnectionManager` injectable by type. A second connection needs a
+    /// slot of its own, named by a marker type whose slot holds a `ConnectionManager`:
     ///
     /// ```ignore
+    /// key!(pub Cache: ConnectionManager);
+    ///
     /// #[module(imports: [
     ///     RedisModule::for_root(env!("PRIMARY_URL")),
-    ///     RedisModule::for_root_named("cache", env!("CACHE_URL")),
+    ///     RedisModule::for_root_keyed::<Cache>(env!("CACHE_URL")),
     /// ])]
     /// pub struct AppModule;
-    /// ```
     ///
-    /// ```ignore
     /// #[injectable]
     /// pub struct SessionService {
-    ///     #[inject("cache")]
+    ///     #[inject(Cache)]
     ///     redis: ConnectionManager,
     /// }
     /// ```
     ///
-    /// The name is a global identifier: two connections cannot share one, and reusing a name
-    /// across integrations is refused at startup. The connection only is registered — the health
-    /// indicator is attached to the default `for_root` connection.
-    pub fn for_root_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
-        let name: String = name.into();
+    /// Two connections under one marker are refused at startup, whichever integrations register
+    /// them. The connection only is registered — the health indicator is attached to the default
+    /// `for_root` connection.
+    pub fn for_root_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = ConnectionManager>,
+    {
         let url: String = url.into();
 
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("RedisModule::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(RedisConnectionFactory {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })

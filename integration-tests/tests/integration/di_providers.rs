@@ -1,33 +1,34 @@
-//! The `provider_value!`, `provider_factory!`, `provider_alias!` and
-//! `provider_token!` forms, each resolving to what it registered.
+//! `provide!`'s four forms under a key — a value, a factory, an alias and a type
+//! — each resolving to what it registered.
 //!
 //! They are four ways to reach one provider store, and a consumer picks between
-//! them by what it has to hand — a constant, a closure, an existing token, a
-//! type with no name of its own. Coverage of one says nothing about the others.
-//! The final test runs them in a single module, where a token collision between
-//! two forms would surface.
+//! them by what it has to hand — a constant, a closure, an existing binding, a
+//! type's own declaration. Coverage of one says nothing about the others. The
+//! final test runs them in a single module, where a key collision between two
+//! forms would surface.
 use crate::common::TestServer;
 use std::time::Duration;
 use ulo::http::Body;
-use ulo::{
-    controller, get, injectable, module, new, provider_alias, provider_factory, provider_token,
-    provider_value, routes,
-};
+use ulo::{controller, get, injectable, module, new, provide, routes};
 #[tokio::test]
-async fn provider_value_injects_constant() {
+async fn value_injects_a_constant() {
+    ulo::key!(Port: u16);
     #[controller()]
-    pub struct TestController {}
+    pub struct TestController {
+        #[inject(Port)]
+        port: u16,
+    }
 
     #[routes]
     impl TestController {
         #[get("/port")]
         fn port(&self) -> Body {
-            Body::text("3000".to_string())
+            Body::text(self.port.to_string())
         }
     }
 
     #[module(
-        providers: [provider_value!("PORT", 3000_u16)],
+        providers: [provide!(Port => 3000_u16)],
         controllers: [TestController]
     )]
     impl TestModule {}
@@ -39,28 +40,32 @@ async fn provider_value_injects_constant() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "3000");
 }
 
 #[tokio::test]
-async fn provider_factory_sync_without_deps() {
+async fn factory_without_dependencies() {
+    ulo::key!(RequestId: String);
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 
     #[controller("")]
-    pub struct TestController {}
+    pub struct TestController {
+        #[inject(RequestId)]
+        request_id: String,
+    }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text("ok".to_string())
+            Body::text(self.request_id.clone())
         }
     }
 
     #[module(
-        providers: [provider_factory!("REQUEST_ID", || {
+        providers: [provide!(RequestId => async || {
             CALL_COUNT.fetch_add(1, Ordering::SeqCst);
             format!("req_{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -79,11 +84,17 @@ async fn provider_factory_sync_without_deps() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert!(resp.text().await.unwrap().starts_with("req_"));
+    assert_eq!(
+        CALL_COUNT.load(Ordering::SeqCst),
+        1,
+        "a singleton factory runs once"
+    );
 }
 
 #[tokio::test]
-async fn provider_factory_sync_with_deps() {
+async fn factory_with_a_dependency() {
+    ulo::key!(AppInfo: String);
     #[injectable]
     pub struct ConfigService {
         env: String,
@@ -102,20 +113,23 @@ async fn provider_factory_sync_with_deps() {
     }
 
     #[controller("")]
-    pub struct TestController {}
+    pub struct TestController {
+        #[inject(AppInfo)]
+        value: String,
+    }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text("ok".to_string())
+            Body::text(self.value.clone())
         }
     }
 
     #[module(
         providers: [
             ConfigService,
-            provider_factory!("APP_INFO", |config: ConfigService| {
+            provide!(AppInfo => async |config: ConfigService| {
                 format!("App running in {} mode", config.get_env())
             })
         ],
@@ -130,11 +144,12 @@ async fn provider_factory_sync_with_deps() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "App running in production mode");
 }
 
 #[tokio::test]
-async fn provider_factory_async_with_deps() {
+async fn factory_awaiting_in_its_body() {
+    ulo::key!(AsyncStatus: String);
     #[injectable]
     pub struct LoggerService {
         level: String,
@@ -153,20 +168,23 @@ async fn provider_factory_async_with_deps() {
     }
 
     #[controller("")]
-    pub struct TestController {}
+    pub struct TestController {
+        #[inject(AsyncStatus)]
+        value: String,
+    }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text("ok".to_string())
+            Body::text(self.value.clone())
         }
     }
 
     #[module(
         providers: [
             LoggerService,
-            provider_factory!("ASYNC_STATUS", async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: LoggerService| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             })
@@ -182,11 +200,12 @@ async fn provider_factory_async_with_deps() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "[info] System initialized");
 }
 
 #[tokio::test]
-async fn provider_alias_creates_alternate_token() {
+async fn alias_creates_a_second_key() {
+    ulo::key!(Config: ConfigService);
     #[injectable]
     pub struct ConfigService {
         env: String,
@@ -210,7 +229,7 @@ async fn provider_alias_creates_alternate_token() {
     pub struct VerifyService {
         #[inject]
         by_type: ConfigService,
-        #[inject("Config")]
+        #[inject(Config)]
         by_alias: ConfigService,
     }
     impl VerifyService {
@@ -236,7 +255,7 @@ async fn provider_alias_creates_alternate_token() {
     #[module(
         providers: [
             ConfigService,
-            provider_alias!("Config", ConfigService),
+            provide!(Config => alias ConfigService),
             VerifyService,
         ],
         controllers: [TestController]
@@ -255,7 +274,8 @@ async fn provider_alias_creates_alternate_token() {
 }
 
 #[tokio::test]
-async fn provider_token_for_custom_types() {
+async fn type_under_a_marker() {
+    ulo::key!(PrimaryDb: DatabaseService);
     #[injectable]
     pub struct DatabaseService {
         host: String,
@@ -272,11 +292,11 @@ async fn provider_token_for_custom_types() {
         }
     }
 
-    // Injects DatabaseService by its "PRIMARY_DB" token.
-    // If token registration doesn't wire the resolution path, startup panics.
+    // Injects DatabaseService through the `PrimaryDb` marker.
+    // If the rebinding doesn't wire the resolution path, startup panics.
     #[injectable]
     pub struct AppService {
-        #[inject("PRIMARY_DB")]
+        #[inject(PrimaryDb)]
         primary: DatabaseService,
     }
     impl AppService {
@@ -302,7 +322,7 @@ async fn provider_token_for_custom_types() {
     #[module(
         providers: [
             DatabaseService,
-            provider_token!("PRIMARY_DB", DatabaseService),
+            provide!(PrimaryDb => DatabaseService),
             AppService,
         ],
         controllers: [TestController]
@@ -321,7 +341,18 @@ async fn provider_token_for_custom_types() {
 }
 
 #[tokio::test]
-async fn all_provider_variants_work_together() {
+async fn every_form_in_one_module() {
+    ulo::key!(Timeout: Duration);
+    ulo::key!(AppName: String);
+    ulo::key!(RequestId: String);
+    ulo::key!(Port: u16);
+    ulo::key!(Logger: LoggerService);
+    ulo::key!(AsyncStatus: String);
+    ulo::key!(PrimaryConfig: ConfigService);
+    ulo::key!(AppInfo: String);
+    ulo::key!(SecondaryLogger: LoggerService);
+    ulo::key!(AppPort: u16);
+    ulo::key!(Config: ConfigService);
     #[injectable]
     pub struct ConfigService {
         env: String,
@@ -356,21 +387,21 @@ async fn all_provider_variants_work_together() {
         }
     }
 
-    // Consumes one alias and one token to prove they're injectable alongside
+    // Consumes one alias and one marker to prove they're injectable alongside
     // value/factory providers in the same module.
     #[injectable]
-    pub struct AliasTokenConsumer {
-        #[inject("Config")]
+    pub struct AliasMarkerConsumer {
+        #[inject(Config)]
         config_via_alias: ConfigService,
-        #[inject("PRIMARY_CONFIG")]
-        config_via_token: ConfigService,
+        #[inject(PrimaryConfig)]
+        config_via_marker: ConfigService,
     }
-    impl AliasTokenConsumer {
+    impl AliasMarkerConsumer {
         pub fn report(&self) -> String {
             format!(
                 "{}|{}",
                 self.config_via_alias.get_env(),
-                self.config_via_token.get_env()
+                self.config_via_marker.get_env()
             )
         }
     }
@@ -378,7 +409,7 @@ async fn all_provider_variants_work_together() {
     #[controller("")]
     pub struct TestController {
         #[inject]
-        consumer: AliasTokenConsumer,
+        consumer: AliasMarkerConsumer,
     }
 
     #[routes]
@@ -393,28 +424,28 @@ async fn all_provider_variants_work_together() {
         providers: [
             ConfigService,
             LoggerService,
-            provider_value!("APP_NAME", "UloApp".to_string()),
-            provider_value!("PORT", 3000_u16),
-            provider_value!("TIMEOUT", Duration::from_secs(30)),
-            provider_factory!("REQUEST_ID", || {
+            provide!(AppName => "UloApp".to_string()),
+            provide!(Port => 3000_u16),
+            provide!(Timeout => Duration::from_secs(30)),
+            provide!(RequestId => async || {
                 format!("req_{}", std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_millis())
             }),
-            provider_factory!("APP_INFO", |config: ConfigService| {
+            provide!(AppInfo => async |config: ConfigService| {
                 format!("App running in {} mode", config.get_env())
             }),
-            provider_factory!("ASYNC_STATUS", async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: LoggerService| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             }),
-            provider_alias!("Config", ConfigService),
-            provider_alias!("Logger", LoggerService),
-            provider_alias!("APP_PORT", "PORT"),
-            provider_token!("PRIMARY_CONFIG", ConfigService),
-            provider_token!("SECONDARY_LOGGER", LoggerService),
-            AliasTokenConsumer,
+            provide!(Config => alias ConfigService),
+            provide!(Logger => alias LoggerService),
+            provide!(AppPort => alias Port),
+            provide!(PrimaryConfig => ConfigService),
+            provide!(SecondaryLogger => LoggerService),
+            AliasMarkerConsumer,
         ],
         controllers: [TestController]
     )]

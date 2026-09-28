@@ -34,13 +34,14 @@ type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 /// what transmits queued publishes and delivers replies.
 ///
 /// The connection is established lazily on first use, so the transport can be
-/// built synchronously in a `provider_value!` block.
+/// built synchronously as a provider value.
 ///
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "INVENTORY_CLIENT",
+/// key!(pub Inventory: ulo::rpc::RpcClient);
+///
+/// provide!(Inventory =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_mqtt::MqttClientTransport::new("127.0.0.1", 1883))
 /// )
 /// ```

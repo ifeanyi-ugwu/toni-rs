@@ -228,7 +228,7 @@ where
     Subscription::TypeInfo: Send + Sync,
 {
     fn token(&self) -> String {
-        "GraphQLService".to_string()
+        ulo::di::token_of::<crate::GraphQLService<Query, Mutation, Subscription, Ctx, S>>()
     }
 
     async fn resolve(&self, _ctx: Execution) -> Box<dyn std::any::Any + Send> {

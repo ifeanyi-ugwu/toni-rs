@@ -33,7 +33,7 @@ use ulo::{
     injectable, module, post, routes,
     rpc::RpcClient,
 };
-use ulo_macros::{new, patterns, provider_value};
+use ulo_macros::{new, patterns, provide};
 
 // ============================================================================
 // DTOs
@@ -123,10 +123,13 @@ impl OrdersRpcController {
 // HTTP controller — uses RpcClient to call the NATS handlers above
 // ============================================================================
 
+// The slot the client is registered under, beside any other `RpcClient` the application holds.
+ulo::key!(pub OrderServiceClient: RpcClient);
+
 #[controller("/order")]
 pub struct OrdersHttpController {
-    // Injected by the "ORDER_SERVICE_CLIENT" token registered in the module.
-    #[inject("ORDER_SERVICE_CLIENT")]
+    // Injected through the marker the module registers the client under.
+    #[inject(OrderServiceClient)]
     client: RpcClient,
 }
 
@@ -170,11 +173,10 @@ impl OrdersHttpController {
 // ============================================================================
 
 #[module(
-    providers: [OrdersService, // Register the RpcClient under a named token so it can be injected.
-        provider_value!(
-            "ORDER_SERVICE_CLIENT",
-            ulo::rpc::RpcClient::new(ulo_rpc_nats::NatsClientTransport::new("nats://127.0.0.1:4222"))
-        )],
+    providers: [OrdersService,
+        provide!(OrderServiceClient => ulo::rpc::RpcClient::new(
+            ulo_rpc_nats::NatsClientTransport::new("nats://127.0.0.1:4222"),
+        ))],
     controllers: [OrdersHttpController, OrdersRpcController],
 )]
 struct OrdersModule;

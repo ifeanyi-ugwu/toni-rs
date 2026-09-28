@@ -11,8 +11,8 @@ use ulo::{
 pub(crate) struct MongoConnectionFactory {
     pub uri: String,
     pub db_name: String,
-    // Injection token for this connection: the `Database` type name for the default
-    // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
+    // Injection token for this connection: `Database`'s own for the default (`for_root`), or the
+    // marker's for a `for_root_keyed` connection.
     pub token: String,
     pub check: Option<StartupCheck>,
 }

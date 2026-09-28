@@ -76,12 +76,9 @@ impl PluginLoader {
         self.module_ref.get::<CacheService>().await.ok()
     }
 
-    /// Test token-based resolution with strict mode
-    pub async fn load_by_token_strict(&self, token: &str) -> Option<DatabaseService> {
-        self.module_ref
-            .get_by_token::<DatabaseService>(token)
-            .await
-            .ok()
+    /// Resolution through a key, in strict mode
+    pub async fn load_by_key_strict(&self) -> Option<DatabaseService> {
+        self.module_ref.get_key::<DatabaseService>().await.ok()
     }
 
     pub async fn load_request_scoped(&self) -> Result<RequestScopedService, String> {
@@ -184,7 +181,7 @@ async fn test_module_ref_strict_mode_fails_for_non_local_provider() {
 }
 
 #[tokio::test]
-async fn test_module_ref_token_based_resolution() {
+async fn test_module_ref_resolves_a_type_as_its_own_key() {
     let app = UloFactory::create(AppModule).await.unwrap();
 
     let plugin_loader = app
@@ -192,12 +189,11 @@ async fn test_module_ref_token_based_resolution() {
         .await
         .expect("PluginLoader should be available");
 
-    // Test token-based resolution with type name
-    let db_token = std::any::type_name::<DatabaseService>();
+    // A type written as a key names its own slot
     let db_service = plugin_loader
-        .load_by_token_strict(db_token)
+        .load_by_key_strict()
         .await
-        .expect("Should resolve DatabaseService by token");
+        .expect("Should resolve DatabaseService by its key");
 
     assert_eq!(db_service.connection_string, "postgres://localhost:5432");
 }

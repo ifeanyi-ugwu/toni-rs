@@ -18,7 +18,7 @@ use ulo::http::HttpResponse;
 use ulo::http::middleware::{Middleware, MiddlewareResult, NextHandle};
 use ulo::http::{Body, RequestPart};
 use ulo::{
-    controller, get, injectable, module, new, provider_value, routes, use_guards, use_interceptors,
+    controller, get, injectable, module, new, provide, routes, use_guards, use_interceptors,
 };
 // ---- shared tracker -----------------------------------------------------------
 // Tests are serial; all share the same Arc via clone. Each test calls clear()
@@ -264,7 +264,7 @@ impl EnhancerTestController {
 #[module(
     controllers: [EnhancerTestController],
     providers: [
-        provider_value!(ExecutionTracker, get_tracker()),
+        provide!(get_tracker()),
         AuthService,
         AdminGuard,
         UserGuard,

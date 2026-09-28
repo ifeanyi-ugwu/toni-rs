@@ -36,13 +36,14 @@ type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 /// before partition assignment completes is still delivered.
 ///
 /// Established lazily on first use, so the transport can be built synchronously
-/// in a `provider_value!` block.
+/// as a provider value.
 ///
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "INVENTORY_CLIENT",
+/// key!(pub Inventory: ulo::rpc::RpcClient);
+///
+/// provide!(Inventory =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_kafka::KafkaClientTransport::new("127.0.0.1:9092"))
 /// )
 /// ```

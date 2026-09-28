@@ -39,21 +39,27 @@ where
 ///
 /// # Example
 ///
-/// Register via `provider_factory!` with the `lifecycle` flag inside a module's
-/// `providers` list:
+/// Declare it in a module's `providers` list, under a marker when the application holds more than
+/// one client:
 ///
 /// ```ignore
-/// provider_factory!("INVENTORY_CLIENT", |config: ConfigService| {
-///     RpcClient::new(NatsClientTransport::new(config.get("NATS_URL")))
-/// }, lifecycle)
+/// key!(pub Inventory: RpcClient);
+///
+/// provide!(Inventory => async |config: ConfigService<AppConfig>| {
+///     RpcClient::new(NatsClientTransport::new(config.get_ref().nats_url.clone()))
+/// })
 /// ```
+///
+/// A client declared this way is held inside the declaration's provider, not as its own
+/// [`Provider`](crate::spi::Provider), so the framework calls neither
+/// [`connect`](RpcClient::connect) nor [`close`](RpcClient::close) on it.
 ///
 /// Inject into a service:
 ///
 /// ```ignore
 /// #[injectable]
 /// pub struct InventoryService {
-///     #[inject("INVENTORY_CLIENT")] client: RpcClient,
+///     #[inject(Inventory)] client: RpcClient,
 /// }
 /// impl InventoryService {
 ///     async fn notify_restock(&self, payload: serde_json::Value) -> Result<RpcData, RpcClientError> {

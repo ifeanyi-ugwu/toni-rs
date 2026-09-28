@@ -5,7 +5,6 @@ mod common;
 
 mod adapter_error_contract;
 mod an_application_is_send;
-mod app_token_enhancers;
 mod async_controllers;
 mod attribute_extractors;
 mod attribute_syntax;
@@ -42,6 +41,7 @@ mod extension_di;
 mod extraction_failure_shape;
 mod extractors;
 mod global_chain_conformance;
+mod global_collection_enhancers;
 mod global_enhancers;
 mod global_modules;
 mod graceful_shutdown;

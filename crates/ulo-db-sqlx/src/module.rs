@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use crate::pool::SqlxPoolFactory;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ulo::StartupCheck;
-use ulo::di::{CheckedModule, DynamicModule};
+use ulo::di::{CheckedModule, DynamicModule, Key, token_of};
 
 pub struct SqlxModule;
 
@@ -39,45 +39,45 @@ impl SqlxModule {
         })
     }
 
-    /// Register a second, named Postgres pool.
+    /// Register a second Postgres pool, under the marker `K`.
     ///
-    /// `postgres` provides one `Pool<Postgres>` injectable by type. When an application needs
-    /// more than one pool, each additional one is registered under a name and injected by that
-    /// name — the type alone can no longer tell them apart.
+    /// `postgres` provides one `Pool<Postgres>` injectable by type. A second one needs a slot of
+    /// its own, named by a marker type whose slot holds a `Pool<Postgres>`:
     ///
     /// ```ignore
+    /// key!(pub Analytics: Pool<Postgres>);
+    ///
     /// #[module(imports: [
     ///     SqlxModule::postgres(env!("PRIMARY_URL")),
-    ///     SqlxModule::postgres_named("analytics", env!("ANALYTICS_URL")),
+    ///     SqlxModule::postgres_keyed::<Analytics>(env!("ANALYTICS_URL")),
     /// ])]
     /// pub struct AppModule;
-    /// ```
     ///
-    /// ```ignore
     /// #[injectable]
     /// pub struct ReportService {
-    ///     #[inject("analytics")]
+    ///     #[inject(Analytics)]
     ///     pool: Pool<Postgres>,
     /// }
     /// ```
     ///
-    /// The name is a global identifier: two pools cannot share one, and reusing a name across
-    /// integrations is refused at startup. The pool only is registered — the health indicator is
-    /// attached to the default `postgres` pool.
+    /// Two pools under one marker are refused at startup, whichever integrations register them. The
+    /// pool only is registered — the health indicator is attached to the default `postgres` pool.
     #[cfg(feature = "postgres")]
-    pub fn postgres_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
+    pub fn postgres_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = sqlx::Pool<sqlx::Postgres>>,
+    {
         use sqlx::Postgres;
-        let name: String = name.into();
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("SqlxModule::postgres::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(SqlxPoolFactory::<Postgres> {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                     _db: PhantomData,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })
@@ -112,21 +112,23 @@ impl SqlxModule {
         })
     }
 
-    /// Register a second, named MySQL pool. See [`SqlxModule::postgres_named`].
+    /// Register a second MySQL pool, under the marker `K`. See [`SqlxModule::postgres_keyed`].
     #[cfg(feature = "mysql")]
-    pub fn mysql_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
+    pub fn mysql_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = sqlx::Pool<sqlx::MySql>>,
+    {
         use sqlx::MySql;
-        let name: String = name.into();
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("SqlxModule::mysql::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(SqlxPoolFactory::<MySql> {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                     _db: PhantomData,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })
@@ -161,21 +163,23 @@ impl SqlxModule {
         })
     }
 
-    /// Register a second, named SQLite pool. See [`SqlxModule::postgres_named`].
+    /// Register a second SQLite pool, under the marker `K`. See [`SqlxModule::postgres_keyed`].
     #[cfg(feature = "sqlite")]
-    pub fn sqlite_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
+    pub fn sqlite_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = sqlx::Pool<sqlx::Sqlite>>,
+    {
         use sqlx::Sqlite;
-        let name: String = name.into();
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("SqlxModule::sqlite::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(SqlxPoolFactory::<Sqlite> {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                     _db: PhantomData,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })

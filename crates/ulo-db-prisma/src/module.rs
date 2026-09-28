@@ -1,6 +1,6 @@
 use std::{future::Future, marker::PhantomData};
 
-use ulo::di::DynamicModule;
+use ulo::di::{DynamicModule, Key, token_of};
 
 use crate::client::PrismaClientFactory;
 
@@ -54,53 +54,54 @@ impl PrismaModule {
                 token: ulo::di::token_of::<C>(),
                 _client: PhantomData,
             })
-            .export_token(ulo::di::token_of::<C>())
+            .export::<C>()
             .global()
             .build()
     }
 
-    /// Register a second, named Prisma client.
+    /// Register a second Prisma client, under the marker `K`.
     ///
-    /// `for_root` provides one client injectable by its concrete type. When an application needs
-    /// more than one client, each additional one is registered under a name and injected by that
-    /// name — the type alone can no longer tell them apart.
-    ///
-    /// A name is required to register more than one client of the same type: the client is
-    /// configured by an opaque `connect` closure, so two `for_root` calls of the same type cannot
-    /// be told apart automatically the way a URL-configured connection could.
+    /// `for_root` provides one client injectable by its concrete type. A second one needs a slot of
+    /// its own, named by a marker type whose slot holds the client. A marker is required to
+    /// register more than one client of the same type: the client is configured by an opaque
+    /// `connect` closure, so two `for_root` calls of the same type cannot be told apart
+    /// automatically the way a URL-configured connection could.
     ///
     /// ```ignore
+    /// key!(pub Analytics: db::PrismaClient);
+    ///
     /// #[module(imports: [
     ///     PrismaModule::for_root(|| db::new_client()),
-    ///     PrismaModule::for_root_named("analytics", || db::new_client_with(analytics_url())),
+    ///     PrismaModule::for_root_keyed::<Analytics, _>(|| db::new_client_with(analytics_url())),
     /// ])]
     /// pub struct AppModule;
-    /// ```
     ///
-    /// ```ignore
     /// #[injectable]
     /// pub struct ReportService {
-    ///     #[inject("analytics")]
+    ///     #[inject(Analytics)]
     ///     db: db::PrismaClient,
     /// }
     /// ```
     ///
-    /// The name is a global identifier: two clients cannot share one, and reusing a name across
-    /// integrations is refused at startup.
-    pub fn for_root_named<C, F, Fut>(name: impl Into<String>, connect: F) -> DynamicModule
+    /// The marker names the client across the application. Two clients under one marker are one
+    /// module to the container, the client having no configuration to fingerprint: one is
+    /// registered and the other dropped as a repeat, within one `imports` list the one written
+    /// last, as with two `for_root` calls of one type.
+    pub fn for_root_keyed<K, Fut>(
+        connect: impl Fn() -> Fut + Send + Sync + 'static,
+    ) -> DynamicModule
     where
-        C: Send + Sync + Clone + 'static,
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = C> + Send + 'static,
+        K: Key,
+        K::Value: Send + Sync + Clone + Sized,
+        Fut: Future<Output = K::Value> + Send + 'static,
     {
-        let name: String = name.into();
-        DynamicModule::builder(format!("PrismaModule::{name}"))
-            .provider_factory(PrismaClientFactory::<C, F, Fut> {
+        DynamicModule::builder(token_of::<K>())
+            .provider_factory(PrismaClientFactory {
                 connect,
-                token: name.clone(),
+                token: token_of::<K>(),
                 _client: PhantomData,
             })
-            .export_token(name)
+            .export::<K>()
             .global()
             .build()
     }

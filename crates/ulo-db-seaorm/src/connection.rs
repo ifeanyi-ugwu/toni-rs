@@ -11,8 +11,8 @@ use ulo::{
 
 pub(crate) struct SeaOrmConnectionFactory {
     pub database_url: String,
-    // Injection token for this connection: the `DatabaseConnection` type name for the default
-    // (`for_root`), or the caller's chosen name for a `for_root_named` connection.
+    // Injection token for this connection: `DatabaseConnection`'s own for the default
+    // (`for_root`), or the marker's for a `for_root_keyed` connection.
     pub token: String,
     pub check: Option<StartupCheck>,
 }

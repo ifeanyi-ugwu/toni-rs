@@ -1,22 +1,20 @@
-//! An enhancer registered globally by string token resolves from DI with its
-//! dependencies, and runs on every request.
+//! An enhancer contributed to HTTP's global guard or interceptor collection is
+//! built from its own declaration, dependencies included, and runs on every
+//! request.
 //!
-//! A token-named global is the one enhancer form with no type at the
-//! registration site, so nothing connects the name to the provider until
-//! startup resolves it. The dependency is what makes that resolution
+//! The contribution builds its own instance, apart from the plain registration
+//! of the same type beside it. The dependency is what makes that construction
 //! observable: a global that ran without its injected tracker would still
 //! answer requests.
 use crate::common::TestServer;
 use serial_test::serial;
 use std::sync::{Arc, Mutex, OnceLock};
 use ulo::async_trait;
-use ulo::di::{APP_GUARD, APP_INTERCEPTOR};
 use ulo::enhancer::{Guard, Interceptor, InterceptorNext};
 use ulo::http::Body;
 use ulo::http::HttpContext;
 use ulo::http::HttpHandlerResult;
-use ulo::http::HttpResponse;
-use ulo::{controller, get, injectable, module, new, provider_token, provider_value, routes};
+use ulo::{controller, get, injectable, module, new, provide, routes};
 static TRACKER: OnceLock<ExecutionTracker> = OnceLock::new();
 
 fn get_tracker() -> ExecutionTracker {
@@ -66,11 +64,11 @@ impl MockService {
 }
 
 #[injectable]
-pub struct AppGuardWithDI {
+pub struct GlobalGuardWithDI {
     service: MockService,
     tracker: ExecutionTracker,
 }
-impl AppGuardWithDI {
+impl GlobalGuardWithDI {
     #[new]
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
@@ -78,20 +76,20 @@ impl AppGuardWithDI {
 }
 
 #[async_trait]
-impl Guard<HttpContext> for AppGuardWithDI {
+impl Guard<HttpContext> for GlobalGuardWithDI {
     async fn can_activate(&self, _context: &HttpContext) -> bool {
         self.tracker
-            .track(&format!("guard:app_token:{}", self.service.get_name()));
+            .track(&format!("guard:global:{}", self.service.get_name()));
         true
     }
 }
 
 #[injectable]
-pub struct AppInterceptorWithDI {
+pub struct GlobalInterceptorWithDI {
     service: MockService,
     tracker: ExecutionTracker,
 }
-impl AppInterceptorWithDI {
+impl GlobalInterceptorWithDI {
     #[new]
     pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
         Self { service, tracker }
@@ -99,19 +97,19 @@ impl AppInterceptorWithDI {
 }
 
 #[async_trait]
-impl Interceptor<HttpContext, HttpHandlerResult> for AppInterceptorWithDI {
+impl Interceptor<HttpContext, HttpHandlerResult> for GlobalInterceptorWithDI {
     async fn intercept(
         &self,
         context: &HttpContext,
         next: Box<dyn InterceptorNext<HttpContext, HttpHandlerResult>>,
     ) -> HttpHandlerResult {
         self.tracker.track(&format!(
-            "interceptor:app_token:{}:before",
+            "interceptor:global:{}:before",
             self.service.get_name()
         ));
         let answer = next.run(context).await;
         self.tracker.track(&format!(
-            "interceptor:app_token:{}:after",
+            "interceptor:global:{}:after",
             self.service.get_name()
         ));
         answer
@@ -140,19 +138,19 @@ impl TestController {
 #[module(
     controllers: [TestController],
     providers: [
-        provider_value!(ExecutionTracker, get_tracker()),
+        provide!(get_tracker()),
         MockService,
-        AppGuardWithDI,
-        AppInterceptorWithDI,
-        provider_token!(APP_GUARD, AppGuardWithDI),
-        provider_token!(APP_INTERCEPTOR, AppInterceptorWithDI),
+        GlobalGuardWithDI,
+        GlobalInterceptorWithDI,
+        provide!(into dyn Guard<HttpContext> => GlobalGuardWithDI),
+        provide!(into dyn Interceptor<HttpContext, HttpHandlerResult> => GlobalInterceptorWithDI),
     ]
 )]
 impl TestModule {}
 
 #[serial]
 #[tokio::test]
-async fn app_token_enhancers_with_di() {
+async fn global_collection_enhancers_with_di() {
     TRACKER.set(ExecutionTracker::new()).ok();
     let tracker = get_tracker();
 
@@ -171,14 +169,14 @@ async fn app_token_enhancers_with_di() {
     assert!(
         events
             .iter()
-            .any(|e| e.contains("guard:app_token:MockService")),
-        "APP_GUARD must run and its injected MockService must be accessible"
+            .any(|e| e.contains("guard:global:MockService")),
+        "the global guard must run and its injected MockService must be accessible"
     );
     assert!(
         events
             .iter()
-            .any(|e| e.contains("interceptor:app_token:MockService:before")),
-        "APP_INTERCEPTOR before must run"
+            .any(|e| e.contains("interceptor:global:MockService:before")),
+        "the global interceptor's before must run"
     );
     assert!(
         events.iter().any(|e| e == "controller:handler"),
@@ -187,14 +185,14 @@ async fn app_token_enhancers_with_di() {
     assert!(
         events
             .iter()
-            .any(|e| e.contains("interceptor:app_token:MockService:after")),
-        "APP_INTERCEPTOR after must run"
+            .any(|e| e.contains("interceptor:global:MockService:after")),
+        "the global interceptor's after must run"
     );
 
     // guard runs before controller
     let guard_pos = events
         .iter()
-        .position(|e| e.contains("guard:app_token"))
+        .position(|e| e.contains("guard:global"))
         .unwrap();
     let ctrl_pos = events
         .iter()

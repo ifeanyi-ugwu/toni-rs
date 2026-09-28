@@ -66,7 +66,9 @@ where
     }
 
     fn dependency_tokens(&self) -> Vec<String> {
-        vec!["GraphQLService".to_string()]
+        vec![ulo::di::token_of::<
+            crate::GraphQLService<Query, Mutation, Subscription, Ctx>,
+        >()]
     }
 
     async fn build(
@@ -74,7 +76,9 @@ where
         dependencies: FxHashMap<String, Arc<Box<dyn Provider>>>,
     ) -> Arc<dyn Controller> {
         let graphql_service = dependencies
-            .get("GraphQLService")
+            .get(&ulo::di::token_of::<
+                crate::GraphQLService<Query, Mutation, Subscription, Ctx>,
+            >())
             .expect("GraphQLService not found in dependencies")
             .clone();
 

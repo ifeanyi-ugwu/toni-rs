@@ -1,9 +1,9 @@
-//! A sqlx pool, injected by type, and a second one injected by name.
+//! A sqlx pool, injected by type, and a second one injected through a marker.
 //!
 //! `SqlxModule::postgres` registers `Pool<Postgres>` under its own type. A
-//! second pool of the same type cannot be told apart by type alone, so it
-//! carries a name and is injected with `#[inject("…")]` — the rule every
-//! integration here follows for more than one connection.
+//! second pool of the same type cannot be told apart by type alone, so it is
+//! registered under a marker type and injected with `#[inject(Analytics)]` —
+//! the rule every integration here follows for more than one connection.
 //!
 //!     DATABASE_URL=postgres://postgres:postgres@localhost/postgres \
 //!     ANALYTICS_URL=postgres://postgres:postgres@localhost/postgres \
@@ -12,15 +12,17 @@
 
 use sqlx::{Pool, Postgres};
 use ulo::http::Body;
-use ulo::{UloFactory, controller, get, injectable, module, routes};
+use ulo::{UloFactory, controller, get, injectable, key, module, routes};
 use ulo_db_sqlx::SqlxModule;
 use ulo_http_axum::AxumAdapter;
+
+key!(pub Analytics: Pool<Postgres>);
 
 #[injectable]
 pub struct Reports {
     #[inject]
     primary: Pool<Postgres>,
-    #[inject("analytics")]
+    #[inject(Analytics)]
     analytics: Pool<Postgres>,
 }
 
@@ -52,7 +54,7 @@ impl HealthController {
 }
 
 #[module(imports: [SqlxModule::postgres(std::env::var("DATABASE_URL").expect("DATABASE_URL")),
-    SqlxModule::postgres_named("analytics", std::env::var("ANALYTICS_URL").expect("ANALYTICS_URL"))], controllers: [HealthController], providers: [Reports])]
+    SqlxModule::postgres_keyed::<Analytics>(std::env::var("ANALYTICS_URL").expect("ANALYTICS_URL"))], controllers: [HealthController], providers: [Reports])]
 impl AppModule {}
 
 #[tokio::main]

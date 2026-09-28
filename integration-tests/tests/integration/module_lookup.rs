@@ -5,7 +5,7 @@
 use ulo::UloFactory;
 use ulo::di::DynamicModule;
 use ulo::di::ResolutionError;
-use ulo::{injectable, module, provider_value};
+use ulo::{injectable, key, module, provide};
 use ulo_config::{Config, ConfigModule, ConfigService};
 use ulo_graphql_async_graphql::async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
 use ulo_graphql_async_graphql::{DefaultContextBuilder, GraphQLModule};
@@ -49,10 +49,12 @@ fn gql(
     GraphQLModule::for_root(schema, DefaultContextBuilder).with_path(path)
 }
 
+key!(LookupValue: u32);
+
 fn dynamic() -> DynamicModule {
     DynamicModule::builder("LookupDyn")
-        .provider_factory(provider_value!("LOOKUP_VALUE", 7u32))
-        .export_token("LOOKUP_VALUE")
+        .provider_factory(provide!(LookupValue => 7u32))
+        .export::<LookupValue>()
         .build()
 }
 
@@ -171,7 +173,7 @@ async fn a_dynamic_module_is_found_by_its_base() {
     let app = UloFactory::create(AppModule).await.unwrap();
 
     let dyn_module = app.get_module_by_id("LookupDyn").await.unwrap();
-    let value: u32 = dyn_module.get_by_token("LOOKUP_VALUE").await.unwrap();
+    let value: u32 = dyn_module.get_key::<LookupValue>().await.unwrap();
     assert_eq!(value, 7);
 }
 

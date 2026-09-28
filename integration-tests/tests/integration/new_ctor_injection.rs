@@ -351,6 +351,8 @@ fn _arc_marker(_: Arc<()>) {}
 // stripped like the bare one — unmatched it is neither token-routed nor removed.
 #[tokio::test]
 async fn new_ctor_path_qualified_inject_token() {
+    ulo::key!(Greeting: String);
+
     #[injectable]
     pub struct Greeter {
         greeting: String,
@@ -358,7 +360,7 @@ async fn new_ctor_path_qualified_inject_token() {
 
     impl Greeter {
         #[new]
-        fn new(#[ulo::inject("GREETING")] greeting: String) -> Self {
+        fn new(#[ulo::inject(Greeting)] greeting: String) -> Self {
             Self { greeting }
         }
 
@@ -368,7 +370,7 @@ async fn new_ctor_path_qualified_inject_token() {
     }
 
     #[module(providers: [
-        ulo::provider_value!("GREETING", "hello".to_string()),
+        ulo::provide!(Greeting => "hello".to_string()),
         Greeter,
     ])]
     struct GreetModule {}

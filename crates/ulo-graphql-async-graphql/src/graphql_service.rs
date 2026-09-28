@@ -113,7 +113,7 @@ where
     }
 
     fn token(&self) -> String {
-        "GraphQLService".to_string()
+        ulo::di::token_of::<crate::GraphQLService<Query, Mutation, Subscription, Ctx>>()
     }
 
     fn scope(&self) -> ProviderScope {

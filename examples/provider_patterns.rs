@@ -1,16 +1,14 @@
-//! Provider registration patterns: value, factory, alias, token
+//! Provider declarations: a value, a factory, a second slot, an alias, a trait binding
 //!
-//! Shows all four provider macros, a consumer that injects from them,
-//! and how to retrieve a provider from the DI container directly —
-//! no HTTP server required.
+//! Shows the forms of `provide!`, a consumer that injects from each, and how to
+//! retrieve a provider from the DI container directly — no HTTP server
+//! required.
 //!
 //! Run with:  cargo run --example provider_patterns
 
+use std::sync::Arc;
 use std::time::Duration;
-use ulo::{
-    UloFactory, injectable, module, new, provider_alias, provider_factory, provider_token,
-    provider_value,
-};
+use ulo::{UloFactory, injectable, key, module, new, provide};
 // ---- providers ---------------------------------------------------------------
 
 #[injectable]
@@ -47,49 +45,73 @@ impl LoggerService {
     }
 }
 
+pub trait Greeter: Send + Sync {
+    fn greet(&self) -> String;
+}
+
+pub struct English;
+
+impl Greeter for English {
+    fn greet(&self) -> String {
+        "hello".to_string()
+    }
+}
+
+// A type is its own key. A marker names a second slot, and says what it holds.
+
+key!(pub AppName: String);
+key!(pub Port: u16);
+key!(pub AppPort: u16);
+key!(pub AppStatus: String);
+key!(pub PrimaryConfig: ConfigService);
+
 // ---- consumer ----------------------------------------------------------------
 //
-// Injects values from each provider macro so the resolved output is observable.
+// Injects from each declaration so the resolved output is observable.
 
 #[injectable]
 pub struct AppInfo {
-    // provider_value! — constant injected under a string token
-    #[inject("APP_NAME")]
+    // a value under a marker
+    #[inject(AppName)]
     name: String,
 
-    #[inject("PORT")]
+    #[inject(Port)]
     port: u16,
 
-    // provider_factory! — built once, value injected under a string token
-    #[inject("APP_INFO")]
-    info: String,
+    // an alias: the slot `AppPort` answers with the binding under `Port`
+    #[inject(AppPort)]
+    app_port: u16,
 
-    // provider_factory! with async — same injection, factory ran async
-    #[inject("ASYNC_STATUS")]
+    // a factory with no key, bound under the type it builds
+    #[inject]
+    timeout: Duration,
+
+    // an async factory under a marker, built from a dependency
+    #[inject(AppStatus)]
     status: String,
 
-    // provider_alias! — "Config" resolves to the same instance as ConfigService
-    #[inject("Config")]
-    config: ConfigService,
-
-    // provider_token! — ConfigService registered under "PRIMARY_CONFIG"
-    // without a separate type-token entry
-    #[inject("PRIMARY_CONFIG")]
+    // a type's own declaration under a second slot
+    #[inject(PrimaryConfig)]
     primary: ConfigService,
+
+    // a trait bound to an implementation
+    #[inject]
+    greeter: Arc<dyn Greeter>,
 }
 impl AppInfo {
     fn print(&self) {
-        println!("  app_name  (provider_value):         {}", self.name);
-        println!("  port      (provider_value):         {}", self.port);
-        println!("  info      (provider_factory + dep): {}", self.info);
-        println!("  status    (provider_factory async): {}", self.status);
+        println!("  app_name  (value under a marker):   {}", self.name);
+        println!("  port      (value under a marker):   {}", self.port);
+        println!("  app_port  (alias):                  {}", self.app_port);
+        println!("  timeout   (keyless factory):        {:?}", self.timeout);
+        println!("  status    (async factory + dep):    {}", self.status);
         println!(
-            "  config    (provider_alias):         env={}",
-            self.config.get_env()
+            "  primary   (type under a marker):    env={}",
+            self.primary.get_env()
         );
         println!(
-            "  primary   (provider_token):         env={}",
-            self.primary.get_env()
+            "  greeter   (trait binding):          {}",
+            self.greeter.greet()
         );
     }
 }
@@ -101,35 +123,19 @@ impl AppInfo {
         ConfigService,
         LoggerService,
 
-        // provider_value! — static constants under string or type tokens
-        provider_value!("APP_NAME", "UloApp".to_string()),
-        provider_value!("PORT", 3000_u16),
-        provider_value!(Duration, Duration::from_secs(60)),
+        provide!(AppName => "UloApp".to_string()),
+        provide!(Port => 3000_u16),
+        provide!(AppPort => alias Port),
 
-        // provider_factory! — sync factory, no deps
-        provider_factory!("REQUEST_ID", || {
-            format!("req_{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis())
-        }),
-        // sync factory with an injected dep
-        provider_factory!("APP_INFO", |config: ConfigService| {
-            format!("App running in {} mode", config.get_env())
-        }),
-        // async factory — detected by the `async` keyword
-        provider_factory!("ASYNC_STATUS", async |logger: LoggerService| {
+        // a factory is async; this one reads no dependency
+        provide!(async || Duration::from_secs(60)),
+        provide!(AppStatus => async |logger: LoggerService| {
             tokio::time::sleep(Duration::from_millis(1)).await;
             logger.log("System initialized")
         }),
 
-        // provider_alias! — create an alternate token pointing to an existing provider
-        provider_alias!("Config", ConfigService),
-        provider_alias!("APP_PORT", "PORT"),
-
-        // provider_token! — register a type under a custom token
-        // (does NOT create the default type-token entry)
-        provider_token!("PRIMARY_CONFIG", ConfigService),
+        provide!(PrimaryConfig => ConfigService),
+        provide!(dyn Greeter => value English),
 
         AppInfo,
     ],
@@ -151,8 +157,12 @@ async fn main() {
     let info = app
         .get::<AppInfo>()
         .await
-        .expect("AppInfo should resolve — check all token names match");
+        .expect("AppInfo should resolve — check each marker is declared");
 
     println!("Resolved values:");
     info.print();
+    println!(
+        "\nRead directly: port = {}",
+        app.get_key::<Port>().await.unwrap()
+    );
 }

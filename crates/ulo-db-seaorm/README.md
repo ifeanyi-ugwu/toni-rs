@@ -84,7 +84,17 @@ impl UserRepository {
 
 ## Multiple databases
 
-`for_root` registers `DatabaseConnection` globally. Calling it twice overwrites the first registration under the same token. Multiple named connections are not supported yet — if you need them, open an issue.
+`for_root` registers `DatabaseConnection` under its own type. A second connection needs a slot of its own, named by a marker type holding a `DatabaseConnection`, and is registered with `SeaOrmModule::for_root_keyed::<K>(url)` and injected with `#[inject(K)]`:
+
+```rust,ignore
+key!(pub Analytics: DatabaseConnection);
+
+#[module(imports: [
+    SeaOrmModule::for_root(env!("PRIMARY_URL")),
+    SeaOrmModule::for_root_keyed::<Analytics>(env!("ANALYTICS_URL")),
+])]
+pub struct AppModule;
+```
 
 ## License
 

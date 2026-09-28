@@ -17,8 +17,7 @@ use ulo::http::HttpHandlerResult;
 use ulo::http::middleware::{Middleware, MiddlewareResult, NextHandle};
 use ulo::http::{Body, HttpResponse};
 use ulo::{
-    controller, get, injectable, module, post, provider_factory, provider_token, provider_value,
-    routes, use_guards, use_interceptors,
+    controller, get, injectable, key, module, post, provide, routes, use_guards, use_interceptors,
 };
 pub struct OrderTrackerMiddleware {
     name: String,
@@ -270,7 +269,7 @@ async fn enhancers_execution_order() {
         controllers: [EnhancerController],
         providers: [
             TestService,
-            provider_value!(ExecutionOrder, get_tracker()),
+            provide!(get_tracker()),
         ],
     )]
     impl EnhancerModule {
@@ -355,9 +354,11 @@ async fn guard_authorization() {
         tracker: ExecutionOrder,
     }
 
+    key!(Auth: dyn Guard<HttpContext>);
+
     #[routes]
     impl TestController {
-        #[use_guards("AUTH_GUARD")]
+        #[use_guards(Auth)]
         #[get("/auth-only")]
         fn auth_only(&self) -> Body {
             self.tracker.track("controller:auth_only");
@@ -368,8 +369,8 @@ async fn guard_authorization() {
     #[module(
         controllers: [TestController],
         providers: [
-            provider_value!(ExecutionOrder, get_tracker()),
-            provider_factory!("AUTH_GUARD", |tracker: ExecutionOrder| AuthGuard::new(tracker)),
+            provide!(get_tracker()),
+            provide!(Auth => async |tracker: ExecutionOrder| AuthGuard::new(tracker)),
         ],
     )]
     impl TestModule {}
@@ -464,9 +465,8 @@ async fn di_in_enhancers() {
 }
 
 #[tokio::test]
-async fn app_token_global_enhancers() {
+async fn the_http_role_collections_are_the_global_enhancers() {
     use std::sync::OnceLock;
-    use ulo::di::APP_GUARD;
 
     static TRACKER: OnceLock<ExecutionOrder> = OnceLock::new();
 
@@ -490,6 +490,25 @@ async fn app_token_global_enhancers() {
         }
     }
 
+    #[injectable]
+    pub struct GlobalInterceptor {
+        #[inject]
+        tracker: ExecutionOrder,
+    }
+    #[async_trait]
+    impl Interceptor<HttpContext, HttpHandlerResult> for GlobalInterceptor {
+        async fn intercept(
+            &self,
+            context: &HttpContext,
+            next: Box<dyn InterceptorNext<HttpContext, HttpHandlerResult>>,
+        ) -> HttpHandlerResult {
+            self.tracker.track("global_interceptor:before");
+            let answer = next.run(context).await;
+            self.tracker.track("global_interceptor:after");
+            answer
+        }
+    }
+
     #[controller("/api")]
     pub struct TestController {
         #[inject]
@@ -507,9 +526,9 @@ async fn app_token_global_enhancers() {
 
     #[module(
         providers: [
-            provider_value!(ExecutionOrder, get_tracker()),
-            GlobalGuard,
-            provider_token!(APP_GUARD, GlobalGuard),
+            provide!(get_tracker()),
+            provide!(into dyn Guard<HttpContext> => GlobalGuard),
+            provide!(into dyn Interceptor<HttpContext, HttpHandlerResult> => GlobalInterceptor),
         ],
         controllers: [TestController],
     )]
@@ -525,9 +544,12 @@ async fn app_token_global_enhancers() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Verify the global guard was executed
-    tracker.assert_contains("global_guard");
-    tracker.assert_contains("controller:test");
+    tracker.assert_order(&[
+        "global_guard",
+        "global_interceptor:before",
+        "controller:test",
+        "global_interceptor:after",
+    ]);
 }
 
 // Regression: the enhancer scan matched path-qualified attributes for stripping but
@@ -564,7 +586,7 @@ async fn path_qualified_enhancer_attrs() {
 
     #[module(
         controllers: [TestController],
-        providers: [provider_value!(ExecutionOrder, get_tracker())],
+        providers: [provide!(get_tracker())],
     )]
     impl TestModule {}
 
@@ -627,7 +649,7 @@ async fn stacked_enhancer_attrs_accumulate() {
 
     #[module(
         controllers: [TestController],
-        providers: [provider_value!(ExecutionOrder, get_tracker())],
+        providers: [provide!(get_tracker())],
     )]
     impl TestModule {}
 

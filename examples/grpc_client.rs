@@ -24,7 +24,7 @@
 use std::net::SocketAddr;
 
 use ulo::http::Body;
-use ulo::{UloFactory, module, provider_factory};
+use ulo::{UloFactory, module, provide};
 use ulo_http_axum::AxumAdapter;
 use ulo_macros::{controller, get, grpc_methods, new, routes};
 
@@ -108,7 +108,7 @@ impl OrdersService {
 
 #[module(
     controllers: [OrdersGateway, OrdersService],
-    providers: [provider_factory!(OrdersClient<Channel>, || {
+    providers: [provide!(async || {
         // `connect_lazy` dials on the first call rather than here, so a peer
         // that is not up yet cannot fail startup.
         let channel = Channel::from_static("http://127.0.0.1:50051").connect_lazy();
