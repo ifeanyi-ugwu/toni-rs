@@ -37,14 +37,8 @@ pub struct EnhancerTraits {
 pub fn generate_provider_from_struct(
     struct_def: &ItemStruct,
     scope: ProviderScope,
-    init_method: Option<String>,
 ) -> Result<TokenStream> {
-    generate_provider_from_struct_with_traits(
-        struct_def,
-        scope,
-        init_method,
-        EnhancerTraits::default(),
-    )
+    generate_provider_from_struct_with_traits(struct_def, scope, EnhancerTraits::default())
 }
 
 /// Same struct-only DI wiring as [`generate_provider_from_struct`], but with the provider role
@@ -54,14 +48,10 @@ pub fn generate_provider_from_struct(
 pub fn generate_provider_from_struct_with_traits(
     struct_def: &ItemStruct,
     scope: ProviderScope,
-    init_method: Option<String>,
     enhancer_traits: EnhancerTraits,
 ) -> Result<TokenStream> {
     let struct_name = struct_def.ident.clone();
-    let mut dependencies = extract_struct_dependencies(struct_def)?;
-    if let Some(init) = init_method {
-        dependencies.init_method = Some(init);
-    }
+    let dependencies = extract_struct_dependencies(struct_def)?;
 
     // A derive sees only the struct: no lifecycle hooks (the bridge carries them). The role is
     // supplied by the caller rather than detected from an impl head.
@@ -389,62 +379,7 @@ fn generate_execution_provider(
 ) -> TokenStream {
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
-    // Check if this uses from_request pattern
-    let is_from_request = dependencies
-        .init_method
-        .as_ref()
-        .map(|m| m == "from_request")
-        .unwrap_or(false);
-
-    // Generate struct instantiation code (either custom init or struct literal)
-    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
-        let init_ident = syn::Ident::new(init_fn, struct_name.span());
-
-        if is_from_request {
-            // Special case: from_request gets HttpRequest as first parameter.
-            // __http_ctx is extracted at the top of the generated execute body.
-            if field_names.is_empty() {
-                // No dependencies, just the request parts
-                quote! {
-                    #struct_name::#init_ident(__http_ctx.parts)
-                }
-            } else {
-                // Has dependencies + request parts
-                quote! {
-                    #struct_name::#init_ident(__http_ctx.parts, #(#field_names),*)
-                }
-            }
-        } else {
-            // Normal custom init
-            quote! {
-                #struct_name::#init_ident(#(#field_names),*)
-            }
-        }
-    } else {
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    quote! { #field_name: #expr }
-                } else {
-                    quote! { #field_name: {
-                        #[allow(unused_imports)]
-                        use ::ulo::__construct::OwnedFieldDefaultFallback as _;
-                        (&::ulo::__construct::OwnedFieldDefault::<#field_type>::new())
-                            .field_default(stringify!(#field_name), stringify!(#field_type))
-                    } }
-                }
-            })
-            .collect();
-
-        quote! {
-            #struct_name {
-                #(#field_names,)*
-                #(#owned_field_inits),*
-            }
-        }
-    };
+    let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
     let scope_hook_error = reject_lifecycle_hooks(
         lifecycle_hooks,
@@ -749,37 +684,7 @@ fn generate_transient_provider(
 
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
-    // Generate struct instantiation code (either custom init or struct literal)
-    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
-        let init_ident = syn::Ident::new(init_fn, struct_name.span());
-        quote! {
-            #struct_name::#init_ident(#(#field_names),*)
-        }
-    } else {
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    quote! { #field_name: #expr }
-                } else {
-                    quote! { #field_name: {
-                        #[allow(unused_imports)]
-                        use ::ulo::__construct::OwnedFieldDefaultFallback as _;
-                        (&::ulo::__construct::OwnedFieldDefault::<#field_type>::new())
-                            .field_default(stringify!(#field_name), stringify!(#field_type))
-                    } }
-                }
-            })
-            .collect();
-
-        quote! {
-            #struct_name {
-                #(#field_names,)*
-                #(#owned_field_inits),*
-            }
-        }
-    };
+    let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
     let scope_hook_error = reject_lifecycle_hooks(
         lifecycle_hooks,
@@ -838,12 +743,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    // When a constructor is specified, resolve its parameters instead of struct fields
-    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
-        &dependencies.constructor_params
-    } else {
-        &dependencies.fields
-    };
+    let deps_to_resolve = &dependencies.fields;
 
     // Partition into multi-provider fields (Vec<Arc<dyn T>>) and regular fields
     let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
@@ -997,12 +897,7 @@ fn generate_factory_field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    // When a constructor is specified, resolve its parameters instead of struct fields
-    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
-        &dependencies.constructor_params
-    } else {
-        &dependencies.fields
-    };
+    let deps_to_resolve = &dependencies.fields;
 
     // Partition into multi-provider fields (Vec<Arc<dyn T>>) and regular fields
     let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
@@ -1168,18 +1063,13 @@ fn generate_factory(
     }
 }
 
-/// Assemble the instance: through `init = "…"` when one is named, else as a struct literal with the
-/// resolved `#[inject]` fields and the `#[default(…)]` (or `Default`) owned ones.
+/// Assemble the instance as a struct literal with the resolved `#[inject]` fields and the
+/// `#[default(…)]` (or `Default`) owned ones.
 fn struct_instantiation(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
     field_names: &[Ident],
 ) -> TokenStream {
-    if let Some(init_fn) = &dependencies.init_method {
-        let init_ident = syn::Ident::new(init_fn, struct_name.span());
-        return quote! { #struct_name::#init_ident(#(#field_names),*) };
-    }
-
     let owned_field_inits: Vec<_> = dependencies
         .owned_fields
         .iter()
@@ -1220,49 +1110,19 @@ fn generate_singleton_factory(
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
-    // Collect dependency tokens from both constructor params (if using constructor injection)
-    // and from #[inject] fields (if using field injection)
     let dependency_tokens: Vec<_> = dependencies
-        .constructor_params
+        .fields
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .chain(
-            dependencies
-                .fields
-                .iter()
-                .map(|(_, _, lookup_token_expr)| lookup_token_expr),
-        )
         .collect();
 
     // Generate scope validation code (Singleton cannot inject Request)
-    // Check both constructor params and #[inject] fields
-    let has_dependencies =
-        !dependencies.constructor_params.is_empty() || !dependencies.fields.is_empty();
-    let scope_validation = if has_dependencies {
-        // Combine constructor params and fields for validation
-        let constructor_dep_checks = dependencies.constructor_params.iter().map(
-            |(param_name, _param_type, lookup_token_expr)| {
-                let param_str = param_name.to_string();
-                (
-                    param_str,
-                    quote! { "constructor parameter" },
-                    lookup_token_expr,
-                )
-            },
-        );
-
-        let field_dep_checks =
-            dependencies
-                .fields
-                .iter()
-                .map(|(field_name, _full_type, lookup_token_expr)| {
-                    let field_str = field_name.to_string();
-                    (field_str, quote! { "field" }, lookup_token_expr)
-                });
-
-        let dep_checks: Vec<_> = constructor_dep_checks
-            .chain(field_dep_checks)
-            .map(|(dep_name, _dep_kind, lookup_token_expr)| {
+    let scope_validation = if !dependencies.fields.is_empty() {
+        let dep_checks: Vec<_> = dependencies
+            .fields
+            .iter()
+            .map(|(field_name, _full_type, lookup_token_expr)| {
+                let dep_name = field_name.to_string();
                 quote! {
                     {
                         let __lookup_token = #lookup_token_expr;
@@ -1366,15 +1226,9 @@ fn generate_request_factory(
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
     let dependency_tokens: Vec<_> = dependencies
-        .constructor_params
+        .fields
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .chain(
-            dependencies
-                .fields
-                .iter()
-                .map(|(_, _, lookup_token_expr)| lookup_token_expr),
-        )
         .collect();
 
     let (dyn_factory_structs, factory_role_pushes) =
@@ -1446,15 +1300,9 @@ fn generate_transient_factory(
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
     let dependency_tokens: Vec<_> = dependencies
-        .constructor_params
+        .fields
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
-        .chain(
-            dependencies
-                .fields
-                .iter()
-                .map(|(_, _, lookup_token_expr)| lookup_token_expr),
-        )
         .collect();
 
     let (dyn_factory_structs, factory_role_pushes) =
@@ -1531,11 +1379,7 @@ fn generate_create_field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    let deps_to_resolve = if !dependencies.constructor_params.is_empty() {
-        &dependencies.constructor_params
-    } else {
-        &dependencies.fields
-    };
+    let deps_to_resolve = &dependencies.fields;
 
     let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
         .iter()
@@ -1630,43 +1474,7 @@ fn generate_dyn_factories(
 
     let (field_resolutions, field_names) = generate_create_field_resolutions(dependencies);
 
-    // Struct construction — same shape as request/transient provider execute()
-    let struct_instantiation = if let Some(init_fn) = &dependencies.init_method {
-        let init_ident = syn::Ident::new(init_fn, struct_name.span());
-        let is_from_request = init_fn == "from_request";
-        if is_from_request {
-            if field_names.is_empty() {
-                quote! { #struct_name::#init_ident(__exec_ctx.request_parts().expect("HTTP request context required")) }
-            } else {
-                quote! { #struct_name::#init_ident(__exec_ctx.request_parts().expect("HTTP request context required"), #(#field_names),*) }
-            }
-        } else {
-            quote! { #struct_name::#init_ident(#(#field_names),*) }
-        }
-    } else {
-        let owned_field_inits: Vec<_> = dependencies
-            .owned_fields
-            .iter()
-            .map(|(field_name, field_type, default_expr)| {
-                if let Some(expr) = default_expr {
-                    quote! { #field_name: #expr }
-                } else {
-                    quote! { #field_name: {
-                        #[allow(unused_imports)]
-                        use ::ulo::__construct::OwnedFieldDefaultFallback as _;
-                        (&::ulo::__construct::OwnedFieldDefault::<#field_type>::new())
-                            .field_default(stringify!(#field_name), stringify!(#field_type))
-                    } }
-                }
-            })
-            .collect();
-        quote! {
-            #struct_name {
-                #(#field_names,)*
-                #(#owned_field_inits),*
-            }
-        }
-    };
+    let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
     let deps_arc_ty = quote! {
         ::std::sync::Arc<::ulo::FxHashMap<

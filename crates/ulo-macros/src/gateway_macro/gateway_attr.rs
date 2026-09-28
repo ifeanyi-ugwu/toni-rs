@@ -109,7 +109,6 @@ pub fn handle_websocket_gateway(attr: TokenStream, item: TokenStream) -> Result<
     let provider_system = generate_provider_from_struct_with_traits(
         &struct_def,
         ProviderScope::Singleton,
-        None,
         EnhancerTraits {
             is_gateway: true,
             ..Default::default()

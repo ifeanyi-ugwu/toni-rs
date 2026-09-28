@@ -22,12 +22,12 @@ use super::instance_injection::{add_clone_and_inject_fields, generate_provider_f
 
 pub fn handle_provider(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let struct_def = parse2::<ItemStruct>(item)?;
-    let (scope, init) = parse_args(attr)?;
+    let scope = parse_args(attr)?;
 
     // Re-emit the struct with Clone (if absent) + InjectFields so `#[inject]`/`#[default]` stay
     // valid; then emit the provider wiring beside it.
     let emitted_struct = add_clone_and_inject_fields(&struct_def);
-    let wiring = generate_provider_from_struct(&struct_def, scope, init)?;
+    let wiring = generate_provider_from_struct(&struct_def, scope)?;
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -36,13 +36,12 @@ pub fn handle_provider(attr: TokenStream, item: TokenStream) -> Result<TokenStre
     })
 }
 
-/// Parse `scope = "…"` and `init = "…"` from the attribute arguments (`#[injectable(scope = "…")]`).
-fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
+/// Parse `scope = "…"` from the attribute arguments (`#[injectable(scope = "…")]`).
+fn parse_args(attr: TokenStream) -> Result<ProviderScope> {
     let mut scope = ProviderScope::default();
-    let mut init: Option<String> = None;
 
     if attr.is_empty() {
-        return Ok((scope, init));
+        return Ok(scope);
     }
 
     let pairs = Punctuated::<MetaNameValue, Token![,]>::parse_terminated.parse2(attr)?;
@@ -76,20 +75,16 @@ fn parse_args(attr: TokenStream) -> Result<(ProviderScope, Option<String>)> {
                     }
                 };
             }
-            "init" => init = Some(value),
             other => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    format!(
-                        "Unknown #[injectable] key: '{}'. Expected 'scope' or 'init'",
-                        other
-                    ),
+                    format!("Unknown #[injectable] key: '{}'. Expected 'scope'", other),
                 ));
             }
         }
     }
 
-    Ok((scope, init))
+    Ok(scope)
 }
 
 fn str_lit_value(expr: &Expr) -> Result<String> {

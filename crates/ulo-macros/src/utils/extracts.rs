@@ -30,8 +30,6 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
         return Ok(DependencyInfo {
             fields,
             owned_fields,
-            init_method: None,
-            constructor_params: Vec::new(),
             unique_types,
             source: DependencySource::None,
         });
@@ -101,8 +99,6 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
     Ok(DependencyInfo {
         fields,
         owned_fields,
-        init_method: None, // Will be set by caller if provided in attributes
-        constructor_params: Vec::new(), // Will be populated by caller if constructor detected
         unique_types,
         source,
     })

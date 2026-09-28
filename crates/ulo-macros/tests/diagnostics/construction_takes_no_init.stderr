@@ -1,0 +1,11 @@
+error: Unknown #[injectable] key: 'init'. Expected 'scope'
+ --> tests/diagnostics/construction_takes_no_init.rs:4:19
+  |
+4 | #[ulo::injectable(init = "make")]
+  |                   ^^^^
+
+error: Unknown attribute: 'init'. Expected 'scope'
+ --> tests/diagnostics/construction_takes_no_init.rs:7:25
+  |
+7 | #[ulo::controller("/c", init = "make")]
+  |                         ^^^^
