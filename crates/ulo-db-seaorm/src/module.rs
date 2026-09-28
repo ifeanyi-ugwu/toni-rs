@@ -36,7 +36,7 @@ impl SeaOrmModule {
         CheckedModule::new(move |check: Option<StartupCheck>| {
             #[allow(unused_mut)]
             let mut builder = DynamicModule::builder("SeaOrmModule")
-                .provider_factory(SeaOrmConnectionFactory {
+                .provider(SeaOrmConnectionFactory {
                     database_url: database_url.clone(),
                     token: ulo::di::token_of::<DatabaseConnection>(),
                     check,
@@ -46,7 +46,7 @@ impl SeaOrmModule {
             #[cfg(feature = "health")]
             {
                 builder = builder
-                    .provider_factory(crate::health::SeaOrmHealthIndicatorFactory)
+                    .provider(crate::health::SeaOrmHealthIndicatorFactory)
                     .export::<crate::health::SeaOrmHealthIndicator>();
             }
 
@@ -86,7 +86,7 @@ impl SeaOrmModule {
 
         CheckedModule::new(move |check: Option<StartupCheck>| {
             DynamicModule::builder(token_of::<K>())
-                .provider_factory(SeaOrmConnectionFactory {
+                .provider(SeaOrmConnectionFactory {
                     database_url: database_url.clone(),
                     token: token_of::<K>(),
                     check,

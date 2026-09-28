@@ -61,27 +61,27 @@ impl TerminusModule {
     pub fn new() -> DynamicModule {
         #[allow(unused_mut)]
         let mut builder = DynamicModule::builder("TerminusModule")
-            .provider_factory(HealthCheckServiceFactory)
+            .provider(HealthCheckServiceFactory)
             .export::<HealthCheckService>();
 
         #[cfg(feature = "http")]
         {
             builder = builder
-                .provider_factory(HttpHealthIndicatorFactory)
+                .provider(HttpHealthIndicatorFactory)
                 .export::<HttpHealthIndicator>();
         }
 
         #[cfg(feature = "memory")]
         {
             builder = builder
-                .provider_factory(MemoryHealthIndicatorFactory)
+                .provider(MemoryHealthIndicatorFactory)
                 .export::<MemoryHealthIndicator>();
         }
 
         #[cfg(feature = "disk")]
         {
             builder = builder
-                .provider_factory(DiskHealthIndicatorFactory)
+                .provider(DiskHealthIndicatorFactory)
                 .export::<DiskHealthIndicator>();
         }
 

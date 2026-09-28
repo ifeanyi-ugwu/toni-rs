@@ -9,7 +9,7 @@ help: the trait `DeclaresProvider` is not implemented for `Unit`
   |
 4 | struct Unit;
   | ^^^^^^^^^^^
-  = note: mark the type `#[injectable]`; in `provide!`, a value held in a const is written `value Unit`
+  = note: mark the type `#[injectable]`, or put a `#[controller]` type in `controllers:`; in `provide!`, a value held in a const is written `value Unit`
 
 error[E0599]: the method `bind` exists for reference `&&ulo::__di::Keyed<Slot, Declared<Unit>>`, but its trait bounds were not satisfied
  --> tests/diagnostics/provide_bare_name_is_a_type.rs:9:35

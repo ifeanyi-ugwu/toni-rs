@@ -53,7 +53,7 @@ key!(LookupValue: u32);
 
 fn dynamic() -> DynamicModule {
     DynamicModule::builder("LookupDyn")
-        .provider_factory(provide!(LookupValue => 7u32))
+        .provider(provide!(LookupValue => 7u32))
         .export::<LookupValue>()
         .build()
 }

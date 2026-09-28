@@ -622,7 +622,7 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
 /// contribution to a collection.
 ///
 /// What each form builds is a value-API value, so it can equally be written with the value API,
-/// passed to `DynamicModule::builder().provider_factory(..)` or returned from a function.
+/// passed to `DynamicModule::builder().provider(..)` or returned from a function.
 ///
 /// ```ignore
 /// key!(pub Port: u16);

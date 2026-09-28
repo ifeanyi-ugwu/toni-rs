@@ -12,7 +12,7 @@ impl RedisModule {
         CheckedModule::new(move |check: Option<StartupCheck>| {
             #[allow(unused_mut)]
             let mut builder = DynamicModule::builder("RedisModule")
-                .provider_factory(RedisConnectionFactory {
+                .provider(RedisConnectionFactory {
                     url: url.clone(),
                     token: ulo::di::token_of::<ConnectionManager>(),
                     check,
@@ -22,7 +22,7 @@ impl RedisModule {
             #[cfg(feature = "health")]
             {
                 builder = builder
-                    .provider_factory(crate::health::RedisHealthIndicatorFactory)
+                    .provider(crate::health::RedisHealthIndicatorFactory)
                     .export::<crate::health::RedisHealthIndicator>();
             }
 
@@ -62,7 +62,7 @@ impl RedisModule {
 
         CheckedModule::new(move |check: Option<StartupCheck>| {
             DynamicModule::builder(token_of::<K>())
-                .provider_factory(RedisConnectionFactory {
+                .provider(RedisConnectionFactory {
                     url: url.clone(),
                     token: token_of::<K>(),
                     check,

@@ -124,6 +124,14 @@ impl Parse for ProvideExpr {
             found
         };
         let key = if has_key {
+            if input.peek(syn::LitStr) {
+                let name: syn::LitStr = input.parse()?;
+                return Err(syn::Error::new(
+                    name.span(),
+                    "a key is a type, not a string: declare a marker with `key!(pub Name: T)` and \
+                     write `provide!(Name => ..)`",
+                ));
+            }
             let key = match input.parse::<Type>()? {
                 ty @ Type::TraitObject(_) => Key::Dyn(ty),
                 ty => Key::Typed(ty),

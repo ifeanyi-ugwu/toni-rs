@@ -5,7 +5,7 @@
 //! has no attribute to write it on, and `DynamicModule` carried providers only, so such a target
 //! had to be registered as a provider role instead.
 
-use ulo::di::DynamicModule;
+use ulo::di::{DeclaresController, DynamicModule};
 use ulo::dispatch::ControllerFactory;
 use ulo::http::Body;
 use ulo::prelude::*;
@@ -13,14 +13,14 @@ use ulo_macros::{controller, get, injectable, module, routes};
 
 use crate::common::TestServer;
 
-/// Injected into the controller below, and declared by type rather than by factory.
+/// Injected into the controller below.
 #[injectable]
 pub struct Greeting {
     #[default("from a dynamic module".to_string())]
     text: String,
 }
 
-/// Built from a value rather than from an attribute: the path is chosen when the module is made.
+/// Registered through the builder's `.controller(..)` rather than a `controllers:` list.
 #[controller("/dyn")]
 pub struct GreetingController {
     #[inject]
@@ -37,8 +37,8 @@ impl GreetingController {
 
 fn runtime_module() -> DynamicModule {
     DynamicModule::builder("RuntimeGreetings")
-        .provider::<Greeting>()
-        .controller::<GreetingController>()
+        .provider(Greeting::provide())
+        .controller(<GreetingController as DeclaresController>::controller_factory())
         .build()
 }
 
