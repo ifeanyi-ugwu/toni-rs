@@ -6,7 +6,7 @@ use crate::error::ResolutionError;
 use rustc_hash::FxHashMap;
 
 use crate::di::Execution;
-use crate::di::{IntoToken, Key};
+use crate::di::Key;
 use crate::spi::Provider;
 pub(crate) type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>;
 
@@ -29,9 +29,9 @@ pub(crate) type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn 
 ///     module_ref: ModuleRef,
 /// }
 /// impl PluginLoader {
-///     pub async fn load_plugin(&self, name: &str) {
+///     pub async fn load_plugin(&self) {
 ///         // Strict mode (default): only search current module
-///         let plugin = self.module_ref.get_by_token(name).await?;
+///         let plugin = self.module_ref.get_key::<PrimaryPlugin>().await?;
 ///
 ///         // Global mode: search current module first, then fallback globally
 ///         let config = self.module_ref.get::<Config>().global().await?;
@@ -101,30 +101,6 @@ impl ModuleRef {
         }
     }
 
-    /// Get a provider instance by token
-    ///
-    /// Accepts any type that implements `IntoToken` (strings, type tokens, etc.).
-    /// By default, searches only the current module (strict mode).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Strict (default): only current module
-    /// let api_key: String = module_ref.get_by_token("API_KEY").await?;
-    ///
-    /// // Global: searches current module, then globally
-    /// let key: String = module_ref.get_by_token("SHARED_SECRET").global().await?;
-    /// ```
-    pub fn get_by_token<T: 'static>(&self, token: impl IntoToken<T>) -> ModuleRefQuery<'_, T> {
-        ModuleRefQuery {
-            module_ref: self,
-            token: token.into_token(),
-            strict: true,
-            execution: Execution::None,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
     /// Resolve a provider by its type in an execution
     ///
     /// Reaches what [`get`](Self::get) cannot: an execution-scoped provider is built
@@ -162,23 +138,6 @@ impl ModuleRef {
         ModuleRefQuery {
             module_ref: self,
             token: crate::di::token_of::<K>(),
-            strict: true,
-            execution: execution.clone(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Resolve a provider by token in an execution
-    ///
-    /// The token counterpart of [`resolve`](Self::resolve).
-    pub fn resolve_by_token<T: 'static>(
-        &self,
-        token: impl IntoToken<T>,
-        execution: &Execution,
-    ) -> ModuleRefQuery<'_, T> {
-        ModuleRefQuery {
-            module_ref: self,
-            token: token.into_token(),
             strict: true,
             execution: execution.clone(),
             _phantom: std::marker::PhantomData,

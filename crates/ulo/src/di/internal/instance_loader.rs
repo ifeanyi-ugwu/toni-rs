@@ -160,10 +160,10 @@ impl InstanceLoader {
             }
         }
 
-        // PHASE 2: Resolve APP_* token providers to global enhancers
-        // This happens AFTER all provider instances are created but BEFORE controllers are instantiated
-        // This allows APP_* enhancers to have injected dependencies AND be available when controllers are created
-        tracing::debug!("DI phase 2: resolving APP_* enhancers");
+        // PHASE 2: the HTTP guard and interceptor collections become HTTP's global enhancers,
+        // after every provider is built, so they have their dependencies, and before any controller
+        // is, so the controllers see them.
+        tracing::debug!("DI phase 2: resolving the HTTP global collections");
         self.resolve_app_token_enhancers()?;
 
         // PHASE 3: Resolve middleware tokens from DI container
@@ -225,7 +225,8 @@ impl InstanceLoader {
         Ok(())
     }
 
-    /// Resolve APP_* token providers to global enhancers
+    /// The contributions to the HTTP guard and interceptor collections, as HTTP's global
+    /// enhancers.
     fn resolve_app_token_enhancers(&self) -> SetupResult {
         let container = self.container.read();
         let app_guard_providers = container.app_guard_providers().to_vec();
@@ -243,7 +244,7 @@ impl InstanceLoader {
                 .cloned()
                 .ok_or_else(|| {
                     format!(
-                        "Provider '{}' with APP_GUARD token does not implement Guard<HttpContext>",
+                        "Provider '{}' in the HTTP global guard collection does not implement Guard<HttpContext>",
                         provider_token
                     )
                 })?;
@@ -260,7 +261,7 @@ impl InstanceLoader {
                 .cloned()
                 .ok_or_else(|| {
                     format!(
-                        "Provider '{}' with APP_INTERCEPTOR token does not implement Interceptor<HttpContext>",
+                        "Provider '{}' in the HTTP global interceptor collection does not implement Interceptor<HttpContext, HttpHandlerResult>",
                         provider_token
                     )
                 })?;

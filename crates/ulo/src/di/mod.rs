@@ -36,7 +36,7 @@ pub use provide::{
     Provide, ScopedFactoryDeclaration, Under, ValueDeclaration,
 };
 pub use scope::ProviderScope;
-pub use token::{APP_GUARD, APP_INTERCEPTOR, APP_MIDDLEWARE, IntoToken, Token, token_of};
+pub use token::token_of;
 /// Derives [`Key`](trait@Key) for a type of the crate, naming its own slot.
 pub use ulo_macros::Key;
 

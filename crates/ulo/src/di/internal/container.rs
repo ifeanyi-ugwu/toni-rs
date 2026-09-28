@@ -44,8 +44,8 @@ pub struct Container {
     pub(crate) global_rpc: EnhancerSet<Rpc>,
     pub(crate) global_ws: EnhancerSet<Ws>,
     pub(crate) global_grpc: EnhancerSet<Grpc>,
-    /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
-    /// These will be resolved to global enhancers after DI container is built
+    /// Contributions to the HTTP guard and interceptor collections, as (module, provider) tokens,
+    /// resolved to HTTP's global enhancers once every provider is built.
     app_guard_providers: Vec<(String, String)>,
     app_interceptor_providers: Vec<(String, String)>,
     /// Multi-provider registry: base_token -> Vec<(module_token, provider_token)>.
@@ -604,13 +604,13 @@ impl Container {
         self.middleware_manager.as_mut()
     }
 
-    /// Register a provider with APP_GUARD token (during scan phase)
+    /// Records a contribution to the HTTP guard collection, HTTP's global guards.
     pub fn register_app_guard_provider(&mut self, module_token: String, provider_token: String) {
         self.app_guard_providers
             .push((module_token, provider_token));
     }
 
-    /// Register a provider with APP_INTERCEPTOR token (during scan phase)
+    /// Records a contribution to the HTTP interceptor collection, HTTP's global interceptors.
     pub fn register_app_interceptor_provider(
         &mut self,
         module_token: String,
@@ -620,12 +620,12 @@ impl Container {
             .push((module_token, provider_token));
     }
 
-    /// Get all APP_GUARD providers (after instances are created)
+    /// The contributions to the HTTP guard collection, in scan order.
     pub fn app_guard_providers(&self) -> &[(String, String)] {
         &self.app_guard_providers
     }
 
-    /// Get all APP_INTERCEPTOR providers (after instances are created)
+    /// The contributions to the HTTP interceptor collection, in scan order.
     pub fn app_interceptor_providers(&self) -> &[(String, String)] {
         &self.app_interceptor_providers
     }

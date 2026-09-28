@@ -124,27 +124,6 @@ impl DependencyScanner {
             for provider in providers {
                 let provider_token = provider.token();
 
-                // Detect APP_* token providers and register them separately
-                const APP_GUARD_NAME: &str = crate::di::APP_GUARD.name();
-                const APP_INTERCEPTOR_NAME: &str = crate::di::APP_INTERCEPTOR.name();
-                match provider_token.as_str() {
-                    APP_GUARD_NAME => {
-                        app_guards += 1;
-                        let provider_type_token = provider.token();
-                        container
-                            .register_app_guard_provider(module_token.clone(), provider_type_token);
-                    }
-                    APP_INTERCEPTOR_NAME => {
-                        app_interceptors += 1;
-                        let provider_type_token = provider.token();
-                        container.register_app_interceptor_provider(
-                            module_token.clone(),
-                            provider_type_token,
-                        );
-                    }
-                    _ => {}
-                }
-
                 // Detect multi-provider contributions and record them by base token. The unnamed
                 // collection of an HTTP guard or interceptor type is that transport's global set.
                 if let Some(base_token) = provider.multi_base_token() {
