@@ -2,6 +2,10 @@
 
 Status: proposed
 
+Refined by [ADR-0058](0058-a-provider-declaration-is-a-value.md): in the `#[use_*]` attributes a
+`Token<T>` const is written `token X` and a value held in a `static` or `const` `value X`; a bare path
+stays a type name.
+
 An enhancer declaration runs in the order written, whatever spelling each entry uses; the error
 chain sits above the interceptors on every transport; a guard answers `Result<(), E>`; and the
 three enhancer roles take one transport parameter apiece.

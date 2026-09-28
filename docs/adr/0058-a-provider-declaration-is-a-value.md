@@ -100,6 +100,29 @@ every place a declaration is written, and no role is detected by probing a value
 closure is emitted as written, its dependencies read from its parameter types through a trait
 implemented per arity, and the macro writes only the conversion of its output.
 
+**One rule for a bare path, by position.** In a *token position* (`provide!`'s left side,
+`#[inject(..)]`) a bare path is a token, an `IntoToken` value. In a *source position* (`provide!`'s
+right side, and the `#[use_guards]`, `#[use_interceptors]` and `#[use_error_handlers]` of ADR-0055) a
+bare path names a type: its own declaration in `provide!`, the binding under its type token in the
+`#[use_*]` attributes. A bare path there already names a type, and telling a const from it needs the
+casing rule this record removes, so a value or a token in a source position takes a keyword.
+
+- `value` names a value held elsewhere: a variable or const in `provide!`, a `static` or `const` in the
+  `#[use_*]` attributes.
+- A token takes `token` in the `#[use_*]` attributes and `alias` in `provide!`, which also takes
+  `factory`.
+- A string literal is not a path. It stays a token in the `#[use_*]` attributes, written bare, and is
+  an inline value on `provide!`'s right side.
+
+`#[inject(..)]` takes no type. A type is already a key, `token_of::<T>()`, and bare `#[inject]` keys by
+the field's type, the only type key that resolves.
+
+```rust
+#[use_guards(AuthGuard, token tokens::AUTH, value SHARED_LIMITER, "app.audit")]
+#[inject(tokens::API_KEY)] key: Arc<String>,
+#[inject] db: Arc<Db>,
+```
+
 **Single or many is a property of the key.** A key is single-bound unless a binding under it is
 declared with `into`, and a single binding and an `into` on one key fail `create` naming both
 (ADR-0057). A collection is keyed by its element type: `#[inject] plugins: Vec<Arc<dyn Plugin>>`
@@ -109,7 +132,7 @@ collection over one trait is a named `Many<dyn Plugin>` const. The macro writes 
 needs a declaration to be collected. Contributions reach other modules through exports, as single
 bindings do, in declaration order.
 
-**A token is an `impl IntoToken`.** In value position every spelling works: a qualified const, a
+**A token is an `impl IntoToken`.** In a token position every spelling works: a qualified const, a
 bare const, a runtime `String`. Nothing classifies a path; the compiler rejects a key that
 implements no `IntoToken`, and `#[diagnostic::on_unimplemented]` carries the message. A typed token
 is load-bearing: `provide!(tokens::API_KEY => 42u32)` where `API_KEY: Token<String>` fails to
@@ -178,7 +201,8 @@ alias, and `__ulo_provider_factory` leaves the public surface.
 - `APP_GUARD` and `APP_INTERCEPTOR` stop meaning HTTP alone, and `APP_ERROR_HANDLER` joins them. An
   enhancer implementing its role for one transport contributes to that transport's collection and
   fails to compile under a constant.
-- A token spelled as a qualified const, a bare const or a runtime string works in every position.
+- A token spelled as a qualified const, a bare const or a runtime string works in every token
+  position, and in a source position after `token`.
 - A module can export a string-token provider, a generic provider and a provider from a submodule,
   and declare a path-qualified controller.
 - A sync factory gains one word, `async`.
@@ -227,3 +251,6 @@ writes.
 **`provide!` probing a value's type for a role.** The macro would register a role the constructor it
 expands to cannot, and `provide!(k => v)` would build a different declaration from
 `Provide::value(k, v)`.
+
+**Strings only in the `#[use_*]` attributes** leaves a `Token<T>` const unnameable there. **Role
+tokens as unit types** work in both positions and need a declaration per token.
