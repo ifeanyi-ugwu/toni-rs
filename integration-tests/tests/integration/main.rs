@@ -81,6 +81,7 @@ mod marker_free_enhancers;
 mod metadata_overlay;
 mod method_enhancers;
 mod middleware_error;
+mod module_grammar;
 mod module_lookup;
 mod module_ref;
 mod modules;
