@@ -1,13 +1,11 @@
 pub mod dependency_info;
 pub mod enhancer_emit;
+pub mod inject_key;
 pub mod lifecycle_hooks;
 pub mod metadata_info;
 pub mod route_path;
 pub mod scope_parser;
 pub mod set_metadata;
-pub mod token_parser;
-
-pub use token_parser::TokenType;
 
 /// Returns `true` if the attribute's path ends with `name`.
 ///

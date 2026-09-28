@@ -163,9 +163,11 @@ pub fn sse(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Syntax
 ///
-/// - **Type name only** - Requires the guard to be registered in DI container:
+/// - **A type** - the binding under it: a type registered in the DI container, a qualified or
+///   generic path, or a marker declared with `key!`:
 ///   ```rust,ignore
 ///   #[use_guards(AuthGuard)]
+///   #[use_guards(Named)] // key!(pub Named: dyn Guard<HttpContext>)
 ///   ```
 ///
 /// - **Struct literal** - Directly instantiates the guard:
@@ -179,15 +181,22 @@ pub fn sse(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   #[use_guards(RoleGuard::new("admin"))]
 ///   ```
 ///
+/// - **A held value** - a value held in a const is written `value X`, and one held in a `static`
+///   `value &X`:
+///   ```rust,ignore
+///   #[use_guards(value ADMIN)]
+///   #[use_guards(value &LIMITER)]
+///   ```
+///
 /// - **Closure** - Builds the guard once per execution, from that execution's context:
 ///   ```rust,ignore
 ///   #[use_guards(|ctx| AuditGuard::for_call(ctx))]
 ///   ```
 ///
-/// The spelling decides the lifecycle: a type name resolves from DI with whatever scope it
-/// declares, a struct literal or constructor call is built once at startup and shared by every
-/// execution, and a closure runs per execution. Entries run in the order written, whichever
-/// spellings they mix.
+/// The spelling decides the lifecycle: a type resolves from DI with whatever scope its binding
+/// declares, a struct literal, constructor call or held value is built once at startup and shared
+/// by every execution, and a closure runs per execution. Entries run in the order written,
+/// whichever spellings they mix.
 ///
 /// # Examples
 ///
@@ -242,9 +251,11 @@ pub fn use_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Syntax
 ///
-/// - **Type name only** - Requires the interceptor to be registered in DI container:
+/// - **A type** - the binding under it: a type registered in the DI container, a qualified or
+///   generic path, or a marker declared with `key!`:
 ///   ```rust,ignore
 ///   #[use_interceptors(LoggingInterceptor)]
+///   #[use_interceptors(Named)] // key!(pub Named: dyn Interceptor<HttpContext, HttpHandlerResult>)
 ///   ```
 ///
 /// - **Struct literal** - Directly instantiates the interceptor:
@@ -258,13 +269,21 @@ pub fn use_guards(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   #[use_interceptors(CacheInterceptor::new(Duration::from_secs(60)))]
 ///   ```
 ///
+/// - **A held value** - a value held in a const is written `value X`, and one held in a `static`
+///   `value &X`:
+///   ```rust,ignore
+///   #[use_interceptors(value TIMING)]
+///   #[use_interceptors(value &SHARED_TIMING)]
+///   ```
+///
 /// - **Closure** - Builds the interceptor once per execution, from that execution's context:
 ///   ```rust,ignore
 ///   #[use_interceptors(|ctx| TimingInterceptor::for_call(ctx))]
 ///   ```
 ///
-/// The spelling decides the lifecycle, as for [`macro@use_guards`]: a type name resolves from DI,
-/// a struct literal or constructor call is built once and shared, a closure runs per execution.
+/// The spelling decides the lifecycle, as for [`macro@use_guards`]: a type resolves from DI, a
+/// struct literal, constructor call or held value is built once and shared, a closure runs per
+/// execution.
 /// Entries run in the order written, whichever spellings they mix.
 ///
 /// # Examples
@@ -316,9 +335,11 @@ pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Syntax
 ///
-/// - **Type name only** - Requires the error handler to be registered in DI container:
+/// - **A type** - the binding under it: a type registered in the DI container, a qualified or
+///   generic path, or a marker declared with `key!`:
 ///   ```rust,ignore
 ///   #[use_error_handlers(CustomErrorHandler)]
+///   #[use_error_handlers(Named)] // key!(pub Named: dyn ErrorHandler<HttpContext, HttpHandlerResult>)
 ///   ```
 ///
 /// - **Struct literal** - Directly instantiates the error handler:
@@ -330,6 +351,13 @@ pub fn use_interceptors(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - **Constructor call** - Directly calls the constructor:
 ///   ```rust,ignore
 ///   #[use_error_handlers(TracingErrorHandler::new(level))]
+///   ```
+///
+/// - **A held value** - a value held in a const is written `value X`, and one held in a `static`
+///   `value &X`:
+///   ```rust,ignore
+///   #[use_error_handlers(value FALLBACK)]
+///   #[use_error_handlers(value &SHARED_FALLBACK)]
 ///   ```
 ///
 /// An error handler has no per-execution arm, and `#[use_error_handlers(|ctx| ..)]` is refused
@@ -484,9 +512,10 @@ pub fn derive_inject_fields(_input: TokenStream) -> TokenStream {
 /// Marks the dependency-injected constructor of a `#[injectable]` struct.
 ///
 /// Place it on a `fn name(deps…) -> Self` inside the struct's `impl`. Each parameter is resolved
-/// from the DI container (by type, or `#[inject("TOKEN")]`) and passed in — so a dependency can be
-/// a constructor argument without being a stored field, and the constructor can run real assembly
-/// logic. Without `#[new]`, the provider builds the struct by field injection instead.
+/// from the DI container (by type, or through a key with `#[inject(K)]`) and passed in — so a
+/// dependency can be a constructor argument without being a stored field, and the constructor can
+/// run real assembly logic. Without `#[new]`, the provider builds the struct by field injection
+/// instead.
 ///
 /// ```ignore
 /// #[injectable]
@@ -589,34 +618,6 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
     app_error_macro::derive_app_error(input)
 }
 
-#[proc_macro]
-pub fn provider_value(input: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(input);
-    let output = provider_variants::handle_provider_value(input);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-#[proc_macro]
-pub fn provider_factory(input: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(input);
-    let output = provider_variants::handle_provider_factory(input);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-#[proc_macro]
-pub fn provider_alias(input: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(input);
-    let output = provider_variants::handle_provider_alias(input);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
-#[proc_macro]
-pub fn provider_token(input: TokenStream) -> TokenStream {
-    let input = proc_macro2::TokenStream::from(input);
-    let output = provider_variants::handle_provider_token(input);
-    proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
-}
-
 /// Declares a provider: `provide!(key => source)`, or `provide!(into key => source)` for a
 /// contribution to a collection.
 ///
@@ -650,20 +651,10 @@ pub fn provider_token(input: TokenStream) -> TokenStream {
 /// trait object is keyed as written, and the declaration and the field must spell it the same way.
 /// It is held behind `Arc` by a provider shared across threads, so the trait needs `Send + Sync`
 /// as supertraits, or the key is written `dyn Trait + Send + Sync`.
-///
-/// The comma form `provide!(TOKEN, source, marker)` is also accepted.
 #[proc_macro]
 pub fn provide(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
-    let output = if provider_variants::provide_expr::is_expr_grammar(&input) {
-        provider_variants::provide_expr::handle_provide_expr(input)
-    } else {
-        // A keyless generic type such as `Repo::<User, Pg>` has top-level commas too; the comma
-        // grammar refusing it is what sends it to this one.
-        provider_variants::handle_provide(input.clone()).or_else(|comma_error| {
-            provider_variants::provide_expr::handle_provide_expr(input).map_err(|_| comma_error)
-        })
-    };
+    let output = provider_variants::provide_expr::handle_provide_expr(input);
     proc_macro::TokenStream::from(output.unwrap_or_else(|e| e.to_compile_error()))
 }
 

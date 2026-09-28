@@ -160,7 +160,7 @@ fn generate_bridges(
 /// Fields are grouped by lookup token and deduplicated scope-aware, matching NestJS: singleton and
 /// execution-scoped providers are resolved once and shared (cloned) across same-token fields, while
 /// transient providers get a fresh instance per field. The explicit dedup is required because not
-/// every provider caches in the `RequestCache` (e.g. closure-based `provider_factory!`). Returns the
+/// every provider caches in the execution's cache (e.g. a hand-written `Provider`). Returns the
 /// resolution statements plus the field names, in declaration order.
 fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
     use indexmap::IndexMap;

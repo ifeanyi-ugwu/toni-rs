@@ -1,18 +1,18 @@
-//! What a type declares itself to be, so a module built at runtime can name the type rather than
-//! the factory generated beside it.
+//! What a type declares itself to be, so a module can name the type rather than the factory
+//! generated beside it.
 //!
-//! `#[module(providers: [Db], controllers: [Orders])]` names types, and the macro rewrites each to
-//! the factory its attribute generated. A builder method has no macro to do that rewriting, so
-//! these traits carry it: `DynamicModule::builder(..).provider_type::<Db>()` reaches the same
-//! factory `providers: [Db]` does.
+//! `#[module(providers: [Db], controllers: [Orders])]` reaches each type's factory through
+//! [`DeclaresProvider`] and [`DeclaresController`], as `DynamicModule::builder(..).provider::<Db>()`
+//! and `.controller::<Orders>()` do.
 
 use crate::di::provide::Declared;
 use crate::dispatch::ControllerFactory;
 use crate::spi::ProviderFactory;
 
-/// A type `#[injectable]` generated a provider factory for.
+/// A type with a provider declaration of its own: what a bare path in `providers:` or in
+/// `provide!` registers.
 ///
-/// Implemented by the attribute, never by hand — what it answers with is what `providers:` uses.
+/// `#[injectable]` and `#[websocket_gateway]` implement it, and so does `Extension<T>`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no provider declaration of its own",
     label = "a bare path here is a type's own declaration",

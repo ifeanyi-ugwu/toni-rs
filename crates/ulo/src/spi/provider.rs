@@ -75,8 +75,7 @@ pub enum ProviderRole {
 /// A fully-built, ready-to-inject provider with its role registrations.
 ///
 /// Returned from `ProviderFactory::build` and passed as dep values so
-/// wrapper factories (e.g. `provider_alias!`) can forward roles without
-/// a downcast.
+/// wrapper factories (e.g. an alias) can forward roles without a downcast.
 #[derive(Clone)]
 pub struct Injectable {
     pub instance: Arc<Box<dyn Provider>>,

@@ -66,8 +66,9 @@ impl Parse for ConfigParser {
                     config.controllers = fields
                         .into_iter()
                         .map(|field| {
-                            // Bar::__ulo_controller_factory() — only Bar needs to be in scope
-                            syn::parse_quote! { #field::__ulo_controller_factory() }
+                            syn::parse_quote! {
+                                <#field as ::ulo::di::DeclaresController>::controller_factory()
+                            }
                         })
                         .collect()
                 }
@@ -77,12 +78,13 @@ impl Parse for ConfigParser {
                     config.providers = fields
                         .into_iter()
                         .map(|expr| {
-                            // Simple path like Foo → Foo::__ulo_provider_factory()
-                            // Only Foo needs to be in scope; FooProviderFactory stays hidden.
+                            // A bare path is the type's own declaration.
                             if let syn::Expr::Path(ref expr_path) = expr {
                                 if expr_path.attrs.is_empty() && expr_path.qself.is_none() {
                                     let path = &expr_path.path;
-                                    return syn::parse_quote! { #path::__ulo_provider_factory() };
+                                    return syn::parse_quote! {
+                                        <#path as ::ulo::di::DeclaresProvider>::provider_factory()
+                                    };
                                 }
                             }
                             // Macro calls like provide!(...) are used as-is
