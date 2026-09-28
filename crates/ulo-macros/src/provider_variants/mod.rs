@@ -1,6 +1,7 @@
 pub mod alias_provider;
 pub mod factory_provider;
 pub mod multi_provider;
+pub mod provide_expr;
 pub mod token_provider;
 pub mod unified_provide;
 pub mod value_provider;

@@ -869,9 +869,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     // Generate resolutions for multi-provider fields
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        // Downcast must use the normalized type (with + Send + Sync) since that is what
-        // multi-providers store. The closure return type forces coercion back to inner_trait.
-        let downcast_inner = normalize_trait_send_sync(inner_trait.clone());
+        let item_resolution = collection_item_resolution(&inner_trait);
         let field_name_str = field_name.to_string();
         let resolution = quote! {
             let #field_name: #full_type = {
@@ -892,13 +890,7 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
                 erased_items
                     .into_iter()
                     .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        let wrapped = ::std::sync::Arc::downcast::<::std::sync::Arc<#downcast_inner>>(item)
-                            .unwrap_or_else(|_| panic!(
-                                "Multi-provider '{}': item downcast to Arc<{}> failed",
-                                __lookup_token,
-                                stringify!(#downcast_inner)
-                            ));
-                        (*wrapped).clone()
+                        #item_resolution
                     })
                     .collect()
             };
@@ -1036,7 +1028,7 @@ fn generate_factory_field_resolutions(
     // Generate resolutions for multi-provider fields
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        let downcast_inner = normalize_trait_send_sync(inner_trait.clone());
+        let item_resolution = collection_item_resolution(&inner_trait);
         let field_name_str = field_name.to_string();
         let resolution = quote! {
             let #field_name: #full_type = {
@@ -1057,13 +1049,7 @@ fn generate_factory_field_resolutions(
                 erased_items
                     .into_iter()
                     .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        let wrapped = ::std::sync::Arc::downcast::<::std::sync::Arc<#downcast_inner>>(item)
-                            .unwrap_or_else(|_| panic!(
-                                "Multi-provider '{}': item downcast to Arc<{}> failed",
-                                __lookup_token,
-                                stringify!(#downcast_inner)
-                            ));
-                        (*wrapped).clone()
+                        #item_resolution
                     })
                     .collect()
             };
@@ -1573,7 +1559,7 @@ fn generate_create_field_resolutions(
 
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        let downcast_inner = normalize_trait_send_sync(inner_trait.clone());
+        let item_resolution = collection_item_resolution(&inner_trait);
         let field_name_str = field_name.to_string();
         resolutions.push(quote! {
             let #field_name: #full_type = {
@@ -1598,13 +1584,7 @@ fn generate_create_field_resolutions(
                 erased_items
                     .into_iter()
                     .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        let wrapped = ::std::sync::Arc::downcast::<::std::sync::Arc<#downcast_inner>>(item)
-                            .unwrap_or_else(|_| panic!(
-                                "Multi-provider '{}': item downcast to Arc<{}> failed",
-                                __lookup_token,
-                                stringify!(#downcast_inner)
-                            ));
-                        (*wrapped).clone()
+                        #item_resolution
                     })
                     .collect()
             };
@@ -1815,4 +1795,45 @@ fn generate_dyn_factories(
     };
 
     (struct_defs, role_pushes)
+}
+
+/// How one collection item is read back as the field's `Arc<dyn Trait>`.
+///
+/// `provide!` stores an item as the trait object the declaration wrote, and the comma-form `multi`
+/// declarations as `dyn Trait + Send + Sync`. An item is read as written first; a field written
+/// without the bounds also reads the bounded form, which it can hold by dropping them.
+fn collection_item_resolution(inner_trait: &syn::Type) -> proc_macro2::TokenStream {
+    let bounded = normalize_trait_send_sync(inner_trait.clone());
+    let written_bounded = quote!(#bounded).to_string() == quote!(#inner_trait).to_string();
+    let fallback = if written_bounded {
+        quote! {
+            panic!(
+                "Multi-provider '{}': item downcast to Arc<{}> failed",
+                __lookup_token,
+                stringify!(#inner_trait)
+            )
+        }
+    } else {
+        quote! {
+            match ::std::sync::Arc::downcast::<::std::sync::Arc<#bounded>>(item) {
+                Ok(wrapped) => (*wrapped).clone(),
+                Err(_) => panic!(
+                    "Multi-provider '{}': item downcast to Arc<{}> failed",
+                    __lookup_token,
+                    stringify!(#inner_trait)
+                ),
+            }
+        }
+    };
+    let unread = if written_bounded {
+        quote!(_)
+    } else {
+        quote!(item)
+    };
+    quote! {
+        match ::std::sync::Arc::downcast::<::std::sync::Arc<#inner_trait>>(item) {
+            Ok(wrapped) => (*wrapped).clone(),
+            Err(#unread) => #fallback,
+        }
+    }
 }
