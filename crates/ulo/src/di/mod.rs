@@ -11,6 +11,7 @@ mod execution;
 mod execution_cache;
 mod extension;
 pub(crate) mod internal;
+mod key;
 pub(crate) mod module;
 mod scope;
 mod token;
@@ -20,10 +21,13 @@ pub use execution::Execution;
 pub use execution_cache::ExecutionCache;
 pub use extension::{Extension, ExtensionFactory};
 pub use internal::ModuleRef;
+pub use key::Key;
 pub use module::{
     CheckedModule, DynamicModule, MiddlewareConsumer, ModuleIdentity, ModuleMetadata,
 };
 pub use scope::ProviderScope;
 pub use token::{APP_GUARD, APP_INTERCEPTOR, APP_MIDDLEWARE, IntoToken, Token, token_of};
+/// Derives [`Key`](trait@Key) for a type of the crate, naming its own slot.
+pub use ulo_macros::Key;
 
 pub use crate::error::{InitResult, ResolutionError};

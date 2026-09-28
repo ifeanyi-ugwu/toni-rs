@@ -126,7 +126,8 @@ pub mod prelude {
 
     pub use crate::di::{CheckedModule, DynamicModule, Extension, InitResult, ModuleIdentity};
     pub use crate::di::{Execution, ModuleMetadata};
-    pub use crate::di::{ModuleRef, ProviderScope};
+    pub use crate::di::{Key, ModuleRef, ProviderScope};
+    pub use crate::key;
 
     pub use crate::dispatch::Items;
     pub use crate::enhancer::{ChainError, ErrorHandler, Guard, Interceptor, InterceptorNext};

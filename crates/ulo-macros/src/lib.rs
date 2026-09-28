@@ -16,6 +16,7 @@ mod controller_macro;
 mod enhancer;
 mod gateway_macro;
 mod grpc_macro;
+mod key_macro;
 mod markers_params;
 mod middleware_macro;
 mod module_macro;
@@ -546,6 +547,20 @@ lifecycle_hook_macro!(
 #[proc_macro_derive(Config, attributes(env, default, nested))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     config_macro::derive_config(input)
+}
+
+/// Makes a type writable in a key position, naming its own slot: `impl Key for T { type Value
+/// = T; }`.
+///
+/// A type is provided and injected by its own type without this. It is needed where a position
+/// reads a slot's `Value` through a key, such as `provide!(T => ..)` and the `_key` lookups.
+/// `#[injectable]`, `#[controller]` and `#[websocket_gateway]` implement `Key` already.
+#[proc_macro_derive(Key)]
+pub fn derive_key(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    proc_macro::TokenStream::from(
+        key_macro::derive_key(input).unwrap_or_else(|e| e.to_compile_error()),
+    )
 }
 
 /// Derive `ulo::Error` from an annotated error type.

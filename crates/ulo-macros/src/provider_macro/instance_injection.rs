@@ -196,6 +196,10 @@ fn generate_provider_factory_accessor(struct_name: &Ident) -> TokenStream {
                 #factory_name
             }
         }
+
+        impl ::ulo::di::Key for #struct_name {
+            type Value = Self;
+        }
     }
 }
 
@@ -675,6 +679,10 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
             fn controller_factory() -> impl ::ulo::dispatch::ControllerFactory + 'static {
                 #factory_name
             }
+        }
+
+        impl ::ulo::di::Key for #struct_name {
+            type Value = Self;
         }
     }
 }

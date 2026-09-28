@@ -366,6 +366,25 @@ impl UloApplication {
         self.context.get_from::<T>(module_token).await
     }
 
+    /// Returns the value under the marker `K`, searching across all modules. See
+    /// [`UloApplicationContext::get_key`](crate::application_context::UloApplicationContext::get_key).
+    pub async fn get_key<K>(&self) -> Result<K::Value, ResolutionError>
+    where
+        K: crate::di::Key,
+        K::Value: Sized,
+    {
+        self.context.get_key::<K>().await
+    }
+
+    /// Returns the value under the marker `K` from a specific module's scope.
+    pub async fn get_from_key<K>(&self, module_token: &str) -> Result<K::Value, ResolutionError>
+    where
+        K: crate::di::Key,
+        K::Value: Sized,
+    {
+        self.context.get_from_key::<K>(module_token).await
+    }
+
     /// Returns an instance from the DI container by token rather than type; use when providers
     /// are registered with a custom token.
     pub async fn get_by_token<T: 'static>(
@@ -414,6 +433,18 @@ impl UloApplication {
         execution: &crate::di::Execution,
     ) -> Result<T, ResolutionError> {
         self.context.resolve::<T>(execution).await
+    }
+
+    /// Resolves the value under the marker `K` in an execution.
+    pub async fn resolve_key<K>(
+        &self,
+        execution: &crate::di::Execution,
+    ) -> Result<K::Value, ResolutionError>
+    where
+        K: crate::di::Key,
+        K::Value: Sized,
+    {
+        self.context.resolve_key::<K>(execution).await
     }
 
     /// Resolves a provider by token in an execution.
