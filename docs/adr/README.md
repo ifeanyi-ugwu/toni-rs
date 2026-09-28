@@ -71,3 +71,4 @@ the history is part of the value.
 - [0056 — One role per position: the pre-dispatch role reaches every transport](0056-the-pre-dispatch-role.md)
 - [0057 — The container answers an ambiguous question, or refuses it](0057-the-container-answers-or-refuses.md)
 - [0058 — A provider declaration is a value, written through one macro](0058-a-provider-declaration-is-a-value.md)
+- [0059 — Every key is a type](0059-every-key-is-a-type.md)

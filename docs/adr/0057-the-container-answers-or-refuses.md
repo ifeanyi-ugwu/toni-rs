@@ -4,7 +4,7 @@ Status: proposed
 
 A key is single-bound unless declared multi, and a second single binding, or a single binding beside
 an `into` contribution, is refused naming both. A runtime lookup that widens past its module reaches
-only exported and global tokens. Lifecycle hooks run in construction order and shutdown runs in its
+only exported and global keys. Lifecycle hooks run in construction order and shutdown runs in its
 exact reverse, construction order being dependency order with ties broken by declaration order.
 
 ## Context
@@ -20,40 +20,42 @@ removes the first. ADR-0029 already refuses one case, two global modules exporti
 both keys. Nothing refuses two providers in one module, two imports exporting one token, or any
 `APP_*` registration after the first.
 
-"Many under one token" is also a real intent, and the framework carries it as a side channel: a multi
-provider is a separate kind with its own code path per declaration kind, not a property of a binding.
-A clash can only be told from a declared collection once the collection is ordinary token semantics.
+"Many under one token" is also a real intent, and the framework carries it as a side channel: a
+multi provider is a separate kind with its own code path per declaration kind, not a property of a
+binding. A clash can only be told from a declared collection once the collection is ordinary token
+semantics.
 
 **Which module answers.** A token held by two modules resolves to one of them at three sites: the
 loader's walk of an import set, `ModuleRef`'s non-strict lookup, and the application context's
 lookup by type. Renaming one module's builder id, declaration order unchanged, flips which value an
-injection site receives. Separately, `ModuleRef`'s `.global()` searches every provider of every module,
-exported or not, so a provider in a module that exports nothing and is not global is reachable from
-a module that never imports it. The method is named after the global registry that
+injection site receives. Separately, `ModuleRef`'s `.global()` searches every provider of every
+module, exported or not, so a provider in a module that exports nothing and is not global is
+reachable from a module that never imports it. The method is named after the global registry that
 `#[module(global: true)]` fills, and it reaches past that registry.
 
 **The order hooks fire in.** `on_module_init` and `on_application_bootstrap` walk the container's
 module map in hash order, and each module's providers come from another hash map. A provider's hook
-can run before the hook of a provider it injects, and adding one unrelated provider to a module flips
-two existing hooks. The three shutdown phases walk the same maps forwards, so teardown is not the
-reverse of construction. Construction itself is ordered: each module's dependency graph sorts its
-providers topologically, and modules are sorted before loading. The order exists one layer below the
-hooks and is not reused.
+can run before the hook of a provider it injects, and adding one unrelated provider to a module
+flips two existing hooks. The three shutdown phases walk the same maps forwards, so teardown is not
+the reverse of construction. Construction itself is ordered: each module's dependency graph sorts
+its providers topologically, and modules are sorted before loading. The order exists one layer below
+the hooks and is not reused.
 
 ## Decision
 
-**A key is single-bound unless declared multi.** A key is a token or, for a collection, its element
-type (ADR-0058). A second single binding under one key fails `create`, naming both declarations. A
-key is declared multi by contributing to it with `into` (ADR-0058), and a single binding and an
-`into` contribution on one key fail `create` naming both. A multi key collects its contributions in
-declaration order and injects them as `Vec<Arc<dyn Trait>>`. The unnamed collection of a role type
-is that transport's global set, and `APP_GUARD`, `APP_INTERCEPTOR` and `APP_ERROR_HANDLER` name the
-sets every transport runs, so two global guards both run. Any registration surface that takes a key
-obeys the same rule.
+**A key is single-bound unless declared multi.** A key is a type (ADR-0059): the type a binding
+answers as, `dyn Trait` included, a marker type, or, for an unnamed collection, its element type. A
+second single binding under one key fails `create`, naming both declarations. A key is declared
+multi by contributing to it with `into` (ADR-0058), and a single binding and an `into` contribution
+on one key fail `create` naming both. A multi key collects its contributions in declaration order
+and injects them as `Vec<Arc<T>>` for element type `T`. The unnamed collection of a role type is
+that transport's global set, and the markers `AppGuards`, `AppInterceptors` and `AppErrorHandlers`
+name the sets every transport runs, so two global guards both run. Any registration surface that
+takes a key obeys the same rule.
 
 **A widening lookup is a fallback into the global registry.** `ModuleRef`'s `.global()` becomes
-`.or_global()`: the current module first, then exported and global tokens, and nothing a module kept
-private. A token that two imports export into one module fails `create` naming both, and where
+`.or_global()`: the current module first, then exported and global keys, and nothing a module kept
+private. A key that two imports export into one module fails `create` naming both, and where
 startup cannot see the ambiguity, a lookup answers `ResolutionError::AmbiguousModule` rather than
 picking one.
 
@@ -74,9 +76,9 @@ rule above.
 
 ## Consequences
 
-- Two providers under one token, in one module or across two imports, fail `create` naming both.
-- Two `APP_GUARD` registrations, in one module or in two, both run in declaration order, and so do
-  two `APP_INTERCEPTOR` registrations.
+- Two providers under one key, in one module or across two imports, fail `create` naming both.
+- Two contributions to `AppGuards`, in one module or in two, both run in declaration order, and so
+  do two to `AppInterceptors`.
 - A provider in a module that exports nothing is unreachable from outside it, `.or_global()`
   included.
 - A provider's `on_module_init` runs after the init of every provider it injects, and its shutdown
@@ -88,9 +90,9 @@ rule above.
 **Last-wins as an override mechanism.** Nothing documents it, and it cannot express the `APP_GUARD`
 case, where the intent is two guards, not a replacement.
 
-**Refusing only the framework-fixed tokens.** It leaves every user token open to the same unreported
-replacement, and it still needs multi to work as token semantics before the fixed tokens can be
-collections.
+**Refusing only the framework-fixed keys.** It leaves every user key open to the same unreported
+replacement, and it still needs multi to work as ordinary key semantics before the fixed keys can
+be collections.
 
 **Keeping `.global()`'s reach and renaming it `.anywhere()`.** A provider a module did not export
 should not take part in another module's lookups, and a real need to search everywhere earns its own
