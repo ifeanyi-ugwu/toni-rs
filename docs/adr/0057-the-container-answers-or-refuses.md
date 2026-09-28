@@ -2,10 +2,10 @@
 
 Status: proposed
 
-A token is single-bound unless declared multi, and a second single binding is refused naming both. A
-runtime lookup that widens past its module reaches only exported and global tokens. Lifecycle hooks
-run in construction order and shutdown runs in its exact reverse, construction order being dependency
-order with ties broken by declaration order.
+A key is single-bound unless declared multi, and a second single binding, or a single binding beside
+an `into` contribution, is refused naming both. A runtime lookup that widens past its module reaches
+only exported and global tokens. Lifecycle hooks run in construction order and shutdown runs in its
+exact reverse, construction order being dependency order with ties broken by declaration order.
 
 ## Context
 
@@ -42,11 +42,14 @@ hooks and is not reused.
 
 ## Decision
 
-**A token is single-bound unless declared multi.** A second single binding under one token fails
-`create`, naming both declarations. A multi token collects its contributions in declaration order
-and injects them as `Vec<Arc<dyn Trait>>`. `APP_GUARD` and `APP_INTERCEPTOR` are multi tokens, so
-two registrations of either both run. Any registration surface that takes a token obeys the same
-rule, including a per-transport global surface once it takes one.
+**A key is single-bound unless declared multi.** A key is a token or, for a collection, its element
+type (ADR-0058). A second single binding under one key fails `create`, naming both declarations. A
+key is declared multi by contributing to it with `into` (ADR-0058), and a single binding and an
+`into` contribution on one key fail `create` naming both. A multi key collects its contributions in
+declaration order and injects them as `Vec<Arc<dyn Trait>>`. The unnamed collection of a role type
+is that transport's global set, and `APP_GUARD`, `APP_INTERCEPTOR` and `APP_ERROR_HANDLER` name the
+sets every transport runs, so two global guards both run. Any registration surface that takes a key
+obeys the same rule.
 
 **A widening lookup is a fallback into the global registry.** `ModuleRef`'s `.global()` becomes
 `.or_global()`: the current module first, then exported and global tokens, and nothing a module kept
@@ -59,12 +62,12 @@ every module. *Application*: an enhancer runs on every dispatch target. Search i
 meaning; after the narrowing it is a fallback into the first, which is what the new name says.
 
 **Lifecycle order is a contract.** Construction order is dependency order, and ties break by
-declaration order: walk the declaration list in order, and before emitting a provider emit everything
-it injects, so a module written in a valid order gets back exactly what it declared. Hooks follow
-construction order. Shutdown runs in the exact reverse. The container's module map and each module's
-provider, provider-instance and controller maps become insertion-ordered maps with the same hasher.
-A hash map promises no order, which is correct for a pure lookup and wrong once iteration carries a contract;
-the maps keyed by `TypeId` are lookups only and stay as they are.
+declaration order: walk the declaration list in order, and before emitting a provider emit
+everything it injects, so a module written in a valid order gets back exactly what it declared.
+Hooks follow construction order. Shutdown runs in the exact reverse. The container's module map and
+each module's provider, provider-instance and controller maps become insertion-ordered maps with the
+same hasher. A hash map promises no order, which is correct for a pure lookup and wrong once
+iteration carries a contract; the maps keyed by `TypeId` are lookups only and stay as they are.
 
 This record refines ADR-0029, which decided the global-export clash: that refusal is one case of the
 rule above.

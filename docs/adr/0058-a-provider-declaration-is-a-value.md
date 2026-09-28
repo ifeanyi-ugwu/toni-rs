@@ -1,12 +1,13 @@
-# 0058 — A provider declaration is a value
+# 0058 — A provider declaration is a value, written through one macro
 
 Status: proposed
 
-A provider is declared by an expression: three constructors, a type's own declaration, and two
-modifiers that compose over all of them. A token in a declaration is a value implementing
-`IntoToken`, never a spelling a macro reads. An enhancer role comes from the enhancer's own type or
-from the token's. A provider factory is always async. `#[new]` is the one constructor. What `build`
-returns is a `Registration`.
+A provider is declared by `provide!(key => source)`, one macro whose every form expands to a public
+constructor of the value API, so the builder and a function building declarations take the same
+values. A token in a declaration is a value, never a spelling a macro reads. A key is single-bound
+unless a binding under it is declared with `into`; a collection is keyed by its element type. An
+enhancer role comes from the enhancer's own type or from the key's. A provider factory is always
+async. `#[new]` is the one constructor. What `build` returns is a `Registration`.
 
 ## Context
 
@@ -43,6 +44,13 @@ Building it by hand has two shapes and both fail: a marker type parameter is amb
 site for an async closure (`E0282`), and two entry points accept the async form through the sync
 door as a provider of futures.
 
+**A collection needs a conversion that only concrete code can write.** A multi-provider collection
+hands out `Vec<Arc<dyn Plugin>>`, so each contribution's `Arc<V>` becomes an `Arc<dyn Plugin>`. For
+a trait the caller chooses, that conversion needs `Unsize`, which is unstable: a generic function
+cannot write it, and a modifier such as `.multi::<dyn Plugin>(..)` compiles as a signature and has
+no body that type-checks. Where both types are concrete, at the call site, the conversion is a plain
+`as` cast.
+
 **A role is detected where the value's type is concrete.** `provider_value!` and
 `provider_factory!` emit autoref probes that register a middleware, guard, interceptor or
 error-handler role when the produced value's type implements one. A value surface is a generic
@@ -51,48 +59,74 @@ there.
 
 ## Decision
 
-**The surface is values.**
+**One macro over the value API.** `provide!(key => source)` replaces the old `provide!` and the four
+`provider_*!` macros as the declaration surface. Each of its forms expands to a public constructor
+(`Provide::value`, `Provide::factory`, `Provide::alias`, `Provide::into`, a type's own declaration),
+so `builder.provider(provide!(..))`, `#[module(providers: [..])]` and an integration crate's
+`for_root` function build the same values. The macro is sugar over the value API, never beside it.
+It is a proc macro: it reads the source's syntax to choose a form, and it points each refusal at the
+user's value or closure. Its grammar is led by keywords and position, never by how a name is cased.
+
+| Written | Means |
+| --- | --- |
+| key: a string, a `Token<T>` or `Many<T>` const, `dyn Trait`, or none | where the binding goes; none keys it by what the source builds |
+| `into` before the key | a contribution to the collection under that key |
+| a bare name as the source, whatever its case | that type's own declaration, the rule `providers: [Db]` uses |
+| an inline closure / any other inline expression | a factory / a value |
+| `factory f`, `value C` | a factory or value held in a variable or const |
+| `alias K` | a second name for an existing binding |
 
 ```rust
 providers: [
-    Db,                                               // the type declares itself
-    Provide::value("API_KEY", key),
-    Provide::factory("POOL", async |c: Config| open(c).await),
-    Provide::alias("LOG", "LOGGER"),
-    FileLogger::provide().under("LOGGER"),
-    A::provide().multi::<dyn Plugin>("PLUGINS"),
-    B::provide().multi::<dyn Plugin>("PLUGINS"),
+    Db,                                                           // the type declares itself
+    provide!("app.port" => 3000u16),
+    provide!(tokens::API_KEY => value key),                       // a value held in a variable
+    provide!(async |cfg: Config| Db::connect(&cfg.url).await),    // keyed by Db
+    provide!(dyn Logger => ConsoleLogger),                        // a trait bound to its implementation
+    provide!("app.log" => alias tokens::LOGGER),
+    provide!(tokens::AUTH => HeaderGuard("x-auth")),             // a guard, from the key's type
+    provide!(into APP_GUARD => Auth),                             // a global guard, every transport
+    provide!(into dyn Guard<HttpContext> => RateLimit(100)),      // a global guard, HTTP
+    provide!(into dyn Plugin => A {}),
+    provide!(into dyn Plugin => async |d: Dep| B(d)),
+    provide!(into dyn Plugin => C),
+    provide!(into dyn Plugin => factory make),                    // a factory held in a variable
+    provide!(into tokens::LEGACY => A {}),                        // a named collection
 ]
 ```
 
-Three constructors, one accessor, two modifiers. `under` and `multi` are one blanket extension over
-`ProviderFactory`, so they compose over every constructor and over a type's own declaration, and they
-chain. `multi` is a property of a binding, not a kind. A factory's dependencies come from its
-parameter types through a trait implemented per arity, not from the closure's text. `provide!` and
-the four macros are deleted.
+The macro keeps what the macros it replaces lacked: a token stays a value, one vocabulary serves
+every place a declaration is written, and no role is detected by probing a value's type. A factory
+closure is emitted as written, its dependencies read from its parameter types through a trait
+implemented per arity, and the macro writes only the conversion of its output.
 
-**A token is an `impl IntoToken`.** In value position every spelling works: a qualified const, a bare
-const, a runtime `String`. Nothing classifies a path; the compiler rejects a value that is neither a
-`Token<T>` nor a `&str`, and `#[diagnostic::on_unimplemented]` carries the message. A typed token is
-load-bearing: `Provide::value(tokens::API_KEY, 42u32)` where `API_KEY: Token<String>` fails to
-compile, and the string form accepts it.
+**Single or many is a property of the key.** A key is single-bound unless a binding under it is
+declared with `into`, and a single binding and an `into` on one key fail `create` naming both
+(ADR-0057). A collection is keyed by its element type: `#[inject] plugins: Vec<Arc<dyn Plugin>>`
+asks for the collection `dyn Plugin` the way `#[inject] db: Arc<Db>` asks for `Db`. A second
+collection over one trait is a named `Many<dyn Plugin>` const. The macro writes the `Arc<V>` to
+`Arc<dyn Trait>` cast at the call site and hands `Provide::into` the converted item, so no trait
+needs a declaration to be collected. Contributions reach other modules through exports, as single
+bindings do, in declaration order.
 
-**A role comes from a type: the enhancer's own, or the token's.** An `#[injectable]` enhancer
-registers its roles, and `.under(token)` forwards them. A token typed with a role trait,
-`Token<dyn Guard<HttpContext>>`, makes whatever is provided under it take that role, and the
-constructor's bound refuses a value that does not implement it. `APP_GUARD` and `APP_INTERCEPTOR`
-are role tokens: `APP_GUARD` is a `Token<dyn Guard<HttpContext>>`. A string token, or a token typed with a data type, carries data and registers no
-role.
+**A token is an `impl IntoToken`.** In value position every spelling works: a qualified const, a
+bare const, a runtime `String`. Nothing classifies a path; the compiler rejects a key that
+implements no `IntoToken`, and `#[diagnostic::on_unimplemented]` carries the message. A typed token
+is load-bearing: `provide!(tokens::API_KEY => 42u32)` where `API_KEY: Token<String>` fails to
+compile, and `provide!("app.key" => 42u32)` compiles. Token names follow a prefix convention,
+`"billing.plugins"`, and two bindings that collide on one name fail `create` (ADR-0057).
 
-```rust
-pub const AUTH: Token<dyn Guard<HttpContext>> = Token::new("AUTH_GUARD");
+**A role comes from a type: the enhancer's own, or the key's.** An `#[injectable]` enhancer
+registers its roles, and rebinding it under another key forwards them. A key typed with a role
+trait makes whatever is provided under it take that role, and a value that does not implement it
+fails to compile:
 
-providers: [
-    Provide::value(AUTH, HeaderGuard("x-auth")),       // a guard, checked
-    Provide::value(APP_GUARD, RateLimit::new(100)),    // a global guard, checked
-    Provide::value("PORT", 3000u16),                   // data
-]
-```
+- a `Token<dyn Guard<HttpContext>>` is a single guard, applied where a route names it;
+- the unnamed collection `dyn Guard<HttpContext>` is HTTP's global guards;
+- `APP_GUARD`, `APP_INTERCEPTOR` and `APP_ERROR_HANDLER` are the every-transport global sets, and
+  a contribution under one has to implement the role for all four transports.
+
+A string token, or a token typed with a data type, carries data and registers no role.
 
 **`#[module]` and the builder take the same expressions.** All four keys parse expressions, and
 `exports:` takes both forms the builder's export methods have. The builder has one
@@ -101,13 +135,13 @@ one list. An `Extension<T>` needs no declaration, as `Extensions` needs none: th
 any `Extension<T>` token from the execution's bag.
 
 **A provider factory is always async.** The bound is `F: Fn(A..) -> Fut, Fut: Future<Output = R> +
-Send`, which accepts every async spelling and refuses a sync closure. `AsyncFn` accepts the same set,
-but its future type is unstable, so `Send` cannot be named on it. `Provider::resolve` and
+Send`, which accepts every async spelling and refuses a sync closure. `AsyncFn` accepts the same
+set, but its future type is unstable, so `Send` cannot be named on it. `Provider::resolve` and
 `ProviderFactory::build` are already async; the surface becomes consistent with the SPI.
 
 The rule behind this one: *where a language affordance is being copied rather than a design, check
-that the affordance exists.* Nest's duality rests on `await`, and copying it means building `await`'s
-tolerance by hand.
+that the affordance exists.* Nest's duality rests on `await`, and copying it means building
+`await`'s tolerance by hand.
 
 **`#[new]` is the only constructor.** It reads dependencies from the signature, where a Rust reader
 looks, and needs no attribute on the fields. `init = "…"` is removed from `#[injectable]`, and
@@ -123,20 +157,27 @@ both, since the constructor decides every field.
 | What `build` returns: an instance and its roles | `Registration` |
 | Marking a type a provider | `#[injectable]` |
 | Marking a dependency | `#[inject]` |
-| A type's own declaration | `T::provide()` |
-| Binding under another token | `.under(token)` |
-| Contributing to a collected token | `.multi::<Tr>(base)` |
+| A type's own declaration | `T::provide()`, or a bare name in `provide!` |
+| Binding under another key | `provide!(key => T)`, or `T::provide().under(key)` |
+| Contributing to a collection | `provide!(into key => source)`, or `Provide::into(key, item)` |
+| A named collection | `Many<T>` |
 
-`provide()` is a trait method, so `DeclaresProvider` goes in the prelude with the modifiers.
+`provide()` is a trait method, so `DeclaresProvider` goes in the prelude with `provide!`.
 
 **Nothing is kept for compatibility.** The crate is unpublished and its first release will be a
-beta. The macros are deleted rather than deprecated, `init = "…"` is deleted without a migration error,
-`Injectable` is renamed without an alias, and `__ulo_provider_factory` leaves the public surface.
+beta. The four `provider_*!` macros and the old `provide!` grammar are deleted rather than
+deprecated, `init = "…"` is deleted without a migration error, `Injectable` is renamed without an
+alias, and `__ulo_provider_factory` leaves the public surface.
 
 ## Consequences
 
-- Every provider declaration in the tree, and every page showing `provide!` or one of the four
-  macros, is rewritten.
+- Every provider declaration in the tree, and every page showing the old `provide!` or one of the
+  four macros, is rewritten.
+- A trait is collected with no declaration of its own; a contribution that does not implement it
+  fails to compile.
+- `APP_GUARD` and `APP_INTERCEPTOR` stop meaning HTTP alone, and `APP_ERROR_HANDLER` joins them. An
+  enhancer implementing its role for one transport contributes to that transport's collection and
+  fails to compile under a constant.
 - A token spelled as a qualified const, a bare const or a runtime string works in every position.
 - A module can export a string-token provider, a generic provider and a provider from a submodule,
   and declare a path-qualified controller.
@@ -149,10 +190,11 @@ beta. The macros are deleted rather than deprecated, `init = "…"` is deleted w
 
 ## Roads not taken
 
-**One grammar for the five markers.** It leaves the ten code paths and the token as a token tree.
+**One grammar for the five markers over the four macros.** It leaves the ten code paths and the
+token as a token tree.
 
-**Both vocabularies with one documented as preferred.** That is the state today, and the tree's
-call sites are split across both spellings.
+**Two parallel vocabularies with one documented as preferred.** Each keeps its own code path, and
+the call sites split across both.
 
 **Fixing each token surface as it is reported.** It leaves five surfaces with five subsets, and the
 defect has been rediscovered from two directions already.
@@ -171,3 +213,17 @@ whether it implements a trait. **Naming the role at each declaration** (`.guard:
 modifier per role where the token already says it. **A `#[module]` syntax of its own**, emitting the
 same probes, would work in one of the two places a declaration is written and leave the builder
 without roles.
+
+**Values alone.** A contribution to a collection would need `Arc::new` around every value and an
+`as Arc<dyn Trait>` in every factory body, and a type's own declaration could not contribute at all.
+**A `.multi::<dyn Trait>(name)` modifier** needs `Unsize` and has no body that compiles on
+stable. **A declaration once per collected trait** (`collects!(dyn Plugin)`) and **a block declaring
+every token** both work, and both keep multi as a separate step a user takes before a collection
+exists.
+
+**A coercion closure at each contribution** (`|p| p`) repeats at every call the cast the macro
+writes.
+
+**`provide!` probing a value's type for a role.** The macro would register a role the constructor it
+expands to cannot, and `provide!(k => v)` would build a different declaration from
+`Provide::value(k, v)`.
