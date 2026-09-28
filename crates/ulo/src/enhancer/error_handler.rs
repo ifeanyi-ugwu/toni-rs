@@ -27,3 +27,18 @@ pub type ChainError<'a> = &'a (dyn Error + Send + Sync + 'static);
 pub trait ErrorHandler<C: ?Sized + ExecutionContext, R>: Send + Sync {
     async fn handle_error(&self, error: ChainError<'_>, ctx: &C) -> Option<R>;
 }
+
+/// An error handler held in a `static` is shared by reference, written
+/// `#[use_error_handlers(value &FALLBACK)]`.
+#[diagnostic::do_not_recommend]
+#[async_trait]
+impl<'h, C, R, H> ErrorHandler<C, R> for &'h H
+where
+    C: ?Sized + ExecutionContext,
+    R: Send + 'static,
+    H: ErrorHandler<C, R> + ?Sized,
+{
+    async fn handle_error(&self, error: ChainError<'_>, ctx: &C) -> Option<R> {
+        (**self).handle_error(error, ctx).await
+    }
+}

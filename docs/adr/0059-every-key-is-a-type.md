@@ -119,7 +119,8 @@ and the module's identity base takes `token_of::<K>()` in place of the name.
   `Holds` becomes a check of what is provided against `K::Value`: the type equality
   `K: Key<Value = ..>` for a slot holding the declared type, the cast for one holding a trait
   object. `HoldsPerExecution` becomes `PerExecution`, implemented for the guard and interceptor
-  trait objects, and `Injects` a check of a field's shape against `K::Value`.
+  trait objects, and `Injects` the bound `K: Key<Value = ..>` on an `#[inject(K)]` field's held
+  type.
 - A named slot costs a marker type, two lines or one `key!` line, where a string was one literal.
 - A key cannot be chosen at runtime, and two crates cannot share a slot by agreeing on a string.
 - A foreign type is bound keyless and injected by bare `#[inject]`. The orphan rule keeps a user

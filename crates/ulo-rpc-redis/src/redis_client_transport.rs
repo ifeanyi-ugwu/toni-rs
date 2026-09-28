@@ -31,13 +31,14 @@ type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 /// transport will ever use, so there is no per-request connection churn.
 ///
 /// The connection and router are established lazily on first use, so the
-/// transport can be constructed synchronously inside a `provider_value!` block.
+/// transport can be constructed synchronously as a provider value.
 ///
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "INVENTORY_CLIENT",
+/// key!(pub Inventory: ulo::rpc::RpcClient);
+///
+/// provide!(Inventory =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_redis::RedisClientTransport::new("redis://127.0.0.1:6379"))
 /// )
 /// ```

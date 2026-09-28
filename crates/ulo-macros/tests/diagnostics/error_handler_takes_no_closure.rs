@@ -1,6 +1,6 @@
 // An error handler is built once and shared by every execution, so the closure
 // spelling — which builds per execution — has nothing to land on. It is refused
-// at the argument, naming the two spellings that are accepted.
+// at the argument, naming the spellings that are accepted.
 //
 // Paths are written in full and the handler type is well-typed, so the
 // recorded output is this diagnostic and nothing else.

@@ -242,8 +242,10 @@ where
     }
 
     fn exports(&self) -> Option<Vec<String>> {
-        // Export GraphQLService so other modules can inject it
-        Some(vec!["GraphQLService".to_string()])
+        // Export the service so other modules can inject it by its type
+        Some(vec![ulo::di::token_of::<
+            crate::GraphQLService<Query, Mutation, Subscription, Ctx>,
+        >()])
     }
 
     fn imports(&self) -> Option<Vec<Box<dyn ModuleMetadata>>> {

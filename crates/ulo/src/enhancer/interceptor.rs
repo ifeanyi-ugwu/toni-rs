@@ -26,3 +26,18 @@ pub trait InterceptorNext<C: ?Sized + ExecutionContext, R>: Send {
 pub trait Interceptor<C: ?Sized + ExecutionContext, R>: Send + Sync {
     async fn intercept(&self, context: &C, next: Box<dyn InterceptorNext<C, R>>) -> R;
 }
+
+/// An interceptor held in a `static` is shared by reference, written
+/// `#[use_interceptors(value &TIMING)]`.
+#[diagnostic::do_not_recommend]
+#[async_trait]
+impl<'i, C, R, I> Interceptor<C, R> for &'i I
+where
+    C: ?Sized + ExecutionContext,
+    R: Send + 'static,
+    I: Interceptor<C, R> + ?Sized,
+{
+    async fn intercept(&self, context: &C, next: Box<dyn InterceptorNext<C, R>>) -> R {
+        (**self).intercept(context, next).await
+    }
+}

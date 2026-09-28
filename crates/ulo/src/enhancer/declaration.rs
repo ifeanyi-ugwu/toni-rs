@@ -1,21 +1,22 @@
 //! How a declaration names an enhancer, before any of it is resolved.
 //!
-//! `#[use_guards(...)]` and its siblings take three spellings, and the spelling alone decides the
-//! lifecycle:
+//! `#[use_guards(...)]` and its siblings name an enhancer three ways, and which way alone decides
+//! the lifecycle:
 //!
 //! | written | is | lifecycle | DI |
 //! | --- | --- | --- | --- |
-//! | a bare path — `AuthGuard` | a type name | whatever its scope says | yes |
-//! | a value expression — `RateLimiter::new(100)`, `Simple {}` | a value | built once at startup, shared by every execution | no |
+//! | a type — `AuthGuard`, `guards::AuthGuard`, a marker `Auth` | the binding under it | whatever its binding's scope says | yes |
+//! | a value expression — `RateLimiter::new(100)`, `Simple {}`; `value LIMIT`, `value &SHARED` | a value | built once at startup, shared by every execution | no |
 //! | a closure — `\|ctx\| Audit::for_call(ctx)` | a constructor | built per execution, at this site | no |
 //!
-//! The `{}` on a unit struct is what tells a value from a type name, so the three are told apart
-//! by grammar with no convention to remember. Every entry keeps its place: the order a declaration
-//! writes is the order the resolver keeps, whichever spellings it mixes.
+//! A bare path names a type, never a const, so a value held in a const takes `value`, and a value
+//! held in a `static` is taken by reference, a reference to an enhancer being that enhancer. The
+//! `{}` on a unit struct is what tells a value from a type. Every entry keeps its place: the order
+//! a declaration writes is the order the resolver keeps, whichever ways it mixes.
 //!
-//! An error handler takes the first two spellings only. It is built once and shared, so the
-//! closure form has nothing to build per execution, and `#[use_error_handlers(|ctx| ..)]` is
-//! refused where it is written.
+//! An error handler takes the first two only. It is built once and shared, so the closure form
+//! has nothing to build per execution, and `#[use_error_handlers(|ctx| ..)]` is refused where it
+//! is written.
 
 use std::sync::Arc;
 
@@ -27,8 +28,8 @@ use crate::enhancer::{ErrorHandler, Guard, Interceptor};
 /// One entry of `#[use_guards(...)]`.
 #[non_exhaustive]
 pub enum GuardDeclaration<T: Transport> {
-    /// `#[use_guards(AuthGuard)]` — a DI token, resolved against the role registry at `create`.
-    /// A token that resolves against nothing fails `create`.
+    /// `#[use_guards(AuthGuard)]` or `#[use_guards(Auth)]` — the binding under a type, resolved
+    /// against the role registry at `create`. A key that resolves against nothing fails `create`.
     Token(String),
     /// `#[use_guards(RoleGuard::new("admin"))]` — one value, shared by every execution.
     Value(Arc<dyn Guard<T::Context>>),
@@ -89,7 +90,7 @@ pub struct InterceptorConstructor<T: Transport>(pub(crate) Arc<dyn InterceptorFa
 
 /// One entry of `#[use_error_handlers(...)]`.
 ///
-/// Two spellings, not three: an error handler is built once and shared, so there is no
+/// A type or a value, never a closure: an error handler is built once and shared, so there is no
 /// per-execution arm for a closure to reach.
 #[non_exhaustive]
 pub enum ErrorHandlerDeclaration<T: Transport> {

@@ -15,8 +15,8 @@ macro_rules! impl_diesel_pool {
     ($factory:ident, $provider:ident, $conn:ty, $pool:ty) => {
         pub(crate) struct $factory {
             pub url: String,
-            // Injection token for this pool: the `Pool<_>` type name for the default
-            // (`postgres`/`mysql`), or the caller's chosen name for a named pool.
+            // Injection token for this pool: `Pool<_>`'s own for the default (`postgres`/`mysql`),
+            // or the marker's for a keyed pool.
             pub token: String,
             pub check: Option<StartupCheck>,
         }

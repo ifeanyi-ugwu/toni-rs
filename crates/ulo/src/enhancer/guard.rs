@@ -32,3 +32,12 @@ use crate::context::ExecutionContext;
 pub trait Guard<C: ?Sized + ExecutionContext>: Send + Sync {
     async fn can_activate(&self, context: &C) -> bool;
 }
+
+/// A guard held in a `static` is shared by reference, written `#[use_guards(value &LIMITER)]`.
+#[diagnostic::do_not_recommend]
+#[async_trait]
+impl<'g, C: ?Sized + ExecutionContext, G: Guard<C> + ?Sized> Guard<C> for &'g G {
+    async fn can_activate(&self, context: &C) -> bool {
+        (**self).can_activate(context).await
+    }
+}

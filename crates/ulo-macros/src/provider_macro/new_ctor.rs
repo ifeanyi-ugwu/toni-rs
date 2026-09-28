@@ -98,16 +98,12 @@ fn extract_params(method: &ImplItemFn) -> Result<Vec<CtorParam>> {
     Ok(params)
 }
 
-/// `#[inject]` / `#[inject("TOKEN")]` / `#[inject(Type)]` on a parameter → custom token; otherwise
-/// `None` (caller falls back to the type token).
+/// The key `#[inject(K)]` on a parameter names; `None` for bare `#[inject]` or none, where the
+/// caller keys by the parameter's type.
 fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStream>> {
     for attr in &pat_type.attrs {
         if crate::shared::attr_is(attr, "inject") {
-            if attr.meta.require_path_only().is_ok() {
-                return Ok(None);
-            }
-            let token_type: crate::shared::TokenType = attr.parse_args()?;
-            return Ok(Some(token_type.to_token_expr()));
+            return crate::shared::inject_key::inject_key(attr, &pat_type.ty);
         }
     }
     Ok(None)

@@ -13,8 +13,7 @@ use ulo::rpc::{RpcClientError, RpcClientTransport, RpcData};
 /// NATS transport for [`RpcClient`].
 ///
 /// Connections are established lazily on the first [`send`] or [`emit`] call so
-/// the struct can be constructed synchronously inside a `provider_value!` or
-/// `provider_factory!` block.
+/// the struct can be constructed synchronously as a provider value.
 ///
 /// A streaming call (`open_stream`, ADR-0032) subscribes an explicit inbox and
 /// feeds its frames to the caller's [`RpcReplyStream`] until the end marker.
@@ -25,8 +24,9 @@ use ulo::rpc::{RpcClientError, RpcClientTransport, RpcData};
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "INVENTORY_CLIENT",
+/// key!(pub Inventory: ulo::rpc::RpcClient);
+///
+/// provide!(Inventory =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_nats::NatsClientTransport::new("nats://localhost:4222"))
 /// )
 /// ```

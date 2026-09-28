@@ -10,7 +10,7 @@ use std::{any::Any, sync::Arc};
 use crate::error::ResolutionError;
 
 use crate::{
-    di::internal::{Container, IntoToken, ModuleLifecycle, ModuleRef},
+    di::internal::{Container, ModuleLifecycle, ModuleRef},
     di::module::ModuleIdentity,
     di::{Execution, Key},
     spi::Provider,
@@ -161,8 +161,7 @@ impl UloApplicationContext {
         K: Key,
         K::Value: Sized,
     {
-        self.get_by_token::<K::Value>(crate::di::token_of::<K>())
-            .await
+        self.get_under::<K::Value>(crate::di::token_of::<K>()).await
     }
 
     /// Returns the value under the marker `K` from a specific module's scope. See
@@ -172,29 +171,24 @@ impl UloApplicationContext {
         K: Key,
         K::Value: Sized,
     {
-        self.get_from_by_token::<K::Value>(module_token, crate::di::token_of::<K>())
+        self.get_from_under::<K::Value>(module_token, crate::di::token_of::<K>())
             .await
     }
 
-    /// Returns an instance from the DI container by token rather than type; use when providers are registered with a custom token
-    pub async fn get_by_token<T: 'static>(
-        &self,
-        token: impl IntoToken<T>,
-    ) -> Result<T, ResolutionError> {
-        let token = token.into_token();
+    /// The value registered under `token`, searching across all modules.
+    async fn get_under<T: 'static>(&self, token: String) -> Result<T, ResolutionError> {
         let provider = self.provider_in_any_module(&token)?;
         Execution::None.ensure_can_build(provider.scope(), &token)?;
 
         downcast(provider.resolve(Execution::None).await, &token)
     }
 
-    /// Returns an instance by token from a specific module's scope in the DI container
-    pub async fn get_from_by_token<T: 'static>(
+    /// The value registered under `token` in one module.
+    async fn get_from_under<T: 'static>(
         &self,
         module_token: &str,
-        token: impl IntoToken<T>,
+        token: String,
     ) -> Result<T, ResolutionError> {
-        let token = token.into_token();
         let provider = self.provider_in_module(module_token, &token)?;
         Execution::None.ensure_can_build(provider.scope(), &token)?;
 
@@ -237,17 +231,16 @@ impl UloApplicationContext {
         K: Key,
         K::Value: Sized,
     {
-        self.resolve_by_token::<K::Value>(crate::di::token_of::<K>(), execution)
+        self.resolve_under::<K::Value>(crate::di::token_of::<K>(), execution)
             .await
     }
 
-    /// Resolves a provider by token in an execution.
-    pub async fn resolve_by_token<T: 'static>(
+    /// The value registered under `token`, resolved in an execution.
+    async fn resolve_under<T: 'static>(
         &self,
-        token: impl IntoToken<T>,
+        token: String,
         execution: &Execution,
     ) -> Result<T, ResolutionError> {
-        let token = token.into_token();
         let provider = self.provider_in_any_module(&token)?;
         execution.ensure_can_build(provider.scope(), &token)?;
 

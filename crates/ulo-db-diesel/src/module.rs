@@ -1,6 +1,6 @@
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use ulo::StartupCheck;
-use ulo::di::{CheckedModule, DynamicModule};
+use ulo::di::{CheckedModule, DynamicModule, Key, token_of};
 pub struct DieselModule;
 
 impl DieselModule {
@@ -60,63 +60,65 @@ impl DieselModule {
         })
     }
 
-    /// Register a second, named Postgres pool.
+    /// Register a second Postgres pool, under the marker `K`.
     ///
-    /// `postgres` provides one `Pool<AsyncPgConnection>` injectable by type. When an application
-    /// needs more than one pool, each additional one is registered under a name and injected by
-    /// that name — the type alone can no longer tell them apart.
+    /// `postgres` provides one `Pool<AsyncPgConnection>` injectable by type. A second one needs a
+    /// slot of its own, named by a marker type whose slot holds a `Pool<AsyncPgConnection>`:
     ///
     /// ```ignore
+    /// key!(pub Analytics: Pool<AsyncPgConnection>);
+    ///
     /// #[module(imports: [
     ///     DieselModule::postgres(env!("PRIMARY_URL")),
-    ///     DieselModule::postgres_named("analytics", env!("ANALYTICS_URL")),
+    ///     DieselModule::postgres_keyed::<Analytics>(env!("ANALYTICS_URL")),
     /// ])]
     /// pub struct AppModule;
-    /// ```
     ///
-    /// ```ignore
     /// #[injectable]
     /// pub struct ReportService {
-    ///     #[inject("analytics")]
+    ///     #[inject(Analytics)]
     ///     pool: Pool<AsyncPgConnection>,
     /// }
     /// ```
     ///
-    /// The name is a global identifier: two pools cannot share one, and reusing a name across
-    /// integrations is refused at startup. The pool only is registered — the health indicator is
-    /// attached to the default `postgres` pool.
+    /// Two pools under one marker are refused at startup, whichever integrations register them. The
+    /// pool only is registered — the health indicator is attached to the default `postgres` pool.
     #[cfg(feature = "postgres")]
-    pub fn postgres_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
+    pub fn postgres_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = crate::PgPool>,
+    {
         use crate::pool::PgPoolFactory;
-        let name: String = name.into();
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("DieselModule::postgres::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(PgPoolFactory {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })
     }
 
-    /// Register a second, named MySQL pool, injected by `name` rather than by type.
+    /// Register a second MySQL pool, under the marker `K`. See [`DieselModule::postgres_keyed`].
     #[cfg(feature = "mysql")]
-    pub fn mysql_named(name: impl Into<String>, url: impl Into<String>) -> CheckedModule {
+    pub fn mysql_keyed<K>(url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = crate::MySqlPool>,
+    {
         use crate::pool::MySqlPoolFactory;
-        let name: String = name.into();
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("DieselModule::mysql::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(MySqlPoolFactory {
                     url: url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })

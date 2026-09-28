@@ -194,31 +194,40 @@ impl Role {
         }
     }
 
-    fn trait_shape(self) -> &'static str {
+    /// The role trait as `T` writes it, such as `Interceptor<HttpContext, Answer<Http>>`.
+    fn trait_shape<T: Transport>(self) -> String {
+        let context = short_name::<T::Context>();
+        let marker = short_name::<T>();
         match self {
-            Self::Guard => "Guard<Context>",
-            Self::Interceptor => "Interceptor<Context>",
-            Self::ErrorHandler => "ErrorHandler<Context, Answer>",
+            Self::Guard => format!("Guard<{context}>"),
+            Self::Interceptor => format!("Interceptor<{context}, Answer<{marker}>>"),
+            Self::ErrorHandler => format!("ErrorHandler<{context}, Answer<{marker}>>"),
         }
     }
 }
 
-/// The one diagnostic a token that resolves against nothing produces.
+/// A non-generic type's name without its module path.
+fn short_name<X: ?Sized>() -> &'static str {
+    let full = std::any::type_name::<X>();
+    full.rsplit("::").next().unwrap_or(full)
+}
+
+/// The one diagnostic a key that resolves against nothing produces.
 ///
-/// A role is registered by the trait impl a provider carries, so a token missing from the registry
-/// means either the provider is absent from `providers` or it does not implement the role at all.
-/// Both are worth naming, because the second compiles.
+/// A role is registered by the trait impl a declared type carries, or by the trait object a value
+/// or factory's slot holds, so a key missing from the registry means the provider is absent from
+/// `providers`, does not implement the role, or is a value or factory declared under a slot
+/// holding no role. The message names all three.
 fn not_found<T: Transport>(role: Role, token: &str) -> Box<dyn std::error::Error + Send + Sync> {
     format!(
         "{transport} {role} '{token}' not found in registry. {subject} registers automatically by \
-         implementing {trait_shape} for this transport's context; make sure the provider is in the \
-         module's `providers` list. For `provider_factory!` under a string/const token, name the \
-         produced type so it can be detected — annotate the closure's return type or pass a type \
-         hint.",
+         implementing {trait_shape}; make sure the provider is in the module's `providers` list. A \
+         value or factory registers no role under a slot holding a data type; declare it under a \
+         marker holding the role, `key!(Name: dyn {trait_shape})`.",
         transport = T::NAME,
         role = role.name(),
         subject = role.with_article(),
-        trait_shape = role.trait_shape(),
+        trait_shape = role.trait_shape::<T>(),
     )
     .into()
 }
@@ -250,5 +259,15 @@ mod tests {
             assert!(message.starts_with(opening), "{message}");
             assert!(message.contains(subject), "{message}");
         }
+    }
+
+    /// The trait shape is the one a role marker is written with, so the suggested marker compiles.
+    #[test]
+    fn the_diagnostic_names_the_role_marker_as_written() {
+        let message = not_found::<Http>(Role::Interceptor, "X").to_string();
+        assert!(
+            message.contains("`key!(Name: dyn Interceptor<HttpContext, Answer<Http>>)`"),
+            "{message}"
+        );
     }
 }

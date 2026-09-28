@@ -108,10 +108,13 @@ impl<T: Send + Sync + 'static> Extension<T> {
     pub fn take(&self) -> Option<T> {
         self.bag.remove::<T>()
     }
+}
 
-    #[doc(hidden)]
-    pub fn __ulo_provider_factory() -> ExtensionFactory<T> {
-        ExtensionFactory::new()
+/// `providers: [Extension::<T>]` registers the view of `T` in the execution's bag.
+#[diagnostic::do_not_recommend]
+impl<T: Send + Sync + 'static> crate::di::DeclaresProvider for Extension<T> {
+    fn provider_factory() -> impl ProviderFactory + 'static {
+        ExtensionFactory::<T>::new()
     }
 }
 
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     fn the_registration_token_names_the_payload_type() {
-        let factory = Extension::<User>::__ulo_provider_factory();
+        let factory = <Extension<User> as crate::di::DeclaresProvider>::provider_factory();
         assert!(factory.token().contains("Extension"));
         assert!(factory.token().contains("User"));
     }

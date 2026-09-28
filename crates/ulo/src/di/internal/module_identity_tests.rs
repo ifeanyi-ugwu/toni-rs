@@ -90,14 +90,18 @@ impl ModuleMetadata for Root {
     }
 }
 
-/// A global module exporting one connection under `token`, fingerprinted by `url`.
-fn conn_module(base: &str, token: &str, url: &str) -> DynamicModule {
+struct Conn;
+struct Primary;
+struct Replica;
+
+/// A global module exporting one connection under `K`'s slot, fingerprinted by `url`.
+fn conn_module<K: 'static>(base: &str, url: &str) -> DynamicModule {
     DynamicModule::builder(base)
         .provider_factory(FakeFactory {
-            token: token.into(),
+            token: crate::di::token_of::<K>(),
             hint: Some(url.into()),
         })
-        .export_token(token)
+        .export::<K>()
         .global()
         .build()
 }
@@ -117,9 +121,9 @@ fn no_hint_keeps_base_identity() {
 
 #[test]
 fn same_config_shares_identity_but_different_config_splits_it() {
-    let a = conn_module("Conn", "conn", "postgres://a");
-    let a_again = conn_module("Conn", "conn", "postgres://a");
-    let b = conn_module("Conn", "conn", "postgres://b");
+    let a = conn_module::<Conn>("Conn", "postgres://a");
+    let a_again = conn_module::<Conn>("Conn", "postgres://a");
+    let b = conn_module::<Conn>("Conn", "postgres://b");
 
     // Same base + same config → same identity (a diamond import dedups).
     assert_eq!(a.identity().key(), a_again.identity().key());
@@ -136,10 +140,10 @@ fn same_config_shares_identity_but_different_config_splits_it() {
 fn add_module_dedups_identical_dynamic_modules() {
     let mut container = Container::new();
     container
-        .add_module(Box::new(conn_module("Conn", "conn", "postgres://a")))
+        .add_module(Box::new(conn_module::<Conn>("Conn", "postgres://a")))
         .unwrap();
     container
-        .add_module(Box::new(conn_module("Conn", "conn", "postgres://a")))
+        .add_module(Box::new(conn_module::<Conn>("Conn", "postgres://a")))
         .unwrap();
     assert_eq!(container.module_tokens().len(), 1);
 }
@@ -161,15 +165,16 @@ async fn load(root: Root) -> crate::error::SetupResult<Arc<RwLock<Container>>> {
 #[tokio::test]
 async fn two_unnamed_connections_are_refused() {
     let root = Root::new(vec![
-        Box::new(conn_module("Conn", "conn", "postgres://a")),
-        Box::new(conn_module("Conn", "conn", "postgres://b")),
+        Box::new(conn_module::<Conn>("Conn", "postgres://a")),
+        Box::new(conn_module::<Conn>("Conn", "postgres://b")),
     ]);
     let msg = match load(root).await {
         Ok(_) => panic!("clash must abort startup"),
         Err(e) => e.to_string(),
     };
     assert!(
-        msg.contains("exported globally by two modules") && msg.contains("conn"),
+        msg.contains("exported globally by two modules")
+            && msg.contains(&crate::di::token_of::<Conn>()),
         "unexpected error: {msg}"
     );
 }
@@ -177,13 +182,19 @@ async fn two_unnamed_connections_are_refused() {
 #[tokio::test]
 async fn named_connections_coexist_and_resolve() {
     let root = Root::new(vec![
-        Box::new(conn_module("Conn::primary", "primary", "postgres://a")),
-        Box::new(conn_module("Conn::replica", "replica", "postgres://b")),
+        Box::new(conn_module::<Primary>("Conn::primary", "postgres://a")),
+        Box::new(conn_module::<Replica>("Conn::replica", "postgres://b")),
     ]);
     let container = load(root).await.expect("named connections must coexist");
     let c = container.read();
-    assert!(c.get_global_provider(&"primary".to_string()).is_some());
-    assert!(c.get_global_provider(&"replica".to_string()).is_some());
+    assert!(
+        c.get_global_provider(&crate::di::token_of::<Primary>())
+            .is_some()
+    );
+    assert!(
+        c.get_global_provider(&crate::di::token_of::<Replica>())
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -191,8 +202,8 @@ async fn same_connection_imported_twice_dedups() {
     // Two identical registrations (same base, same config) — a diamond import. They collapse
     // to one module, so there is no clash and the single connection resolves.
     let root = Root::new(vec![
-        Box::new(conn_module("Conn", "conn", "postgres://a")),
-        Box::new(conn_module("Conn", "conn", "postgres://a")),
+        Box::new(conn_module::<Conn>("Conn", "postgres://a")),
+        Box::new(conn_module::<Conn>("Conn", "postgres://a")),
     ]);
     let container = load(root)
         .await
@@ -200,7 +211,7 @@ async fn same_connection_imported_twice_dedups() {
     assert!(
         container
             .read()
-            .get_global_provider(&"conn".to_string())
+            .get_global_provider(&crate::di::token_of::<Conn>())
             .is_some()
     );
 }

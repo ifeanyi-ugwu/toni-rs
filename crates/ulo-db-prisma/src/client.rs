@@ -14,8 +14,8 @@ where
     Fut: Future<Output = C> + Send + 'static,
 {
     pub connect: F,
-    // Injection token for this client: the `C` type name for the default (`for_root`), or the
-    // caller's chosen name for a `for_root_named` client.
+    // Injection token for this client: `C`'s own for the default (`for_root`), or the marker's
+    // for a `for_root_keyed` client.
     pub token: String,
     pub _client: PhantomData<C>,
 }

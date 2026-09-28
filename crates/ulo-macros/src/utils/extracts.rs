@@ -7,8 +7,8 @@ use syn::{
     TypePath, TypeReference, spanned::Spanned,
 };
 
+use crate::shared::attr_is;
 use crate::shared::dependency_info::{DependencyInfo, DependencySource};
-use crate::shared::{TokenType, attr_is};
 
 pub fn extract_controller_prefix(impl_block: &ItemImpl) -> Result<String> {
     impl_block
@@ -51,7 +51,6 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(field, "Unnamed struct fields not supported"))?;
 
-        // Check for #[inject] or #[inject("TOKEN")] attribute
         let inject_attr = extract_inject_attr(field)?;
         let has_inject = inject_attr.is_some();
 
@@ -75,7 +74,6 @@ pub fn extract_struct_dependencies(struct_attrs: &ItemStruct) -> Result<Dependen
 
                 // Determine the lookup token
                 let lookup_token_expr = if let Some(custom_token_expr) = inject_attr.unwrap() {
-                    // #[inject("TOKEN")] or #[inject(Type)] - use custom token
                     custom_token_expr
                 } else {
                     // #[inject] - use type-based token
@@ -121,25 +119,12 @@ fn extract_default_attr(field: &syn::Field) -> Result<Option<Expr>> {
     Ok(None)
 }
 
-/// Extract the #[inject] or #[inject(token)] attribute from a field
-/// Returns:
-/// - None: no #[inject] attribute
-/// - Some(None): #[inject] without token (use type-based token)
-/// - Some(Some(token_expr)): #[inject("TOKEN")] or #[inject(Type)] with custom token
+/// The `#[inject]` attribute on a field: `None` without one, `Some(None)` for bare `#[inject]`,
+/// and `Some(Some(key))` for `#[inject(K)]`.
 fn extract_inject_attr(field: &syn::Field) -> Result<Option<Option<TokenStream>>> {
     for attr in &field.attrs {
         if attr_is(attr, "inject") {
-            // Check if there's an argument
-            if attr.meta.require_path_only().is_ok() {
-                // #[inject] without arguments - use type-based token
-                return Ok(Some(None));
-            } else {
-                // #[inject("TOKEN")] or #[inject(Type)] or #[inject(CONST)]
-                // Parse as TokenType to support all token formats
-                let token_type: TokenType = attr.parse_args()?;
-                let token_expr = token_type.to_token_expr();
-                return Ok(Some(Some(token_expr)));
-            }
+            return crate::shared::inject_key::inject_key(attr, &field.ty).map(Some);
         }
     }
     Ok(None)
@@ -190,43 +175,6 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
         ty,
         "Expected a type path (e.g., MyType or MyType<T>)",
     ))
-}
-
-/// Normalize a trait-object type to always include `+ Send + Sync`.
-///
-/// The comma-form `multi` declarations store `Arc<dyn Trait + Send + Sync>`. When a user writes
-/// `Vec<Arc<dyn Plugin>>` (omitting the bounds), reading those items needs the bounded type.
-pub fn normalize_trait_send_sync(ty: Type) -> Type {
-    let Type::TraitObject(mut tobj) = ty else {
-        return ty;
-    };
-    let has_send = tobj
-        .bounds
-        .iter()
-        .any(|b| matches!(b, syn::TypeParamBound::Trait(t) if t.path.is_ident("Send")));
-    let has_sync = tobj
-        .bounds
-        .iter()
-        .any(|b| matches!(b, syn::TypeParamBound::Trait(t) if t.path.is_ident("Sync")));
-    if !has_send {
-        tobj.bounds
-            .push(syn::TypeParamBound::Trait(syn::TraitBound {
-                paren_token: None,
-                modifier: syn::TraitBoundModifier::None,
-                lifetimes: None,
-                path: syn::parse_quote!(Send),
-            }));
-    }
-    if !has_sync {
-        tobj.bounds
-            .push(syn::TypeParamBound::Trait(syn::TraitBound {
-                paren_token: None,
-                modifier: syn::TraitBoundModifier::None,
-                lifetimes: None,
-                path: syn::parse_quote!(Sync),
-            }));
-    }
-    Type::TraitObject(tobj)
 }
 
 /// Returns the inner trait-object type if `ty` is `Arc<dyn Trait...>`, otherwise `None`.

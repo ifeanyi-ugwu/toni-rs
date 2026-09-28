@@ -31,6 +31,11 @@ struct Inner {
     cancel_tx: mpsc::UnboundedSender<String>,
 }
 
+// Slot type shared between the public transport and the background reader
+// loop. The reader clears the slot on exit so the next caller rebuilds the
+// connection — this is the lazy-reconnect path.
+type Slot = Arc<Mutex<Option<Arc<Inner>>>>;
+
 /// TCP transport for [`RpcClient`].
 ///
 /// Maintains a persistent TCP connection to the remote service.
@@ -56,18 +61,14 @@ struct Inner {
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "ORDERS_CLIENT",
+/// key!(pub Orders: ulo::rpc::RpcClient);
+///
+/// provide!(Orders =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_tcp::TcpClientTransport::new("127.0.0.1", 4000))
 /// )
 /// ```
 ///
 /// [`RpcClient`]: ulo::rpc::RpcClient
-// Slot type shared between the public transport and the background reader
-// loop. The reader clears the slot on exit so the next caller rebuilds the
-// connection — this is the lazy-reconnect path.
-type Slot = Arc<Mutex<Option<Arc<Inner>>>>;
-
 pub struct TcpClientTransport {
     host: String,
     port: u16,

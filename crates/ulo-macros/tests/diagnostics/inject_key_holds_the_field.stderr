@@ -1,0 +1,16 @@
+error[E0271]: type mismatch resolving `<Port as Key>::Value == String`
+ --> tests/diagnostics/inject_key_holds_the_field.rs:8:14
+  |
+8 |     #[inject(Port)]
+  |              ^^^^ type mismatch resolving `<Port as Key>::Value == String`
+  |
+note: expected this to be `std::string::String`
+ --> tests/diagnostics/inject_key_holds_the_field.rs:4:17
+  |
+4 | ulo::key!(Port: u16);
+  |                 ^^^
+note: required by a bound in `ulo::__di::inject_key`
+ --> $WORKSPACE/crates/ulo/src/__di.rs
+  |
+  | pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
+  |                          ^^^^^^^^^ required by this bound in `inject_key`

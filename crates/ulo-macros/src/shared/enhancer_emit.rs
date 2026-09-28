@@ -6,8 +6,7 @@
 //! dyn-factory shapes, so they're a separate small kind to keep `EnhancerKind`
 //! uniform.
 //!
-//! Every emission site (singleton role-push, execution-scoped dyn-factory,
-//! `provider_factory!` ready, `provider_factory!` non-caching factory) reads
+//! Every emission site (singleton role-push, execution-scoped dyn-factory) reads
 //! from these specs instead of restating the per-variant constants inline.
 
 use proc_macro2::TokenStream;
@@ -183,9 +182,9 @@ impl ErrorHandlerKind {
 /// `ulo::__detect` autoref probes resolve (a generic wrapper would erase the bound and detect
 /// nothing — see the `__detect` module docs).
 ///
-/// Shared by every singleton role-registration site: the `#[injectable]` factory and the caching
-/// `provider_factory!` factory. Middleware, the eight guard/interceptor
-/// kinds, and the four error-handler kinds are each probed; only implemented ones register.
+/// Used by the `#[injectable]` factory's singleton role registration. Middleware, the eight
+/// guard/interceptor kinds, and the four error-handler kinds are each probed; only implemented ones
+/// register.
 pub fn value_probe_detection() -> TokenStream {
     let mut detects = vec![quote! {
         if let Some(__r) = ::ulo::__detect::MiddlewareProbe(instance.clone()).detect() {

@@ -59,7 +59,17 @@ impl UserService {
 
 ## Multiple databases
 
-`for_root` registers `Database` under the `mongodb::Database` type token. Calling it twice overwrites the first registration. If you need multiple databases, inject `Database` and call `client.database("other_db")` — or open an issue.
+`for_root` registers `Database` under its own type. A second database needs a slot of its own, named by a marker type holding a `Database`, and is registered with `MongoModule::for_root_keyed::<K>(uri, db_name)` and injected with `#[inject(K)]`:
+
+```rust,ignore
+key!(pub Analytics: Database);
+
+#[module(imports: [
+    MongoModule::for_root(env!("PRIMARY_URI"), "primary"),
+    MongoModule::for_root_keyed::<Analytics>(env!("ANALYTICS_URI"), "analytics"),
+])]
+pub struct AppModule;
+```
 
 ## License
 

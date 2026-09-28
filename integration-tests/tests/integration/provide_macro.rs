@@ -1,10 +1,11 @@
-//! `provide!` registers a provider under a string token, inferring the form
-//! from the expression and taking it from a marker when told.
+//! `provide!` registers a provider under a marker, reading the form from the
+//! source's syntax and taking it from a keyword when told.
 //!
-//! Auto-detection is the part that can be wrong without being loud: a value
+//! Reading the syntax is the part that can be wrong without being loud: a value
 //! read as a factory, or the reverse, still registers a provider and still
-//! resolves. Each marker — `value()`, `factory()`, `existing()`, `provider()` —
-//! is asserted against what it produced, not merely that it produced something.
+//! resolves. Each form — an inline value, an inline closure, a bare type name,
+//! `alias`, `value`, `factory` — is asserted against what it produced, not
+//! merely that it produced something.
 use crate::common::TestServer;
 use std::time::Duration;
 use ulo::http::Body;
@@ -50,33 +51,42 @@ impl CacheService {
 
 #[tokio::test]
 async fn provide_macro_patterns() {
+    ulo::key!(ApiKey: String);
+    ulo::key!(Port: u16);
+    ulo::key!(Timeout: Duration);
+    ulo::key!(MaxConnections: i32);
+    ulo::key!(Logger: String);
+    ulo::key!(PrimaryDb: DatabaseService);
+    ulo::key!(CacheAlias: CacheService);
+    ulo::key!(ExplicitValue: String);
+    ulo::key!(ExplicitFactory: String);
     #[injectable]
     pub struct AppService {
-        #[inject("API_KEY")]
+        #[inject(ApiKey)]
         api_key: String,
 
-        #[inject("PORT")]
+        #[inject(Port)]
         port: u16,
 
-        #[inject("TIMEOUT")]
+        #[inject(Timeout)]
         timeout: Duration,
 
-        #[inject("MAX_CONNECTIONS")]
+        #[inject(MaxConnections)]
         max_connections: i32,
 
-        #[inject("LOGGER")]
+        #[inject(Logger)]
         logger: String,
 
-        #[inject("PRIMARY_DB")]
+        #[inject(PrimaryDb)]
         database: DatabaseService,
 
-        #[inject("CACHE_ALIAS")]
+        #[inject(CacheAlias)]
         cache: CacheService,
 
-        #[inject("EXPLICIT_VALUE")]
+        #[inject(ExplicitValue)]
         explicit_value: String,
 
-        #[inject("EXPLICIT_FACTORY")]
+        #[inject(ExplicitFactory)]
         explicit_factory: String,
     }
     impl AppService {
@@ -116,28 +126,26 @@ async fn provide_macro_patterns() {
             DatabaseService,
             CacheService,
 
-            // Literals auto-detected as value providers
-            provide!("API_KEY", "secret_key".to_string()),
-            provide!("PORT", 8080_u16),
-            provide!("TIMEOUT", Duration::from_secs(30)),
+            // An inline expression is a value
+            provide!(ApiKey => "secret_key".to_string()),
+            provide!(Port => 8080_u16),
+            provide!(Timeout => Duration::from_secs(30)),
 
-            // Closures auto-detected as factory providers
-            provide!("MAX_CONNECTIONS", || 100_i32),
-            provide!("LOGGER", |config: ConfigService| {
+            // An inline closure is a factory
+            provide!(MaxConnections => async || 100_i32),
+            provide!(Logger => async |config: ConfigService| {
                 format!("logger:{}", config.env)
             }),
 
-            // provider() required - registers type under custom token
-            provide!("PRIMARY_DB", provider(DatabaseService)),
+            // A bare name is the type's own declaration, here under a key
+            provide!(PrimaryDb => DatabaseService),
 
-            // existing() required - creates alias to existing provider
-            provide!("CACHE_ALIAS", existing(CacheService)),
+            // `alias` is a second name for an existing binding
+            provide!(CacheAlias => alias CacheService),
 
-            // value() optional - explicit marker for clarity
-            provide!("EXPLICIT_VALUE", value("explicit".to_string())),
-
-            // factory() optional - explicit marker for clarity
-            provide!("EXPLICIT_FACTORY", factory(|| "factory_result".to_string())),
+            // `value` and `factory` name the form where the syntax would too
+            provide!(ExplicitValue => value "explicit".to_string()),
+            provide!(ExplicitFactory => factory async || "factory_result".to_string()),
 
             AppService,
         ],

@@ -16,7 +16,7 @@ use event_listener::Event;
 
 use crate::{
     application_context::UloApplicationContext,
-    di::internal::{Container, IntoToken},
+    di::internal::Container,
     dispatch::resolve::GatewayResolver,
     grpc::GrpcAdapter,
     http::RouteMount,
@@ -385,26 +385,6 @@ impl UloApplication {
         self.context.get_from_key::<K>(module_token).await
     }
 
-    /// Returns an instance from the DI container by token rather than type; use when providers
-    /// are registered with a custom token.
-    pub async fn get_by_token<T: 'static>(
-        &self,
-        token: impl IntoToken<T>,
-    ) -> Result<T, ResolutionError> {
-        self.context.get_by_token::<T>(token).await
-    }
-
-    /// Returns an instance by token from a specific module's scope in the DI container.
-    pub async fn get_from_by_token<T: 'static>(
-        &self,
-        module_token: &str,
-        token: impl IntoToken<T>,
-    ) -> Result<T, ResolutionError> {
-        self.context
-            .get_from_by_token::<T>(module_token, token)
-            .await
-    }
-
     /// The module handle for `M`, found by its identity. See
     /// [`UloApplicationContext::get_module`](crate::application_context::UloApplicationContext::get_module).
     pub async fn get_module<M: 'static>(
@@ -445,15 +425,6 @@ impl UloApplication {
         K::Value: Sized,
     {
         self.context.resolve_key::<K>(execution).await
-    }
-
-    /// Resolves a provider by token in an execution.
-    pub async fn resolve_by_token<T: 'static>(
-        &self,
-        token: impl IntoToken<T>,
-        execution: &crate::di::Execution,
-    ) -> Result<T, ResolutionError> {
-        self.context.resolve_by_token::<T>(token, execution).await
     }
 
     /// Bind all registered adapters and run bootstrap hooks.

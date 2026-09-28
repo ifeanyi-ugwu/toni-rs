@@ -44,8 +44,8 @@ pub struct Container {
     pub(crate) global_rpc: EnhancerSet<Rpc>,
     pub(crate) global_ws: EnhancerSet<Ws>,
     pub(crate) global_grpc: EnhancerSet<Grpc>,
-    /// APP_* token providers - providers registered with special tokens (module_token, provider_token)
-    /// These will be resolved to global enhancers after DI container is built
+    /// Contributions to the HTTP guard and interceptor collections, as (module, provider) tokens,
+    /// resolved to HTTP's global enhancers once every provider is built.
     app_guard_providers: Vec<(String, String)>,
     app_interceptor_providers: Vec<(String, String)>,
     /// Multi-provider registry: base_token -> Vec<(module_token, provider_token)>.
@@ -535,7 +535,7 @@ impl Container {
         // Register all exported providers as globally accessible
         for export_token in exports_tokens.iter() {
             // Two distinct global modules exporting the same token is the shape of the
-            // "two connections, no names" mistake: both provide `DatabaseConnection`, and one
+            // "two connections, no markers" mistake: both provide `DatabaseConnection`, and one
             // would silently shadow the other at injection. Refuse it and point at the fix. The
             // owner is keyed by identity, not display name — two dynamic modules with different
             // config share a name but are genuinely different modules.
@@ -546,8 +546,9 @@ impl Container {
                         "provider '{export_token}' is exported globally by two modules \
                          ('{owner_name}' and '{module_name}'). One would silently shadow the other. \
                          If these are separate instances of the same integration, register each \
-                         under a distinct name — integrations expose a named constructor for this \
-                         (e.g. `for_root_named`) — and inject it with `#[inject(\"<name>\")]`."
+                         under a marker of its own — integrations expose a keyed constructor for \
+                         this (e.g. `for_root_keyed::<K>`), `K` declared with `key!` — and inject \
+                         it with `#[inject(K)]`."
                     ).into());
                 }
             }
@@ -603,13 +604,13 @@ impl Container {
         self.middleware_manager.as_mut()
     }
 
-    /// Register a provider with APP_GUARD token (during scan phase)
+    /// Records a contribution to the HTTP guard collection, HTTP's global guards.
     pub fn register_app_guard_provider(&mut self, module_token: String, provider_token: String) {
         self.app_guard_providers
             .push((module_token, provider_token));
     }
 
-    /// Register a provider with APP_INTERCEPTOR token (during scan phase)
+    /// Records a contribution to the HTTP interceptor collection, HTTP's global interceptors.
     pub fn register_app_interceptor_provider(
         &mut self,
         module_token: String,
@@ -619,12 +620,12 @@ impl Container {
             .push((module_token, provider_token));
     }
 
-    /// Get all APP_GUARD providers (after instances are created)
+    /// The contributions to the HTTP guard collection, in scan order.
     pub fn app_guard_providers(&self) -> &[(String, String)] {
         &self.app_guard_providers
     }
 
-    /// Get all APP_INTERCEPTOR providers (after instances are created)
+    /// The contributions to the HTTP interceptor collection, in scan order.
     pub fn app_interceptor_providers(&self) -> &[(String, String)] {
         &self.app_interceptor_providers
     }

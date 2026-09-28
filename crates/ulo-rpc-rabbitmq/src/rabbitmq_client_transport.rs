@@ -36,13 +36,14 @@ type Pending = Arc<Mutex<HashMap<String, PendingSlot>>>;
 /// `amq.rabbitmq.reply-to` receives every reply, and a correlation id routes
 /// each one back to the waiting [`send`]. The connection and consumer are
 /// established lazily on first use, so the transport can be built synchronously
-/// in a `provider_value!` block.
+/// as a provider value.
 ///
 /// # Example
 ///
 /// ```ignore
-/// provider_value!(
-///     "INVENTORY_CLIENT",
+/// key!(pub Inventory: ulo::rpc::RpcClient);
+///
+/// provide!(Inventory =>
 ///     ulo::rpc::RpcClient::new(ulo_rpc_rabbitmq::RabbitMqClientTransport::new("amqp://127.0.0.1:5672/%2f"))
 /// )
 /// ```

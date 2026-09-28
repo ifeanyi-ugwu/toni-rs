@@ -1,0 +1,5 @@
+error: a key is a type, not a string: declare a marker with `key!(pub Name: T)` and write `#[inject(Name)]`
+ --> tests/diagnostics/inject_takes_no_string.rs:5:14
+  |
+5 |     #[inject("PORT")]
+  |              ^^^^^^

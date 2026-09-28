@@ -28,30 +28,6 @@ mod kw {
     syn::custom_keyword!(alias);
 }
 
-/// Whether `input` is written in this grammar rather than the comma grammar. This grammar has a
-/// top-level `=>`, starts with `into`, or is a lone source.
-pub fn is_expr_grammar(input: &TokenStream) -> bool {
-    let tokens: Vec<TokenTree> = input.clone().into_iter().collect();
-    if let Some(TokenTree::Ident(first)) = tokens.first() {
-        if first == "into" || first == "async" || first == "move" {
-            return true;
-        }
-    }
-    if matches!(tokens.first(), Some(TokenTree::Punct(p)) if p.as_char() == '|') {
-        return true;
-    }
-    let has_fat_arrow = tokens.windows(2).any(|w| {
-        matches!((&w[0], &w[1]),
-            (TokenTree::Punct(a), TokenTree::Punct(b))
-                if a.as_char() == '=' && b.as_char() == '>'
-                    && a.spacing() == proc_macro2::Spacing::Joint)
-    });
-    let has_top_level_comma = tokens
-        .iter()
-        .any(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ','));
-    has_fat_arrow || !has_top_level_comma
-}
-
 enum Key {
     /// `dyn Trait`: the trait object's own slot.
     Dyn(Type),

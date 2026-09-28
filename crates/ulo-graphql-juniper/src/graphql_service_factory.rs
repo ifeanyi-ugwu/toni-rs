@@ -100,7 +100,7 @@ where
     Subscription::TypeInfo: Send + Sync,
 {
     fn token(&self) -> String {
-        "GraphQLService".to_string()
+        ulo::di::token_of::<crate::GraphQLService<Query, Mutation, Subscription, Ctx, S>>()
     }
 
     async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> Injectable {

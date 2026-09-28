@@ -258,7 +258,7 @@ async fn controller_constructor_patterns() {
 
 #[tokio::test]
 async fn constructor_param_injection_patterns() {
-    const DB_TOKEN: &str = "CustomDatabase";
+    ulo::key!(CustomDatabase: DatabaseService);
 
     #[injectable]
     pub struct DatabaseService {}
@@ -302,7 +302,7 @@ async fn constructor_param_injection_patterns() {
     pub struct TokenParamService {}
     impl TokenParamService {
         #[new]
-        fn new(#[inject(DB_TOKEN)] _db: DatabaseService) -> Self {
+        fn new(#[inject(CustomDatabase)] _db: DatabaseService) -> Self {
             Self {}
         }
 
@@ -345,7 +345,7 @@ async fn constructor_param_injection_patterns() {
 
     #[controller("/token")]
     pub struct TokenParamController {
-        #[inject(DB_TOKEN)]
+        #[inject(CustomDatabase)]
         db: DatabaseService,
         #[inject]
         service: TokenParamService,
@@ -380,7 +380,7 @@ async fn constructor_param_injection_patterns() {
     #[module(
         providers: [
             DatabaseService,
-            provide!(DB_TOKEN, provider(DatabaseService)),
+            provide!(CustomDatabase => DatabaseService),
             ConfigService,
             CacheService,
             BasicParamService,

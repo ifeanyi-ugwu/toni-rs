@@ -6,13 +6,16 @@
 //! - Transient: Fresh instance per injection point at construction time
 
 use ulo::http::Body;
-use ulo::{controller, get, module, provider_factory, routes};
+use ulo::{controller, get, module, provide, routes};
 use uuid::Uuid;
 
 use crate::common::TestServer;
 
 #[tokio::test]
 async fn scope_behavior() {
+    ulo::key!(Singleton: Counter);
+    ulo::key!(Request: Counter);
+    ulo::key!(Transient: Counter);
     #[derive(Clone)]
     struct Counter {
         id: String,
@@ -40,17 +43,17 @@ async fn scope_behavior() {
 
     #[controller("/execution-scoped", scope = "execution")]
     pub struct RequestController {
-        #[inject("SINGLETON")]
+        #[inject(Singleton)]
         singleton1: Counter,
-        #[inject("SINGLETON")]
+        #[inject(Singleton)]
         singleton2: Counter,
-        #[inject("REQUEST")]
+        #[inject(Request)]
         request1: Counter,
-        #[inject("REQUEST")]
+        #[inject(Request)]
         request2: Counter,
-        #[inject("TRANSIENT")]
+        #[inject(Transient)]
         transient1: Counter,
-        #[inject("TRANSIENT")]
+        #[inject(Transient)]
         transient2: Counter,
     }
 
@@ -72,9 +75,9 @@ async fn scope_behavior() {
 
     #[controller("/singleton-scoped")]
     pub struct SingletonController {
-        #[inject("TRANSIENT")]
+        #[inject(Transient)]
         transient1: Counter,
-        #[inject("TRANSIENT")]
+        #[inject(Transient)]
         transient2: Counter,
     }
 
@@ -89,9 +92,9 @@ async fn scope_behavior() {
     #[module(
         controllers: [RequestController, SingletonController],
         providers: [
-            provider_factory!("SINGLETON", || Counter::new_singleton(), Counter, scope = "singleton"),
-            provider_factory!("REQUEST", || Counter::new_request(), scope = "execution"),
-            provider_factory!("TRANSIENT", || Counter::new_transient(), scope = "transient"),
+            provide!(Singleton => async || Counter::new_singleton()),
+            provide!(Request => async || Counter::new_request()).per_execution(),
+            provide!(Transient => async || Counter::new_transient()).transient(),
         ],
     )]
     impl TestModule {}

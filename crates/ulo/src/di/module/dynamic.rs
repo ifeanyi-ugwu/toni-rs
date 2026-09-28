@@ -111,16 +111,10 @@ impl DynamicModuleBuilder {
         self
     }
 
-    /// Export a provider by its Rust type. Uses [`token_of`](crate::di::token_of) as the
-    /// token, which matches how `#[injectable]`-generated factories register theirs.
-    pub fn export<T: 'static>(mut self) -> Self {
+    /// Export the slot under `T`: a type's own, a marker's, or a trait object's. The slot is named
+    /// by [`token_of`](crate::di::token_of), which is how every declaration registers.
+    pub fn export<T: ?Sized + 'static>(mut self) -> Self {
         self.exports.push(crate::di::token_of::<T>());
-        self
-    }
-
-    /// Export a provider by an explicit string token (for `provide!`-style value providers).
-    pub fn export_token(mut self, token: impl Into<String>) -> Self {
-        self.exports.push(token.into());
         self
     }
 

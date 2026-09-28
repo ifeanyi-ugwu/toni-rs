@@ -7,10 +7,9 @@ use crate::spi::Provider;
 
 /// Holds all contributions for a given multi-provider base token.
 ///
-/// Each item is stored as `Arc<Arc<dyn Trait + Send + Sync>>` erased to
-/// `Arc<dyn Any + Send + Sync>` (the "double-Arc" pattern). The injection-site
-/// codegen downcasts back to `Arc<Arc<dyn Trait + Send + Sync>>` and clones
-/// the inner Arc to produce `Vec<Arc<dyn Trait + Send + Sync>>`.
+/// Each item is stored as `Arc<Arc<T>>` for the trait object `T` the collection's key names,
+/// erased to `Arc<dyn Any + Send + Sync>`; the injection site downcasts back to `Arc<Arc<T>>` for
+/// the trait object its field names and clones the inner `Arc`.
 pub(super) struct MultiCollectionProvider {
     pub token: String,
     pub items: Vec<Arc<dyn Any + Send + Sync>>,

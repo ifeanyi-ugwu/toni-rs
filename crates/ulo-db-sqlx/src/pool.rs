@@ -10,8 +10,8 @@ use ulo::{
 
 pub(crate) struct SqlxPoolFactory<DB: Database> {
     pub url: String,
-    // Injection token for this pool: the `Pool<DB>` type name for the default
-    // (`for_root_*`), or the caller's chosen name for a `for_root_*_named` pool.
+    // Injection token for this pool: `Pool<DB>`'s own for the default (`postgres`, `mysql`,
+    // `sqlite`), or the marker's for a `*_keyed` pool.
     pub token: String,
     pub check: Option<StartupCheck>,
     pub _db: PhantomData<DB>,

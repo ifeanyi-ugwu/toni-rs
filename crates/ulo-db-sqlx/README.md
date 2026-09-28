@@ -89,6 +89,18 @@ pub struct AppModule;
 
 Then inject `PgPool` and `SqlitePool` as separate fields in the same service.
 
+Two pools of one backend share a type, so the second is registered under a marker holding that pool type, with `SqlxModule::postgres_keyed::<K>(url)` (or `mysql_keyed`, `sqlite_keyed`), and injected with `#[inject(K)]`:
+
+```rust,ignore
+key!(pub Analytics: Pool<Postgres>);
+
+#[module(imports: [
+    SqlxModule::postgres(env!("PRIMARY_DB_URL")),
+    SqlxModule::postgres_keyed::<Analytics>(env!("ANALYTICS_DB_URL")),
+])]
+pub struct AppModule;
+```
+
 ## License
 
 MIT

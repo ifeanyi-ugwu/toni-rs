@@ -49,27 +49,30 @@ async fn a_client_injects_by_its_concrete_type() {
     );
 }
 
+ulo::key!(Analytics: FakeClient);
+ulo::key!(Secondary: FakeClient);
+
 #[injectable]
 struct ByName {
-    #[inject("analytics")]
+    #[inject(Analytics)]
     client: FakeClient,
 }
 
-#[module(imports: [PrismaModule::for_root_named("analytics", || async {
+#[module(imports: [PrismaModule::for_root_keyed::<Analytics, _>(|| async {
     FakeClient { url: "analytics" }
 })], providers: [ByName], exports: [ByName])]
 struct NamedModule {}
 
 #[tokio::test]
-async fn a_named_client_injects_by_its_name() {
+async fn a_keyed_client_injects_by_its_marker() {
     let ctx = UloFactory::create_application_context(NamedModule)
         .await
-        .expect("a module with one named client starts");
+        .expect("a module with one keyed client starts");
 
     let svc = ctx.get::<ByName>().await.expect("the injectable resolves");
     assert_eq!(
         svc.client.url, "analytics",
-        "a named client is reached by its name, not by its type"
+        "a keyed client is reached by its marker, not by its type"
     );
 }
 
@@ -77,44 +80,45 @@ async fn a_named_client_injects_by_its_name() {
 struct BothClients {
     #[inject]
     default: FakeClient,
-    #[inject("secondary")]
-    named: FakeClient,
+    #[inject(Secondary)]
+    keyed: FakeClient,
 }
 
 #[module(imports: [
     PrismaModule::for_root(|| async { FakeClient { url: "primary" } }),
-    PrismaModule::for_root_named("secondary", || async { FakeClient { url: "secondary" } }),
+    PrismaModule::for_root_keyed::<Secondary, _>(|| async { FakeClient { url: "secondary" } }),
 ], providers: [BothClients], exports: [BothClients])]
 struct TwoClientModule {}
 
-/// The documented way to run two clients of one type: the second carries a
-/// name, because the type alone no longer tells them apart.
+/// The documented way to run two clients of one type: the second sits under a
+/// marker, because the type alone no longer tells them apart.
 #[tokio::test]
-async fn a_second_client_of_one_type_is_reached_by_name() {
+async fn a_second_client_of_one_type_is_reached_by_its_marker() {
     let ctx = UloFactory::create_application_context(TwoClientModule)
         .await
-        .expect("a default client alongside a named one starts");
+        .expect("a default client alongside a keyed one starts");
 
     let svc = ctx
         .get::<BothClients>()
         .await
         .expect("the injectable resolves");
     assert_eq!(svc.default.url, "primary");
-    assert_eq!(svc.named.url, "secondary");
+    assert_eq!(svc.keyed.url, "secondary");
 }
 
-/// Two unnamed clients of one type are accepted, and the one registered last
-/// is the one injected.
+/// Two clients of one type without a marker are accepted, and the one written
+/// last is the one injected.
 ///
-/// `for_root`'s documentation says a name is required to register more than
-/// one client of the same type. Nothing enforces that: both register under
-/// `token_of::<C>()`, the second replaces the first, and startup reports
-/// nothing. The other five database integrations refuse this at startup and
-/// name both modules; this one has no `identity_hint` to tell two `for_root`
-/// calls apart, which is why it cannot.
+/// `for_root_keyed`'s documentation says a marker is required to register more
+/// than one client of the same type. Nothing enforces that: the two render one
+/// module identity, having no `identity_hint` to tell them apart, the container
+/// keeps the first module the scan reaches and drops the other as a repeat, and
+/// startup reports nothing. The scan reaches the import written last first. The
+/// other five database integrations refuse this at startup and name both
+/// modules.
 ///
-/// Pinned as what happens today rather than as what should. F31 carries the
-/// gap, and this test is what will fail when it closes.
+/// Pinned as what happens today rather than as what should; this test is what
+/// will fail when the gap closes.
 #[tokio::test]
 async fn two_unnamed_clients_of_one_type_keep_the_last() {
     #[injectable]

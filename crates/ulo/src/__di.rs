@@ -1,5 +1,7 @@
-//! What `provide!(K => source)` expands through: whether `K` holds the source's type, which binds
-//! it as it is, or a trait object, which takes the cast.
+//! What `provide!(K => source)` and `#[inject(K)]` expand through.
+//!
+//! For `provide!`: whether `K` holds the source's type, which binds it as it is, or a trait object,
+//! which takes the cast.
 //!
 //! A macro sees `K` only as a path, and a generic function cannot ask whether `K::Value` is the
 //! declared type, so the choice is made by autoref at the expansion site, where both types are
@@ -72,4 +74,10 @@ where
     fn bind(&self, cast: fn(Arc<D::Output>) -> Arc<K::Value>) -> D::Held<K::Value> {
         self.take().under_key_with::<K>(cast)
     }
+}
+
+/// The container key `#[inject(K)]` resolves a field by, checked to hold `V`: the field's type, or
+/// the trait object an `Arc<dyn Trait>` or `Vec<Arc<dyn Trait>>` field holds.
+pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
+    token_of::<K>()
 }

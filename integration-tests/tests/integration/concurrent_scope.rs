@@ -12,11 +12,12 @@
 use crate::common::TestServer;
 use futures_util::future::join_all;
 use ulo::http::Body;
-use ulo::{controller, get, module, provider_factory, routes};
+use ulo::{controller, get, module, provide, routes};
 use uuid::Uuid;
 
 #[tokio::test]
 async fn request_scoped_instances_are_isolated_under_concurrency() {
+    ulo::key!(ReqId: RequestId);
     #[derive(Clone)]
     struct RequestId {
         id: String,
@@ -24,7 +25,7 @@ async fn request_scoped_instances_are_isolated_under_concurrency() {
 
     #[controller("/", scope = "execution")]
     pub struct TestController {
-        #[inject("REQ_ID")]
+        #[inject(ReqId)]
         req_id: RequestId,
     }
 
@@ -39,7 +40,7 @@ async fn request_scoped_instances_are_isolated_under_concurrency() {
     #[module(
         controllers: [TestController],
         providers: [
-            provider_factory!("REQ_ID", || RequestId { id: Uuid::new_v4().to_string() }, RequestId, scope = "execution"),
+            provide!(ReqId => async || RequestId { id: Uuid::new_v4().to_string() }).per_execution(),
         ],
     )]
     impl TestModule {}

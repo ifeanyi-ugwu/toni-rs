@@ -16,9 +16,7 @@ use crate::{
         lifecycle_hooks::{LifecycleHooks, reject_lifecycle_hooks},
         scope_parser::ProviderScope,
     },
-    utils::extracts::{
-        extract_struct_dependencies, extract_vec_arc_dyn_inner, normalize_trait_send_sync,
-    },
+    utils::extracts::{extract_struct_dependencies, extract_vec_arc_dyn_inner},
 };
 
 /// Structural roles the surrounding macro assigns to a provider.
@@ -184,13 +182,6 @@ fn generate_provider_factory_accessor(struct_name: &Ident) -> TokenStream {
         struct_name.span(),
     );
     quote! {
-        impl #struct_name {
-            #[doc(hidden)]
-            pub fn __ulo_provider_factory() -> impl ::ulo::spi::ProviderFactory {
-                #factory_name
-            }
-        }
-
         impl ::ulo::di::DeclaresProvider for #struct_name {
             fn provider_factory() -> impl ::ulo::spi::ProviderFactory + 'static {
                 #factory_name
@@ -665,13 +656,6 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
                 };
 
                 ::std::sync::Arc::new(#object_name { source: __source })
-            }
-        }
-
-        impl #struct_name {
-            #[doc(hidden)]
-            pub fn __ulo_controller_factory() -> impl ::ulo::dispatch::ControllerFactory {
-                #factory_name
             }
         }
 
@@ -1797,43 +1781,17 @@ fn generate_dyn_factories(
     (struct_defs, role_pushes)
 }
 
-/// How one collection item is read back as the field's `Arc<dyn Trait>`.
-///
-/// `provide!` stores an item as the trait object the declaration wrote, and the comma-form `multi`
-/// declarations as `dyn Trait + Send + Sync`. An item is read as written first; a field written
-/// without the bounds also reads the bounded form, which it can hold by dropping them.
+/// How one collection item is read back as the field's `Arc<dyn Trait>`. `provide!` stores an item
+/// as the trait object the declaration wrote, which is the one the field is keyed by.
 fn collection_item_resolution(inner_trait: &syn::Type) -> proc_macro2::TokenStream {
-    let bounded = normalize_trait_send_sync(inner_trait.clone());
-    let written_bounded = quote!(#bounded).to_string() == quote!(#inner_trait).to_string();
-    let fallback = if written_bounded {
-        quote! {
-            panic!(
-                "Multi-provider '{}': item downcast to Arc<{}> failed",
-                __lookup_token,
-                stringify!(#inner_trait)
-            )
-        }
-    } else {
-        quote! {
-            match ::std::sync::Arc::downcast::<::std::sync::Arc<#bounded>>(item) {
-                Ok(wrapped) => (*wrapped).clone(),
-                Err(_) => panic!(
-                    "Multi-provider '{}': item downcast to Arc<{}> failed",
-                    __lookup_token,
-                    stringify!(#inner_trait)
-                ),
-            }
-        }
-    };
-    let unread = if written_bounded {
-        quote!(_)
-    } else {
-        quote!(item)
-    };
     quote! {
         match ::std::sync::Arc::downcast::<::std::sync::Arc<#inner_trait>>(item) {
             Ok(wrapped) => (*wrapped).clone(),
-            Err(#unread) => #fallback,
+            Err(_) => panic!(
+                "Multi-provider '{}': item downcast to Arc<{}> failed",
+                __lookup_token,
+                stringify!(#inner_trait)
+            ),
         }
     }
 }

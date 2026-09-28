@@ -1,7 +1,7 @@
 use crate::connection::SeaOrmConnectionFactory;
 use sea_orm::DatabaseConnection;
 use ulo::StartupCheck;
-use ulo::di::{CheckedModule, DynamicModule};
+use ulo::di::{CheckedModule, DynamicModule, Key, token_of};
 
 pub struct SeaOrmModule;
 
@@ -54,46 +54,44 @@ impl SeaOrmModule {
         })
     }
 
-    /// Register a second, named database connection.
+    /// Register a second database connection, under the marker `K`.
     ///
-    /// `for_root` provides one `DatabaseConnection` injectable by type. When an application needs
-    /// more than one connection, each additional one is registered under a name and injected by
-    /// that name — the type alone can no longer tell them apart.
+    /// `for_root` provides one `DatabaseConnection` injectable by type. A second one needs a slot
+    /// of its own, named by a marker type whose slot holds a `DatabaseConnection`:
     ///
     /// ```ignore
+    /// key!(pub Analytics: DatabaseConnection);
+    ///
     /// #[module(imports: [
     ///     SeaOrmModule::for_root(env!("PRIMARY_URL")),
-    ///     SeaOrmModule::for_root_named("analytics", env!("ANALYTICS_URL")),
+    ///     SeaOrmModule::for_root_keyed::<Analytics>(env!("ANALYTICS_URL")),
     /// ])]
     /// pub struct AppModule;
-    /// ```
     ///
-    /// ```ignore
     /// #[injectable]
     /// pub struct ReportService {
-    ///     #[inject("analytics")]
+    ///     #[inject(Analytics)]
     ///     db: DatabaseConnection,
     /// }
     /// ```
     ///
-    /// The name is a global identifier: two connections cannot share one, and reusing a name
-    /// across integrations is refused at startup. The connection only is registered — the health
-    /// indicator is attached to the default `for_root` connection.
-    pub fn for_root_named(
-        name: impl Into<String>,
-        database_url: impl Into<String>,
-    ) -> CheckedModule {
-        let name: String = name.into();
+    /// Two connections under one marker are refused at startup, whichever integrations register
+    /// them. The connection only is registered — the health indicator is attached to the default
+    /// `for_root` connection.
+    pub fn for_root_keyed<K>(database_url: impl Into<String>) -> CheckedModule
+    where
+        K: Key<Value = DatabaseConnection>,
+    {
         let database_url: String = database_url.into();
 
         CheckedModule::new(move |check: Option<StartupCheck>| {
-            DynamicModule::builder(format!("SeaOrmModule::{name}"))
+            DynamicModule::builder(token_of::<K>())
                 .provider_factory(SeaOrmConnectionFactory {
                     database_url: database_url.clone(),
-                    token: name.clone(),
+                    token: token_of::<K>(),
                     check,
                 })
-                .export_token(name.clone())
+                .export::<K>()
                 .global()
                 .build()
         })
