@@ -15,18 +15,20 @@ over trait impls doesn't exist in Rust, and specialization is unstable.
 
 ## Decision
 
-Don't detect — **dispatch**. The generated code unconditionally calls a well-known method; the type
-system, not the macro, decides which definition runs.
+Don't detect — **dispatch**. The generated code unconditionally names a well-known associated item;
+the type system, not the macro, decides which definition it reaches.
 
 The mechanism, applied uniformly by `ulo/src/__construct.rs` (constructors) and
 `ulo/src/__lifecycle.rs` (hooks):
 
-1. A blanket trait provides a no-op default for every type: `impl<T: ?Sized> LifecycleBridge for T`
-   with `async fn __ulo_lc_on_init(&self) { /* no-op */ }`, and similar.
-2. The marker macro on the impl method (`#[on_module_init]`, `#[new]`) emits an *inherent* method of
-   the same name beside the user's, forwarding to it.
-3. The struct macro's generated code always calls that method. Where the inherent method exists
-   (the user wrote the hook/constructor) it wins method resolution; otherwise the blanket no-op runs.
+1. A blanket trait provides a default for every type: `impl<T: ?Sized> LifecycleBridge for T`
+   with `async fn __ulo_lc_on_init(&self) { /* no-op */ }`, and similar; `impl<T> CtorBridge for T`
+   with `const __ULO_ONE_NEW_PER_TYPE: Option<Ctor<Self>> = None`.
+2. The marker macro on the impl method emits an *inherent* item of the same name beside the user's:
+   `#[on_module_init]` a method forwarding to it, `#[new]` a const holding fn pointers that return
+   the constructor's dependency tokens and that resolve them and call it.
+3. The struct macro's generated code always names that item. Where the inherent item exists (the
+   user wrote the hook/constructor) it wins resolution; otherwise the blanket default applies.
 
 The struct macro needs zero knowledge of which hooks or constructor exist. The `ulo::__detect`
 enhancer probes are the same idea in a returns-`Option` shape: the probe yields `Some(coerced role)`
@@ -36,7 +38,7 @@ roles a type actually implements.
 ## Consequences
 
 **Good.** One mechanism powers `#[new]`, lifecycle hooks, and enhancer-role detection. Adding a hook
-or role is a new bridge method, not new detection logic. A misuse fails at the call site (a trait not
+or role is a new bridge item, not new detection logic. A misuse fails at the call site (a trait not
 implemented → loud compile error) rather than silently doing nothing.
 
 **The load-bearing trap — call via UFCS on the concrete type, never method syntax.** The blanket impl
@@ -54,7 +56,9 @@ Struct::__ulo_lc_on_init(&*self.instance).await
 ```
 
 (See `generate_bridge_lifecycle_methods` in
-`ulo-macros/src/provider_macro/instance_injection.rs`; `__ulo_ctor_build` is called the same way.)
+`ulo-macros/src/provider_macro/instance_injection.rs`. `#[new]`'s const is read as
+`<Struct>::__ULO_ONE_NEW_PER_TYPE`; a const has no method-call form, so the `Arc` trap cannot reach
+it.)
 
 **Second constraint — the probe/dispatch call must sit at a concrete-type site.** Inside a generic
 `fn f<T>()` the bound is erased and the probe always takes the fallback. The macro therefore emits the

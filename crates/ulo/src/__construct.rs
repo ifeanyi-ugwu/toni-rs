@@ -1,15 +1,17 @@
 //! Bridge between a `#[injectable]` provider and an optional `#[new]` constructor.
 //!
-//! The derive generates the provider factory from the struct's fields and cannot see a `#[new]`
-//! method on a separate `impl`. Rather than *detect* the constructor, the derive simply *calls* it:
-//! the factory invokes `Self::__ulo_ctor_build(deps)` and `Self::__ulo_ctor_tokens()` at a site
-//! where the type is concrete. Method resolution does the dispatch — `#[new]` emits inherent
-//! associated fns that out-rank the blanket [`CtorBridge`] defaults below, so a type with a
-//! constructor returns `Some(..)` (build via the constructor) and any other type returns `None`
-//! (fall back to field injection).
+//! The struct macro generates the provider factory from the struct's fields and cannot see a
+//! `#[new]` method on a separate `impl`. Rather than *detect* the constructor, the struct macro
+//! reads `<Struct>::__ULO_ONE_NEW_PER_TYPE` at a site where the type is concrete. Path resolution
+//! does the dispatch: `#[new]` emits an inherent associated const of that name, which out-ranks the
+//! blanket [`CtorBridge`] default below, so a type with a constructor reads `Some(..)` (build via
+//! the constructor) and any other type reads `None` (fall back to field injection).
 //!
-//! The factory must call these at a concrete-type site (the generated code names the struct); the
-//! inherent-wins resolution is a property of the call site, not available through a generic `T`.
+//! The const is the only fixed-name item `#[new]` emits, so a second `#[new]` on one type fails as
+//! a single duplicate definition of it, labelled at both attributes.
+//!
+//! The factory must read it at a concrete-type site (the generated code names the struct); the
+//! inherent-wins resolution is a property of the site, not available through a generic `T`.
 
 #![doc(hidden)]
 
@@ -26,28 +28,23 @@ use crate::spi::Provider;
 /// The already-built dependency providers passed to a factory's `build`, keyed by token.
 pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
 
-/// Blanket "no constructor" defaults, implemented for every type. `#[new]` shadows these with
-/// inherent associated fns of the same name; the derive's factory calls the names unqualified at a
-/// concrete-type site, so the inherent versions win where they exist.
-///
-/// `__ulo_ctor_tokens` returns the constructor's dependency tokens (so the factory can declare
-/// them); `__ulo_ctor_build` resolves those dependencies and calls the constructor. `None` from
-/// either means "no `#[new]` — use field injection".
+/// A `#[new]` constructor: `tokens` returns its dependency tokens (so the factory can declare
+/// them), and `build` resolves those dependencies and calls it.
 ///
 /// The context parameter carries the execution being served, so a constructor parameter that is
 /// itself execution-scoped resolves in that same execution; it is `Execution::None` for
 /// construction outside any execution, matching the field-injection paths.
-pub trait CtorBridge: Sized {
-    fn __ulo_ctor_tokens() -> Option<Vec<String>> {
-        None
-    }
+pub struct Ctor<T> {
+    pub tokens: fn() -> Vec<String>,
+    pub build:
+        for<'a> fn(&'a ResolvedDeps, Execution) -> Pin<Box<dyn Future<Output = T> + Send + 'a>>,
+}
 
-    fn __ulo_ctor_build<'a>(
-        _deps: &'a ResolvedDeps,
-        _ctx: Execution,
-    ) -> Option<Pin<Box<dyn Future<Output = Self> + Send + 'a>>> {
-        None
-    }
+/// The blanket "no constructor" default, implemented for every type. `#[new]` shadows it with an
+/// inherent associated const of the same name; the struct macros read the name unqualified at a
+/// concrete-type site, so the inherent const wins where it exists.
+pub trait CtorBridge: Sized {
+    const __ULO_ONE_NEW_PER_TYPE: Option<Ctor<Self>> = None;
 }
 
 impl<T> CtorBridge for T {}

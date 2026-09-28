@@ -394,7 +394,7 @@ fn generate_execution_provider(
     // execution it is does not matter — every transport has one, and the cache that
     // makes the scope mean anything lives on it.
     //
-    // Build via the `#[new]` constructor when one exists (inherent fn shadows the blanket
+    // Build via the `#[new]` constructor when one exists (its inherent const shadows the blanket
     // `CtorBridge` default), else by field injection — same dispatch as the singleton factory.
     let execute_body = quote! {
         use ::ulo::__construct::CtorBridge as _;
@@ -414,10 +414,9 @@ fn generate_execution_provider(
         }
         // Thread the execution on, so an execution-scoped constructor parameter resolves in
         // the same one and is shared rather than rebuilt.
-        let instance = match <#struct_name>::__ulo_ctor_build(
-            &self.dependencies,
-            __exec_ctx.clone(),
-        ) {
+        let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE
+            .map(|__ctor| (__ctor.build)(&self.dependencies, __exec_ctx.clone()))
+        {
             ::std::option::Option::Some(__fut) => __fut.await,
             ::std::option::Option::None => {
                 #(#field_resolutions)*
@@ -716,7 +715,7 @@ fn generate_transient_provider(
                 // that same one rather than starting a new one.
                 use ::ulo::__construct::CtorBridge as _;
                 let __exec_ctx = _ctx;
-                let instance = match <#struct_name>::__ulo_ctor_build(&self.dependencies, __exec_ctx.clone()) {
+                let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(&self.dependencies, __exec_ctx.clone())) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
@@ -1177,10 +1176,11 @@ fn generate_singleton_factory(
             }
 
             fn dependency_tokens(&self) -> Vec<String> {
-                // A `#[new]` constructor supplies its own dependency tokens (inherent fn shadows the
-                // blanket `CtorBridge` default); otherwise fall back to the field-injection tokens.
+                // A `#[new]` constructor supplies its own dependency tokens (its inherent const
+                // shadows the blanket `CtorBridge` default); otherwise fall back to the field-injection
+                // tokens.
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ulo_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1196,7 +1196,7 @@ fn generate_singleton_factory(
                 // Build via the `#[new]` constructor if one exists, else by field injection.
                 // Singletons are built at startup, outside any execution.
                 let __exec_ctx = ::ulo::di::Execution::None;
-                let instance = match <#struct_name>::__ulo_ctor_build(&dependencies, __exec_ctx.clone()) {
+                let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(&dependencies, __exec_ctx.clone())) {
                     ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
                     ::std::option::Option::None => ::std::sync::Arc::new({
                         #(#field_resolutions)*
@@ -1275,7 +1275,7 @@ fn generate_request_factory(
                 // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
                 // field-injection tokens.
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ulo_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1355,7 +1355,7 @@ fn generate_transient_factory(
                 // A `#[new]` constructor supplies its own dependency tokens; else fall back to the
                 // field-injection tokens.
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ulo_ctor_tokens().unwrap_or_else(|| vec![#(#dependency_tokens),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
             async fn build(
@@ -1507,7 +1507,7 @@ fn generate_dyn_factories(
                 // resolve in it rather than in one of their own.
                 use ::ulo::__construct::CtorBridge as _;
                 if let ::std::option::Option::Some(__fut) =
-                    <#struct_name>::__ulo_ctor_build(&*self.all_deps, __exec_ctx.clone())
+                    <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(&*self.all_deps, __exec_ctx.clone()))
                 {
                     return __fut.await;
                 }

@@ -60,7 +60,7 @@ pub fn handle_subscriptions(item: TokenStream) -> Result<TokenStream> {
     // Re-emit the impl with the consumed `#[subscribe_message]` and enhancer attrs stripped.
     // `#[new]`, the `#[on_*]` lifecycle attrs, and the `#[on_connect]`/`#[on_disconnect]`/
     // `#[after_init]` connection-hook attrs are LEFT intact so their own macros expand into the
-    // `__ulo_ctor_*` / `__ulo_lc_*` / `__ulo_ws_*` bridges.
+    // `__ULO_ONE_NEW_PER_TYPE` / `__ulo_lc_*` / `__ulo_ws_*` bridges.
     let mut impl_def = impl_block.clone();
     impl_def.attrs.retain(|attr| !has_enhancer_attribute(attr));
     for item in impl_def.items.iter_mut() {

@@ -103,8 +103,8 @@ fn generate_bridges(
     quote! {
         impl #struct_name {
             /// Build the controller from resolved dependencies — via the `#[new]` constructor when
-            /// one exists (inherent fn shadows the blanket `CtorBridge` default), else by field
-            /// injection. `__exec_ctx` is the execution being served, or `None` at startup.
+            /// one exists (its inherent const shadows the blanket `CtorBridge` default), else by
+            /// field injection. `__exec_ctx` is the execution being served, or `None` at startup.
             #[doc(hidden)]
             #[allow(unused_variables, non_snake_case, clippy::all)]
             pub async fn __ulo_build_from_deps(
@@ -115,7 +115,7 @@ fn generate_bridges(
                 __exec_ctx: ::ulo::di::Execution,
             ) -> Self {
                 use ::ulo::__construct::CtorBridge as _;
-                match <Self>::__ulo_ctor_build(dependencies, __exec_ctx.clone()) {
+                match <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(dependencies, __exec_ctx.clone())) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
@@ -130,7 +130,7 @@ fn generate_bridges(
             #[allow(non_snake_case)]
             pub fn __ulo_dependencies() -> ::std::vec::Vec<String> {
                 use ::ulo::__construct::CtorBridge as _;
-                <Self>::__ulo_ctor_tokens().unwrap_or_else(|| ::std::vec![#(#field_tokens),*])
+                <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| ::std::vec![#(#field_tokens),*])
             }
 
             #[doc(hidden)]
