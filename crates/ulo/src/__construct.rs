@@ -5,7 +5,9 @@
 //! reads `<Struct>::__ULO_ONE_NEW_PER_TYPE` at a site where the type is concrete. Path resolution
 //! does the dispatch: `#[new]` emits an inherent associated const of that name, which out-ranks the
 //! blanket [`CtorBridge`] default below, so a type with a constructor reads `Some(..)` (build via
-//! the constructor) and any other type reads `None` (fall back to field injection).
+//! the constructor) and any other type reads `None` (fall back to field injection). The struct
+//! macros read the same const in a `const` item to refuse a `#[default]` field the constructor
+//! overrides.
 //!
 //! The const is the only fixed-name item `#[new]` emits, so a second `#[new]` on one type fails as
 //! a single duplicate definition of it, labelled at both attributes.

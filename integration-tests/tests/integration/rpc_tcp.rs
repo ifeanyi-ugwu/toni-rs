@@ -1048,7 +1048,6 @@ static SCOPED_BUILDS: AtomicUsize = AtomicUsize::new(0);
 /// that used to be reachable only on HTTP.
 #[injectable(scope = "execution")]
 pub struct PerCall {
-    #[default(0)]
     id: usize,
 }
 
@@ -1169,7 +1168,6 @@ static CALL_IDS: AtomicUsize = AtomicUsize::new(0);
 
 #[injectable(scope = "execution")]
 pub struct CallScoped {
-    #[default(0)]
     id: usize,
 }
 
@@ -1212,7 +1210,6 @@ static PER_CALL_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 pub struct PerCallRpcController {
     #[inject]
     scoped: CallScoped,
-    #[default(0)]
     build: usize,
 }
 
@@ -1245,7 +1242,6 @@ static SINGLETON_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 
 #[controller]
 pub struct SingletonRpcController {
-    #[default(0)]
     build: usize,
 }
 
@@ -1349,7 +1345,6 @@ static ELEVATED_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 pub struct ElevatedRpcController {
     #[inject]
     scoped: CallScoped,
-    #[default(0)]
     build: usize,
 }
 

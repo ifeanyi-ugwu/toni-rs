@@ -559,6 +559,9 @@ pub fn derive_inject_fields(_input: TokenStream) -> TokenStream {
 /// run real assembly logic. Without `#[new]`, the provider builds the struct by field injection
 /// instead.
 ///
+/// A type has one `#[new]` constructor, and a second fails to compile. A `#[default]` field beside
+/// it also fails to compile: the constructor sets every field, so the default could never apply.
+///
 /// ```ignore
 /// #[injectable]
 /// pub struct Server { port: u16 }

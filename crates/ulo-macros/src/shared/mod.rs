@@ -1,3 +1,4 @@
+pub mod default_beside_new;
 pub mod dependency_info;
 pub mod enhancer_emit;
 pub mod inject_key;

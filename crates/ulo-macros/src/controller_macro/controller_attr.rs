@@ -48,6 +48,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
         is_execution_scoped,
     );
     let system = generate_dispatch_system(&struct_name);
+    let default_checks = crate::shared::default_beside_new::default_beside_new(&struct_def);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -55,6 +56,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
 
         #bridges
         #system
+        #default_checks
     })
 }
 

@@ -68,11 +68,13 @@ pub fn generate_provider_from_struct_with_traits(
     );
     let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
     let factory_accessor = generate_provider_factory_accessor(&struct_name);
+    let default_checks = crate::shared::default_beside_new::default_beside_new(struct_def);
 
     Ok(quote! {
         #provider_wrapper
         #factory
         #factory_accessor
+        #default_checks
     })
 }
 
