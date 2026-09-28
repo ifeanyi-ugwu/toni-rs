@@ -2,8 +2,8 @@
 //! generated beside it.
 //!
 //! `#[module(providers: [Db], controllers: [Orders])]` reaches each type's factory through
-//! [`DeclaresProvider`] and [`DeclaresController`], as `DynamicModule::builder(..).provider::<Db>()`
-//! and `.controller::<Orders>()` do.
+//! [`DeclaresProvider`] and [`DeclaresController`], and a builder passes the same values:
+//! `DynamicModule::builder(..).provider(Db::provide())`.
 
 use crate::di::provide::Declared;
 use crate::dispatch::ControllerFactory;
@@ -16,7 +16,7 @@ use crate::spi::ProviderFactory;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no provider declaration of its own",
     label = "a bare path here is a type's own declaration",
-    note = "mark the type `#[injectable]`; in `provide!`, a value held in a const is written `value {Self}`"
+    note = "mark the type `#[injectable]`, or put a `#[controller]` type in `controllers:`; in `provide!`, a value held in a const is written `value {Self}`"
 )]
 pub trait DeclaresProvider {
     /// The factory that builds this type, and reports what it must be built after.
@@ -32,7 +32,13 @@ pub trait DeclaresProvider {
     }
 }
 
-/// A type `#[controller]` generated a controller factory for. See [`DeclaresProvider`].
+/// A type `#[controller]` generated a controller factory for: what a bare path in `controllers:`
+/// registers. See [`DeclaresProvider`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a dispatch target",
+    label = "a dispatch target is a type marked `#[controller]`",
+    note = "a provider, a gateway included, goes in `providers:` or `.provider(..)`"
+)]
 pub trait DeclaresController {
     /// The factory that builds this target, and reports what it must be built after.
     fn controller_factory() -> impl ControllerFactory + 'static;

@@ -6,18 +6,19 @@ use crate::dispatch::ControllerFactory;
 use crate::spi::ProviderFactory;
 /// A module whose providers and exports are determined at runtime rather than compile time.
 ///
-/// Integration crates (e.g. `ulo-db-seaorm`) use this to implement `forRoot`/`forFeature`-style
-/// factory functions without having to implement all of `ModuleMetadata` manually.
+/// An integration crate uses this to implement a `for_root`-style factory function without
+/// implementing all of `ModuleMetadata` by hand.
 ///
 /// # Example
 /// ```ignore
-/// pub struct SeaOrmModule;
+/// pub struct DbModule;
 ///
-/// impl SeaOrmModule {
-///     pub fn for_root(database_url: &str) -> DynamicModule {
-///         DynamicModule::builder("SeaOrmModule")
-///             .provider(SeaOrmConnectionFactory::new(database_url))
-///             .export::<DatabaseConnection>()
+/// impl DbModule {
+///     pub fn for_root(url: &str) -> DynamicModule {
+///         DynamicModule::builder("DbModule")
+///             .provider(PoolFactory { url: url.to_string() }) // a factory built from configuration
+///             .provider(PoolHealth::provide())                // a type's own declaration
+///             .export::<Pool>()
 ///             .build()
 ///     }
 /// }
@@ -25,7 +26,7 @@ use crate::spi::ProviderFactory;
 ///
 /// Then in the application module:
 /// ```ignore
-/// #[module(imports: [SeaOrmModule::for_root(DATABASE_URL)])]
+/// #[module(imports: [DbModule::for_root(DATABASE_URL)])]
 /// pub struct AppModule;
 /// ```
 pub struct DynamicModule {
@@ -77,37 +78,20 @@ pub struct DynamicModuleBuilder {
 }
 
 impl DynamicModuleBuilder {
-    /// Declare a provider by a factory value, for one that carries configuration it was built
-    /// with — a URL, a pool size. Use [`provider`](Self::provider) where the type declares itself.
-    pub fn provider_factory<F: ProviderFactory + 'static>(mut self, factory: F) -> Self {
-        self.providers.push(Box::new(factory));
+    /// Declare a provider: what `providers:` takes on a `#[module]`, the same values. A type's own
+    /// declaration is `Db::provide()`, a `provide!(..)` is one, and so is a factory an integration
+    /// builds from its configuration — a URL, a pool size.
+    pub fn provider(mut self, declaration: impl ProviderFactory + 'static) -> Self {
+        self.providers.push(Box::new(declaration));
         self
     }
 
-    /// Declare a dispatch target this module serves, by the type that declares it.
-    ///
-    /// What `controllers: [Orders]` takes on a `#[module]`, spelled for a builder.
-    pub fn controller<T: crate::di::DeclaresController>(mut self) -> Self {
-        self.controllers.push(Box::new(T::controller_factory()));
-        self
-    }
-
-    /// Declare a provider by the type that declares it.
-    ///
-    /// What `providers: [Db]` takes on a `#[module]`. Use
-    /// [`provider_factory`](Self::provider_factory) for a factory carrying configuration.
-    pub fn provider<T: crate::di::DeclaresProvider>(mut self) -> Self {
-        self.providers.push(Box::new(T::provider_factory()));
-        self
-    }
-
-    /// Declare a dispatch target this module serves.
-    ///
-    /// What `controllers:` takes on a `#[module]`, for a module built at runtime: an integration
-    /// whose target comes from a value it was configured with — a schema, a path — rather than
-    /// from an attribute on a struct.
-    pub fn controller_factory<F: ControllerFactory + 'static>(mut self, factory: F) -> Self {
-        self.controllers.push(Box::new(factory));
+    /// Declare a dispatch target this module serves: what `controllers:` takes on a `#[module]`.
+    /// A `#[controller]` type's own is `<Orders as DeclaresController>::controller_factory()`, and
+    /// an integration whose target comes from a value it was configured with — a schema, a path —
+    /// passes the factory it built.
+    pub fn controller(mut self, target: impl ControllerFactory + 'static) -> Self {
+        self.controllers.push(Box::new(target));
         self
     }
 

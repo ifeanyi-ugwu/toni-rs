@@ -7,10 +7,10 @@
 //!
 //! fn for_root(config: DbConfig) -> DynamicModule {
 //!     DynamicModule::builder("db")
-//!         .provider_factory(Provide::value(config))                                   // under DbConfig
-//!         .provider_factory(Provide::factory(async |cfg: DbConfig| Pool::open(&cfg.url).await))
-//!         .provider_factory(Provide::alias_key::<Primary, Pool>())
-//!         .provider_factory(AuditGuard::provide().under_key_with::<Auth>(|guard| guard))
+//!         .provider(Provide::value(config))                                   // under DbConfig
+//!         .provider(Provide::factory(async |cfg: DbConfig| Pool::open(&cfg.url).await))
+//!         .provider(Provide::alias_key::<Primary, Pool>())
+//!         .provider(AuditGuard::provide().under_key_with::<Auth>(|guard| guard))
 //!         .build()
 //! }
 //! ```

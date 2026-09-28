@@ -26,6 +26,34 @@ mod rpc_macro;
 mod shared;
 mod utils;
 
+/// Declares a module: what it imports, provides, serves and exports. Place it on a unit struct, or
+/// on an `impl` block holding its lifecycle hooks and `configure_middleware`, where the macro
+/// declares the struct itself.
+///
+/// ```ignore
+/// #[module(
+///     imports: [ConfigModule::<AppConfig>::new(), DbModule::for_root(DATABASE_URL)],
+///     providers: [UserService, provide!(Port => 3000u16)],
+///     controllers: [UserController, api::AdminController],
+///     exports: [UserService, Port],
+///     global: true,
+/// )]
+/// pub struct UserModule;
+/// ```
+///
+/// | List | Takes |
+/// | --- | --- |
+/// | `imports:` | modules, as values: a `#[module]` type named bare, or any expression building a module, such as `DbModule::for_root(url)` or `ConfigModule::<AppConfig>::new()` |
+/// | `providers:` | declarations, as values: a bare path is the type's own declaration, `Db` or `repo::Db`, a generic type taking a turbofish, `Extension::<User>`; any other expression, such as `provide!(..)` or `Db::provide()`, is used as it is |
+/// | `controllers:` | dispatch targets, as values: a bare path is a `#[controller]` type's own dispatch target, qualified or not; any other expression is a controller factory |
+/// | `exports:` | key types: a type, a marker, a generic type with or without a turbofish, `dyn Trait` |
+///
+/// `global: true` makes the module's exports visible to every module without an import.
+///
+/// `DynamicModule::builder(..)` takes the same values, a bare path written out as `Db::provide()` or
+/// `<Orders as DeclaresController>::controller_factory()`: `.provider(value)`, `.controller(value)`,
+/// `.export::<K>()` and `.global()`. An export names a slot and needs no `Key`, so a foreign type is
+/// exported by its own type. A string in `exports:` is refused: a key is a type.
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_macro::module_struct::module(attr, item)
@@ -65,6 +93,24 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 ///     #[inject] repo: UserRepo,
 /// }
 /// ```
+///
+/// # `#[inject]`
+///
+/// | Written | Reads |
+/// | --- | --- |
+/// | `#[inject] db: Db` | the slot keyed by the field's type |
+/// | `#[inject] logger: Arc<dyn Logger>` | the slot keyed by `dyn Logger` |
+/// | `#[inject] plugins: Vec<Arc<dyn Plugin>>` | the collection keyed by `dyn Plugin` |
+/// | `#[inject(Replica)] db: Db` | the slot under the marker `Replica`, declared `key!(pub Replica: Db)` |
+/// | `#[inject(keys::Audit)] log: Arc<dyn Logger>` | a marker holding `dyn Logger`, qualified or not |
+/// | `#[inject(Legacy)] legacy: Vec<Arc<dyn Plugin>>` | the collection under a marker holding `dyn Plugin` |
+/// | `#[inject(dyn Logger)] logger: Arc<dyn Logger>` | a trait object's own slot, the key written out |
+/// | `#[inject(Repo<User>)] repo: Repo<User>` | a type as its own key, generic or not, when it implements `Key` |
+///
+/// The key is checked against what the field holds, at the key: `V` for a slot holding a sized
+/// type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a collection.
+/// A field holding another type fails to compile there, as do a key that is not a `Key` and a string
+/// key. A `#[new]` parameter takes the same keys and cannot take a collection.
 #[proc_macro_attribute]
 pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);
@@ -618,11 +664,11 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
     app_error_macro::derive_app_error(input)
 }
 
-/// Declares a provider: `provide!(key => source)`, or `provide!(into key => source)` for a
-/// contribution to a collection.
+/// Declares a provider: `provide!(key => source)`, `provide!(into key => source)` for a
+/// contribution to a collection, or `provide!(source)` keyed by what the source builds.
 ///
 /// What each form builds is a value-API value, so it can equally be written with the value API,
-/// passed to `DynamicModule::builder().provider_factory(..)` or returned from a function.
+/// passed to `DynamicModule::builder().provider(..)` or returned from a function.
 ///
 /// ```ignore
 /// key!(pub Port: u16);
@@ -642,15 +688,68 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
 /// ]
 /// ```
 ///
-/// A key is a type: a marker declared with `key!`, a type implementing `Key`, or `dyn Trait` for a
-/// trait object's own slot. A bare path as the source is that type's own declaration, as in
-/// `providers: [Db]`; `value` and `factory` name a value or factory held in a variable or const,
-/// and `alias E` a second name for the binding under `E`. An inline closure is a factory and any
-/// other inline expression a value. A slot holding a trait object hands out `Arc<dyn Trait>`, and
-/// a collection is injected by its element type, `#[inject] plugins: Vec<Arc<dyn Plugin>>`. A
-/// trait object is keyed as written, and the declaration and the field must spell it the same way.
-/// It is held behind `Arc` by a provider shared across threads, so the trait needs `Send + Sync`
-/// as supertraits, or the key is written `dyn Trait + Send + Sync`.
+/// # Keys
+///
+/// | Key | Written | Holds |
+/// | --- | --- | --- |
+/// | a marker | `Port`, `keys::Auth`, declared `key!(pub Port: u16)` | what its `Value` names; under a role trait object such as `dyn Guard<HttpContext>`, a value implementing it, registered in that role |
+/// | a type as its own key | `Db`, `Repo<User>`, a type implementing `Key` | a value of that type |
+/// | a trait object | `dyn Logger` | one implementation, handed out as `Arc<dyn Logger>` |
+/// | none | `provide!(Db)`, `provide!(3000u16)`, `provide!(async \|..\| ..)` | the source, under the type it builds |
+///
+/// A generic key is written with or without a turbofish. A slot holding the declared type hands the
+/// value out as the declaration would under its own type; a slot holding a trait object hands out
+/// `Arc<dyn Trait>`, the macro writing the conversion. A trait object is held behind `Arc` by a
+/// provider shared across threads, so the trait needs `Send + Sync` as supertraits, or the key is
+/// written `dyn Trait + Send + Sync`, and the declaration and the field must spell it the same way.
+///
+/// # Sources
+///
+/// | Source | Written | Is |
+/// | --- | --- | --- |
+/// | a type | `Db`, `db::Db`, `Repo<User>`, `Repo::<User>` | the type's own `#[injectable]` declaration; under a key, a second instance with the type's roles and hooks |
+/// | a value | `3000u16`, `Config { .. }`, `Client::new(url)` | built where the declaration is written |
+/// | a held value | `value PORT`, `value key` | a value in a const or a variable |
+/// | a factory | `async \|cfg: Config\| ..`, `\|\| async { .. }` | built at startup; each parameter a dependency resolved by its type |
+/// | a held factory | `factory make_pool` | a factory function held in a path |
+/// | an alias | `alias Port`, `alias dyn Logger`, `alias Db` | a second name for the binding under that type: the same binding, in its scope |
+///
+/// A keyword reads as one only where the source does not read as a single expression, so
+/// `value.clone()` or `value - 1` keeps `value` as a variable; `value &X` and `factory` before a
+/// closure's bars are keywords all the same.
+///
+/// # Scopes
+///
+/// A factory is a singleton. `.per_execution()` builds it once per execution and `.transient()` at
+/// every resolution, chained after the macro, for a factory under its own type, under a marker
+/// holding its type, or under a slot holding a guard or an interceptor, where the binding fills the
+/// role's per-execution arm. A factory is always async: a sync closure is refused.
+///
+/// # Collections
+///
+/// | Written | Contributes to | Injected as |
+/// | --- | --- | --- |
+/// | `provide!(into dyn Plugin => A {})` | the collection keyed by `dyn Plugin` | `#[inject] plugins: Vec<Arc<dyn Plugin>>` |
+/// | `provide!(into Legacy => A {})` | the collection under `key!(pub Legacy: dyn Plugin)` | `#[inject(Legacy)] legacy: Vec<Arc<dyn Plugin>>` |
+/// | `provide!(into dyn Guard<HttpContext> => RateLimit(100))` | HTTP's global guards | — |
+///
+/// Every source but `alias` contributes. A contribution from a type builds its own instance, apart
+/// from the type's plain registration, and takes the collection's role rather than its own. The
+/// unnamed collections of `dyn Guard<HttpContext>` and `dyn Interceptor<HttpContext, Answer<Http>>`
+/// are HTTP's global guards and interceptors.
+///
+/// # Refused
+///
+/// - a string key: a key is a type;
+/// - a key that is not a `Key`, and a value its `Value` cannot hold;
+/// - `alias` with no key, or after `into`, and `into` with no key;
+/// - a sync factory;
+/// - a bare path naming a type with no declaration of its own;
+/// - at startup, a contribution to any other role collection (a guard or interceptor of RPC,
+///   WebSocket or gRPC, an error handler, middleware), naming the `UloFactory::use_global_*` method
+///   that registers it;
+/// - `.per_execution()` or `.transient()` under a slot holding an error handler, middleware or any
+///   trait object other than a guard or an interceptor.
 #[proc_macro]
 pub fn provide(input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);

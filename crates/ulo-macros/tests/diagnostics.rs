@@ -111,6 +111,18 @@ const DOCUMENTED: &[(&str, &str)] = &[
     ("inject_key_is_a_key", "`Plain` is not a key"),
     ("inject_takes_no_string", "a key is a type, not a string"),
     (
+        "provide_key_takes_no_string",
+        "a key is a type, not a string",
+    ),
+    (
+        "module_export_takes_no_string",
+        "a key is a type, not a string",
+    ),
+    (
+        "module_controller_is_a_dispatch_target",
+        "`Service` is not a dispatch target",
+    ),
+    (
         "use_guards_takes_no_string",
         "a key is a type, not a string",
     ),

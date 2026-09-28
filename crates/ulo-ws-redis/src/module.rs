@@ -30,10 +30,10 @@ impl RedisBroadcastModule {
         let local_bs = BroadcastService::new();
 
         DynamicModule::builder("RedisBroadcastModule")
-            .provider_factory(SharedBroadcastServiceProviderFactory {
+            .provider(SharedBroadcastServiceProviderFactory {
                 instance: local_bs.clone(),
             })
-            .provider_factory(RedisBroadcastServiceFactory { url, local_bs })
+            .provider(RedisBroadcastServiceFactory { url, local_bs })
             .export::<BroadcastService>()
             .export::<RedisBroadcastService>()
             .global()

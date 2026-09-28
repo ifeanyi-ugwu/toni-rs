@@ -5,6 +5,7 @@ use syn::{
     Ident, ImplItem, ItemImpl, ItemStruct, Token, Type, TypePath, Visibility, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 use crate::shared::lifecycle_hooks::{detect_lifecycle_hooks, strip_lifecycle_attrs};
@@ -14,7 +15,7 @@ struct ModuleConfig {
     imports: Vec<syn::Expr>,
     controllers: Vec<syn::Expr>,
     providers: Vec<syn::Expr>,
-    exports: Vec<Ident>,
+    exports: Vec<Type>,
     global: bool,
 }
 
@@ -22,8 +23,26 @@ struct ConfigParser {
     imports: Vec<syn::Expr>,
     controllers: Vec<syn::Expr>,
     providers: Vec<syn::Expr>,
-    exports: Vec<Ident>,
+    exports: Vec<Type>,
     global: bool,
+}
+
+/// One entry of `exports:`: a key type, as `.export::<K>()` takes (ADR-0059). A generic type is
+/// written with or without a turbofish, and a trait object's slot as `dyn Trait`.
+struct ExportEntry(Type);
+
+impl Parse for ExportEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::LitStr) {
+            let name: syn::LitStr = input.parse()?;
+            return Err(syn::Error::new(
+                name.span(),
+                "a key is a type, not a string: declare a marker with `key!(pub Name: T)` and \
+                 export `Name`",
+            ));
+        }
+        Ok(ExportEntry(input.parse()?))
+    }
 }
 
 impl Parse for ConfigParser {
@@ -62,13 +81,24 @@ impl Parse for ConfigParser {
                     config.imports = fields.into_iter().collect();
                 }
                 "controllers" => {
-                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
+                    let fields = Punctuated::<syn::Expr, Token![,]>::parse_terminated(&content)?;
                     config.controllers = fields
                         .into_iter()
-                        .map(|field| {
-                            syn::parse_quote! {
-                                <#field as ::ulo::di::DeclaresController>::controller_factory()
+                        .map(|expr| {
+                            // A bare path is the type's own dispatch target; any other expression is
+                            // a controller factory value already.
+                            if let syn::Expr::Path(ref expr_path) = expr {
+                                if expr_path.attrs.is_empty() {
+                                    let ty = syn::TypePath {
+                                        qself: expr_path.qself.clone(),
+                                        path: expr_path.path.clone(),
+                                    };
+                                    return syn::parse_quote_spanned! {ty.span()=>
+                                        <#ty as ::ulo::di::DeclaresController>::controller_factory()
+                                    };
+                                }
                             }
+                            expr
                         })
                         .collect()
                 }
@@ -93,8 +123,8 @@ impl Parse for ConfigParser {
                         .collect();
                 }
                 "exports" => {
-                    let fields = Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
-                    config.exports = fields.into_iter().collect()
+                    let fields = Punctuated::<ExportEntry, Token![,]>::parse_terminated(&content)?;
+                    config.exports = fields.into_iter().map(|entry| entry.0).collect()
                 }
                 _ => return Err(syn::Error::new(key.span(), "Unknown field")),
             }

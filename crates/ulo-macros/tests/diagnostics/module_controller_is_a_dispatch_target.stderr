@@ -1,0 +1,12 @@
+error[E0277]: `Service` is not a dispatch target
+ --> tests/diagnostics/module_controller_is_a_dispatch_target.rs:7:29
+  |
+7 | #[ulo::module(controllers: [Service])]
+  |                             ^^^^^^^ a dispatch target is a type marked `#[controller]`
+  |
+help: the trait `DeclaresController` is not implemented for `Service`
+ --> tests/diagnostics/module_controller_is_a_dispatch_target.rs:5:1
+  |
+5 | pub struct Service {}
+  | ^^^^^^^^^^^^^^^^^^
+  = note: a provider, a gateway included, goes in `providers:` or `.provider(..)`

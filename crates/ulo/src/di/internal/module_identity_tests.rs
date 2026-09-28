@@ -97,7 +97,7 @@ struct Replica;
 /// A global module exporting one connection under `K`'s slot, fingerprinted by `url`.
 fn conn_module<K: 'static>(base: &str, url: &str) -> DynamicModule {
     DynamicModule::builder(base)
-        .provider_factory(FakeFactory {
+        .provider(FakeFactory {
             token: crate::di::token_of::<K>(),
             hint: Some(url.into()),
         })
@@ -111,7 +111,7 @@ fn conn_module<K: 'static>(base: &str, url: &str) -> DynamicModule {
 #[test]
 fn no_hint_keeps_base_identity() {
     let m = DynamicModule::builder("Mod")
-        .provider_factory(FakeFactory {
+        .provider(FakeFactory {
             token: "t".into(),
             hint: None,
         })

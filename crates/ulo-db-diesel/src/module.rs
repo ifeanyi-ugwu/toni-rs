@@ -14,7 +14,7 @@ impl DieselModule {
         CheckedModule::new(move |check: Option<StartupCheck>| {
             #[allow(unused_mut)]
             let mut builder = DynamicModule::builder("DieselModule::postgres")
-                .provider_factory(PgPoolFactory {
+                .provider(PgPoolFactory {
                     url: url.clone(),
                     token: ulo::di::token_of::<Pool<AsyncPgConnection>>(),
                     check,
@@ -24,7 +24,7 @@ impl DieselModule {
             #[cfg(feature = "health")]
             {
                 builder = builder
-                    .provider_factory(crate::health::PgHealthIndicatorFactory)
+                    .provider(crate::health::PgHealthIndicatorFactory)
                     .export::<crate::health::PgHealthIndicator>();
             }
 
@@ -42,7 +42,7 @@ impl DieselModule {
         CheckedModule::new(move |check: Option<StartupCheck>| {
             #[allow(unused_mut)]
             let mut builder = DynamicModule::builder("DieselModule::mysql")
-                .provider_factory(MySqlPoolFactory {
+                .provider(MySqlPoolFactory {
                     url: url.clone(),
                     token: ulo::di::token_of::<Pool<AsyncMysqlConnection>>(),
                     check,
@@ -52,7 +52,7 @@ impl DieselModule {
             #[cfg(feature = "health")]
             {
                 builder = builder
-                    .provider_factory(crate::health::MySqlHealthIndicatorFactory)
+                    .provider(crate::health::MySqlHealthIndicatorFactory)
                     .export::<crate::health::MySqlHealthIndicator>();
             }
 
@@ -92,7 +92,7 @@ impl DieselModule {
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
             DynamicModule::builder(token_of::<K>())
-                .provider_factory(PgPoolFactory {
+                .provider(PgPoolFactory {
                     url: url.clone(),
                     token: token_of::<K>(),
                     check,
@@ -113,7 +113,7 @@ impl DieselModule {
         let url: String = url.into();
         CheckedModule::new(move |check: Option<StartupCheck>| {
             DynamicModule::builder(token_of::<K>())
-                .provider_factory(MySqlPoolFactory {
+                .provider(MySqlPoolFactory {
                     url: url.clone(),
                     token: token_of::<K>(),
                     check,
