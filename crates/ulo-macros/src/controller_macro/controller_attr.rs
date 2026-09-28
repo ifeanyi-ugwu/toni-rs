@@ -33,13 +33,6 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
              `#[controller(\"/p\")]` on the struct and `#[routes]` on its impl",
         ));
     }
-    if args.init.is_some() {
-        return Err(syn::Error::new_spanned(
-            &struct_def.ident,
-            "`init = \"…\"` is not supported on `#[controller]`; mark the constructor with `#[new]` \
-             (or use `#[inject]` field injection), as with `#[injectable]`",
-        ));
-    }
 
     let struct_name = struct_def.ident.clone();
     let path = args.path;

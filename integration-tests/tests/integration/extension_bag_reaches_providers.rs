@@ -18,7 +18,7 @@ pub struct UserId(String);
 #[derive(Clone, Debug)]
 pub struct RequestId(String);
 
-// ===== 2. Execution-scoped provider using from_request =====
+// ===== 2. Execution-scoped provider built from the request =====
 
 #[injectable(scope = "execution")]
 pub struct RequestContext {
@@ -28,9 +28,7 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    /// Built per request from the injected `Request` — the modern replacement for the old
-    /// `init = "from_request"` magic: `Request` is an execution-scoped injectable, so `#[new]` resolves
-    /// it and the constructor reads the same request extensions.
+    /// Built per request from the injected `Request`, an execution-scoped injectable.
     #[new]
     fn new(req: Request) -> Self {
         let user_id = req
