@@ -2012,7 +2012,6 @@ static GRPC_CALL_IDS: AtomicU64 = AtomicU64::new(0);
 
 #[injectable(scope = "execution")]
 pub struct GrpcCallScoped {
-    #[default(0)]
     id: u64,
 }
 
@@ -2056,7 +2055,6 @@ static PER_CALL_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
 pub struct PerCallGrpcService {
     #[inject]
     scoped: GrpcCallScoped,
-    #[default(0)]
     build: u64,
 }
 
@@ -2128,7 +2126,6 @@ static SINGLETON_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
 
 #[controller]
 pub struct SingletonGrpcService {
-    #[default(0)]
     build: u64,
 }
 

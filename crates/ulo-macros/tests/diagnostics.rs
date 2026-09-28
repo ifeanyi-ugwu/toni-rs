@@ -126,6 +126,11 @@ const DOCUMENTED: &[(&str, &str)] = &[
         "construction_takes_no_init",
         "Unknown #[injectable] key: 'init'. Expected 'scope'",
     ),
+    ("default_beside_new", "is built by its `#[new]` constructor"),
+    (
+        "new_twice",
+        "duplicate definitions with name `__ULO_ONE_NEW_PER_TYPE`",
+    ),
     (
         "use_guards_takes_no_string",
         "a key is a type, not a string",

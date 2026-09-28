@@ -1,0 +1,10 @@
+error[E0592]: duplicate definitions with name `__ULO_ONE_NEW_PER_TYPE`
+  --> tests/diagnostics/new_twice.rs:13:5
+   |
+ 8 |     #[ulo::new]
+   |     ----------- other definition for `__ULO_ONE_NEW_PER_TYPE`
+...
+13 |     #[ulo::new]
+   |     ^^^^^^^^^^^ duplicate definitions for `__ULO_ONE_NEW_PER_TYPE`
+   |
+   = note: this error originates in the attribute macro `ulo::new` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -43,7 +43,7 @@ pub fn generate_routes_system(impl_block: &ItemImpl) -> Result<TokenStream> {
     // Re-emit the impl with the inert param markers and the consumed enhancer attrs stripped —
     // the standalone enhancer macros reject unconsumed use, so none may survive to the output.
     // `#[new]` and the `#[on_*]` lifecycle attrs are LEFT intact so their own macros expand into
-    // the `__ulo_ctor_*` / `__ulo_lc_*` bridges that `#[controller]`'s factory and object
+    // the `__ULO_ONE_NEW_PER_TYPE` / `__ulo_lc_*` bridges that `#[controller]`'s factory and object
     // dispatch through.
     let mut impl_def = impl_block.clone();
     impl_def
