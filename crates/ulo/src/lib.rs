@@ -8,6 +8,8 @@ pub mod __construct;
 #[doc(hidden)]
 pub mod __detect;
 #[doc(hidden)]
+pub mod __di;
+#[doc(hidden)]
 pub mod __dispatch;
 #[doc(hidden)]
 pub mod __enhancer;
@@ -125,8 +127,8 @@ pub mod prelude {
     pub use crate::{UloApplicationContext, UloFactory};
 
     pub use crate::di::{CheckedModule, DynamicModule, Extension, InitResult, ModuleIdentity};
+    pub use crate::di::{Declaration, DeclaresProvider, Key, ModuleRef, Provide, ProviderScope};
     pub use crate::di::{Execution, ModuleMetadata};
-    pub use crate::di::{Key, ModuleRef, ProviderScope};
     pub use crate::key;
 
     pub use crate::dispatch::Items;

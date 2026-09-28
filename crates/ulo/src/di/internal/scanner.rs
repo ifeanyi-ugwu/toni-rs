@@ -145,8 +145,26 @@ impl DependencyScanner {
                     _ => {}
                 }
 
-                // Detect multi-provider contributions and record them by base token
+                // Detect multi-provider contributions and record them by base token. The unnamed
+                // collection of an HTTP guard or interceptor type is that transport's global set.
                 if let Some(base_token) = provider.multi_base_token() {
+                    match crate::di::global_collection(&base_token)? {
+                        Some(crate::di::GlobalCollection::HttpGuards) => {
+                            app_guards += 1;
+                            container.register_app_guard_provider(
+                                module_token.clone(),
+                                provider_token.clone(),
+                            );
+                        }
+                        Some(crate::di::GlobalCollection::HttpInterceptors) => {
+                            app_interceptors += 1;
+                            container.register_app_interceptor_provider(
+                                module_token.clone(),
+                                provider_token.clone(),
+                            );
+                        }
+                        None => {}
+                    }
                     container.register_multi_provider(
                         base_token,
                         module_token.clone(),
