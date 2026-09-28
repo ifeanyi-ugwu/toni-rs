@@ -1,0 +1,23 @@
+error[E0277]: `Plain` is not a key
+ --> tests/diagnostics/inject_key_is_a_key.rs:8:14
+  |
+8 |     #[inject(Plain)]
+  |              ^^^^^ a key position reads a type implementing `Key`
+  |
+help: the trait `Key` is not implemented for `Plain`
+ --> tests/diagnostics/inject_key_is_a_key.rs:4:1
+  |
+4 | pub struct Plain;
+  | ^^^^^^^^^^^^^^^^
+  = note: a foreign type is named by a marker, `key!(pub Name: Plain)`; a type of this crate takes `#[derive(Key)]`
+help: the trait `Key` is implemented for `Server`
+ --> tests/diagnostics/inject_key_is_a_key.rs:6:1
+  |
+6 | #[ulo::injectable]
+  | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `ulo::__di::inject_key`
+ --> $WORKSPACE/crates/ulo/src/__di.rs
+  |
+  | pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
+  |                      ^^^^^^^^^^^^^^ required by this bound in `inject_key`
+  = note: this error originates in the attribute macro `ulo::injectable` (in Nightly builds, run with -Z macro-backtrace for more info)

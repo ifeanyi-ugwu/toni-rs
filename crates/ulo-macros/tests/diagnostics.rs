@@ -105,6 +105,16 @@ const DOCUMENTED: &[(&str, &str)] = &[
         "`Plain` is not a key",
     ),
     (
+        "inject_key_holds_the_field",
+        "type mismatch resolving `<Port as Key>::Value == String`",
+    ),
+    ("inject_key_is_a_key", "`Plain` is not a key"),
+    ("inject_takes_no_string", "a key is a type, not a string"),
+    (
+        "use_guards_takes_no_string",
+        "a key is a type, not a string",
+    ),
+    (
         "error_handler_factory_is_singleton",
         "is built once, not per execution or per resolution",
     ),

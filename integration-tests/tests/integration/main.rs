@@ -75,6 +75,7 @@ mod handler_return_is_a_type;
 mod http_e2e;
 mod import_cycle;
 mod inline_enhancers;
+mod key_spellings;
 mod lifecycle_hooks;
 mod marker_free_enhancers;
 mod metadata_overlay;
