@@ -6,11 +6,14 @@
 //! invisible at runtime — the application serves correctly until two requests
 //! disagree — so `create` refuses it, naming the provider built at startup and
 //! the execution-scoped one it reaches, through however many transients.
+use std::sync::Arc;
+
 use ulo::di::{Execution, ModuleMetadata, ResolutionError};
 use ulo::enhancer::Guard;
 use ulo::http::{Body, HttpContext};
 use ulo::{
-    StartupError, UloFactory, async_trait, controller, get, injectable, module, new, routes,
+    StartupError, UloFactory, async_trait, controller, get, injectable, key, module, new, provide,
+    routes,
 };
 
 use crate::common::TestServer;
@@ -241,6 +244,215 @@ pub struct PerCall {}
 pub struct Between {
     #[inject]
     per_call: PerCall,
+}
+
+#[injectable]
+pub struct Reaches {
+    #[inject]
+    between: Between,
+}
+
+#[module(providers: [PerCall, Between, Reaches])]
+struct ThroughATransient;
+
+#[tokio::test]
+async fn a_singleton_reaching_one_through_a_transient_is_refused() {
+    let (refused, needed) = refusal(ThroughATransient).await;
+    assert!(refused.ends_with("::Reaches"), "{refused}");
+    assert!(needed.ends_with("::PerCall"), "{needed}");
+}
+
+#[injectable]
+pub struct Constructed {
+    per_call: PerCall,
+}
+
+impl Constructed {
+    #[new]
+    fn new(per_call: PerCall) -> Self {
+        Self { per_call }
+    }
+}
+
+#[module(providers: [PerCall, Constructed])]
+struct ThroughAConstructor;
+
+#[tokio::test]
+async fn a_constructor_parameter_is_refused_like_a_field() {
+    let (refused, needed) = refusal(ThroughAConstructor).await;
+    assert!(refused.ends_with("::Constructed"), "{refused}");
+    assert!(needed.ends_with("::PerCall"), "{needed}");
+}
+
+#[derive(Clone)]
+pub struct Report;
+
+#[module(providers: [PerCall, provide!(async |_per_call: PerCall| Report)])]
+struct ThroughAFactory;
+
+#[derive(Clone)]
+pub struct Stamp;
+
+#[derive(Clone)]
+pub struct Stamped;
+
+#[module(providers: [
+    provide!(async || Stamp).per_execution(),
+    provide!(async |_stamp: Stamp| Stamped),
+])]
+struct OverAPerExecutionFactory;
+
+key!(pub PerCallPort: u16);
+
+key!(pub Doubled: u32);
+
+#[injectable]
+pub struct Dials {
+    #[inject(PerCallPort)]
+    port: u16,
+}
+
+#[module(providers: [provide!(PerCallPort => async || 3000u16).per_execution(), Dials])]
+struct OverAKeyedPerExecutionFactory;
+
+#[injectable]
+pub struct Halves {
+    #[inject(Doubled)]
+    doubled: u32,
+}
+
+#[module(providers: [
+    provide!(async || 21u32).per_execution(),
+    provide!(Doubled => async |n: u32| n * 2).transient(),
+    Halves,
+])]
+struct ThroughAKeyedTransient;
+
+#[tokio::test]
+async fn a_factory_declaration_is_refused_like_a_provider() {
+    let (refused, needed) = refusal(ThroughAFactory).await;
+    assert!(refused.ends_with("::Report"), "{refused}");
+    assert!(needed.ends_with("::PerCall"), "{needed}");
+
+    // A `.per_execution()` declaration reached as a factory's parameter refuses like an
+    // `#[injectable]`.
+    let (refused, needed) = refusal(OverAPerExecutionFactory).await;
+    assert!(refused.ends_with("::Stamped"), "{refused}");
+    assert!(needed.ends_with("::Stamp"), "{needed}");
+
+    // The refusal names the key the declaration is bound under, not the type it builds.
+    let (refused, needed) = refusal(OverAKeyedPerExecutionFactory).await;
+    assert!(refused.ends_with("::Dials"), "{refused}");
+    assert!(needed.ends_with("::PerCallPort"), "{needed}");
+
+    // A transient under a key passes on its dependency's refusal, naming the dependency.
+    let (refused, needed) = refusal(ThroughAKeyedTransient).await;
+    assert!(refused.ends_with("::Halves"), "{refused}");
+    assert_eq!(needed, "u32");
+}
+
+pub trait Named: Send + Sync {}
+
+#[injectable(scope = "execution")]
+pub struct PerCallNamed {}
+
+impl Named for PerCallNamed {}
+
+#[injectable]
+pub struct Greets {
+    #[inject]
+    named: Arc<dyn Named>,
+}
+
+#[module(providers: [
+    provide!(dyn Named => async |_per_call: PerCall| PerCallNamed {}),
+    PerCall,
+    Greets,
+])]
+struct ThroughASlotFactory;
+
+#[module(providers: [provide!(dyn Named => PerCallNamed), Greets])]
+struct ThroughASlotType;
+
+#[module(providers: [provide!(into dyn Named => PerCallNamed)])]
+struct ThroughAContribution;
+
+#[tokio::test]
+async fn a_trait_object_slot_or_collection_is_refused_like_a_provider() {
+    let (refused, needed) = refusal(ThroughASlotFactory).await;
+    assert!(refused.ends_with("::Named"), "{refused}");
+    assert!(needed.ends_with("::PerCall"), "{needed}");
+
+    let (refused, needed) = refusal(ThroughASlotType).await;
+    assert!(refused.ends_with("::Greets"), "{refused}");
+    assert!(needed.ends_with("::PerCallNamed"), "{needed}");
+
+    let (refused, needed) = refusal(ThroughAContribution).await;
+    assert!(refused.contains("Named"), "{refused}");
+    assert!(needed.ends_with("::PerCallNamed"), "{needed}");
+}
+
+#[controller("/reaches")]
+pub struct ReachesController {
+    #[inject]
+    between: Between,
+}
+
+#[routes]
+impl ReachesController {
+    #[get("/")]
+    fn show(&self) -> Body {
+        let _ = &self.between;
+        Body::text("built")
+    }
+}
+
+#[module(controllers: [ReachesController], providers: [PerCall, Between])]
+struct ControllerThroughATransient;
+
+// A controller injecting an execution-scoped provider directly is built per call instead; one
+// reaching it through a transient is built once, and refused.
+#[tokio::test]
+async fn a_controller_built_once_is_refused_like_a_provider() {
+    let (refused, needed) = refusal(ControllerThroughATransient).await;
+    assert!(refused.contains("ReachesController"), "{refused}");
+    assert!(needed.ends_with("::PerCall"), "{needed}");
+}
+
+#[module(providers: [PerCall, Between])]
+struct TransientOverPerCall;
+
+#[tokio::test]
+async fn a_transient_reaching_one_resolves_in_an_execution_and_is_refused_outside() {
+    let app = UloFactory::create(TransientOverPerCall).await.unwrap();
+
+    app.resolve::<Between>(&Execution::standalone())
+        .await
+        .expect("an execution builds what the transient reaches");
+    match app.get::<Between>().await {
+        Err(ResolutionError::ExecutionRequired { token }) => {
+            assert!(token.ends_with("::PerCall"), "{token}")
+        }
+        Ok(_) => panic!("outside an execution the transient cannot be built"),
+        Err(other) => panic!("unexpected error: {other}"),
+    }
+}
+
+#[injectable(scope = "execution")]
+pub struct AlsoPerCall {
+    #[inject]
+    per_call: PerCall,
+}
+
+#[module(providers: [PerCall, AlsoPerCall])]
+struct PerCallOverPerCall;
+
+#[tokio::test]
+async fn an_execution_scoped_provider_injects_another() {
+    let app = UloFactory::create(PerCallOverPerCall).await.unwrap();
+    app.resolve::<AlsoPerCall>(&Execution::standalone())
+        .await
+        .expect("both are built in the one execution");
 }
 
 #[controller("/per-call-reaches", scope = "execution")]
