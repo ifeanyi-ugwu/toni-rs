@@ -1,9 +1,9 @@
 //! `ModuleRef` resolves providers at runtime, scoped to the module that handed
 //! it out.
 //!
-//! Strict resolution is the point: a handle that fell back to the global store
-//! would satisfy every lookup and erase the module boundary, so the refusals
-//! matter more than the successes. Execution-scoped resolution through a handle
+//! Strict resolution is the point: a handle that searched every module would
+//! satisfy every lookup and erase the module boundary, so the refusals matter
+//! more than the successes. Execution-scoped resolution through a handle
 //! is covered too — it needs an execution to resolve into, and asking without
 //! one is a refusal rather than a panic.
 use ulo::prelude::*;
@@ -66,9 +66,9 @@ impl PluginLoader {
         self.module_ref.get::<DatabaseService>().await.ok()
     }
 
-    /// Test global mode - searches current module first, then globally
+    /// The current module first, then what the global modules export
     pub async fn load_service_global(&self) -> Option<CacheService> {
-        self.module_ref.get::<CacheService>().global().await.ok()
+        self.module_ref.get::<CacheService>().or_global().await.ok()
     }
 
     /// Test strict mode should fail for non-local service

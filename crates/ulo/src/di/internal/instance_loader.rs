@@ -153,13 +153,14 @@ impl InstanceLoader {
         {
             let container = self.container.read();
             let mut store = store_arc.write();
+            store.globals = container.global_providers().clone();
             for module_token in &modules_order {
                 if let Ok(instances) = container.get_provider_instances(module_token) {
                     let instances = instances
                         .iter()
                         .map(|(token, instance)| (token.clone(), instance.clone()))
                         .collect();
-                    store.insert(module_token.clone(), instances);
+                    store.modules.insert(module_token.clone(), instances);
                 }
             }
         }
