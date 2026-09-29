@@ -777,8 +777,9 @@ pub fn provide(input: TokenStream) -> TokenStream {
 ///     Ok(err.to_response())
 /// }
 ///
-/// // Register on a controller / method:
-/// #[use_error_handlers(render_4xx)]
+/// // Register on a controller / method. A bare name is read as a type to resolve from the
+/// // container, where `#[catch]` declares nothing, so the handler is passed as a value:
+/// #[use_error_handlers(value render_4xx)]
 /// ```
 #[proc_macro_attribute]
 pub fn catch(attr: TokenStream, item: TokenStream) -> TokenStream {
