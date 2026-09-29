@@ -10,9 +10,29 @@ constraint or trade-off that isn't visible from the resulting code, or (c) recor
 
 ## Format
 
-Lightweight [MADR](https://adr.github.io/madr/): context → decision → consequences. Numbered,
-append-only. A superseded ADR stays in place with its status changed and a pointer to the successor —
-the history is part of the value.
+Lightweight [MADR](https://adr.github.io/madr/): context → decision → consequences. Numbered, and
+never renumbered or removed. A superseded ADR stays in place with its status changed and a pointer
+to the successor — the history is part of the value.
+
+## After acceptance
+
+An accepted record is not rewritten to track the code. Its own text takes two edits: a successor's
+pointer, and the correction of a clause that was wrong when written. What changed decides which:
+
+- **The decision.** A later ADR that refines the whole decision adds a pointer under its title,
+  above the body, so a reader meets it before the older text: 0048 carries one to 0049, which moved
+  the boundary 0048 drew. One that supersedes a section adds the pointer at that section, and one
+  that revisits a consequence adds it where the older record draws the consequence. One that
+  supersedes the record changes its status to name the successor.
+- **A name.** A type, variant, method or term renamed since is left as written, and the change that
+  renamed it carries the mapping. Editing the prose to follow a rename turns a record of a decision
+  into a description of the present.
+- **A clause that was wrong when written**, such as a claim about code that did not yet exist, is
+  corrected in place by the change that finds it.
+
+A rename that touches every record's paths, as the framework's own did, is recorded as an ADR of its
+own (0044) and applied across the records in the same pull request, so they stay greppable against
+the code.
 
 ## Index
 

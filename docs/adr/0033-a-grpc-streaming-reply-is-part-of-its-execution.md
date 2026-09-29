@@ -16,6 +16,9 @@ Two facts decide the shape of the fix.
 typed by the tonic trait's associated stream type, which the user's impl defines. A value cannot be
 wrapped without changing its type.
 
+Revisited by [ADR-0048](0048-a-grpc-reply-travels-through-the-pipeline.md), which carries the reply
+through the pipeline in a framework type.
+
 **A gRPC handler cannot reach its context.** The signature is tonic's and carries no context
 parameter, so guards, interceptors and error handlers receive one and a handler does not. The
 generated method puts the execution's extension bag on the request, which is how a handler reads
