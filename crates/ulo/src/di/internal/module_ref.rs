@@ -91,7 +91,7 @@ impl ModuleRef {
     pub fn get<T: 'static>(&self) -> ModuleRefQuery<'_, T> {
         ModuleRefQuery {
             module_ref: self,
-            token: std::any::type_name::<T>().to_string(),
+            token: crate::di::token_of::<T>(),
             visible: false,
             execution: Execution::None,
             _phantom: std::marker::PhantomData,
@@ -135,7 +135,7 @@ impl ModuleRef {
     pub fn resolve<T: 'static>(&self, execution: &Execution) -> ModuleRefQuery<'_, T> {
         ModuleRefQuery {
             module_ref: self,
-            token: std::any::type_name::<T>().to_string(),
+            token: crate::di::token_of::<T>(),
             visible: false,
             execution: execution.clone(),
             _phantom: std::marker::PhantomData,
