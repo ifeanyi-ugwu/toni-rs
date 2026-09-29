@@ -20,7 +20,7 @@ use std::time::Duration;
 /// retrying: one counts attempts with its own exponential backoff, another takes a total timeout
 /// and no attempt count, two do not retry at all. Their internal retry is switched off and this
 /// schedule is used instead, so every integration gives up at the same point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StartupCheck {
     attempts: u32,
     delay: Duration,

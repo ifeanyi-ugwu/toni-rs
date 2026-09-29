@@ -18,7 +18,9 @@ use crate::startup_check::StartupCheck;
 /// ```
 ///
 /// The module is rebuilt whenever the check changes, because the check is folded into the provider
-/// factories rather than read later.
+/// factories rather than read later. The check is part of the module's identity: two identical
+/// imports dedup, and two differing only in their check are two modules, refused where their
+/// exports clash.
 pub struct CheckedModule {
     make: Box<dyn Fn(Option<StartupCheck>) -> DynamicModule + Send + Sync>,
     check: Option<StartupCheck>,
@@ -66,7 +68,9 @@ impl CheckedModule {
 
 impl ModuleMetadata for CheckedModule {
     fn identity(&self) -> crate::di::ModuleIdentity {
-        self.built.identity()
+        let built = self.built.identity();
+        crate::di::ModuleIdentity::named(built.base())
+            .fingerprinted(&(built.fingerprint(), self.check))
     }
 
     fn is_global(&self) -> bool {
