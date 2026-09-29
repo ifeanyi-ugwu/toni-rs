@@ -32,6 +32,9 @@ fix the identity.
 
 ## Decision
 
+Its mechanism is superseded by [ADR-0039](0039-a-grpc-status-carries-the-error-it-came-from.md):
+the error travels inside the status the call fails with, not beside it.
+
 **The error travels beside the answer when it cannot travel inside it.** `GrpcContext` already exists
 per call, and its extensions are ulo's own, so `fail` parks the domain error there and answers with
 the status its `kind()` maps to:
