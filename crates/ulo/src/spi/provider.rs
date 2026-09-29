@@ -106,8 +106,10 @@ pub trait ProviderFactory: Send + Sync {
     /// size. Return a value derived from that config so identical registrations dedup (the same
     /// module reached through two import paths) while different ones stay distinct. `None` (the
     /// default) leaves identity keyed on the base name alone: two such modules with differing
-    /// config collapse silently, as before. Integrations that support multiple instances should
-    /// override this.
+    /// config collapse into one without an error. Integrations that support multiple instances
+    /// should override this. A factory whose configuration cannot be compared, such as a closure,
+    /// may return a value unique to each construction; every construction is then a module of its
+    /// own, and two exporting one token globally are refused.
     fn identity_hint(&self) -> Option<String> {
         None
     }

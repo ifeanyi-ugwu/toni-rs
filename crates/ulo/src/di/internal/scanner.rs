@@ -30,6 +30,9 @@ impl DependencyScanner {
 
         while let Some(default_module) = stack.pop() {
             let module_id = default_module.identity().key();
+            // A module reached through two import paths can be on the stack twice, and is
+            // scanned once: a `#[module]` builds its imports afresh on each `imports()` call, and
+            // an import whose identity is unique to each construction would register twice.
             if ctx_registry.iter().any(|seen| seen == &module_id) {
                 continue;
             }

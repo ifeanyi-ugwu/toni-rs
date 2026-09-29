@@ -106,21 +106,13 @@ async fn a_second_client_of_one_type_is_reached_by_its_marker() {
     assert_eq!(svc.keyed.url, "secondary");
 }
 
-/// Two clients of one type without a marker are accepted, and the one written
-/// last is the one injected.
+/// Two clients of one type without a marker fail startup, naming both modules.
 ///
-/// `for_root_keyed`'s documentation says a marker is required to register more
-/// than one client of the same type. Nothing enforces that: the two render one
-/// module identity, having no `identity_hint` to tell them apart, the container
-/// keeps the first module the scan reaches and drops the other as a repeat, and
-/// startup reports nothing. The scan reaches the import written last first. The
-/// other five database integrations refuse this at startup and name both
-/// modules.
-///
-/// Pinned as what happens today rather than as what should; this test is what
-/// will fail when the gap closes.
+/// Neither closure can be compared with the other, so each `for_root` call is a
+/// registration of its own: two modules exporting one client type globally,
+/// which the container refuses as ADR-0029's global-export clash.
 #[tokio::test]
-async fn two_unnamed_clients_of_one_type_keep_the_last() {
+async fn two_unnamed_clients_of_one_type_are_refused() {
     #[injectable]
     struct Solo {
         #[inject]
@@ -133,13 +125,96 @@ async fn two_unnamed_clients_of_one_type_keep_the_last() {
     ], providers: [Solo], exports: [Solo])]
     struct TwoUnnamedModule {}
 
-    let ctx = UloFactory::create_application_context(TwoUnnamedModule)
-        .await
-        .expect("two unnamed clients of one type are accepted today");
-
-    let svc = ctx.get::<Solo>().await.expect("the injectable resolves");
-    assert_eq!(
-        svc.client.url, "second",
-        "the later registration replaces the earlier one"
+    let err = match UloFactory::create_application_context(TwoUnnamedModule).await {
+        Ok(_) => panic!("two unnamed clients of one type must be refused"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        err.contains("exported globally by two modules"),
+        "the refusal names the clash: {err}"
     );
+    assert_eq!(
+        err.matches("PrismaModule#").count(),
+        2,
+        "the refusal names both modules: {err}"
+    );
+}
+
+/// Two clients under one marker fail startup the same way.
+#[tokio::test]
+async fn two_clients_under_one_marker_are_refused() {
+    #[module(imports: [
+        PrismaModule::for_root_keyed::<Analytics, _>(|| async { FakeClient { url: "first" } }),
+        PrismaModule::for_root_keyed::<Analytics, _>(|| async { FakeClient { url: "second" } }),
+    ])]
+    struct TwoUnderOneMarker {}
+
+    let err = match UloFactory::create_application_context(TwoUnderOneMarker).await {
+        Ok(_) => panic!("two clients under one marker must be refused"),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("exported globally by two modules"), "{err}");
+}
+
+/// Stands in for a second generated client type.
+#[derive(Clone)]
+struct OtherClient {
+    url: &'static str,
+}
+
+/// Two client types register side by side, each module having an identity of
+/// its own.
+#[tokio::test]
+async fn two_client_types_register_side_by_side() {
+    #[injectable]
+    struct BothTypes {
+        #[inject]
+        first: FakeClient,
+        #[inject]
+        second: OtherClient,
+    }
+
+    #[module(imports: [
+        PrismaModule::for_root(|| async { FakeClient { url: "fake" } }),
+        PrismaModule::for_root(|| async { OtherClient { url: "other" } }),
+    ], providers: [BothTypes], exports: [BothTypes])]
+    struct TwoTypesModule {}
+
+    let ctx = UloFactory::create_application_context(TwoTypesModule)
+        .await
+        .expect("two client types start");
+    let svc = ctx
+        .get::<BothTypes>()
+        .await
+        .expect("the injectable resolves");
+    assert_eq!(svc.first.url, "fake");
+    assert_eq!(svc.second.url, "other");
+}
+
+static DIAMOND_CONNECTS: AtomicUsize = AtomicUsize::new(0);
+
+#[module(imports: [PrismaModule::for_root(|| async {
+    DIAMOND_CONNECTS.fetch_add(1, Ordering::SeqCst);
+    FakeClient { url: "shared" }
+})])]
+struct DbModule {}
+
+#[module(imports: [DbModule])]
+struct UsersModule {}
+
+#[module(imports: [DbModule, UsersModule], providers: [ByType], exports: [ByType])]
+struct DiamondModule {}
+
+/// A module importing Prisma, reached through two import paths, registers one
+/// client: its imports are built once, not once per path.
+#[tokio::test]
+async fn a_module_reached_through_two_paths_registers_one_client() {
+    DIAMOND_CONNECTS.store(0, Ordering::SeqCst);
+
+    let ctx = UloFactory::create_application_context(DiamondModule)
+        .await
+        .expect("one client reached through two paths starts");
+    let svc = ctx.get::<ByType>().await.expect("the injectable resolves");
+    assert_eq!(svc.client.url, "shared");
+    assert_eq!(DIAMOND_CONNECTS.load(Ordering::SeqCst), 1);
 }
