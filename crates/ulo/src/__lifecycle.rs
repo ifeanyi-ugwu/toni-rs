@@ -33,3 +33,17 @@ pub trait LifecycleBridge {
 }
 
 impl<T: ?Sized + Sync> LifecycleBridge for T {}
+
+/// Blanket `false` for each hook, shadowed by the inherent `true` its `#[on_*]` macro emits.
+/// `#[injectable]` reads the five in `const` items to refuse a hook its scope never fires. Apart
+/// from [`LifecycleBridge`] because they carry no `Sync` bound: the check reads them for every
+/// execution-scoped and transient type, hooked or not.
+pub trait LifecycleFlags {
+    const __ULO_LC_ON_INIT: bool = false;
+    const __ULO_LC_ON_BOOTSTRAP: bool = false;
+    const __ULO_LC_ON_DESTROY: bool = false;
+    const __ULO_LC_BEFORE_SHUTDOWN: bool = false;
+    const __ULO_LC_ON_SHUTDOWN: bool = false;
+}
+
+impl<T: ?Sized> LifecycleFlags for T {}
