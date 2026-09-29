@@ -356,7 +356,9 @@ impl UloApplication {
         }
     }
 
-    /// Returns an instance of `T` from the DI container, searching across all modules.
+    /// Returns an instance of `T` from the DI container, searching across all modules. A type two
+    /// modules hold answers [`ResolutionError::AmbiguousModule`], as
+    /// [`UloApplicationContext::get`](crate::application_context::UloApplicationContext::get) does.
     pub async fn get<T: 'static>(&self) -> Result<T, ResolutionError> {
         self.context.get::<T>().await
     }
