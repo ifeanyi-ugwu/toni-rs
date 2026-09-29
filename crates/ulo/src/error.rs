@@ -95,7 +95,8 @@ impl From<Box<dyn Error + Send + Sync + 'static>> for StartupError {
 #[non_exhaustive]
 pub enum ResolutionError {
     /// `module` is the module searched, or `None` where every module was. A `ModuleRef` lookup
-    /// with `.or_global()` names its own module, the global registry having been read after it.
+    /// with `.visible()` names its own module, its imports' exports and the global registry having
+    /// been read after it.
     #[error("provider `{token}` not found {}", searched_in(.module))]
     ProviderNotFound {
         token: String,
@@ -109,8 +110,9 @@ pub enum ResolutionError {
     )]
     ModuleNotFound { id: String },
 
-    /// Two or more modules answer one lookup: modules sharing the identity base `base`, or
-    /// modules each holding the token `base` that a search across every module asked for.
+    /// Two or more modules answer one lookup: modules sharing the identity base `base`, modules
+    /// each holding the token `base` that a search across every module asked for, or imports each
+    /// exporting the token `base` into the module a `.visible()` lookup ran in.
     /// `candidates` holds their full keys, each of which
     /// [`get_module_by_id`](crate::application_context::UloApplicationContext::get_module_by_id)
     /// resolves on its own.

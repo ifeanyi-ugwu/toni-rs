@@ -1,5 +1,5 @@
-//! `.or_global()` reaches what the global modules export and no other module's provider, and a key
-//! with two answers is refused rather than answered by whichever module the search reached first.
+//! `.visible()` reaches a global module's export and no provider kept private, and a key with two
+//! answers is refused rather than answered by whichever module the search reached first.
 
 use ulo::di::{ModuleRef, ResolutionError};
 use ulo::{UloFactory, injectable, module};
@@ -33,20 +33,20 @@ struct LookerModule;
 struct RootModule;
 
 #[tokio::test]
-async fn or_global_reaches_a_global_export_and_no_private_provider() {
+async fn visible_reaches_a_global_export_and_no_private_provider() {
     let ctx = UloFactory::create_application_context(RootModule)
         .await
         .expect("the module starts");
     let looker = ctx.get::<Looker>().await.unwrap();
 
-    let shared = looker.module_ref.get::<Shared>().or_global().await;
+    let shared = looker.module_ref.get::<Shared>().visible().await;
     assert_eq!(shared.expect("a global export is reached").origin, "global");
     assert!(
         looker.module_ref.get::<Shared>().await.is_err(),
         "the current module alone does not hold it"
     );
 
-    match looker.module_ref.get::<Secret>().or_global().await {
+    match looker.module_ref.get::<Secret>().visible().await {
         Err(ResolutionError::ProviderNotFound { .. }) => {}
         Ok(_) => panic!("a provider another module kept private is not reached"),
         Err(other) => panic!("unexpected error: {other}"),

@@ -66,9 +66,9 @@ impl PluginLoader {
         self.module_ref.get::<DatabaseService>().await.ok()
     }
 
-    /// The current module first, then what the global modules export
+    /// Everything visible to the module: its own, its imports' exports, the globals
     pub async fn load_service_global(&self) -> Option<CacheService> {
-        self.module_ref.get::<CacheService>().or_global().await.ok()
+        self.module_ref.get::<CacheService>().visible().await.ok()
     }
 
     /// Test strict mode should fail for non-local service

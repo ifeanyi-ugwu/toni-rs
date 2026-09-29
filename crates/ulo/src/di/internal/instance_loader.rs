@@ -162,6 +162,21 @@ impl InstanceLoader {
                         .collect();
                     store.modules.insert(module_token.clone(), instances);
                 }
+                // Every import declaring the export counts, built or not, as it does where the
+                // loader resolves an injection.
+                let mut imported: super::module_ref::ImportedExports = FxHashMap::default();
+                for import in container.imported_modules(module_token)? {
+                    for token in container.exported_tokens_of(import)? {
+                        let instance = container
+                            .get_provider_instance_by_token(import, &token)?
+                            .cloned();
+                        imported
+                            .entry(token)
+                            .or_default()
+                            .push((import.clone(), instance));
+                    }
+                }
+                store.imports.insert(module_token.clone(), imported);
             }
         }
 
