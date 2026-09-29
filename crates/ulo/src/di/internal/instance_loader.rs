@@ -104,13 +104,12 @@ impl InstanceLoader {
         );
         // Track which modules are pending (deferred due to unready global providers)
         let mut pending_modules: Vec<String> = modules_order.clone();
-        let total_modules = pending_modules.len();
-        let mut max_iterations = total_modules * 2; // Prevent infinite loops
         // Last deferral reason per module, kept to explain a stall precisely.
         let mut deferred_reasons: FxHashMap<String, String> = FxHashMap::default();
 
-        while !pending_modules.is_empty() && max_iterations > 0 {
-            max_iterations -= 1;
+        // Every pass builds at least one module or ends in the stall diagnostic below, so the loop
+        // runs at most once per module.
+        while !pending_modules.is_empty() {
             let mut successfully_created = Vec::new();
             let mut deferred_modules = Vec::new();
 
@@ -147,14 +146,6 @@ impl InstanceLoader {
 
             // Update pending list to only deferred modules
             pending_modules = deferred_modules;
-        }
-
-        if !pending_modules.is_empty() {
-            return Err(format!(
-                "Module instantiation timed out. Remaining modules: {:?}",
-                pending_modules
-            )
-            .into());
         }
 
         // PHASE 1.5: Collect multi-provider contributions into Vec collections per base token.
