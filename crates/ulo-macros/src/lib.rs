@@ -106,7 +106,7 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 /// The key is checked against what the field holds, at the key: `V` for a slot holding a sized
 /// type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a collection.
 /// A field holding another type fails to compile there, as do a key that is not a `Key` and a string
-/// key. A `#[new]` parameter takes the same keys and cannot take a collection.
+/// key. A `#[new]` parameter, or a `#[controller]` field, takes the same keys, collections included.
 #[proc_macro_attribute]
 pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = proc_macro2::TokenStream::from(attr);

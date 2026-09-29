@@ -684,33 +684,14 @@ fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream
     // Generate resolutions for multi-provider fields
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        let item_resolution = collection_item_resolution(&inner_trait);
-        let field_name_str = field_name.to_string();
-        let resolution = quote! {
-            let #field_name: #full_type = {
-                let __lookup_token = #lookup_token_expr;
-                let provider = self.dependencies
-                    .get(&__lookup_token)
-                    .unwrap_or_else(|| panic!(
-                        "Missing multi-provider '{}' for field '{}'",
-                        __lookup_token, #field_name_str
-                    ));
-                let any_box = provider.resolve(__exec_ctx.clone()).await;
-                let erased_items = *any_box
-                    .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
-                    .unwrap_or_else(|_| panic!(
-                        "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
-                        __lookup_token
-                    ));
-                erased_items
-                    .into_iter()
-                    .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        #item_resolution
-                    })
-                    .collect()
-            };
-        };
-        resolutions.push(resolution);
+        resolutions.push(collection_field_resolution(
+            field_name,
+            full_type,
+            &inner_trait,
+            lookup_token_expr,
+            quote! { self.dependencies },
+            quote! { __exec_ctx.clone() },
+        ));
         field_names.push(field_name.clone());
     }
 
@@ -838,33 +819,14 @@ fn generate_factory_field_resolutions(
     // Generate resolutions for multi-provider fields
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        let item_resolution = collection_item_resolution(&inner_trait);
-        let field_name_str = field_name.to_string();
-        let resolution = quote! {
-            let #field_name: #full_type = {
-                let __lookup_token = #lookup_token_expr;
-                let provider = dependencies
-                    .get(&__lookup_token)
-                    .unwrap_or_else(|| panic!(
-                        "Missing multi-provider '{}' for field '{}'",
-                        __lookup_token, #field_name_str
-                    ));
-                let any_box = provider.resolve(::ulo::di::Execution::None).await;
-                let erased_items = *any_box
-                    .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
-                    .unwrap_or_else(|_| panic!(
-                        "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
-                        __lookup_token
-                    ));
-                erased_items
-                    .into_iter()
-                    .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        #item_resolution
-                    })
-                    .collect()
-            };
-        };
-        resolutions.push(resolution);
+        resolutions.push(collection_field_resolution(
+            field_name,
+            full_type,
+            &inner_trait,
+            lookup_token_expr,
+            quote! { dependencies },
+            quote! { ::ulo::di::Execution::None },
+        ));
         field_names.push(field_name.clone());
     }
 
@@ -1319,36 +1281,18 @@ fn generate_create_field_resolutions(
 
     for (field_name, full_type, lookup_token_expr) in &multi_deps {
         let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        let item_resolution = collection_item_resolution(&inner_trait);
-        let field_name_str = field_name.to_string();
-        resolutions.push(quote! {
-            let #field_name: #full_type = {
-                let __lookup_token = #lookup_token_expr;
-                let __provider = all_deps.get(&__lookup_token)
-                    .unwrap_or_else(|| panic!(
-                        "Missing multi-provider '{}' for field '{}'",
-                        __lookup_token, #field_name_str
-                    ));
-                let __ctx = if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-                    __exec_ctx.clone()
-                } else {
-                    ::ulo::di::Execution::None
-                };
-                let __any_box = __provider.resolve(__ctx).await;
-                let erased_items = *__any_box
-                    .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
-                    .unwrap_or_else(|_| panic!(
-                        "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
-                        __lookup_token
-                    ));
-                erased_items
-                    .into_iter()
-                    .map(|item| -> ::std::sync::Arc<#inner_trait> {
-                        #item_resolution
-                    })
-                    .collect()
-            };
-        });
+        resolutions.push(collection_field_resolution(
+            field_name,
+            full_type,
+            &inner_trait,
+            lookup_token_expr,
+            quote! { all_deps },
+            quote! { if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
+                __exec_ctx.clone()
+            } else {
+                ::ulo::di::Execution::None
+            } },
+        ));
         field_names.push(field_name.clone());
     }
 
@@ -1519,6 +1463,47 @@ fn generate_dyn_factories(
     };
 
     (struct_defs, role_pushes)
+}
+
+/// A `Vec<Arc<dyn Trait>>` field's or parameter's resolution: the collection provider under
+/// `lookup_token`, read from the dependency map `deps` and resolved in `ctx`, its erased items read
+/// back as the declared trait object. `ctx` may read `__provider`. Every resolver of an `#[inject]`
+/// field or a `#[new]` parameter calls this for a collection.
+pub(crate) fn collection_field_resolution(
+    field_name: &Ident,
+    full_type: &Type,
+    inner_trait: &Type,
+    lookup_token: &TokenStream,
+    deps: TokenStream,
+    ctx: TokenStream,
+) -> TokenStream {
+    let item_resolution = collection_item_resolution(inner_trait);
+    let field_name_str = field_name.to_string();
+    quote! {
+        let #field_name: #full_type = {
+            let __lookup_token = #lookup_token;
+            let __provider = #deps
+                .get(&__lookup_token)
+                .unwrap_or_else(|| panic!(
+                    "Missing multi-provider '{}' for field '{}'",
+                    __lookup_token, #field_name_str
+                ));
+            let __ctx = #ctx;
+            let __any_box = __provider.resolve(__ctx).await;
+            let erased_items = *__any_box
+                .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
+                .unwrap_or_else(|_| panic!(
+                    "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
+                    __lookup_token
+                ));
+            erased_items
+                .into_iter()
+                .map(|item| -> ::std::sync::Arc<#inner_trait> {
+                    #item_resolution
+                })
+                .collect()
+        };
+    }
 }
 
 /// How one collection item is read back as the field's `Arc<dyn Trait>`. `provide!` stores an item
