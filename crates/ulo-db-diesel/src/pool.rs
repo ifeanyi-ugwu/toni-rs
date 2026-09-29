@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use ulo::{
     FxHashMap, StartupCheck,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -31,7 +31,10 @@ macro_rules! impl_diesel_pool {
                 Some(self.url.clone())
             }
 
-            async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+            async fn build(
+                &self,
+                _deps: FxHashMap<String, Registration>,
+            ) -> BuildResult<Registration> {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
                 // A failure is carried into the provider and reported from `on_module_init` with
@@ -51,7 +54,7 @@ macro_rules! impl_diesel_pool {
                         )),
                     ),
                 };
-                Ok(Injectable::new(
+                Ok(Registration::new(
                     Arc::new(Box::new($provider {
                         pool,
                         init_error,

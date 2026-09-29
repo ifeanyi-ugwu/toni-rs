@@ -6,7 +6,7 @@ use mongodb::{Client, Database, options::ClientOptions};
 use ulo::{
     FxHashMap,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
 
@@ -51,14 +51,14 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
         vec![ulo::di::token_of::<Database>()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let token = ulo::di::token_of::<Database>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
             .instance
             .clone();
-        Ok(Injectable::new(
+        Ok(Registration::new(
             Arc::new(Box::new(MongoHealthProvider { connection })),
             vec![],
         ))

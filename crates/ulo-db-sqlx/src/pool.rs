@@ -5,7 +5,7 @@ use sqlx::{Database, Pool, pool::PoolOptions};
 use ulo::{
     FxHashMap, StartupCheck,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 
 pub(crate) struct SqlxPoolFactory<DB: Database> {
@@ -40,8 +40,8 @@ where
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<Injectable> {
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<Registration> {
         // Configured lazily: the server is contacted by the startup check, so every integration
         // reaches an unreachable one on the same schedule rather than on its driver's. What is
         // left here is URL parsing, which needs no network.
@@ -64,7 +64,7 @@ where
             ),
         };
 
-        Ok(Injectable::new(
+        Ok(Registration::new(
             Arc::new(Box::new(SqlxPoolProvider {
                 pool,
                 init_error,

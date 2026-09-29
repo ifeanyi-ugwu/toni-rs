@@ -29,8 +29,8 @@ impl ProviderFactory for SeaOrmConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<ulo::spi::Injectable> {
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<ulo::spi::Registration> {
         // Configured lazily, with the check's deadline handed to the driver: sea-orm's own
         // connect and acquire timeouts are what bound the probe, so nothing here needs a timer.
         // What is left at build time is URL parsing, which needs no network.
@@ -56,7 +56,7 @@ impl ProviderFactory for SeaOrmConnectionFactory {
             ),
         };
 
-        Ok(ulo::spi::Injectable::new(
+        Ok(ulo::spi::Registration::new(
             Arc::new(Box::new(SeaOrmConnectionProvider {
                 db: Mutex::new(db),
                 init_error,

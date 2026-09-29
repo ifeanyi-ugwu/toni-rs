@@ -65,30 +65,6 @@ pub fn generate_provider_from_struct_with_traits(
     })
 }
 
-/// Adds Clone and Injectable derives to struct if needed
-///
-/// # Clone Detection
-/// This function checks for `#[derive(Clone)]` attribute on the struct.
-///
-/// # Limitation: Manual `impl Clone`
-/// This macro **cannot detect** manual `impl Clone` blocks that come after the macro invocation:
-///
-/// ```rust,ignore
-/// #[injectable]
-/// pub struct Foo { field: String }
-///
-/// // ❌ Macro cannot see this - will add #[derive(Clone)] and cause conflict
-/// impl Clone for Foo {
-///     fn clone(&self) -> Self { /* custom logic */ }
-/// }
-/// ```
-///
-/// This is an acceptable limitation because:
-/// - Macros process attributes linearly and cannot look ahead to future impl blocks
-/// - Compile errors are clear when conflicts occur
-/// Re-emit the struct deriving only `InjectFields`. Dispatch targets take this path: nothing
-/// clones one, so no `Clone` derive is forced and non-`Clone` fields are legal.
-
 /// Re-emit the struct deriving only `InjectFields`. Dispatch targets take this path: nothing
 /// clones one, so no `Clone` derive is forced and non-`Clone` fields are legal.
 pub fn add_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
@@ -100,6 +76,24 @@ pub fn add_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     struct_def
 }
 
+/// Re-emit the struct deriving `InjectFields`, and `Clone` where it does not derive it already.
+///
+/// # Clone Detection
+/// This function checks for `#[derive(Clone)]` attribute on the struct.
+///
+/// # Limitation: Manual `impl Clone`
+/// The attribute receives only the struct, so an `impl Clone` written anywhere else is invisible to
+/// it and conflicts with the derive (E0119):
+///
+/// ```rust,ignore
+/// #[injectable]
+/// pub struct Foo { field: String }
+///
+/// // ❌ Invisible to the attribute: `#[derive(Clone)]` is added and conflicts with this
+/// impl Clone for Foo {
+///     fn clone(&self) -> Self { /* custom logic */ }
+/// }
+/// ```
 pub fn add_clone_and_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     let mut struct_def = struct_attrs.clone();
 
@@ -918,11 +912,11 @@ fn generate_singleton_factory(
 
             async fn build(
                 &self,
-                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
+                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Registration>,
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Registration> {
                 use ::ulo::__construct::CtorBridge as _;
                 let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
-                    __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+                    __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
 
                 // Build via the `#[new]` constructor if one exists, else by field injection.
                 // Singletons are built at startup, outside any execution, and a dependency that
@@ -940,7 +934,7 @@ fn generate_singleton_factory(
                 #role_pushes
 
                 let provider = ::std::sync::Arc::new(Box::new(#provider_name { instance }) as Box<dyn ::ulo::spi::Provider>);
-                ::std::result::Result::Ok(::ulo::spi::Injectable::new(provider, __roles))
+                ::std::result::Result::Ok(::ulo::spi::Registration::new(provider, __roles))
             }
         }
     }
@@ -970,12 +964,12 @@ fn generate_request_factory(
         quote! {}
     } else {
         quote! {
-            let __has_request_deps = __deps.values().any(|inj|
-                matches!(inj.instance.scope(), ::ulo::di::ProviderScope::Execution)
+            let __has_request_deps = __deps.values().any(|registration|
+                matches!(registration.instance.scope(), ::ulo::di::ProviderScope::Execution)
             );
             let __all_deps = ::std::sync::Arc::new(
                 __deps.iter()
-                    .map(|(k, inj)| (k.clone(), inj.instance.clone()))
+                    .map(|(k, registration)| (k.clone(), registration.instance.clone()))
                     .collect::<::ulo::FxHashMap<_, _>>()
             );
         }
@@ -984,12 +978,12 @@ fn generate_request_factory(
     let build_body = quote! {
         #enhancer_preamble
         let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
-            __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+            __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
         let __provider: ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>> =
             ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>);
         let mut __roles = ::std::vec::Vec::new();
         #factory_role_pushes
-        ::std::result::Result::Ok(::ulo::spi::Injectable::new(__provider, __roles))
+        ::std::result::Result::Ok(::ulo::spi::Registration::new(__provider, __roles))
     };
 
     quote! {
@@ -1012,8 +1006,8 @@ fn generate_request_factory(
 
             async fn build(
                 &self,
-                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
+                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Registration>,
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Registration> {
                 #build_body
             }
         }
@@ -1044,19 +1038,19 @@ fn generate_transient_factory(
 
     let build_body = if has_enhancer_roles {
         quote! {
-            let __has_request_deps = __deps.values().any(|inj|
-                matches!(inj.instance.scope(), ::ulo::di::ProviderScope::Execution)
+            let __has_request_deps = __deps.values().any(|registration|
+                matches!(registration.instance.scope(), ::ulo::di::ProviderScope::Execution)
             );
             let __all_deps = ::std::sync::Arc::new(
                 __deps.iter()
-                    .map(|(k, inj)| (k.clone(), inj.instance.clone()))
+                    .map(|(k, registration)| (k.clone(), registration.instance.clone()))
                     .collect::<::ulo::FxHashMap<_, _>>()
             );
             let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
+                __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
             let mut __roles = ::std::vec::Vec::new();
             #factory_role_pushes
-            ::std::result::Result::Ok(::ulo::spi::Injectable::new(
+            ::std::result::Result::Ok(::ulo::spi::Registration::new(
                 ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
                 __roles,
             ))
@@ -1064,8 +1058,8 @@ fn generate_transient_factory(
     } else {
         quote! {
             let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
-                __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            ::std::result::Result::Ok(::ulo::spi::Injectable::new(
+                __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
+            ::std::result::Result::Ok(::ulo::spi::Registration::new(
                 ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
                 ::std::vec::Vec::new(),
             ))
@@ -1092,8 +1086,8 @@ fn generate_transient_factory(
 
             async fn build(
                 &self,
-                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
+                __deps: ::ulo::FxHashMap<String, ::ulo::spi::Registration>,
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Registration> {
                 #build_body
             }
         }

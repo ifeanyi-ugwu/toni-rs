@@ -6,7 +6,7 @@ use sqlx::{Database, Pool};
 use ulo::{
     FxHashMap,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
 
@@ -85,14 +85,14 @@ where
         vec![ulo::di::token_of::<Pool<DB>>()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let token = ulo::di::token_of::<Pool<DB>>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the pool it checks")
             .instance
             .clone();
-        Ok(Injectable::new(
+        Ok(Registration::new(
             Arc::new(Box::new(SqlxHealthProvider::<DB> {
                 connection,
                 _db: PhantomData,

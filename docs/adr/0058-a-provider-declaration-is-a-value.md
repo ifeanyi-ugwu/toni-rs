@@ -1,14 +1,14 @@
 # 0058 — A provider declaration is a value, written through one macro
 
-Status: proposed
+Status: accepted
 
-A provider is declared by `provide!(key => source)`, one macro whose every form expands to a public
-constructor of the value API, so the builder and a function building declarations take the same
-values. A key is a type (ADR-0059), and no macro tells a type from a const by how it is written. A
-key is single-bound unless a binding under it is declared with `into`; the unnamed collection is
-keyed by its element type. An enhancer role comes from the enhancer's own type or from the key's. A
-provider factory is always async. `#[new]` is the one constructor. What `build` returns is a
-`Registration`.
+A provider is declared by `provide!(key => source)`, one macro whose every form builds a value a
+public constructor of the value API also builds, so the builder and a function building declarations
+take the same values. A key is a type (ADR-0059), and no macro tells a type from a const by how it
+is written. A key is single-bound unless a binding under it is declared with `into`; the unnamed
+collection is keyed by its element type. An enhancer role comes from the enhancer's own type or from
+the key's. A provider factory is always async. `#[new]` is the one constructor. What `build` builds
+is a `Registration`.
 
 ## Context
 
@@ -61,14 +61,14 @@ there.
 ## Decision
 
 **One macro over the value API.** `provide!(key => source)` replaces the old `provide!` and the four
-`provider_*!` macros as the declaration surface. Each of its forms expands to a public constructor
-(a type's own declaration, and `Provide::value`, `Provide::factory`, `Provide::alias` and
-`Provide::into`, each addressing a type's own slot by a type parameter and a marker's slot through
-its `_key` form, ADR-0059), so `builder.provider(provide!(..))`, `#[module(providers: [..])]` and an
-integration crate's `for_root` function build the same values. The macro is sugar over the value
-API, never beside it. It is a proc macro: it reads the source's syntax to choose a form, and it
-points each refusal at the user's value or closure. Its grammar is led by keywords and position,
-never by how a name is cased.
+`provider_*!` macros as the declaration surface. Each of its forms builds a value a public
+constructor also builds (a type's own declaration, and `Provide::value`, `Provide::factory`,
+`Provide::alias` and `Provide::into`, each addressing a type's own slot by a type parameter and a
+marker's slot through its `_key` form, ADR-0059), so `builder.provider(provide!(..))`,
+`#[module(providers: [..])]` and an integration crate's `for_root` function build the same values.
+The macro is sugar over the value API, never beside it. It is a proc macro: it reads the source's
+syntax to choose a form, and it points each refusal at the user's value or closure. Its grammar is
+led by keywords and position, never by how a name is cased.
 
 | Written | Means |
 | --- | --- |
@@ -137,7 +137,8 @@ declared with `into`, and a single binding and an `into` on one key fail `create
 `#[inject] db: Arc<Db>` asks for `Db`. A second collection over one trait is a marker whose `Value`
 is `dyn Plugin`. The macro writes the `Arc<V>` to `Arc<dyn Trait>` cast at the call site and passes
 it to the value API beside the declaration, so no trait needs a declaration to be collected.
-Contributions reach other modules through exports, as single bindings do, in declaration order.
+A collection gathers every module's contributions under its key, exported or not, in the order the
+scan reaches them.
 
 **A key names what it holds.** A marker's `Value` fixes what may be provided under it and what a
 field reads from it: `provide!(ApiKey => 42u32)`, where `ApiKey` holds a `String`, fails to compile;
@@ -185,7 +186,7 @@ both, since the constructor decides every field.
 | --- | --- |
 | Recipe: key, dependencies, build | `ProviderFactory` |
 | What answers a resolution | `Provider` |
-| What `build` returns: an instance and its roles | `Registration` |
+| What `build` builds: an instance and its roles | `Registration` |
 | Marking a type a provider | `#[injectable]` |
 | Marking a dependency | `#[inject]` |
 | A type's own declaration | `T::provide()`, or a bare name in `provide!` |
@@ -202,8 +203,7 @@ alias, and `__ulo_provider_factory` leaves the public surface.
 
 ## Consequences
 
-- Every provider declaration in the tree, and every page showing the old `provide!` or one of the
-  four macros, is rewritten.
+- Every provider declaration in the tree is rewritten.
 - A trait is collected with no declaration of its own; a contribution that does not implement it
   fails to compile.
 - The every-transport sets (`AppGuards`, `AppInterceptors`, `AppErrorHandlers`, ADR-0059) run on
@@ -212,7 +212,7 @@ alias, and `__ulo_provider_factory` leaves the public surface.
 - A module can export a marker's slot, a generic provider and a provider from a submodule, and
   declare a path-qualified controller.
 - A sync factory gains one word, `async`.
-- A struct's dependencies have one source, its `#[new]` signature.
+- A struct built by `#[new]` takes its dependencies from the signature alone.
 - A value becomes an enhancer only where a type says so. A plain guard value provided under a
   marker holding a data type registers no role, and a `#[use_guards]` naming that marker fails
   startup with the registry's not-found diagnostic. A value that does not implement `Guard` fails

@@ -31,6 +31,11 @@ A provider is a plain struct plus its normal `impl`s. One attribute, no restatem
   context type in the trait (`HttpContext` vs `WsContext` …) names the transport, so that isn't
   restated either.
 
+  Superseded for a declared value or factory by
+  [ADR-0058](0058-a-provider-declaration-is-a-value.md): its role comes from the key it is bound
+  under, not from probing the value. An `#[injectable]` type's roles are still detected from its
+  trait impls.
+
 Why `#[injectable]` is an attribute, not a `#[derive]`: a derive receives the struct with its
 `#[derive(...)]` list stripped — it can neither see a sibling `Clone` nor add one without risking a
 conflicting impl. An attribute re-emits the whole item, so it can add `Clone` only when absent. The

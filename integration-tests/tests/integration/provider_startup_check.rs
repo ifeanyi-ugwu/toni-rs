@@ -12,7 +12,7 @@ use std::sync::Arc;
 use ulo::di::{Execution, ResolutionError};
 
 use ulo::di::{DynamicModule, InitResult};
-use ulo::spi::{BuildResult, Injectable, Provider, ProviderFactory};
+use ulo::spi::{BuildResult, Provider, ProviderFactory, Registration};
 use ulo::{FxHashMap, StartupError, UloFactory, async_trait};
 const TOKEN: &str = "PROBE_CONNECTION";
 
@@ -26,9 +26,9 @@ impl ProviderFactory for ProbeFactory {
         TOKEN.to_string()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         // A real module would attempt its connection here and keep the Result.
-        Ok(Injectable::new(
+        Ok(Registration::new(
             Arc::new(Box::new(ProbeProvider {
                 reachable: self.reachable,
             })),

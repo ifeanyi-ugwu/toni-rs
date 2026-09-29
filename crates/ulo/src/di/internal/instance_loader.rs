@@ -66,7 +66,7 @@ use super::{
 use crate::{
     dispatch::{Controller, Targets},
     http::Route,
-    spi::{Injectable, Provider},
+    spi::{Provider, Registration},
 };
 
 pub(crate) struct InstanceLoader {
@@ -324,7 +324,7 @@ impl InstanceLoader {
         let ordered_providers_token = dependency_graph.ordered_provider_tokens()?;
         let provider_instances = {
             // In build order, which the module's instance map keeps and the hooks walk.
-            let mut instances: FxIndexMap<String, Injectable> = FxIndexMap::default();
+            let mut instances: FxIndexMap<String, Registration> = FxIndexMap::default();
 
             for provider_token in ordered_providers_token {
                 // The factory is taken as a handle and the lock released: `build` is
@@ -340,15 +340,15 @@ impl InstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let injectable = provider_factory
+                let registration = provider_factory
                     .build(resolved_dependencies)
                     .await
                     .map_err(|source| {
                         build_failed(&module_token, provider_token.clone(), source)
                     })?;
-                tracing::debug!(module = %module_token, provider = %injectable.instance.token(), "provider instantiated");
-                let token = injectable.instance.token();
-                instances.insert(token, injectable);
+                tracing::debug!(module = %module_token, provider = %registration.instance.token(), "provider instantiated");
+                let token = registration.instance.token();
+                instances.insert(token, registration);
             }
             instances
         };
@@ -437,13 +437,17 @@ impl InstanceLoader {
     fn add_providers_instances(
         &self,
         module_token: &String,
-        providers_instances: FxIndexMap<String, Injectable>,
+        providers_instances: FxIndexMap<String, Registration>,
     ) -> SetupResult {
         let mut container = self.container.write();
         let mut providers_tokens = Vec::new();
-        for (provider_instance_token, injectable) in providers_instances {
-            let token = injectable.instance.token().clone();
-            container.add_provider_instance(module_token, injectable.instance, injectable.roles)?;
+        for (provider_instance_token, registration) in providers_instances {
+            let token = registration.instance.token().clone();
+            container.add_provider_instance(
+                module_token,
+                registration.instance,
+                registration.roles,
+            )?;
             providers_tokens.push((token, provider_instance_token));
         }
 
@@ -495,7 +499,7 @@ impl InstanceLoader {
             let resolved_dependencies = self
                 .resolve_dependencies(&module_token, dependencies, None)?
                 .into_iter()
-                .map(|(k, inj)| (k, inj.instance))
+                .map(|(k, registration)| (k, registration.instance))
                 .collect();
             let controller = controller_factory
                 .build(resolved_dependencies)
@@ -600,8 +604,8 @@ impl InstanceLoader {
         &self,
         module_token: &String,
         dependencies: Vec<String>,
-        providers_instances: Option<&FxIndexMap<String, Injectable>>,
-    ) -> LoadResult<FxHashMap<String, Injectable>> {
+        providers_instances: Option<&FxIndexMap<String, Registration>>,
+    ) -> LoadResult<FxHashMap<String, Registration>> {
         let container = self.container.read();
         let mut resolved_dependencies = FxHashMap::default();
 
@@ -610,8 +614,8 @@ impl InstanceLoader {
             // among them — it is declared in `controllers:` and never reaches the provider store —
             // so asking for one falls through to the not-found answer below.
             let built_locally = providers_instances.and_then(|m| m.get(&dependency));
-            if let Some(injectable) = built_locally {
-                resolved_dependencies.insert(dependency, injectable.clone());
+            if let Some(registration) = built_locally {
+                resolved_dependencies.insert(dependency, registration.clone());
             }
             // Step 1b: Check pre-registered container instances not yet in the build map
             // (e.g. ModuleRefProvider registered before Phase 1)
@@ -619,7 +623,8 @@ impl InstanceLoader {
                 container.get_provider_instance_by_token(module_token, &dependency)
             {
                 let roles = container.provider_roles(&dependency);
-                resolved_dependencies.insert(dependency, Injectable::new(instance.clone(), roles));
+                resolved_dependencies
+                    .insert(dependency, Registration::new(instance.clone(), roles));
             }
             // Step 2: Check imported modules
             else if let Some(exported_instance) =
@@ -629,7 +634,7 @@ impl InstanceLoader {
                 let roles = container.provider_roles(&dependency);
                 resolved_dependencies.insert(
                     dependency,
-                    Injectable::new(exported_instance.clone(), roles),
+                    Registration::new(exported_instance.clone(), roles),
                 );
             }
             // Step 3: Check if it's a registered global provider token
@@ -637,8 +642,10 @@ impl InstanceLoader {
                 if let Some(global_instance) = container.get_global_provider(&dependency) {
                     tracing::debug!(module = %module_token, dependency = %dependency, source = "global", "dependency resolved");
                     let roles = container.provider_roles(&dependency);
-                    resolved_dependencies
-                        .insert(dependency, Injectable::new(global_instance.clone(), roles));
+                    resolved_dependencies.insert(
+                        dependency,
+                        Registration::new(global_instance.clone(), roles),
+                    );
                 } else {
                     return Err(LoadError::Deferred(format!(
                         "global provider '{dependency}' is not instantiated yet"
@@ -649,7 +656,7 @@ impl InstanceLoader {
             else if let Some(multi_instance) =
                 container.get_multi_collection_provider(&dependency)
             {
-                resolved_dependencies.insert(dependency, Injectable::new(multi_instance, vec![]));
+                resolved_dependencies.insert(dependency, Registration::new(multi_instance, vec![]));
             }
             // Step 3.6: Assemble multi-collection on-demand when contributor and consumer
             // share the same module — contributors are in the in-progress instances map
@@ -659,7 +666,7 @@ impl InstanceLoader {
                 for (contrib_module_token, provider_token) in &contribs {
                     let item = providers_instances
                         .and_then(|m| m.get(provider_token))
-                        .and_then(|inj| inj.instance.as_multi_item());
+                        .and_then(|registration| registration.instance.as_multi_item());
                     if let Some(item) = item {
                         items.push(item);
                     } else if let Ok(saved) = container.get_provider_instances(contrib_module_token)
@@ -676,7 +683,7 @@ impl InstanceLoader {
                         token: dependency.clone(),
                         items,
                     }));
-                resolved_dependencies.insert(dependency, Injectable::new(collection, vec![]));
+                resolved_dependencies.insert(dependency, Registration::new(collection, vec![]));
             }
             // Step 4: Not found anywhere
             else {

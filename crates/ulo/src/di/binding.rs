@@ -21,7 +21,7 @@ use crate::grpc::GrpcContext;
 use crate::http::HttpContext;
 use crate::http::middleware::Middleware;
 use crate::rpc::RpcContext;
-use crate::spi::{Injectable, Provider, ProviderFactory, ProviderRole};
+use crate::spi::{Provider, ProviderFactory, ProviderRole, Registration};
 use crate::ws::WsContext;
 
 /// What a value declaration becomes under a slot holding `S`: one item, given where it is declared.
@@ -58,12 +58,15 @@ impl<S: ?Sized + Send + Sync + 'static> ProviderFactory for Binding<S> {
         self.token.clone()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider: Box<dyn Provider> = Box::new(BindingProvider {
             token: self.token.clone(),
             item: self.item.clone(),
         });
-        Ok(Injectable::new(Arc::new(provider), slot_roles(&self.item)))
+        Ok(Registration::new(
+            Arc::new(provider),
+            slot_roles(&self.item),
+        ))
     }
 }
 
@@ -135,7 +138,7 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let item = (self.cast)(Arc::new(self.factory.call(&built, Execution::None).await?));
         let roles = slot_roles(&item);
@@ -143,7 +146,7 @@ where
             token: self.token.clone(),
             item,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
 
@@ -207,7 +210,7 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let make: Arc<dyn MakeInExecution<S>> = Arc::new(Converted {
             make: Arc::new(Maker::new(
@@ -224,7 +227,7 @@ where
             scope: self.scope,
             make,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
 
@@ -325,8 +328,8 @@ where
         T::provider_factory().identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        let Injectable { instance, roles } = T::provider_factory().build(deps).await?;
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        let Registration { instance, roles } = T::provider_factory().build(deps).await?;
         let shared = match instance.scope() {
             ProviderScope::Singleton => {
                 Some(RecastProvider::convert(&instance, self.cast, Execution::None).await?)
@@ -339,7 +342,7 @@ where
             cast: self.cast,
             shared,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
 
