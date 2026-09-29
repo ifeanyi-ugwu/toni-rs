@@ -19,7 +19,7 @@ use super::{
 use futures::StreamExt;
 
 /// The innermost step of the chain: the gateway asked to handle this event.
-struct GatewayLeaf(Arc<Box<dyn Gateway>>);
+struct GatewayLeaf(Arc<dyn Gateway>);
 
 #[async_trait]
 impl Leaf<Ws> for GatewayLeaf {
@@ -40,7 +40,7 @@ impl Leaf<Ws> for GatewayLeaf {
 /// Parallel to `RoutePipeline` on the HTTP side — wraps a gateway with the full
 /// guard/interceptor pipeline and tracks its own connected clients.
 pub(crate) struct GatewayWrapper {
-    gateway: Arc<Box<dyn Gateway>>,
+    gateway: Arc<dyn Gateway>,
     /// The gateway's enhancers, each event's merged over them at create. A connect runs the
     /// gateway's set.
     enhancers: Resolved<Ws>,
@@ -55,7 +55,7 @@ pub(crate) struct GatewayWrapper {
 
 impl GatewayWrapper {
     pub(crate) fn new(
-        gateway: Arc<Box<dyn Gateway>>,
+        gateway: Arc<dyn Gateway>,
         enhancers: Resolved<Ws>,
         metadata: Arc<Metadata>,
         handler_metadata: HashMap<String, Arc<Metadata>>,
@@ -262,7 +262,7 @@ impl GatewayWrapper {
     /// The interceptor chain around the handler. Every way this can fail leaves as `Err`.
     async fn run_chain(
         context: &WsContext,
-        gateway: &Arc<Box<dyn Gateway>>,
+        gateway: &Arc<dyn Gateway>,
         interceptors: &[Arc<dyn Interceptor<WsContext, WsHandlerResult>>],
     ) -> WsHandlerResult {
         through_interceptors::<Ws>(
@@ -391,7 +391,7 @@ mod tests {
         }
 
         GatewayWrapper::new(
-            Arc::new(Box::new(TestGateway)),
+            Arc::new(TestGateway),
             Resolved::default(),
             Arc::new(Metadata::new()),
             HashMap::new(),

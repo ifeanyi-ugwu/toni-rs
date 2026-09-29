@@ -60,10 +60,10 @@ where
     ) -> BuildResult<ulo::spi::Registration> {
         let client = (self.connect)().await;
         Ok(ulo::spi::Registration::new(
-            Arc::new(Box::new(PrismaClientProvider {
+            Arc::new(PrismaClientProvider {
                 client,
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

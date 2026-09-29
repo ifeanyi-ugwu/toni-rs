@@ -55,13 +55,13 @@ macro_rules! impl_diesel_pool {
                     ),
                 };
                 Ok(Registration::new(
-                    Arc::new(Box::new($provider {
+                    Arc::new($provider {
                         pool,
                         init_error,
                         check: self.check.clone(),
                         url: self.url.clone(),
                         token: self.token.clone(),
-                    })),
+                    }),
                     vec![],
                 ))
             }

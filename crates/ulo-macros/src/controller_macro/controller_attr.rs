@@ -112,7 +112,7 @@ fn generate_bridges(
             pub async fn __ulo_build_from_deps(
                 dependencies: &::ulo::FxHashMap<
                     String,
-                    ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>,
+                    ::std::sync::Arc<dyn ::ulo::spi::Provider>,
                 >,
                 __exec_ctx: ::ulo::di::Execution,
             ) -> ::std::result::Result<Self, ::ulo::di::ResolutionError> {

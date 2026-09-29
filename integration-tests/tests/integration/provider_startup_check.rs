@@ -28,9 +28,9 @@ impl ProviderFactory for ProbeFactory {
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         // A real module would attempt its connection here and keep the Result.
         Ok(Registration::new(
-            Arc::new(Box::new(ProbeProvider {
+            Arc::new(ProbeProvider {
                 reachable: self.reachable,
-            })),
+            }),
             vec![],
         ))
     }
@@ -115,10 +115,7 @@ impl ProviderFactory for ConnectionFactory {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
-        Ok(Registration::new(
-            Arc::new(Box::new(ConnectionProvider)),
-            vec![],
-        ))
+        Ok(Registration::new(Arc::new(ConnectionProvider), vec![]))
     }
 }
 

@@ -183,7 +183,7 @@ impl ProviderFactory for HealthCheckServiceFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(HealthCheckServiceProvider)),
+            Arc::new(HealthCheckServiceProvider),
             vec![],
         ))
     }

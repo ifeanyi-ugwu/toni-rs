@@ -57,13 +57,13 @@ impl ProviderFactory for SeaOrmConnectionFactory {
         };
 
         Ok(ulo::spi::Registration::new(
-            Arc::new(Box::new(SeaOrmConnectionProvider {
+            Arc::new(SeaOrmConnectionProvider {
                 db: Mutex::new(db),
                 init_error,
                 check: self.check.clone(),
                 database_url: self.database_url.clone(),
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

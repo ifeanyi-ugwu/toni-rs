@@ -60,14 +60,14 @@ impl ProviderFactory for MongoConnectionFactory {
         let db = client.as_ref().map(|c| c.database(&self.db_name));
 
         Ok(ulo::spi::Registration::new(
-            Arc::new(Box::new(MongoConnectionProvider {
+            Arc::new(MongoConnectionProvider {
                 client,
                 db,
                 init_error,
                 check: self.check.clone(),
                 uri: self.uri.clone(),
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

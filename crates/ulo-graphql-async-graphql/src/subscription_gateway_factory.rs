@@ -62,8 +62,8 @@ where
             )),
         };
 
-        let role = ProviderRole::Gateway(Arc::new(Box::new(gateway.clone()) as Box<dyn Gateway>));
-        let instance = Arc::new(Box::new(gateway) as Box<dyn ulo::spi::Provider>);
+        let role = ProviderRole::Gateway(Arc::new(gateway.clone()) as Arc<dyn Gateway>);
+        let instance = Arc::new(gateway) as Arc<dyn ulo::spi::Provider>;
 
         Ok(Registration::new(instance, vec![role]))
     }

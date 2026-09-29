@@ -22,7 +22,7 @@ pub(crate) struct Module {
     controllers_instances: FxHashMap<String, Arc<RoutePipeline>>,
     /// One per controller struct, kept for lifecycle hooks (fired once each).
     controller_objects: Vec<Arc<dyn Controller>>,
-    providers_instances: FxIndexMap<String, Arc<Box<dyn Provider>>>,
+    providers_instances: FxIndexMap<String, Arc<dyn Provider>>,
     exports_instances: FxHashSet<String>,
     metadata: Arc<dyn ModuleMetadata>,
 }
@@ -85,7 +85,7 @@ impl Module {
             .insert(key, Arc::new(instance_wrapper));
     }
 
-    pub(crate) fn add_provider_instance(&mut self, provider: Arc<Box<dyn Provider>>) {
+    pub(crate) fn add_provider_instance(&mut self, provider: Arc<dyn Provider>) {
         self.providers_instances.insert(provider.token(), provider);
     }
     pub(crate) fn add_export_instance(&mut self, provider_token: String) {
@@ -96,7 +96,7 @@ impl Module {
         &self.providers
     }
 
-    pub(crate) fn provider_instances(&self) -> &FxIndexMap<String, Arc<Box<dyn Provider>>> {
+    pub(crate) fn provider_instances(&self) -> &FxIndexMap<String, Arc<dyn Provider>> {
         &self.providers_instances
     }
 
@@ -114,7 +114,7 @@ impl Module {
     pub(crate) fn get_provider_instance_by_token(
         &self,
         provider_token: &String,
-    ) -> Option<&Arc<Box<dyn Provider>>> {
+    ) -> Option<&Arc<dyn Provider>> {
         self.providers_instances.get(provider_token)
     }
 

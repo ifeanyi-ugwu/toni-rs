@@ -31,7 +31,7 @@ use crate::spi::{Provider, ProviderFactory, ProviderRole, Registration};
 use crate::ws::WsContext;
 
 /// An item, and the provider it was built through when a type's own declaration built it.
-type ItemAndSource<T> = (Arc<T>, Option<Arc<Box<dyn Provider>>>);
+type ItemAndSource<T> = (Arc<T>, Option<Arc<dyn Provider>>);
 
 type BuildItem<T> = Arc<
     dyn Fn(
@@ -144,7 +144,7 @@ struct ContributionProvider<T: ?Sized> {
     token: String,
     base: String,
     item: Arc<T>,
-    declared: Option<Arc<Box<dyn Provider>>>,
+    declared: Option<Arc<dyn Provider>>,
 }
 
 #[async_trait]
@@ -215,13 +215,13 @@ impl<T: ?Sized + Send + Sync + 'static> ProviderFactory for Contribution<T> {
     async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let (item, declared) = self.source.item(deps).await?;
         let roles = collection_roles(&item);
-        let provider: Box<dyn Provider> = Box::new(ContributionProvider {
+        let provider: Arc<dyn Provider> = Arc::new(ContributionProvider {
             token: self.token.clone(),
             base: self.base.clone(),
             item,
             declared,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }
 

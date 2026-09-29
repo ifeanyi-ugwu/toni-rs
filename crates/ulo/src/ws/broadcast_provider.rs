@@ -49,9 +49,9 @@ impl ProviderFactory for BroadcastServiceManager {
         _deps: FxHashMap<String, crate::spi::Registration>,
     ) -> BuildResult<crate::spi::Registration> {
         Ok(crate::spi::Registration::new(
-            Arc::new(Box::new(BroadcastServiceProvider {
+            Arc::new(BroadcastServiceProvider {
                 instance: BroadcastService::new(),
-            }) as Box<dyn Provider>),
+            }) as Arc<dyn Provider>,
             vec![],
         ))
     }

@@ -160,7 +160,7 @@ impl ProviderFactory for HttpHealthIndicatorFactory {
         let provider = HttpHealthIndicatorProvider {
             indicator: HttpHealthIndicator::new(),
         };
-        Ok(Registration::new(Arc::new(Box::new(provider)), vec![]))
+        Ok(Registration::new(Arc::new(provider), vec![]))
     }
 }
 

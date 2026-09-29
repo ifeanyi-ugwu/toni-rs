@@ -215,9 +215,7 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     if traits.is_gateway {
         pushes.push(quote! {
             __roles.push(::ulo::spi::ProviderRole::Gateway(
-                ::std::sync::Arc::new(
-                    Box::new((*instance).clone()) as Box<dyn ::ulo::ws::Gateway>
-                )
+                ::std::sync::Arc::new((*instance).clone()) as ::std::sync::Arc<dyn ::ulo::ws::Gateway>
             ));
         });
     }
@@ -350,7 +348,7 @@ fn generate_execution_provider(
         struct #provider_name {
             dependencies: ::ulo::FxHashMap<
                 String,
-                ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>
+                ::std::sync::Arc<dyn ::ulo::spi::Provider>
             >,
         }
 
@@ -470,7 +468,7 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
                 &self,
                 dependencies: ::ulo::FxHashMap<
                     String,
-                    ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>,
+                    ::std::sync::Arc<dyn ::ulo::spi::Provider>,
                 >,
             ) -> ::ulo::spi::BuildResult<::std::sync::Arc<dyn ::ulo::dispatch::Controller>> {
                 let __force_execution: bool = <#struct_name>::__ulo_is_execution_scoped();
@@ -492,8 +490,7 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
 
                 let __source = if __force_execution || !__execution_deps.is_empty() {
                     ::ulo::__enhancer::DispatchSource::PerCall(
-                        ::std::sync::Arc::new(Box::new(#per_call_provider { dependencies })
-                            as Box<dyn ::ulo::spi::Provider>),
+                        ::std::sync::Arc::new(#per_call_provider { dependencies }) as ::std::sync::Arc<dyn ::ulo::spi::Provider>,
                     )
                 } else {
                     // Built at startup, outside any execution, and shared by every call.
@@ -535,7 +532,7 @@ pub(crate) fn generate_dispatch_provider(
         struct #provider_name {
             dependencies: ::ulo::FxHashMap<
                 String,
-                ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>
+                ::std::sync::Arc<dyn ::ulo::spi::Provider>
             >,
         }
 
@@ -640,7 +637,7 @@ fn generate_transient_provider(
         struct #provider_name {
             dependencies: ::ulo::FxHashMap<
                 String,
-                ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>
+                ::std::sync::Arc<dyn ::ulo::spi::Provider>
             >,
         }
 
@@ -915,7 +912,7 @@ fn generate_singleton_factory(
                 __deps: ::ulo::FxHashMap<String, ::ulo::spi::Registration>,
             ) -> ::ulo::spi::BuildResult<::ulo::spi::Registration> {
                 use ::ulo::__construct::CtorBridge as _;
-                let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
+                let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<dyn ::ulo::spi::Provider>> =
                     __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
 
                 // Build via the `#[new]` constructor if one exists, else by field injection.
@@ -933,7 +930,7 @@ fn generate_singleton_factory(
                 let mut __roles = ::std::vec::Vec::new();
                 #role_pushes
 
-                let provider = ::std::sync::Arc::new(Box::new(#provider_name { instance }) as Box<dyn ::ulo::spi::Provider>);
+                let provider = ::std::sync::Arc::new(#provider_name { instance }) as ::std::sync::Arc<dyn ::ulo::spi::Provider>;
                 ::std::result::Result::Ok(::ulo::spi::Registration::new(provider, __roles))
             }
         }
@@ -977,10 +974,10 @@ fn generate_request_factory(
 
     let build_body = quote! {
         #enhancer_preamble
-        let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
+        let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<dyn ::ulo::spi::Provider>> =
             __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
-        let __provider: ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>> =
-            ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>);
+        let __provider: ::std::sync::Arc<dyn ::ulo::spi::Provider> =
+            ::std::sync::Arc::new(#provider_name { dependencies }) as ::std::sync::Arc<dyn ::ulo::spi::Provider>;
         let mut __roles = ::std::vec::Vec::new();
         #factory_role_pushes
         ::std::result::Result::Ok(::ulo::spi::Registration::new(__provider, __roles))
@@ -1046,21 +1043,21 @@ fn generate_transient_factory(
                     .map(|(k, registration)| (k.clone(), registration.instance.clone()))
                     .collect::<::ulo::FxHashMap<_, _>>()
             );
-            let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
+            let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<dyn ::ulo::spi::Provider>> =
                 __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
             let mut __roles = ::std::vec::Vec::new();
             #factory_role_pushes
             ::std::result::Result::Ok(::ulo::spi::Registration::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
+                ::std::sync::Arc::new(#provider_name { dependencies }) as ::std::sync::Arc<dyn ::ulo::spi::Provider>,
                 __roles,
             ))
         }
     } else {
         quote! {
-            let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
+            let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<dyn ::ulo::spi::Provider>> =
                 __deps.into_iter().map(|(k, registration)| (k, registration.instance)).collect();
             ::std::result::Result::Ok(::ulo::spi::Registration::new(
-                ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
+                ::std::sync::Arc::new(#provider_name { dependencies }) as ::std::sync::Arc<dyn ::ulo::spi::Provider>,
                 ::std::vec::Vec::new(),
             ))
         }
@@ -1177,7 +1174,7 @@ fn generate_dyn_factories(
     let deps_arc_ty = quote! {
         ::std::sync::Arc<::ulo::FxHashMap<
             String,
-            ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>
+            ::std::sync::Arc<dyn ::ulo::spi::Provider>
         >>
     };
 

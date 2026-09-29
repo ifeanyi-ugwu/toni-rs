@@ -24,7 +24,7 @@ pub enum DispatchSource<T> {
     /// provider body is and this generic code is not — and cache the `Arc` in the execution
     /// only once both hooks return `Ok`. A target asked for twice in one call is then built
     /// once and its hooks fire once; one whose hook failed is left out of the cache.
-    PerCall(Arc<Box<dyn Provider>>),
+    PerCall(Arc<dyn Provider>),
 }
 
 impl<T> Clone for DispatchSource<T> {
@@ -77,7 +77,7 @@ impl<T: Any + Send + Sync> DispatchSource<T> {
 /// whether a dispatch target is built per call.
 pub fn execution_scoped_dependencies(
     declared: &[String],
-    dependencies: &FxHashMap<String, Arc<Box<dyn Provider>>>,
+    dependencies: &FxHashMap<String, Arc<dyn Provider>>,
 ) -> Vec<String> {
     declared
         .iter()

@@ -180,7 +180,7 @@ impl ProviderFactory for ExtensionsFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(Extensions::new()) as Box<dyn Provider>),
+            Arc::new(Extensions::new()) as Arc<dyn Provider>,
             vec![],
         ))
     }
@@ -218,7 +218,7 @@ impl<T: Send + Sync + 'static> ProviderFactory for ExtensionFactory<T> {
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider = Extension::<T>::over(Extensions::new());
         Ok(Registration::new(
-            Arc::new(Box::new(provider) as Box<dyn Provider>),
+            Arc::new(provider) as Arc<dyn Provider>,
             vec![],
         ))
     }

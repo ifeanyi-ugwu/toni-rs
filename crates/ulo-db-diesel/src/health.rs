@@ -74,7 +74,7 @@ macro_rules! impl_diesel_health {
                     .expect("the health indicator is registered alongside the pool it checks")
                     .instance
                     .clone();
-                Ok(Registration::new(Arc::new(Box::new($provider { connection })), vec![]))
+                Ok(Registration::new(Arc::new($provider { connection }), vec![]))
             }
         }
 
@@ -82,7 +82,7 @@ macro_rules! impl_diesel_health {
             // The registered pool's provider, resolved per request for an indicator rather than
             // at build time: the pool may have failed, and startup reports that from its own
             // `on_module_init` before anything can resolve this one.
-            connection: Arc<Box<dyn Provider>>,
+            connection: Arc<dyn Provider>,
         }
 
         #[async_trait]
@@ -152,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn a_value_of_another_type_is_a_type_mismatch() {
         let provider = PgHealthProvider {
-            connection: Arc::new(Box::new(Mistyped)),
+            connection: Arc::new(Mistyped),
         };
         match provider.resolve(Execution::None).await {
             Err(ResolutionError::TypeMismatch { token }) => {

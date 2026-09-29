@@ -163,7 +163,7 @@ impl ProviderFactory for RequestFactory {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         let provider = Request::from_parts(&parts);
         Ok(crate::spi::Registration::new(
-            Arc::new(Box::new(provider) as Box<dyn Provider>),
+            Arc::new(provider) as Arc<dyn Provider>,
             vec![],
         ))
     }

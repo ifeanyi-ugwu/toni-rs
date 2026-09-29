@@ -10,16 +10,16 @@ use crate::di::Key;
 use crate::spi::Provider;
 /// Each token a module's imports export into it, with every import declaring the export and its
 /// instance, `None` where the import declares a token it does not build.
-pub(crate) type ImportedExports = FxHashMap<String, Vec<(String, Option<Arc<Box<dyn Provider>>>)>>;
+pub(crate) type ImportedExports = FxHashMap<String, Vec<(String, Option<Arc<dyn Provider>>)>>;
 
 /// What a [`ModuleRef`] reads: each module's own instances, what its imports export into it, and
 /// the global registry.
 #[derive(Default)]
 pub(crate) struct ProviderStore {
-    pub(crate) modules: FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>,
+    pub(crate) modules: FxHashMap<String, FxHashMap<String, Arc<dyn Provider>>>,
     pub(crate) imports: FxHashMap<String, ImportedExports>,
     /// What the global modules export, the registry `#[module(global: true)]` fills.
-    pub(crate) globals: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    pub(crate) globals: FxHashMap<String, Arc<dyn Provider>>,
 }
 
 /// Provides runtime dependency resolution within a module context

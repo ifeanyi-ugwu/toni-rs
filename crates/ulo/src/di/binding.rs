@@ -59,14 +59,11 @@ impl<S: ?Sized + Send + Sync + 'static> ProviderFactory for Binding<S> {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
-        let provider: Box<dyn Provider> = Box::new(BindingProvider {
+        let provider: Arc<dyn Provider> = Arc::new(BindingProvider {
             token: self.token.clone(),
             item: self.item.clone(),
         });
-        Ok(Registration::new(
-            Arc::new(provider),
-            slot_roles(&self.item),
-        ))
+        Ok(Registration::new(provider, slot_roles(&self.item)))
     }
 }
 
@@ -142,11 +139,11 @@ where
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let item = (self.cast)(Arc::new(self.factory.call(&built, Execution::None).await?));
         let roles = slot_roles(&item);
-        let provider: Box<dyn Provider> = Box::new(BindingProvider {
+        let provider: Arc<dyn Provider> = Arc::new(BindingProvider {
             token: self.token.clone(),
             item,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }
 
@@ -222,12 +219,12 @@ where
             cast: self.cast,
         });
         let roles = S::roles(&make);
-        let provider: Box<dyn Provider> = Box::new(ScopedBindingProvider {
+        let provider: Arc<dyn Provider> = Arc::new(ScopedBindingProvider {
             token: self.token.clone(),
             scope: self.scope,
             make,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }
 
@@ -247,7 +244,7 @@ impl<T, S: ?Sized> Recast<T, S> {
 
 struct RecastProvider<T, S: ?Sized> {
     token: String,
-    inner: Arc<Box<dyn Provider>>,
+    inner: Arc<dyn Provider>,
     cast: fn(Arc<T>) -> Arc<S>,
     /// A singleton's one instance, converted once so every injection site holds it.
     shared: Option<Arc<S>>,
@@ -255,7 +252,7 @@ struct RecastProvider<T, S: ?Sized> {
 
 impl<T: 'static, S: ?Sized + 'static> RecastProvider<T, S> {
     async fn convert(
-        inner: &Arc<Box<dyn Provider>>,
+        inner: &Arc<dyn Provider>,
         cast: fn(Arc<T>) -> Arc<S>,
         ctx: Execution,
     ) -> Result<Arc<S>, ResolutionError> {
@@ -336,13 +333,13 @@ where
             }
             _ => None,
         };
-        let provider: Box<dyn Provider> = Box::new(RecastProvider {
+        let provider: Arc<dyn Provider> = Arc::new(RecastProvider {
             token: self.token.clone(),
             inner: instance,
             cast: self.cast,
             shared,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }
 

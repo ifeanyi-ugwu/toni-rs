@@ -53,10 +53,10 @@ where
         _deps: FxHashMap<String, ulo::spi::Registration>,
     ) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(GraphQLService::new(
+            Arc::new(GraphQLService::new(
                 self.schema.clone(),
                 self.context_builder.clone(),
-            )) as Box<dyn Provider>),
+            )) as Arc<dyn Provider>,
             vec![],
         ))
     }

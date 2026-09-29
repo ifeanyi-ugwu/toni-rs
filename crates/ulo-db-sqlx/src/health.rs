@@ -93,10 +93,10 @@ where
             .instance
             .clone();
         Ok(Registration::new(
-            Arc::new(Box::new(SqlxHealthProvider::<DB> {
+            Arc::new(SqlxHealthProvider::<DB> {
                 connection,
                 _db: PhantomData,
-            })),
+            }),
             vec![],
         ))
     }
@@ -106,7 +106,7 @@ struct SqlxHealthProvider<DB: Database> {
     // The registered pool's provider, resolved per request for an indicator rather than at build
     // time: the pool may have failed, and startup reports that from its own `on_module_init`
     // before anything can resolve this one.
-    connection: Arc<Box<dyn Provider>>,
+    connection: Arc<dyn Provider>,
     _db: PhantomData<DB>,
 }
 
@@ -157,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn a_value_of_another_type_is_a_type_mismatch() {
         let provider = SqlxHealthProvider::<sqlx::Postgres> {
-            connection: Arc::new(Box::new(Mistyped)),
+            connection: Arc::new(Mistyped),
             _db: PhantomData,
         };
         match provider.resolve(Execution::None).await {

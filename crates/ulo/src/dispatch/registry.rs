@@ -19,7 +19,7 @@ pub(crate) struct RoleRegistry {
 
     pub middleware: FxHashMap<String, Arc<dyn Middleware>>,
     /// Keyed by WS path (e.g. "/chat"), not by provider token.
-    pub gateways: FxHashMap<String, Arc<Box<dyn Gateway>>>,
+    pub gateways: FxHashMap<String, Arc<dyn Gateway>>,
     /// Keyed by the RPC controller's own token. Enhancer tokens are already resolved — the
     /// wrapper is stored ready to serve, and bind only hands it to the adapter.
     pub rpc_controllers: FxHashMap<String, Arc<RpcControllerWrapper>>,

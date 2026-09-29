@@ -31,16 +31,13 @@ impl UloApplicationContext {
     ///
     /// The instance is cloned out so the container borrow ends here rather than
     /// spanning the `resolve` that follows.
-    fn provider_in_any_module(
-        &self,
-        token: &str,
-    ) -> Result<Arc<Box<dyn Provider>>, ResolutionError> {
+    fn provider_in_any_module(&self, token: &str) -> Result<Arc<dyn Provider>, ResolutionError> {
         let container = self.container.read();
         let token = token.to_string();
 
         // Every module holding the token: two would make the answer depend on which module the
         // search reached first (ADR-0057), so they are handed back instead.
-        let mut holders: Vec<(String, Arc<Box<dyn Provider>>)> = Vec::new();
+        let mut holders: Vec<(String, Arc<dyn Provider>)> = Vec::new();
         for module_token in container.module_tokens() {
             if let Ok(Some(instance)) =
                 container.get_provider_instance_by_token(&module_token, &token)
@@ -66,7 +63,7 @@ impl UloApplicationContext {
         &self,
         module_token: &str,
         token: &str,
-    ) -> Result<Arc<Box<dyn Provider>>, ResolutionError> {
+    ) -> Result<Arc<dyn Provider>, ResolutionError> {
         let container = self.container.read();
 
         container
