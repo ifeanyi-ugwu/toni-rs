@@ -52,7 +52,7 @@ pub trait Provider: Send + Sync {
 
 /// Role trait-objects a provider may contribute to the registry.
 ///
-/// Returned as the second element of `ProviderFactory::build`. The container
+/// Carried in a [`Registration`] from `ProviderFactory::build`. The container
 /// inserts each variant into the matching slot of `RoleRegistry` keyed by the
 /// provider token (or, for gateways, by WS path).
 #[derive(Clone)]
@@ -77,17 +77,18 @@ pub enum ProviderRole {
     Gateway(Arc<Box<dyn crate::ws::Gateway>>),
 }
 
-/// A fully-built, ready-to-inject provider with its role registrations.
+/// What a [`ProviderFactory`] builds: the provider instance and the roles it registers under.
 ///
-/// Returned from `ProviderFactory::build` and passed as dep values so
-/// wrapper factories (e.g. an alias) can forward roles without a downcast.
+/// The loader registers `instance` in its module and each of `roles` in the matching slot of the
+/// role registry. A factory's dependencies arrive as their registrations, so a wrapper factory,
+/// such as an alias, forwards the roles without a downcast.
 #[derive(Clone)]
-pub struct Injectable {
+pub struct Registration {
     pub instance: Arc<Box<dyn Provider>>,
     pub roles: Vec<ProviderRole>,
 }
 
-impl Injectable {
+impl Registration {
     pub fn new(instance: Arc<Box<dyn Provider>>, roles: Vec<ProviderRole>) -> Self {
         Self { instance, roles }
     }
@@ -125,5 +126,5 @@ pub trait ProviderFactory: Send + Sync {
     /// A singleton builds its value here, outside any execution, and a dependency it cannot
     /// resolve there fails the build; the loader reports it as
     /// [`StartupError::BuildFailed`](crate::error::StartupError::BuildFailed).
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable>;
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration>;
 }

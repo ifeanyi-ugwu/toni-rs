@@ -28,8 +28,8 @@ impl ProviderFactory for RedisConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<ulo::spi::Injectable> {
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<ulo::spi::Registration> {
         // Configured lazily, with the check's deadline handed to the driver: its own connection
         // timeout is what bounds the probe, so nothing here needs a timer.
         // The driver's own retry is switched off and each attempt bounded, so the check's
@@ -62,7 +62,7 @@ impl ProviderFactory for RedisConnectionFactory {
             },
         };
 
-        Ok(ulo::spi::Injectable::new(
+        Ok(ulo::spi::Registration::new(
             Arc::new(Box::new(RedisConnectionProvider {
                 manager,
                 init_error,

@@ -29,8 +29,8 @@ impl ProviderFactory for MongoConnectionFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<ulo::spi::Injectable> {
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<ulo::spi::Registration> {
         // A failure is carried into the provider and reported from `on_module_init` with the
         // startup check's, so either arrives as `StartupError::HookFailed`. The driver connects
         // lazily, so only URI parsing and client construction are checked here.
@@ -59,7 +59,7 @@ impl ProviderFactory for MongoConnectionFactory {
         };
         let db = client.as_ref().map(|c| c.database(&self.db_name));
 
-        Ok(ulo::spi::Injectable::new(
+        Ok(ulo::spi::Registration::new(
             Arc::new(Box::new(MongoConnectionProvider {
                 client,
                 db,

@@ -7,7 +7,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use ulo::{
     FxHashMap,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 
 use crate::health_check_result::{HealthEntry, HealthIndicatorResult};
@@ -121,8 +121,8 @@ impl ProviderFactory for MemoryHealthIndicatorFactory {
         ulo::di::token_of::<MemoryHealthIndicator>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        Ok(Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        Ok(Registration::new(
             Arc::new(Box::new(MemoryHealthIndicatorProvider)),
             vec![],
         ))

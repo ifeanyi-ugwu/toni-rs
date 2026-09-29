@@ -158,11 +158,11 @@ impl ProviderFactory for RequestFactory {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, crate::spi::Injectable>,
-    ) -> BuildResult<crate::spi::Injectable> {
+        _deps: FxHashMap<String, crate::spi::Registration>,
+    ) -> BuildResult<crate::spi::Registration> {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         let provider = Request::from_parts(&parts);
-        Ok(crate::spi::Injectable::new(
+        Ok(crate::spi::Registration::new(
             Arc::new(Box::new(provider) as Box<dyn Provider>),
             vec![],
         ))

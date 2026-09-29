@@ -107,9 +107,9 @@ impl<T: Config + Clone + Send + Sync + 'static> ProviderFactory for ConfigServic
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<ulo::spi::Injectable> {
-        Ok(ulo::spi::Injectable::new(
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<ulo::spi::Registration> {
+        Ok(ulo::spi::Registration::new(
             Arc::new(Box::new(ConfigService {
                 config: self.config.clone(),
             }) as Box<dyn Provider>),

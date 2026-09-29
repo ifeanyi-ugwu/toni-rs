@@ -46,9 +46,9 @@ impl ProviderFactory for BroadcastServiceManager {
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, crate::spi::Injectable>,
-    ) -> BuildResult<crate::spi::Injectable> {
-        Ok(crate::spi::Injectable::new(
+        _deps: FxHashMap<String, crate::spi::Registration>,
+    ) -> BuildResult<crate::spi::Registration> {
+        Ok(crate::spi::Registration::new(
             Arc::new(Box::new(BroadcastServiceProvider {
                 instance: BroadcastService::new(),
             }) as Box<dyn Provider>),

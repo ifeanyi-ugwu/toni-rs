@@ -309,7 +309,7 @@ where
 }
 
 // ---- Provider ---------------------------------------------------------
-// Required so the gateway can be the `instance` field inside `Injectable`.
+// Required so the gateway can be the `instance` field inside `Registration`.
 
 #[async_trait]
 impl<Q, M, S> Provider for GraphQLSubscriptionGateway<Q, M, S>

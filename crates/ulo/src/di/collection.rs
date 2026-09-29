@@ -27,7 +27,7 @@ use crate::grpc::GrpcContext;
 use crate::http::HttpContext;
 use crate::http::middleware::Middleware;
 use crate::rpc::RpcContext;
-use crate::spi::{Injectable, Provider, ProviderFactory, ProviderRole};
+use crate::spi::{Provider, ProviderFactory, ProviderRole, Registration};
 use crate::ws::WsContext;
 
 /// An item, and the provider it was built through when a type's own declaration built it.
@@ -76,7 +76,7 @@ impl<T: ?Sized + Send + Sync + 'static> Source<T> {
 
     pub(crate) async fn item(
         &self,
-        deps: FxHashMap<String, Injectable>,
+        deps: FxHashMap<String, Registration>,
     ) -> BuildResult<ItemAndSource<T>> {
         match self {
             Self::Item(item) => Ok((item.clone(), None)),
@@ -98,11 +98,11 @@ where
         dependencies: V::provider_factory().dependency_tokens(),
         build: Arc::new(move |built: Arc<Built>| {
             Box::pin(async move {
-                let deps: FxHashMap<String, Injectable> = built
+                let deps: FxHashMap<String, Registration> = built
                     .iter()
-                    .map(|(k, v)| (k.clone(), Injectable::new(v.clone(), Vec::new())))
+                    .map(|(k, v)| (k.clone(), Registration::new(v.clone(), Vec::new())))
                     .collect();
-                let Injectable { instance, .. } = V::provider_factory().build(deps).await?;
+                let Registration { instance, .. } = V::provider_factory().build(deps).await?;
                 let value = *instance
                     .resolve(Execution::None)
                     .await?
@@ -212,7 +212,7 @@ impl<T: ?Sized + Send + Sync + 'static> ProviderFactory for Contribution<T> {
         Some(self.base.clone())
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let (item, declared) = self.source.item(deps).await?;
         let roles = collection_roles(&item);
         let provider: Box<dyn Provider> = Box::new(ContributionProvider {
@@ -221,7 +221,7 @@ impl<T: ?Sized + Send + Sync + 'static> ProviderFactory for Contribution<T> {
             item,
             declared,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
 

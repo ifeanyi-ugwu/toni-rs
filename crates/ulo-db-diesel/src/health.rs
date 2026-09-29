@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use ulo::{
     FxHashMap,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
@@ -67,14 +67,14 @@ macro_rules! impl_diesel_health {
                 vec![ulo::di::token_of::<$pool>()]
             }
 
-            async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+            async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
                 let token = ulo::di::token_of::<$pool>();
                 let connection = deps
                     .get(&token)
                     .expect("the health indicator is registered alongside the pool it checks")
                     .instance
                     .clone();
-                Ok(Injectable::new(Arc::new(Box::new($provider { connection })), vec![]))
+                Ok(Registration::new(Arc::new(Box::new($provider { connection })), vec![]))
             }
         }
 

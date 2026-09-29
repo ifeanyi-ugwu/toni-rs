@@ -56,10 +56,10 @@ where
 
     async fn build(
         &self,
-        _deps: FxHashMap<String, ulo::spi::Injectable>,
-    ) -> BuildResult<ulo::spi::Injectable> {
+        _deps: FxHashMap<String, ulo::spi::Registration>,
+    ) -> BuildResult<ulo::spi::Registration> {
         let client = (self.connect)().await;
-        Ok(ulo::spi::Injectable::new(
+        Ok(ulo::spi::Registration::new(
             Arc::new(Box::new(PrismaClientProvider {
                 client,
                 token: self.token.clone(),

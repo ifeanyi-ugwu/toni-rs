@@ -7,7 +7,7 @@ use serde_json::json;
 use ulo::{
     FxHashMap,
     di::{Execution, ResolutionError},
-    spi::{BuildResult, Injectable, Provider, ProviderFactory},
+    spi::{BuildResult, Provider, ProviderFactory, Registration},
 };
 
 use crate::health_check_result::{HealthEntry, HealthIndicatorResult};
@@ -156,11 +156,11 @@ impl ProviderFactory for HttpHealthIndicatorFactory {
         ulo::di::token_of::<HttpHealthIndicator>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider = HttpHealthIndicatorProvider {
             indicator: HttpHealthIndicator::new(),
         };
-        Ok(Injectable::new(Arc::new(Box::new(provider)), vec![]))
+        Ok(Registration::new(Arc::new(Box::new(provider)), vec![]))
     }
 }
 

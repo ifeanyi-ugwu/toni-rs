@@ -46,7 +46,7 @@ use crate::context::Extensions;
 use crate::di::Execution;
 use crate::di::ProviderScope;
 use crate::error::{BuildResult, ResolutionError};
-use crate::spi::{Injectable, Provider, ProviderFactory};
+use crate::spi::{Provider, ProviderFactory, Registration};
 /// An injectable view of one type in the request's extension bag.
 ///
 /// Holds the bag itself, not a copy of the value, so a `set` from a guard is
@@ -178,8 +178,8 @@ impl ProviderFactory for ExtensionsFactory {
         crate::di::token_of::<Extensions>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        Ok(Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        Ok(Registration::new(
             Arc::new(Box::new(Extensions::new()) as Box<dyn Provider>),
             vec![],
         ))
@@ -215,9 +215,9 @@ impl<T: Send + Sync + 'static> ProviderFactory for ExtensionFactory<T> {
         crate::di::token_of::<Extension<T>>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider = Extension::<T>::over(Extensions::new());
-        Ok(Injectable::new(
+        Ok(Registration::new(
             Arc::new(Box::new(provider) as Box<dyn Provider>),
             vec![],
         ))

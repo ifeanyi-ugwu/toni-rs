@@ -16,7 +16,7 @@ use crate::di::internal::scanner::DependencyScanner;
 use crate::di::internal::{Container, InstanceLoader};
 use crate::di::{Execution, ModuleMetadata};
 use crate::dispatch::ControllerFactory;
-use crate::spi::{BuildResult, Injectable, Provider, ProviderFactory};
+use crate::spi::{BuildResult, Provider, ProviderFactory, Registration};
 /// A provider that builds a trivial value. `token` is its injection token; `hint` is the
 /// configuration fingerprint folded into the owning module's identity.
 struct FakeFactory {
@@ -34,8 +34,8 @@ impl ProviderFactory for FakeFactory {
         self.hint.clone()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        Ok(Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        Ok(Registration::new(
             Arc::new(Box::new(FakeProvider {
                 token: self.token.clone(),
             })),

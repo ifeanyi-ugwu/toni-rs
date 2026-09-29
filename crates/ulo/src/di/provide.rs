@@ -35,7 +35,7 @@ use crate::di::binding::{Binding, FactoryBinding, Recast};
 use crate::di::collection::{Contribution, Source, declared_source};
 use crate::di::{DeclaresProvider, Execution, Key, ProviderScope, token_of};
 use crate::error::{BuildResult, ResolutionError};
-use crate::spi::{Injectable, Provider, ProviderFactory};
+use crate::spi::{Provider, ProviderFactory, Registration};
 
 pub(crate) type Built = FxHashMap<String, Arc<Box<dyn Provider>>>;
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -218,12 +218,12 @@ impl<V: Clone + Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
         token_of::<V>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider: Box<dyn Provider> = Box::new(ValueProvider {
             token: token_of::<V>(),
             value: Arc::new(self.value.clone()),
         });
-        Ok(Injectable::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -393,14 +393,14 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let value = Arc::new(self.factory.call(&built, Execution::None).await?);
         let provider: Box<dyn Provider> = Box::new(ValueProvider {
             token: token_of::<F::Output>(),
             value,
         });
-        Ok(Injectable::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -554,7 +554,7 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let make: Arc<dyn MakeInExecution<F::Output>> = Arc::new(Maker::new(
             self.factory.clone(),
@@ -568,7 +568,7 @@ where
             make,
             take: self.take,
         });
-        Ok(Injectable::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -598,7 +598,7 @@ impl<T: DeclaresProvider + 'static> ProviderFactory for Declared<T> {
         T::provider_factory().identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         T::provider_factory().build(deps).await
     }
 }
@@ -640,8 +640,8 @@ impl ProviderFactory for AliasDeclaration {
         vec![self.existing.clone()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        let Injectable { instance, roles } = deps
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        let Registration { instance, roles } = deps
             .get(&self.existing)
             .cloned()
             .unwrap_or_else(|| panic!("the loader built `{}` before its alias", self.existing));
@@ -650,7 +650,7 @@ impl ProviderFactory for AliasDeclaration {
             inner: instance,
             stands_in: false,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
 
@@ -779,13 +779,13 @@ impl<F: ProviderFactory> ProviderFactory for Under<F> {
         self.inner.identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
-        let Injectable { instance, roles } = self.inner.build(deps).await?;
+    async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
+        let Registration { instance, roles } = self.inner.build(deps).await?;
         let provider: Box<dyn Provider> = Box::new(Rekeyed {
             token: self.token.clone(),
             inner: instance,
             stands_in: true,
         });
-        Ok(Injectable::new(Arc::new(provider), roles))
+        Ok(Registration::new(Arc::new(provider), roles))
     }
 }
