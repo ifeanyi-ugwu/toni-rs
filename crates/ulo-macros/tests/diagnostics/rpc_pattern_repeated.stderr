@@ -1,0 +1,5 @@
+error: RPC pattern `orders.get` is already declared by `first` in this impl; a pattern has one handler
+  --> tests/diagnostics/rpc_pattern_repeated.rs:14:5
+   |
+14 |     #[ulo::message_pattern("orders.get")]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
