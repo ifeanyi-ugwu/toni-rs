@@ -5,6 +5,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::http::RoutePipeline;
 
+use super::FxIndexMap;
+
 use crate::{
     di::ModuleMetadata,
     dispatch::{Controller, ControllerFactory},
@@ -12,15 +14,15 @@ use crate::{
     spi::{Provider, ProviderFactory},
 };
 pub struct Module {
-    controllers: FxHashMap<String, Arc<dyn ControllerFactory>>,
-    providers: FxHashMap<String, Arc<dyn ProviderFactory>>,
+    controllers: FxIndexMap<String, Arc<dyn ControllerFactory>>,
+    providers: FxIndexMap<String, Arc<dyn ProviderFactory>>,
     imports: FxHashSet<String>,
     exports: FxHashSet<String>,
     /// One per route, the dispatch units the router registers with the adapter.
     controllers_instances: FxHashMap<String, Arc<RoutePipeline>>,
     /// One per controller struct, kept for lifecycle hooks (fired once each).
     controller_objects: Vec<Arc<dyn Controller>>,
-    providers_instances: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    providers_instances: FxIndexMap<String, Arc<Box<dyn Provider>>>,
     exports_instances: FxHashSet<String>,
     metadata: Arc<dyn ModuleMetadata>,
 }
@@ -29,13 +31,13 @@ impl Module {
     pub fn new(metadata: Box<dyn ModuleMetadata>) -> Self {
         let metadata: Arc<dyn ModuleMetadata> = Arc::from(metadata);
         Self {
-            controllers: FxHashMap::default(),
-            providers: FxHashMap::default(),
+            controllers: FxIndexMap::default(),
+            providers: FxIndexMap::default(),
             imports: FxHashSet::default(),
             exports: FxHashSet::default(),
             controllers_instances: FxHashMap::default(),
             controller_objects: Vec::new(),
-            providers_instances: FxHashMap::default(),
+            providers_instances: FxIndexMap::default(),
             exports_instances: FxHashSet::default(),
             metadata,
         }
@@ -90,11 +92,11 @@ impl Module {
         self.exports_instances.insert(provider_token);
     }
 
-    pub fn provider_factories(&self) -> &FxHashMap<String, Arc<dyn ProviderFactory>> {
+    pub fn provider_factories(&self) -> &FxIndexMap<String, Arc<dyn ProviderFactory>> {
         &self.providers
     }
 
-    pub fn provider_instances(&self) -> &FxHashMap<String, Arc<Box<dyn Provider>>> {
+    pub fn provider_instances(&self) -> &FxIndexMap<String, Arc<Box<dyn Provider>>> {
         &self.providers_instances
     }
 
@@ -116,7 +118,7 @@ impl Module {
         self.providers_instances.get(provider_token)
     }
 
-    pub fn controller_factories(&self) -> &FxHashMap<String, Arc<dyn ControllerFactory>> {
+    pub fn controller_factories(&self) -> &FxIndexMap<String, Arc<dyn ControllerFactory>> {
         &self.controllers
     }
 

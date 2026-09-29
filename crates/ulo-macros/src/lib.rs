@@ -595,7 +595,7 @@ macro_rules! lifecycle_hook_macro {
 lifecycle_hook_macro!(
     on_module_init,
     provider_macro::lifecycle_attr::Hook::OnInit,
-    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> ulo::di::InitResult`, run after the DI container is built. Returning `Err` aborts startup. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. On a dispatch target built per call, it runs on each instance, and an `Err` fails that call as `ulo::errors::HookFailed`."
+    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> ulo::di::InitResult`, run after the DI container is built and after the hook of every provider it injects. A module that declares each provider after the providers it injects runs their hooks in declaration order, and a controller's hook runs after every provider's. Returning `Err` aborts startup. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. On a dispatch target built per call, it runs on each instance, and an `Err` fails that call as `ulo::errors::HookFailed`."
 );
 lifecycle_hook_macro!(
     on_application_bootstrap,
@@ -605,7 +605,7 @@ lifecycle_hook_macro!(
 lifecycle_hook_macro!(
     on_module_destroy,
     provider_macro::lifecycle_attr::Hook::OnDestroy,
-    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. Not run on a dispatch target built per call, which leaves the framework no instance at shutdown."
+    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown, before the hook of every provider it injects: providers and controllers are torn down in the reverse of the order `#[on_module_init]` runs them. A module's own `on_module_destroy` runs before any provider's, as its `on_module_init` does. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. Not run on a dispatch target built per call, which leaves the framework no instance at shutdown."
 );
 lifecycle_hook_macro!(
     before_application_shutdown,

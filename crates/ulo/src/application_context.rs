@@ -253,16 +253,25 @@ impl UloApplicationContext {
         self.call_shutdown_hooks(None).await;
     }
 
-    /// Every module's hook-carrying handles, taken in one pass under the container lock.
+    /// Every module's hook-carrying handles in the reverse of construction order, providers and
+    /// controllers reversed within each, taken in one pass under the container lock: shutdown
+    /// tears down a provider before what it injects (ADR-0057). A module's own hooks keep their
+    /// phase ahead of every provider's, as at startup.
     ///
     /// The shutdown hooks below are awaited, so the handles are detached from the container
     /// first rather than held across each await. See [`Container::module_lifecycle`].
     fn module_lifecycles(&self) -> Vec<ModuleLifecycle> {
         let container = self.container.read();
         container
-            .module_tokens()
+            .modules_in_construction_order()
             .iter()
+            .rev()
             .filter_map(|token| container.module_lifecycle(token))
+            .map(|mut lifecycle| {
+                lifecycle.providers.reverse();
+                lifecycle.controllers.reverse();
+                lifecycle
+            })
             .collect()
     }
 
@@ -276,12 +285,15 @@ impl UloApplicationContext {
                 .await;
         }
 
-        for lifecycle in lifecycles {
-            for provider in lifecycle.providers {
-                provider.before_application_shutdown(signal.clone()).await;
-            }
-            for controller in lifecycle.controllers {
+        // Controllers were built after every provider, so they stop before any.
+        for lifecycle in &lifecycles {
+            for controller in &lifecycle.controllers {
                 controller.before_application_shutdown(signal.clone()).await;
+            }
+        }
+        for lifecycle in &lifecycles {
+            for provider in &lifecycle.providers {
+                provider.before_application_shutdown(signal.clone()).await;
             }
         }
     }
@@ -293,12 +305,15 @@ impl UloApplicationContext {
             lifecycle.metadata.on_module_destroy().await;
         }
 
-        for lifecycle in lifecycles {
-            for provider in lifecycle.providers {
-                provider.on_module_destroy().await;
-            }
-            for controller in lifecycle.controllers {
+        // Controllers were built after every provider, so they stop before any.
+        for lifecycle in &lifecycles {
+            for controller in &lifecycle.controllers {
                 controller.on_module_destroy().await;
+            }
+        }
+        for lifecycle in &lifecycles {
+            for provider in &lifecycle.providers {
+                provider.on_module_destroy().await;
             }
         }
     }
@@ -313,12 +328,15 @@ impl UloApplicationContext {
                 .await;
         }
 
-        for lifecycle in lifecycles {
-            for provider in lifecycle.providers {
-                provider.on_application_shutdown(signal.clone()).await;
-            }
-            for controller in lifecycle.controllers {
+        // Controllers were built after every provider, so they stop before any.
+        for lifecycle in &lifecycles {
+            for controller in &lifecycle.controllers {
                 controller.on_application_shutdown(signal.clone()).await;
+            }
+        }
+        for lifecycle in &lifecycles {
+            for provider in &lifecycle.providers {
+                provider.on_application_shutdown(signal.clone()).await;
             }
         }
     }

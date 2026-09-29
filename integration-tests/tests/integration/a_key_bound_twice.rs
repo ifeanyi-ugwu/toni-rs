@@ -143,8 +143,9 @@ async fn two_contributions_to_the_http_guards_both_run_in_declaration_order() {
 
 #[serial]
 #[tokio::test]
-async fn contributions_from_two_modules_both_run() {
-    let mut ran = guards_run_by(TwoGuardsInTwoModules).await;
-    ran.sort();
-    assert_eq!(ran, ["first", "second"]);
+async fn contributions_from_two_modules_both_run_in_import_order() {
+    assert_eq!(
+        guards_run_by(TwoGuardsInTwoModules).await,
+        ["first", "second"]
+    );
 }

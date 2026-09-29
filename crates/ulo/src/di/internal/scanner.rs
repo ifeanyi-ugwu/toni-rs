@@ -6,7 +6,7 @@ use crate::error::SetupResult;
 use crate::error::StartupError;
 
 use crate::{
-    di::internal::Container,
+    di::internal::{Container, ModuleLifecycle},
     di::{MiddlewareConsumer, ModuleMetadata},
 };
 
@@ -43,12 +43,16 @@ impl DependencyScanner {
 
             let modules_imported = default_module.imports().unwrap_or_default();
 
-            let mut modules_imported_tokens = vec![];
+            let modules_imported_tokens: Vec<String> = modules_imported
+                .iter()
+                .map(|module_imported| module_imported.identity().key())
+                .collect();
 
-            for module_imported in modules_imported {
+            // Pushed last-declared first, so the stack pops sibling imports in the order their
+            // importer declares them. The module map keeps that order, and the loader builds the
+            // modules ready in one pass in it.
+            for module_imported in modules_imported.into_iter().rev() {
                 let imported_id = module_imported.identity().key();
-                modules_imported_tokens.push(imported_id.clone());
-
                 if ctx_registry.iter().any(|seen| seen == &imported_id) {
                     continue;
                 }
@@ -275,7 +279,7 @@ impl DependencyScanner {
     }
 
     pub(crate) async fn call_lifecycle_hooks(&mut self) -> Result<(), StartupError> {
-        let modules_token = self.container.read().module_tokens();
+        let modules_token = self.container.read().modules_in_construction_order();
 
         for module_token in &modules_token {
             self.call_module_init_hook(module_token).await?;
@@ -288,7 +292,7 @@ impl DependencyScanner {
 
     /// Runs after `call_lifecycle_hooks` (OnModuleInit) but before the application starts listening.
     pub(crate) async fn call_bootstrap_hooks(&mut self) -> Result<(), StartupError> {
-        let modules_token = self.container.read().module_tokens();
+        let modules_token = self.container.read().modules_in_construction_order();
 
         for module_token in &modules_token {
             self.call_module_bootstrap_hook(module_token).await?;
@@ -325,13 +329,20 @@ impl DependencyScanner {
         &self,
         modules_token: &[String],
     ) -> Result<(), StartupError> {
-        for module_token in modules_token {
-            let lifecycle = self.container.read().module_lifecycle(module_token);
-            let Some(lifecycle) = lifecycle else {
-                continue;
-            };
+        let lifecycles: Vec<(String, ModuleLifecycle)> = {
+            let container = self.container.read();
+            modules_token
+                .iter()
+                .filter_map(|token| {
+                    container
+                        .module_lifecycle(token)
+                        .map(|lifecycle| (token.clone(), lifecycle))
+                })
+                .collect()
+        };
 
-            for provider in lifecycle.providers {
+        for (module_token, lifecycle) in &lifecycles {
+            for provider in &lifecycle.providers {
                 tracing::debug!(module = %module_token, provider = %provider.token(), hook = "on_application_bootstrap", "lifecycle hook");
                 provider
                     .on_application_bootstrap()
@@ -342,8 +353,13 @@ impl DependencyScanner {
                         source,
                     })?;
             }
+        }
 
-            for controller in lifecycle.controllers {
+        // Controllers are built after every module's providers, so their hooks run after every
+        // provider's: a controller injecting a global export from a module built later still
+        // starts after it.
+        for (module_token, lifecycle) in &lifecycles {
+            for controller in &lifecycle.controllers {
                 controller
                     .on_application_bootstrap()
                     .await
@@ -380,13 +396,20 @@ impl DependencyScanner {
     }
 
     async fn call_provider_init_hooks(&self, modules_token: &[String]) -> Result<(), StartupError> {
-        for module_token in modules_token {
-            let lifecycle = self.container.read().module_lifecycle(module_token);
-            let Some(lifecycle) = lifecycle else {
-                continue;
-            };
+        let lifecycles: Vec<(String, ModuleLifecycle)> = {
+            let container = self.container.read();
+            modules_token
+                .iter()
+                .filter_map(|token| {
+                    container
+                        .module_lifecycle(token)
+                        .map(|lifecycle| (token.clone(), lifecycle))
+                })
+                .collect()
+        };
 
-            for provider in lifecycle.providers {
+        for (module_token, lifecycle) in &lifecycles {
+            for provider in &lifecycle.providers {
                 tracing::debug!(module = %module_token, provider = %provider.token(), hook = "on_module_init", "lifecycle hook");
                 provider
                     .on_module_init()
@@ -397,8 +420,13 @@ impl DependencyScanner {
                         source,
                     })?;
             }
+        }
 
-            for controller in lifecycle.controllers {
+        // Controllers are built after every module's providers, so their hooks run after every
+        // provider's: a controller injecting a global export from a module built later still
+        // starts after it.
+        for (module_token, lifecycle) in &lifecycles {
+            for controller in &lifecycle.controllers {
                 controller
                     .on_module_init()
                     .await
