@@ -28,7 +28,7 @@ pub(crate) struct ModuleLifecycle {
     pub(crate) controllers: Vec<Arc<dyn Controller>>,
 }
 
-pub struct Container {
+pub(crate) struct Container {
     modules: FxIndexMap<String, Module>,
     /// Modules in the order the loader finished building their providers. The loader takes
     /// imports before importers and retries a module waiting on a provider not yet built in a later
@@ -72,7 +72,7 @@ impl Default for Container {
 }
 
 impl Container {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             modules: FxIndexMap::default(),
             construction_order: Vec::new(),
@@ -92,7 +92,7 @@ impl Container {
         }
     }
 
-    pub fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) -> SetupResult {
+    pub(crate) fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) -> SetupResult {
         let token: String = module_metadata.identity().key();
         // The token is the full identity key (type name for static modules, base + config
         // fingerprint for dynamic ones). The scanner skips a module it has already scanned; a
@@ -107,7 +107,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_import(
+    pub(crate) fn add_import(
         &mut self,
         module_ref_token: &String,
         imported_module_token: String,
@@ -120,7 +120,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_controller(
+    pub(crate) fn add_controller(
         &mut self,
         module_ref_token: &String,
         controller: Box<dyn ControllerFactory>,
@@ -133,7 +133,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_provider(
+    pub(crate) fn add_provider(
         &mut self,
         module_ref_token: &String,
         provider: Box<dyn ProviderFactory>,
@@ -146,7 +146,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_provider_instance(
+    pub(crate) fn add_provider_instance(
         &mut self,
         module_ref_token: &String,
         provider_instance: Arc<Box<dyn Provider>>,
@@ -303,7 +303,7 @@ impl Container {
         self.role_registry.get_roles_for_token(token)
     }
 
-    pub fn gateways(&self) -> &FxHashMap<String, Arc<Box<dyn Gateway>>> {
+    pub(crate) fn gateways(&self) -> &FxHashMap<String, Arc<Box<dyn Gateway>>> {
         &self.role_registry.gateways
     }
 
@@ -313,7 +313,7 @@ impl Container {
         &self.role_registry.rpc_controllers
     }
 
-    pub fn grpc_services(
+    pub(crate) fn grpc_services(
         &self,
     ) -> &FxHashMap<
         String,
@@ -329,14 +329,14 @@ impl Container {
     ///
     /// Called from the instance loader after all providers are instantiated so
     /// that the registry is fully populated before middleware is resolved.
-    pub fn resolve_module_middleware(&mut self, module_token: &str) -> SetupResult {
+    pub(crate) fn resolve_module_middleware(&mut self, module_token: &str) -> SetupResult {
         if let Some(manager) = self.middleware_manager.as_mut() {
             manager.resolve_middleware_tokens(module_token, &self.role_registry.middleware)?;
         }
         Ok(())
     }
 
-    pub fn add_controller_object(
+    pub(crate) fn add_controller_object(
         &mut self,
         module_ref_token: &String,
         controller: Arc<dyn Controller>,
@@ -364,7 +364,11 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_export(&mut self, module_ref_token: &String, provider_token: String) -> SetupResult {
+    pub(crate) fn add_export(
+        &mut self,
+        module_ref_token: &String,
+        provider_token: String,
+    ) -> SetupResult {
         let module_ref = self
             .modules
             .get_mut(module_ref_token)
@@ -373,7 +377,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn add_export_instance(
+    pub(crate) fn add_export_instance(
         &mut self,
         module_ref_token: &String,
         provider_token: String,
@@ -386,7 +390,7 @@ impl Container {
         Ok(())
     }
 
-    pub fn provider_factories(
+    pub(crate) fn provider_factories(
         &self,
         module_ref_token: &String,
     ) -> SetupResult<&FxIndexMap<String, Arc<dyn ProviderFactory>>> {
@@ -397,7 +401,7 @@ impl Container {
         Ok(module_ref.provider_factories())
     }
 
-    pub fn controller_factories(
+    pub(crate) fn controller_factories(
         &self,
         module_ref_token: &String,
     ) -> SetupResult<&FxIndexMap<String, Arc<dyn ControllerFactory>>> {
@@ -408,7 +412,7 @@ impl Container {
         Ok(module_ref.controller_factories())
     }
 
-    pub fn get_provider_instances(
+    pub(crate) fn get_provider_instances(
         &self,
         module_ref_token: &String,
     ) -> SetupResult<&FxIndexMap<String, Arc<Box<dyn Provider>>>> {
@@ -419,7 +423,7 @@ impl Container {
         Ok(module_ref.provider_instances())
     }
 
-    pub fn get_provider_instance_by_token(
+    pub(crate) fn get_provider_instance_by_token(
         &self,
         module_ref_token: &String,
         provider_token: &String,
@@ -431,7 +435,7 @@ impl Container {
         Ok(module_ref.get_provider_instance_by_token(provider_token))
     }
 
-    pub fn get_provider_by_token(
+    pub(crate) fn get_provider_by_token(
         &self,
         module_ref_token: &String,
         provider_token: &String,
@@ -454,7 +458,10 @@ impl Container {
         Ok(module_ref.drain_controllers_instances())
     }
 
-    pub fn imported_modules(&self, module_ref_token: &String) -> SetupResult<&FxHashSet<String>> {
+    pub(crate) fn imported_modules(
+        &self,
+        module_ref_token: &String,
+    ) -> SetupResult<&FxHashSet<String>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -462,7 +469,7 @@ impl Container {
         Ok(module_ref.imported_modules())
     }
 
-    pub fn exported_instance_tokens(
+    pub(crate) fn exported_instance_tokens(
         &self,
         module_ref_token: &String,
     ) -> SetupResult<&FxHashSet<String>> {
@@ -473,7 +480,7 @@ impl Container {
         Ok(module_ref.exported_instance_tokens())
     }
 
-    pub fn exported_tokens_of(&self, module_ref_token: &String) -> SetupResult<Vec<String>> {
+    pub(crate) fn exported_tokens_of(&self, module_ref_token: &String) -> SetupResult<Vec<String>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -481,7 +488,7 @@ impl Container {
         Ok(module_ref.exported_tokens().iter().cloned().collect())
     }
 
-    pub fn module_tokens(&self) -> Vec<String> {
+    pub(crate) fn module_tokens(&self) -> Vec<String> {
         self.modules.keys().cloned().collect::<Vec<String>>()
     }
 
@@ -495,7 +502,7 @@ impl Container {
         self.construction_order.clone()
     }
 
-    pub fn ordered_module_tokens(&self) -> Vec<String> {
+    pub(crate) fn ordered_module_tokens(&self) -> Vec<String> {
         let mut ordered_modules: Vec<String> = Vec::new();
         let mut visited: FxHashMap<String, bool> = FxHashMap::default();
 
@@ -548,12 +555,12 @@ impl Container {
         ordered_modules
     }
 
-    pub fn get_module_by_token(&self, module_ref_token: &String) -> Option<&Module> {
+    pub(crate) fn get_module_by_token(&self, module_ref_token: &String) -> Option<&Module> {
         self.modules.get(module_ref_token)
     }
 
     /// Register all exported providers from a global module into the global registry
-    pub fn register_global_providers(&mut self, module_token: &String) -> SetupResult {
+    pub(crate) fn register_global_providers(&mut self, module_token: &String) -> SetupResult {
         let (is_global, module_name, exports_tokens) = {
             let module = self
                 .modules
@@ -612,17 +619,17 @@ impl Container {
     }
 
     /// Get a provider from the global registry
-    pub fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn Provider>>> {
+    pub(crate) fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn Provider>>> {
         self.global_providers.get(token).cloned()
     }
 
     /// Register a provider token as globally available (during scan phase)
-    pub fn register_global_provider_token(&mut self, token: String) {
+    pub(crate) fn register_global_provider_token(&mut self, token: String) {
         self.global_provider_tokens.insert(token);
     }
 
     /// Check if a provider token is registered as globally available
-    pub fn is_global_provider_token(&self, token: &String) -> bool {
+    pub(crate) fn is_global_provider_token(&self, token: &String) -> bool {
         self.global_provider_tokens.contains(token)
     }
 
@@ -640,22 +647,26 @@ impl Container {
     //     Ok(())
     // }
 
-    pub fn middleware_manager(&self) -> Option<&MiddlewareManager> {
+    pub(crate) fn middleware_manager(&self) -> Option<&MiddlewareManager> {
         self.middleware_manager.as_ref()
     }
 
-    pub fn middleware_manager_mut(&mut self) -> Option<&mut MiddlewareManager> {
+    pub(crate) fn middleware_manager_mut(&mut self) -> Option<&mut MiddlewareManager> {
         self.middleware_manager.as_mut()
     }
 
     /// Records a contribution to the HTTP guard collection, HTTP's global guards.
-    pub fn register_app_guard_provider(&mut self, module_token: String, provider_token: String) {
+    pub(crate) fn register_app_guard_provider(
+        &mut self,
+        module_token: String,
+        provider_token: String,
+    ) {
         self.app_guard_providers
             .push((module_token, provider_token));
     }
 
     /// Records a contribution to the HTTP interceptor collection, HTTP's global interceptors.
-    pub fn register_app_interceptor_provider(
+    pub(crate) fn register_app_interceptor_provider(
         &mut self,
         module_token: String,
         provider_token: String,
@@ -665,17 +676,17 @@ impl Container {
     }
 
     /// The contributions to the HTTP guard collection, in scan order.
-    pub fn app_guard_providers(&self) -> &[(String, String)] {
+    pub(crate) fn app_guard_providers(&self) -> &[(String, String)] {
         &self.app_guard_providers
     }
 
     /// The contributions to the HTTP interceptor collection, in scan order.
-    pub fn app_interceptor_providers(&self) -> &[(String, String)] {
+    pub(crate) fn app_interceptor_providers(&self) -> &[(String, String)] {
         &self.app_interceptor_providers
     }
 
     /// Register one multi-provider contribution during the scan phase.
-    pub fn register_multi_provider(
+    pub(crate) fn register_multi_provider(
         &mut self,
         base_token: String,
         module_token: String,
@@ -687,11 +698,11 @@ impl Container {
             .push((module_token, provider_token));
     }
 
-    pub fn multi_providers(&self) -> &FxHashMap<String, Vec<(String, String)>> {
+    pub(crate) fn multi_providers(&self) -> &FxHashMap<String, Vec<(String, String)>> {
         &self.multi_providers
     }
 
-    pub fn add_multi_collection_provider(
+    pub(crate) fn add_multi_collection_provider(
         &mut self,
         base_token: String,
         instance: Arc<Box<dyn Provider>>,
@@ -699,7 +710,7 @@ impl Container {
         self.multi_collection_providers.insert(base_token, instance);
     }
 
-    pub fn get_multi_collection_provider(
+    pub(crate) fn get_multi_collection_provider(
         &self,
         base_token: &str,
     ) -> Option<Arc<Box<dyn Provider>>> {

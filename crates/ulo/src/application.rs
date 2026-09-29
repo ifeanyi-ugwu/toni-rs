@@ -203,7 +203,7 @@ pub struct UloApplication {
 }
 
 impl UloApplication {
-    pub fn new(container: Arc<RwLock<Container>>) -> Self {
+    pub(crate) fn new(container: Arc<RwLock<Container>>) -> Self {
         Self {
             http_adapter: None,
             http_target: None,
