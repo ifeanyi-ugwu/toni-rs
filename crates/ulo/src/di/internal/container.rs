@@ -583,6 +583,11 @@ impl Container {
         Ok(())
     }
 
+    /// The global registry: every token a global module exports, with its instance.
+    pub(crate) fn global_providers(&self) -> &FxHashMap<String, Arc<Box<dyn Provider>>> {
+        &self.global_providers
+    }
+
     /// Get a provider from the global registry
     pub fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn Provider>>> {
         self.global_providers.get(token).cloned()

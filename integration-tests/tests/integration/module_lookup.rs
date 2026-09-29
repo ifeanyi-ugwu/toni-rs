@@ -70,7 +70,7 @@ fn dynamic() -> DynamicModule {
 impl AppModule {}
 
 /// A `#[module]` type is its identity: the handle resolves that module's
-/// providers and, in strict mode, nothing from other modules.
+/// providers and, by default, nothing from other modules.
 #[tokio::test]
 async fn a_static_module_is_found_by_type() {
     let app = UloFactory::create(AppModule).await.unwrap();
@@ -83,9 +83,9 @@ async fn a_static_module_is_found_by_type() {
         Some(ResolutionError::ProviderNotFound { module, .. }) => assert_eq!(
             module.as_deref().map(|m| m.contains("FeatureModule")),
             Some(true),
-            "strict mode reports the one module it searched"
+            "a lookup in the current module reports the one module it searched"
         ),
-        other => panic!("strict mode stays inside the module's scope, got: {other:?}"),
+        other => panic!("a lookup stays inside the module's scope, got: {other:?}"),
     }
 }
 

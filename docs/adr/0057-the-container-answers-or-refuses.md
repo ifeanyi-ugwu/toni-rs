@@ -1,11 +1,12 @@
 # 0057 — The container answers an ambiguous question, or refuses it
 
-Status: proposed
+Status: accepted
 
 A key is single-bound unless declared multi, and a second single binding, or a single binding beside
 an `into` contribution, is refused naming both. A runtime lookup that widens past its module reaches
-only exported and global keys. Lifecycle hooks run in construction order and shutdown runs in its
-exact reverse, construction order being dependency order with ties broken by declaration order.
+the single bindings the module could inject: its imports' exports, then what the global modules
+export. Lifecycle hooks run in construction order and shutdown runs in its exact reverse,
+construction order being dependency order with ties broken by declaration order.
 
 ## Context
 
@@ -26,7 +27,7 @@ binding. A clash can only be told from a declared collection once the collection
 semantics.
 
 **Which module answers.** A token held by two modules resolves to one of them at three sites: the
-loader's walk of an import set, `ModuleRef`'s non-strict lookup, and the application context's
+loader's walk of an import set, `ModuleRef`'s widening lookup, and the application context's
 lookup by type. Renaming one module's builder id, declaration order unchanged, flips which value an
 injection site receives. Separately, `ModuleRef`'s `.global()` searches every provider of every
 module, exported or not, so a provider in a module that exports nothing and is not global is
@@ -53,15 +54,20 @@ that transport's global set, and the markers `AppGuards`, `AppInterceptors` and 
 name the sets every transport runs, so two global guards both run. Any registration surface that
 takes a key obeys the same rule.
 
-**A widening lookup is a fallback into the global registry.** `ModuleRef`'s `.global()` becomes
-`.or_global()`: the current module first, then exported and global keys, and nothing a module kept
-private. A key that two imports export into one module fails `create` naming both, and where
-startup cannot see the ambiguity, a lookup answers `ResolutionError::AmbiguousModule` rather than
-picking one.
+**A widening lookup reaches what the module could inject.** `ModuleRef`'s `.global()` becomes
+`.visible()`: the current module, then what its imports export into it, then what the global modules
+export, the order the loader resolves an injection in. The name is the set's, not one tier's: every
+tier is what the module can see. A provider exported neither to the module nor globally is not
+reached, whether another module keeps it private or exports it to its own importers, and a
+collection is not reached, a lookup naming one binding. A key that two imports export into one
+module fails `create` naming both when a provider or controller there injects it, the loader having
+no one answer to give; where startup cannot see the ambiguity, a lookup answers
+`ResolutionError::AmbiguousModule` rather than picking one, a `.visible()` lookup included.
 
-The framework keeps two meanings of *global* and only two. *Visibility*: a module's exports reach
-every module. *Application*: an enhancer runs on every dispatch target. Search is not a third
-meaning; after the narrowing it is a fallback into the first, which is what the new name says.
+The framework keeps two meanings of *global* and only two. *Visibility*: a global module's exports
+reach every module. *Application*: an enhancer runs on every dispatch target. Search is not a third
+meaning: the widened lookup reads what the module can see, through an import or through a global
+module, and is named for that.
 
 **Lifecycle order is a contract.** Construction order is dependency order, and ties break by
 declaration order: walk the declaration list in order, and before emitting a provider emit
@@ -78,11 +84,13 @@ rule above.
 
 ## Consequences
 
-- Two providers under one key, in one module or across two imports, fail `create` naming both.
+- Two providers under one key in one module fail `create` naming both, and so do two imports
+  exporting one key into a module where a provider or controller injects it.
 - Two contributions to `AppGuards`, in one module or in two, both run in declaration order, and so
   do two to `AppInterceptors`.
-- A provider in a module that exports nothing is unreachable from outside it, `.or_global()`
-  included.
+- A provider in a module that exports nothing is unreachable from outside it, `.visible()`
+  included. `.visible()` reaches the export of a module that is not global only from a module
+  importing it, and a key two imports export answers `AmbiguousModule` naming both.
 - A provider's `on_module_init` runs after the init of every provider it injects, and its shutdown
   hooks run before theirs. Adding an unrelated provider changes neither.
 - `ModuleRef`'s `.global()` is renamed with no alias, the crate being unpublished.
@@ -100,6 +108,13 @@ be collections.
 should not take part in another module's lookups, and a real need to search everywhere earns its own
 API when something asks for one. Nothing in the tree asks: the one caller of the widening resolves a
 provider that a global module exports.
+
+**The global registry alone.** A lookup would miss an export the module can inject, and one written
+in place of an injection would see less than the injection did.
+
+**`.or_global()`.** Names the third tier of a three-tier set and reaches the second, the fault the
+Context charges `.global()` with; and `or_` places the current module outside a set its own
+providers belong to.
 
 **Leaving lifecycle order unspecified and documenting that.** It asks every application to encode
 an order the container already computes.

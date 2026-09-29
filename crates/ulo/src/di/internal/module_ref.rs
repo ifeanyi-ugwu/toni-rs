@@ -8,13 +8,27 @@ use rustc_hash::FxHashMap;
 use crate::di::Execution;
 use crate::di::Key;
 use crate::spi::Provider;
-pub(crate) type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>;
+/// Each token a module's imports export into it, with every import declaring the export and its
+/// instance, `None` where the import declares a token it does not build.
+pub(crate) type ImportedExports = FxHashMap<String, Vec<(String, Option<Arc<Box<dyn Provider>>>)>>;
+
+/// What a [`ModuleRef`] reads: each module's own instances, what its imports export into it, and
+/// the global registry.
+#[derive(Default)]
+pub(crate) struct ProviderStore {
+    pub(crate) modules: FxHashMap<String, FxHashMap<String, Arc<Box<dyn Provider>>>>,
+    pub(crate) imports: FxHashMap<String, ImportedExports>,
+    /// What the global modules export, the registry `#[module(global: true)]` fills.
+    pub(crate) globals: FxHashMap<String, Arc<Box<dyn Provider>>>,
+}
 
 /// Provides runtime dependency resolution within a module context
 ///
 /// `ModuleRef` is scoped to a specific module and allows dynamic resolution
-/// of providers at runtime. It supports both strict (module-only, default) and
-/// global (fallback) resolution modes.
+/// of providers at runtime. A lookup reads the module's own providers, and with
+/// `.visible()` everything visible to the module: its own providers, what its
+/// imports export, then what the global modules export. A provider exported
+/// neither to this module nor globally is not reached, and neither is a collection.
 ///
 /// [`get`](Self::get) builds outside any execution, which limits it to providers
 /// that can exist there. An execution-scoped provider cannot, so it is reached with
@@ -30,11 +44,11 @@ pub(crate) type ProviderStore = FxHashMap<String, FxHashMap<String, Arc<Box<dyn 
 /// }
 /// impl PluginLoader {
 ///     pub async fn load_plugin(&self) {
-///         // Strict mode (default): only search current module
+///         // The current module only (the default)
 ///         let plugin = self.module_ref.get_key::<PrimaryPlugin>().await?;
 ///
-///         // Global mode: search current module first, then fallback globally
-///         let config = self.module_ref.get::<Config>().global().await?;
+///         // Everything visible to the module: its own, its imports' exports, the globals
+///         let config = self.module_ref.get::<Config>().visible().await?;
 ///     }
 /// }
 /// ```
@@ -62,23 +76,23 @@ impl ModuleRef {
 
     /// Get a provider instance by its type
     ///
-    /// By default, searches only the current module (strict mode).
-    /// Use `.global()` to search current module first, then fall back to global search.
+    /// By default, searches only the current module. `.visible()` searches everything visible to
+    /// the module: its own providers, its imports' exports, then what the global modules export.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// // Strict (default): only current module
+    /// // The current module only
     /// let service = module_ref.get::<MyService>().await?;
     ///
-    /// // Global: searches current module, then globally
-    /// let shared = module_ref.get::<SharedService>().global().await?;
+    /// // Everything visible to the module
+    /// let shared = module_ref.get::<SharedService>().visible().await?;
     /// ```
     pub fn get<T: 'static>(&self) -> ModuleRefQuery<'_, T> {
         ModuleRefQuery {
             module_ref: self,
             token: std::any::type_name::<T>().to_string(),
-            strict: true,
+            visible: false,
             execution: Execution::None,
             _phantom: std::marker::PhantomData,
         }
@@ -95,7 +109,7 @@ impl ModuleRef {
         ModuleRefQuery {
             module_ref: self,
             token: crate::di::token_of::<K>(),
-            strict: true,
+            visible: false,
             execution: Execution::None,
             _phantom: std::marker::PhantomData,
         }
@@ -108,8 +122,8 @@ impl ModuleRef {
     /// returns the instance the handler is holding rather than a second one.
     ///
     /// Any execution will do — an HTTP request, a WebSocket message, an RPC or
-    /// gRPC call. Search mode works as it does for `get`: current module only,
-    /// or `.global()` for the fallback.
+    /// gRPC call. It searches as `get` does: the current module only, or
+    /// everything visible to it with `.visible()`.
     ///
     /// # Examples
     ///
@@ -122,7 +136,7 @@ impl ModuleRef {
         ModuleRefQuery {
             module_ref: self,
             token: std::any::type_name::<T>().to_string(),
-            strict: true,
+            visible: false,
             execution: execution.clone(),
             _phantom: std::marker::PhantomData,
         }
@@ -138,7 +152,7 @@ impl ModuleRef {
         ModuleRefQuery {
             module_ref: self,
             token: crate::di::token_of::<K>(),
-            strict: true,
+            visible: false,
             execution: execution.clone(),
             _phantom: std::marker::PhantomData,
         }
@@ -150,26 +164,30 @@ impl ModuleRef {
     }
 }
 
-/// Builder for ModuleRef queries with strict mode support
+/// A [`ModuleRef`] lookup, run by awaiting it.
 pub struct ModuleRefQuery<'a, T: 'static> {
     module_ref: &'a ModuleRef,
     token: String,
-    strict: bool,
+    visible: bool,
     /// The execution to build in; `None` for a `get`, which has none.
     execution: Execution,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<'a, T: 'static> ModuleRefQuery<'a, T> {
-    /// Enable global mode: search current module first, then globally
+    /// Reach what an `#[inject]` field naming one binding in this module would: the module's own
+    /// providers, then what its imports export into it, then what the global modules export. A key
+    /// two imports export answers [`ResolutionError::AmbiguousModule`] naming each exporting
+    /// module. A provider exported neither to this module nor globally is not reached, and neither
+    /// is a collection.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let service = module_ref.get::<Service>().global().await?;
+    /// let service = module_ref.get::<Service>().visible().await?;
     /// ```
-    pub fn global(mut self) -> Self {
-        self.strict = false;
+    pub fn visible(mut self) -> Self {
+        self.visible = true;
         self
     }
 
@@ -180,35 +198,39 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
     {
         let provider_instance = {
             let store = self.module_ref.store.read();
-
-            if self.strict {
-                store
+            let local = store
+                .modules
+                .get(&self.module_ref.module_token)
+                .and_then(|m| m.get(&self.token))
+                .cloned();
+            let found = match local {
+                Some(instance) => Some(instance),
+                None if self.visible => match store
+                    .imports
                     .get(&self.module_ref.module_token)
-                    .and_then(|m| m.get(&self.token))
-                    .cloned()
-                    .ok_or_else(|| ResolutionError::ProviderNotFound {
-                        token: self.token.clone(),
-                        module: Some(self.module_ref.module_token.clone()),
-                    })?
-            } else {
-                // Try current module first, then any module
-                let local = store
-                    .get(&self.module_ref.module_token)
-                    .and_then(|m| m.get(&self.token))
-                    .cloned();
-
-                if let Some(instance) = local {
-                    instance
-                } else {
-                    store
-                        .values()
-                        .find_map(|providers| providers.get(&self.token).cloned())
-                        .ok_or_else(|| ResolutionError::ProviderNotFound {
-                            token: self.token.clone(),
-                            module: None,
-                        })?
-                }
-            }
+                    .and_then(|imported| imported.get(&self.token))
+                    .map(Vec::as_slice)
+                {
+                    // The one import declaring it and not building it leaves nothing to answer,
+                    // as it leaves an injection nothing to inject.
+                    Some([(_, instance)]) => instance.clone(),
+                    Some(exporters @ [_, _, ..]) => {
+                        let mut candidates: Vec<String> =
+                            exporters.iter().map(|(module, _)| module.clone()).collect();
+                        candidates.sort();
+                        return Err(ResolutionError::AmbiguousModule {
+                            base: self.token.clone(),
+                            candidates,
+                        });
+                    }
+                    _ => store.globals.get(&self.token).cloned(),
+                },
+                None => None,
+            };
+            found.ok_or_else(|| ResolutionError::ProviderNotFound {
+                token: self.token.clone(),
+                module: Some(self.module_ref.module_token.clone()),
+            })?
         };
 
         self.execution
