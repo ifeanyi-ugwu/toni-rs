@@ -61,11 +61,11 @@ impl DependencyGraph {
         &mut self,
         token: String,
         dependencies: Vec<String>,
-        providers: &Vec<(String, Vec<String>)>,
+        providers: &[(String, Vec<String>)],
         multi_providers: &FxHashMap<String, Vec<String>>,
     ) -> SetupResult {
         if self.temp_mark.contains_key(&token) {
-            return Err(format!("Circular dependency detected for provider: {}", token).into());
+            return Err(self.cycle_in_module(providers, multi_providers).into());
         }
 
         if self.visited.contains_key(&token) {
@@ -108,6 +108,38 @@ impl DependencyGraph {
         self.ordered.push(token);
         Ok(())
     }
+
+    /// The module's provider cycle in the form the cross-module stall uses, started at the provider
+    /// declared first rather than the first in token order.
+    fn cycle_in_module(
+        &self,
+        providers: &[(String, Vec<String>)],
+        multi_providers: &FxHashMap<String, Vec<String>>,
+    ) -> String {
+        let adjacency: FxHashMap<String, Vec<String>> = providers
+            .iter()
+            .map(|(token, deps)| {
+                let deps = deps
+                    .iter()
+                    .flat_map(|dep| match multi_providers.get(dep) {
+                        Some(contributors) => contributors.clone(),
+                        None => vec![dep.clone()],
+                    })
+                    .collect();
+                (token.clone(), deps)
+            })
+            .collect();
+        let declared = |token: &String| providers.iter().position(|(t, _)| t == token);
+        let mut cycle = find_dependency_cycle(&adjacency).unwrap_or_default();
+        cycle.pop();
+        if let Some(first) = (0..cycle.len()).min_by_key(|&at| declared(&cycle[at])) {
+            cycle.rotate_left(first);
+        }
+        if let Some(start) = cycle.first().cloned() {
+            cycle.push(start);
+        }
+        cycle_message(&cycle, |_| Some(self.module_token.as_str()))
+    }
 }
 
 /// Find one dependency cycle in a provider graph, if any exists.
@@ -118,9 +150,8 @@ impl DependencyGraph {
 ///
 /// Returns the cycle as `[A, B, …, A]` — the entry token repeated at the end — or `None`
 /// when the graph is acyclic. Roots are visited in sorted order so the result is
-/// deterministic for a given graph. Used only on the failure path, where the per-module
-/// [`DependencyGraph`] sort has already excluded within-module cycles, to name a cycle
-/// that spans modules.
+/// deterministic for a given graph. Used only on the failure path: by the per-module sort to
+/// name the cycle it hit, and by the stall diagnostic to name one spanning modules.
 pub(crate) fn find_dependency_cycle(
     adjacency: &FxHashMap<String, Vec<String>>,
 ) -> Option<Vec<String>> {
@@ -178,6 +209,27 @@ pub(crate) fn find_dependency_cycle(
         }
     }
     None
+}
+
+/// The refusal for a provider cycle, `cycle` naming its providers in order and closing on the first.
+pub(crate) fn cycle_message<'a>(
+    cycle: &'a [String],
+    module_of: impl Fn(&str) -> Option<&'a str>,
+) -> String {
+    let chain = cycle
+        .iter()
+        .map(|token| match module_of(token) {
+            Some(module) => format!("{token} (in module {module})"),
+            None => token.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n    -> ");
+    format!(
+        "Circular dependency detected between providers:\n    {chain}\n\
+         A provider cannot be built before a provider it depends on. Break the cycle: extract the \
+         shared logic into a third provider both depend on, or inject `ModuleRef` into one side and \
+         resolve the other lazily at call time."
+    )
 }
 
 #[cfg(test)]

@@ -60,7 +60,7 @@ impl From<LoadError> for Box<dyn std::error::Error + Send + Sync + 'static> {
 type LoadResult<T> = std::result::Result<T, LoadError>;
 
 use super::{
-    Container, DependencyGraph, FxIndexMap, find_dependency_cycle,
+    Container, DependencyGraph, FxIndexMap, cycle_message, find_dependency_cycle,
     multi_collection_provider::MultiCollectionProvider,
 };
 use crate::{
@@ -104,13 +104,12 @@ impl InstanceLoader {
         );
         // Track which modules are pending (deferred due to unready global providers)
         let mut pending_modules: Vec<String> = modules_order.clone();
-        let total_modules = pending_modules.len();
-        let mut max_iterations = total_modules * 2; // Prevent infinite loops
         // Last deferral reason per module, kept to explain a stall precisely.
         let mut deferred_reasons: FxHashMap<String, String> = FxHashMap::default();
 
-        while !pending_modules.is_empty() && max_iterations > 0 {
-            max_iterations -= 1;
+        // Every pass builds at least one module or ends in the stall diagnostic below, so the loop
+        // runs at most once per module.
+        while !pending_modules.is_empty() {
             let mut successfully_created = Vec::new();
             let mut deferred_modules = Vec::new();
 
@@ -147,14 +146,6 @@ impl InstanceLoader {
 
             // Update pending list to only deferred modules
             pending_modules = deferred_modules;
-        }
-
-        if !pending_modules.is_empty() {
-            return Err(format!(
-                "Module instantiation timed out. Remaining modules: {:?}",
-                pending_modules
-            )
-            .into());
         }
 
         // PHASE 1.5: Collect multi-provider contributions into Vec collections per base token.
@@ -405,20 +396,7 @@ impl InstanceLoader {
         let (adjacency, token_module) = self.build_provider_dependency_graph();
 
         if let Some(cycle) = find_dependency_cycle(&adjacency) {
-            let chain = cycle
-                .iter()
-                .map(|token| match token_module.get(token) {
-                    Some(module) => format!("{token} (in module {module})"),
-                    None => token.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n    -> ");
-            return format!(
-                "Circular dependency detected between providers:\n    {chain}\n\
-                 A provider cannot be built before a provider it depends on. Break the cycle: \
-                 extract the shared logic into a third provider both depend on, or inject \
-                 `ModuleRef` into one side and resolve the other lazily at call time."
-            );
+            return cycle_message(&cycle, |token| token_module.get(token).map(String::as_str));
         }
 
         let mut details = String::new();
