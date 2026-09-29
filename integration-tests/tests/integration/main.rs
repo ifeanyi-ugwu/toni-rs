@@ -1,3 +1,4 @@
+mod a_key_bound_twice;
 mod body_already_read;
 mod body_and_multipart_extractors;
 mod cancellation;
