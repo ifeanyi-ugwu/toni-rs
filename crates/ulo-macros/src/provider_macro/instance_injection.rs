@@ -1149,9 +1149,9 @@ fn generate_transient_factory(
 /// The `#[inject]` fields' resolutions inside an enhancer builder's `__build_instance`, which each
 /// role's `create` calls.
 ///
-/// Unlike `field_resolutions`, which resolves every field in the one execution its caller passes,
-/// this reads a captured `all_deps: Arc<FxHashMap<...>>` and picks each dependency's `Execution`
-/// from that provider's declared scope.
+/// Unlike `field_resolutions`, which reads the dependency map and the execution its caller names,
+/// this reads a captured `all_deps: Arc<FxHashMap<...>>` and resolves every field in the execution
+/// `create` is handed.
 fn generate_create_field_resolutions(
     dependencies: &DependencyInfo,
 ) -> (Vec<TokenStream>, Vec<Ident>) {
@@ -1172,11 +1172,7 @@ fn generate_create_field_resolutions(
             &inner_trait,
             lookup_token_expr,
             quote! { all_deps },
-            quote! { if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-                __exec_ctx.clone()
-            } else {
-                ::ulo::di::Execution::None
-            } },
+            quote! { __exec_ctx.clone() },
         ));
         field_names.push(field_name.clone());
     }
@@ -1191,12 +1187,7 @@ fn generate_create_field_resolutions(
                         "Missing dependency '{}' for field '{}'",
                         __lookup_token, #field_name_str
                     ));
-                let __ctx = if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-                    __exec_ctx.clone()
-                } else {
-                    ::ulo::di::Execution::None
-                };
-                let __any_box = __provider.resolve(__ctx).await;
+                let __any_box = __provider.resolve(__exec_ctx.clone()).await;
                 *__any_box.downcast::<#full_type>()
                     .unwrap_or_else(|_| panic!(
                         "Failed to downcast '{}' to {}",
@@ -1352,8 +1343,8 @@ fn generate_dyn_factories(
 
 /// A `Vec<Arc<dyn Trait>>` field's or parameter's resolution: the collection provider under
 /// `lookup_token`, read from the dependency map `deps` and resolved in `ctx`, its erased items read
-/// back as the declared trait object. `ctx` may read `__provider`. Every resolver of an `#[inject]`
-/// field or a `#[new]` parameter calls this for a collection.
+/// back as the declared trait object. Every resolver of an `#[inject]` field or a `#[new]`
+/// parameter calls this for a collection.
 pub(crate) fn collection_field_resolution(
     field_name: &Ident,
     full_type: &Type,

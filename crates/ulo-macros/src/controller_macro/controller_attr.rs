@@ -236,8 +236,7 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
     (resolutions, field_names)
 }
 
-/// One scope-aware field resolution: execution-scoped providers get the active HTTP context (threaded
-/// via `request_parts` + the shared `__request_cache`), anything else `Execution::None`.
+/// One field resolution, in the execution the controller is built in.
 fn resolve_one(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     let name_str = name.to_string();
     let ctx = ctx_expr();
@@ -257,15 +256,9 @@ fn resolve_one(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     }
 }
 
-/// The `Execution` for a `__provider` in scope: this execution when the
-/// provider is execution-scoped, `None` otherwise. Resolving it in the same
-/// execution is what makes one construction shared across the request.
+/// The execution a field resolves in: the one the controller is built in, `None` at startup. A
+/// transient field is built in it too, so what that transient injects per execution is shared
+/// with the rest of the call.
 fn ctx_expr() -> TokenStream {
-    quote! {
-        if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-            __exec_ctx.clone()
-        } else {
-            ::ulo::di::Execution::None
-        }
-    }
+    quote! { __exec_ctx.clone() }
 }

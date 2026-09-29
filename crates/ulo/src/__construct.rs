@@ -33,9 +33,10 @@ pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
 /// A `#[new]` constructor: `tokens` returns its dependency tokens (so the factory can declare
 /// them), and `build` resolves those dependencies and calls it.
 ///
-/// The context parameter carries the execution being served, so a constructor parameter that is
-/// itself execution-scoped resolves in that same execution; it is `Execution::None` for
-/// construction outside any execution, matching the field-injection paths.
+/// The context parameter carries the execution being served, and every constructor parameter
+/// resolves in it: an execution-scoped one shares the execution's instance, and a transient one
+/// builds what it injects there. It is `Execution::None` for construction outside any execution,
+/// matching the field-injection paths.
 pub struct Ctor<T> {
     pub tokens: fn() -> Vec<String>,
     pub build:
