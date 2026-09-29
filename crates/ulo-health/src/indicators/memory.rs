@@ -123,7 +123,7 @@ impl ProviderFactory for MemoryHealthIndicatorFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(MemoryHealthIndicatorProvider)),
+            Arc::new(MemoryHealthIndicatorProvider),
             vec![],
         ))
     }

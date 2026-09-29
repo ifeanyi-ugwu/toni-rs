@@ -29,7 +29,7 @@ use crate::error::ResolutionError;
 use crate::spi::Provider;
 
 /// The already-built dependency providers passed to a factory's `build`, keyed by token.
-pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
+pub type ResolvedDeps = FxHashMap<String, Arc<dyn Provider>>;
 
 /// A `#[new]` constructor: `tokens` returns its dependency tokens (so the factory can declare
 /// them), and `build` resolves those dependencies and calls it, or answers the first one that

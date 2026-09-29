@@ -86,12 +86,11 @@ impl InstanceLoader {
         let store_arc: Arc<RwLock<super::module_ref::ProviderStore>> =
             Arc::new(RwLock::new(super::module_ref::ProviderStore::default()));
         for module_token in &modules_order {
-            let provider: Arc<Box<dyn Provider>> = Arc::new(Box::new(
-                super::module_ref_provider::ModuleRefProvider::new(
+            let provider: Arc<dyn Provider> =
+                Arc::new(super::module_ref_provider::ModuleRefProvider::new(
                     module_token.clone(),
                     store_arc.clone(),
-                ),
-            ));
+                ));
             self.container
                 .write()
                 .add_provider_instance(module_token, provider, vec![])?;
@@ -238,10 +237,10 @@ impl InstanceLoader {
                 items.push(item);
             }
 
-            let collection: Arc<Box<dyn Provider>> = Arc::new(Box::new(MultiCollectionProvider {
+            let collection: Arc<dyn Provider> = Arc::new(MultiCollectionProvider {
                 token: base_token.clone(),
                 items,
-            }));
+            });
             self.container
                 .write()
                 .add_multi_collection_provider(base_token, collection);
@@ -656,11 +655,10 @@ impl InstanceLoader {
                         }
                     }
                 }
-                let collection: Arc<Box<dyn Provider>> =
-                    Arc::new(Box::new(MultiCollectionProvider {
-                        token: dependency.clone(),
-                        items,
-                    }));
+                let collection: Arc<dyn Provider> = Arc::new(MultiCollectionProvider {
+                    token: dependency.clone(),
+                    items,
+                });
                 resolved_dependencies.insert(dependency, Registration::new(collection, vec![]));
             }
             // Step 4: Not found anywhere
@@ -678,7 +676,7 @@ impl InstanceLoader {
         &self,
         module_token: &String,
         dependency: &String,
-    ) -> LoadResult<Option<Arc<Box<dyn Provider>>>> {
+    ) -> LoadResult<Option<Arc<dyn Provider>>> {
         let container = self.container.read();
 
         // Every import exporting the dependency. With two, the instance injected would depend on

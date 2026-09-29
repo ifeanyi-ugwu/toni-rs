@@ -73,7 +73,7 @@ where
 
     async fn build(
         &self,
-        dependencies: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        dependencies: FxHashMap<String, Arc<dyn Provider>>,
     ) -> BuildResult<Arc<dyn Controller>> {
         let graphql_service = dependencies
             .get(&ulo::di::token_of::<
@@ -136,7 +136,7 @@ where
     Ctx: ContextBuilder,
 {
     path: String,
-    graphql_service: Arc<Box<dyn Provider>>,
+    graphql_service: Arc<dyn Provider>,
     _phantom: std::marker::PhantomData<(Query, Mutation, Subscription, Ctx)>,
 }
 

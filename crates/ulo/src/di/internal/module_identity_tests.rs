@@ -36,9 +36,9 @@ impl ProviderFactory for FakeFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(FakeProvider {
+            Arc::new(FakeProvider {
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

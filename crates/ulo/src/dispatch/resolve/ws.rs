@@ -28,7 +28,7 @@ impl GatewayResolver {
             .collect()
     }
 
-    fn wrap_gateway(&self, gateway: Arc<Box<dyn Gateway>>) -> SetupResult<GatewayWrapper> {
+    fn wrap_gateway(&self, gateway: Arc<dyn Gateway>) -> SetupResult<GatewayWrapper> {
         let declared = gateway.enhancers();
         let metadata = gateway.metadata();
         let handler_metadata: HashMap<String, Arc<crate::context::Metadata>> =

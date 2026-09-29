@@ -51,6 +51,6 @@ pub trait ControllerFactory: Send + Sync {
     }
     async fn build(
         &self,
-        deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+        deps: FxHashMap<String, Arc<dyn Provider>>,
     ) -> BuildResult<Arc<dyn Controller>>;
 }

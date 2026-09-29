@@ -32,9 +32,9 @@ impl ProviderFactory for SharedBroadcastServiceProviderFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(SharedBroadcastServiceProvider {
+            Arc::new(SharedBroadcastServiceProvider {
                 instance: self.instance.clone(),
-            })),
+            }),
             vec![],
         ))
     }
@@ -141,9 +141,7 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
         );
 
         Ok(Registration::new(
-            Arc::new(Box::new(RedisBroadcastServiceProvider {
-                instance: service,
-            })),
+            Arc::new(RedisBroadcastServiceProvider { instance: service }),
             vec![],
         ))
     }

@@ -65,13 +65,13 @@ where
         };
 
         Ok(Registration::new(
-            Arc::new(Box::new(SqlxPoolProvider {
+            Arc::new(SqlxPoolProvider {
                 pool,
                 init_error,
                 check: self.check.clone(),
                 url: self.url.clone(),
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

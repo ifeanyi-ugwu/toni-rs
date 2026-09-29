@@ -74,7 +74,7 @@ pub enum ProviderRole {
     GrpcErrorHandler(ErrorHandlerArc<Grpc>),
 
     Middleware(Arc<dyn Middleware>),
-    Gateway(Arc<Box<dyn crate::ws::Gateway>>),
+    Gateway(Arc<dyn crate::ws::Gateway>),
 }
 
 /// What a [`ProviderFactory`] builds: the provider instance and the roles it registers under.
@@ -84,12 +84,12 @@ pub enum ProviderRole {
 /// such as an alias, forwards the roles without a downcast.
 #[derive(Clone)]
 pub struct Registration {
-    pub instance: Arc<Box<dyn Provider>>,
+    pub instance: Arc<dyn Provider>,
     pub roles: Vec<ProviderRole>,
 }
 
 impl Registration {
-    pub fn new(instance: Arc<Box<dyn Provider>>, roles: Vec<ProviderRole>) -> Self {
+    pub fn new(instance: Arc<dyn Provider>, roles: Vec<ProviderRole>) -> Self {
         Self { instance, roles }
     }
 }

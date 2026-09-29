@@ -110,9 +110,9 @@ impl<T: Config + Clone + Send + Sync + 'static> ProviderFactory for ConfigServic
         _deps: FxHashMap<String, ulo::spi::Registration>,
     ) -> BuildResult<ulo::spi::Registration> {
         Ok(ulo::spi::Registration::new(
-            Arc::new(Box::new(ConfigService {
+            Arc::new(ConfigService {
                 config: self.config.clone(),
-            }) as Box<dyn Provider>),
+            }) as Arc<dyn Provider>,
             vec![],
         ))
     }

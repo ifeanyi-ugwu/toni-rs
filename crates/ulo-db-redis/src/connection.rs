@@ -63,13 +63,13 @@ impl ProviderFactory for RedisConnectionFactory {
         };
 
         Ok(ulo::spi::Registration::new(
-            Arc::new(Box::new(RedisConnectionProvider {
+            Arc::new(RedisConnectionProvider {
                 manager,
                 init_error,
                 check: self.check.clone(),
                 url: self.url.clone(),
                 token: self.token.clone(),
-            })),
+            }),
             vec![],
         ))
     }

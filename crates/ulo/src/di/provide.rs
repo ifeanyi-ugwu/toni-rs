@@ -37,7 +37,7 @@ use crate::di::{DeclaresProvider, Execution, Key, ProviderScope, token_of};
 use crate::error::{BuildResult, ResolutionError};
 use crate::spi::{Provider, ProviderFactory, Registration};
 
-pub(crate) type Built = FxHashMap<String, Arc<Box<dyn Provider>>>;
+pub(crate) type Built = FxHashMap<String, Arc<dyn Provider>>;
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Constructors of a provider declaration: a value, a factory, an alias, or a collection item
@@ -219,11 +219,11 @@ impl<V: Clone + Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
     }
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
-        let provider: Box<dyn Provider> = Box::new(ValueProvider {
+        let provider: Arc<dyn Provider> = Arc::new(ValueProvider {
             token: token_of::<V>(),
             value: Arc::new(self.value.clone()),
         });
-        Ok(Registration::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(provider, Vec::new()))
     }
 }
 
@@ -396,11 +396,11 @@ where
     async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let value = Arc::new(self.factory.call(&built, Execution::None).await?);
-        let provider: Box<dyn Provider> = Box::new(ValueProvider {
+        let provider: Arc<dyn Provider> = Arc::new(ValueProvider {
             token: token_of::<F::Output>(),
             value,
         });
-        Ok(Registration::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(provider, Vec::new()))
     }
 }
 
@@ -562,13 +562,13 @@ where
             self.scope,
             token_of::<F::Output>(),
         ));
-        let provider: Box<dyn Provider> = Box::new(ScopedProvider {
+        let provider: Arc<dyn Provider> = Arc::new(ScopedProvider {
             token: token_of::<F::Output>(),
             scope: self.scope,
             make,
             take: self.take,
         });
-        Ok(Registration::new(Arc::new(provider), Vec::new()))
+        Ok(Registration::new(provider, Vec::new()))
     }
 }
 
@@ -645,12 +645,12 @@ impl ProviderFactory for AliasDeclaration {
             .get(&self.existing)
             .cloned()
             .unwrap_or_else(|| panic!("the loader built `{}` before its alias", self.existing));
-        let provider: Box<dyn Provider> = Box::new(Rekeyed {
+        let provider: Arc<dyn Provider> = Arc::new(Rekeyed {
             token: self.token.clone(),
             inner: instance,
             stands_in: false,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }
 
@@ -661,7 +661,7 @@ impl ProviderFactory for AliasDeclaration {
 /// runs its own hooks.
 pub(crate) struct Rekeyed {
     pub(crate) token: String,
-    pub(crate) inner: Arc<Box<dyn Provider>>,
+    pub(crate) inner: Arc<dyn Provider>,
     pub(crate) stands_in: bool,
 }
 
@@ -781,11 +781,11 @@ impl<F: ProviderFactory> ProviderFactory for Under<F> {
 
     async fn build(&self, deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let Registration { instance, roles } = self.inner.build(deps).await?;
-        let provider: Box<dyn Provider> = Box::new(Rekeyed {
+        let provider: Arc<dyn Provider> = Arc::new(Rekeyed {
             token: self.token.clone(),
             inner: instance,
             stands_in: true,
         });
-        Ok(Registration::new(Arc::new(provider), roles))
+        Ok(Registration::new(provider, roles))
     }
 }

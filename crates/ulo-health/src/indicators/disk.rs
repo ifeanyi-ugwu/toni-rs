@@ -122,7 +122,7 @@ impl ProviderFactory for DiskHealthIndicatorFactory {
 
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
-            Arc::new(Box::new(DiskHealthIndicatorProvider)),
+            Arc::new(DiskHealthIndicatorProvider),
             vec![],
         ))
     }

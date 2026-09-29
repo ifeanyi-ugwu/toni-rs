@@ -24,7 +24,7 @@ use crate::http::RoutePipeline;
 /// Produced by [`Container::module_lifecycle`]; see there for why the handles are cloned out.
 pub(crate) struct ModuleLifecycle {
     pub(crate) metadata: Arc<dyn ModuleMetadata>,
-    pub(crate) providers: Vec<Arc<Box<dyn Provider>>>,
+    pub(crate) providers: Vec<Arc<dyn Provider>>,
     pub(crate) controllers: Vec<Arc<dyn Controller>>,
 }
 
@@ -37,7 +37,7 @@ pub(crate) struct Container {
     construction_order: Vec<String>,
     middleware_manager: Option<MiddlewareManager>,
     /// Global provider registry - providers from modules marked as global
-    global_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    global_providers: FxHashMap<String, Arc<dyn Provider>>,
     /// Owner of each global token: `(module identity, display name)`. Keyed by export token. Lets
     /// a second, distinct module claiming the same token fail loudly with both names instead of
     /// silently shadowing. Two dynamic modules with different config share a display name but not an
@@ -60,7 +60,7 @@ pub(crate) struct Container {
     multi_providers: FxHashMap<String, Vec<(String, String)>>,
     /// Fully-collected multi-provider instances, keyed by base token.
     /// Built by the instance loader after Phase 1 and resolved like regular providers.
-    multi_collection_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    multi_collection_providers: FxHashMap<String, Arc<dyn Provider>>,
     /// Per-role registries populated by `ProviderFactory::extract_roles` at instance creation.
     role_registry: RoleRegistry,
 }
@@ -149,7 +149,7 @@ impl Container {
     pub(crate) fn add_provider_instance(
         &mut self,
         module_ref_token: &String,
-        provider_instance: Arc<Box<dyn Provider>>,
+        provider_instance: Arc<dyn Provider>,
         roles: Vec<ProviderRole>,
     ) -> SetupResult {
         let token = provider_instance.token();
@@ -303,7 +303,7 @@ impl Container {
         self.role_registry.get_roles_for_token(token)
     }
 
-    pub(crate) fn gateways(&self) -> &FxHashMap<String, Arc<Box<dyn Gateway>>> {
+    pub(crate) fn gateways(&self) -> &FxHashMap<String, Arc<dyn Gateway>> {
         &self.role_registry.gateways
     }
 
@@ -415,7 +415,7 @@ impl Container {
     pub(crate) fn get_provider_instances(
         &self,
         module_ref_token: &String,
-    ) -> SetupResult<&FxIndexMap<String, Arc<Box<dyn Provider>>>> {
+    ) -> SetupResult<&FxIndexMap<String, Arc<dyn Provider>>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -427,7 +427,7 @@ impl Container {
         &self,
         module_ref_token: &String,
         provider_token: &String,
-    ) -> SetupResult<Option<&Arc<Box<dyn Provider>>>> {
+    ) -> SetupResult<Option<&Arc<dyn Provider>>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -614,12 +614,12 @@ impl Container {
     }
 
     /// The global registry: every token a global module exports, with its instance.
-    pub(crate) fn global_providers(&self) -> &FxHashMap<String, Arc<Box<dyn Provider>>> {
+    pub(crate) fn global_providers(&self) -> &FxHashMap<String, Arc<dyn Provider>> {
         &self.global_providers
     }
 
     /// Get a provider from the global registry
-    pub(crate) fn get_global_provider(&self, token: &String) -> Option<Arc<Box<dyn Provider>>> {
+    pub(crate) fn get_global_provider(&self, token: &String) -> Option<Arc<dyn Provider>> {
         self.global_providers.get(token).cloned()
     }
 
@@ -705,7 +705,7 @@ impl Container {
     pub(crate) fn add_multi_collection_provider(
         &mut self,
         base_token: String,
-        instance: Arc<Box<dyn Provider>>,
+        instance: Arc<dyn Provider>,
     ) {
         self.multi_collection_providers.insert(base_token, instance);
     }
@@ -713,7 +713,7 @@ impl Container {
     pub(crate) fn get_multi_collection_provider(
         &self,
         base_token: &str,
-    ) -> Option<Arc<Box<dyn Provider>>> {
+    ) -> Option<Arc<dyn Provider>> {
         self.multi_collection_providers.get(base_token).cloned()
     }
 }
