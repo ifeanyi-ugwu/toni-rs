@@ -108,6 +108,7 @@ mod rpc_global_enhancers;
 mod rpc_grpc;
 mod rpc_grpc_listener_adoption;
 mod rpc_grpc_macros;
+mod rpc_pattern_declared_twice;
 mod rpc_tcp;
 mod rpc_tcp_stream;
 mod rpc_udp;

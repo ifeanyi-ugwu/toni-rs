@@ -136,6 +136,10 @@ const DOCUMENTED: &[(&str, &str)] = &[
         "never fires: `Session` is execution-scoped",
     ),
     (
+        "rpc_pattern_repeated",
+        "is already declared by `first` in this impl",
+    ),
+    (
         "use_guards_takes_no_string",
         "a key is a type, not a string",
     ),

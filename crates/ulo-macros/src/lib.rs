@@ -935,6 +935,10 @@ pub fn patterns(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// The handler receives an `RpcData` payload and returns `Result<RpcData, RpcError>`.
 /// The framework sends the returned data back to the caller.
 ///
+/// Declared twice in one `#[patterns]` impl, with either attribute, a pattern fails to compile at
+/// the second declaration. Declared by two controllers, it fails `create`, naming the pattern and
+/// both controllers.
+///
 /// # Syntax
 ///
 /// ```rust,ignore
@@ -950,6 +954,10 @@ pub fn message_pattern(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// The handler receives an `RpcData` payload and returns `Result<(), RpcError>`.
 /// No response is sent back to the caller.
+///
+/// Declared twice in one `#[patterns]` impl, with either attribute, a pattern fails to compile at
+/// the second declaration. Declared by two controllers, it fails `create`, naming the pattern and
+/// both controllers.
 ///
 /// # Syntax
 ///
