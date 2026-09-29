@@ -655,35 +655,51 @@ impl InstanceLoader {
         dependency: &String,
     ) -> LoadResult<Option<Arc<Box<dyn Provider>>>> {
         let container = self.container.read();
-        let imported_modules = container.imported_modules(module_token)?;
 
-        for imported_module in imported_modules {
-            // Check if the imported module exports this dependency (from scan phase)
-            let exports_tokens = container.exported_tokens_of(imported_module)?;
-
-            if exports_tokens.contains(dependency) {
-                // Dependency is exported by this module - try to get the instance
-                let exported_instances_tokens =
-                    container.exported_instance_tokens(imported_module)?;
-
-                if exported_instances_tokens.contains(dependency) {
-                    // Instance exists - return it
-                    if let Ok(Some(exported_instance)) =
-                        container.get_provider_instance_by_token(imported_module, dependency)
-                    {
-                        return Ok(Some(exported_instance.clone()));
-                    }
-                } else {
-                    // Module exports this dependency but instance not created yet - DEFER
-                    return Err(LoadError::Deferred(format!(
-                        "imported module '{imported_module}' exports '{dependency}', \
-                         whose instance is not created yet"
-                    )));
-                }
+        // Every import exporting the dependency. With two, the instance injected would depend on
+        // which import was tried first (ADR-0057), and the injection is refused naming both.
+        let mut exporters: Vec<&String> = Vec::new();
+        for imported_module in container.imported_modules(module_token)? {
+            if container
+                .exported_tokens_of(imported_module)?
+                .contains(dependency)
+            {
+                exporters.push(imported_module);
             }
         }
+        exporters.sort();
+        let imported_module = match exporters.as_slice() {
+            [] => return Ok(None),
+            [one] => *one,
+            [first, second, ..] => {
+                return Err(LoadError::Failed(
+                    format!(
+                        "`{dependency}` is exported into module `{module_token}` by two of its \
+                         imports, `{first}` and `{second}`, and a provider or controller there \
+                         injects it; \
+                         import one of them, or bind one under a marker of its own"
+                    )
+                    .into(),
+                ));
+            }
+        };
 
-        Ok(None)
+        if container
+            .exported_instance_tokens(imported_module)?
+            .contains(dependency)
+        {
+            Ok(container
+                .get_provider_instance_by_token(imported_module, dependency)
+                .ok()
+                .flatten()
+                .cloned())
+        } else {
+            // The import exports the dependency but has not built it yet.
+            Err(LoadError::Deferred(format!(
+                "imported module '{imported_module}' exports '{dependency}', \
+                 whose instance is not created yet"
+            )))
+        }
     }
 }
 

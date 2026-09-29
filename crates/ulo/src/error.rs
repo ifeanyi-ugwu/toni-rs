@@ -80,8 +80,8 @@ impl From<Box<dyn Error + Send + Sync + 'static>> for StartupError {
 ///
 /// Produced by the resolution methods on [`UloApplication`], [`UloApplicationContext`] and
 /// [`ModuleRef`]. Every variant carries what a caller needs to act on it rather than only to
-/// report it: [`ProviderNotFound`] says whether one module was searched or all of them,
-/// [`AmbiguousModule`] hands back the full keys that [`get_module_by_id`] accepts, and
+/// report it: [`ProviderNotFound`] says which module a lookup searched, or that it searched all of
+/// them, [`AmbiguousModule`] hands back the full keys that [`get_module_by_id`] accepts, and
 /// [`ExecutionRequired`] names the provider that needs an execution to be built in.
 ///
 /// [`ProviderNotFound`]: ResolutionError::ProviderNotFound
@@ -94,7 +94,8 @@ impl From<Box<dyn Error + Send + Sync + 'static>> for StartupError {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ResolutionError {
-    /// `module` is the one module searched, or `None` where every module was.
+    /// `module` is the module searched, or `None` where every module was. A `ModuleRef` lookup
+    /// with `.or_global()` names its own module, the global registry having been read after it.
     #[error("provider `{token}` not found {}", searched_in(.module))]
     ProviderNotFound {
         token: String,
@@ -108,12 +109,14 @@ pub enum ResolutionError {
     )]
     ModuleNotFound { id: String },
 
-    /// Two or more modules share an identity base. `candidates` holds their full keys, each of
-    /// which [`get_module_by_id`](crate::application_context::UloApplicationContext::get_module_by_id)
+    /// Two or more modules answer one lookup: modules sharing the identity base `base`, or
+    /// modules each holding the token `base` that a search across every module asked for.
+    /// `candidates` holds their full keys, each of which
+    /// [`get_module_by_id`](crate::application_context::UloApplicationContext::get_module_by_id)
     /// resolves on its own.
     #[error(
-        "module identity `{base}` is ambiguous: {} share the base. Pass one full key to \
-         `get_module_by_id`.",
+        "`{base}` is ambiguous: {} each answer it. Pass one full key to `get_module_by_id` and \
+         resolve through that module.",
         candidate_list(.candidates)
     )]
     AmbiguousModule {

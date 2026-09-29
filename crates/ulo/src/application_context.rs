@@ -26,7 +26,8 @@ impl UloApplicationContext {
         Self { container }
     }
 
-    /// The provider registered under `token`, from whichever module holds it.
+    /// The provider registered under `token` in the one module holding it. Two holders answer
+    /// `AmbiguousModule` with both keys rather than one instance.
     ///
     /// The instance is cloned out so the container borrow ends here rather than
     /// spanning the `resolve` that follows.
@@ -37,20 +38,27 @@ impl UloApplicationContext {
         let container = self.container.read();
         let token = token.to_string();
 
-        container
-            .module_tokens()
-            .iter()
-            .find_map(|module_token| {
-                container
-                    .get_provider_instance_by_token(module_token, &token)
-                    .ok()
-                    .flatten()
-                    .cloned()
-            })
-            .ok_or(ResolutionError::ProviderNotFound {
+        // Every module holding the token: two would make the answer depend on which module the
+        // search reached first (ADR-0057), so they are handed back instead.
+        let mut holders: Vec<(String, Arc<Box<dyn Provider>>)> = Vec::new();
+        for module_token in container.module_tokens() {
+            if let Ok(Some(instance)) =
+                container.get_provider_instance_by_token(&module_token, &token)
+            {
+                holders.push((module_token, instance.clone()));
+            }
+        }
+        match holders.len() {
+            0 => Err(ResolutionError::ProviderNotFound {
                 token,
                 module: None,
-            })
+            }),
+            1 => Ok(holders.remove(0).1),
+            _ => Err(ResolutionError::AmbiguousModule {
+                base: token,
+                candidates: holders.into_iter().map(|(module, _)| module).collect(),
+            }),
+        }
     }
 
     /// The provider registered under `token` in one named module.
@@ -73,7 +81,9 @@ impl UloApplicationContext {
             })
     }
 
-    /// Returns an instance of `T` from the DI container, searching across all modules
+    /// Returns an instance of `T` from the DI container, searching across all modules. A type two
+    /// modules hold answers [`ResolutionError::AmbiguousModule`] with their keys, each of which
+    /// [`get_module_by_id`](Self::get_module_by_id) resolves.
     pub async fn get<T: 'static>(&self) -> Result<T, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;

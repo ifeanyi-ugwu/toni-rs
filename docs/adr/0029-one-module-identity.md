@@ -2,6 +2,10 @@
 
 Status: accepted
 
+[ADR-0057](0057-the-container-answers-or-refuses.md) makes the global-export clash below one case of
+a general rule: a key holds one binding in a module, and a lookup left to choose between two
+modules' bindings is refused naming them.
+
 ## Context
 
 `ModuleMetadata` carried two identity methods. `get_id` was the registry key — a type name for

@@ -1,11 +1,11 @@
 # 0057 — The container answers an ambiguous question, or refuses it
 
-Status: proposed
+Status: accepted
 
 A key is single-bound unless declared multi, and a second single binding, or a single binding beside
 an `into` contribution, is refused naming both. A runtime lookup that widens past its module reaches
-only exported and global keys. Lifecycle hooks run in construction order and shutdown runs in its
-exact reverse, construction order being dependency order with ties broken by declaration order.
+only what the global modules export. Lifecycle hooks run in construction order and shutdown runs in
+its exact reverse, construction order being dependency order with ties broken by declaration order.
 
 ## Context
 
@@ -54,13 +54,14 @@ name the sets every transport runs, so two global guards both run. Any registrat
 takes a key obeys the same rule.
 
 **A widening lookup is a fallback into the global registry.** `ModuleRef`'s `.global()` becomes
-`.or_global()`: the current module first, then exported and global keys, and nothing a module kept
-private. A key that two imports export into one module fails `create` naming both, and where
-startup cannot see the ambiguity, a lookup answers `ResolutionError::AmbiguousModule` rather than
-picking one.
+`.or_global()`: the current module first, then what the global modules export, and no other module's
+provider, whether it is exported to an importer or kept private. A key that two imports export into
+one module fails `create` naming both when a provider or controller there injects it, the loader
+having no one answer to give; where startup cannot see the ambiguity, a lookup answers
+`ResolutionError::AmbiguousModule` rather than picking one.
 
-The framework keeps two meanings of *global* and only two. *Visibility*: a module's exports reach
-every module. *Application*: an enhancer runs on every dispatch target. Search is not a third
+The framework keeps two meanings of *global* and only two. *Visibility*: a global module's exports
+reach every module. *Application*: an enhancer runs on every dispatch target. Search is not a third
 meaning; after the narrowing it is a fallback into the first, which is what the new name says.
 
 **Lifecycle order is a contract.** Construction order is dependency order, and ties break by
@@ -78,11 +79,13 @@ rule above.
 
 ## Consequences
 
-- Two providers under one key, in one module or across two imports, fail `create` naming both.
+- Two providers under one key in one module fail `create` naming both, and so do two imports
+  exporting one key into a module where a provider or controller injects it.
 - Two contributions to `AppGuards`, in one module or in two, both run in declaration order, and so
   do two to `AppInterceptors`.
 - A provider in a module that exports nothing is unreachable from outside it, `.or_global()`
-  included.
+  included, and `.or_global()` reaches no export of a module that is not global, from an importer
+  either.
 - A provider's `on_module_init` runs after the init of every provider it injects, and its shutdown
   hooks run before theirs. Adding an unrelated provider changes neither.
 - `ModuleRef`'s `.global()` is renamed with no alias, the crate being unpublished.
