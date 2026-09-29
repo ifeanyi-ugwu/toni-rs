@@ -36,6 +36,7 @@ use crate::async_trait;
 use crate::context::ExecutionContext;
 use crate::di::Execution;
 use crate::di::ProviderScope;
+use crate::error::{BuildResult, ResolutionError};
 use crate::extract::FromContext;
 use crate::http::HttpContext;
 use crate::http::{PathParams, RequestPart};
@@ -58,17 +59,23 @@ impl Provider for Request {
         crate::di::token_of::<Request>()
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
-        let Execution::Http(http_ctx) = &ctx else {
-            panic!("Request provider requires an HTTP execution context");
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        let http_ctx = match &ctx {
+            Execution::Http(http_ctx) => http_ctx,
+            Execution::None => {
+                return Err(ResolutionError::ExecutionRequired {
+                    token: self.token(),
+                });
+            }
+            _ => panic!("Request provider requires an HTTP execution context"),
         };
         let cache = http_ctx.cache();
         if let Some(cached) = cache.get::<Request>() {
-            return Box::new(cached);
+            return Ok(Box::new(cached));
         }
         let instance = Request::from_parts(http_ctx.request());
         cache.insert(instance.clone());
-        Box::new(instance)
+        Ok(Box::new(instance))
     }
 
     fn scope(&self) -> ProviderScope {
@@ -152,9 +159,12 @@ impl ProviderFactory for RequestFactory {
     async fn build(
         &self,
         _deps: FxHashMap<String, crate::spi::Injectable>,
-    ) -> crate::spi::Injectable {
+    ) -> BuildResult<crate::spi::Injectable> {
         let (parts, ()) = http::Request::builder().body(()).unwrap().into_parts();
         let provider = Request::from_parts(&parts);
-        crate::spi::Injectable::new(Arc::new(Box::new(provider) as Box<dyn Provider>), vec![])
+        Ok(crate::spi::Injectable::new(
+            Arc::new(Box::new(provider) as Box<dyn Provider>),
+            vec![],
+        ))
     }
 }

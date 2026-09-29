@@ -87,18 +87,16 @@ impl UloApplicationContext {
     pub async fn get<T: 'static>(&self) -> Result<T, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
-        Execution::None.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(Execution::None).await, &token)
+        downcast(provider.resolve(Execution::None).await?, &token)
     }
 
     /// Returns an instance of `T` from a specific module's scope in the DI container
     pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_module(module_token, &token)?;
-        Execution::None.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(Execution::None).await, &token)
+        downcast(provider.resolve(Execution::None).await?, &token)
     }
 
     /// The module handle for `M`, found by its identity.
@@ -160,7 +158,7 @@ impl UloApplicationContext {
     async fn module_ref_for(&self, module_id: &str) -> Result<ModuleRef, ResolutionError> {
         let token = crate::di::token_of::<ModuleRef>();
         let provider = self.provider_in_module(module_id, &token)?;
-        downcast(provider.resolve(Execution::None).await, &token)
+        downcast(provider.resolve(Execution::None).await?, &token)
     }
 
     /// Returns the value under the marker `K`, searching across all modules. A slot holding a
@@ -188,9 +186,8 @@ impl UloApplicationContext {
     /// The value registered under `token`, searching across all modules.
     async fn get_under<T: 'static>(&self, token: String) -> Result<T, ResolutionError> {
         let provider = self.provider_in_any_module(&token)?;
-        Execution::None.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(Execution::None).await, &token)
+        downcast(provider.resolve(Execution::None).await?, &token)
     }
 
     /// The value registered under `token` in one module.
@@ -200,9 +197,8 @@ impl UloApplicationContext {
         token: String,
     ) -> Result<T, ResolutionError> {
         let provider = self.provider_in_module(module_token, &token)?;
-        Execution::None.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(Execution::None).await, &token)
+        downcast(provider.resolve(Execution::None).await?, &token)
     }
 
     /// Resolves a provider `T` in an execution.
@@ -229,9 +225,8 @@ impl UloApplicationContext {
     pub async fn resolve<T: 'static>(&self, execution: &Execution) -> Result<T, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
-        execution.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(execution.clone()).await, &token)
+        downcast(provider.resolve(execution.clone()).await?, &token)
     }
 
     /// Resolves the value under the marker `K` in an execution. See [`resolve`](Self::resolve)
@@ -252,9 +247,8 @@ impl UloApplicationContext {
         execution: &Execution,
     ) -> Result<T, ResolutionError> {
         let provider = self.provider_in_any_module(&token)?;
-        execution.ensure_can_build(provider.scope(), &token)?;
 
-        downcast(provider.resolve(execution.clone()).await, &token)
+        downcast(provider.resolve(execution.clone()).await?, &token)
     }
 
     pub async fn close(&mut self) {

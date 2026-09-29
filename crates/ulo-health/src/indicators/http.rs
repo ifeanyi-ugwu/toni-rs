@@ -6,8 +6,8 @@ use reqwest::{Client, Response};
 use serde_json::json;
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 use crate::health_check_result::{HealthEntry, HealthIndicatorResult};
@@ -156,11 +156,11 @@ impl ProviderFactory for HttpHealthIndicatorFactory {
         ulo::di::token_of::<HttpHealthIndicator>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let provider = HttpHealthIndicatorProvider {
             indicator: HttpHealthIndicator::new(),
         };
-        Injectable::new(Arc::new(Box::new(provider)), vec![])
+        Ok(Injectable::new(Arc::new(Box::new(provider)), vec![]))
     }
 }
 
@@ -174,7 +174,7 @@ impl Provider for HttpHealthIndicatorProvider {
         ulo::di::token_of::<HttpHealthIndicator>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.indicator.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.indicator.clone()))
     }
 }

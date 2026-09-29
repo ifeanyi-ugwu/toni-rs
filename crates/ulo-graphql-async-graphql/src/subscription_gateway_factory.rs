@@ -5,7 +5,7 @@ use crate::subscription_gateway::GraphQLSubscriptionGateway;
 use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use ulo::FxHashMap;
-use ulo::spi::{Injectable, ProviderFactory, ProviderRole};
+use ulo::spi::{BuildResult, Injectable, ProviderFactory, ProviderRole};
 use ulo::ws::Gateway;
 
 pub struct GraphQLSubscriptionGatewayFactory<Q, M, S>
@@ -49,7 +49,7 @@ where
         format!("GraphQLSubscriptionGateway_{}", self.path)
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let gateway = GraphQLSubscriptionGateway {
             schema: self.schema.clone(),
             context_builder: self.context_builder.clone(),
@@ -65,6 +65,6 @@ where
         let role = ProviderRole::Gateway(Arc::new(Box::new(gateway.clone()) as Box<dyn Gateway>));
         let instance = Arc::new(Box::new(gateway) as Box<dyn ulo::spi::Provider>);
 
-        Injectable::new(instance, vec![role])
+        Ok(Injectable::new(instance, vec![role]))
     }
 }

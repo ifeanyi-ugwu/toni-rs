@@ -67,26 +67,6 @@ impl Execution {
         }
     }
 
-    /// Refuses a provider whose scope this execution cannot satisfy.
-    ///
-    /// An execution-scoped instance lives in the execution's cache. Where there is no
-    /// execution there is nowhere to put it, and the generated provider panics on
-    /// the missing cache — so a caller resolving by hand checks here first and
-    /// returns the refusal instead.
-    pub(crate) fn ensure_can_build(
-        &self,
-        scope: crate::di::ProviderScope,
-        token: &str,
-    ) -> Result<(), crate::error::ResolutionError> {
-        if scope == crate::di::ProviderScope::Execution && self.cache().is_none() {
-            return Err(crate::error::ResolutionError::ExecutionRequired {
-                token: token.to_string(),
-            });
-        }
-
-        Ok(())
-    }
-
     /// The HTTP request parts, when this execution is an HTTP one.
     pub fn request_parts(&self) -> Option<&crate::http::RequestPart> {
         match self {

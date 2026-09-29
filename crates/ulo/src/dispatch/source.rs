@@ -44,7 +44,13 @@ impl<T: Any + Send + Sync> DispatchSource<T> {
         match self {
             Self::Singleton(instance) => Ok(instance.clone()),
             Self::PerCall(provider) => {
-                let any = provider.resolve(ctx).await;
+                // A live execution leaves the build nothing to refuse but a dependency the loader
+                // checked resolving to another type, which fails the call the way a panicking
+                // constructor does.
+                let any = provider
+                    .resolve(ctx)
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}"));
                 let built = *any
                     .downcast::<Result<Arc<T>, HookFailed>>()
                     .unwrap_or_else(|_| {

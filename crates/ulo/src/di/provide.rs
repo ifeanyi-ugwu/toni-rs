@@ -34,6 +34,7 @@ use rustc_hash::FxHashMap;
 use crate::di::binding::{Binding, FactoryBinding, Recast};
 use crate::di::collection::{Contribution, Source, declared_source};
 use crate::di::{DeclaresProvider, Execution, Key, ProviderScope, token_of};
+use crate::error::{BuildResult, ResolutionError};
 use crate::spi::{Injectable, Provider, ProviderFactory};
 
 pub(crate) type Built = FxHashMap<String, Arc<Box<dyn Provider>>>;
@@ -206,8 +207,8 @@ impl<V: Clone + Send + Sync + 'static> Provider for ValueProvider<V> {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new((*self.value).clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new((*self.value).clone()))
     }
 }
 
@@ -217,12 +218,12 @@ impl<V: Clone + Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
         token_of::<V>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let provider: Box<dyn Provider> = Box::new(ValueProvider {
             token: token_of::<V>(),
             value: Arc::new(self.value.clone()),
         });
-        Injectable::new(Arc::new(provider), Vec::new())
+        Ok(Injectable::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -263,8 +264,14 @@ pub trait IntoFactory<A>: Send + Sync + 'static {
     /// The token of every parameter, in order.
     fn dependency_tokens() -> Vec<String>;
 
-    /// Resolves the parameters from `built` inside `execution`, and calls the factory.
-    fn call<'a>(&'a self, built: &'a Built, execution: Execution) -> BoxFuture<'a, Self::Output>;
+    /// Resolves the parameters from `built` inside `execution`, and calls the factory. The first
+    /// parameter that cannot be resolved there answers with its failure, and the factory is not
+    /// called.
+    fn call<'a>(
+        &'a self,
+        built: &'a Built,
+        execution: Execution,
+    ) -> BoxFuture<'a, Result<Self::Output, ResolutionError>>;
 }
 
 macro_rules! into_factory {
@@ -283,10 +290,14 @@ macro_rules! into_factory {
             }
 
             #[allow(non_snake_case, unused_variables)]
-            fn call<'a>(&'a self, built: &'a Built, execution: Execution) -> BoxFuture<'a, R> {
+            fn call<'a>(
+                &'a self,
+                built: &'a Built,
+                execution: Execution,
+            ) -> BoxFuture<'a, Result<R, ResolutionError>> {
                 Box::pin(async move {
-                    $(let $arg = resolve_dependency::<$arg>(built, execution.clone()).await;)*
-                    (self)($($arg),*).await
+                    $(let $arg = resolve_dependency::<$arg>(built, execution.clone()).await?;)*
+                    Ok((self)($($arg),*).await)
                 })
             }
         }
@@ -308,16 +319,20 @@ into_factory!(A1, A2, A3, A4, A5, A6, A7, A8);
 /// The loader builds a declaration only after every token in `dependency_tokens` is built, so an
 /// entry is always present. A value of another type means some declaration registered it under a
 /// key spelling this type's name.
-async fn resolve_dependency<A: 'static>(built: &Built, execution: Execution) -> A {
+async fn resolve_dependency<A: 'static>(
+    built: &Built,
+    execution: Execution,
+) -> Result<A, ResolutionError> {
     let token = token_of::<A>();
     let provider = built
         .get(&token)
         .unwrap_or_else(|| panic!("the loader built `{token}` before its dependents"));
-    *provider
+    provider
         .resolve(execution)
-        .await
+        .await?
         .downcast::<A>()
-        .unwrap_or_else(|_| panic!("`{token}` is registered under a key naming another type"))
+        .map(|value| *value)
+        .map_err(|_| ResolutionError::TypeMismatch { token })
 }
 
 /// What [`Provide::factory`] declares: a singleton, built once at startup.
@@ -335,8 +350,8 @@ where
     A: 'static,
 {
     /// Built once inside each execution and shared by everything in it that asks: an injection
-    /// site receives a clone of the one instance. A lookup outside an execution is refused; a
-    /// singleton depending on it, built outside any execution, builds its own and caches nothing.
+    /// site receives a clone of the one instance. Outside an execution it answers
+    /// [`ResolutionError::ExecutionRequired`], and a singleton depending on it fails its build.
     pub fn per_execution(self) -> ScopedFactoryDeclaration<A, F>
     where
         F::Output: Clone,
@@ -378,14 +393,14 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
-        let value = Arc::new(self.factory.call(&built, Execution::None).await);
+        let value = Arc::new(self.factory.call(&built, Execution::None).await?);
         let provider: Box<dyn Provider> = Box::new(ValueProvider {
             token: token_of::<F::Output>(),
             value,
         });
-        Injectable::new(Arc::new(provider), Vec::new())
+        Ok(Injectable::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -414,8 +429,8 @@ impl<A: 'static, F: IntoFactory<A>> Declaration for FactoryDeclaration<A, F> {
                 build: Arc::new(move |built: Arc<Built>| {
                     let factory = factory.clone();
                     Box::pin(async move {
-                        let value = factory.call(&built, Execution::None).await;
-                        (cast(Arc::new(value)), None)
+                        let value = factory.call(&built, Execution::None).await?;
+                        Ok((cast(Arc::new(value)), None))
                     })
                 }),
             },
@@ -435,25 +450,27 @@ pub struct ScopedFactoryDeclaration<A, F: IntoFactory<A>> {
 
 /// Builds a `V` inside an execution, or hands back the one already built in it.
 pub trait MakeInExecution<V: ?Sized>: Send + Sync {
-    fn make(&self, execution: Execution) -> BoxFuture<'_, Arc<V>>;
+    fn make(&self, execution: Execution) -> BoxFuture<'_, Result<Arc<V>, ResolutionError>>;
 }
 
 /// The factory and what it was built after, which is what a per-execution build needs again.
 ///
 /// `cache_key` names this declaration alone: a token repeats across modules and is hidden by
 /// `under_key`, and an alias or a rebinding wraps this same `Maker`, so they share its instance.
+/// `token` is what a refusal outside an execution names.
 pub(crate) struct Maker<A, F> {
     factory: Arc<F>,
     built: Arc<Built>,
     cache_key: String,
     scope: ProviderScope,
+    token: String,
     _args: PhantomData<fn(A)>,
 }
 
 static SCOPED_DECLARATIONS: AtomicU64 = AtomicU64::new(0);
 
 impl<A: 'static, F: IntoFactory<A>> Maker<A, F> {
-    pub(crate) fn new(factory: Arc<F>, built: Built, scope: ProviderScope) -> Self {
+    pub(crate) fn new(factory: Arc<F>, built: Built, scope: ProviderScope, token: String) -> Self {
         Self {
             factory,
             built: Arc::new(built),
@@ -462,33 +479,41 @@ impl<A: 'static, F: IntoFactory<A>> Maker<A, F> {
                 SCOPED_DECLARATIONS.fetch_add(1, Ordering::Relaxed)
             ),
             scope,
+            token,
             _args: PhantomData,
         }
     }
 }
 
 impl<A: 'static, F: IntoFactory<A>> MakeInExecution<F::Output> for Maker<A, F> {
-    fn make(&self, execution: Execution) -> BoxFuture<'_, Arc<F::Output>> {
+    fn make(&self, execution: Execution) -> BoxFuture<'_, Result<Arc<F::Output>, ResolutionError>> {
         Box::pin(async move {
             // Per execution, the instance lives in the execution's cache under this declaration's
             // own key, since two declarations may build one type.
             let shared = match self.scope {
-                ProviderScope::Execution => execution.cache(),
+                ProviderScope::Execution => match execution.cache() {
+                    Some(cache) => Some(cache),
+                    None => {
+                        return Err(ResolutionError::ExecutionRequired {
+                            token: self.token.clone(),
+                        });
+                    }
+                },
                 _ => None,
             };
             if let Some(cached) = shared.and_then(|cache| cache.get_keyed(&self.cache_key)) {
                 if let Ok(value) = cached.downcast::<F::Output>() {
-                    return value;
+                    return Ok(value);
                 }
             }
-            let value = Arc::new(self.factory.call(&self.built, execution.clone()).await);
-            match shared {
+            let value = Arc::new(self.factory.call(&self.built, execution.clone()).await?);
+            Ok(match shared {
                 Some(cache) => cache
                     .insert_keyed(&self.cache_key, value.clone())
                     .downcast::<F::Output>()
                     .unwrap_or(value),
                 None => value,
-            }
+            })
         })
     }
 }
@@ -510,8 +535,8 @@ impl<V: Send + Sync + 'static> Provider for ScopedProvider<V> {
         self.scope
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new((self.take)(self.make.make(ctx).await))
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new((self.take)(self.make.make(ctx).await?)))
     }
 }
 
@@ -529,17 +554,21 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
-        let make: Arc<dyn MakeInExecution<F::Output>> =
-            Arc::new(Maker::new(self.factory.clone(), built, self.scope));
+        let make: Arc<dyn MakeInExecution<F::Output>> = Arc::new(Maker::new(
+            self.factory.clone(),
+            built,
+            self.scope,
+            token_of::<F::Output>(),
+        ));
         let provider: Box<dyn Provider> = Box::new(ScopedProvider {
             token: token_of::<F::Output>(),
             scope: self.scope,
             make,
             take: self.take,
         });
-        Injectable::new(Arc::new(provider), Vec::new())
+        Ok(Injectable::new(Arc::new(provider), Vec::new()))
     }
 }
 
@@ -569,7 +598,7 @@ impl<T: DeclaresProvider + 'static> ProviderFactory for Declared<T> {
         T::provider_factory().identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         T::provider_factory().build(deps).await
     }
 }
@@ -611,7 +640,7 @@ impl ProviderFactory for AliasDeclaration {
         vec![self.existing.clone()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let Injectable { instance, roles } = deps
             .get(&self.existing)
             .cloned()
@@ -621,7 +650,7 @@ impl ProviderFactory for AliasDeclaration {
             inner: instance,
             stands_in: false,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }
 
@@ -646,8 +675,22 @@ impl Provider for Rekeyed {
         self.inner.scope()
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
-        self.inner.resolve(ctx).await
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        self.inner.resolve(ctx).await.map_err(|error| match error {
+            // A stand-in's inner provider is registered under no token of its own, so a refusal
+            // naming that provider names this slot. Only an execution-scoped inner refuses on its
+            // own account; a refusal passing through any other names a dependency.
+            ResolutionError::ExecutionRequired { token }
+                if self.stands_in
+                    && self.inner.scope() == ProviderScope::Execution
+                    && token == self.inner.token() =>
+            {
+                ResolutionError::ExecutionRequired {
+                    token: self.token.clone(),
+                }
+            }
+            other => other,
+        })
     }
 
     async fn on_module_init(&self) -> crate::di::InitResult {
@@ -736,13 +779,13 @@ impl<F: ProviderFactory> ProviderFactory for Under<F> {
         self.inner.identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let Injectable { instance, roles } = self.inner.build(deps).await;
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        let Injectable { instance, roles } = self.inner.build(deps).await?;
         let provider: Box<dyn Provider> = Box::new(Rekeyed {
             token: self.token.clone(),
             inner: instance,
             stands_in: true,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }

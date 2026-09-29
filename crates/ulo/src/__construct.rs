@@ -25,21 +25,27 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use crate::di::Execution;
+use crate::error::ResolutionError;
 use crate::spi::Provider;
 
 /// The already-built dependency providers passed to a factory's `build`, keyed by token.
 pub type ResolvedDeps = FxHashMap<String, Arc<Box<dyn Provider>>>;
 
 /// A `#[new]` constructor: `tokens` returns its dependency tokens (so the factory can declare
-/// them), and `build` resolves those dependencies and calls it.
+/// them), and `build` resolves those dependencies and calls it, or answers the first one that
+/// cannot be resolved.
 ///
-/// The context parameter carries the execution being served, so a constructor parameter that is
-/// itself execution-scoped resolves in that same execution; it is `Execution::None` for
-/// construction outside any execution, matching the field-injection paths.
+/// The context parameter carries the execution being served, and every constructor parameter
+/// resolves in it: an execution-scoped one shares the execution's instance, and a transient one
+/// builds what it injects there. It is `Execution::None` for construction outside any execution,
+/// matching the field-injection paths.
 pub struct Ctor<T> {
     pub tokens: fn() -> Vec<String>,
-    pub build:
-        for<'a> fn(&'a ResolvedDeps, Execution) -> Pin<Box<dyn Future<Output = T> + Send + 'a>>,
+    pub build: for<'a> fn(
+        &'a ResolvedDeps,
+        Execution,
+    )
+        -> Pin<Box<dyn Future<Output = Result<T, ResolutionError>> + Send + 'a>>,
 }
 
 /// The blanket "no constructor" default, implemented for every type. `#[new]` shadows it with an

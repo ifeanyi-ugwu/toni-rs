@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 use redis::aio::ConnectionManager;
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
 
@@ -51,17 +51,17 @@ impl ProviderFactory for RedisHealthIndicatorFactory {
         vec![ulo::di::token_of::<ConnectionManager>()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let token = ulo::di::token_of::<ConnectionManager>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
             .instance
             .clone();
-        Injectable::new(
+        Ok(Injectable::new(
             Arc::new(Box::new(RedisHealthProvider { connection })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -78,11 +78,46 @@ impl Provider for RedisHealthProvider {
         ulo::di::token_of::<RedisHealthIndicator>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        let resolved = self.connection.resolve(Execution::None).await;
-        let manager = *resolved
-            .downcast::<ConnectionManager>()
-            .expect("the registered connection provider yields a ConnectionManager");
-        Box::new(RedisHealthIndicator { manager })
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        let resolved = self.connection.resolve(Execution::None).await?;
+        let manager = *resolved.downcast::<ConnectionManager>().map_err(|_| {
+            ResolutionError::TypeMismatch {
+                token: ulo::di::token_of::<ConnectionManager>(),
+            }
+        })?;
+        Ok(Box::new(RedisHealthIndicator { manager }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection provider answering a value of another type.
+    struct Mistyped;
+
+    #[async_trait]
+    impl Provider for Mistyped {
+        fn token(&self) -> String {
+            ulo::di::token_of::<ConnectionManager>()
+        }
+
+        async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+            Ok(Box::new(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_of_another_type_is_a_type_mismatch() {
+        let provider = RedisHealthProvider {
+            connection: Arc::new(Box::new(Mistyped)),
+        };
+        match provider.resolve(Execution::None).await {
+            Err(ResolutionError::TypeMismatch { token }) => {
+                assert_eq!(token, ulo::di::token_of::<ConnectionManager>())
+            }
+            Ok(_) => panic!("a value of another type is not the connection"),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
     }
 }

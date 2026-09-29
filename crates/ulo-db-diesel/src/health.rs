@@ -8,8 +8,8 @@ use futures::future::BoxFuture;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
@@ -67,14 +67,14 @@ macro_rules! impl_diesel_health {
                 vec![ulo::di::token_of::<$pool>()]
             }
 
-            async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+            async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
                 let token = ulo::di::token_of::<$pool>();
                 let connection = deps
                     .get(&token)
                     .expect("the health indicator is registered alongside the pool it checks")
                     .instance
                     .clone();
-                Injectable::new(Arc::new(Box::new($provider { connection })), vec![])
+                Ok(Injectable::new(Arc::new(Box::new($provider { connection })), vec![]))
             }
         }
 
@@ -95,15 +95,17 @@ macro_rules! impl_diesel_health {
             async fn resolve(
                 &self,
                 _ctx: Execution,
-            ) -> Box<dyn Any + Send> {
+            ) -> Result<Box<dyn Any + Send>, ResolutionError> {
                 let resolved = self
                     .connection
                     .resolve(Execution::None)
-                    .await;
+                    .await?;
                 let pool = *resolved
                     .downcast::<$pool>()
-                    .expect("the registered pool provider yields a Pool");
-                Box::new($indicator { pool })
+                    .map_err(|_| ResolutionError::TypeMismatch {
+                        token: ulo::di::token_of::<$pool>(),
+                    })?;
+                Ok(Box::new($indicator { pool }))
             }
         }
     };
@@ -126,3 +128,45 @@ impl_diesel_health!(
     diesel_async::AsyncMysqlConnection,
     diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncMysqlConnection>
 );
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+
+    /// A pool provider answering a value of another type.
+    struct Mistyped;
+
+    #[async_trait]
+    impl Provider for Mistyped {
+        fn token(&self) -> String {
+            ulo::di::token_of::<
+                diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>,
+            >()
+        }
+
+        async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+            Ok(Box::new(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_of_another_type_is_a_type_mismatch() {
+        let provider = PgHealthProvider {
+            connection: Arc::new(Box::new(Mistyped)),
+        };
+        match provider.resolve(Execution::None).await {
+            Err(ResolutionError::TypeMismatch { token }) => {
+                assert_eq!(
+                    token,
+                    ulo::di::token_of::<
+                        diesel_async::pooled_connection::deadpool::Pool<
+                            diesel_async::AsyncPgConnection,
+                        >,
+                    >()
+                )
+            }
+            Ok(_) => panic!("a value of another type is not the pool"),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+}

@@ -5,8 +5,8 @@ use parking_lot::Mutex;
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use ulo::{
     FxHashMap, StartupCheck,
-    di::Execution,
-    spi::{Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Provider, ProviderFactory},
 };
 
 pub(crate) struct SeaOrmConnectionFactory {
@@ -27,7 +27,10 @@ impl ProviderFactory for SeaOrmConnectionFactory {
         Some(self.database_url.clone())
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> ulo::spi::Injectable {
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<ulo::spi::Injectable> {
         // Configured lazily, with the check's deadline handed to the driver: sea-orm's own
         // connect and acquire timeouts are what bound the probe, so nothing here needs a timer.
         // What is left at build time is URL parsing, which needs no network.
@@ -39,8 +42,8 @@ impl ProviderFactory for SeaOrmConnectionFactory {
                 .acquire_timeout(check.attempt_timeout());
         }
 
-        // `build` returns the instance directly, so a failure is carried into the provider and
-        // reported from `on_module_init`, which can return it.
+        // A failure is carried into the provider and reported from `on_module_init` with the
+        // startup check's, so either arrives as `StartupError::HookFailed`.
         let (db, init_error) = match Database::connect(options).await {
             Ok(db) => (Some(db), None),
             Err(e) => (
@@ -53,7 +56,7 @@ impl ProviderFactory for SeaOrmConnectionFactory {
             ),
         };
 
-        ulo::spi::Injectable::new(
+        Ok(ulo::spi::Injectable::new(
             Arc::new(Box::new(SeaOrmConnectionProvider {
                 db: Mutex::new(db),
                 init_error,
@@ -62,7 +65,7 @@ impl ProviderFactory for SeaOrmConnectionFactory {
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -84,7 +87,7 @@ impl Provider for SeaOrmConnectionProvider {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         // DatabaseConnection is Clone — it wraps a connection pool internally.
         let db = self
             .db
@@ -92,7 +95,7 @@ impl Provider for SeaOrmConnectionProvider {
             .as_ref()
             .expect("database connection unavailable")
             .clone();
-        Box::new(db)
+        Ok(Box::new(db))
     }
 
     async fn on_module_init(&self) -> ulo::di::InitResult {

@@ -6,8 +6,8 @@ use serde_json::json;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 use crate::health_check_result::{HealthEntry, HealthIndicatorResult};
@@ -121,8 +121,11 @@ impl ProviderFactory for MemoryHealthIndicatorFactory {
         ulo::di::token_of::<MemoryHealthIndicator>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(Arc::new(Box::new(MemoryHealthIndicatorProvider)), vec![])
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
+            Arc::new(Box::new(MemoryHealthIndicatorProvider)),
+            vec![],
+        ))
     }
 }
 
@@ -134,7 +137,7 @@ impl Provider for MemoryHealthIndicatorProvider {
         ulo::di::token_of::<MemoryHealthIndicator>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(MemoryHealthIndicator)
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(MemoryHealthIndicator))
     }
 }

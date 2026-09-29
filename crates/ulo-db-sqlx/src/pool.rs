@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use sqlx::{Database, Pool, pool::PoolOptions};
 use ulo::{
     FxHashMap, StartupCheck,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 pub(crate) struct SqlxPoolFactory<DB: Database> {
@@ -38,13 +38,16 @@ where
         Some(self.url.clone())
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> Injectable {
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<Injectable> {
         // Configured lazily: the server is contacted by the startup check, so every integration
         // reaches an unreachable one on the same schedule rather than on its driver's. What is
         // left here is URL parsing, which needs no network.
         //
-        // `build` returns the instance directly, so a failure is carried into the provider and
-        // reported from `on_module_init`, which can return it.
+        // A failure is carried into the provider and reported from `on_module_init` with the
+        // startup check's, so either arrives as `StartupError::HookFailed`.
         let mut options = PoolOptions::<DB>::new();
         if let Some(check) = &self.check {
             options = options.acquire_timeout(check.attempt_timeout());
@@ -61,7 +64,7 @@ where
             ),
         };
 
-        Injectable::new(
+        Ok(Injectable::new(
             Arc::new(Box::new(SqlxPoolProvider {
                 pool,
                 init_error,
@@ -70,7 +73,7 @@ where
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -100,9 +103,11 @@ where
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         // Pool<DB> is Arc-backed; cloning is cheap and shares the same connection pool.
-        Box::new(self.pool.clone().expect("database pool unavailable"))
+        Ok(Box::new(
+            self.pool.clone().expect("database pool unavailable"),
+        ))
     }
     async fn on_module_init(&self) -> ulo::di::InitResult {
         if let Some(message) = &self.init_error {

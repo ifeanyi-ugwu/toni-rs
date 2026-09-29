@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use mongodb::{Client, Database, options::ClientOptions};
 use ulo::{
     FxHashMap, StartupCheck,
-    di::Execution,
-    spi::{Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Provider, ProviderFactory},
 };
 
 pub(crate) struct MongoConnectionFactory {
@@ -27,10 +27,13 @@ impl ProviderFactory for MongoConnectionFactory {
         Some(format!("{}/{}", self.uri, self.db_name))
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> ulo::spi::Injectable {
-        // `build` returns the instance directly, so a failure is carried into the provider and
-        // reported from `on_module_init`, which can return it. The driver connects lazily, so
-        // only URI parsing and client construction are checked here.
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<ulo::spi::Injectable> {
+        // A failure is carried into the provider and reported from `on_module_init` with the
+        // startup check's, so either arrives as `StartupError::HookFailed`. The driver connects
+        // lazily, so only URI parsing and client construction are checked here.
         let (client, init_error) = match ClientOptions::parse(&self.uri).await.map(|mut o| {
             if let Some(check) = &self.check {
                 o.server_selection_timeout = Some(check.attempt_timeout());
@@ -56,7 +59,7 @@ impl ProviderFactory for MongoConnectionFactory {
         };
         let db = client.as_ref().map(|c| c.database(&self.db_name));
 
-        ulo::spi::Injectable::new(
+        Ok(ulo::spi::Injectable::new(
             Arc::new(Box::new(MongoConnectionProvider {
                 client,
                 db,
@@ -66,7 +69,7 @@ impl ProviderFactory for MongoConnectionFactory {
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -89,9 +92,11 @@ impl Provider for MongoConnectionProvider {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         // Database is Clone (Arc-backed); cloning shares the same connection pool.
-        Box::new(self.db.clone().expect("mongo database unavailable"))
+        Ok(Box::new(
+            self.db.clone().expect("mongo database unavailable"),
+        ))
     }
 
     async fn on_module_init(&self) -> ulo::di::InitResult {

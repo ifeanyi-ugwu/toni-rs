@@ -75,10 +75,12 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         fn #build_fn<'a>(
             deps: &'a ::ulo::__construct::ResolvedDeps,
             __exec_ctx: ::ulo::di::Execution,
-        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self> + Send + 'a>> {
+        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
+            Output = ::std::result::Result<Self, ::ulo::di::ResolutionError>,
+        > + Send + 'a>> {
             ::std::boxed::Box::pin(async move {
                 #(#resolutions)*
-                Self::#method_name(#(#arg_names),*)
+                ::std::result::Result::Ok(Self::#method_name(#(#arg_names),*))
             })
         }
     })
@@ -118,10 +120,9 @@ fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStr
     Ok(None)
 }
 
-/// Resolve one constructor parameter from the dependency map, scope-aware: an execution-scoped
-/// parameter is resolved in the active execution (threaded via `__exec_ctx`),
-/// anything else with `Execution::None` — mirroring the field-injection
-/// paths. Panics with a clear message on a missing dep or absent request context.
+/// Resolve one constructor parameter from the dependency map, in the execution the instance is
+/// built in (`__exec_ctx`, `None` at startup) — mirroring the field-injection paths. A parameter
+/// that cannot be resolved there answers with its failure, and the constructor is not called.
 fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     // A collection answers its items erased; the path below downcasts to the parameter's own type.
     if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
@@ -131,13 +132,7 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
             &inner_trait,
             token,
             quote! { deps },
-            quote! {
-                if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-                    __exec_ctx.clone()
-                } else {
-                    ::ulo::di::Execution::None
-                }
-            },
+            quote! { __exec_ctx.clone() },
         );
     }
     let name_str = name.to_string();
@@ -150,18 +145,12 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
                     "Missing dependency '{}' for #[new] parameter '{}'",
                     __lookup_token, #name_str
                 ));
-            let __ctx = if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
-                __exec_ctx.clone()
-            } else {
-                ::ulo::di::Execution::None
-            };
             let __any = __provider
-                .resolve(__ctx)
-                .await;
-            *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
-                "Failed to downcast '{}' to {} for #[new] parameter '{}'",
-                __lookup_token, stringify!(#ty), #name_str
-            ))
+                .resolve(__exec_ctx.clone())
+                .await?;
+            *__any.downcast::<#ty>().map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                token: __lookup_token.clone(),
+            })?
         };
     }
 }

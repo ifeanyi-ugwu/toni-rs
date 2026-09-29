@@ -175,13 +175,11 @@ impl UloFactory {
     ///
     /// [`StartupError::Setup`] when the module graph does not resolve: an
     /// unresolvable dependency, a provider cycle, or a global-export clash
-    /// between two modules. [`StartupError::HookFailed`] when an
-    /// `on_module_init` hook returns an error, naming the module and hook.
-    ///
-    /// A provider whose factory cannot build its instance panics instead —
-    /// `ProviderFactory::build` returns the instance directly and has nowhere
-    /// to put an error, so a database module that cannot connect ends the
-    /// process here rather than returning.
+    /// between two modules. [`StartupError::BuildFailed`] when a provider or
+    /// controller cannot be built, such as a singleton injecting an
+    /// execution-scoped provider, naming it and its module.
+    /// [`StartupError::HookFailed`] when an `on_module_init` hook returns an
+    /// error, naming the module and hook.
     pub async fn create_with(
         &self,
         module: impl ModuleMetadata + 'static,
