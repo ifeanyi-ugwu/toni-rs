@@ -60,7 +60,7 @@ impl From<LoadError> for Box<dyn std::error::Error + Send + Sync + 'static> {
 type LoadResult<T> = std::result::Result<T, LoadError>;
 
 use super::{
-    Container, DependencyGraph, FxIndexMap, find_dependency_cycle,
+    Container, DependencyGraph, FxIndexMap, cycle_message, find_dependency_cycle,
     multi_collection_provider::MultiCollectionProvider,
 };
 use crate::{
@@ -405,20 +405,7 @@ impl InstanceLoader {
         let (adjacency, token_module) = self.build_provider_dependency_graph();
 
         if let Some(cycle) = find_dependency_cycle(&adjacency) {
-            let chain = cycle
-                .iter()
-                .map(|token| match token_module.get(token) {
-                    Some(module) => format!("{token} (in module {module})"),
-                    None => token.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n    -> ");
-            return format!(
-                "Circular dependency detected between providers:\n    {chain}\n\
-                 A provider cannot be built before a provider it depends on. Break the cycle: \
-                 extract the shared logic into a third provider both depend on, or inject \
-                 `ModuleRef` into one side and resolve the other lazily at call time."
-            );
+            return cycle_message(&cycle, |token| token_module.get(token).map(String::as_str));
         }
 
         let mut details = String::new();

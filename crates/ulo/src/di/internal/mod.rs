@@ -19,7 +19,7 @@ mod module;
 mod multi_collection_provider;
 
 mod dependency_graph;
-pub(crate) use self::dependency_graph::{DependencyGraph, find_dependency_cycle};
+pub(crate) use self::dependency_graph::{DependencyGraph, cycle_message, find_dependency_cycle};
 
 mod module_ref;
 pub use self::module_ref::ModuleRef;
