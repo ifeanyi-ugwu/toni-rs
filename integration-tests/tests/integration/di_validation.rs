@@ -6,7 +6,12 @@
 //! invisible at runtime — the application serves correctly until two requests
 //! disagree — so it is refused when the graph is built.
 use ulo::di::Execution;
-use ulo::{UloFactory, injectable, module};
+use ulo::enhancer::Guard;
+use ulo::http::{Body, HttpContext};
+use ulo::{UloFactory, async_trait, controller, get, injectable, module, new, routes};
+
+use crate::common::TestServer;
+
 #[tokio::test]
 async fn valid_singleton_injects_singleton() {
     #[injectable]
@@ -196,4 +201,109 @@ async fn explicit_singleton_with_request_fails() {
     impl TestModule {}
 
     let _app = UloFactory::create(TestModule).await.unwrap();
+}
+
+#[injectable(scope = "execution")]
+pub struct PerCall {}
+
+#[injectable(scope = "transient")]
+pub struct Between {
+    #[inject]
+    per_call: PerCall,
+}
+
+#[controller("/per-call-reaches", scope = "execution")]
+pub struct PerCallReaches {
+    #[inject]
+    between: Between,
+}
+
+#[routes]
+impl PerCallReaches {
+    #[get("/")]
+    fn show(&self) -> Body {
+        let _ = &self.between;
+        Body::text("built")
+    }
+}
+
+#[module(controllers: [PerCallReaches], providers: [PerCall, Between])]
+struct PerCallControllerThroughATransient;
+
+#[tokio::test]
+async fn a_controller_built_per_call_reaches_one_through_a_transient() {
+    let server = TestServer::start(PerCallControllerThroughATransient).await;
+    let response = server
+        .client()
+        .get(server.url("/per-call-reaches"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{:?}", response.text().await);
+}
+
+#[injectable(scope = "execution")]
+pub struct ConstructedPerCall {
+    between: Between,
+}
+
+impl ConstructedPerCall {
+    #[new]
+    fn new(between: Between) -> Self {
+        Self { between }
+    }
+}
+
+#[module(providers: [PerCall, Between, ConstructedPerCall])]
+struct ConstructorThroughATransient;
+
+#[tokio::test]
+async fn a_constructor_built_per_call_reaches_one_through_a_transient() {
+    let app = UloFactory::create(ConstructorThroughATransient)
+        .await
+        .unwrap();
+    app.resolve::<ConstructedPerCall>(&Execution::standalone())
+        .await
+        .expect("the transient parameter is built in the same execution");
+}
+
+#[injectable(scope = "execution")]
+pub struct ReachingGuard {
+    #[inject]
+    between: Between,
+}
+
+#[async_trait]
+impl Guard<HttpContext> for ReachingGuard {
+    async fn can_activate(&self, _ctx: &HttpContext) -> bool {
+        let _ = &self.between;
+        true
+    }
+}
+
+#[controller("/guarded")]
+pub struct Guarded {}
+
+#[routes]
+#[use_guards(ReachingGuard)]
+impl Guarded {
+    #[get("/")]
+    fn show(&self) -> Body {
+        Body::text("admitted")
+    }
+}
+
+#[module(controllers: [Guarded], providers: [PerCall, Between, ReachingGuard])]
+struct GuardThroughATransient;
+
+#[tokio::test]
+async fn a_guard_built_per_call_reaches_one_through_a_transient() {
+    let server = TestServer::start(GuardThroughATransient).await;
+    let response = server
+        .client()
+        .get(server.url("/guarded"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{:?}", response.text().await);
 }
