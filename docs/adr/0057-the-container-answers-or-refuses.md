@@ -66,10 +66,12 @@ meaning; after the narrowing it is a fallback into the first, which is what the 
 **Lifecycle order is a contract.** Construction order is dependency order, and ties break by
 declaration order: walk the declaration list in order, and before emitting a provider emit
 everything it injects, so a module written in a valid order gets back exactly what it declared.
-Hooks follow construction order. Shutdown runs in the exact reverse. The container's module map and
-each module's provider, provider-instance and controller maps become insertion-ordered maps with the
-same hasher. A hash map promises no order, which is correct for a pure lookup and wrong once
-iteration carries a contract; the maps keyed by `TypeId` are lookups only and stay as they are.
+Hooks follow construction order. Shutdown runs in the exact reverse. A module's own hooks sit
+outside construction order, the loader building no module: in every phase they run ahead of every
+provider's, at startup and at shutdown. The container's module map and each module's provider,
+provider-instance and controller maps become insertion-ordered maps with the same hasher. A hash
+map promises no order, which is correct for a pure lookup and wrong once iteration carries a
+contract; the maps keyed by `TypeId` are lookups only and stay as they are.
 
 This record refines ADR-0029, which decided the global-export clash: that refusal is one case of the
 rule above.

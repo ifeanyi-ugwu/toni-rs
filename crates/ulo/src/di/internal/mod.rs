@@ -4,6 +4,12 @@
 //! Nothing here is nameable from outside the crate, and `ModuleRef` is the one type that leaves —
 //! re-exported by `di` as the handle a caller resolves against.
 
+/// A map that iterates in insertion order, with the hasher the other maps use. The module map and
+/// each module's provider, provider-instance and controller maps are these: the loader builds in
+/// their order and the lifecycle hooks follow it (ADR-0057). The engine's other maps promise no
+/// order.
+pub(crate) type FxIndexMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
+
 mod container;
 pub(crate) use self::container::{Container, ModuleLifecycle};
 

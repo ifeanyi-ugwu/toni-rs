@@ -14,6 +14,7 @@ use crate::{
 
 use crate::dispatch::registry::RoleRegistry;
 
+use super::FxIndexMap;
 use super::module::Module;
 use crate::di::ProviderScope;
 use crate::http::RoutePipeline;
@@ -28,7 +29,12 @@ pub(crate) struct ModuleLifecycle {
 }
 
 pub struct Container {
-    modules: FxHashMap<String, Module>,
+    modules: FxIndexMap<String, Module>,
+    /// Modules in the order the loader finished building their providers. The loader takes
+    /// imports before importers and retries a module waiting on a provider not yet built in a later
+    /// pass, so a module finishes after every module whose providers it injects. The lifecycle hooks
+    /// walk it, and shutdown walks it back.
+    construction_order: Vec<String>,
     middleware_manager: Option<MiddlewareManager>,
     /// Global provider registry - providers from modules marked as global
     global_providers: FxHashMap<String, Arc<Box<dyn Provider>>>,
@@ -68,7 +74,8 @@ impl Default for Container {
 impl Container {
     pub fn new() -> Self {
         Self {
-            modules: FxHashMap::default(),
+            modules: FxIndexMap::default(),
+            construction_order: Vec::new(),
             middleware_manager: Some(MiddlewareManager::new()),
             global_http: EnhancerSet::default(),
             global_rpc: EnhancerSet::default(),
@@ -221,9 +228,8 @@ impl Container {
         Ok(())
     }
 
-    /// Every provider instance a module's lifecycle hooks must reach. Controllers are held
-    /// separately and iterated beside these.
-    /// One module's hook-carrying handles, cloned out of the container.
+    /// One module's hook-carrying handles, cloned out of the container: providers in the order the
+    /// loader built them, controllers in the order they are declared.
     ///
     /// Every lifecycle hook is awaited and the container sits behind a lock, so a caller
     /// takes the handles and releases the lock rather than holding it across each await.
@@ -360,7 +366,7 @@ impl Container {
     pub fn provider_factories(
         &self,
         module_ref_token: &String,
-    ) -> SetupResult<&FxHashMap<String, Arc<dyn ProviderFactory>>> {
+    ) -> SetupResult<&FxIndexMap<String, Arc<dyn ProviderFactory>>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -371,7 +377,7 @@ impl Container {
     pub fn controller_factories(
         &self,
         module_ref_token: &String,
-    ) -> SetupResult<&FxHashMap<String, Arc<dyn ControllerFactory>>> {
+    ) -> SetupResult<&FxIndexMap<String, Arc<dyn ControllerFactory>>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -382,7 +388,7 @@ impl Container {
     pub fn get_provider_instances(
         &self,
         module_ref_token: &String,
-    ) -> SetupResult<&FxHashMap<String, Arc<Box<dyn Provider>>>> {
+    ) -> SetupResult<&FxIndexMap<String, Arc<Box<dyn Provider>>>> {
         let module_ref = self
             .modules
             .get(module_ref_token)
@@ -454,6 +460,16 @@ impl Container {
 
     pub fn module_tokens(&self) -> Vec<String> {
         self.modules.keys().cloned().collect::<Vec<String>>()
+    }
+
+    /// Record that the loader has built every provider of `module_token`.
+    pub(crate) fn record_construction(&mut self, module_token: &str) {
+        self.construction_order.push(module_token.to_string());
+    }
+
+    /// Modules in construction order, which the lifecycle hooks follow (ADR-0057).
+    pub(crate) fn modules_in_construction_order(&self) -> Vec<String> {
+        self.construction_order.clone()
     }
 
     pub fn ordered_module_tokens(&self) -> Vec<String> {

@@ -46,7 +46,7 @@ impl From<LoadError> for Box<dyn std::error::Error + Send + Sync + 'static> {
 type LoadResult<T> = std::result::Result<T, LoadError>;
 
 use super::{
-    Container, DependencyGraph, find_dependency_cycle,
+    Container, DependencyGraph, FxIndexMap, find_dependency_cycle,
     multi_collection_provider::MultiCollectionProvider,
 };
 use crate::{
@@ -107,9 +107,9 @@ impl InstanceLoader {
                 {
                     Ok(_) => {
                         // Module providers created successfully - register its global providers
-                        self.container
-                            .write()
-                            .register_global_providers(module_token)?;
+                        let mut container = self.container.write();
+                        container.register_global_providers(module_token)?;
+                        container.record_construction(module_token);
                         successfully_created.push(module_token.clone());
                     }
                     Err(LoadError::Deferred(reason)) => {
@@ -155,7 +155,11 @@ impl InstanceLoader {
             let mut store = store_arc.write();
             for module_token in &modules_order {
                 if let Ok(instances) = container.get_provider_instances(module_token) {
-                    store.insert(module_token.clone(), instances.clone());
+                    let instances = instances
+                        .iter()
+                        .map(|(token, instance)| (token.clone(), instance.clone()))
+                        .collect();
+                    store.insert(module_token.clone(), instances);
                 }
             }
         }
@@ -289,7 +293,8 @@ impl InstanceLoader {
         let dependency_graph = DependencyGraph::new(self.container.clone(), module_token.clone());
         let ordered_providers_token = dependency_graph.ordered_provider_tokens()?;
         let provider_instances = {
-            let mut instances: FxHashMap<String, Injectable> = FxHashMap::default();
+            // In build order, which the module's instance map keeps and the hooks walk.
+            let mut instances: FxIndexMap<String, Injectable> = FxIndexMap::default();
 
             for provider_token in ordered_providers_token {
                 // The factory is taken as a handle and the lock released: `build` is
@@ -397,7 +402,7 @@ impl InstanceLoader {
     fn add_providers_instances(
         &self,
         module_token: &String,
-        providers_instances: FxHashMap<String, Injectable>,
+        providers_instances: FxIndexMap<String, Injectable>,
     ) -> SetupResult {
         let mut container = self.container.write();
         let mut providers_tokens = Vec::new();
@@ -554,7 +559,7 @@ impl InstanceLoader {
         &self,
         module_token: &String,
         dependencies: Vec<String>,
-        providers_instances: Option<&FxHashMap<String, Injectable>>,
+        providers_instances: Option<&FxIndexMap<String, Injectable>>,
     ) -> LoadResult<FxHashMap<String, Injectable>> {
         let container = self.container.read();
         let mut resolved_dependencies = FxHashMap::default();
