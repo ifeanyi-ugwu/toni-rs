@@ -80,9 +80,11 @@ impl Provider for SeaOrmHealthProvider {
 
     async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         let resolved = self.connection.resolve(Execution::None).await?;
-        let db = *resolved
-            .downcast::<DatabaseConnection>()
-            .expect("the registered connection provider yields a DatabaseConnection");
+        let db = *resolved.downcast::<DatabaseConnection>().map_err(|_| {
+            ResolutionError::TypeMismatch {
+                token: ulo::di::token_of::<DatabaseConnection>(),
+            }
+        })?;
         Ok(Box::new(SeaOrmHealthIndicator { db }))
     }
 }

@@ -129,7 +129,9 @@ where
         let resolved = self.connection.resolve(Execution::None).await?;
         let pool = *resolved
             .downcast::<Pool<DB>>()
-            .expect("the registered pool provider yields a Pool");
+            .map_err(|_| ResolutionError::TypeMismatch {
+                token: ulo::di::token_of::<Pool<DB>>(),
+            })?;
         Ok(Box::new(SqlxHealthIndicator { pool }))
     }
 }

@@ -80,9 +80,11 @@ impl Provider for RedisHealthProvider {
 
     async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         let resolved = self.connection.resolve(Execution::None).await?;
-        let manager = *resolved
-            .downcast::<ConnectionManager>()
-            .expect("the registered connection provider yields a ConnectionManager");
+        let manager = *resolved.downcast::<ConnectionManager>().map_err(|_| {
+            ResolutionError::TypeMismatch {
+                token: ulo::di::token_of::<ConnectionManager>(),
+            }
+        })?;
         Ok(Box::new(RedisHealthIndicator { manager }))
     }
 }

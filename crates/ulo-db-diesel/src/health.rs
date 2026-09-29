@@ -102,7 +102,9 @@ macro_rules! impl_diesel_health {
                     .await?;
                 let pool = *resolved
                     .downcast::<$pool>()
-                    .expect("the registered pool provider yields a Pool");
+                    .map_err(|_| ResolutionError::TypeMismatch {
+                        token: ulo::di::token_of::<$pool>(),
+                    })?;
                 Ok(Box::new($indicator { pool }))
             }
         }

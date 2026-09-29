@@ -82,7 +82,9 @@ impl Provider for MongoHealthProvider {
         let resolved = self.connection.resolve(Execution::None).await?;
         let db = *resolved
             .downcast::<Database>()
-            .expect("the registered connection provider yields a Database");
+            .map_err(|_| ResolutionError::TypeMismatch {
+                token: ulo::di::token_of::<Database>(),
+            })?;
         Ok(Box::new(MongoHealthIndicator { db }))
     }
 }
