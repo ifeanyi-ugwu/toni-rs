@@ -302,7 +302,11 @@ fn generate_execution_provider(
     provider_name: &Ident,
     dependencies: &DependencyInfo,
 ) -> TokenStream {
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+    let (field_resolutions, field_names) = field_resolutions(
+        dependencies,
+        quote! { self.dependencies },
+        quote! { __exec_ctx.clone() },
+    );
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
@@ -622,7 +626,11 @@ fn generate_transient_provider(
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
-    let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
+    let (field_resolutions, field_names) = field_resolutions(
+        dependencies,
+        quote! { self.dependencies },
+        quote! { __exec_ctx.clone() },
+    );
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
@@ -669,142 +677,14 @@ fn generate_transient_provider(
     }
 }
 
-/// Generate field resolutions for Request/Transient providers (uses self.dependencies)
-fn generate_field_resolutions(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
-    let mut resolutions = Vec::new();
-    let mut field_names = Vec::new();
-
-    let deps_to_resolve = &dependencies.fields;
-
-    // Partition into multi-provider fields (Vec<Arc<dyn T>>) and regular fields
-    let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
-        .iter()
-        .partition(|(_, full_type, _)| extract_vec_arc_dyn_inner(full_type).is_some());
-
-    // Generate resolutions for multi-provider fields
-    for (field_name, full_type, lookup_token_expr) in &multi_deps {
-        let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        resolutions.push(collection_field_resolution(
-            field_name,
-            full_type,
-            &inner_trait,
-            lookup_token_expr,
-            quote! { self.dependencies },
-            quote! { __exec_ctx.clone() },
-        ));
-        field_names.push(field_name.clone());
-    }
-
-    // Group regular fields by token for deduplication while preserving declaration order
-    use indexmap::IndexMap;
-    let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
-
-    for (field_name, full_type, lookup_token_expr) in &regular_deps {
-        let type_key = quote!(#lookup_token_expr).to_string();
-        type_groups.entry(type_key).or_insert_with(Vec::new).push((
-            (*field_name).clone(),
-            (*full_type).clone(),
-            (*lookup_token_expr).clone(),
-        ));
-    }
-    for (_type_key, fields_of_type) in type_groups {
-        let (first_field_name, full_type, lookup_token_expr) = &fields_of_type[0];
-        let field_name_str = first_field_name.to_string();
-
-        if fields_of_type.len() == 1 {
-            let field_name = first_field_name;
-            let resolution = quote! {
-                let #field_name: #full_type = {
-                    let __lookup_token = #lookup_token_expr;
-                    let provider = self.dependencies
-                        .get(&__lookup_token)
-                        .unwrap_or_else(|| panic!(
-                            "Missing dependency '{}' for field '{}'",
-                            __lookup_token, #field_name_str
-                        ));
-
-                    let any_box = provider.resolve(__exec_ctx.clone()).await;
-
-                    *any_box.downcast::<#full_type>()
-                        .unwrap_or_else(|_| panic!(
-                            "Failed to downcast '{}' to {}",
-                            __lookup_token,
-                            stringify!(#full_type)
-                        ))
-                };
-            };
-
-            resolutions.push(resolution);
-            field_names.push(field_name.clone());
-        } else {
-            let temp_var = syn::Ident::new(
-                &format!("__temp_instance_{}", first_field_name),
-                first_field_name.span(),
-            );
-            let field_idents: Vec<_> = fields_of_type.iter().map(|(name, _, _)| name).collect();
-
-            let field_declarations: Vec<TokenStream> = field_idents
-                .iter()
-                .map(|field_ident| {
-                    quote! {
-                        let #field_ident: #full_type;
-                    }
-                })
-                .collect();
-
-            let resolution = quote! {
-                #(#field_declarations)*
-
-                let __lookup_token = #lookup_token_expr;
-                let provider = self.dependencies
-                    .get(&__lookup_token)
-                    .unwrap_or_else(|| panic!(
-                        "Missing dependency '{}' for field '{}'",
-                        __lookup_token, #field_name_str
-                    ));
-
-                if matches!(provider.scope(), ::ulo::di::ProviderScope::Transient) {
-                    #(
-                        #field_idents = {
-                            let any_box = provider.resolve(__exec_ctx.clone()).await;
-                            *any_box.downcast::<#full_type>()
-                                .unwrap_or_else(|_| panic!(
-                                    "Failed to downcast '{}' to {}",
-                                    __lookup_token,
-                                    stringify!(#full_type)
-                                ))
-                        };
-                    )*
-                } else {
-                    let #temp_var: #full_type = {
-                        let any_box = provider.resolve(__exec_ctx.clone()).await;
-                        *any_box.downcast::<#full_type>()
-                            .unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}",
-                                __lookup_token,
-                                stringify!(#full_type)
-                            ))
-                    };
-
-                    #(
-                        #field_idents = #temp_var.clone();
-                    )*
-                }
-            };
-
-            resolutions.push(resolution);
-            for (field_name, _, _) in &fields_of_type {
-                field_names.push(field_name.clone());
-            }
-        }
-    }
-
-    (resolutions, field_names)
-}
-
-/// Generate field resolutions for singleton factory (uses dependencies parameter)
-fn generate_factory_field_resolutions(
+/// The `#[inject]` fields' resolutions, each read from the dependency map `deps` and resolved in
+/// the execution `ctx`. The execution and transient providers pass `self.dependencies` and the
+/// execution being served; the singleton factory passes the map its `build` collects from
+/// `__deps`, and no execution.
+fn field_resolutions(
     dependencies: &DependencyInfo,
+    deps: TokenStream,
+    ctx: TokenStream,
 ) -> (Vec<TokenStream>, Vec<Ident>) {
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
@@ -824,8 +704,8 @@ fn generate_factory_field_resolutions(
             full_type,
             &inner_trait,
             lookup_token_expr,
-            quote! { dependencies },
-            quote! { ::ulo::di::Execution::None },
+            deps.clone(),
+            ctx.clone(),
         ));
         field_names.push(field_name.clone());
     }
@@ -851,14 +731,14 @@ fn generate_factory_field_resolutions(
             let resolution = quote! {
                 let #field_name: #full_type = {
                     let __lookup_token = #lookup_token_expr;
-                    let provider = dependencies
+                    let provider = #deps
                         .get(&__lookup_token)
                         .unwrap_or_else(|| panic!(
                             "Missing dependency '{}' for field '{}'",
                             __lookup_token, #field_name_str
                         ));
 
-                    let any_box = provider.resolve(::ulo::di::Execution::None).await;
+                    let any_box = provider.resolve(#ctx).await;
 
                     *any_box.downcast::<#full_type>()
                         .unwrap_or_else(|_| panic!(
@@ -891,7 +771,7 @@ fn generate_factory_field_resolutions(
                 #(#field_declarations)*
 
                 let __lookup_token = #lookup_token_expr;
-                let provider = dependencies
+                let provider = #deps
                     .get(&__lookup_token)
                     .unwrap_or_else(|| panic!(
                         "Missing dependency '{}' for field '{}'",
@@ -901,7 +781,7 @@ fn generate_factory_field_resolutions(
                 if matches!(provider.scope(), ::ulo::di::ProviderScope::Transient) {
                     #(
                         #field_idents = {
-                            let any_box = provider.resolve(::ulo::di::Execution::None).await;
+                            let any_box = provider.resolve(#ctx).await;
                             *any_box.downcast::<#full_type>()
                                 .unwrap_or_else(|_| panic!(
                                     "Failed to downcast '{}' to {}",
@@ -912,7 +792,7 @@ fn generate_factory_field_resolutions(
                     )*
                 } else {
                     let #temp_var: #full_type = {
-                        let any_box = provider.resolve(::ulo::di::Execution::None).await;
+                        let any_box = provider.resolve(#ctx).await;
                         *any_box.downcast::<#full_type>()
                             .unwrap_or_else(|_| panic!(
                                 "Failed to downcast '{}' to {}",
@@ -999,7 +879,11 @@ fn generate_singleton_factory(
     );
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
-    let (field_resolutions, field_names) = generate_factory_field_resolutions(dependencies);
+    let (field_resolutions, field_names) = field_resolutions(
+        dependencies,
+        quote! { dependencies },
+        quote! { ::ulo::di::Execution::None },
+    );
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
@@ -1262,11 +1146,12 @@ fn generate_transient_factory(
     }
 }
 
-/// Generates the dep resolution code for use inside a `DynXxxFactory::create()` body.
+/// The `#[inject]` fields' resolutions inside an enhancer builder's `__build_instance`, which each
+/// role's `create` calls.
 ///
-/// Unlike `generate_field_resolutions` (which uses `self.dependencies` and `_ctx`),
-/// this version uses a captured `all_deps: Arc<FxHashMap<...>>` and selects the
-/// `Execution` at runtime based on each provider's declared scope.
+/// Unlike `field_resolutions`, which resolves every field in the one execution its caller passes,
+/// this reads a captured `all_deps: Arc<FxHashMap<...>>` and picks each dependency's `Execution`
+/// from that provider's declared scope.
 fn generate_create_field_resolutions(
     dependencies: &DependencyInfo,
 ) -> (Vec<TokenStream>, Vec<Ident>) {
