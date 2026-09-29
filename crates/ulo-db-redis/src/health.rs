@@ -88,3 +88,36 @@ impl Provider for RedisHealthProvider {
         Ok(Box::new(RedisHealthIndicator { manager }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection provider answering a value of another type.
+    struct Mistyped;
+
+    #[async_trait]
+    impl Provider for Mistyped {
+        fn token(&self) -> String {
+            ulo::di::token_of::<ConnectionManager>()
+        }
+
+        async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+            Ok(Box::new(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_of_another_type_is_a_type_mismatch() {
+        let provider = RedisHealthProvider {
+            connection: Arc::new(Box::new(Mistyped)),
+        };
+        match provider.resolve(Execution::None).await {
+            Err(ResolutionError::TypeMismatch { token }) => {
+                assert_eq!(token, ulo::di::token_of::<ConnectionManager>())
+            }
+            Ok(_) => panic!("a value of another type is not the connection"),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+}

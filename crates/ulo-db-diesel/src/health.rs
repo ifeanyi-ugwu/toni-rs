@@ -128,3 +128,45 @@ impl_diesel_health!(
     diesel_async::AsyncMysqlConnection,
     diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncMysqlConnection>
 );
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+
+    /// A pool provider answering a value of another type.
+    struct Mistyped;
+
+    #[async_trait]
+    impl Provider for Mistyped {
+        fn token(&self) -> String {
+            ulo::di::token_of::<
+                diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>,
+            >()
+        }
+
+        async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+            Ok(Box::new(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_of_another_type_is_a_type_mismatch() {
+        let provider = PgHealthProvider {
+            connection: Arc::new(Box::new(Mistyped)),
+        };
+        match provider.resolve(Execution::None).await {
+            Err(ResolutionError::TypeMismatch { token }) => {
+                assert_eq!(
+                    token,
+                    ulo::di::token_of::<
+                        diesel_async::pooled_connection::deadpool::Pool<
+                            diesel_async::AsyncPgConnection,
+                        >,
+                    >()
+                )
+            }
+            Ok(_) => panic!("a value of another type is not the pool"),
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+}
