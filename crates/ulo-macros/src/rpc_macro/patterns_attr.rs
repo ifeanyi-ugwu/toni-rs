@@ -228,10 +228,15 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
             async fn resolve(
                 &self,
                 ctx: &::ulo::rpc::RpcContext,
-            ) -> ::std::sync::Arc<dyn ::ulo::rpc::RpcController> {
-                self.0
+            ) -> ::std::result::Result<
+                ::std::sync::Arc<dyn ::ulo::rpc::RpcController>,
+                ::ulo::errors::HookFailed,
+            > {
+                let __controller: ::std::sync::Arc<dyn ::ulo::rpc::RpcController> = self
+                    .0
                     .resolve(::ulo::di::Execution::Rpc(ctx.clone()))
-                    .await
+                    .await?;
+                ::std::result::Result::Ok(__controller)
             }
         }
     })

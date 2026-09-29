@@ -11,11 +11,7 @@ use quote::quote;
 use syn::{Ident, ItemStruct, Result, Type};
 
 use crate::{
-    shared::{
-        dependency_info::DependencyInfo,
-        lifecycle_hooks::{LifecycleHooks, reject_lifecycle_hooks},
-        scope_parser::ProviderScope,
-    },
+    shared::{dependency_info::DependencyInfo, scope_parser::ProviderScope},
     utils::extracts::{extract_struct_dependencies, extract_vec_arc_dyn_inner},
 };
 
@@ -53,19 +49,10 @@ pub fn generate_provider_from_struct_with_traits(
     let struct_name = struct_def.ident.clone();
     let dependencies = extract_struct_dependencies(struct_def)?;
 
-    // A derive sees only the struct: no lifecycle hooks (the bridge carries them). The role is
-    // supplied by the caller rather than detected from an impl head.
-    let lifecycle_hooks = LifecycleHooks::default();
-
-    // Derive can't see the impl, so it dispatches lifecycle through the `#[on_*]` bridge.
-    let provider_wrapper = generate_provider_wrapper(
-        &struct_name,
-        &dependencies,
-        scope,
-        &enhancer_traits,
-        &lifecycle_hooks,
-        true,
-    );
+    // The struct macro can't see the impl, so it dispatches lifecycle through the `#[on_*]`
+    // bridge. The role is supplied by the caller rather than detected from an impl head.
+    let provider_wrapper =
+        generate_provider_wrapper(&struct_name, &dependencies, scope, &enhancer_traits);
     let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
     let factory_accessor = generate_provider_factory_accessor(&struct_name);
     let default_checks = crate::shared::default_beside_new::default_beside_new(struct_def);
@@ -205,24 +192,16 @@ fn generate_provider_wrapper(
     dependencies: &DependencyInfo,
     scope: ProviderScope,
     enhancer_traits: &EnhancerTraits,
-    lifecycle_hooks: &LifecycleHooks,
-    lifecycle_via_bridge: bool,
 ) -> TokenStream {
     match scope {
-        ProviderScope::Singleton => generate_singleton_provider(
-            struct_name,
-            &provider_ident(struct_name),
-            lifecycle_hooks,
-            lifecycle_via_bridge,
-        ),
-        ProviderScope::Execution => generate_execution_provider(
-            struct_name,
-            &provider_ident(struct_name),
-            dependencies,
-            lifecycle_hooks,
-        ),
+        ProviderScope::Singleton => {
+            generate_singleton_provider(struct_name, &provider_ident(struct_name))
+        }
+        ProviderScope::Execution => {
+            generate_execution_provider(struct_name, &provider_ident(struct_name), dependencies)
+        }
         ProviderScope::Transient => {
-            generate_transient_provider(struct_name, dependencies, enhancer_traits, lifecycle_hooks)
+            generate_transient_provider(struct_name, dependencies, enhancer_traits)
         }
     }
 }
@@ -250,52 +229,6 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     }
 
     quote! { #(#pushes)* }
-}
-
-/// Generate direct lifecycle method overrides on `Provider` for singleton providers.
-///
-/// Each override delegates to the user's annotated method on `self.instance`.
-/// Signal-bearing hooks receive the signal as the second argument.
-fn generate_lifecycle_direct_methods(hooks: &LifecycleHooks) -> TokenStream {
-    let mut methods = Vec::new();
-
-    if let Some(method) = &hooks.on_module_init {
-        methods.push(quote! {
-            async fn on_module_init(&self) -> ::ulo::di::InitResult {
-                self.instance.#method().await
-            }
-        });
-    }
-    if let Some(method) = &hooks.on_application_bootstrap {
-        methods.push(quote! {
-            async fn on_application_bootstrap(&self) -> ::ulo::di::InitResult {
-                self.instance.#method().await
-            }
-        });
-    }
-    if let Some(method) = &hooks.on_module_destroy {
-        methods.push(quote! {
-            async fn on_module_destroy(&self) {
-                self.instance.#method().await;
-            }
-        });
-    }
-    if let Some(method) = &hooks.before_application_shutdown {
-        methods.push(quote! {
-            async fn before_application_shutdown(&self, signal: Option<String>) {
-                self.instance.#method(signal).await;
-            }
-        });
-    }
-    if let Some(method) = &hooks.on_application_shutdown {
-        methods.push(quote! {
-            async fn on_application_shutdown(&self, signal: Option<String>) {
-                self.instance.#method(signal).await;
-            }
-        });
-    }
-
-    quote! { #(#methods)* }
 }
 
 /// Generate the five `Provider` lifecycle overrides for the derive path, each forwarding to the
@@ -333,17 +266,8 @@ fn generate_bridge_lifecycle_methods(struct_name: &Ident) -> TokenStream {
     }
 }
 
-fn generate_singleton_provider(
-    struct_name: &Ident,
-    provider_name: &Ident,
-    lifecycle_hooks: &LifecycleHooks,
-    lifecycle_via_bridge: bool,
-) -> TokenStream {
-    let lifecycle_methods = if lifecycle_via_bridge {
-        generate_bridge_lifecycle_methods(struct_name)
-    } else {
-        generate_lifecycle_direct_methods(lifecycle_hooks)
-    };
+fn generate_singleton_provider(struct_name: &Ident, provider_name: &Ident) -> TokenStream {
+    let lifecycle_methods = generate_bridge_lifecycle_methods(struct_name);
 
     quote! {
         struct #provider_name {
@@ -377,19 +301,10 @@ fn generate_execution_provider(
     struct_name: &Ident,
     provider_name: &Ident,
     dependencies: &DependencyInfo,
-    lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     let (field_resolutions, field_names) = generate_field_resolutions(dependencies);
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
-
-    let scope_hook_error = reject_lifecycle_hooks(
-        lifecycle_hooks,
-        "Lifecycle hooks are not supported on execution-scoped providers. Execution-scoped \
-         instances are created per-request and dropped when the response is sent — they do \
-         not exist at application init or shutdown, so neither startup nor shutdown hooks \
-         can fire. Use a singleton provider if you need lifecycle hooks.",
-    );
 
     // Execution-scoped providers require an active execution. Constructing one outside
     // of any execution would silently violate the declared scope contract. Which
@@ -433,7 +348,6 @@ fn generate_execution_provider(
     };
 
     quote! {
-        #scope_hook_error
 
         struct #provider_name {
             dependencies: ::ulo::FxHashMap<
@@ -607,10 +521,11 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
     }
 }
 
-/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with `Arc<T>`, caches
-/// that `Arc` in the execution, fires init/bootstrap at the build site where hook resolution sees
-/// the concrete type, and builds through the struct's `__ulo_build_from_deps` bridge. Nothing
-/// clones the target, so the struct needs no `Clone`.
+/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with
+/// `Result<Arc<T>, HookFailed>`, fires init/bootstrap at the build site where hook resolution sees
+/// the concrete type, caches the `Arc` in the execution once both return `Ok`, and builds through
+/// the struct's `__ulo_build_from_deps` bridge. Nothing clones the target, so the struct needs no
+/// `Clone`.
 pub(crate) fn generate_dispatch_provider(
     struct_name: &Ident,
     provider_name: &Ident,
@@ -640,7 +555,10 @@ pub(crate) fn generate_dispatch_provider(
                     .cache()
                     .and_then(|__c| __c.get::<::std::sync::Arc<#struct_name>>())
                 {
-                    return Box::new(__cached);
+                    return Box::new(::std::result::Result::<
+                        ::std::sync::Arc<#struct_name>,
+                        ::ulo::errors::HookFailed,
+                    >::Ok(__cached));
                 }
                 // `__exec_ctx` threads into the build, so an execution-scoped dependency resolves
                 // in the same execution and is shared rather than rebuilt.
@@ -651,17 +569,39 @@ pub(crate) fn generate_dispatch_provider(
                 .await;
                 let __instance = ::std::sync::Arc::new(__instance);
                 // Hooks complete before the cache holds the instance, so nothing is handed a
-                // pre-init one.
-                {
+                // pre-init one, and a failed hook leaves nothing cached for the call to reuse.
+                let __hooks: ::std::result::Result<(), ::ulo::errors::HookFailed> = async {
                     use ::ulo::__lifecycle::LifecycleBridge as _;
-                    let _ = #struct_name::__ulo_lc_on_init(&__instance).await;
-                    let _ = #struct_name::__ulo_lc_on_bootstrap(&__instance).await;
+                    #struct_name::__ulo_lc_on_init(&__instance).await.map_err(|__e| {
+                        ::ulo::errors::HookFailed::new(
+                            ::ulo::di::token_of::<#struct_name>(),
+                            "on_module_init",
+                            __e,
+                        )
+                    })?;
+                    #struct_name::__ulo_lc_on_bootstrap(&__instance).await.map_err(|__e| {
+                        ::ulo::errors::HookFailed::new(
+                            ::ulo::di::token_of::<#struct_name>(),
+                            "on_application_bootstrap",
+                            __e,
+                        )
+                    })
+                }
+                .await;
+                if let ::std::result::Result::Err(__failed) = __hooks {
+                    return Box::new(::std::result::Result::<
+                        ::std::sync::Arc<#struct_name>,
+                        ::ulo::errors::HookFailed,
+                    >::Err(__failed));
                 }
                 __exec_ctx
                     .cache()
                     .expect("checked above")
                     .insert(__instance.clone());
-                Box::new(__instance)
+                Box::new(::std::result::Result::<
+                    ::std::sync::Arc<#struct_name>,
+                    ::ulo::errors::HookFailed,
+                >::Ok(__instance))
             }
 
             fn token(&self) -> String {
@@ -679,7 +619,6 @@ fn generate_transient_provider(
     struct_name: &Ident,
     dependencies: &DependencyInfo,
     _enhancer_traits: &EnhancerTraits,
-    lifecycle_hooks: &LifecycleHooks,
 ) -> TokenStream {
     let provider_name = Ident::new(&format!("{}Provider", struct_name), struct_name.span());
 
@@ -687,16 +626,7 @@ fn generate_transient_provider(
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
-    let scope_hook_error = reject_lifecycle_hooks(
-        lifecycle_hooks,
-        "Lifecycle hooks are not supported on transient-scoped providers. A transient's \
-         lifetime is consumer-determined — singleton-shaped when consumed by a singleton, \
-         request-shaped otherwise — so whether and when hooks fire depends on the consumer, \
-         not the provider. Use a singleton provider if you need lifecycle hooks.",
-    );
-
     quote! {
-        #scope_hook_error
 
         struct #provider_name {
             dependencies: ::ulo::FxHashMap<

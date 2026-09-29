@@ -353,11 +353,20 @@ fn generate_route_wrapper(
             },
             // Resolve the instance before the extractors run: a per-call build reads
             // execution-scoped dependencies through the context, while a body extractor
-            // may move the request out of it.
+            // may move the request out of it. A per-call build whose startup hook fails
+            // answers the call with that failure.
             quote! {
-                let controller = self.source
+                let controller = match self.source
                     .resolve(::ulo::di::Execution::Http(__ctx.clone()))
-                    .await;
+                    .await
+                {
+                    ::std::result::Result::Ok(__controller) => __controller,
+                    ::std::result::Result::Err(__failed) => {
+                        return ::ulo::dispatch::ExecutionResult::Err(
+                            ::ulo::http::HttpError::from(__failed),
+                        );
+                    }
+                };
             },
         )
     };

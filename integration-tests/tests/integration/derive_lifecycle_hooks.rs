@@ -7,6 +7,7 @@
 //! "the hook ran" are therefore separate claims; all five hooks assert the
 //! second.
 
+use std::cell::Cell;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serial_test::serial;
@@ -71,6 +72,24 @@ pub struct PlainService {
 
 #[module(providers: [HookedService, PlainService])]
 struct LifecycleModule {}
+
+/// A hook-free transient that is not `Sync` compiles: the refusal of a hook on a non-singleton
+/// scope reads a flag on every such type, and a `Cell` field makes this one `!Sync`.
+#[injectable(scope = "transient")]
+pub struct Draft {
+    #[default(Cell::new(3))]
+    count: Cell<u32>,
+}
+
+#[module(providers: [Draft])]
+struct DraftModule {}
+
+#[tokio::test]
+async fn a_hook_free_transient_that_is_not_sync_builds() {
+    let app = UloFactory::create(DraftModule).await.unwrap();
+    let draft = app.get::<Draft>().await.expect("Draft should resolve");
+    assert_eq!(draft.count.get(), 3);
+}
 
 #[serial]
 #[tokio::test]

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use crate::context::Metadata;
 use crate::dispatch::Rpc;
 use crate::enhancer::{ErrorHandlerDeclaration, GuardDeclaration, InterceptorDeclaration};
+use crate::errors::HookFailed;
 use crate::rpc::RpcContext;
 
 use super::RpcController;
@@ -71,6 +72,8 @@ pub trait RpcControllerSource: Send + Sync {
     ///
     /// A singleton answers with the instance built at startup. An execution-scoped one is built
     /// inside `ctx`'s execution, so its execution-scoped dependencies resolve against that
-    /// execution's cache and are shared with whatever else in the call already asked for them.
-    async fn resolve(&self, ctx: &RpcContext) -> Arc<dyn RpcController>;
+    /// execution's cache and are shared with whatever else in the call already asked for them;
+    /// its `#[on_module_init]` or `#[on_application_bootstrap]` returning `Err` answers
+    /// [`HookFailed`], and the call fails with it.
+    async fn resolve(&self, ctx: &RpcContext) -> Result<Arc<dyn RpcController>, HookFailed>;
 }

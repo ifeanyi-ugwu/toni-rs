@@ -135,6 +135,55 @@ impl Error for MiddlewareFailure {
     }
 }
 
+/// Emitted when a dispatch target built per call returns `Err` from its `#[on_module_init]` or
+/// `#[on_application_bootstrap]` hook, on HTTP, RPC and gRPC. The call it was built for fails with
+/// this event, the way a singleton's hook `Err` fails startup as `StartupError::HookFailed`, and
+/// nothing is cached. `kind()` is `Internal`, and the message names the hook alone: the target's
+/// path and the hook's error may carry what a caller should not see, so they stay in the fields
+/// and the `error` log `DispatchSource::resolve` writes. [`source`](std::error::Error::source)
+/// holds the hook's error, and a `#[catch(HookFailed)]` handler can downcast it to reshape the
+/// answer.
+#[derive(Debug)]
+pub struct HookFailed {
+    /// The target's DI token.
+    pub target: String,
+    /// `"on_module_init"` or `"on_application_bootstrap"`.
+    pub hook: &'static str,
+    pub source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl HookFailed {
+    pub fn new(
+        target: impl Into<String>,
+        hook: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self {
+            target: target.into(),
+            hook,
+            source,
+        }
+    }
+}
+
+impl fmt::Display for HookFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} failed", self.hook)
+    }
+}
+
+impl std::error::Error for HookFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+impl Error for HookFailed {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Internal
+    }
+}
+
 /// Where in the request pipeline a panic was caught. Carried on
 /// [`PanicRecovered`] so chain handlers can branch on the site without
 /// parsing the message.

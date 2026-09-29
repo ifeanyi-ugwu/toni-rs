@@ -2,10 +2,12 @@
 //! `#[before_application_shutdown]` / `#[on_application_shutdown]` hook macros for `#[injectable]`
 //! providers.
 //!
-//! The derive generates the provider from the struct and can't see these methods. Each macro emits
-//! the user's method unchanged plus an inherent `__ulo_lc_*` forwarder that shadows the blanket
-//! `ulo::__lifecycle::LifecycleBridge` no-op of the same name. The derive's `Provider` impl always
-//! calls the `__ulo_lc_*` methods, so the user hook runs when present and the no-op otherwise.
+//! The struct macro generates the provider from the struct and can't see these methods. Each macro
+//! emits the user's method unchanged plus an inherent `__ulo_lc_*` forwarder that shadows the
+//! blanket `ulo::__lifecycle::LifecycleBridge` no-op of the same name, and an inherent `__ULO_LC_*`
+//! flag shadowing the blanket `false` in `LifecycleFlags`. The struct macro's `Provider` impl
+//! always calls the `__ulo_lc_*` methods, so the user hook runs when present and the no-op
+//! otherwise; `#[injectable]` reads the flags to refuse a hook on a scope that never fires it.
 //!
 //! Hooks are `async fn(&self)`. `on_module_init`/`on_application_bootstrap` return `ulo::di::InitResult`; the three
 //! shutdown/destroy hooks return `()`, and `before_application_shutdown`/`on_application_shutdown` receive
@@ -37,6 +39,25 @@ impl Hook {
         }
     }
 
+    /// Inherent flag this hook sets, read by `#[injectable]`'s scope check.
+    pub(crate) fn flag(self) -> &'static str {
+        match self {
+            Hook::OnInit => "__ULO_LC_ON_INIT",
+            Hook::OnBootstrap => "__ULO_LC_ON_BOOTSTRAP",
+            Hook::OnDestroy => "__ULO_LC_ON_DESTROY",
+            Hook::BeforeShutdown => "__ULO_LC_BEFORE_SHUTDOWN",
+            Hook::OnShutdown => "__ULO_LC_ON_SHUTDOWN",
+        }
+    }
+
+    pub(crate) const ALL: [Hook; 5] = [
+        Hook::OnInit,
+        Hook::OnBootstrap,
+        Hook::OnDestroy,
+        Hook::BeforeShutdown,
+        Hook::OnShutdown,
+    ];
+
     fn takes_signal(self) -> bool {
         matches!(self, Hook::BeforeShutdown | Hook::OnShutdown)
     }
@@ -45,7 +66,7 @@ impl Hook {
         matches!(self, Hook::OnInit | Hook::OnBootstrap)
     }
 
-    fn attr_name(self) -> &'static str {
+    pub(crate) fn attr_name(self) -> &'static str {
         match self {
             Hook::OnInit => "on_module_init",
             Hook::OnBootstrap => "on_application_bootstrap",
@@ -80,6 +101,7 @@ pub fn handle_hook(hook: Hook, item: TokenStream) -> Result<TokenStream> {
 
     let user_method_name = method.sig.ident.clone();
     let bridge_method = format_ident!("{}", hook.bridge_method());
+    let flag = format_ident!("{}", hook.flag());
 
     // Whether the user wrote the optional `signal` parameter (shutdown hooks). A user signature
     // may include it or omit it; forward accordingly.
@@ -127,5 +149,8 @@ pub fn handle_hook(hook: Hook, item: TokenStream) -> Result<TokenStream> {
     Ok(quote! {
         #method
         #bridge_fn
+
+        #[doc(hidden)]
+        const #flag: bool = true;
     })
 }
