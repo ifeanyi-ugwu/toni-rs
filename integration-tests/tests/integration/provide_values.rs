@@ -114,9 +114,7 @@ key!(pub Loud: dyn Greeter);
 key!(pub Quiet: dyn Greeter);
 key!(pub Legacy: dyn Plugin);
 
-/// Holds the collections, and second readers of `Loud` and `Quiet`. A controller's field
-/// resolver has no collection branch, so the collections are injected here and the registry into
-/// the controller.
+/// Holds the collections, and second readers of `Loud` and `Quiet`.
 #[injectable]
 pub struct PluginRegistry {
     #[inject]

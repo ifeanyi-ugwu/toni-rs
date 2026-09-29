@@ -152,25 +152,41 @@ fn generate_bridges(
 
 /// Resolve the `#[inject]` fields from the dependency map.
 ///
-/// Fields are grouped by lookup token and deduplicated scope-aware, matching NestJS: singleton and
+/// A collection field resolves on its own, ahead of the rest. The other fields are grouped by
+/// lookup token, in order of first appearance, and deduplicated scope-aware: singleton and
 /// execution-scoped providers are resolved once and shared (cloned) across same-token fields, while
 /// transient providers get a fresh instance per field. The explicit dedup is required because not
 /// every provider caches in the execution's cache (e.g. a hand-written `Provider`). Returns the
-/// resolution statements plus the field names, in declaration order.
+/// resolution statements plus the field names.
 fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
     use indexmap::IndexMap;
 
+    let mut resolutions = Vec::new();
+    let mut field_names = Vec::new();
+
     let mut groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
     for (name, ty, token) in &dependencies.fields {
+        // A collection answers its items erased; the groups below downcast to the field's own type.
+        if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
+            resolutions.push(
+                crate::provider_macro::instance_injection::collection_field_resolution(
+                    name,
+                    ty,
+                    &inner_trait,
+                    token,
+                    quote! { dependencies },
+                    ctx_expr(),
+                ),
+            );
+            field_names.push(name.clone());
+            continue;
+        }
         groups.entry(quote!(#token).to_string()).or_default().push((
             name.clone(),
             ty.clone(),
             token.clone(),
         ));
     }
-
-    let mut resolutions = Vec::new();
-    let mut field_names = Vec::new();
 
     for (_key, group) in groups {
         let (first_name, ty, token) = &group[0];

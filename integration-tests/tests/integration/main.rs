@@ -3,6 +3,7 @@ mod ambiguous_lookups;
 mod body_already_read;
 mod body_and_multipart_extractors;
 mod cancellation;
+mod collection_in_a_controller;
 mod common;
 
 mod adapter_error_contract;

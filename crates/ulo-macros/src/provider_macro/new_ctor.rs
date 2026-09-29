@@ -123,6 +123,23 @@ fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStr
 /// anything else with `Execution::None` — mirroring the field-injection
 /// paths. Panics with a clear message on a missing dep or absent request context.
 fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
+    // A collection answers its items erased; the path below downcasts to the parameter's own type.
+    if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
+        return super::instance_injection::collection_field_resolution(
+            name,
+            ty,
+            &inner_trait,
+            token,
+            quote! { deps },
+            quote! {
+                if matches!(__provider.scope(), ::ulo::di::ProviderScope::Execution) {
+                    __exec_ctx.clone()
+                } else {
+                    ::ulo::di::Execution::None
+                }
+            },
+        );
+    }
     let name_str = name.to_string();
     quote! {
         let #name: #ty = {
