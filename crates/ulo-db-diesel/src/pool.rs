@@ -6,8 +6,8 @@ use async_trait::async_trait;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 use ulo::{
     FxHashMap, StartupCheck,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -31,11 +31,11 @@ macro_rules! impl_diesel_pool {
                 Some(self.url.clone())
             }
 
-            async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+            async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
                 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
                 let manager = AsyncDieselConnectionManager::<$conn>::new(&self.url);
-                // `build` returns the instance directly, so a failure is carried into the
-                // provider and reported from `on_module_init`, which can return it. deadpool
+                // A failure is carried into the provider and reported from `on_module_init` with
+                // the startup check's, so either arrives as `StartupError::HookFailed`. deadpool
                 // opens no connection here, so only the pool configuration is checked.
                 // deadpool returns a failed `create` rather than retrying it, so an attempt is
                 // already bounded by the connection attempt itself and the check supplies the
@@ -51,7 +51,7 @@ macro_rules! impl_diesel_pool {
                         )),
                     ),
                 };
-                Injectable::new(
+                Ok(Injectable::new(
                     Arc::new(Box::new($provider {
                         pool,
                         init_error,
@@ -60,7 +60,7 @@ macro_rules! impl_diesel_pool {
                         token: self.token.clone(),
                     })),
                     vec![],
-                )
+                ))
             }
         }
 
@@ -82,8 +82,13 @@ macro_rules! impl_diesel_pool {
                 self.token.clone()
             }
 
-            async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-                Box::new(self.pool.clone().expect("database pool unavailable"))
+            async fn resolve(
+                &self,
+                _ctx: Execution,
+            ) -> Result<Box<dyn Any + Send>, ResolutionError> {
+                Ok(Box::new(
+                    self.pool.clone().expect("database pool unavailable"),
+                ))
             }
 
             async fn on_module_init(&self) -> ulo::di::InitResult {

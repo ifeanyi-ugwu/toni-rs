@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rustc_hash::FxHashMap;
 
+use crate::error::BuildResult;
 use crate::http::Route;
-
 use crate::spi::provider::Provider;
 
 /// What a controller hands over to be dispatched on.
@@ -49,5 +49,8 @@ pub trait ControllerFactory: Send + Sync {
     fn dependency_tokens(&self) -> Vec<String> {
         vec![]
     }
-    async fn build(&self, deps: FxHashMap<String, Arc<Box<dyn Provider>>>) -> Arc<dyn Controller>;
+    async fn build(
+        &self,
+        deps: FxHashMap<String, Arc<Box<dyn Provider>>>,
+    ) -> BuildResult<Arc<dyn Controller>>;
 }

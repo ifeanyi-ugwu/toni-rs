@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 use mongodb::{Client, Database, options::ClientOptions};
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
 
@@ -51,17 +51,17 @@ impl ProviderFactory for MongoHealthIndicatorFactory {
         vec![ulo::di::token_of::<Database>()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let token = ulo::di::token_of::<Database>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the connection it checks")
             .instance
             .clone();
-        Injectable::new(
+        Ok(Injectable::new(
             Arc::new(Box::new(MongoHealthProvider { connection })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -78,11 +78,11 @@ impl Provider for MongoHealthProvider {
         ulo::di::token_of::<MongoHealthIndicator>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        let resolved = self.connection.resolve(Execution::None).await;
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        let resolved = self.connection.resolve(Execution::None).await?;
         let db = *resolved
             .downcast::<Database>()
             .expect("the registered connection provider yields a Database");
-        Box::new(MongoHealthIndicator { db })
+        Ok(Box::new(MongoHealthIndicator { db }))
     }
 }

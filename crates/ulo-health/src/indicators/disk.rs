@@ -6,8 +6,8 @@ use serde_json::json;
 use sysinfo::Disks;
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 use crate::health_check_result::{HealthEntry, HealthIndicatorResult};
@@ -120,8 +120,11 @@ impl ProviderFactory for DiskHealthIndicatorFactory {
         ulo::di::token_of::<DiskHealthIndicator>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(Arc::new(Box::new(DiskHealthIndicatorProvider)), vec![])
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
+            Arc::new(Box::new(DiskHealthIndicatorProvider)),
+            vec![],
+        ))
     }
 }
 
@@ -133,7 +136,7 @@ impl Provider for DiskHealthIndicatorProvider {
         ulo::di::token_of::<DiskHealthIndicator>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(DiskHealthIndicator)
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(DiskHealthIndicator))
     }
 }

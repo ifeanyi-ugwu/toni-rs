@@ -233,12 +233,9 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
             })?
         };
 
-        self.execution
-            .ensure_can_build(provider_instance.scope(), &self.token)?;
-
         provider_instance
             .resolve(self.execution.clone())
-            .await
+            .await?
             .downcast::<T>()
             .map(|boxed| *boxed)
             .map_err(|_| ResolutionError::TypeMismatch {

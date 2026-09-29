@@ -45,6 +45,7 @@ use crate::async_trait;
 use crate::context::Extensions;
 use crate::di::Execution;
 use crate::di::ProviderScope;
+use crate::error::{BuildResult, ResolutionError};
 use crate::spi::{Injectable, Provider, ProviderFactory};
 /// An injectable view of one type in the request's extension bag.
 ///
@@ -131,14 +132,13 @@ impl<T: Send + Sync + 'static> Provider for Extension<T> {
         crate::di::token_of::<Extension<T>>()
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         let Some(bag) = ctx.extensions() else {
-            panic!(
-                "Extension<{}> is execution-scoped and cannot be resolved outside an execution",
-                std::any::type_name::<T>()
-            );
+            return Err(ResolutionError::ExecutionRequired {
+                token: self.token(),
+            });
         };
-        Box::new(Extension::<T>::over(bag))
+        Ok(Box::new(Extension::<T>::over(bag)))
     }
 
     fn scope(&self) -> ProviderScope {
@@ -156,11 +156,13 @@ impl Provider for Extensions {
         crate::di::token_of::<Extensions>()
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         let Some(bag) = ctx.extensions() else {
-            panic!("Extensions is execution-scoped and cannot be resolved outside an execution");
+            return Err(ResolutionError::ExecutionRequired {
+                token: self.token(),
+            });
         };
-        Box::new(bag)
+        Ok(Box::new(bag))
     }
 
     fn scope(&self) -> ProviderScope {
@@ -176,11 +178,11 @@ impl ProviderFactory for ExtensionsFactory {
         crate::di::token_of::<Extensions>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
             Arc::new(Box::new(Extensions::new()) as Box<dyn Provider>),
             vec![],
-        )
+        ))
     }
 }
 
@@ -213,9 +215,12 @@ impl<T: Send + Sync + 'static> ProviderFactory for ExtensionFactory<T> {
         crate::di::token_of::<Extension<T>>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let provider = Extension::<T>::over(Extensions::new());
-        Injectable::new(Arc::new(Box::new(provider) as Box<dyn Provider>), vec![])
+        Ok(Injectable::new(
+            Arc::new(Box::new(provider) as Box<dyn Provider>),
+            vec![],
+        ))
     }
 }
 

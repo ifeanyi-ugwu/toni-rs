@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
-use ulo::di::Execution;
 use ulo::di::ProviderScope;
+use ulo::di::{Execution, ResolutionError};
 use ulo::http::RequestPart;
 use ulo::spi::Provider;
 /// Injectable GraphQL service that executes GraphQL queries.
@@ -102,14 +102,14 @@ where
     Subscription: SubscriptionType + 'static,
     Ctx: ContextBuilder,
 {
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         //Box::new(self.clone())
 
         let service: GraphQLService<Query, Mutation, Subscription, Ctx> = GraphQLService {
             schema: self.schema.clone(),
             context_builder: self.context_builder.clone(),
         };
-        Box::new(service)
+        Ok(Box::new(service))
     }
 
     fn token(&self) -> String {

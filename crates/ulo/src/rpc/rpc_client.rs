@@ -338,8 +338,11 @@ impl Provider for RpcClient {
         crate::di::token_of::<Self>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.clone())
+    async fn resolve(
+        &self,
+        _ctx: Execution,
+    ) -> Result<Box<dyn Any + Send>, crate::di::ResolutionError> {
+        Ok(Box::new(self.clone()))
     }
 
     fn scope(&self) -> ProviderScope {

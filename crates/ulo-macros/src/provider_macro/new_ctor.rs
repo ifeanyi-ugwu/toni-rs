@@ -75,10 +75,12 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         fn #build_fn<'a>(
             deps: &'a ::ulo::__construct::ResolvedDeps,
             __exec_ctx: ::ulo::di::Execution,
-        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self> + Send + 'a>> {
+        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<
+            Output = ::std::result::Result<Self, ::ulo::di::ResolutionError>,
+        > + Send + 'a>> {
             ::std::boxed::Box::pin(async move {
                 #(#resolutions)*
-                Self::#method_name(#(#arg_names),*)
+                ::std::result::Result::Ok(Self::#method_name(#(#arg_names),*))
             })
         }
     })
@@ -119,8 +121,8 @@ fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStr
 }
 
 /// Resolve one constructor parameter from the dependency map, in the execution the instance is
-/// built in (`__exec_ctx`, `None` at startup) — mirroring the field-injection paths. Panics with a
-/// clear message on a missing or mistyped dependency.
+/// built in (`__exec_ctx`, `None` at startup) — mirroring the field-injection paths. A parameter
+/// that cannot be resolved there answers with its failure, and the constructor is not called.
 fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     // A collection answers its items erased; the path below downcasts to the parameter's own type.
     if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
@@ -145,11 +147,10 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
                 ));
             let __any = __provider
                 .resolve(__exec_ctx.clone())
-                .await;
-            *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
-                "Failed to downcast '{}' to {} for #[new] parameter '{}'",
-                __lookup_token, stringify!(#ty), #name_str
-            ))
+                .await?;
+            *__any.downcast::<#ty>().map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                token: __lookup_token.clone(),
+            })?
         };
     }
 }

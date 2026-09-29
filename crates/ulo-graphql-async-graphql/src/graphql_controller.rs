@@ -8,7 +8,7 @@ use ulo::FxHashMap;
 use ulo::dispatch::{Controller, ControllerFactory, Targets};
 use ulo::http::Route;
 use ulo::http::{Body, HttpMethod, HttpRequest, HttpResponse};
-use ulo::spi::Provider;
+use ulo::spi::{BuildResult, Provider};
 /// GraphQL request payload
 #[derive(Debug, Deserialize)]
 struct GraphQLRequest {
@@ -74,7 +74,7 @@ where
     async fn build(
         &self,
         dependencies: FxHashMap<String, Arc<Box<dyn Provider>>>,
-    ) -> Arc<dyn Controller> {
+    ) -> BuildResult<Arc<dyn Controller>> {
         let graphql_service = dependencies
             .get(&ulo::di::token_of::<
                 crate::GraphQLService<Query, Mutation, Subscription, Ctx>,
@@ -102,10 +102,10 @@ where
             }));
         }
 
-        Arc::new(GraphQLController {
+        Ok(Arc::new(GraphQLController {
             token: format!("GraphQLController_{}", self.path),
             routes,
-        })
+        }))
     }
 }
 
@@ -213,7 +213,8 @@ where
         let service_any = self
             .graphql_service
             .resolve(ulo::di::Execution::Http(ctx.clone()))
-            .await;
+            .await
+            .expect("GraphQLService is a singleton, which resolves in any execution");
 
         let service = service_any
             .downcast_ref::<GraphQLService<Query, Mutation, Subscription, Ctx>>()

@@ -11,8 +11,8 @@ use std::{
 use async_trait::async_trait;
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Provider, ProviderFactory},
 };
 
 pub(crate) struct PrismaClientFactory<C, F, Fut>
@@ -54,15 +54,18 @@ where
         Some(self.registration.to_string())
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> ulo::spi::Injectable {
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<ulo::spi::Injectable> {
         let client = (self.connect)().await;
-        ulo::spi::Injectable::new(
+        Ok(ulo::spi::Injectable::new(
             Arc::new(Box::new(PrismaClientProvider {
                 client,
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -77,7 +80,7 @@ impl<C: Send + Sync + Clone + 'static> Provider for PrismaClientProvider<C> {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.client.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.client.clone()))
     }
 }

@@ -16,6 +16,7 @@ use crate::dispatch::transport::{
     Answer, Grpc, GuardEntry, GuardFactory, Http, InterceptorEntry, InterceptorFactory, Rpc, Ws,
 };
 use crate::enhancer::{ErrorHandler, Guard, Interceptor};
+use crate::error::{BuildResult, ResolutionError};
 use crate::grpc::GrpcContext;
 use crate::http::HttpContext;
 use crate::http::middleware::Middleware;
@@ -46,8 +47,8 @@ impl<S: ?Sized + Send + Sync + 'static> Provider for BindingProvider<S> {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.item.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.item.clone()))
     }
 }
 
@@ -57,12 +58,12 @@ impl<S: ?Sized + Send + Sync + 'static> ProviderFactory for Binding<S> {
         self.token.clone()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let provider: Box<dyn Provider> = Box::new(BindingProvider {
             token: self.token.clone(),
             item: self.item.clone(),
         });
-        Injectable::new(Arc::new(provider), slot_roles(&self.item))
+        Ok(Injectable::new(Arc::new(provider), slot_roles(&self.item)))
     }
 }
 
@@ -134,15 +135,15 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
-        let item = (self.cast)(Arc::new(self.factory.call(&built, Execution::None).await));
+        let item = (self.cast)(Arc::new(self.factory.call(&built, Execution::None).await?));
         let roles = slot_roles(&item);
         let provider: Box<dyn Provider> = Box::new(BindingProvider {
             token: self.token.clone(),
             item,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }
 
@@ -165,8 +166,8 @@ struct Converted<V, S: ?Sized> {
 impl<V: Send + Sync + 'static, S: ?Sized + Send + Sync + 'static> MakeInExecution<S>
     for Converted<V, S>
 {
-    fn make(&self, execution: Execution) -> BoxFuture<'_, Arc<S>> {
-        Box::pin(async move { (self.cast)(self.make.make(execution).await) })
+    fn make(&self, execution: Execution) -> BoxFuture<'_, Result<Arc<S>, ResolutionError>> {
+        Box::pin(async move { Ok((self.cast)(self.make.make(execution).await?)) })
     }
 }
 
@@ -186,8 +187,8 @@ impl<S: ?Sized + Send + Sync + 'static> Provider for ScopedBindingProvider<S> {
         self.scope
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.make.make(ctx).await)
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.make.make(ctx).await?))
     }
 }
 
@@ -206,11 +207,15 @@ where
         F::dependency_tokens()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
         let make: Arc<dyn MakeInExecution<S>> = Arc::new(Converted {
-            make: Arc::new(Maker::new(self.factory.clone(), built, self.scope))
-                as Arc<dyn MakeInExecution<F::Output>>,
+            make: Arc::new(Maker::new(
+                self.factory.clone(),
+                built,
+                self.scope,
+                self.token.clone(),
+            )) as Arc<dyn MakeInExecution<F::Output>>,
             cast: self.cast,
         });
         let roles = S::roles(&make);
@@ -219,7 +224,7 @@ where
             scope: self.scope,
             make,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }
 
@@ -250,18 +255,13 @@ impl<T: 'static, S: ?Sized + 'static> RecastProvider<T, S> {
         inner: &Arc<Box<dyn Provider>>,
         cast: fn(Arc<T>) -> Arc<S>,
         ctx: Execution,
-    ) -> Arc<S> {
-        let value = inner
-            .resolve(ctx)
-            .await
-            .downcast::<T>()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "`{}` resolved to a value of another type",
-                    crate::di::token_of::<T>()
-                )
-            });
-        cast(Arc::new(*value))
+    ) -> Result<Arc<S>, ResolutionError> {
+        let value = inner.resolve(ctx).await?.downcast::<T>().map_err(|_| {
+            ResolutionError::TypeMismatch {
+                token: crate::di::token_of::<T>(),
+            }
+        })?;
+        Ok(cast(Arc::new(*value)))
     }
 }
 
@@ -279,11 +279,11 @@ where
         self.inner.scope()
     }
 
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send> {
-        match &self.shared {
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(match &self.shared {
             Some(item) => Box::new(item.clone()),
-            None => Box::new(Self::convert(&self.inner, self.cast, ctx).await),
-        }
+            None => Box::new(Self::convert(&self.inner, self.cast, ctx).await?),
+        })
     }
 
     async fn on_module_init(&self) -> crate::di::InitResult {
@@ -325,11 +325,11 @@ where
         T::provider_factory().identity_hint()
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let Injectable { instance, roles } = T::provider_factory().build(deps).await;
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        let Injectable { instance, roles } = T::provider_factory().build(deps).await?;
         let shared = match instance.scope() {
             ProviderScope::Singleton => {
-                Some(RecastProvider::convert(&instance, self.cast, Execution::None).await)
+                Some(RecastProvider::convert(&instance, self.cast, Execution::None).await?)
             }
             _ => None,
         };
@@ -339,7 +339,7 @@ where
             cast: self.cast,
             shared,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }
 
@@ -360,6 +360,10 @@ pub trait PerExecution: 'static {
     fn roles(make: &Arc<dyn MakeInExecution<Self>>) -> Vec<ProviderRole>;
 }
 
+// A per-execution guard or interceptor is built inside a live execution, which leaves `make`
+// nothing to refuse but a dependency of another type. The panic unwinds from `create`, which runs
+// outside the recovery around `can_activate` and `intercept`, so the chain is not offered it as
+// this enhancer's panic.
 macro_rules! per_execution_roles {
     ($($transport:ident, $context:ident, $guard:ident, $interceptor:ident;)*) => {$(
         per_execution_roles!(@guard $transport, $context, $guard, dyn Guard<$context>);
@@ -383,8 +387,11 @@ macro_rules! per_execution_roles {
                         ctx: &'a $context,
                     ) -> BoxFuture<'a, Arc<dyn Guard<$context> + Send + Sync>> {
                         Box::pin(async move {
-                            let guard: Arc<dyn Guard<$context> + Send + Sync> =
-                                self.0.make(Execution::from(ctx.clone())).await;
+                            let guard: Arc<dyn Guard<$context> + Send + Sync> = self
+                                .0
+                                .make(Execution::from(ctx.clone()))
+                                .await
+                                .unwrap_or_else(|error| panic!("{error}"));
                             guard
                         })
                     }
@@ -410,7 +417,11 @@ macro_rules! per_execution_roles {
                         Box::pin(async move {
                             let interceptor: Arc<
                                 dyn Interceptor<$context, Answer<$transport>> + Send + Sync,
-                            > = self.0.make(Execution::from(ctx.clone())).await;
+                            > = self
+                                .0
+                                .make(Execution::from(ctx.clone()))
+                                .await
+                                .unwrap_or_else(|error| panic!("{error}"));
                             interceptor
                         })
                     }

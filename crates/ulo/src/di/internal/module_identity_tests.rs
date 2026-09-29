@@ -11,11 +11,12 @@ use async_trait::async_trait;
 
 use crate::FxHashMap;
 use crate::di::DynamicModule;
+use crate::di::ResolutionError;
 use crate::di::internal::scanner::DependencyScanner;
 use crate::di::internal::{Container, InstanceLoader};
 use crate::di::{Execution, ModuleMetadata};
 use crate::dispatch::ControllerFactory;
-use crate::spi::{Injectable, Provider, ProviderFactory};
+use crate::spi::{BuildResult, Injectable, Provider, ProviderFactory};
 /// A provider that builds a trivial value. `token` is its injection token; `hint` is the
 /// configuration fingerprint folded into the owning module's identity.
 struct FakeFactory {
@@ -33,13 +34,13 @@ impl ProviderFactory for FakeFactory {
         self.hint.clone()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
             Arc::new(Box::new(FakeProvider {
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -52,8 +53,8 @@ impl Provider for FakeProvider {
     fn token(&self) -> String {
         self.token.clone()
     }
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(0i32)
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(0i32))
     }
 }
 

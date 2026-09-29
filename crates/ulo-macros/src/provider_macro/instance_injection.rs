@@ -279,8 +279,11 @@ fn generate_singleton_provider(struct_name: &Ident, provider_name: &Ident) -> To
             async fn resolve(
                 &self,
                 _ctx: ::ulo::di::Execution,
-            ) -> Box<dyn ::std::any::Any + Send> {
-                Box::new((*self.instance).clone())
+            ) -> ::std::result::Result<
+                Box<dyn ::std::any::Any + Send>,
+                ::ulo::di::ResolutionError,
+            > {
+                ::std::result::Result::Ok(Box::new((*self.instance).clone()))
             }
 
             fn token(&self) -> String {
@@ -310,10 +313,9 @@ fn generate_execution_provider(
 
     let struct_instantiation = struct_instantiation(struct_name, dependencies, &field_names);
 
-    // Execution-scoped providers require an active execution. Constructing one outside
-    // of any execution would silently violate the declared scope contract. Which
-    // execution it is does not matter — every transport has one, and the cache that
-    // makes the scope mean anything lives on it.
+    // The instance lives in the execution's cache, which only an execution has; which
+    // transport's does not matter. Outside one the answer is the refusal, which a provider
+    // built at startup and injecting this one fails its build with.
     //
     // Build via the `#[new]` constructor when one exists (its inherent const shadows the blanket
     // `CtorBridge` default), else by field injection — same dispatch as the singleton factory.
@@ -321,24 +323,22 @@ fn generate_execution_provider(
         use ::ulo::__construct::CtorBridge as _;
         let __exec_ctx = _ctx;
         if __exec_ctx.cache().is_none() {
-            panic!(
-                "Execution-scoped provider '{}' requires an active execution; it cannot be \
-                 resolved outside one.",
-                ::std::any::type_name::<#struct_name>()
-            );
+            return ::std::result::Result::Err(::ulo::di::ResolutionError::ExecutionRequired {
+                token: ::ulo::di::token_of::<#struct_name>(),
+            });
         }
         if let Some(__cached) = __exec_ctx
             .cache()
             .and_then(|__c| __c.get::<#struct_name>())
         {
-            return Box::new(__cached);
+            return ::std::result::Result::Ok(Box::new(__cached));
         }
         // Thread the execution on, so an execution-scoped constructor parameter resolves in
         // the same one and is shared rather than rebuilt.
         let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE
             .map(|__ctor| (__ctor.build)(&self.dependencies, __exec_ctx.clone()))
         {
-            ::std::option::Option::Some(__fut) => __fut.await,
+            ::std::option::Option::Some(__fut) => __fut.await?,
             ::std::option::Option::None => {
                 #(#field_resolutions)*
                 #struct_instantiation
@@ -348,7 +348,7 @@ fn generate_execution_provider(
             .cache()
             .expect("checked above")
             .insert(instance.clone());
-        Box::new(instance)
+        ::std::result::Result::Ok(Box::new(instance))
     };
 
     quote! {
@@ -365,7 +365,10 @@ fn generate_execution_provider(
             async fn resolve(
                 &self,
                 _ctx: ::ulo::di::Execution,
-            ) -> Box<dyn ::std::any::Any + Send> {
+            ) -> ::std::result::Result<
+                Box<dyn ::std::any::Any + Send>,
+                ::ulo::di::ResolutionError,
+            > {
                 #execute_body
             }
 
@@ -475,7 +478,7 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
                     String,
                     ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>,
                 >,
-            ) -> ::std::sync::Arc<dyn ::ulo::dispatch::Controller> {
+            ) -> ::ulo::spi::BuildResult<::std::sync::Arc<dyn ::ulo::dispatch::Controller>> {
                 let __force_execution: bool = <#struct_name>::__ulo_is_execution_scoped();
                 let __declared =
                     <Self as ::ulo::dispatch::ControllerFactory>::dependency_tokens(self);
@@ -505,11 +508,11 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
                             &dependencies,
                             ::ulo::di::Execution::None,
                         )
-                        .await,
+                        .await?,
                     ))
                 };
 
-                ::std::sync::Arc::new(#object_name { source: __source })
+                ::std::result::Result::Ok(::std::sync::Arc::new(#object_name { source: __source }))
             }
         }
 
@@ -547,22 +550,26 @@ pub(crate) fn generate_dispatch_provider(
             async fn resolve(
                 &self,
                 _ctx: ::ulo::di::Execution,
-            ) -> Box<dyn ::std::any::Any + Send> {
+            ) -> ::std::result::Result<
+                Box<dyn ::std::any::Any + Send>,
+                ::ulo::di::ResolutionError,
+            > {
                 let __exec_ctx = _ctx;
                 if __exec_ctx.cache().is_none() {
-                    panic!(
-                        "Dispatch target '{}' is built per call and requires an active execution.",
-                        ::std::any::type_name::<#struct_name>()
+                    return ::std::result::Result::Err(
+                        ::ulo::di::ResolutionError::ExecutionRequired {
+                            token: ::ulo::di::token_of::<#struct_name>(),
+                        },
                     );
                 }
                 if let Some(__cached) = __exec_ctx
                     .cache()
                     .and_then(|__c| __c.get::<::std::sync::Arc<#struct_name>>())
                 {
-                    return Box::new(::std::result::Result::<
+                    return ::std::result::Result::Ok(Box::new(::std::result::Result::<
                         ::std::sync::Arc<#struct_name>,
                         ::ulo::errors::HookFailed,
-                    >::Ok(__cached));
+                    >::Ok(__cached)));
                 }
                 // `__exec_ctx` threads into the build, so an execution-scoped dependency resolves
                 // in the same execution and is shared rather than rebuilt.
@@ -570,7 +577,7 @@ pub(crate) fn generate_dispatch_provider(
                     &self.dependencies,
                     __exec_ctx.clone(),
                 )
-                .await;
+                .await?;
                 let __instance = ::std::sync::Arc::new(__instance);
                 // Hooks complete before the cache holds the instance, so nothing is handed a
                 // pre-init one, and a failed hook leaves nothing cached for the call to reuse.
@@ -593,19 +600,19 @@ pub(crate) fn generate_dispatch_provider(
                 }
                 .await;
                 if let ::std::result::Result::Err(__failed) = __hooks {
-                    return Box::new(::std::result::Result::<
+                    return ::std::result::Result::Ok(Box::new(::std::result::Result::<
                         ::std::sync::Arc<#struct_name>,
                         ::ulo::errors::HookFailed,
-                    >::Err(__failed));
+                    >::Err(__failed)));
                 }
                 __exec_ctx
                     .cache()
                     .expect("checked above")
                     .insert(__instance.clone());
-                Box::new(::std::result::Result::<
+                ::std::result::Result::Ok(Box::new(::std::result::Result::<
                     ::std::sync::Arc<#struct_name>,
                     ::ulo::errors::HookFailed,
-                >::Ok(__instance))
+                >::Ok(__instance)))
             }
 
             fn token(&self) -> String {
@@ -648,7 +655,10 @@ fn generate_transient_provider(
             async fn resolve(
                 &self,
                 _ctx: ::ulo::di::Execution,
-            ) -> Box<dyn ::std::any::Any + Send> {
+            ) -> ::std::result::Result<
+                Box<dyn ::std::any::Any + Send>,
+                ::ulo::di::ResolutionError,
+            > {
                 // Build via the `#[new]` constructor when one exists, else by field injection.
                 // A transient is rebuilt at every injection point, so it is built inside
                 // whatever execution asked for it — and its execution-scoped fields resolve in
@@ -656,13 +666,13 @@ fn generate_transient_provider(
                 use ::ulo::__construct::CtorBridge as _;
                 let __exec_ctx = _ctx;
                 let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(&self.dependencies, __exec_ctx.clone())) {
-                    ::std::option::Option::Some(__fut) => __fut.await,
+                    ::std::option::Option::Some(__fut) => __fut.await?,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
                         #struct_instantiation
                     }
                 };
-                Box::new(instance)
+                ::std::result::Result::Ok(Box::new(instance))
             }
 
             fn token(&self) -> String {
@@ -738,14 +748,12 @@ fn field_resolutions(
                             __lookup_token, #field_name_str
                         ));
 
-                    let any_box = provider.resolve(#ctx).await;
+                    let any_box = provider.resolve(#ctx).await?;
 
                     *any_box.downcast::<#full_type>()
-                        .unwrap_or_else(|_| panic!(
-                            "Failed to downcast '{}' to {}",
-                            __lookup_token,
-                            stringify!(#full_type)
-                        ))
+                        .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                            token: __lookup_token.clone(),
+                        })?
                 };
             };
 
@@ -781,24 +789,20 @@ fn field_resolutions(
                 if matches!(provider.scope(), ::ulo::di::ProviderScope::Transient) {
                     #(
                         #field_idents = {
-                            let any_box = provider.resolve(#ctx).await;
+                            let any_box = provider.resolve(#ctx).await?;
                             *any_box.downcast::<#full_type>()
-                                .unwrap_or_else(|_| panic!(
-                                    "Failed to downcast '{}' to {}",
-                                    __lookup_token,
-                                    stringify!(#full_type)
-                                ))
+                                .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                                    token: __lookup_token.clone(),
+                                })?
                         };
                     )*
                 } else {
                     let #temp_var: #full_type = {
-                        let any_box = provider.resolve(#ctx).await;
+                        let any_box = provider.resolve(#ctx).await?;
                         *any_box.downcast::<#full_type>()
-                            .unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}",
-                                __lookup_token,
-                                stringify!(#full_type)
-                            ))
+                            .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                                token: __lookup_token.clone(),
+                            })?
                     };
 
                     #(
@@ -893,55 +897,6 @@ fn generate_singleton_factory(
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
         .collect();
 
-    // Generate scope validation code (Singleton cannot inject Request)
-    let scope_validation = if !dependencies.fields.is_empty() {
-        let dep_checks: Vec<_> = dependencies
-            .fields
-            .iter()
-            .map(|(field_name, _full_type, lookup_token_expr)| {
-                let dep_name = field_name.to_string();
-                quote! {
-                    {
-                        let __lookup_token = #lookup_token_expr;
-                        if let Some(provider) = dependencies.get(&__lookup_token) {
-                            let dep_scope = provider.scope();
-                            if matches!(dep_scope, ::ulo::di::ProviderScope::Execution) {
-                                panic!(
-                                    "\n❌ Scope validation error in provider '{}':\n\
-                                     \n\
-                                     Singleton-scoped providers cannot inject Execution-scoped providers.\n\
-                                     Dependency '{}' depends on '{}' which has Execution scope.\n\
-                                     \n\
-                                     This restriction prevents data leakage across executions. Singleton providers\n\
-                                     live for the entire application lifetime and would capture stale data from one execution.\n\
-                                     \n\
-                                     Solutions:\n\
-                                     1. Change '{}' to Execution scope: #[injectable(scope = \"execution\")]\n\
-                                     2. Change '{}' to Singleton scope (if appropriate for your use case)\n\
-                                     3. Pass execution-specific data as method parameters instead of injecting\n\
-                                     4. Extract data in controller (which has HttpRequest access) and pass it down\n\
-                                     \n",
-                                    ::std::any::type_name::<#struct_name>(),
-                                    #dep_name,
-                                    __lookup_token,
-                                    ::std::any::type_name::<#struct_name>(),
-                                    __lookup_token
-                                );
-                            }
-                        }
-                    }
-                }
-            })
-            .collect();
-
-        quote! {
-            // Validate scope compatibility (runtime check at startup)
-            #(#dep_checks)*
-        }
-    } else {
-        quote! {}
-    };
-
     let role_pushes = generate_role_pushes(enhancer_traits);
 
     quote! {
@@ -964,18 +919,17 @@ fn generate_singleton_factory(
             async fn build(
                 &self,
                 __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::Injectable {
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
                 use ::ulo::__construct::CtorBridge as _;
                 let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
                     __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
 
-                #scope_validation
-
                 // Build via the `#[new]` constructor if one exists, else by field injection.
-                // Singletons are built at startup, outside any execution.
+                // Singletons are built at startup, outside any execution, and a dependency that
+                // needs one answers the refusal this build fails with.
                 let __exec_ctx = ::ulo::di::Execution::None;
                 let instance = match <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(&dependencies, __exec_ctx.clone())) {
-                    ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await),
+                    ::std::option::Option::Some(__fut) => ::std::sync::Arc::new(__fut.await?),
                     ::std::option::Option::None => ::std::sync::Arc::new({
                         #(#field_resolutions)*
                         #struct_instantiation
@@ -986,7 +940,7 @@ fn generate_singleton_factory(
                 #role_pushes
 
                 let provider = ::std::sync::Arc::new(Box::new(#provider_name { instance }) as Box<dyn ::ulo::spi::Provider>);
-                ::ulo::spi::Injectable::new(provider, __roles)
+                ::std::result::Result::Ok(::ulo::spi::Injectable::new(provider, __roles))
             }
         }
     }
@@ -1035,7 +989,7 @@ fn generate_request_factory(
             ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>);
         let mut __roles = ::std::vec::Vec::new();
         #factory_role_pushes
-        ::ulo::spi::Injectable::new(__provider, __roles)
+        ::std::result::Result::Ok(::ulo::spi::Injectable::new(__provider, __roles))
     };
 
     quote! {
@@ -1059,7 +1013,7 @@ fn generate_request_factory(
             async fn build(
                 &self,
                 __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::Injectable {
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
                 #build_body
             }
         }
@@ -1102,19 +1056,19 @@ fn generate_transient_factory(
                 __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
             let mut __roles = ::std::vec::Vec::new();
             #factory_role_pushes
-            ::ulo::spi::Injectable::new(
+            ::std::result::Result::Ok(::ulo::spi::Injectable::new(
                 ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
                 __roles,
-            )
+            ))
         }
     } else {
         quote! {
             let dependencies: ::ulo::FxHashMap<String, ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>> =
                 __deps.into_iter().map(|(k, inj)| (k, inj.instance)).collect();
-            ::ulo::spi::Injectable::new(
+            ::std::result::Result::Ok(::ulo::spi::Injectable::new(
                 ::std::sync::Arc::new(Box::new(#provider_name { dependencies }) as Box<dyn ::ulo::spi::Provider>),
                 ::std::vec::Vec::new(),
-            )
+            ))
         }
     };
 
@@ -1139,7 +1093,7 @@ fn generate_transient_factory(
             async fn build(
                 &self,
                 __deps: ::ulo::FxHashMap<String, ::ulo::spi::Injectable>,
-            ) -> ::ulo::spi::Injectable {
+            ) -> ::ulo::spi::BuildResult<::ulo::spi::Injectable> {
                 #build_body
             }
         }
@@ -1187,13 +1141,11 @@ fn generate_create_field_resolutions(
                         "Missing dependency '{}' for field '{}'",
                         __lookup_token, #field_name_str
                     ));
-                let __any_box = __provider.resolve(__exec_ctx.clone()).await;
+                let __any_box = __provider.resolve(__exec_ctx.clone()).await?;
                 *__any_box.downcast::<#full_type>()
-                    .unwrap_or_else(|_| panic!(
-                        "Failed to downcast '{}' to {}",
-                        __lookup_token,
-                        stringify!(#full_type)
-                    ))
+                    .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                        token: __lookup_token.clone(),
+                    })?
             };
         });
         field_names.push(field_name.clone());
@@ -1253,7 +1205,7 @@ fn generate_dyn_factories(
             async fn __build_instance<'a>(
                 &'a self,
                 __exec_ctx: ::ulo::di::Execution,
-            ) -> #struct_name {
+            ) -> ::std::result::Result<#struct_name, ::ulo::di::ResolutionError> {
                 // A `#[new]` constructor takes over construction; otherwise fall back to field
                 // injection. Both thread the execution so execution-scoped sub-dependencies
                 // resolve in it rather than in one of their own.
@@ -1265,7 +1217,7 @@ fn generate_dyn_factories(
                 }
                 let all_deps = self.all_deps.clone();
                 #(#field_resolutions)*
-                #struct_instantiation
+                ::std::result::Result::Ok(#struct_instantiation)
             }
         }
     };
@@ -1301,7 +1253,14 @@ fn generate_dyn_factories(
                 > + Send + 'a>> {
                     ::std::boxed::Box::pin(async move {
                         use ::ulo::__detect::prelude::*;
-                        let instance = self.__build_instance(#provider_ctx_variant(__ctx.clone())).await;
+                        // Built inside a live execution, which leaves nothing to refuse but a
+                        // dependency of another type. The panic unwinds from `create`, which runs
+                        // outside the recovery around `can_activate` and `intercept`, so the chain
+                        // is not offered it as this enhancer's panic.
+                        let instance = self
+                            .__build_instance(#provider_ctx_variant(__ctx.clone()))
+                            .await
+                            .unwrap_or_else(|__error| panic!("{__error}"));
                         ::ulo::__detect::#value_probe(::std::sync::Arc::new(instance))
                             .detect()
                             .expect("enhancer factory registered only when the type implements the role")
@@ -1365,19 +1324,21 @@ pub(crate) fn collection_field_resolution(
                     __lookup_token, #field_name_str
                 ));
             let __ctx = #ctx;
-            let __any_box = __provider.resolve(__ctx).await;
+            let __any_box = __provider.resolve(__ctx).await?;
             let erased_items = *__any_box
                 .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
-                .unwrap_or_else(|_| panic!(
-                    "Multi-provider '{}' returned unexpected type (expected Vec<Arc<dyn Any+Send+Sync>>)",
-                    __lookup_token
-                ));
+                .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                    token: __lookup_token.clone(),
+                })?;
             erased_items
                 .into_iter()
-                .map(|item| -> ::std::sync::Arc<#inner_trait> {
+                .map(|item| -> ::std::result::Result<
+                    ::std::sync::Arc<#inner_trait>,
+                    ::ulo::di::ResolutionError,
+                > {
                     #item_resolution
                 })
-                .collect()
+                .collect::<::std::result::Result<_, _>>()?
         };
     }
 }
@@ -1386,13 +1347,10 @@ pub(crate) fn collection_field_resolution(
 /// as the trait object the declaration wrote, which is the one the field is keyed by.
 fn collection_item_resolution(inner_trait: &syn::Type) -> proc_macro2::TokenStream {
     quote! {
-        match ::std::sync::Arc::downcast::<::std::sync::Arc<#inner_trait>>(item) {
-            Ok(wrapped) => (*wrapped).clone(),
-            Err(_) => panic!(
-                "Multi-provider '{}': item downcast to Arc<{}> failed",
-                __lookup_token,
-                stringify!(#inner_trait)
-            ),
-        }
+        ::std::sync::Arc::downcast::<::std::sync::Arc<#inner_trait>>(item)
+            .map(|wrapped| (*wrapped).clone())
+            .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                token: __lookup_token.clone(),
+            })
     }
 }

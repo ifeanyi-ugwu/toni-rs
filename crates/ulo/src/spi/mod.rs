@@ -10,4 +10,4 @@ pub(crate) mod provider;
 
 pub use self::bind_target::BindTarget;
 pub use self::provider::{Injectable, Provider, ProviderFactory, ProviderRole};
-pub use crate::error::AdapterResult;
+pub use crate::error::{AdapterResult, BuildResult};

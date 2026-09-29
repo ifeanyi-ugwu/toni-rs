@@ -1,6 +1,6 @@
 use crate::dispatch::ControllerFactory;
 use crate::dispatch::transport::{EnhancerSet, Http};
-use crate::error::SetupResult;
+use crate::error::{SetupResult, StartupError};
 use rustc_hash::FxHashMap;
 use std::{any::Any, sync::Arc};
 
@@ -32,6 +32,20 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for LoadError {
     fn from(source: Box<dyn std::error::Error + Send + Sync + 'static>) -> Self {
         Self::Failed(source)
     }
+}
+
+/// A factory's failed build, as the error `create` returns: a [`StartupError::BuildFailed`] boxed
+/// for the setup surface, which hands it back unwrapped.
+fn build_failed(
+    module_token: &str,
+    token: String,
+    source: Box<dyn std::error::Error + Send + Sync + 'static>,
+) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+    Box::new(StartupError::BuildFailed {
+        module: module_token.to_string(),
+        token,
+        source,
+    })
 }
 
 impl From<LoadError> for Box<dyn std::error::Error + Send + Sync + 'static> {
@@ -326,7 +340,12 @@ impl InstanceLoader {
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
 
-                let injectable = provider_factory.build(resolved_dependencies).await;
+                let injectable = provider_factory
+                    .build(resolved_dependencies)
+                    .await
+                    .map_err(|source| {
+                        build_failed(&module_token, provider_token.clone(), source)
+                    })?;
                 tracing::debug!(module = %module_token, provider = %injectable.instance.token(), "provider instantiated");
                 let token = injectable.instance.token();
                 instances.insert(token, injectable);
@@ -478,7 +497,13 @@ impl InstanceLoader {
                 .into_iter()
                 .map(|(k, inj)| (k, inj.instance))
                 .collect();
-            controllers_instances.push(controller_factory.build(resolved_dependencies).await);
+            let controller = controller_factory
+                .build(resolved_dependencies)
+                .await
+                .map_err(|source| {
+                    build_failed(&module_token, controller_factory.token(), source)
+                })?;
+            controllers_instances.push(controller);
         }
         self.add_controllers_instances(module_token, controllers_instances)?;
         Ok(())

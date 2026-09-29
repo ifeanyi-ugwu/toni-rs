@@ -3,6 +3,7 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 
 use crate::di::{Execution, ProviderScope};
+use crate::error::ResolutionError;
 use crate::spi::Provider;
 
 /// Holds all contributions for a given multi-provider base token.
@@ -25,7 +26,7 @@ impl Provider for MultiCollectionProvider {
         ProviderScope::Singleton
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.items.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.items.clone()))
     }
 }

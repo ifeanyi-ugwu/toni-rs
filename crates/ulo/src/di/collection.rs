@@ -22,6 +22,7 @@ use crate::di::provide::Built;
 use crate::di::{DeclaresProvider, Execution, token_of};
 use crate::dispatch::transport::{Answer, Grpc, GuardEntry, Http, InterceptorEntry, Rpc, Ws};
 use crate::enhancer::{ErrorHandler, Guard, Interceptor};
+use crate::error::{BuildResult, ResolutionError};
 use crate::grpc::GrpcContext;
 use crate::http::HttpContext;
 use crate::http::middleware::Middleware;
@@ -35,8 +36,9 @@ type ItemAndSource<T> = (Arc<T>, Option<Arc<Box<dyn Provider>>>);
 type BuildItem<T> = Arc<
     dyn Fn(
             Arc<Built>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ItemAndSource<T>> + Send>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = BuildResult<ItemAndSource<T>>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -72,9 +74,12 @@ impl<T: ?Sized + Send + Sync + 'static> Source<T> {
         }
     }
 
-    pub(crate) async fn item(&self, deps: FxHashMap<String, Injectable>) -> ItemAndSource<T> {
+    pub(crate) async fn item(
+        &self,
+        deps: FxHashMap<String, Injectable>,
+    ) -> BuildResult<ItemAndSource<T>> {
         match self {
-            Self::Item(item) => (item.clone(), None),
+            Self::Item(item) => Ok((item.clone(), None)),
             Self::Built { build, .. } => {
                 let built: Built = deps.into_iter().map(|(k, v)| (k, v.instance)).collect();
                 build(Arc::new(built)).await
@@ -97,15 +102,15 @@ where
                     .iter()
                     .map(|(k, v)| (k.clone(), Injectable::new(v.clone(), Vec::new())))
                     .collect();
-                let Injectable { instance, .. } = V::provider_factory().build(deps).await;
+                let Injectable { instance, .. } = V::provider_factory().build(deps).await?;
                 let value = *instance
                     .resolve(Execution::None)
-                    .await
+                    .await?
                     .downcast::<V>()
-                    .unwrap_or_else(|_| {
-                        panic!("`{}` resolved to a value of another type", token_of::<V>())
-                    });
-                (cast(Arc::new(value)), Some(instance))
+                    .map_err(|_| ResolutionError::TypeMismatch {
+                        token: token_of::<V>(),
+                    })?;
+                Ok((cast(Arc::new(value)), Some(instance)))
             })
         }),
     }
@@ -156,8 +161,8 @@ impl<T: ?Sized + Send + Sync + 'static> Provider for ContributionProvider<T> {
         Some(Arc::new(self.item.clone()))
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.item.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.item.clone()))
     }
 
     async fn on_module_init(&self) -> crate::di::InitResult {
@@ -207,8 +212,8 @@ impl<T: ?Sized + Send + Sync + 'static> ProviderFactory for Contribution<T> {
         Some(self.base.clone())
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
-        let (item, declared) = self.source.item(deps).await;
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        let (item, declared) = self.source.item(deps).await?;
         let roles = collection_roles(&item);
         let provider: Box<dyn Provider> = Box::new(ContributionProvider {
             token: self.token.clone(),
@@ -216,7 +221,7 @@ impl<T: ?Sized + Send + Sync + 'static> ProviderFactory for Contribution<T> {
             item,
             declared,
         });
-        Injectable::new(Arc::new(provider), roles)
+        Ok(Injectable::new(Arc::new(provider), roles))
     }
 }
 

@@ -115,13 +115,13 @@ fn generate_bridges(
                     ::std::sync::Arc<Box<dyn ::ulo::spi::Provider>>,
                 >,
                 __exec_ctx: ::ulo::di::Execution,
-            ) -> Self {
+            ) -> ::std::result::Result<Self, ::ulo::di::ResolutionError> {
                 use ::ulo::__construct::CtorBridge as _;
                 match <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.build)(dependencies, __exec_ctx.clone())) {
                     ::std::option::Option::Some(__fut) => __fut.await,
                     ::std::option::Option::None => {
                         #(#field_resolutions)*
-                        #struct_literal
+                        ::std::result::Result::Ok(#struct_literal)
                     }
                 }
             }
@@ -210,19 +210,23 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
                     #(
                         #idents = {
                             let __ctx = #ctx;
-                            let __any = __provider.resolve(__ctx).await;
-                            *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
-                                "Failed to downcast '{}' to {}", __lookup_token, stringify!(#ty)
-                            ))
+                            let __any = __provider.resolve(__ctx).await?;
+                            *__any.downcast::<#ty>().map_err(|_| {
+                                ::ulo::di::ResolutionError::TypeMismatch {
+                                    token: __lookup_token.clone(),
+                                }
+                            })?
                         };
                     )*
                 } else {
                     let __shared: #ty = {
                         let __ctx = #ctx;
-                        let __any = __provider.resolve(__ctx).await;
-                        *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
-                            "Failed to downcast '{}' to {}", __lookup_token, stringify!(#ty)
-                        ))
+                        let __any = __provider.resolve(__ctx).await?;
+                        *__any.downcast::<#ty>().map_err(|_| {
+                            ::ulo::di::ResolutionError::TypeMismatch {
+                                token: __lookup_token.clone(),
+                            }
+                        })?
                     };
                     #( #idents = __shared.clone(); )*
                 }
@@ -247,11 +251,10 @@ fn resolve_one(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
                 "Missing dependency '{}' for field '{}'", __lookup_token, #name_str
             ));
             let __ctx = #ctx;
-            let __any = __provider.resolve(__ctx).await;
-            *__any.downcast::<#ty>().unwrap_or_else(|_| panic!(
-                "Failed to downcast '{}' to {} for field '{}'",
-                __lookup_token, stringify!(#ty), #name_str
-            ))
+            let __any = __provider.resolve(__ctx).await?;
+            *__any.downcast::<#ty>().map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
+                token: __lookup_token.clone(),
+            })?
         };
     }
 }

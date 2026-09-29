@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 use sqlx::{Database, Pool};
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 use ulo_health::{HealthEntry, HealthIndicator, HealthIndicatorResult};
 
@@ -85,20 +85,20 @@ where
         vec![ulo::di::token_of::<Pool<DB>>()]
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let token = ulo::di::token_of::<Pool<DB>>();
         let connection = deps
             .get(&token)
             .expect("the health indicator is registered alongside the pool it checks")
             .instance
             .clone();
-        Injectable::new(
+        Ok(Injectable::new(
             Arc::new(Box::new(SqlxHealthProvider::<DB> {
                 connection,
                 _db: PhantomData,
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -125,11 +125,11 @@ where
         ulo::di::token_of::<SqlxHealthIndicator<DB>>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        let resolved = self.connection.resolve(Execution::None).await;
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        let resolved = self.connection.resolve(Execution::None).await?;
         let pool = *resolved
             .downcast::<Pool<DB>>()
             .expect("the registered pool provider yields a Pool");
-        Box::new(SqlxHealthIndicator { pool })
+        Ok(Box::new(SqlxHealthIndicator { pool }))
     }
 }

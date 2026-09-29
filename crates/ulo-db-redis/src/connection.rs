@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use ulo::{
     FxHashMap, StartupCheck,
-    di::Execution,
-    spi::{Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Provider, ProviderFactory},
 };
 
 pub(crate) struct RedisConnectionFactory {
@@ -26,7 +26,10 @@ impl ProviderFactory for RedisConnectionFactory {
         Some(self.url.clone())
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> ulo::spi::Injectable {
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<ulo::spi::Injectable> {
         // Configured lazily, with the check's deadline handed to the driver: its own connection
         // timeout is what bounds the probe, so nothing here needs a timer.
         // The driver's own retry is switched off and each attempt bounded, so the check's
@@ -39,8 +42,8 @@ impl ProviderFactory for RedisConnectionFactory {
                 .set_connection_timeout(Some(check.attempt_timeout()));
         }
 
-        // `build` returns the instance directly, so a failure is carried into the provider and
-        // reported from `on_module_init`, which can return it.
+        // A failure is carried into the provider and reported from `on_module_init` with the
+        // startup check's, so either arrives as `StartupError::HookFailed`.
         let (manager, init_error) = match redis::Client::open(self.url.as_str()) {
             Err(e) => (
                 None,
@@ -59,7 +62,7 @@ impl ProviderFactory for RedisConnectionFactory {
             },
         };
 
-        ulo::spi::Injectable::new(
+        Ok(ulo::spi::Injectable::new(
             Arc::new(Box::new(RedisConnectionProvider {
                 manager,
                 init_error,
@@ -68,7 +71,7 @@ impl ProviderFactory for RedisConnectionFactory {
                 token: self.token.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -89,9 +92,11 @@ impl Provider for RedisConnectionProvider {
         self.token.clone()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         // ConnectionManager is Clone (Arc-backed); clones share the same underlying connection.
-        Box::new(self.manager.clone().expect("redis connection unavailable"))
+        Ok(Box::new(
+            self.manager.clone().expect("redis connection unavailable"),
+        ))
     }
     async fn on_module_init(&self) -> ulo::di::InitResult {
         if let Some(message) = &self.init_error {

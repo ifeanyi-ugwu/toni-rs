@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use futures::future::{BoxFuture, join_all};
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
 };
 
 use crate::health_check_result::{HealthCheckResult, HealthIndicatorResult};
@@ -181,8 +181,11 @@ impl ProviderFactory for HealthCheckServiceFactory {
         ulo::di::token_of::<HealthCheckService>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(Arc::new(Box::new(HealthCheckServiceProvider)), vec![])
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
+            Arc::new(Box::new(HealthCheckServiceProvider)),
+            vec![],
+        ))
     }
 }
 
@@ -194,7 +197,7 @@ impl Provider for HealthCheckServiceProvider {
         ulo::di::token_of::<HealthCheckService>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(HealthCheckService)
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(HealthCheckService))
     }
 }

@@ -4,14 +4,32 @@
 //! A singleton outlives every request, so holding something execution-scoped
 //! means holding one arbitrary request's state forever. That failure is
 //! invisible at runtime — the application serves correctly until two requests
-//! disagree — so it is refused when the graph is built.
-use ulo::di::Execution;
+//! disagree — so `create` refuses it, naming the provider built at startup and
+//! the execution-scoped one it reaches, through however many transients.
+use ulo::di::{Execution, ModuleMetadata, ResolutionError};
 use ulo::enhancer::Guard;
 use ulo::http::{Body, HttpContext};
-use ulo::{UloFactory, async_trait, controller, get, injectable, module, new, routes};
+use ulo::{
+    StartupError, UloFactory, async_trait, controller, get, injectable, module, new, routes,
+};
 
 use crate::common::TestServer;
 
+/// The provider `create` refused to build and the execution-scoped provider it reached.
+async fn refusal(module: impl ModuleMetadata + 'static) -> (String, String) {
+    match UloFactory::create(module).await {
+        Err(StartupError::BuildFailed { token, source, .. }) => {
+            match source.downcast_ref::<ResolutionError>() {
+                Some(ResolutionError::ExecutionRequired { token: needed }) => {
+                    (token, needed.clone())
+                }
+                _ => panic!("unexpected build failure: {source}"),
+            }
+        }
+        Err(other) => panic!("unexpected startup error: {other}"),
+        Ok(_) => panic!("the module must be refused"),
+    }
+}
 #[tokio::test]
 async fn valid_singleton_injects_singleton() {
     #[injectable]
@@ -87,7 +105,6 @@ async fn valid_transient_injects_any_scope() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "Scope validation error")]
 async fn singleton_cannot_inject_request_scoped() {
     #[injectable(scope = "execution")]
     pub struct RequestService {}
@@ -103,7 +120,20 @@ async fn singleton_cannot_inject_request_scoped() {
     #[module(providers: [RequestService, SingletonService])]
     impl InvalidModule {}
 
-    let _app = UloFactory::create(InvalidModule).await.unwrap();
+    let err = match UloFactory::create(InvalidModule).await {
+        Err(err) => err,
+        Ok(_) => panic!("the module must be refused"),
+    };
+    let StartupError::BuildFailed { module, token, .. } = &err else {
+        panic!("unexpected startup error: {err}");
+    };
+    assert!(module.ends_with("InvalidModule"), "{module}");
+    assert!(token.ends_with("::SingletonService"), "{token}");
+    let message = err.to_string();
+    assert!(
+        message.contains("SingletonService") && message.contains("RequestService"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -184,7 +214,6 @@ async fn complex_valid_hierarchy() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "Scope validation error")]
 async fn explicit_singleton_with_request_fails() {
     #[injectable(scope = "execution")]
     pub struct RequestService {}
@@ -200,7 +229,9 @@ async fn explicit_singleton_with_request_fails() {
     #[module(providers: [RequestService, ExplicitSingleton])]
     impl TestModule {}
 
-    let _app = UloFactory::create(TestModule).await.unwrap();
+    let (refused, needed) = refusal(TestModule).await;
+    assert!(refused.ends_with("::ExplicitSingleton"), "{refused}");
+    assert!(needed.ends_with("::RequestService"), "{needed}");
 }
 
 #[injectable(scope = "execution")]

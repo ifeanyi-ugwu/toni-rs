@@ -6,6 +6,7 @@ use crate::FxHashMap;
 use crate::async_trait;
 use crate::di::Execution;
 use crate::di::ProviderScope;
+use crate::error::{BuildResult, ResolutionError};
 use crate::spi::{Provider, ProviderFactory};
 /// Singleton provider that hands out clones of the pre-built `BroadcastService`.
 pub(crate) struct BroadcastServiceProvider {
@@ -18,8 +19,8 @@ impl Provider for BroadcastServiceProvider {
         crate::di::token_of::<BroadcastService>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.instance.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.instance.clone()))
     }
 
     fn scope(&self) -> ProviderScope {
@@ -46,12 +47,12 @@ impl ProviderFactory for BroadcastServiceManager {
     async fn build(
         &self,
         _deps: FxHashMap<String, crate::spi::Injectable>,
-    ) -> crate::spi::Injectable {
-        crate::spi::Injectable::new(
+    ) -> BuildResult<crate::spi::Injectable> {
+        Ok(crate::spi::Injectable::new(
             Arc::new(Box::new(BroadcastServiceProvider {
                 instance: BroadcastService::new(),
             }) as Box<dyn Provider>),
             vec![],
-        )
+        ))
     }
 }

@@ -8,6 +8,7 @@ use crate::di::ProviderScope;
 use crate::dispatch::transport::{
     ErrorHandlerArc, Grpc, GuardEntry, Http, InterceptorEntry, Rpc, Ws,
 };
+use crate::error::{BuildResult, ResolutionError};
 use crate::http::middleware::Middleware;
 
 #[async_trait]
@@ -20,7 +21,11 @@ pub trait Provider: Send + Sync {
     /// one per execution and caches it on `ctx`, so everything in the same call that asks for
     /// this token shares it; a transient one builds on every call. The answer is erased —
     /// callers downcast to the concrete type the token stands for.
-    async fn resolve(&self, ctx: Execution) -> Box<dyn Any + Send>;
+    ///
+    /// An execution-scoped provider must answer [`Execution::None`] with
+    /// [`ResolutionError::ExecutionRequired`]: no caller refuses on its scope first. A provider
+    /// resolving its own dependencies passes their failure on.
+    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError>;
     fn scope(&self) -> ProviderScope {
         ProviderScope::Singleton
     }
@@ -114,5 +119,11 @@ pub trait ProviderFactory: Send + Sync {
         None
     }
 
-    async fn build(&self, deps: FxHashMap<String, Injectable>) -> Injectable;
+    /// The provider, built from `deps`: every token [`dependency_tokens`](Self::dependency_tokens)
+    /// names, each already built.
+    ///
+    /// A singleton builds its value here, outside any execution, and a dependency it cannot
+    /// resolve there fails the build; the loader reports it as
+    /// [`StartupError::BuildFailed`](crate::error::StartupError::BuildFailed).
+    async fn build(&self, deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable>;
 }

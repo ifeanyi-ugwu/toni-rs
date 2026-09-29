@@ -4,7 +4,7 @@ use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use std::sync::Arc;
 use ulo::FxHashMap;
-use ulo::spi::{Injectable, Provider, ProviderFactory};
+use ulo::spi::{BuildResult, Injectable, Provider, ProviderFactory};
 /// `ProviderFactory` for `GraphQLService` — registered during module scanning.
 pub struct GraphQLServiceFactory<Query, Mutation, Subscription, Ctx>
 where
@@ -48,13 +48,16 @@ where
         ulo::di::token_of::<crate::GraphQLService<Query, Mutation, Subscription, Ctx>>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> Injectable {
-        Injectable::new(
+    async fn build(
+        &self,
+        _deps: FxHashMap<String, ulo::spi::Injectable>,
+    ) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
             Arc::new(Box::new(GraphQLService::new(
                 self.schema.clone(),
                 self.context_builder.clone(),
             )) as Box<dyn Provider>),
             vec![],
-        )
+        ))
     }
 }

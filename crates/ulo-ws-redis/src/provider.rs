@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use ulo::{
     FxHashMap,
-    di::Execution,
-    spi::{Injectable, Provider, ProviderFactory},
+    di::{Execution, ResolutionError},
+    spi::{BuildResult, Injectable, Provider, ProviderFactory},
     ws::BroadcastService,
 };
 
@@ -30,13 +30,13 @@ impl ProviderFactory for SharedBroadcastServiceProviderFactory {
         ulo::di::token_of::<BroadcastService>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
-        Injectable::new(
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
+        Ok(Injectable::new(
             Arc::new(Box::new(SharedBroadcastServiceProvider {
                 instance: self.instance.clone(),
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -50,8 +50,8 @@ impl Provider for SharedBroadcastServiceProvider {
         ulo::di::token_of::<BroadcastService>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.instance.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.instance.clone()))
     }
 }
 
@@ -84,7 +84,7 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
         ulo::di::token_of::<RedisBroadcastService>()
     }
 
-    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> Injectable {
+    async fn build(&self, _deps: FxHashMap<String, Injectable>) -> BuildResult<Injectable> {
         let client = redis::Client::open(self.url.as_str())
             .unwrap_or_else(|e| panic!("ulo-ws-redis: invalid Redis URL '{}': {e}", self.url));
 
@@ -140,12 +140,12 @@ impl ProviderFactory for RedisBroadcastServiceFactory {
             join_handle.abort_handle(),
         );
 
-        Injectable::new(
+        Ok(Injectable::new(
             Arc::new(Box::new(RedisBroadcastServiceProvider {
                 instance: service,
             })),
             vec![],
-        )
+        ))
     }
 }
 
@@ -159,7 +159,7 @@ impl Provider for RedisBroadcastServiceProvider {
         ulo::di::token_of::<RedisBroadcastService>()
     }
 
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.instance.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.instance.clone()))
     }
 }

@@ -11,8 +11,8 @@ use async_graphql::{ObjectType, Schema, SubscriptionType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ulo::di::Execution;
 use ulo::di::ProviderScope;
+use ulo::di::{Execution, ResolutionError};
 use ulo::spi::Provider;
 use ulo::ws::WsContext;
 use ulo::ws::{DisconnectReason, Gateway, WsClient, WsError, WsHandlerOutput, WsMessage};
@@ -318,8 +318,8 @@ where
     M: ObjectType + 'static,
     S: SubscriptionType + 'static,
 {
-    async fn resolve(&self, _ctx: Execution) -> Box<dyn Any + Send> {
-        Box::new(self.clone())
+    async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
+        Ok(Box::new(self.clone()))
     }
 
     fn token(&self) -> String {
