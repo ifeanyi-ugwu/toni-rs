@@ -88,8 +88,8 @@ impl Container {
     pub fn add_module(&mut self, module_metadata: Box<dyn ModuleMetadata>) -> SetupResult {
         let token: String = module_metadata.identity().key();
         // The token is the full identity key (type name for static modules, base + config
-        // fingerprint for dynamic ones). A repeat is the same module reached through a second
-        // import path — a diamond — so dedup instead of overwriting. Distinct modules that
+        // fingerprint for dynamic ones). The scanner skips a module it has already scanned; a
+        // repeat from any other caller is deduped rather than overwritten. Distinct modules that
         // resolve to the same exported provider token are caught later, at global-provider
         // registration.
         if self.modules.contains_key(&token) {

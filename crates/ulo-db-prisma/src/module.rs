@@ -2,7 +2,7 @@ use std::{future::Future, marker::PhantomData};
 
 use ulo::di::{DynamicModule, Key, token_of};
 
-use crate::client::PrismaClientFactory;
+use crate::client::{PrismaClientFactory, next_registration};
 
 pub struct PrismaModule;
 
@@ -12,6 +12,10 @@ impl PrismaModule {
     /// `connect` is a closure that produces the generated `PrismaClient`. It is called once
     /// during application startup. The client is registered globally under its concrete type,
     /// so any injectable can declare it as a dependency without additional imports.
+    ///
+    /// Import it once. Two closures cannot be told apart, so each call is a registration of its
+    /// own, and a second `for_root` of one client type fails startup naming both modules; a second
+    /// client takes a marker through [`for_root_keyed`](Self::for_root_keyed).
     ///
     /// ```ignore
     /// // schema.prisma → cargo prisma generate → generates db::PrismaClient
@@ -52,6 +56,7 @@ impl PrismaModule {
             .provider(PrismaClientFactory::<C, F, Fut> {
                 connect,
                 token: ulo::di::token_of::<C>(),
+                registration: next_registration(),
                 _client: PhantomData,
             })
             .export::<C>()
@@ -83,10 +88,8 @@ impl PrismaModule {
     /// }
     /// ```
     ///
-    /// The marker names the client across the application. Two clients under one marker are one
-    /// module to the container, the client having no configuration to fingerprint: one is
-    /// registered and the other dropped as a repeat, within one `imports` list the one written
-    /// last, as with two `for_root` calls of one type.
+    /// The marker names the client across the application, and two clients under one marker fail
+    /// startup naming both modules, as two `for_root` calls of one type do.
     pub fn for_root_keyed<K, Fut>(
         connect: impl Fn() -> Fut + Send + Sync + 'static,
     ) -> DynamicModule
@@ -99,6 +102,7 @@ impl PrismaModule {
             .provider(PrismaClientFactory {
                 connect,
                 token: token_of::<K>(),
+                registration: next_registration(),
                 _client: PhantomData,
             })
             .export::<K>()

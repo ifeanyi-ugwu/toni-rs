@@ -1,4 +1,12 @@
-use std::{any::Any, future::Future, marker::PhantomData, sync::Arc};
+use std::{
+    any::Any,
+    future::Future,
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use ulo::{
@@ -17,7 +25,18 @@ where
     // Injection token for this client: `C`'s own for the default (`for_root`), or the marker's
     // for a `for_root_keyed` client.
     pub token: String,
+    // This call's place among the process's registrations. The client is configured by a closure,
+    // which cannot be compared, so no two calls are the same registration: each one's module gets
+    // an identity of its own, and two of one client type collide on the global export at startup
+    // rather than one being dropped as a repeat of the other.
+    pub registration: u64,
     pub _client: PhantomData<C>,
+}
+
+static REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_registration() -> u64 {
+    REGISTRATIONS.fetch_add(1, Ordering::Relaxed)
 }
 
 #[async_trait]
@@ -29,6 +48,10 @@ where
 {
     fn token(&self) -> String {
         self.token.clone()
+    }
+
+    fn identity_hint(&self) -> Option<String> {
+        Some(self.registration.to_string())
     }
 
     async fn build(&self, _deps: FxHashMap<String, ulo::spi::Injectable>) -> ulo::spi::Injectable {
