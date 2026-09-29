@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: `#[on_module_init]` on `Session` never fires: `Session` is execution-scoped, built per execution and dropped with it, so the framework holds no instance of it to run the hook on; make `Session` a singleton to keep the hook, or remove it
+ --> tests/diagnostics/hook_on_a_scope_that_never_fires.rs:4:27
+  |
+4 | #[ulo::injectable(scope = "execution")]
+  |                           ^^^^^^^^^^^ evaluation of `_` failed here
+
+error[E0080]: evaluation panicked: `#[on_module_destroy]` on `Draft` never fires: `Draft` is transient, built afresh for every consumer, so the framework holds no instance of it to run the hook on; make `Draft` a singleton to keep the hook, or remove it
+  --> tests/diagnostics/hook_on_a_scope_that_never_fires.rs:14:27
+   |
+14 | #[ulo::injectable(scope = "transient")]
+   |                           ^^^^^^^^^^^ evaluation of `_` failed here

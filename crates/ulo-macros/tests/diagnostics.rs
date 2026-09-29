@@ -132,6 +132,10 @@ const DOCUMENTED: &[(&str, &str)] = &[
         "duplicate definitions with name `__ULO_ONE_NEW_PER_TYPE`",
     ),
     (
+        "hook_on_a_scope_that_never_fires",
+        "never fires: `Session` is execution-scoped",
+    ),
+    (
         "use_guards_takes_no_string",
         "a key is a type, not a string",
     ),
