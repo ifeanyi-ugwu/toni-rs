@@ -252,12 +252,35 @@ impl Container {
 
     /// Register an RPC controller's resolved wrapper under its token. Called from the controller
     /// path at create, with enhancer tokens already resolved against the role registry.
+    ///
+    /// A pattern another controller already declares is refused, naming both. Left in, dispatch
+    /// would reach one of the two by the registry's hash order, and `NatsAdapter`, which subscribes
+    /// once per entry in the pattern list, would run every call twice.
     pub(crate) fn add_rpc_controller(
         &mut self,
         token: String,
         wrapper: Arc<crate::rpc::RpcControllerWrapper>,
-    ) {
+    ) -> SetupResult {
+        // An earlier registration under this same token is not compared: it is the token's
+        // collision, not the pattern's.
+        for pattern in wrapper.patterns() {
+            let declared_by =
+                self.role_registry
+                    .rpc_controllers
+                    .iter()
+                    .find(|(other, registered)| {
+                        **other != token && registered.patterns().contains(&pattern)
+                    });
+            if let Some((other, _)) = declared_by {
+                return Err(format!(
+                    "RPC pattern `{pattern}` is declared by two controllers, `{other}` and \
+                     `{token}`; a pattern has one handler"
+                )
+                .into());
+            }
+        }
         self.role_registry.rpc_controllers.insert(token, wrapper);
+        Ok(())
     }
 
     /// Register a gRPC service and its resolved enhancer bundle under the service's token.

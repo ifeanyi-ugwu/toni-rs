@@ -26,11 +26,35 @@ pub fn handle_patterns(item: TokenStream) -> Result<TokenStream> {
     let mut message_handlers: Vec<(String, syn::ImplItemFn)> = Vec::new();
     let mut event_handlers: Vec<(String, syn::ImplItemFn)> = Vec::new();
 
+    // A pattern repeated here would leave the later method unreachable, its dispatch arm shadowed by
+    // the earlier one, and hand the adapter the pattern twice.
+    let mut declared: Vec<(String, syn::Ident)> = Vec::new();
     for item in &impl_block.items {
         if let ImplItem::Fn(method) = item {
-            if let Some(pattern) = extract_pattern_attr(&method.attrs, "message_pattern") {
+            let (pattern, attr, is_message) = if let Some((pattern, attr)) =
+                extract_pattern_attr(&method.attrs, "message_pattern")
+            {
+                (pattern, attr, true)
+            } else if let Some((pattern, attr)) =
+                extract_pattern_attr(&method.attrs, "event_pattern")
+            {
+                (pattern, attr, false)
+            } else {
+                continue;
+            };
+            if let Some((_, first)) = declared.iter().find(|(seen, _)| *seen == pattern) {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "RPC pattern `{pattern}` is already declared by `{first}` in this impl; a \
+                         pattern has one handler"
+                    ),
+                ));
+            }
+            declared.push((pattern.clone(), method.sig.ident.clone()));
+            if is_message {
                 message_handlers.push((pattern, method.clone()));
-            } else if let Some(pattern) = extract_pattern_attr(&method.attrs, "event_pattern") {
+            } else {
                 check_event_return_type(method)?;
                 event_handlers.push((pattern, method.clone()));
             }
@@ -303,11 +327,11 @@ fn build_enhancers_fn(
     })
 }
 
-fn extract_pattern_attr(attrs: &[Attribute], name: &str) -> Option<String> {
+fn extract_pattern_attr<'a>(attrs: &'a [Attribute], name: &str) -> Option<(String, &'a Attribute)> {
     for attr in attrs {
         if attr_is(attr, name) {
             if let Ok(lit) = attr.parse_args::<LitStr>() {
-                return Some(lit.value());
+                return Some((lit.value(), attr));
             }
         }
     }

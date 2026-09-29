@@ -540,7 +540,7 @@ impl InstanceLoader {
                     }
                 }
                 ResolvedDispatch::Rpc(wrapper) => {
-                    container_mut.add_rpc_controller(token.clone(), wrapper)
+                    container_mut.add_rpc_controller(token.clone(), wrapper)?
                 }
                 ResolvedDispatch::Grpc(source, enhancers) => {
                     container_mut.add_grpc_service(token.clone(), (source, enhancers))
