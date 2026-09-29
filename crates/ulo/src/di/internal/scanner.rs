@@ -1,4 +1,5 @@
 use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use crate::error::SetupResult;
@@ -29,6 +30,9 @@ impl DependencyScanner {
 
         while let Some(default_module) = stack.pop() {
             let module_id = default_module.identity().key();
+            if ctx_registry.iter().any(|seen| seen == &module_id) {
+                continue;
+            }
             tracing::debug!(module = %module_id, "scanning module");
             // Dedup on the full key: two dynamic modules with different config share a base
             // but not a fingerprint, and both must survive to the clash check.
@@ -63,7 +67,33 @@ impl DependencyScanner {
             self.insert_controllers(module_token.clone())?;
             self.insert_exports(module_token.clone())?;
         }
+        self.refuse_a_key_bound_both_ways()
+    }
 
+    /// A key holds one binding or a collection declared with `into`, never both (ADR-0057): a
+    /// collection field finds a single binding it can see before the collection. Collections are
+    /// registered by base key across modules, so the check runs once every module's providers are
+    /// in.
+    fn refuse_a_key_bound_both_ways(&self) -> SetupResult {
+        let container = self.container.read();
+        for (base, contributions) in container.multi_providers() {
+            let Some((collected_in, _)) = contributions.first() else {
+                continue;
+            };
+            for module_token in container.module_tokens() {
+                let bound = container
+                    .get_module_by_token(&module_token)
+                    .is_some_and(|module| module.provider_factories().contains_key(base));
+                if bound {
+                    return Err(format!(
+                        "`{base}` is bound in module `{module_token}` and collected with `into` \
+                         in module `{collected_in}`; a key holds one binding or a collection, not \
+                         both"
+                    )
+                    .into());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -121,8 +151,21 @@ impl DependencyScanner {
             let count = providers.len();
             let mut app_guards: usize = 0;
             let mut app_interceptors: usize = 0;
-            for provider in providers {
+            // Each binding by its 1-based position in the module's provider list, so a second one
+            // under a key is refused naming both (ADR-0057). Contributions carry tokens of their
+            // own, so only single bindings can meet here.
+            let mut bound: FxHashMap<String, usize> = FxHashMap::default();
+            for (position, provider) in providers.into_iter().enumerate() {
                 let provider_token = provider.token();
+                if let Some(first) = bound.insert(provider_token.clone(), position + 1) {
+                    return Err(format!(
+                        "`{provider_token}` is bound twice in module `{module_token}`, by its \
+                         provider entries {first} and {}; a key holds one binding, and `into` \
+                         collects several",
+                        position + 1
+                    )
+                    .into());
+                }
 
                 // Detect multi-provider contributions and record them by base token. The unnamed
                 // collection of an HTTP guard or interceptor type is that transport's global set.

@@ -747,6 +747,8 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
 /// - at startup, a contribution to any other role collection (a guard or interceptor of RPC,
 ///   WebSocket or gRPC, an error handler, middleware), naming the `UloFactory::use_global_*` method
 ///   that registers it;
+/// - at startup, a second binding under one key in one module, naming both entries, and a key bound
+///   in any module and collected with `into` in any module, naming both modules;
 /// - `.per_execution()` or `.transient()` under a slot holding an error handler, middleware or any
 ///   trait object other than a guard or an interceptor.
 #[proc_macro]
