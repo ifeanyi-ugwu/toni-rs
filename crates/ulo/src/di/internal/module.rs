@@ -13,7 +13,7 @@ use crate::{
     http::Route,
     spi::{Provider, ProviderFactory},
 };
-pub struct Module {
+pub(crate) struct Module {
     controllers: FxIndexMap<String, Arc<dyn ControllerFactory>>,
     providers: FxIndexMap<String, Arc<dyn ProviderFactory>>,
     imports: FxHashSet<String>,
@@ -28,7 +28,7 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn new(metadata: Box<dyn ModuleMetadata>) -> Self {
+    pub(crate) fn new(metadata: Box<dyn ModuleMetadata>) -> Self {
         let metadata: Arc<dyn ModuleMetadata> = Arc::from(metadata);
         Self {
             controllers: FxIndexMap::default(),
@@ -44,25 +44,25 @@ impl Module {
     }
 }
 impl Module {
-    pub fn add_controller(&mut self, controller: Box<dyn ControllerFactory>) {
+    pub(crate) fn add_controller(&mut self, controller: Box<dyn ControllerFactory>) {
         self.controllers
             .insert(controller.token(), Arc::from(controller));
     }
 
-    pub fn add_provider(&mut self, provider: Box<dyn ProviderFactory>) {
+    pub(crate) fn add_provider(&mut self, provider: Box<dyn ProviderFactory>) {
         self.providers.insert(provider.token(), Arc::from(provider));
     }
 
-    pub fn add_import(&mut self, module_token: String) {
+    pub(crate) fn add_import(&mut self, module_token: String) {
         self.imports.insert(module_token);
     }
 
-    pub fn add_export(&mut self, provider_token: String) {
+    pub(crate) fn add_export(&mut self, provider_token: String) {
         self.exports.insert(provider_token);
     }
 
     /// Keep the controller instance for lifecycle-hook dispatch (one per struct).
-    pub fn add_controller_object(&mut self, controller: Arc<dyn Controller>) {
+    pub(crate) fn add_controller_object(&mut self, controller: Arc<dyn Controller>) {
         self.controller_objects.push(controller);
     }
 
@@ -85,18 +85,18 @@ impl Module {
             .insert(key, Arc::new(instance_wrapper));
     }
 
-    pub fn add_provider_instance(&mut self, provider: Arc<Box<dyn Provider>>) {
+    pub(crate) fn add_provider_instance(&mut self, provider: Arc<Box<dyn Provider>>) {
         self.providers_instances.insert(provider.token(), provider);
     }
-    pub fn add_export_instance(&mut self, provider_token: String) {
+    pub(crate) fn add_export_instance(&mut self, provider_token: String) {
         self.exports_instances.insert(provider_token);
     }
 
-    pub fn provider_factories(&self) -> &FxIndexMap<String, Arc<dyn ProviderFactory>> {
+    pub(crate) fn provider_factories(&self) -> &FxIndexMap<String, Arc<dyn ProviderFactory>> {
         &self.providers
     }
 
-    pub fn provider_instances(&self) -> &FxIndexMap<String, Arc<Box<dyn Provider>>> {
+    pub(crate) fn provider_instances(&self) -> &FxIndexMap<String, Arc<Box<dyn Provider>>> {
         &self.providers_instances
     }
 
@@ -104,21 +104,21 @@ impl Module {
     ///
     /// Cloned out so a caller can await [`ProviderFactory::build`] without holding the
     /// container lock across it.
-    pub fn get_provider_by_token(
+    pub(crate) fn get_provider_by_token(
         &self,
         provider_token: &String,
     ) -> Option<Arc<dyn ProviderFactory>> {
         self.providers.get(provider_token).map(Arc::clone)
     }
 
-    pub fn get_provider_instance_by_token(
+    pub(crate) fn get_provider_instance_by_token(
         &self,
         provider_token: &String,
     ) -> Option<&Arc<Box<dyn Provider>>> {
         self.providers_instances.get(provider_token)
     }
 
-    pub fn controller_factories(&self) -> &FxIndexMap<String, Arc<dyn ControllerFactory>> {
+    pub(crate) fn controller_factories(&self) -> &FxIndexMap<String, Arc<dyn ControllerFactory>> {
         &self.controllers
     }
 
@@ -126,15 +126,15 @@ impl Module {
         self.controllers_instances.drain()
     }
 
-    pub fn imported_modules(&self) -> &FxHashSet<String> {
+    pub(crate) fn imported_modules(&self) -> &FxHashSet<String> {
         &self.imports
     }
 
-    pub fn exported_instance_tokens(&self) -> &FxHashSet<String> {
+    pub(crate) fn exported_instance_tokens(&self) -> &FxHashSet<String> {
         &self.exports_instances
     }
 
-    pub fn exported_tokens(&self) -> &FxHashSet<String> {
+    pub(crate) fn exported_tokens(&self) -> &FxHashSet<String> {
         &self.exports
     }
 
@@ -142,11 +142,11 @@ impl Module {
     ///
     /// Cloned out so a caller can await one of its lifecycle hooks without holding the
     /// container lock across the await.
-    pub fn metadata(&self) -> Arc<dyn ModuleMetadata> {
+    pub(crate) fn metadata(&self) -> Arc<dyn ModuleMetadata> {
         Arc::clone(&self.metadata)
     }
 
-    pub fn _get_controller_by_token(
+    pub(crate) fn _get_controller_by_token(
         &self,
         controller_token: &String,
     ) -> Option<&dyn ControllerFactory> {
@@ -156,7 +156,7 @@ impl Module {
     }
 
     /// The controller instances, one per struct, for lifecycle-hook dispatch.
-    pub fn controller_objects(&self) -> &[Arc<dyn Controller>] {
+    pub(crate) fn controller_objects(&self) -> &[Arc<dyn Controller>] {
         &self.controller_objects
     }
 }
