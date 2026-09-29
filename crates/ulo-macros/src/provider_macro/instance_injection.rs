@@ -521,10 +521,11 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
     }
 }
 
-/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with `Arc<T>`, caches
-/// that `Arc` in the execution, fires init/bootstrap at the build site where hook resolution sees
-/// the concrete type, and builds through the struct's `__ulo_build_from_deps` bridge. Nothing
-/// clones the target, so the struct needs no `Clone`.
+/// The per-call provider behind a `DispatchSource::PerCall` arm: it answers with
+/// `Result<Arc<T>, HookFailed>`, fires init/bootstrap at the build site where hook resolution sees
+/// the concrete type, caches the `Arc` in the execution once both return `Ok`, and builds through
+/// the struct's `__ulo_build_from_deps` bridge. Nothing clones the target, so the struct needs no
+/// `Clone`.
 pub(crate) fn generate_dispatch_provider(
     struct_name: &Ident,
     provider_name: &Ident,
@@ -554,7 +555,10 @@ pub(crate) fn generate_dispatch_provider(
                     .cache()
                     .and_then(|__c| __c.get::<::std::sync::Arc<#struct_name>>())
                 {
-                    return Box::new(__cached);
+                    return Box::new(::std::result::Result::<
+                        ::std::sync::Arc<#struct_name>,
+                        ::ulo::errors::HookFailed,
+                    >::Ok(__cached));
                 }
                 // `__exec_ctx` threads into the build, so an execution-scoped dependency resolves
                 // in the same execution and is shared rather than rebuilt.
@@ -565,17 +569,39 @@ pub(crate) fn generate_dispatch_provider(
                 .await;
                 let __instance = ::std::sync::Arc::new(__instance);
                 // Hooks complete before the cache holds the instance, so nothing is handed a
-                // pre-init one.
-                {
+                // pre-init one, and a failed hook leaves nothing cached for the call to reuse.
+                let __hooks: ::std::result::Result<(), ::ulo::errors::HookFailed> = async {
                     use ::ulo::__lifecycle::LifecycleBridge as _;
-                    let _ = #struct_name::__ulo_lc_on_init(&__instance).await;
-                    let _ = #struct_name::__ulo_lc_on_bootstrap(&__instance).await;
+                    #struct_name::__ulo_lc_on_init(&__instance).await.map_err(|__e| {
+                        ::ulo::errors::HookFailed::new(
+                            ::ulo::di::token_of::<#struct_name>(),
+                            "on_module_init",
+                            __e,
+                        )
+                    })?;
+                    #struct_name::__ulo_lc_on_bootstrap(&__instance).await.map_err(|__e| {
+                        ::ulo::errors::HookFailed::new(
+                            ::ulo::di::token_of::<#struct_name>(),
+                            "on_application_bootstrap",
+                            __e,
+                        )
+                    })
+                }
+                .await;
+                if let ::std::result::Result::Err(__failed) = __hooks {
+                    return Box::new(::std::result::Result::<
+                        ::std::sync::Arc<#struct_name>,
+                        ::ulo::errors::HookFailed,
+                    >::Err(__failed));
                 }
                 __exec_ctx
                     .cache()
                     .expect("checked above")
                     .insert(__instance.clone());
-                Box::new(__instance)
+                Box::new(::std::result::Result::<
+                    ::std::sync::Arc<#struct_name>,
+                    ::ulo::errors::HookFailed,
+                >::Ok(__instance))
             }
 
             fn token(&self) -> String {

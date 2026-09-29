@@ -12,4 +12,6 @@ mod error;
 mod framework;
 
 pub use error::{Error, ErrorKind};
-pub use framework::{GuardRejection, MiddlewareFailure, PanicRecovered, PipelineSegment, Unrouted};
+pub use framework::{
+    GuardRejection, HookFailed, MiddlewareFailure, PanicRecovered, PipelineSegment, Unrouted,
+};

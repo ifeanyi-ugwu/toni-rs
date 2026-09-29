@@ -15,15 +15,22 @@ use crate::rpc::RpcContext;
 use futures::StreamExt;
 
 /// The innermost step of the chain: the controller, resolved for this call, asked to handle it.
+///
+/// Resolution sits inside the panic recovery with the handler, so a per-call controller whose
+/// constructor or startup hook panics answers the call as the handler's panic would.
 struct ControllerLeaf(Arc<dyn RpcControllerSource>);
 
 #[async_trait]
 impl Leaf<Rpc> for ControllerLeaf {
     async fn call(&self, context: &RpcContext) -> RpcHandlerResult {
-        let controller = self.0.resolve(context).await;
         match crate::panic_recovery::catch_async(
             crate::errors::PipelineSegment::HandlerBody,
-            controller.handle_message(context),
+            async {
+                match self.0.resolve(context).await {
+                    Ok(controller) => controller.handle_message(context).await,
+                    Err(failed) => ExecutionResult::Err(RpcError::from(failed)),
+                }
+            },
         )
         .await
         {

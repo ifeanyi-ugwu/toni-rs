@@ -4,6 +4,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use crate::di::Execution;
+use crate::errors::HookFailed;
 use crate::spi::provider::Provider;
 
 /// How a dispatch target's instance is held: built once at startup and shared by every
@@ -18,11 +19,11 @@ pub enum DispatchSource<T> {
     Singleton(Arc<T>),
     /// The target's own provider, resolved inside the call being served.
     ///
-    /// The provider must answer with `Arc<T>`, cache that `Arc` in the execution, and
-    /// fire init/bootstrap at its own build site — hook resolution needs a
-    /// concrete-type call site, which the generated provider body is and this generic
-    /// code is not. A target asked for twice in one call is then built once and its
-    /// hooks fire once.
+    /// The provider must answer with `Result<Arc<T>, HookFailed>`, fire init/bootstrap at its
+    /// own build site — hook resolution needs a concrete-type call site, which the generated
+    /// provider body is and this generic code is not — and cache the `Arc` in the execution
+    /// only once both hooks return `Ok`. A target asked for twice in one call is then built
+    /// once and its hooks fire once; one whose hook failed is left out of the cache.
     PerCall(Arc<Box<dyn Provider>>),
 }
 
@@ -36,18 +37,31 @@ impl<T> Clone for DispatchSource<T> {
 }
 
 impl<T: Any + Send + Sync> DispatchSource<T> {
-    /// Resolve the instance serving the execution `ctx` belongs to.
-    pub async fn resolve(&self, ctx: Execution) -> Arc<T> {
+    /// Resolve the instance serving the execution `ctx` belongs to, or the failure of a per-call
+    /// target's startup hook, which fails the call. The hook's error is logged here, since the
+    /// event's message leaves it out.
+    pub async fn resolve(&self, ctx: Execution) -> Result<Arc<T>, HookFailed> {
         match self {
-            Self::Singleton(instance) => instance.clone(),
+            Self::Singleton(instance) => Ok(instance.clone()),
             Self::PerCall(provider) => {
                 let any = provider.resolve(ctx).await;
-                *any.downcast::<Arc<T>>().unwrap_or_else(|_| {
-                    panic!(
-                        "dispatch target '{}' resolved to a different type",
-                        std::any::type_name::<T>()
-                    )
-                })
+                let built = *any
+                    .downcast::<Result<Arc<T>, HookFailed>>()
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "dispatch target '{}' resolved to a different type",
+                            std::any::type_name::<T>()
+                        )
+                    });
+                if let Err(failed) = &built {
+                    tracing::error!(
+                        dispatch_target = %failed.target,
+                        hook = failed.hook,
+                        error = %failed.source,
+                        "a per-call dispatch target's startup hook failed; the call fails with it"
+                    );
+                }
+                built
             }
         }
     }

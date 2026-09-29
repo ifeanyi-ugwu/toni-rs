@@ -1072,9 +1072,17 @@ fn build_wrapper_method(
                     // body, so a panicking constructor renders a status rather than tearing down
                     // the connection.
                     let __caught = ::ulo::__grpc::catch_handler_panic(async move {
-                        let __inner = __source
+                        let __inner = match __source
                             .resolve(::ulo::di::Execution::Grpc(__build_ctx))
-                            .await;
+                            .await
+                        {
+                            ::std::result::Result::Ok(__inner) => __inner,
+                            ::std::result::Result::Err(__failed) => {
+                                return ::std::result::Result::Err(
+                                    ::ulo::grpc::GrpcStatus::of(__failed),
+                                );
+                            }
+                        };
                         #self_ident::#run(&__inner, &__run_ctx).await
                     }).await;
                     match __caught {

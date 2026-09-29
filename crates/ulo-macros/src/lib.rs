@@ -595,27 +595,27 @@ macro_rules! lifecycle_hook_macro {
 lifecycle_hook_macro!(
     on_module_init,
     provider_macro::lifecycle_attr::Hook::OnInit,
-    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> ulo::di::InitResult`, run after the DI container is built. Returning `Err` aborts startup. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on."
+    "Lifecycle hook on a `#[injectable]` struct: `async fn(&self) -> ulo::di::InitResult`, run after the DI container is built. Returning `Err` aborts startup. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. On a dispatch target built per call, it runs on each instance, and an `Err` fails that call as `ulo::errors::HookFailed`."
 );
 lifecycle_hook_macro!(
     on_application_bootstrap,
     provider_macro::lifecycle_attr::Hook::OnBootstrap,
-    "Lifecycle hook: `async fn(&self) -> ulo::di::InitResult`, run after all modules initialize, before the server accepts connections. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on."
+    "Lifecycle hook: `async fn(&self) -> ulo::di::InitResult`, run after all modules initialize, before the server accepts connections. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. On a dispatch target built per call, it runs on each instance after `#[on_module_init]`, and an `Err` fails that call as `ulo::errors::HookFailed`."
 );
 lifecycle_hook_macro!(
     on_module_destroy,
     provider_macro::lifecycle_attr::Hook::OnDestroy,
-    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on."
+    "Lifecycle hook: `async fn(&self)`, run as the module is torn down during shutdown. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. Not run on a dispatch target built per call, which leaves the framework no instance at shutdown."
 );
 lifecycle_hook_macro!(
     before_application_shutdown,
     provider_macro::lifecycle_attr::Hook::BeforeShutdown,
-    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run before shutdown begins. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on."
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run before shutdown begins. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. Not run on a dispatch target built per call, which leaves the framework no instance at shutdown."
 );
 lifecycle_hook_macro!(
     on_application_shutdown,
     provider_macro::lifecycle_attr::Hook::OnShutdown,
-    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run as the application shuts down. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on."
+    "Lifecycle hook: `async fn(&self, signal: Option<String>)`, run as the application shuts down. Refused on an execution-scoped or transient `#[injectable]`, which the framework holds no instance of to run it on. Not run on a dispatch target built per call, which leaves the framework no instance at shutdown."
 );
 
 #[proc_macro_derive(Config, attributes(env, default, nested))]
