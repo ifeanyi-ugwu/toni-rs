@@ -90,6 +90,7 @@ mod new_ctor_injection;
 mod owned_fields;
 mod panic_recovery;
 mod param_syntax_conformance;
+mod per_call_hook_failure;
 mod pipeline_panic_is_an_event;
 mod provide_macro;
 mod provide_values;
