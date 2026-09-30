@@ -104,7 +104,7 @@ mod factory_dep_generic {
             .get_key::<ConfiguredName>()
             .await
             .expect("the factory built from its dep");
-        assert_eq!(name, "token-test");
+        assert_eq!(*name, "token-test");
     }
 }
 
@@ -162,10 +162,10 @@ mod marker_lookup {
     async fn a_marker_reaches_its_registration() {
         let app = UloFactory::create(TestModule).await.unwrap();
 
-        let value: String = app
+        let value = app
             .get_key::<NamedValue>()
             .await
             .expect("the marker names the same key the registration used");
-        assert_eq!(value, "held");
+        assert_eq!(*value, "held");
     }
 }

@@ -6,6 +6,7 @@
 //! more than the successes. Execution-scoped resolution through a handle
 //! is covered too — it needs an execution to resolve into, and asking without
 //! one is a refusal rather than a panic.
+use std::sync::Arc;
 use ulo::prelude::*;
 use uuid::Uuid;
 
@@ -62,26 +63,26 @@ pub struct PluginLoader {
 
 impl PluginLoader {
     /// The current module only (the default)
-    pub async fn load_service_here(&self) -> Option<DatabaseService> {
+    pub async fn load_service_here(&self) -> Option<Arc<DatabaseService>> {
         self.module_ref.get::<DatabaseService>().await.ok()
     }
 
     /// Everything visible to the module: its own, its imports' exports, the globals
-    pub async fn load_service_visible(&self) -> Option<CacheService> {
+    pub async fn load_service_visible(&self) -> Option<Arc<CacheService>> {
         self.module_ref.get::<CacheService>().visible().await.ok()
     }
 
     /// A provider of another module, which the current module alone does not hold
-    pub async fn load_cache_here(&self) -> Option<CacheService> {
+    pub async fn load_cache_here(&self) -> Option<Arc<CacheService>> {
         self.module_ref.get::<CacheService>().await.ok()
     }
 
     /// Resolution through a key, in the current module
-    pub async fn load_by_key_here(&self) -> Option<DatabaseService> {
+    pub async fn load_by_key_here(&self) -> Option<Arc<DatabaseService>> {
         self.module_ref.get_key::<DatabaseService>().await.ok()
     }
 
-    pub async fn load_request_scoped(&self) -> Result<RequestScopedService, String> {
+    pub async fn load_request_scoped(&self) -> Result<Arc<RequestScopedService>, String> {
         self.module_ref
             .get::<RequestScopedService>()
             .await
@@ -91,7 +92,7 @@ impl PluginLoader {
     pub async fn resolve_request_scoped(
         &self,
         execution: &Execution,
-    ) -> Result<RequestScopedService, String> {
+    ) -> Result<Arc<RequestScopedService>, String> {
         self.module_ref
             .resolve::<RequestScopedService>(execution)
             .await

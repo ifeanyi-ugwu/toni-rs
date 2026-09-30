@@ -334,7 +334,7 @@ async fn injectable_accepts_path_qualified_clone_derive() {
     let app = ulo::UloFactory::create_application_context(QualifiedCloneModule)
         .await
         .unwrap();
-    let svc: QualifiedCloneService = app
+    let svc = app
         .get::<QualifiedCloneService>()
         .await
         .expect("resolves with a user-supplied qualified Clone derive");

@@ -47,7 +47,7 @@ async fn a_module_waiting_on_a_global_is_retried() {
         .await
         .expect("the module ordered before its global provider is retried, not refused");
 
-    let scheduler: Scheduler = app
+    let scheduler = app
         .get_from::<Scheduler>(&ulo::di::token_of::<SchedulerModule>())
         .await
         .expect("the deferred module's provider is built by the time create returns");
@@ -63,7 +63,7 @@ impl ProviderFirstModule {}
 async fn import_order_does_not_decide_whether_the_wait_happens() {
     let app = UloFactory::create(ProviderFirstModule).await.unwrap();
 
-    let scheduler: Scheduler = app
+    let scheduler = app
         .get_from::<Scheduler>(&ulo::di::token_of::<SchedulerModule>())
         .await
         .unwrap();

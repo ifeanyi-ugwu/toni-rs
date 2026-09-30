@@ -92,7 +92,7 @@ async fn a_context_resolves_from_another_thread() {
         let ctx = Arc::clone(&ctx);
         resolved.push(tokio::spawn(async move {
             let execution = Execution::standalone();
-            let greeter: Greeter = ctx.resolve(&execution).await.unwrap();
+            let greeter = ctx.resolve::<Greeter>(&execution).await.unwrap();
             greeter.greeting()
         }));
     }

@@ -226,11 +226,11 @@ async fn each_declaration_is_read_by_the_key_it_was_written_with() {
 async fn a_declaration_under_a_marker_is_read_by_the_marker() {
     let app = UloFactory::create(ValuesModule).await.unwrap();
 
-    assert_eq!(app.get_key::<Port>().await.unwrap(), 3000);
-    assert_eq!(app.get_key::<PortAlias>().await.unwrap(), 3000);
-    assert_eq!(app.get_key::<Seven>().await.unwrap(), 7);
-    assert_eq!(app.get_key::<Ten>().await.unwrap(), 10);
-    assert_eq!(app.get_key::<BannerText>().await.unwrap(), "app-banner");
+    assert_eq!(*app.get_key::<Port>().await.unwrap(), 3000);
+    assert_eq!(*app.get_key::<PortAlias>().await.unwrap(), 3000);
+    assert_eq!(*app.get_key::<Seven>().await.unwrap(), 7);
+    assert_eq!(*app.get_key::<Ten>().await.unwrap(), 10);
+    assert_eq!(*app.get_key::<BannerText>().await.unwrap(), "app-banner");
     assert_eq!(app.get_key::<Motd>().await.unwrap().0, "welcome");
     assert_eq!(app.get_key::<Replica>().await.unwrap().name, "logger");
     assert_eq!(app.get_key::<ReplicaAgain>().await.unwrap().name, "logger");
@@ -243,14 +243,14 @@ async fn a_marker_is_read_through_a_module() {
     let module = app.get_module::<ValuesModule>().await.unwrap();
 
     assert_eq!(
-        app.get_from_key::<Port>(module.current_module())
+        *app.get_from_key::<Port>(module.current_module())
             .await
             .unwrap(),
         3000
     );
-    assert_eq!(module.get_key::<Seven>().execute().await.unwrap(), 7);
+    assert_eq!(*module.get_key::<Seven>().execute().await.unwrap(), 7);
     assert_eq!(
-        module
+        *module
             .resolve_key::<Ten>(&Execution::standalone())
             .execute()
             .await

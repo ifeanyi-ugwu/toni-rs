@@ -45,7 +45,7 @@ async fn a_second_binding_under_one_key_is_refused_naming_both() {
     let ctx = UloFactory::create_application_context(OneBinding)
         .await
         .expect("one binding starts");
-    assert_eq!(ctx.get_key::<Port>().await.unwrap(), 1);
+    assert_eq!(*ctx.get_key::<Port>().await.unwrap(), 1);
 }
 
 #[module(providers: [

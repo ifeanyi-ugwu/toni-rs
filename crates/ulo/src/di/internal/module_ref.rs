@@ -191,8 +191,8 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
         self
     }
 
-    /// Execute the query and return the provider instance
-    pub async fn execute(self) -> Result<T, ResolutionError>
+    /// Execute the query and return what it found, as an `Arc<T>` field reads it.
+    pub async fn execute(self) -> Result<Arc<T>, ResolutionError>
     where
         T: Send,
     {
@@ -233,20 +233,16 @@ impl<'a, T: 'static> ModuleRefQuery<'a, T> {
             })?
         };
 
-        provider_instance
-            .resolve(self.execution.clone())
-            .await?
-            .downcast::<T>()
-            .map(|boxed| *boxed)
-            .map_err(|_| ResolutionError::TypeMismatch {
-                token: self.token.clone(),
-            })
+        crate::__di::take_shared(
+            provider_instance.resolve(self.execution.clone()).await?,
+            &self.token,
+        )
     }
 }
 
 /// Awaiting the query runs it, so a lookup reads as `module.get::<T>().await`.
 impl<'a, T: 'static + Send> std::future::IntoFuture for ModuleRefQuery<'a, T> {
-    type Output = Result<T, ResolutionError>;
+    type Output = Result<Arc<T>, ResolutionError>;
     type IntoFuture =
         std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send + 'a>>;
 

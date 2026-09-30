@@ -235,7 +235,7 @@ async fn new_ctor_injects_without_storing() {
         .unwrap();
 
     // Server was built via Self::new(config) — config injected, only port kept.
-    let server: Server = app
+    let server = app
         .get::<Server>()
         .await
         .expect("Server resolves via #[new]");
@@ -276,7 +276,7 @@ async fn new_ctor_transient_scope_resolves() {
         .await
         .unwrap();
     // Transient is resolvable through the application context; the constructor must have run.
-    let t: TransientServer = app
+    let t = app
         .get::<TransientServer>()
         .await
         .expect("TransientServer resolves via #[new]");
@@ -324,7 +324,7 @@ async fn new_ctor_builds_non_default_field() {
         .unwrap();
     // `Handle` has no `Default`; the field is built solely by the constructor. Resolving proves the
     // dead field-injection path compiles without a `Default` bound and the constructor runs.
-    let holder: ConnHolder = app
+    let holder = app
         .get::<ConnHolder>()
         .await
         .expect("ConnHolder resolves via #[new] despite a non-Default field");
@@ -336,7 +336,7 @@ async fn new_ctor_strips_inject_attr_from_params() {
     let app = UloFactory::create_application_context(NewCtorModule)
         .await
         .unwrap();
-    let server: ExplicitInjectServer = app
+    let server = app
         .get::<ExplicitInjectServer>()
         .await
         .expect("ExplicitInjectServer resolves via #[new] with an #[inject] parameter");
@@ -378,6 +378,6 @@ async fn new_ctor_path_qualified_inject_token() {
     let app = UloFactory::create_application_context(GreetModule)
         .await
         .unwrap();
-    let greeter: Greeter = app.get::<Greeter>().await.expect("Greeter resolves");
+    let greeter = app.get::<Greeter>().await.expect("Greeter resolves");
     assert_eq!(greeter.greeting(), "hello");
 }

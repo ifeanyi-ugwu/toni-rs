@@ -242,7 +242,7 @@ async fn visible_reads_an_import_before_the_global_registry() {
 
     let looker = ctx.get::<RegionLooker>().await.unwrap();
     let region = looker.module_ref.get_key::<Region>().visible().await;
-    assert_eq!(region.expect("the import answers"), "import");
+    assert_eq!(*region.expect("the import answers"), "import");
 
     let looker = ctx.get::<TwoRegionLooker>().await.unwrap();
     match looker.module_ref.get_key::<Region>().visible().await {

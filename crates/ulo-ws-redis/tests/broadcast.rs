@@ -16,7 +16,7 @@ fn make_client() -> (Arc<dyn WsSink>, mpsc::Receiver<WsMessage>) {
     (Arc::new(TokioSender::new(tx)) as Arc<dyn WsSink>, rx)
 }
 
-async fn boot(url: &str) -> (ulo::UloApplicationContext, RedisBroadcastService) {
+async fn boot(url: &str) -> (ulo::UloApplicationContext, Arc<RedisBroadcastService>) {
     let app = UloFactory::create_application_context(RedisBroadcastModule::for_root(url))
         .await
         .unwrap();
