@@ -83,7 +83,7 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         #[doc(hidden)]
         #[allow(non_snake_case)]
         fn #values_fn() -> ::std::vec::Vec<(::std::string::String, &'static str)> {
-            ::std::vec![#(#value_reads),*]
+            #value_reads
         }
 
         #[doc(hidden)]
@@ -140,17 +140,6 @@ fn extract_param_inject_token(pat_type: &syn::PatType) -> Result<Option<TokenStr
 /// built in (`__exec_ctx`, `None` at startup) — mirroring the field-injection paths. A parameter
 /// that cannot be resolved there answers with its failure, and the constructor is not called.
 fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
-    // A collection answers its items erased; the path below downcasts to the parameter's own type.
-    if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
-        return super::instance_injection::collection_field_resolution(
-            name,
-            ty,
-            &inner_trait,
-            token,
-            quote! { deps },
-            quote! { __exec_ctx.clone() },
-        );
-    }
     let name_str = name.to_string();
     let take = super::instance_injection::take_answer(
         ty,

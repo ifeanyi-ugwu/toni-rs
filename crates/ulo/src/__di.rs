@@ -78,15 +78,8 @@ where
     }
 }
 
-/// The container key `#[inject(K)]` resolves a field by, checked to hold `V`: the field's type, the
-/// type an `Arc<V>` field shares, or the trait object an `Arc<dyn Trait>` or `Vec<Arc<dyn Trait>>`
-/// field holds.
-pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
-    token_of::<K>()
-}
-
-/// What a field or parameter written `Arc<T>` takes from a provider's answer: the shared `Arc<T>`
-/// as it is, or a `T` handed out by value, wrapped.
+/// What a site of type `Arc<T>` takes from a provider's answer: the shared `Arc<T>` as it is, or a
+/// `T` handed out by value, wrapped.
 pub fn take_shared<T: 'static>(
     answer: Box<dyn Any + Send>,
     token: &str,
@@ -100,8 +93,7 @@ pub fn take_shared<T: 'static>(
     }
 }
 
-/// What a field or parameter written `Arc<dyn Trait>` takes: the `Arc` a slot holding the trait
-/// object answers.
+/// What a site of type `Arc<dyn Trait>` takes: the `Arc` a slot holding the trait object answers.
 pub fn take_object<T: ?Sized + 'static>(
     answer: Box<dyn Any + Send>,
     token: &str,
@@ -112,8 +104,8 @@ pub fn take_object<T: ?Sized + 'static>(
         .map_err(|_| mismatch(token))
 }
 
-/// What a field or parameter written as a plain `T` takes: a `T` handed out by value. A shared
-/// `Arc<T>` is refused, since the field would hold a copy of it.
+/// What a site of a plain type `T` takes: a `T` handed out by value. A shared `Arc<T>` is refused,
+/// since the site would hold a copy of it.
 pub fn take_value<T: 'static>(
     answer: Box<dyn Any + Send>,
     token: &str,
@@ -126,6 +118,225 @@ pub fn take_value<T: 'static>(
         }),
         Err(_) => Err(mismatch(token)),
     }
+}
+
+/// An injection site of type `F`, whose key, answer, value read and `#[inject(K)]` check follow
+/// `F`'s type rather than its spelling, so an alias or a renamed `Arc` reads as the `Arc` it
+/// names. The macros call each method as `(&&&Site::<F>::new()).m()`, where autoref ranks the
+/// rungs: an `Arc` of a sized type, an `Arc` of anything, a collection of an unsized `Send + Sync`
+/// element, a trait object in practice, then any other type, which is read by value. A `Vec<Arc<T>>` whose `T` is sized, `str` or a slice is not
+/// a collection: it takes the first rung's rank to be read by value.
+pub struct Site<F: ?Sized>(PhantomData<fn() -> Box<F>>);
+
+impl<F: ?Sized> Site<F> {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Site(PhantomData)
+    }
+}
+
+/// The key a trait-object key names, checked against what the site holds.
+pub trait SameAs<T: ?Sized> {}
+
+impl<T: ?Sized> SameAs<T> for T {}
+
+/// The first rung: `Arc<T>` of a sized `T`, keyed by `T`, taking a shared answer or wrapping a
+/// value.
+pub trait SiteShared {
+    type Held;
+    type Taken;
+    fn key(&self) -> String;
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Self::Taken, ResolutionError>;
+    fn value_read(&self, token: String) -> Option<(String, &'static str)>;
+    fn inject_key<K: Key<Value = Self::Held>>(&self) -> String {
+        token_of::<K>()
+    }
+    fn inject_dyn<D: ?Sized + SameAs<Self::Held> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+impl<T: 'static> SiteShared for &&Site<Arc<T>> {
+    type Held = T;
+    type Taken = Arc<T>;
+    fn key(&self) -> String {
+        token_of::<T>()
+    }
+    fn take(&self, answer: Box<dyn Any + Send>, token: &str) -> Result<Arc<T>, ResolutionError> {
+        take_shared::<T>(answer, token)
+    }
+    fn value_read(&self, _token: String) -> Option<(String, &'static str)> {
+        None
+    }
+}
+
+/// Beside the first rung: `Vec<Arc<T>>` whose `T` is sized, `str` or a slice, read as any other
+/// type is rather than as a collection.
+pub trait SiteValueVec {
+    type Held;
+    type Taken;
+    fn key(&self) -> String;
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Self::Taken, ResolutionError>;
+    fn value_read(&self, token: String) -> Option<(String, &'static str)>;
+    fn inject_key<K: Key<Value = Self::Held>>(&self) -> String {
+        token_of::<K>()
+    }
+    fn inject_dyn<D: ?Sized + SameAs<Self::Held> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+macro_rules! value_vec {
+    ($([$($generic:tt)*] $element:ty;)*) => {$(
+        impl<$($generic)*> SiteValueVec for &&Site<Vec<Arc<$element>>> {
+            type Held = Vec<Arc<$element>>;
+            type Taken = Vec<Arc<$element>>;
+            fn key(&self) -> String {
+                token_of::<Vec<Arc<$element>>>()
+            }
+            fn take(
+                &self,
+                answer: Box<dyn Any + Send>,
+                token: &str,
+            ) -> Result<Vec<Arc<$element>>, ResolutionError> {
+                take_value::<Vec<Arc<$element>>>(answer, token)
+            }
+            fn value_read(&self, token: String) -> Option<(String, &'static str)> {
+                Some((token, std::any::type_name::<Vec<Arc<$element>>>()))
+            }
+        }
+    )*};
+}
+
+value_vec! {
+    [T: 'static] T;
+    [] str;
+    [U: 'static] [U];
+}
+
+/// The second rung: `Arc<T>` of any `T`, a trait object included, taking the `Arc` a slot holding
+/// it answers.
+pub trait SiteObject {
+    type Held: ?Sized;
+    type Taken;
+    fn key(&self) -> String;
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Self::Taken, ResolutionError>;
+    fn value_read(&self, token: String) -> Option<(String, &'static str)>;
+    fn inject_key<K: Key<Value = Self::Held>>(&self) -> String {
+        token_of::<K>()
+    }
+    fn inject_dyn<D: ?Sized + SameAs<Self::Held> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+impl<T: ?Sized + 'static> SiteObject for &&&Site<Arc<T>> {
+    type Held = T;
+    type Taken = Arc<T>;
+    fn key(&self) -> String {
+        token_of::<T>()
+    }
+    fn take(&self, answer: Box<dyn Any + Send>, token: &str) -> Result<Arc<T>, ResolutionError> {
+        take_object::<T>(answer, token)
+    }
+    fn value_read(&self, _token: String) -> Option<(String, &'static str)> {
+        None
+    }
+}
+
+/// The third rung: the collection `Vec<Arc<T>>` of an unsized `Send + Sync` element, a trait object
+/// in practice, keyed by its element type.
+pub trait SiteCollection {
+    type Held: ?Sized;
+    type Taken;
+    fn key(&self) -> String;
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Self::Taken, ResolutionError>;
+    fn value_read(&self, token: String) -> Option<(String, &'static str)>;
+    fn inject_key<K: Key<Value = Self::Held>>(&self) -> String {
+        token_of::<K>()
+    }
+    fn inject_dyn<D: ?Sized + SameAs<Self::Held> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+impl<T: ?Sized + Send + Sync + 'static> SiteCollection for &Site<Vec<Arc<T>>> {
+    type Held = T;
+    type Taken = Vec<Arc<T>>;
+    fn key(&self) -> String {
+        token_of::<T>()
+    }
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Vec<Arc<T>>, ResolutionError> {
+        take_collection::<T>(answer, token)
+    }
+    fn value_read(&self, _token: String) -> Option<(String, &'static str)> {
+        None
+    }
+}
+
+/// The last rung: any other type, keyed by itself and read by value.
+impl<F: 'static> Site<F> {
+    pub fn key(&self) -> String {
+        token_of::<F>()
+    }
+    pub fn take(&self, answer: Box<dyn Any + Send>, token: &str) -> Result<F, ResolutionError> {
+        take_value::<F>(answer, token)
+    }
+    pub fn value_read(&self, token: String) -> Option<(String, &'static str)> {
+        Some((token, std::any::type_name::<F>()))
+    }
+    pub fn inject_key<K: Key<Value = F>>(&self) -> String {
+        token_of::<K>()
+    }
+    pub fn inject_dyn<D: ?Sized + SameAs<F> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+/// The tokens a factory's plain fields and parameters read, each with the type it is written as.
+pub fn value_reads<const N: usize>(
+    reads: [Option<(String, &'static str)>; N],
+) -> Vec<(String, &'static str)> {
+    reads.into_iter().flatten().collect()
+}
+
+/// What a collection site takes: the items a collection provider answers erased, each read back as
+/// the element type `provide!` stored it as.
+pub fn take_collection<T: ?Sized + Send + Sync + 'static>(
+    answer: Box<dyn Any + Send>,
+    token: &str,
+) -> Result<Vec<Arc<T>>, ResolutionError> {
+    let items = answer
+        .downcast::<Vec<Arc<dyn Any + Send + Sync>>>()
+        .map_err(|_| mismatch(token))?;
+    items
+        .into_iter()
+        .map(|item| {
+            Arc::downcast::<Arc<T>>(item)
+                .map(|wrapped| (*wrapped).clone())
+                .map_err(|_| mismatch(token))
+        })
+        .collect()
 }
 
 /// Whether a type is handed out as one shared instance. `#[injectable]` and `#[websocket_gateway]`

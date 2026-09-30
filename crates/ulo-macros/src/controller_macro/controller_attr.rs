@@ -145,7 +145,7 @@ fn generate_bridges(
             #[allow(non_snake_case)]
             pub fn __ulo_value_dependencies() -> ::std::vec::Vec<(String, &'static str)> {
                 use ::ulo::__construct::CtorBridge as _;
-                <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| ::std::vec![#(#value_reads),*])
+                <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| #value_reads)
             }
 
             #[doc(hidden)]
@@ -163,81 +163,20 @@ fn generate_bridges(
     }
 }
 
-/// Resolve the `#[inject]` fields from the dependency map.
-///
-/// A collection field resolves on its own, ahead of the rest. Fields written `Arc<T>` are grouped
-/// by lookup token, in order of first appearance, and deduplicated scope-aware: singleton and
-/// execution-scoped providers are resolved once and the `Arc` shared across same-token fields,
-/// while transient providers get a fresh instance per field. The explicit dedup is required
-/// because not every provider caches in the execution's cache (e.g. a hand-written `Provider`). A
-/// plain field takes its own answer. Returns the resolution statements plus the field names.
+/// Resolve the `#[inject]` fields from the dependency map, each on its own: a provider answering a
+/// shared `Arc` hands every field over its key that `Arc`, and one answering a value hands each
+/// field its own. Returns the resolution statements plus the field names.
 fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
-    use indexmap::IndexMap;
-
-    let mut resolutions = Vec::new();
-    let mut field_names = Vec::new();
-
-    let mut groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
-    for (name, ty, token) in &dependencies.fields {
-        // A collection answers its items erased; the groups below downcast to the field's own type.
-        if let Some(inner_trait) = crate::utils::extracts::extract_vec_arc_dyn_inner(ty) {
-            resolutions.push(
-                crate::provider_macro::instance_injection::collection_field_resolution(
-                    name,
-                    ty,
-                    &inner_trait,
-                    token,
-                    quote! { dependencies },
-                    ctx_expr(),
-                ),
-            );
-            field_names.push(name.clone());
-            continue;
-        }
-        let key = crate::provider_macro::instance_injection::shared_group_key(name, ty, token);
-        groups
-            .entry(key)
-            .or_default()
-            .push((name.clone(), ty.clone(), token.clone()));
-    }
-
-    for (_key, group) in groups {
-        let (first_name, ty, token) = &group[0];
-        if group.len() == 1 {
-            resolutions.push(resolve_one(first_name, ty, token));
-            field_names.push(first_name.clone());
-            continue;
-        }
-
-        // Same token shared by several fields — resolve once (or per-field for transient).
-        let idents: Vec<&Ident> = group.iter().map(|(n, _, _)| n).collect();
-        let decls: Vec<TokenStream> = idents.iter().map(|n| quote! { let #n: #ty; }).collect();
-        let ctx = ctx_expr();
-        let take = crate::provider_macro::instance_injection::take_answer(
-            ty,
-            quote! { __provider.resolve(#ctx).await? },
-        );
-        resolutions.push(quote! {
-            #(#decls)*
-            {
-                let __lookup_token = #token;
-                let __provider = dependencies.get(&__lookup_token)
-                    .unwrap_or_else(|| panic!("Missing dependency '{}'", __lookup_token));
-                if matches!(__provider.scope(), ::ulo::di::ProviderScope::Transient) {
-                    #(
-                        #idents = #take;
-                    )*
-                } else {
-                    let __shared: #ty = #take;
-                    #( #idents = __shared.clone(); )*
-                }
-            }
-        });
-        for (n, _, _) in &group {
-            field_names.push(n.clone());
-        }
-    }
-
+    let resolutions = dependencies
+        .fields
+        .iter()
+        .map(|(name, ty, token)| resolve_one(name, ty, token))
+        .collect();
+    let field_names = dependencies
+        .fields
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        .collect();
     (resolutions, field_names)
 }
 

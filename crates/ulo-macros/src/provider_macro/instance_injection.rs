@@ -12,10 +12,7 @@ use syn::{Ident, ItemStruct, Result, Type};
 
 use crate::{
     shared::{dependency_info::DependencyInfo, scope_parser::ProviderScope},
-    utils::extracts::{
-        extract_arc_dyn_inner, extract_arc_inner, extract_struct_dependencies,
-        extract_vec_arc_dyn_inner,
-    },
+    utils::extracts::{extract_arc_inner, extract_struct_dependencies, extract_vec_arc_dyn_inner},
 };
 
 /// Structural roles the surrounding macro assigns to a provider.
@@ -681,81 +678,11 @@ fn field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    let deps_to_resolve = &dependencies.fields;
-
-    // Partition into multi-provider fields (Vec<Arc<dyn T>>) and regular fields
-    let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
-        .iter()
-        .partition(|(_, full_type, _)| extract_vec_arc_dyn_inner(full_type).is_some());
-
-    // Generate resolutions for multi-provider fields
-    for (field_name, full_type, lookup_token_expr) in &multi_deps {
-        let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        resolutions.push(collection_field_resolution(
-            field_name,
-            full_type,
-            &inner_trait,
-            lookup_token_expr,
-            deps.clone(),
-            ctx.clone(),
-        ));
-        field_names.push(field_name.clone());
-    }
-
-    // Group regular fields by token for deduplication while preserving declaration order
-    use indexmap::IndexMap;
-    let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
-
-    for (field_name, full_type, lookup_token_expr) in &regular_deps {
-        let type_key = shared_group_key(field_name, full_type, lookup_token_expr);
-        type_groups.entry(type_key).or_insert_with(Vec::new).push((
-            (*field_name).clone(),
-            (*full_type).clone(),
-            (*lookup_token_expr).clone(),
-        ));
-    }
-    for (_type_key, fields_of_type) in type_groups {
-        let (first_field_name, full_type, lookup_token_expr) = &fields_of_type[0];
-        let field_name_str = first_field_name.to_string();
-
+    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
+        let field_name_str = field_name.to_string();
         let take = take_answer(full_type, quote! { provider.resolve(#ctx).await? });
-        if fields_of_type.len() == 1 {
-            let field_name = first_field_name;
-            let resolution = quote! {
-                let #field_name: #full_type = {
-                    let __lookup_token = #lookup_token_expr;
-                    let provider = #deps
-                        .get(&__lookup_token)
-                        .unwrap_or_else(|| panic!(
-                            "Missing dependency '{}' for field '{}'",
-                            __lookup_token, #field_name_str
-                        ));
-
-                    #take
-                };
-            };
-
-            resolutions.push(resolution);
-            field_names.push(field_name.clone());
-        } else {
-            let temp_var = syn::Ident::new(
-                &format!("__temp_instance_{}", first_field_name),
-                first_field_name.span(),
-            );
-            let field_idents: Vec<_> = fields_of_type.iter().map(|(name, _, _)| name).collect();
-
-            let field_declarations: Vec<TokenStream> = field_idents
-                .iter()
-                .map(|field_ident| {
-                    quote! {
-                        let #field_ident: #full_type;
-                    }
-                })
-                .collect();
-
-            let resolution = quote! {
-                #(#field_declarations)*
-
+        resolutions.push(quote! {
+            let #field_name: #full_type = {
                 let __lookup_token = #lookup_token_expr;
                 let provider = #deps
                     .get(&__lookup_token)
@@ -763,25 +690,10 @@ fn field_resolutions(
                         "Missing dependency '{}' for field '{}'",
                         __lookup_token, #field_name_str
                     ));
-
-                if matches!(provider.scope(), ::ulo::di::ProviderScope::Transient) {
-                    #(
-                        #field_idents = #take;
-                    )*
-                } else {
-                    let #temp_var: #full_type = #take;
-
-                    #(
-                        #field_idents = #temp_var.clone();
-                    )*
-                }
+                #take
             };
-
-            resolutions.push(resolution);
-            for (field_name, _, _) in &fields_of_type {
-                field_names.push(field_name.clone());
-            }
-        }
+        });
+        field_names.push(field_name.clone());
     }
 
     (resolutions, field_names)
@@ -885,7 +797,7 @@ fn generate_singleton_factory(
 
             fn value_dependencies(&self) -> Vec<(String, &'static str)> {
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| #value_reads)
             }
 
             async fn build(
@@ -985,7 +897,7 @@ fn generate_request_factory(
 
             fn value_dependencies(&self) -> Vec<(String, &'static str)> {
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| #value_reads)
             }
 
             async fn build(
@@ -1071,7 +983,7 @@ fn generate_transient_factory(
 
             fn value_dependencies(&self) -> Vec<(String, &'static str)> {
                 use ::ulo::__construct::CtorBridge as _;
-                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| #value_reads)
             }
 
             async fn build(
@@ -1096,26 +1008,7 @@ fn generate_create_field_resolutions(
     let mut resolutions = Vec::new();
     let mut field_names = Vec::new();
 
-    let deps_to_resolve = &dependencies.fields;
-
-    let (multi_deps, regular_deps): (Vec<_>, Vec<_>) = deps_to_resolve
-        .iter()
-        .partition(|(_, full_type, _)| extract_vec_arc_dyn_inner(full_type).is_some());
-
-    for (field_name, full_type, lookup_token_expr) in &multi_deps {
-        let inner_trait = extract_vec_arc_dyn_inner(full_type).unwrap();
-        resolutions.push(collection_field_resolution(
-            field_name,
-            full_type,
-            &inner_trait,
-            lookup_token_expr,
-            quote! { all_deps },
-            quote! { __exec_ctx.clone() },
-        ));
-        field_names.push(field_name.clone());
-    }
-
-    for (field_name, full_type, lookup_token_expr) in &regular_deps {
+    for (field_name, full_type, lookup_token_expr) in &dependencies.fields {
         let field_name_str = field_name.to_string();
         let take = take_answer(
             full_type,
@@ -1284,95 +1177,23 @@ fn generate_dyn_factories(
     (struct_defs, role_pushes)
 }
 
-/// `(token, type name)` for each field or parameter written as a plain type, which
-/// `value_dependencies` reports: `Arc<T>` and `Vec<Arc<dyn Trait>>` read any binding.
+/// What `value_dependencies` reports, as one `ulo::__di::value_reads` call over the fields or
+/// parameters `reads`: `(token, type name)` for each whose type reads a value, which its
+/// `ulo::__di::Site` decides. `Arc<T>` and a collection read any binding.
 pub(crate) fn value_reads<'a>(
     reads: impl Iterator<Item = (&'a Type, &'a TokenStream)>,
-) -> Vec<TokenStream> {
-    reads
-        .filter(|(ty, _)| {
-            extract_arc_inner(ty).is_none() && extract_vec_arc_dyn_inner(ty).is_none()
-        })
-        .map(|(ty, token)| quote! { (#token, ::std::any::type_name::<#ty>()) })
-        .collect()
-}
-
-/// The group a field joins for same-token deduplication. Fields written `Arc<T>` over one token
-/// resolve once and share the `Arc`; a plain field reads a binding handing out its value, a
-/// transient or a handle, and takes its own answer, so its type needs no `Clone`.
-pub(crate) fn shared_group_key(field: &Ident, ty: &Type, token: &TokenStream) -> String {
-    match extract_arc_inner(ty) {
-        Some(_) => quote!(#token).to_string(),
-        None => format!("{} {}", quote!(#token), field),
-    }
+) -> TokenStream {
+    let reads =
+        reads.map(|(ty, token)| crate::shared::site::site_call(ty, quote! { value_read(#token) }));
+    quote! { ::ulo::__di::value_reads([#(#reads),*]) }
 }
 
 /// How a field or parameter of type `ty` takes its value from a provider's erased `answer`, with
-/// `__lookup_token` in scope: the `Arc` a trait-object slot answers for `Arc<dyn Trait>`, the
-/// shared instance or a value wrapped for `Arc<T>`, and a value handed out as it is for any other
-/// type. Every resolver of an `#[inject]` field or a `#[new]` parameter reads a single binding
-/// through this.
+/// `__lookup_token` in scope, as its `ulo::__di::Site` decides: the shared instance or a value
+/// wrapped for `Arc<T>`, the `Arc` a trait-object slot answers for `Arc<dyn Trait>`, the items for
+/// a collection, and a value handed out as it is for any other type. Every resolver of an
+/// `#[inject]` field or a `#[new]` parameter reads through this.
 pub(crate) fn take_answer(ty: &Type, answer: TokenStream) -> TokenStream {
-    if let Some(object) = extract_arc_dyn_inner(ty) {
-        quote! { ::ulo::__di::take_object::<#object>(#answer, &__lookup_token)? }
-    } else if let Some(shared) = extract_arc_inner(ty) {
-        quote! { ::ulo::__di::take_shared::<#shared>(#answer, &__lookup_token)? }
-    } else {
-        quote! { ::ulo::__di::take_value::<#ty>(#answer, &__lookup_token)? }
-    }
-}
-
-/// A `Vec<Arc<dyn Trait>>` field's or parameter's resolution: the collection provider under
-/// `lookup_token`, read from the dependency map `deps` and resolved in `ctx`, its erased items read
-/// back as the declared trait object. Every resolver of an `#[inject]` field or a `#[new]`
-/// parameter calls this for a collection.
-pub(crate) fn collection_field_resolution(
-    field_name: &Ident,
-    full_type: &Type,
-    inner_trait: &Type,
-    lookup_token: &TokenStream,
-    deps: TokenStream,
-    ctx: TokenStream,
-) -> TokenStream {
-    let item_resolution = collection_item_resolution(inner_trait);
-    let field_name_str = field_name.to_string();
-    quote! {
-        let #field_name: #full_type = {
-            let __lookup_token = #lookup_token;
-            let __provider = #deps
-                .get(&__lookup_token)
-                .unwrap_or_else(|| panic!(
-                    "Missing multi-provider '{}' for field '{}'",
-                    __lookup_token, #field_name_str
-                ));
-            let __ctx = #ctx;
-            let __any_box = __provider.resolve(__ctx).await?;
-            let erased_items = *__any_box
-                .downcast::<Vec<::std::sync::Arc<dyn ::std::any::Any + Send + Sync>>>()
-                .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                    token: __lookup_token.clone(),
-                })?;
-            erased_items
-                .into_iter()
-                .map(|item| -> ::std::result::Result<
-                    ::std::sync::Arc<#inner_trait>,
-                    ::ulo::di::ResolutionError,
-                > {
-                    #item_resolution
-                })
-                .collect::<::std::result::Result<_, _>>()?
-        };
-    }
-}
-
-/// How one collection item is read back as the field's `Arc<dyn Trait>`. `provide!` stores an item
-/// as the trait object the declaration wrote, which is the one the field is keyed by.
-fn collection_item_resolution(inner_trait: &syn::Type) -> proc_macro2::TokenStream {
-    quote! {
-        ::std::sync::Arc::downcast::<::std::sync::Arc<#inner_trait>>(item)
-            .map(|wrapped| (*wrapped).clone())
-            .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                token: __lookup_token.clone(),
-            })
-    }
+    let take = crate::shared::site::site_call(ty, quote! { take(#answer, &__lookup_token) });
+    quote! { #take? }
 }

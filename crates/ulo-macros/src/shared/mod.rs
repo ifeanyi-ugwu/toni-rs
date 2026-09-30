@@ -7,6 +7,7 @@ pub mod metadata_info;
 pub mod route_path;
 pub mod scope_parser;
 pub mod set_metadata;
+pub mod site;
 pub mod type_display;
 
 /// Returns `true` if the attribute's path ends with `name`.

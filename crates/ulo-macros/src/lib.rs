@@ -112,6 +112,10 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 /// sharing one instance, such as a `provide!` value or a factory not declared `.transient()`, it
 /// fails `create` with `StartupError::BuildFailed` carrying `ResolutionError::SharedByValue`.
 ///
+/// What a field reads follows its type, however it is spelled: an alias of `Arc<Db>`, or `Arc`
+/// imported under another name, reads `Db`'s slot as `Arc<Db>` does, and an alias of
+/// `Vec<Arc<dyn Plugin>>` reads the collection.
+///
 /// The key is checked against what the field holds, at the key: `V` or `Arc<V>` for a slot holding
 /// a sized type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a
 /// collection.
