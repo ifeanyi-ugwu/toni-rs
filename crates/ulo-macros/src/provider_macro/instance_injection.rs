@@ -59,13 +59,63 @@ pub fn generate_provider_from_struct_with_traits(
     let factory = generate_factory(&struct_name, &dependencies, scope, &enhancer_traits);
     let factory_accessor = generate_provider_factory_accessor(&struct_name);
     let default_checks = crate::shared::default_beside_new::default_beside_new(struct_def);
+    let shared_flag = shared_flag(&struct_name, scope);
+    let plain_reads = plain_read_checks(&dependencies);
 
     Ok(quote! {
         #provider_wrapper
         #factory
         #factory_accessor
         #default_checks
+        #shared_flag
+        #plain_reads
     })
+}
+
+/// The inherent const a singleton or execution-scoped type carries, over the blanket
+/// `ulo::__di::SharedFlag` default: its provider hands out one shared `Arc`, which a plain field
+/// or parameter of the type cannot hold.
+fn shared_flag(struct_name: &Ident, scope: ProviderScope) -> TokenStream {
+    match scope {
+        ProviderScope::Singleton | ProviderScope::Execution => quote! {
+            impl #struct_name {
+                #[doc(hidden)]
+                pub const __ULO_SHARED: bool = true;
+            }
+        },
+        ProviderScope::Transient => TokenStream::new(),
+    }
+}
+
+/// One `const` item per `#[inject]` field written as a plain type, failing const evaluation when
+/// that type is handed out as one shared instance. Spanned at the field's type.
+pub(crate) fn plain_read_checks(dependencies: &DependencyInfo) -> TokenStream {
+    dependencies
+        .fields
+        .iter()
+        .map(|(_, ty, _)| plain_read_check(ty))
+        .collect()
+}
+
+/// The check `plain_read_checks` emits for one field or parameter of type `ty`: nothing for
+/// `Arc<T>` or `Vec<Arc<dyn Trait>>`, which hold any binding, and for a plain type a `const` item
+/// reading `ulo::__di::SharedFlag`, whose inherent shadow a shared `#[injectable]` type carries.
+pub(crate) fn plain_read_check(ty: &Type) -> TokenStream {
+    if extract_arc_inner(ty).is_some() || extract_vec_arc_dyn_inner(ty).is_some() {
+        return TokenStream::new();
+    }
+    let written = crate::shared::type_display::type_display(ty);
+    let message =
+        format!("`{written}` is handed out as one shared instance: write `Arc<{written}>`");
+    quote::quote_spanned! {syn::spanned::Spanned::span(ty)=>
+        const _: () = {
+            #[allow(unused_imports)]
+            use ::ulo::__di::SharedFlag as _;
+            if <#ty>::__ULO_SHARED {
+                ::core::panic!(#message);
+            }
+        };
+    }
 }
 
 /// Re-emit the struct deriving `InjectFields`, which keeps `#[inject]` and `#[default]` valid as

@@ -49,6 +49,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
     );
     let system = generate_dispatch_system(&struct_name);
     let default_checks = crate::shared::default_beside_new::default_beside_new(&struct_def);
+    let plain_reads = crate::provider_macro::instance_injection::plain_read_checks(&dependencies);
 
     Ok(quote! {
         #[allow(dead_code)]
@@ -57,6 +58,7 @@ pub fn handle_controller(attr: TokenStream, item: TokenStream) -> Result<TokenSt
         #bridges
         #system
         #default_checks
+        #plain_reads
     })
 }
 

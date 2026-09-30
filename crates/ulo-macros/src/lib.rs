@@ -107,8 +107,10 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 ///
 /// Write `Arc<T>`: it reads any binding of `T`. A plain `T` reads a binding that hands out its
 /// value, a transient or a handle a provider written by hand answers by value, such as
-/// `ConfigService<C>` or a database pool. A plain field over a binding that shares one instance is
-/// refused with `ResolutionError::SharedByValue`.
+/// `ConfigService<C>` or a database pool. A plain field of a singleton or execution-scoped
+/// `#[injectable]` type fails to compile, naming the `Arc<T>` to write; over any other binding
+/// sharing one instance, such as a `provide!` value or a factory not declared `.transient()`, it
+/// is refused with `ResolutionError::SharedByValue`.
 ///
 /// The key is checked against what the field holds, at the key: `V` or `Arc<V>` for a slot holding
 /// a sized type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a

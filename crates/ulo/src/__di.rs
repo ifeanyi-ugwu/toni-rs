@@ -128,6 +128,15 @@ pub fn take_value<T: 'static>(
     }
 }
 
+/// Whether a type is handed out as one shared instance. `#[injectable]` and `#[websocket_gateway]`
+/// shadow this `false` with an inherent const on a singleton or execution-scoped type, read at a
+/// plain field or parameter of that type to refuse it where it is written.
+pub trait SharedFlag {
+    const __ULO_SHARED: bool = false;
+}
+
+impl<T: ?Sized> SharedFlag for T {}
+
 fn mismatch(token: &str) -> ResolutionError {
     ResolutionError::TypeMismatch {
         token: token.to_string(),

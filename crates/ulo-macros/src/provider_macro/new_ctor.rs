@@ -38,6 +38,10 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
     let params = extract_params(&method)?;
 
     let dep_tokens: Vec<&TokenStream> = params.iter().map(|(_, _, tok)| tok).collect();
+    let plain_reads: TokenStream = params
+        .iter()
+        .map(|(_, ty, _)| super::instance_injection::plain_read_check(ty))
+        .collect();
     let resolutions = params
         .iter()
         .map(|(name, ty, tok)| resolve_param(name, ty, tok));
@@ -67,6 +71,7 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         #[doc(hidden)]
         #[allow(unused_variables, non_snake_case)]
         fn #tokens_fn() -> ::std::vec::Vec<::std::string::String> {
+            #plain_reads
             ::std::vec![#(#dep_tokens),*]
         }
 
