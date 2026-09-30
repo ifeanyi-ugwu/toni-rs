@@ -63,7 +63,6 @@ impl Greeter for English {
         provide!(LibName => "lib".to_string()),
         provide!(keys::LibPort => 7u16),
         provide!(dyn Greeter => value English),
-        Extension::<Current>,
     ],
     exports: [
         helpers::Service,
@@ -72,7 +71,6 @@ impl Greeter for English {
         LibName,
         keys::LibPort,
         dyn Greeter,
-        Extension<Current>,
     ],
 )]
 pub struct LibraryModule;
@@ -141,9 +139,9 @@ pub mod ctl {
 )]
 pub struct AppModule;
 
-/// Imports the library for `Extension<Current>` alone, so this export is resolved apart from the
-/// others.
-#[module(imports: [LibraryModule], providers: [Reader])]
+/// Declares a provider reading `Extension<Current>` and nothing else: the view needs no
+/// declaration or export.
+#[module(providers: [Reader])]
 pub struct ReaderModule;
 
 #[tokio::test]
@@ -164,13 +162,13 @@ async fn every_export_spelling_resolves_from_an_importing_module() {
 }
 
 #[tokio::test]
-async fn an_extension_view_is_exported_like_any_provider() {
+async fn an_extension_view_needs_no_declaration() {
     let app = UloFactory::create(ReaderModule).await.unwrap();
 
     let reader = app
         .resolve::<Reader>(&Execution::standalone())
         .await
-        .expect("the imported `Extension<Current>` resolves in the importing module");
+        .expect("`Extension<Current>` resolves with no declaration");
     assert!(
         reader.current.get().is_none(),
         "nothing attached a `Current`"

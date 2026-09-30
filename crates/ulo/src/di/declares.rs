@@ -12,7 +12,7 @@ use crate::spi::ProviderFactory;
 /// A type with a provider declaration of its own: what a bare path in `providers:` or in
 /// `provide!` registers.
 ///
-/// `#[injectable]` and `#[websocket_gateway]` implement it, and so does `Extension<T>`.
+/// `#[injectable]` and `#[websocket_gateway]` implement it.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no provider declaration of its own",
     label = "a bare path here is a type's own declaration",

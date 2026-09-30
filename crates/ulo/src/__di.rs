@@ -16,7 +16,8 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::di::{Declaration, Key, Under, token_of};
+use crate::context::Extensions;
+use crate::di::{Declaration, Extension, Key, Under, token_of};
 use crate::error::ResolutionError;
 
 pub struct Keyed<K, D> {
@@ -124,7 +125,8 @@ pub fn take_value<T: 'static>(
 /// `F`'s type rather than its spelling, so an alias or a renamed `Arc` reads as the `Arc` it
 /// names. The macros call each method as `(&&&Site::<F>::new()).m()`, where autoref ranks the
 /// rungs: an `Arc` of a sized type, an `Arc` of anything, a collection of an unsized `Send + Sync`
-/// element, a trait object in practice, then any other type, which is read by value. A `Vec<Arc<T>>` whose `T` is sized, `str` or a slice is not
+/// element, a trait object in practice, or an `Extension<T>`, then any other type, which is read by
+/// value. A `Vec<Arc<T>>` whose `T` is sized, `str` or a slice is not
 /// a collection: it takes the first rung's rank to be read by value.
 pub struct Site<F: ?Sized>(PhantomData<fn() -> Box<F>>);
 
@@ -291,6 +293,44 @@ impl<T: ?Sized + Send + Sync + 'static> SiteCollection for &Site<Vec<Arc<T>>> {
     }
     fn value_read(&self, _token: String) -> Option<(String, &'static str)> {
         None
+    }
+}
+
+/// Beside the third rung: `Extension<T>`, keyed by the execution's bag and viewing it as `T`, so a
+/// view needs no declaration of its own.
+pub trait SiteExtension {
+    type Held;
+    type Taken;
+    fn key(&self) -> String;
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Self::Taken, ResolutionError>;
+    fn value_read(&self, token: String) -> Option<(String, &'static str)>;
+    fn inject_key<K: Key<Value = Self::Held>>(&self) -> String {
+        token_of::<K>()
+    }
+    fn inject_dyn<D: ?Sized + SameAs<Self::Held> + 'static>(&self) -> String {
+        token_of::<D>()
+    }
+}
+
+impl<T: 'static> SiteExtension for &Site<Extension<T>> {
+    type Held = Extension<T>;
+    type Taken = Extension<T>;
+    fn key(&self) -> String {
+        token_of::<Extensions>()
+    }
+    fn take(
+        &self,
+        answer: Box<dyn Any + Send>,
+        token: &str,
+    ) -> Result<Extension<T>, ResolutionError> {
+        take_value::<Extensions>(answer, token).map(Extension::over)
+    }
+    fn value_read(&self, token: String) -> Option<(String, &'static str)> {
+        Some((token, std::any::type_name::<Extensions>()))
     }
 }
 

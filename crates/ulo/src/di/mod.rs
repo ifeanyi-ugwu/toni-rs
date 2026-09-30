@@ -25,7 +25,7 @@ pub(crate) use collection::{GlobalCollection, global_collection};
 pub use declares::{DeclaresController, DeclaresProvider};
 pub use execution::Execution;
 pub use execution_cache::ExecutionCache;
-pub use extension::{Extension, ExtensionFactory};
+pub use extension::Extension;
 pub use internal::ModuleRef;
 pub use key::Key;
 pub use module::{

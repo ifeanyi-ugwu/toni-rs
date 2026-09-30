@@ -10,7 +10,10 @@ use syn::Type;
 pub fn site_call(ty: &Type, call: TokenStream) -> TokenStream {
     quote! {{
         #[allow(unused_imports)]
-        use ::ulo::__di::{SiteCollection as _, SiteObject as _, SiteShared as _, SiteValueVec as _};
+        use ::ulo::__di::{
+            SiteCollection as _, SiteExtension as _, SiteObject as _, SiteShared as _,
+            SiteValueVec as _,
+        };
         (&&&::ulo::__di::Site::<#ty>::new()).#call
     }}
 }

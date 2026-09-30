@@ -44,7 +44,7 @@ mod utils;
 /// | List | Takes |
 /// | --- | --- |
 /// | `imports:` | modules, as values: a `#[module]` type named bare, or any expression building a module, such as `DbModule::for_root(url)` or `ConfigModule::<AppConfig>::new()` |
-/// | `providers:` | declarations, as values: a bare path is the type's own declaration, `Db` or `repo::Db`, a generic type taking a turbofish, `Extension::<User>`; any other expression, such as `provide!(..)` or `Db::provide()`, is used as it is |
+/// | `providers:` | declarations, as values: a bare path is the type's own declaration, `Db` or `repo::Db`; any other expression, such as `provide!(..)` or `Db::provide()`, is used as it is |
 /// | `controllers:` | dispatch targets, as values: a bare path is a `#[controller]` type's own dispatch target, qualified or not; any other expression is a controller factory |
 /// | `exports:` | key types: a type, a marker, a generic type with or without a turbofish, `dyn Trait` |
 ///
