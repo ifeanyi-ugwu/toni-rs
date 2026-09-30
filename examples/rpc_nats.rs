@@ -19,6 +19,7 @@
 //   # fire-and-forget — no reply-to, no response
 //   nats pub order.shipped '{"order_id":1001}'
 
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo_macros::{controller, injectable, module, new, patterns};
 
@@ -46,12 +47,12 @@ impl OrdersService {
 #[controller]
 pub struct OrdersController {
     #[inject]
-    service: OrdersService,
+    service: Arc<OrdersService>,
 }
 #[patterns]
 impl OrdersController {
     #[new]
-    pub fn new(service: OrdersService) -> Self {
+    pub fn new(service: Arc<OrdersService>) -> Self {
         Self { service }
     }
 

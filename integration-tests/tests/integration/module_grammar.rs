@@ -87,17 +87,17 @@ fn dynamic_library() -> DynamicModule {
 #[injectable]
 pub struct Consumer {
     #[inject]
-    service: helpers::Service,
+    service: Arc<helpers::Service>,
     #[inject]
-    _handle: Handle<Marker>,
+    _handle: Arc<Handle<Marker>>,
     #[inject]
-    _tag: Tag<Marker>,
+    _tag: Arc<Tag<Marker>>,
     #[inject(LibName)]
-    name: String,
+    name: Arc<String>,
     #[inject(keys::LibPort)]
-    port: u16,
+    port: Arc<u16>,
     #[inject(DynName)]
-    dyn_name: String,
+    dyn_name: Arc<String>,
     #[inject]
     greeter: Arc<dyn Greeter>,
 }
@@ -114,7 +114,7 @@ pub mod ctl {
     #[controller("/grammar")]
     pub struct Hello {
         #[inject]
-        consumer: Consumer,
+        consumer: Arc<Consumer>,
     }
 
     #[routes]

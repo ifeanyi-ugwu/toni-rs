@@ -12,6 +12,7 @@
 //!     cargo run -p ulo-db-prisma --example quick_start
 //!     curl http://127.0.0.1:3000/users
 
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_prisma::PrismaModule;
@@ -39,7 +40,7 @@ pub struct Users {
 #[controller("/users")]
 pub struct UsersController {
     #[inject]
-    users: Users,
+    users: Arc<Users>,
 }
 
 #[routes]

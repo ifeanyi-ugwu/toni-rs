@@ -5,6 +5,7 @@
 //! factory closure's parameter, and `resolve::<T>()` on the app. Generic written
 //! types are where the paths can disagree — each test pins one pair.
 
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo::di::Execution;
 use ulo::{injectable, key, module, provide};
@@ -24,7 +25,7 @@ mod bare_inject_generic {
     #[injectable]
     pub struct Consumer {
         #[inject]
-        pub handle: Handle<Marker>,
+        pub handle: Arc<Handle<Marker>>,
     }
 
     #[module(
@@ -124,7 +125,7 @@ mod qualified_path_inject {
     #[injectable]
     pub struct Consumer {
         #[inject]
-        pub service: helpers::Service,
+        pub service: Arc<helpers::Service>,
     }
 
     #[module(

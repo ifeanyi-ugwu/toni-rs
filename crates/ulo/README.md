@@ -104,7 +104,7 @@ pub struct AppModule;
 #[controller("/app")]
 pub struct AppController {
     #[inject]
-    app_service: AppService,
+    app_service: Arc<AppService>,
 }
 
 #[routes]

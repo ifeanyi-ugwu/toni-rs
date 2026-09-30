@@ -35,7 +35,7 @@ impl Greeter {
 #[controller("/send")]
 pub struct SendController {
     #[inject]
-    greeter: Greeter,
+    greeter: Arc<Greeter>,
 }
 
 #[routes]

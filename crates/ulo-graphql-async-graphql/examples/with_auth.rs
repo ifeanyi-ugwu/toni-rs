@@ -90,9 +90,9 @@ impl _DatabaseService {
 #[injectable]
 pub struct _GraphQLContextBuilder {
     #[inject]
-    auth_service: _AuthService,
+    auth_service: Arc<_AuthService>,
     #[inject]
-    database_service: _DatabaseService,
+    database_service: Arc<_DatabaseService>,
 }
 
 #[async_trait]
@@ -109,7 +109,7 @@ impl ContextBuilder for _GraphQLContextBuilder {
         }
 
         // Add database service to context (so resolvers can use it!)
-        data.insert(Arc::new(self.database_service.clone()));
+        data.insert(self.database_service.clone());
 
         data
     }
@@ -196,8 +196,8 @@ fn build_graphql_module()
 
     // Create context builder (will be injected with services by Ulo!)
     let context_builder = _GraphQLContextBuilder {
-        auth_service: _AuthService {},
-        database_service: _DatabaseService {},
+        auth_service: Arc::new(_AuthService {}),
+        database_service: Arc::new(_DatabaseService {}),
     };
 
     GraphQLModule::for_root(schema, context_builder)

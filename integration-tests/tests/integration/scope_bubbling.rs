@@ -8,6 +8,7 @@
 //! honoured, so the framework refuses to pretend it was.
 use crate::common::TestServer;
 use serial_test::serial;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, routes};
@@ -24,7 +25,7 @@ impl SingletonProvider {
 #[controller("/ok")]
 pub struct OkController {
     #[inject]
-    provider: SingletonProvider,
+    provider: Arc<SingletonProvider>,
 }
 
 #[routes]
@@ -54,7 +55,7 @@ impl RequestScopedProvider {
 #[controller("/problematic")]
 pub struct ProblematicController {
     #[inject]
-    provider: RequestScopedProvider,
+    provider: Arc<RequestScopedProvider>,
 }
 
 #[routes]
@@ -81,7 +82,7 @@ impl AnotherRequestProvider {
 #[controller("/correct", scope = "execution")]
 pub struct CorrectController {
     #[inject]
-    provider: AnotherRequestProvider,
+    provider: Arc<AnotherRequestProvider>,
 }
 
 #[routes]
@@ -116,9 +117,9 @@ impl SessionProvider {
 #[controller("/mixed")]
 pub struct MixedController {
     #[inject]
-    cache: CacheProvider,
+    cache: Arc<CacheProvider>,
     #[inject]
-    session: SessionProvider,
+    session: Arc<SessionProvider>,
 }
 
 #[routes]
@@ -149,7 +150,7 @@ impl ContradictoryRequestProvider {
 #[controller("/explicit", scope = "singleton")]
 pub struct ExplicitSingletonController {
     #[inject]
-    provider: ContradictoryRequestProvider,
+    provider: Arc<ContradictoryRequestProvider>,
 }
 
 #[routes]

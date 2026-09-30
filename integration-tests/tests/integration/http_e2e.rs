@@ -7,6 +7,7 @@
 //! time — the arrangement a user writes on day one.
 use crate::common::TestServer;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use ulo::http::{Body, Request};
 use ulo::{controller, get, http::extract::Json, injectable, module, new, post, routes};
@@ -33,7 +34,7 @@ async fn async_controller_methods_with_http_server() {
     #[controller("/api")]
     pub struct TestController {
         #[inject]
-        service: AsyncService,
+        service: Arc<AsyncService>,
     }
 
     #[routes]

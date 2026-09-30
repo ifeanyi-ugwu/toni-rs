@@ -114,9 +114,9 @@ impl juniper::Context for GraphQLContext {}
 #[injectable]
 pub struct _GraphQLContextBuilder {
     #[inject]
-    auth_service: _AuthService,
+    auth_service: Arc<_AuthService>,
     #[inject]
-    database_service: _DatabaseService,
+    database_service: Arc<_DatabaseService>,
 }
 
 #[async_trait]
@@ -126,7 +126,7 @@ impl ContextBuilder for _GraphQLContextBuilder {
     async fn build(&self, req: &ulo::http::RequestPart) -> Self::Context {
         GraphQLContext {
             user: self.auth_service.verify_token(req),
-            database_service: Arc::new(self.database_service.clone()),
+            database_service: self.database_service.clone(),
         }
     }
 }
@@ -210,8 +210,8 @@ fn build_graphql_module()
 
     // Create context builder (will be injected with services by Ulo!)
     let context_builder = _GraphQLContextBuilder {
-        auth_service: _AuthService {},
-        database_service: _DatabaseService {},
+        auth_service: Arc::new(_AuthService {}),
+        database_service: Arc::new(_DatabaseService {}),
     };
 
     GraphQLModule::for_root(schema, context_builder)

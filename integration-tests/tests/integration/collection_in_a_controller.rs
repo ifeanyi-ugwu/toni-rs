@@ -60,9 +60,9 @@ pub struct Plugins {
     #[inject]
     plugins: Vec<Arc<dyn Plugin>>,
     #[inject]
-    registry: Registry,
+    registry: Arc<Registry>,
     #[inject]
-    built: Built,
+    built: Arc<Built>,
 }
 
 #[routes]

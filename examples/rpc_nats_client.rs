@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 use ulo::extract::Payload;
 use ulo::{
     UloFactory, controller, get,
@@ -87,12 +88,12 @@ impl OrdersService {
 #[controller]
 pub struct OrdersRpcController {
     #[inject]
-    service: OrdersService,
+    service: Arc<OrdersService>,
 }
 #[patterns]
 impl OrdersRpcController {
     #[new]
-    pub fn new(service: OrdersService) -> Self {
+    pub fn new(service: Arc<OrdersService>) -> Self {
         Self { service }
     }
 
@@ -130,7 +131,7 @@ ulo::key!(pub OrderServiceClient: RpcClient);
 pub struct OrdersHttpController {
     // Injected through the marker the module registers the client under.
     #[inject(OrderServiceClient)]
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 #[routes]

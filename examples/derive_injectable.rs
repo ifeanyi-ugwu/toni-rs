@@ -7,6 +7,7 @@
 //!
 //! Run with:  cargo run --example derive_injectable
 
+use std::sync::Arc;
 use ulo::{UloFactory, injectable, module, new};
 #[injectable]
 pub struct Config {
@@ -38,7 +39,7 @@ impl Logger {
 #[injectable]
 pub struct Greeter {
     #[inject]
-    config: Config,
+    config: Arc<Config>,
     #[inject]
     logger: Logger,
 }
@@ -60,7 +61,7 @@ pub struct Banner {
 
 impl Banner {
     #[new]
-    fn new(config: Config) -> Self {
+    fn new(config: Arc<Config>) -> Self {
         Self {
             prefix: format!("<{}>", config.env()),
         }

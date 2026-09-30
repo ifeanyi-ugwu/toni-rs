@@ -20,6 +20,7 @@
 
 use serde::Serialize;
 use serde_json::json;
+use std::sync::Arc;
 use ulo::http::{Body, HttpHandlerResult, HttpRequest, HttpResponse};
 use ulo::{
     Error, UloFactory, async_trait, catch, controller, enhancer::Guard, get, http::HttpContext,
@@ -174,7 +175,7 @@ async fn auth_failure(err: &ulo::errors::GuardRejection, _ctx: &HttpContext) -> 
 #[controller("/users")]
 pub struct UserController {
     #[inject]
-    service: UserService,
+    service: Arc<UserService>,
 }
 
 #[routes]

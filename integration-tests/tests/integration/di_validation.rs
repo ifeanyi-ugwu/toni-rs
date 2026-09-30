@@ -42,7 +42,7 @@ async fn valid_singleton_injects_singleton() {
     #[injectable]
     pub struct ServiceB {
         #[inject]
-        dep: ServiceA,
+        dep: Arc<ServiceA>,
     }
     impl ServiceB {}
 
@@ -64,7 +64,7 @@ async fn valid_request_injects_singleton() {
     #[injectable(scope = "execution")]
     pub struct RequestService {
         #[inject]
-        dep: SingletonService,
+        dep: Arc<SingletonService>,
     }
     impl RequestService {}
 
@@ -91,9 +91,9 @@ async fn valid_transient_injects_any_scope() {
     #[injectable(scope = "transient")]
     pub struct TransientService {
         #[inject]
-        singleton: SingletonService,
+        singleton: Arc<SingletonService>,
         #[inject]
-        request: RequestService,
+        request: Arc<RequestService>,
     }
     impl TransientService {}
 
@@ -116,7 +116,7 @@ async fn singleton_cannot_inject_request_scoped() {
     #[injectable]
     pub struct SingletonService {
         #[inject]
-        request_dep: RequestService,
+        request_dep: Arc<RequestService>,
     }
     impl SingletonService {}
 
@@ -193,16 +193,16 @@ async fn complex_valid_hierarchy() {
     #[injectable]
     pub struct MiddleService {
         #[inject]
-        base: BaseService,
+        base: Arc<BaseService>,
     }
     impl MiddleService {}
 
     #[injectable(scope = "execution")]
     pub struct TopService {
         #[inject]
-        middle: MiddleService,
+        middle: Arc<MiddleService>,
         #[inject]
-        base: BaseService,
+        base: Arc<BaseService>,
     }
     impl TopService {}
 
@@ -225,7 +225,7 @@ async fn explicit_singleton_with_request_fails() {
     #[injectable(scope = "singleton")]
     pub struct ExplicitSingleton {
         #[inject]
-        request_dep: RequestService,
+        request_dep: Arc<RequestService>,
     }
     impl ExplicitSingleton {}
 
@@ -243,7 +243,7 @@ pub struct PerCall {}
 #[injectable(scope = "transient")]
 pub struct Between {
     #[inject]
-    per_call: PerCall,
+    per_call: Arc<PerCall>,
 }
 
 #[injectable]
@@ -264,12 +264,12 @@ async fn a_singleton_reaching_one_through_a_transient_is_refused() {
 
 #[injectable]
 pub struct Constructed {
-    per_call: PerCall,
+    per_call: Arc<PerCall>,
 }
 
 impl Constructed {
     #[new]
-    fn new(per_call: PerCall) -> Self {
+    fn new(per_call: Arc<PerCall>) -> Self {
         Self { per_call }
     }
 }
@@ -309,7 +309,7 @@ key!(pub Doubled: u32);
 #[injectable]
 pub struct Dials {
     #[inject(PerCallPort)]
-    port: u16,
+    port: Arc<u16>,
 }
 
 #[module(providers: [provide!(PerCallPort => async || 3000u16).per_execution(), Dials])]
@@ -441,7 +441,7 @@ async fn a_transient_reaching_one_resolves_in_an_execution_and_is_refused_outsid
 #[injectable(scope = "execution")]
 pub struct AlsoPerCall {
     #[inject]
-    per_call: PerCall,
+    per_call: Arc<PerCall>,
 }
 
 #[module(providers: [PerCall, AlsoPerCall])]

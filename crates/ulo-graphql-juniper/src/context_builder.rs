@@ -18,7 +18,7 @@ use ulo::http::RequestPart;
 /// #[derive(Clone)]
 /// struct MyContext {
 ///     user_id: Option<i32>,
-///     db: DatabaseService,
+///     db: Arc<DatabaseService>,
 /// }
 ///
 /// impl JuniperContext for MyContext {}
@@ -26,9 +26,9 @@ use ulo::http::RequestPart;
 /// #[injectable]
 /// pub struct _MyContextBuilder {
 ///     #[inject]
-///     auth_service: _AuthService,
+///     auth_service: Arc<_AuthService>,
 ///     #[inject]
-///     db_service: _DatabaseService,
+///     db_service: Arc<_DatabaseService>,
 /// }
 ///
 /// #[async_trait]

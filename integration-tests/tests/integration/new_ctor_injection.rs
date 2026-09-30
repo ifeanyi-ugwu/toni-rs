@@ -34,7 +34,7 @@ pub struct Server {
 
 impl Server {
     #[new]
-    fn new(config: ConfigService) -> Self {
+    fn new(config: Arc<ConfigService>) -> Self {
         Self {
             port: config.port(),
         }
@@ -54,7 +54,7 @@ pub struct PortGuard {
 
 impl PortGuard {
     #[new]
-    fn new(config: ConfigService) -> Self {
+    fn new(config: Arc<ConfigService>) -> Self {
         Self {
             threshold: config.port(),
         }
@@ -82,7 +82,7 @@ pub struct ReqServer {
 
 impl ReqServer {
     #[new]
-    fn new(config: ConfigService) -> Self {
+    fn new(config: Arc<ConfigService>) -> Self {
         Self {
             port: config.port(),
         }
@@ -103,7 +103,7 @@ pub struct ReqFacade {
 
 impl ReqFacade {
     #[new]
-    fn new(inner: ReqServer) -> Self {
+    fn new(inner: Arc<ReqServer>) -> Self {
         Self { port: inner.port() }
     }
 
@@ -120,7 +120,7 @@ pub struct TransientServer {
 
 impl TransientServer {
     #[new]
-    fn new(config: ConfigService) -> Self {
+    fn new(config: Arc<ConfigService>) -> Self {
         Self {
             port: config.port(),
         }
@@ -145,7 +145,7 @@ pub struct ConnHolder {
 
 impl ConnHolder {
     #[new]
-    fn new(config: ConfigService) -> Self {
+    fn new(config: Arc<ConfigService>) -> Self {
         Self {
             handle: Handle(format!("conn:{}", config.port())),
         }
@@ -165,7 +165,7 @@ pub struct ExplicitInjectServer {
 
 impl ExplicitInjectServer {
     #[new]
-    fn new(#[inject] config: ConfigService) -> Self {
+    fn new(#[inject] config: Arc<ConfigService>) -> Self {
         Self {
             port: config.port(),
         }
@@ -193,9 +193,9 @@ impl ApiController {
 #[controller("/req")]
 pub struct ReqController {
     #[inject]
-    server: ReqServer,
+    server: Arc<ReqServer>,
     #[inject]
-    facade: ReqFacade,
+    facade: Arc<ReqFacade>,
 }
 
 #[routes]
@@ -355,12 +355,12 @@ async fn new_ctor_path_qualified_inject_token() {
 
     #[injectable]
     pub struct Greeter {
-        greeting: String,
+        greeting: Arc<String>,
     }
 
     impl Greeter {
         #[new]
-        fn new(#[ulo::inject(Greeting)] greeting: String) -> Self {
+        fn new(#[ulo::inject(Greeting)] greeting: Arc<String>) -> Self {
             Self { greeting }
         }
 

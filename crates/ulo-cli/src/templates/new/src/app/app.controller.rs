@@ -1,11 +1,12 @@
 use super::app_service::AppService;
 use ulo::http::Body;
+use std::sync::Arc;
 use ulo::prelude::*;
 
 #[controller("/app")]
 pub struct AppController {
     #[inject]
-    app_service: AppService,
+    app_service: Arc<AppService>,
 }
 
 #[routes]

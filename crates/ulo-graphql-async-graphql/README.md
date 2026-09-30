@@ -80,9 +80,9 @@ use async_trait::async_trait;
 #[injectable]
 pub struct GraphQLContextBuilder {
     #[inject]
-    auth_service: AuthService,
+    auth_service: Arc<AuthService>,
     #[inject]
-    database_service: DatabaseService,
+    database_service: Arc<DatabaseService>,
 }
 
 #[async_trait]
@@ -135,7 +135,7 @@ impl Query {
         ctx.data::<User>().map_err(|_| "Not authenticated")?;
 
         // Get DI service from context
-        let db = ctx.data::<DatabaseService>()?;
+        let db = ctx.data::<Arc<DatabaseService>>()?;
 
         // Query database
         db.find_user(id).await.ok_or("User not found")

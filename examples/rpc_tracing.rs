@@ -117,11 +117,11 @@ impl OrdersCounter {
 #[controller]
 pub struct OrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl OrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }

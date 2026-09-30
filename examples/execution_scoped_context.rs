@@ -9,6 +9,7 @@
 //! Test:      curl -H 'authorization: Bearer alice-token' http://127.0.0.1:3000/orders
 //!            curl http://127.0.0.1:3000/orders
 
+use std::sync::Arc;
 use ulo::async_trait;
 use ulo::enhancer::Guard;
 use ulo::http::HttpContext;
@@ -75,7 +76,7 @@ impl AuditLog {
 #[injectable(scope = "execution")]
 pub struct OrderService {
     #[inject]
-    audit: AuditLog,
+    audit: Arc<AuditLog>,
 }
 
 impl OrderService {
@@ -87,7 +88,7 @@ impl OrderService {
 #[controller("/orders")]
 pub struct OrderController {
     #[inject]
-    orders: OrderService,
+    orders: Arc<OrderService>,
     #[inject]
     user: Extension<CurrentUser>,
 }

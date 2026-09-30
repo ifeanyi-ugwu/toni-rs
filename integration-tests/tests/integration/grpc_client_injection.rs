@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::common::NotServed;
@@ -89,14 +90,14 @@ impl ProbeServerModule {}
 #[controller("/probe")]
 pub struct CallerController {
     #[inject]
-    orders: OrdersClient<tonic::transport::Channel>,
+    orders: Arc<OrdersClient<tonic::transport::Channel>>,
 }
 
 #[routes]
 impl CallerController {
     #[get("/place")]
     async fn place(&self) -> ulo::http::Body {
-        let mut orders = self.orders.clone();
+        let mut orders = (*self.orders).clone();
         let reply = orders
             .create(probe_pb::CreateOrderRequest {
                 item: "keyboard".to_string(),

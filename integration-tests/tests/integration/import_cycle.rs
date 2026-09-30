@@ -5,6 +5,7 @@
 //! visibility rather than construction order. The distinction is only
 //! observable if a provider resolves across the cycle, which the
 //! second test does.
+use std::sync::Arc;
 use ulo::prelude::*;
 
 // Two modules that import each other. An import edge is a visibility relationship, not a
@@ -84,8 +85,10 @@ pub struct ServiceC {
 
 impl ServiceC {
     #[new]
-    pub fn new(d: ServiceD) -> Self {
-        Self { d_label: d.label }
+    pub fn new(d: Arc<ServiceD>) -> Self {
+        Self {
+            d_label: d.label.clone(),
+        }
     }
 }
 

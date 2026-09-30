@@ -132,23 +132,23 @@ pub struct PluginRegistry {
 #[controller("/values")]
 pub struct Values {
     #[inject]
-    keyless: Banner,
+    keyless: Arc<Banner>,
     #[inject]
-    motd: Motd,
+    motd: Arc<Motd>,
     #[inject]
     greeter: Arc<dyn Greeter>,
     #[inject]
     bounded_greeter: Arc<dyn Greeter + Send + Sync>,
     #[inject(Port)]
-    port: u16,
+    port: Arc<u16>,
     #[inject(Replica)]
-    replica: Logger,
+    replica: Arc<Logger>,
     #[inject(Loud)]
     loud: Arc<dyn Greeter>,
     #[inject(Quiet)]
     quiet: Arc<dyn Greeter>,
     #[inject]
-    registry: PluginRegistry,
+    registry: Arc<PluginRegistry>,
 }
 
 #[routes]
@@ -553,15 +553,15 @@ key!(pub Fresh: RequestId);
 #[injectable(scope = "execution")]
 pub struct Holder {
     #[inject]
-    id: RequestId,
+    id: Arc<RequestId>,
 }
 
 #[controller("/per-execution", scope = "execution")]
 pub struct PerExecution {
     #[inject]
-    direct: RequestId,
+    direct: Arc<RequestId>,
     #[inject]
-    holder: Holder,
+    holder: Arc<Holder>,
 }
 
 #[routes]

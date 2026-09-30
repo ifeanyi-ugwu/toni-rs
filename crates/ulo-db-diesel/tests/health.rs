@@ -1,5 +1,6 @@
 #![cfg(feature = "integration")]
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -65,7 +66,7 @@ impl ItemService {
 #[controller("/items")]
 pub struct ItemController {
     #[inject]
-    service: ItemService,
+    service: Arc<ItemService>,
     #[inject]
     health: HealthCheckService,
     #[inject]

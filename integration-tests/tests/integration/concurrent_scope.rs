@@ -11,6 +11,7 @@
 
 use crate::common::TestServer;
 use futures_util::future::join_all;
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{controller, get, module, provide, routes};
 use uuid::Uuid;
@@ -26,7 +27,7 @@ async fn request_scoped_instances_are_isolated_under_concurrency() {
     #[controller("/", scope = "execution")]
     pub struct TestController {
         #[inject(ReqId)]
-        req_id: RequestId,
+        req_id: Arc<RequestId>,
     }
 
     #[routes]

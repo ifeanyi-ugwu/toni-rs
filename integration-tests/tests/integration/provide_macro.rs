@@ -7,6 +7,7 @@
 //! `alias`, `value`, `factory` — is asserted against what it produced, not
 //! merely that it produced something.
 use crate::common::TestServer;
+use std::sync::Arc;
 use std::time::Duration;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, new, provide, routes};
@@ -63,31 +64,31 @@ async fn provide_macro_patterns() {
     #[injectable]
     pub struct AppService {
         #[inject(ApiKey)]
-        api_key: String,
+        api_key: Arc<String>,
 
         #[inject(Port)]
-        port: u16,
+        port: Arc<u16>,
 
         #[inject(Timeout)]
-        timeout: Duration,
+        timeout: Arc<Duration>,
 
         #[inject(MaxConnections)]
-        max_connections: i32,
+        max_connections: Arc<i32>,
 
         #[inject(Logger)]
-        logger: String,
+        logger: Arc<String>,
 
         #[inject(PrimaryDb)]
-        database: DatabaseService,
+        database: Arc<DatabaseService>,
 
         #[inject(CacheAlias)]
-        cache: CacheService,
+        cache: Arc<CacheService>,
 
         #[inject(ExplicitValue)]
-        explicit_value: String,
+        explicit_value: Arc<String>,
 
         #[inject(ExplicitFactory)]
-        explicit_factory: String,
+        explicit_factory: Arc<String>,
     }
     impl AppService {
         pub fn get_info(&self) -> String {
@@ -109,7 +110,7 @@ async fn provide_macro_patterns() {
     #[controller("/app")]
     pub struct AppController {
         #[inject]
-        app: AppService,
+        app: Arc<AppService>,
     }
 
     #[routes]

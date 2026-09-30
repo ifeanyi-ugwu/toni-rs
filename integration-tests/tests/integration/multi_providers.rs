@@ -47,7 +47,7 @@ async fn multi_type_path_collects_all_contributions() {
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: PluginRegistry,
+        registry: Arc<PluginRegistry>,
     }
 
     #[routes]
@@ -108,7 +108,7 @@ async fn multi_factory_closure_collects_contributions() {
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: GreeterRegistry,
+        registry: Arc<GreeterRegistry>,
     }
 
     #[routes]
@@ -159,7 +159,7 @@ async fn a_collection_with_no_contribution_fails_startup() {
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: EmptyRegistry,
+        registry: Arc<EmptyRegistry>,
     }
 
     #[routes]
@@ -200,7 +200,7 @@ async fn multi_single_contribution_is_vec_of_one() {
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: SingleRegistry,
+        registry: Arc<SingleRegistry>,
     }
 
     #[routes]
@@ -256,7 +256,7 @@ async fn multi_raw_value_contributes_to_collection() {
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: NamedRegistry,
+        registry: Arc<NamedRegistry>,
     }
 
     #[routes]
@@ -317,14 +317,14 @@ async fn a_contribution_from_a_type_is_built_apart_from_its_registration() {
         #[inject]
         plugins: Vec<Arc<dyn Plugin>>,
         #[inject]
-        alpha: Alpha,
+        alpha: Arc<Alpha>,
     }
     impl Registry {}
 
     #[controller()]
     pub struct TestController {
         #[inject]
-        registry: Registry,
+        registry: Arc<Registry>,
     }
 
     #[routes]

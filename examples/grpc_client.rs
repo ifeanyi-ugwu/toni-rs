@@ -22,6 +22,7 @@
 //! ```
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use ulo::http::Body;
 use ulo::{UloFactory, module, provide};
@@ -42,18 +43,18 @@ const GRPC_ADDR: &str = "127.0.0.1:50051";
 
 #[controller("/orders")]
 pub struct OrdersGateway {
-    /// Injected by type. `OrdersClient<Channel>` is cheap to clone — the
-    /// clone shares the connection — so a handler clones it to get the `&mut`
-    /// tonic wants.
+    /// Injected by type, as the one client the module declares. A clone of
+    /// `OrdersClient<Channel>` shares the connection, so a handler clones it
+    /// out of the `Arc` to get the `&mut` tonic wants.
     #[inject]
-    orders: OrdersClient<Channel>,
+    orders: Arc<OrdersClient<Channel>>,
 }
 
 #[routes]
 impl OrdersGateway {
     #[get("/place")]
     async fn place(&self) -> Body {
-        let mut orders = self.orders.clone();
+        let mut orders = (*self.orders).clone();
         match orders
             .create(orders_pb::CreateOrderRequest {
                 item: "keyboard".to_string(),

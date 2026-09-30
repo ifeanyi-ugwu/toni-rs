@@ -7,6 +7,7 @@
 //! requests correctly and both are wrong.
 use crate::common::TestServer;
 use serial_test::serial;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, new, routes};
@@ -38,7 +39,7 @@ async fn singleton_providers_created_once_across_requests() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: SingletonService,
+        service: Arc<SingletonService>,
     }
 
     #[routes]
@@ -105,7 +106,7 @@ async fn transient_providers_create_unique_instances_per_injection() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: MultiService,
+        service: Arc<MultiService>,
     }
 
     #[routes]
@@ -153,7 +154,7 @@ async fn field_injection_with_inject_attribute() {
     #[injectable]
     pub struct ServiceWithDeps {
         #[inject]
-        dep: DependencyService,
+        dep: Arc<DependencyService>,
     }
     impl ServiceWithDeps {
         pub fn get_value(&self) -> i32 {
@@ -164,7 +165,7 @@ async fn field_injection_with_inject_attribute() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: ServiceWithDeps,
+        service: Arc<ServiceWithDeps>,
     }
 
     #[routes]
@@ -206,7 +207,7 @@ async fn field_injection_with_default_fallback() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: ServiceWithDefault,
+        service: Arc<ServiceWithDefault>,
     }
 
     #[routes]
@@ -248,7 +249,7 @@ async fn config_service_injection_in_providers() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: ServiceWithConfig,
+        service: Arc<ServiceWithConfig>,
     }
 
     #[routes]
@@ -293,7 +294,7 @@ async fn new_attribute_syntax() {
     #[controller("/")]
     pub struct TestController {
         #[inject]
-        service: NewSyntaxService,
+        service: Arc<NewSyntaxService>,
     }
 
     #[routes]

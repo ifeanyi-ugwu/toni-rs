@@ -7,6 +7,7 @@
 //! stopped happening would surface as an application that refuses to start, naming a provider the
 //! reader can see is declared.
 
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo::{injectable, module};
 #[injectable]
@@ -23,7 +24,7 @@ impl ClockModule {}
 #[injectable]
 pub struct Scheduler {
     #[inject]
-    clock: SharedClock,
+    clock: Arc<SharedClock>,
 }
 
 impl Scheduler {
@@ -73,7 +74,7 @@ async fn import_order_does_not_decide_whether_the_wait_happens() {
 #[injectable]
 pub struct Orphan {
     #[inject]
-    missing: NeverProvided,
+    missing: Arc<NeverProvided>,
 }
 
 #[injectable]

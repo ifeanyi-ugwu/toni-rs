@@ -2,6 +2,7 @@
 //! module's, and no provider exported to neither; a key with two answers is refused rather than
 //! answered by whichever module the search reached first.
 
+use std::sync::Arc;
 use ulo::di::{ModuleRef, ResolutionError};
 use ulo::{UloFactory, injectable, key, module, provide};
 
@@ -69,7 +70,7 @@ struct SecondPorts;
 #[injectable]
 pub struct Dialer {
     #[inject]
-    port: Port,
+    port: Arc<Port>,
 }
 
 #[module(imports: [FirstPorts, SecondPorts], providers: [Dialer])]

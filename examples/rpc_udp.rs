@@ -19,6 +19,7 @@
 //   echo '{"pattern":"order.shipped","data":{"order_id":1001}}' \
 //     | nc -u -w1 127.0.0.1 4000
 
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo_macros::{controller, injectable, module, new, patterns};
 
@@ -38,12 +39,12 @@ impl OrdersService {
 #[controller]
 pub struct OrdersController {
     #[inject]
-    service: OrdersService,
+    service: Arc<OrdersService>,
 }
 #[patterns]
 impl OrdersController {
     #[new]
-    pub fn new(service: OrdersService) -> Self {
+    pub fn new(service: Arc<OrdersService>) -> Self {
         Self { service }
     }
 

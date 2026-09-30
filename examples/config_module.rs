@@ -12,6 +12,7 @@
 //!   curl http://127.0.0.1:3000/config
 
 use serde_json::json;
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, routes};
@@ -51,7 +52,7 @@ impl AppService {
 #[controller("/config")]
 pub struct ConfigController {
     #[inject]
-    service: AppService,
+    service: Arc<AppService>,
 }
 
 #[routes]
