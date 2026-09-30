@@ -12,7 +12,10 @@ use syn::{Ident, ItemStruct, Result, Type};
 
 use crate::{
     shared::{dependency_info::DependencyInfo, scope_parser::ProviderScope},
-    utils::extracts::{extract_struct_dependencies, extract_vec_arc_dyn_inner},
+    utils::extracts::{
+        extract_arc_dyn_inner, extract_arc_inner, extract_struct_dependencies,
+        extract_vec_arc_dyn_inner,
+    },
 };
 
 /// Structural roles the surrounding macro assigns to a provider.
@@ -716,7 +719,7 @@ fn field_resolutions(
     let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
 
     for (field_name, full_type, lookup_token_expr) in &regular_deps {
-        let type_key = quote!(#lookup_token_expr).to_string();
+        let type_key = shared_group_key(full_type, lookup_token_expr);
         type_groups.entry(type_key).or_insert_with(Vec::new).push((
             (*field_name).clone(),
             (*full_type).clone(),
@@ -727,6 +730,7 @@ fn field_resolutions(
         let (first_field_name, full_type, lookup_token_expr) = &fields_of_type[0];
         let field_name_str = first_field_name.to_string();
 
+        let take = take_answer(full_type, quote! { provider.resolve(#ctx).await? });
         if fields_of_type.len() == 1 {
             let field_name = first_field_name;
             let resolution = quote! {
@@ -739,12 +743,7 @@ fn field_resolutions(
                             __lookup_token, #field_name_str
                         ));
 
-                    let any_box = provider.resolve(#ctx).await?;
-
-                    *any_box.downcast::<#full_type>()
-                        .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                            token: __lookup_token.clone(),
-                        })?
+                    #take
                 };
             };
 
@@ -779,22 +778,10 @@ fn field_resolutions(
 
                 if matches!(provider.scope(), ::ulo::di::ProviderScope::Transient) {
                     #(
-                        #field_idents = {
-                            let any_box = provider.resolve(#ctx).await?;
-                            *any_box.downcast::<#full_type>()
-                                .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                                    token: __lookup_token.clone(),
-                                })?
-                        };
+                        #field_idents = #take;
                     )*
                 } else {
-                    let #temp_var: #full_type = {
-                        let any_box = provider.resolve(#ctx).await?;
-                        *any_box.downcast::<#full_type>()
-                            .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                                token: __lookup_token.clone(),
-                            })?
-                    };
+                    let #temp_var: #full_type = #take;
 
                     #(
                         #field_idents = #temp_var.clone();
@@ -1124,6 +1111,10 @@ fn generate_create_field_resolutions(
 
     for (field_name, full_type, lookup_token_expr) in &regular_deps {
         let field_name_str = field_name.to_string();
+        let take = take_answer(
+            full_type,
+            quote! { __provider.resolve(__exec_ctx.clone()).await? },
+        );
         resolutions.push(quote! {
             let #field_name: #full_type = {
                 let __lookup_token = #lookup_token_expr;
@@ -1132,11 +1123,7 @@ fn generate_create_field_resolutions(
                         "Missing dependency '{}' for field '{}'",
                         __lookup_token, #field_name_str
                     ));
-                let __any_box = __provider.resolve(__exec_ctx.clone()).await?;
-                *__any_box.downcast::<#full_type>()
-                    .map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                        token: __lookup_token.clone(),
-                    })?
+                #take
             };
         });
         field_names.push(field_name.clone());
@@ -1289,6 +1276,33 @@ fn generate_dyn_factories(
     };
 
     (struct_defs, role_pushes)
+}
+
+/// The group a field joins for same-token deduplication. Fields over one token resolve once only
+/// when written in one shape, `Arc<T>` or plain, since the group takes the answer in the shape of
+/// its first field.
+pub(crate) fn shared_group_key(ty: &Type, token: &TokenStream) -> String {
+    let shape = if extract_arc_inner(ty).is_some() {
+        "Arc"
+    } else {
+        "value"
+    };
+    format!("{} {shape}", quote!(#token))
+}
+
+/// How a field or parameter of type `ty` takes its value from a provider's erased `answer`, with
+/// `__lookup_token` in scope: the `Arc` a trait-object slot answers for `Arc<dyn Trait>`, the
+/// shared instance or a value wrapped for `Arc<T>`, and a value handed out as it is for any other
+/// type. Every resolver of an `#[inject]` field or a `#[new]` parameter reads a single binding
+/// through this.
+pub(crate) fn take_answer(ty: &Type, answer: TokenStream) -> TokenStream {
+    if let Some(object) = extract_arc_dyn_inner(ty) {
+        quote! { ::ulo::__di::take_object::<#object>(#answer, &__lookup_token)? }
+    } else if let Some(shared) = extract_arc_inner(ty) {
+        quote! { ::ulo::__di::take_shared::<#shared>(#answer, &__lookup_token)? }
+    } else {
+        quote! { ::ulo::__di::take_value::<#ty>(#answer, &__lookup_token)? }
+    }
 }
 
 /// A `Vec<Arc<dyn Trait>>` field's or parameter's resolution: the collection provider under

@@ -1,4 +1,4 @@
-//! What `provide!(K => source)` and `#[inject(K)]` expand through.
+//! What `provide!(K => source)`, `#[inject(K)]` and every injection site expand through.
 //!
 //! For `provide!`: whether `K` holds the source's type, which binds it as it is, or a trait object,
 //! which takes the cast.
@@ -11,11 +11,13 @@
 
 #![doc(hidden)]
 
+use std::any::Any;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::di::{Declaration, Key, Under, token_of};
+use crate::error::ResolutionError;
 
 pub struct Keyed<K, D> {
     declaration: Cell<Option<D>>,
@@ -76,8 +78,53 @@ where
     }
 }
 
-/// The container key `#[inject(K)]` resolves a field by, checked to hold `V`: the field's type, or
-/// the trait object an `Arc<dyn Trait>` or `Vec<Arc<dyn Trait>>` field holds.
+/// The container key `#[inject(K)]` resolves a field by, checked to hold `V`: the field's type, the
+/// type an `Arc<V>` field shares, or the trait object an `Arc<dyn Trait>` or `Vec<Arc<dyn Trait>>`
+/// field holds.
 pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
     token_of::<K>()
+}
+
+/// What a field or parameter written `Arc<T>` takes from a provider's answer: the shared `Arc<T>`
+/// as it is, or a `T` handed out by value, wrapped.
+pub fn take_shared<T: 'static>(
+    answer: Box<dyn Any + Send>,
+    token: &str,
+) -> Result<Arc<T>, ResolutionError> {
+    match answer.downcast::<Arc<T>>() {
+        Ok(shared) => Ok(*shared),
+        Err(answer) => answer
+            .downcast::<T>()
+            .map(|value| Arc::new(*value))
+            .map_err(|_| mismatch(token)),
+    }
+}
+
+/// What a field or parameter written `Arc<dyn Trait>` takes: the `Arc` a slot holding the trait
+/// object answers.
+pub fn take_object<T: ?Sized + 'static>(
+    answer: Box<dyn Any + Send>,
+    token: &str,
+) -> Result<Arc<T>, ResolutionError> {
+    answer
+        .downcast::<Arc<T>>()
+        .map(|object| *object)
+        .map_err(|_| mismatch(token))
+}
+
+/// What a field or parameter written as a plain `T` takes: a `T` handed out by value.
+pub fn take_value<T: 'static>(
+    answer: Box<dyn Any + Send>,
+    token: &str,
+) -> Result<T, ResolutionError> {
+    answer
+        .downcast::<T>()
+        .map(|value| *value)
+        .map_err(|_| mismatch(token))
+}
+
+fn mismatch(token: &str) -> ResolutionError {
+    ResolutionError::TypeMismatch {
+        token: token.to_string(),
+    }
 }

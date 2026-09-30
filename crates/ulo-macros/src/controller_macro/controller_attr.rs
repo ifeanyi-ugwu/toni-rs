@@ -153,7 +153,8 @@ fn generate_bridges(
 /// Resolve the `#[inject]` fields from the dependency map.
 ///
 /// A collection field resolves on its own, ahead of the rest. The other fields are grouped by
-/// lookup token, in order of first appearance, and deduplicated scope-aware: singleton and
+/// lookup token and written shape, `Arc<T>` or plain, in order of first appearance, and
+/// deduplicated scope-aware: singleton and
 /// execution-scoped providers are resolved once and shared (cloned) across same-token fields, while
 /// transient providers get a fresh instance per field. The explicit dedup is required because not
 /// every provider caches in the execution's cache (e.g. a hand-written `Provider`). Returns the
@@ -181,11 +182,11 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
             field_names.push(name.clone());
             continue;
         }
-        groups.entry(quote!(#token).to_string()).or_default().push((
-            name.clone(),
-            ty.clone(),
-            token.clone(),
-        ));
+        let key = crate::provider_macro::instance_injection::shared_group_key(ty, token);
+        groups
+            .entry(key)
+            .or_default()
+            .push((name.clone(), ty.clone(), token.clone()));
     }
 
     for (_key, group) in groups {
@@ -200,6 +201,10 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
         let idents: Vec<&Ident> = group.iter().map(|(n, _, _)| n).collect();
         let decls: Vec<TokenStream> = idents.iter().map(|n| quote! { let #n: #ty; }).collect();
         let ctx = ctx_expr();
+        let take = crate::provider_macro::instance_injection::take_answer(
+            ty,
+            quote! { __provider.resolve(#ctx).await? },
+        );
         resolutions.push(quote! {
             #(#decls)*
             {
@@ -208,26 +213,10 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
                     .unwrap_or_else(|| panic!("Missing dependency '{}'", __lookup_token));
                 if matches!(__provider.scope(), ::ulo::di::ProviderScope::Transient) {
                     #(
-                        #idents = {
-                            let __ctx = #ctx;
-                            let __any = __provider.resolve(__ctx).await?;
-                            *__any.downcast::<#ty>().map_err(|_| {
-                                ::ulo::di::ResolutionError::TypeMismatch {
-                                    token: __lookup_token.clone(),
-                                }
-                            })?
-                        };
+                        #idents = #take;
                     )*
                 } else {
-                    let __shared: #ty = {
-                        let __ctx = #ctx;
-                        let __any = __provider.resolve(__ctx).await?;
-                        *__any.downcast::<#ty>().map_err(|_| {
-                            ::ulo::di::ResolutionError::TypeMismatch {
-                                token: __lookup_token.clone(),
-                            }
-                        })?
-                    };
+                    let __shared: #ty = #take;
                     #( #idents = __shared.clone(); )*
                 }
             }
@@ -244,17 +233,17 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
 fn resolve_one(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
     let name_str = name.to_string();
     let ctx = ctx_expr();
+    let take = crate::provider_macro::instance_injection::take_answer(
+        ty,
+        quote! { __provider.resolve(#ctx).await? },
+    );
     quote! {
         let #name: #ty = {
             let __lookup_token = #token;
             let __provider = dependencies.get(&__lookup_token).unwrap_or_else(|| panic!(
                 "Missing dependency '{}' for field '{}'", __lookup_token, #name_str
             ));
-            let __ctx = #ctx;
-            let __any = __provider.resolve(__ctx).await?;
-            *__any.downcast::<#ty>().map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                token: __lookup_token.clone(),
-            })?
+            #take
         };
     }
 }

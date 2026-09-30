@@ -143,8 +143,8 @@ pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
 }
 
 /// Extracts a type token expression: a call to `ulo::di::token_of` with the
-/// written type, resolved in the caller's scope; for `Arc<dyn T>` and `Vec<Arc<dyn T>>`, with the
-/// trait object `dyn T`. The compiler canonicalizes the
+/// written type, resolved in the caller's scope; for `Arc<T>`, with `T`, and for
+/// `Vec<Arc<dyn T>>`, with the trait object `dyn T`. The compiler canonicalizes the
 /// spelling — qualified paths, aliases, and generic parameters all produce the
 /// fully-qualified name the registration side uses.
 pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
@@ -155,10 +155,10 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
         ty
     };
 
-    // A collection field `Vec<Arc<dyn T>>` and a binding field `Arc<dyn T>` are keyed by the trait
-    // object as written, which is how `provide!` keys them.
+    // A collection field `Vec<Arc<dyn T>>` is keyed by the trait object, and an `Arc<T>` field by
+    // what it shares, which is how `provide!` keys them.
     if let Some(inner) =
-        extract_vec_arc_dyn_inner(actual_type).or_else(|| extract_arc_dyn_inner(actual_type))
+        extract_vec_arc_dyn_inner(actual_type).or_else(|| extract_arc_inner(actual_type))
     {
         return Ok(quote! { ::ulo::di::token_of::<#inner>() });
     }
@@ -173,8 +173,8 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
     ))
 }
 
-/// Returns the inner trait-object type if `ty` is `Arc<dyn Trait...>`, otherwise `None`.
-pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
+/// Returns the inner type if `ty` is `Arc<T>`, a trait object included, otherwise `None`.
+pub fn extract_arc_inner(ty: &Type) -> Option<Type> {
     let Type::Path(syn::TypePath { path, .. }) = ty else {
         return None;
     };
@@ -186,9 +186,14 @@ pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
         return None;
     };
     match args.args.first()? {
-        syn::GenericArgument::Type(inner @ Type::TraitObject(_)) => Some(inner.clone()),
+        syn::GenericArgument::Type(inner) => Some(inner.clone()),
         _ => None,
     }
+}
+
+/// Returns the inner trait-object type if `ty` is `Arc<dyn Trait...>`, otherwise `None`.
+pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
+    extract_arc_inner(ty).filter(|inner| matches!(inner, Type::TraitObject(_)))
 }
 
 /// Returns the inner trait-object type if `ty` is `Vec<Arc<dyn Trait...>>`, otherwise `None`.

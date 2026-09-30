@@ -95,6 +95,7 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 /// | Written | Reads |
 /// | --- | --- |
 /// | `#[inject] db: Db` | the slot keyed by the field's type |
+/// | `#[inject] db: Arc<Db>` | the slot keyed by `Db`: its shared instance, or the value it hands out, wrapped |
 /// | `#[inject] logger: Arc<dyn Logger>` | the slot keyed by `dyn Logger` |
 /// | `#[inject] plugins: Vec<Arc<dyn Plugin>>` | the collection keyed by `dyn Plugin` |
 /// | `#[inject(Replica)] db: Db` | the slot under the marker `Replica`, declared `key!(pub Replica: Db)` |
@@ -103,8 +104,9 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 /// | `#[inject(dyn Logger)] logger: Arc<dyn Logger>` | a trait object's own slot, the key written out |
 /// | `#[inject(Repo<User>)] repo: Repo<User>` | a type as its own key, generic or not, when it implements `Key` |
 ///
-/// The key is checked against what the field holds, at the key: `V` for a slot holding a sized
-/// type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a collection.
+/// The key is checked against what the field holds, at the key: `V` or `Arc<V>` for a slot holding
+/// a sized type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a
+/// collection.
 /// A field holding another type fails to compile there, as do a key that is not a `Key` and a string
 /// key. A `#[new]` parameter, or a `#[controller]` field, takes the same keys, collections included.
 #[proc_macro_attribute]

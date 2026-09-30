@@ -136,6 +136,10 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
         );
     }
     let name_str = name.to_string();
+    let take = super::instance_injection::take_answer(
+        ty,
+        quote! { __provider.resolve(__exec_ctx.clone()).await? },
+    );
     quote! {
         let #name: #ty = {
             let __lookup_token = #token;
@@ -145,12 +149,7 @@ fn resolve_param(name: &Ident, ty: &Type, token: &TokenStream) -> TokenStream {
                     "Missing dependency '{}' for #[new] parameter '{}'",
                     __lookup_token, #name_str
                 ));
-            let __any = __provider
-                .resolve(__exec_ctx.clone())
-                .await?;
-            *__any.downcast::<#ty>().map_err(|_| ::ulo::di::ResolutionError::TypeMismatch {
-                token: __lookup_token.clone(),
-            })?
+            #take
         };
     }
 }
