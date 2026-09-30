@@ -117,6 +117,7 @@ mod rpc_udp_stream;
 mod scope_bubbling;
 mod scoped_enhancers;
 mod serve_loop_death;
+mod shared_by_value;
 mod shared_instances;
 mod sse;
 mod sse_adapter_conformance;

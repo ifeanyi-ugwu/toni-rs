@@ -1,0 +1,17 @@
+error[E0080]: evaluation panicked: `Store` is handed out as one shared instance: write `Arc<Store>`
+  --> tests/diagnostics/inject_a_shared_type_plain.rs:14:12
+   |
+14 |     store: Store,
+   |            ^^^^^ evaluation of `_` failed here
+
+error[E0080]: evaluation panicked: `Call` is handed out as one shared instance: write `Arc<Call>`
+  --> tests/diagnostics/inject_a_shared_type_plain.rs:20:11
+   |
+20 |     call: Call,
+   |           ^^^^ evaluation of `_` failed here
+
+error[E0080]: evaluation panicked: `Store` is handed out as one shared instance: write `Arc<Store>`
+  --> tests/diagnostics/inject_a_shared_type_plain.rs:30:19
+   |
+30 |     fn new(store: Store) -> Self {
+   |                   ^^^^^ evaluation of `Built::__ulo_ctor_tokens_new::_` failed here
