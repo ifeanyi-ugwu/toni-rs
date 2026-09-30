@@ -1,0 +1,11 @@
+[package]
+name = "fable-redesign"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+
+# A crate of its own, outside the ulo workspace.
+[workspace]

@@ -8,3 +8,7 @@ holds it until it is either phased into ulo or dropped.
   numbers in the design, such as [12], refer to this list.
 - `DESIGN.md` — the design. `fw` stands for the framework's crate prefix, `ulo`. Section 14 ends
   at item 7.
+- `REFINEMENTS.md` — refinements to the design and open questions on it, each claim marked by how
+  it was established.
+- `probes/` — the scratch crate behind `REFINEMENTS.md`, outside the ulo workspace; each binary
+  shows one claim, and a `*_fails.rs` binary's compile error is its result.
