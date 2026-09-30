@@ -163,8 +163,8 @@ rebound under one keeps its type's roles.
 `controllers:` parse expressions, a bare path in the last two being its type's own declaration.
 `exports:` lists key types, as `.export::<K>()` does. The builder has one `.provider(value)` and one
 `.controller(value)`. The attribute and the builder are two syntaxes for one list. An `Extension<T>`
-needs no declaration, as `Extensions` needs none: the container answers any `Extension<T>` key from
-the execution's bag.
+needs no declaration, as `Extensions` needs none: an injection site of `Extension<T>` reads the
+execution's bag and views it as `T`.
 
 **A provider factory is always async.** The bound is
 `F: Fn(A..) -> Fut, Fut: Future<Output = R> + Send`, which accepts every async spelling and refuses

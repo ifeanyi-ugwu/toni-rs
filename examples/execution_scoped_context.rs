@@ -112,11 +112,11 @@ impl OrderController {
     }
 }
 
-// `Extension::<CurrentUser>` registers the payload type; every injection site
-// above resolves to the same per-request value.
+// `Extension<CurrentUser>` needs no declaration: every injection site above reads the
+// same per-request value from the execution's bag.
 #[module(
     controllers: [OrderController],
-    providers: [Extension::<CurrentUser>, AuthGuard, AuditLog, OrderService]
+    providers: [AuthGuard, AuditLog, OrderService]
 )]
 impl AppModule {}
 

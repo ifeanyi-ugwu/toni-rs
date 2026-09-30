@@ -93,7 +93,7 @@ impl OrderController {
 
 #[module(
     controllers: [OrderController],
-    providers: [Extension::<CurrentUser>, AuthGuard, AuditLog, OrderService]
+    providers: [AuthGuard, AuditLog, OrderService]
 )]
 impl OrderModule {}
 
@@ -163,7 +163,7 @@ impl OnceController {
     }
 }
 
-#[module(controllers: [OnceController], providers: [Extension::<CurrentUser>, OnceGuard])]
+#[module(controllers: [OnceController], providers: [OnceGuard])]
 impl OnceModule {}
 
 #[tokio::test]

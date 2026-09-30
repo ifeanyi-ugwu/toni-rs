@@ -20,21 +20,17 @@
 //! }
 //! ```
 //!
-//! Register one line per payload type, alongside any other provider:
-//!
-//! ```rust,ignore
-//! #[module(providers: [Extension::<CurrentUser>, AuditLog])]
-//! impl AppModule {}
-//! ```
+//! A view needs no declaration: the container reads it from the execution's bag, the one
+//! [`Extensions`](crate::context::Extensions) it answers every module with, and code outside the
+//! injection tree reads that bag with `resolve::<Extensions>`.
 //!
 //! # Scope
 //!
-//! These are execution-scoped, so they cannot be injected into singletons — a
-//! singleton holding one request's values would serve them to every later
-//! request. The container refuses it at startup. Execution scope is an HTTP
-//! concept in ulo: WebSocket gateways and RPC controllers are built once at
-//! startup, so their handlers read the bag off the client or the context
-//! instead.
+//! A view reads the execution's bag, so a singleton cannot hold one: it would
+//! serve one execution's values to every later one. `create` refuses it with
+//! `ExecutionRequired` naming `Extensions`, the provider a view reads. A
+//! `provide!` factory's parameters are not injection sites: a factory takes
+//! `Arc<Extensions>` and reads the payload from the bag.
 
 use std::any::Any;
 use std::marker::PhantomData;
@@ -69,7 +65,7 @@ impl<T> Clone for Extension<T> {
 }
 
 impl<T> Extension<T> {
-    fn over(bag: Extensions) -> Self {
+    pub(crate) fn over(bag: Extensions) -> Self {
         Self {
             bag,
             _marker: PhantomData,
@@ -111,14 +107,6 @@ impl<T: Send + Sync + 'static> Extension<T> {
     }
 }
 
-/// `providers: [Extension::<T>]` registers the view of `T` in the execution's bag.
-#[diagnostic::do_not_recommend]
-impl<T: Send + Sync + 'static> crate::di::DeclaresProvider for Extension<T> {
-    fn provider_factory() -> impl ProviderFactory + 'static {
-        ExtensionFactory::<T>::new()
-    }
-}
-
 impl<T: Clone + Send + Sync + 'static> Extension<T> {
     /// A clone of the attached value, if a stage before this one attached it.
     pub fn get(&self) -> Option<T> {
@@ -126,30 +114,8 @@ impl<T: Clone + Send + Sync + 'static> Extension<T> {
     }
 }
 
-#[async_trait]
-impl<T: Send + Sync + 'static> Provider for Extension<T> {
-    fn token(&self) -> String {
-        crate::di::token_of::<Extension<T>>()
-    }
-
-    async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
-        let Some(bag) = ctx.extensions() else {
-            return Err(ResolutionError::ExecutionRequired {
-                token: self.token(),
-            });
-        };
-        Ok(Box::new(Extension::<T>::over(bag)))
-    }
-
-    fn scope(&self) -> ProviderScope {
-        ProviderScope::Execution
-    }
-}
-
-/// The bag itself is injectable too, for code that reads several payload types
-/// and would rather not declare a view for each. It needs no registration —
-/// unlike [`Extension<T>`] there is only one of it, so the framework registers
-/// it globally.
+/// The bag itself is injectable too, for code that reads several payload types. The framework
+/// registers it globally, and every injection site of [`Extension<T>`] reads it.
 #[async_trait]
 impl Provider for Extensions {
     fn token(&self) -> String {
@@ -181,44 +147,6 @@ impl ProviderFactory for ExtensionsFactory {
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         Ok(Registration::new(
             Arc::new(Extensions::new()) as Arc<dyn Provider>,
-            vec![],
-        ))
-    }
-}
-
-/// Registers an [`Extension<T>`] with the container.
-///
-/// Written as `Extension::<T>` in a module's `providers` list, which resolves
-/// to this. One entry per payload type: each `T` is its own DI token, so the
-/// container cannot conjure them from a single registration.
-pub struct ExtensionFactory<T> {
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T> ExtensionFactory<T> {
-    pub fn new() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T> Default for ExtensionFactory<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl<T: Send + Sync + 'static> ProviderFactory for ExtensionFactory<T> {
-    fn token(&self) -> String {
-        crate::di::token_of::<Extension<T>>()
-    }
-
-    async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
-        let provider = Extension::<T>::over(Extensions::new());
-        Ok(Registration::new(
-            Arc::new(provider) as Arc<dyn Provider>,
             vec![],
         ))
     }
@@ -297,12 +225,5 @@ mod tests {
 
         assert_eq!(users.get(), Some(User("erin")));
         assert_eq!(flags.get(), Some(7));
-    }
-
-    #[test]
-    fn the_registration_token_names_the_payload_type() {
-        let factory = <Extension<User> as crate::di::DeclaresProvider>::provider_factory();
-        assert!(factory.token().contains("Extension"));
-        assert!(factory.token().contains("User"));
     }
 }
