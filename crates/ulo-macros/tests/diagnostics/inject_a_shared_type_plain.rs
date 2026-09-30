@@ -14,6 +14,15 @@ pub struct Holder {
     store: Store,
 }
 
+// An alias names the same type, and the refusal reads the type.
+type PlainStore = Store;
+
+#[ulo::injectable]
+pub struct AliasHolder {
+    #[inject]
+    store: PlainStore,
+}
+
 #[ulo::controller("/calls")]
 pub struct Calls {
     #[inject]
