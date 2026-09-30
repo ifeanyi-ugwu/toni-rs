@@ -32,8 +32,9 @@ use crate::spi::Provider;
 pub type ResolvedDeps = FxHashMap<String, Arc<dyn Provider>>;
 
 /// A `#[new]` constructor: `tokens` returns its dependency tokens (so the factory can declare
-/// them), and `build` resolves those dependencies and calls it, or answers the first one that
-/// cannot be resolved.
+/// them), `values` those of its parameters written as a plain type, each with that type, and
+/// `build` resolves the dependencies and calls it, or answers the first one that cannot be
+/// resolved.
 ///
 /// The context parameter carries the execution being served, and every constructor parameter
 /// resolves in it: an execution-scoped one shares the execution's instance, and a transient one
@@ -41,6 +42,7 @@ pub type ResolvedDeps = FxHashMap<String, Arc<dyn Provider>>;
 /// matching the field-injection paths.
 pub struct Ctor<T> {
     pub tokens: fn() -> Vec<String>,
+    pub values: fn() -> Vec<(String, &'static str)>,
     pub build: for<'a> fn(
         &'a ResolvedDeps,
         Execution,

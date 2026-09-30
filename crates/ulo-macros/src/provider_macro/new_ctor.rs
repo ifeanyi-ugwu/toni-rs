@@ -1,16 +1,17 @@
 //! `#[new]` — marks the DI constructor of a `#[injectable]` provider.
 //!
 //! Lives on the constructor method. The struct macro generates the factory from the struct's fields
-//! and cannot see this method, so `#[new]` emits next to it two inherent fns named after the
-//! method, one returning the constructor's dependency tokens and one resolving them and calling it,
-//! and one inherent const, `__ULO_ONE_NEW_PER_TYPE`, holding both as a `ulo::__construct::Ctor`.
+//! and cannot see this method, so `#[new]` emits next to it three inherent fns named after the
+//! method, one returning the constructor's dependency tokens, one those read by a plain parameter
+//! and one resolving them and calling it, and one inherent const, `__ULO_ONE_NEW_PER_TYPE`, holding
+//! the three as a `ulo::__construct::Ctor`.
 //! The const out-ranks the blanket `CtorBridge` default, so the struct macro's factory, which
 //! always reads it, dispatches to the constructor when present and to field injection otherwise.
 //!
 //! The const is the one item whose name does not vary with the method, so two `#[new]` methods on
 //! one type collide on it alone, as one duplicate-definition error at the two attributes.
 //!
-//! The method and the three emitted items are associated items, so they're legal in the impl-block
+//! The method and the four emitted items are associated items, so they're legal in the impl-block
 //! position a method attribute macro emits into. This lets a dependency be a constructor parameter
 //! without also being a stored field.
 
@@ -34,10 +35,13 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
 
     let method_name = method.sig.ident.clone();
     let tokens_fn = format_ident!("__ulo_ctor_tokens_{}", method_name);
+    let values_fn = format_ident!("__ulo_ctor_values_{}", method_name);
     let build_fn = format_ident!("__ulo_ctor_build_{}", method_name);
     let params = extract_params(&method)?;
 
     let dep_tokens: Vec<&TokenStream> = params.iter().map(|(_, _, tok)| tok).collect();
+    let value_reads =
+        super::instance_injection::value_reads(params.iter().map(|(_, ty, tok)| (ty, tok)));
     let plain_reads: TokenStream = params
         .iter()
         .map(|(_, ty, _)| super::instance_injection::plain_read_check(ty))
@@ -65,6 +69,7 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         const __ULO_ONE_NEW_PER_TYPE: ::std::option::Option<::ulo::__construct::Ctor<Self>> =
             ::std::option::Option::Some(::ulo::__construct::Ctor {
                 tokens: Self::#tokens_fn,
+                values: Self::#values_fn,
                 build: Self::#build_fn,
             });
 
@@ -73,6 +78,12 @@ pub fn handle_new(item: TokenStream) -> Result<TokenStream> {
         fn #tokens_fn() -> ::std::vec::Vec<::std::string::String> {
             #plain_reads
             ::std::vec![#(#dep_tokens),*]
+        }
+
+        #[doc(hidden)]
+        #[allow(non_snake_case)]
+        fn #values_fn() -> ::std::vec::Vec<(::std::string::String, &'static str)> {
+            ::std::vec![#(#value_reads),*]
         }
 
         #[doc(hidden)]

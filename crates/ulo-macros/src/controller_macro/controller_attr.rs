@@ -76,6 +76,9 @@ fn generate_bridges(
         .collect();
 
     let (field_resolutions, field_names) = resolve_fields(dependencies);
+    let value_reads = crate::provider_macro::instance_injection::value_reads(
+        dependencies.fields.iter().map(|(_, ty, tok)| (ty, tok)),
+    );
 
     let owned_field_inits: Vec<TokenStream> = dependencies
         .owned_fields
@@ -135,6 +138,14 @@ fn generate_bridges(
             pub fn __ulo_dependencies() -> ::std::vec::Vec<String> {
                 use ::ulo::__construct::CtorBridge as _;
                 <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| ::std::vec![#(#field_tokens),*])
+            }
+
+            /// The dependency tokens a plain field or `#[new]` parameter reads, each with its type.
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            pub fn __ulo_value_dependencies() -> ::std::vec::Vec<(String, &'static str)> {
+                use ::ulo::__construct::CtorBridge as _;
+                <Self>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| ::std::vec![#(#value_reads),*])
             }
 
             #[doc(hidden)]

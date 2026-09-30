@@ -110,7 +110,7 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 /// `ConfigService<C>` or a database pool. A plain field of a singleton or execution-scoped
 /// `#[injectable]` type fails to compile, naming the `Arc<T>` to write; over any other binding
 /// sharing one instance, such as a `provide!` value or a factory not declared `.transient()`, it
-/// is refused with `ResolutionError::SharedByValue`.
+/// fails `create` with `StartupError::BuildFailed` carrying `ResolutionError::SharedByValue`.
 ///
 /// The key is checked against what the field holds, at the key: `V` or `Arc<V>` for a slot holding
 /// a sized type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a

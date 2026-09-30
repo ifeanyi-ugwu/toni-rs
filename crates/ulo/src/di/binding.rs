@@ -334,6 +334,10 @@ where
         T::provider_factory().dependency_tokens()
     }
 
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        T::provider_factory().value_dependencies()
+    }
+
     fn identity_hint(&self) -> Option<String> {
         T::provider_factory().identity_hint()
     }

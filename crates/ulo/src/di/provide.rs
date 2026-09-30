@@ -607,6 +607,10 @@ impl<T: DeclaresProvider + 'static> ProviderFactory for Declared<T> {
         T::provider_factory().dependency_tokens()
     }
 
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        T::provider_factory().value_dependencies()
+    }
+
     fn identity_hint(&self) -> Option<String> {
         T::provider_factory().identity_hint()
     }
@@ -787,6 +791,10 @@ impl<F: ProviderFactory> ProviderFactory for Under<F> {
 
     fn dependency_tokens(&self) -> Vec<String> {
         self.inner.dependency_tokens()
+    }
+
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        self.inner.value_dependencies()
     }
 
     fn identity_hint(&self) -> Option<String> {

@@ -118,6 +118,15 @@ pub trait ProviderFactory: Send + Sync {
     fn dependency_tokens(&self) -> Vec<String> {
         vec![]
     }
+
+    /// The dependencies a field or parameter written as a plain type reads, each with the type it
+    /// is written as. The loader refuses the build when one of them hands out one shared instance,
+    /// [`Shape::Shared`](crate::spi::Shape::Shared), which a consumer built per execution would
+    /// otherwise meet at its first resolution.
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        vec![]
+    }
+
     fn multi_base_token(&self) -> Option<String> {
         None
     }

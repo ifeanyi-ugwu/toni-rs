@@ -451,6 +451,10 @@ pub(crate) fn generate_dispatch_system(struct_name: &Ident) -> TokenStream {
                 <#struct_name>::__ulo_dependencies()
             }
 
+            fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+                <#struct_name>::__ulo_value_dependencies()
+            }
+
             async fn build(
                 &self,
                 dependencies: ::ulo::FxHashMap<
@@ -858,6 +862,7 @@ fn generate_singleton_factory(
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
         .collect();
+    let value_reads = value_reads(dependencies.fields.iter().map(|(_, ty, tok)| (ty, tok)));
 
     let role_pushes = generate_role_pushes(enhancer_traits);
 
@@ -876,6 +881,11 @@ fn generate_singleton_factory(
                 // tokens.
                 use ::ulo::__construct::CtorBridge as _;
                 <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
+            }
+
+            fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+                use ::ulo::__construct::CtorBridge as _;
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
             }
 
             async fn build(
@@ -924,6 +934,7 @@ fn generate_request_factory(
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
         .collect();
+    let value_reads = value_reads(dependencies.fields.iter().map(|(_, ty, tok)| (ty, tok)));
 
     let (dyn_factory_structs, factory_role_pushes) =
         generate_dyn_factories(struct_name, dependencies, enhancer_traits);
@@ -972,6 +983,11 @@ fn generate_request_factory(
                 <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
             }
 
+            fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+                use ::ulo::__construct::CtorBridge as _;
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
+            }
+
             async fn build(
                 &self,
                 __deps: ::ulo::FxHashMap<String, ::ulo::spi::Registration>,
@@ -998,6 +1014,7 @@ fn generate_transient_factory(
         .iter()
         .map(|(_, _, lookup_token_expr)| lookup_token_expr)
         .collect();
+    let value_reads = value_reads(dependencies.fields.iter().map(|(_, ty, tok)| (ty, tok)));
 
     let (dyn_factory_structs, factory_role_pushes) =
         generate_dyn_factories(struct_name, dependencies, enhancer_traits);
@@ -1050,6 +1067,11 @@ fn generate_transient_factory(
                 // field-injection tokens.
                 use ::ulo::__construct::CtorBridge as _;
                 <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.tokens)()).unwrap_or_else(|| vec![#(#dependency_tokens),*])
+            }
+
+            fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+                use ::ulo::__construct::CtorBridge as _;
+                <#struct_name>::__ULO_ONE_NEW_PER_TYPE.map(|__ctor| (__ctor.values)()).unwrap_or_else(|| vec![#(#value_reads),*])
             }
 
             async fn build(
@@ -1260,6 +1282,19 @@ fn generate_dyn_factories(
     };
 
     (struct_defs, role_pushes)
+}
+
+/// `(token, type name)` for each field or parameter written as a plain type, which
+/// `value_dependencies` reports: `Arc<T>` and `Vec<Arc<dyn Trait>>` read any binding.
+pub(crate) fn value_reads<'a>(
+    reads: impl Iterator<Item = (&'a Type, &'a TokenStream)>,
+) -> Vec<TokenStream> {
+    reads
+        .filter(|(ty, _)| {
+            extract_arc_inner(ty).is_none() && extract_vec_arc_dyn_inner(ty).is_none()
+        })
+        .map(|(ty, token)| quote! { (#token, ::std::any::type_name::<#ty>()) })
+        .collect()
 }
 
 /// The group a field joins for same-token deduplication. Fields written `Arc<T>` over one token
