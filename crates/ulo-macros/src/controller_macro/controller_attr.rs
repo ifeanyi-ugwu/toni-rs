@@ -152,13 +152,12 @@ fn generate_bridges(
 
 /// Resolve the `#[inject]` fields from the dependency map.
 ///
-/// A collection field resolves on its own, ahead of the rest. The other fields are grouped by
-/// lookup token and written shape, `Arc<T>` or plain, in order of first appearance, and
-/// deduplicated scope-aware: singleton and
-/// execution-scoped providers are resolved once and shared (cloned) across same-token fields, while
-/// transient providers get a fresh instance per field. The explicit dedup is required because not
-/// every provider caches in the execution's cache (e.g. a hand-written `Provider`). Returns the
-/// resolution statements plus the field names.
+/// A collection field resolves on its own, ahead of the rest. Fields written `Arc<T>` are grouped
+/// by lookup token, in order of first appearance, and deduplicated scope-aware: singleton and
+/// execution-scoped providers are resolved once and the `Arc` shared across same-token fields,
+/// while transient providers get a fresh instance per field. The explicit dedup is required
+/// because not every provider caches in the execution's cache (e.g. a hand-written `Provider`). A
+/// plain field takes its own answer. Returns the resolution statements plus the field names.
 fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident>) {
     use indexmap::IndexMap;
 
@@ -182,7 +181,7 @@ fn resolve_fields(dependencies: &DependencyInfo) -> (Vec<TokenStream>, Vec<Ident
             field_names.push(name.clone());
             continue;
         }
-        let key = crate::provider_macro::instance_injection::shared_group_key(ty, token);
+        let key = crate::provider_macro::instance_injection::shared_group_key(name, ty, token);
         groups
             .entry(key)
             .or_default()

@@ -2,7 +2,7 @@
 
 /// A key to the container: a type naming a slot, and what the slot holds.
 ///
-/// A type is its own key with nothing to write: `#[inject] db: Db` reads `Db`'s slot, and a
+/// A type is its own key with nothing to write: `#[inject] db: Arc<Db>` reads `Db`'s slot, and a
 /// declaration with no key binds under the type it builds. `Key` is what a position that reads a
 /// slot's `Value` through a name needs, such as `provide!(K => ..)` and the `_key` lookups. A
 /// marker type implementing it names a second slot for a type, or a slot for a role:
@@ -17,8 +17,8 @@
 /// named by a marker: `key!(pub Main: sqlx::PgPool)`.
 ///
 /// A slot holding a trait object hands out `Arc<Value>`. `provide!` binds any other slot to hand
-/// out its value as the declaration would under its own type: a clone of a shared instance, a
-/// fresh one for a transient.
+/// out its value as the declaration would under its own type: one shared `Arc<Value>`, or a fresh
+/// `Value` for a transient.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a key",
     label = "a key position reads a type implementing `Key`",

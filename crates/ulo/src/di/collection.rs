@@ -103,14 +103,11 @@ where
                     .map(|(k, v)| (k.clone(), Registration::new(v.clone(), Vec::new())))
                     .collect();
                 let Registration { instance, .. } = V::provider_factory().build(deps).await?;
-                let value = *instance
-                    .resolve(Execution::None)
-                    .await?
-                    .downcast::<V>()
-                    .map_err(|_| ResolutionError::TypeMismatch {
-                        token: token_of::<V>(),
-                    })?;
-                Ok((cast(Arc::new(value)), Some(instance)))
+                let value = crate::__di::take_shared::<V>(
+                    instance.resolve(Execution::None).await?,
+                    &token_of::<V>(),
+                )?;
+                Ok((cast(value), Some(instance)))
             })
         }),
     }

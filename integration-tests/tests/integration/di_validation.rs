@@ -287,7 +287,7 @@ async fn a_constructor_parameter_is_refused_like_a_field() {
 #[derive(Clone)]
 pub struct Report;
 
-#[module(providers: [PerCall, provide!(async |_per_call: PerCall| Report)])]
+#[module(providers: [PerCall, provide!(async |_per_call: Arc<PerCall>| Report)])]
 struct ThroughAFactory;
 
 #[derive(Clone)]
@@ -298,7 +298,7 @@ pub struct Stamped;
 
 #[module(providers: [
     provide!(async || Stamp).per_execution(),
-    provide!(async |_stamp: Stamp| Stamped),
+    provide!(async |_stamp: Arc<Stamp>| Stamped),
 ])]
 struct OverAPerExecutionFactory;
 
@@ -323,7 +323,7 @@ pub struct Halves {
 
 #[module(providers: [
     provide!(async || 21u32).per_execution(),
-    provide!(Doubled => async |n: u32| n * 2).transient(),
+    provide!(Doubled => async |n: Arc<u32>| *n * 2).transient(),
     Halves,
 ])]
 struct ThroughAKeyedTransient;
@@ -365,7 +365,7 @@ pub struct Greets {
 }
 
 #[module(providers: [
-    provide!(dyn Named => async |_per_call: PerCall| PerCallNamed {}),
+    provide!(dyn Named => async |_per_call: Arc<PerCall>| PerCallNamed {}),
     PerCall,
     Greets,
 ])]

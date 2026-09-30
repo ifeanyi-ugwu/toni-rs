@@ -70,12 +70,11 @@ impl Provider for Request {
             _ => panic!("Request provider requires an HTTP execution context"),
         };
         let cache = http_ctx.cache();
-        if let Some(cached) = cache.get::<Request>() {
-            return Ok(Box::new(cached));
-        }
-        let instance = Request::from_parts(http_ctx.request());
-        cache.insert(instance.clone());
-        Ok(Box::new(instance))
+        let instance = match cache.get::<Request>() {
+            Some(cached) => cached,
+            None => cache.insert(Arc::new(Request::from_parts(http_ctx.request()))),
+        };
+        Ok(Box::new((*instance).clone()))
     }
 
     fn scope(&self) -> ProviderScope {

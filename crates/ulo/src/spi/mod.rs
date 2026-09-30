@@ -9,5 +9,5 @@ mod bind_target;
 pub(crate) mod provider;
 
 pub use self::bind_target::BindTarget;
-pub use self::provider::{Provider, ProviderFactory, ProviderRole, Registration};
+pub use self::provider::{Provider, ProviderFactory, ProviderRole, Registration, Shape};
 pub use crate::error::{AdapterResult, BuildResult};

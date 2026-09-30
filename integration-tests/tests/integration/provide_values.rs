@@ -184,8 +184,8 @@ impl Values {
         provide!(PortAlias => alias Port),
         provide!(Seven => value SEVEN),
         provide!(Ten => factory make_ten),
-        provide!(BannerText => async |prefix: Prefix| format!("{}-banner", prefix.value)),
-        provide!(async |prefix: Prefix| Banner(format!("{}-keyless", prefix.value))),
+        provide!(BannerText => async |prefix: Arc<Prefix>| format!("{}-banner", prefix.value)),
+        provide!(async |prefix: Arc<Prefix>| Banner(format!("{}-keyless", prefix.value))),
         provide!(Motd => Motd("welcome".to_string())),
         provide!(Replica => Logger),
         Logger::provide().under_key::<ReplicaAgain>(),
@@ -194,7 +194,7 @@ impl Values {
         provide!(dyn Greeter => EnglishGreeter),
         provide!(dyn Greeter + Send + Sync => EnglishGreeter),
         provide!(into dyn Plugin => A {}),
-        provide!(into dyn Plugin => async |prefix: Prefix| B(prefix.value)),
+        provide!(into dyn Plugin => async |prefix: Arc<Prefix>| B(prefix.value.clone())),
         provide!(into dyn Plugin => C),
         provide!(into Legacy => A {}),
         provide!(into dyn Plugin + Send + Sync => A {}),
@@ -522,7 +522,7 @@ fn a_declaration_carries_the_key_it_was_written_with() {
         [token_of::<Port>()]
     );
     assert_eq!(
-        Provide::factory(async |_: Prefix| String::new()).dependency_tokens(),
+        Provide::factory(async |_: Arc<Prefix>| String::new()).dependency_tokens(),
         [token_of::<Prefix>()]
     );
     assert_eq!(

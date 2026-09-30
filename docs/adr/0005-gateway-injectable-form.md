@@ -48,6 +48,10 @@ impl ChatGateway {
   (`handle_event` / `enhancers`) or a connection-hook macro (`on_connect` / `on_disconnect` /
   `after_init`) shadows it. Construction and lifecycle reuse the provider bridges (`__construct` /
   `__lifecycle`), so `#[inject]` fields, `#[new]`, and `#[on_*]` hooks behave as on any injectable.
+
+  Revisited by [ADR-0058](0058-a-provider-declaration-is-a-value.md), which reads a shared binding
+  as `Arc<K::Value>`: the struct is re-emitted with `InjectFields` alone, and the gateway role holds
+  the provider's one instance.
 - `#[subscriptions]` is an **impl** attribute and is *purely additive*: it scans the
   `#[subscribe_message]` handlers into the `handle_event` match and the gateway- and handler-level
   enhancer attrs into the `enhancers` descriptor, emitting those two inherent `__ulo_ws_*` fns

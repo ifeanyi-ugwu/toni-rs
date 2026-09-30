@@ -317,27 +317,3 @@ async fn new_attribute_syntax() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
-
-// A user-supplied Clone derive suppresses the one #[injectable] adds; the qualified
-// spelling must count too, or the two derives collide as conflicting implementations.
-#[tokio::test]
-async fn injectable_accepts_path_qualified_clone_derive() {
-    #[injectable]
-    #[derive(std::clone::Clone)]
-    pub struct QualifiedCloneService {
-        #[default(7_u32)]
-        value: u32,
-    }
-
-    #[module(providers: [QualifiedCloneService])]
-    struct QualifiedCloneModule {}
-
-    let app = ulo::UloFactory::create_application_context(QualifiedCloneModule)
-        .await
-        .unwrap();
-    let svc = app
-        .get::<QualifiedCloneService>()
-        .await
-        .expect("resolves with a user-supplied qualified Clone derive");
-    assert_eq!(svc.value, 7);
-}

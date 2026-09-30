@@ -2,12 +2,12 @@ error[E0277]: `{closure@$DIR/tests/diagnostics/provide_factory_is_async.rs:5:39:
  --> tests/diagnostics/provide_factory_is_async.rs:5:39
   |
 5 |     let _ = ulo::di::Provide::factory(|| 3000u16);
-  |             ------------------------- ^^^^^^^^^^ a factory is an async function of its dependencies
+  |             ------------------------- ^^^^^^^^^^ a factory is an async function of its dependencies, each an `Arc`
   |             |
   |             required by a bound introduced by this call
   |
   = help: the trait `IntoFactory<_>` is not implemented for closure `{closure@$DIR/tests/diagnostics/provide_factory_is_async.rs:5:39: 5:41}`
-  = note: write `async |dep: Dep| ..` or `|dep: Dep| async move { .. }`; a sync closure gains `async`
+  = note: write `async |dep: Arc<Dep>| ..` or `|dep: Arc<Dep>| async move { .. }`; a sync closure gains `async`
 note: required by a bound in `Provide::factory`
  --> $WORKSPACE/crates/ulo/src/di/provide.rs
   |

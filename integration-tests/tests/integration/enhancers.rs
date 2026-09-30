@@ -371,7 +371,7 @@ async fn guard_authorization() {
         controllers: [TestController],
         providers: [
             provide!(get_tracker()),
-            provide!(Auth => async |tracker: ExecutionOrder| AuthGuard::new(tracker)),
+            provide!(Auth => async |tracker: Arc<ExecutionOrder>| AuthGuard::new((*tracker).clone())),
         ],
     )]
     impl TestModule {}

@@ -68,8 +68,9 @@ pub fn generate_provider_from_struct_with_traits(
     })
 }
 
-/// Re-emit the struct deriving only `InjectFields`. Dispatch targets take this path: nothing
-/// clones one, so no `Clone` derive is forced and non-`Clone` fields are legal.
+/// Re-emit the struct deriving `InjectFields`, which keeps `#[inject]` and `#[default]` valid as
+/// inert field attributes. The container holds the one instance behind an `Arc`, so nothing
+/// clones it and no `Clone` is derived.
 pub fn add_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     let mut struct_def = struct_attrs.clone();
     let injectable_derive: syn::Attribute = syn::parse_quote! {
@@ -77,79 +78,6 @@ pub fn add_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
     };
     struct_def.attrs.push(injectable_derive);
     struct_def
-}
-
-/// Re-emit the struct deriving `InjectFields`, and `Clone` where it does not derive it already.
-///
-/// # Clone Detection
-/// This function checks for `#[derive(Clone)]` attribute on the struct.
-///
-/// # Limitation: Manual `impl Clone`
-/// The attribute receives only the struct, so an `impl Clone` written anywhere else is invisible to
-/// it and conflicts with the derive (E0119):
-///
-/// ```rust,ignore
-/// #[injectable]
-/// pub struct Foo { field: String }
-///
-/// // ❌ Invisible to the attribute: `#[derive(Clone)]` is added and conflicts with this
-/// impl Clone for Foo {
-///     fn clone(&self) -> Self { /* custom logic */ }
-/// }
-/// ```
-pub fn add_clone_and_inject_fields(struct_attrs: &ItemStruct) -> ItemStruct {
-    let mut struct_def = struct_attrs.clone();
-
-    let has_clone = struct_def.attrs.iter().any(|attr| {
-        if attr.path().is_ident("derive") {
-            if let Ok(meta) = attr.parse_args::<syn::Meta>() {
-                return meta_contains_clone(&meta);
-            }
-        }
-        false
-    });
-
-    if !has_clone {
-        // Clone is needed for the provider wrapper; InjectFields keeps the
-        // #[inject]/#[default] field attributes valid on the re-emitted struct.
-        let derives: syn::Attribute = syn::parse_quote! {
-            #[derive(Clone, ::ulo::InjectFields)]
-        };
-        struct_def.attrs.push(derives);
-    } else {
-        let injectable_derive: syn::Attribute = syn::parse_quote! {
-            #[derive(::ulo::InjectFields)]
-        };
-        struct_def.attrs.push(injectable_derive);
-    }
-
-    struct_def
-}
-
-/// Recursively check if a derive meta contains Clone. Matched by the path's last segment,
-/// so `std::clone::Clone` and re-exported Clone derives count too. An aliased derive
-/// (`use Clone as C`) or a manual `impl Clone` elsewhere stays invisible — token-level
-/// scanning cannot resolve names — and surfaces as a conflicting-implementations error.
-fn meta_contains_clone(meta: &syn::Meta) -> bool {
-    match meta {
-        syn::Meta::Path(path) => path.segments.last().is_some_and(|seg| seg.ident == "Clone"),
-        syn::Meta::List(list) => {
-            for nested in list
-                .parse_args_with(
-                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-                )
-                .ok()
-                .iter()
-                .flatten()
-            {
-                if meta_contains_clone(nested) {
-                    return true;
-                }
-            }
-            false
-        }
-        _ => false,
-    }
 }
 
 fn generate_provider_factory_accessor(struct_name: &Ident) -> TokenStream {
@@ -218,7 +146,7 @@ fn generate_role_pushes(traits: &EnhancerTraits) -> TokenStream {
     if traits.is_gateway {
         pushes.push(quote! {
             __roles.push(::ulo::spi::ProviderRole::Gateway(
-                ::std::sync::Arc::new((*instance).clone()) as ::std::sync::Arc<dyn ::ulo::ws::Gateway>
+                instance.clone() as ::std::sync::Arc<dyn ::ulo::ws::Gateway>
             ));
         });
     }
@@ -278,16 +206,19 @@ fn generate_singleton_provider(struct_name: &Ident, provider_name: &Ident) -> To
                 Box<dyn ::std::any::Any + Send>,
                 ::ulo::di::ResolutionError,
             > {
-                ::std::result::Result::Ok(Box::new((*self.instance).clone()))
+                ::std::result::Result::Ok(Box::new(self.instance.clone()))
             }
 
             fn token(&self) -> String {
                 ::ulo::di::token_of::<#struct_name>()
             }
 
-
             fn scope(&self) -> ::ulo::di::ProviderScope {
                 ::ulo::di::ProviderScope::Singleton
+            }
+
+            fn shape(&self) -> ::ulo::spi::Shape {
+                ::ulo::spi::Shape::Shared
             }
 
             #lifecycle_methods
@@ -339,10 +270,10 @@ fn generate_execution_provider(
                 #struct_instantiation
             }
         };
-        __exec_ctx
+        let instance = __exec_ctx
             .cache()
             .expect("checked above")
-            .insert(instance.clone());
+            .insert(::std::sync::Arc::new(instance));
         ::std::result::Result::Ok(Box::new(instance))
     };
 
@@ -371,9 +302,12 @@ fn generate_execution_provider(
                 ::ulo::di::token_of::<#struct_name>()
             }
 
-
             fn scope(&self) -> ::ulo::di::ProviderScope {
                 ::ulo::di::ProviderScope::Execution
+            }
+
+            fn shape(&self) -> ::ulo::spi::Shape {
+                ::ulo::spi::Shape::Shared
             }
         }
     }
@@ -558,7 +492,7 @@ pub(crate) fn generate_dispatch_provider(
                 }
                 if let Some(__cached) = __exec_ctx
                     .cache()
-                    .and_then(|__c| __c.get::<::std::sync::Arc<#struct_name>>())
+                    .and_then(|__c| __c.get::<#struct_name>())
                 {
                     return ::std::result::Result::Ok(Box::new(::std::result::Result::<
                         ::std::sync::Arc<#struct_name>,
@@ -599,10 +533,10 @@ pub(crate) fn generate_dispatch_provider(
                         ::ulo::errors::HookFailed,
                     >::Err(__failed)));
                 }
-                __exec_ctx
+                let __instance = __exec_ctx
                     .cache()
                     .expect("checked above")
-                    .insert(__instance.clone());
+                    .insert(__instance);
                 ::std::result::Result::Ok(Box::new(::std::result::Result::<
                     ::std::sync::Arc<#struct_name>,
                     ::ulo::errors::HookFailed,
@@ -719,7 +653,7 @@ fn field_resolutions(
     let mut type_groups: IndexMap<String, Vec<(Ident, Type, TokenStream)>> = IndexMap::new();
 
     for (field_name, full_type, lookup_token_expr) in &regular_deps {
-        let type_key = shared_group_key(full_type, lookup_token_expr);
+        let type_key = shared_group_key(field_name, full_type, lookup_token_expr);
         type_groups.entry(type_key).or_insert_with(Vec::new).push((
             (*field_name).clone(),
             (*full_type).clone(),
@@ -1278,16 +1212,14 @@ fn generate_dyn_factories(
     (struct_defs, role_pushes)
 }
 
-/// The group a field joins for same-token deduplication. Fields over one token resolve once only
-/// when written in one shape, `Arc<T>` or plain, since the group takes the answer in the shape of
-/// its first field.
-pub(crate) fn shared_group_key(ty: &Type, token: &TokenStream) -> String {
-    let shape = if extract_arc_inner(ty).is_some() {
-        "Arc"
-    } else {
-        "value"
-    };
-    format!("{} {shape}", quote!(#token))
+/// The group a field joins for same-token deduplication. Fields written `Arc<T>` over one token
+/// resolve once and share the `Arc`; a plain field reads a binding handing out its value, a
+/// transient or a handle, and takes its own answer, so its type needs no `Clone`.
+pub(crate) fn shared_group_key(field: &Ident, ty: &Type, token: &TokenStream) -> String {
+    match extract_arc_inner(ty) {
+        Some(_) => quote!(#token).to_string(),
+        None => format!("{} {}", quote!(#token), field),
+    }
 }
 
 /// How a field or parameter of type `ty` takes its value from a provider's erased `answer`, with

@@ -45,7 +45,7 @@ where
 /// ```ignore
 /// key!(pub Inventory: RpcClient);
 ///
-/// provide!(Inventory => async |config: ConfigService<AppConfig>| {
+/// provide!(Inventory => async |config: Arc<ConfigService<AppConfig>>| {
 ///     RpcClient::new(NatsClientTransport::new(config.get_ref().nats_url.clone()))
 /// })
 /// ```
@@ -59,7 +59,7 @@ where
 /// ```ignore
 /// #[injectable]
 /// pub struct InventoryService {
-///     #[inject(Inventory)] client: RpcClient,
+///     #[inject(Inventory)] client: Arc<RpcClient>,
 /// }
 /// impl InventoryService {
 ///     async fn notify_restock(&self, payload: serde_json::Value) -> Result<RpcData, RpcClientError> {

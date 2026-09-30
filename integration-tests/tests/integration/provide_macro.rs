@@ -134,7 +134,7 @@ async fn provide_macro_patterns() {
 
             // An inline closure is a factory
             provide!(MaxConnections => async || 100_i32),
-            provide!(Logger => async |config: ConfigService| {
+            provide!(Logger => async |config: Arc<ConfigService>| {
                 format!("logger:{}", config.env)
             }),
 

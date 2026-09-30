@@ -30,6 +30,14 @@ pub trait Provider: Send + Sync {
         ProviderScope::Singleton
     }
 
+    /// What [`resolve`](Self::resolve) answers inside the box: one shared `Arc<V>`, or a `V` the
+    /// holder owns. A field written as a plain `V` reads only the second. The default is a value,
+    /// which is what a provider written by hand to hand out a handle answers, such as a pool or a
+    /// client whose clone reaches the same connection.
+    fn shape(&self) -> Shape {
+        Shape::Value
+    }
+
     fn multi_base_token(&self) -> Option<String> {
         None
     }
@@ -48,6 +56,16 @@ pub trait Provider: Send + Sync {
     async fn on_module_destroy(&self) {}
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
+}
+
+/// What a provider hands out: see [`Provider::shape`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// One instance every holder shares, as an `Arc<V>`: a singleton or execution-scoped
+    /// `#[injectable]`, a `provide!` value or factory, a trait object.
+    Shared,
+    /// A `V` each holder owns: a transient, or a handle whose clone reaches the same thing.
+    Value,
 }
 
 /// Role trait-objects a provider may contribute to the registry.

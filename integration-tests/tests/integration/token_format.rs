@@ -88,7 +88,7 @@ mod factory_dep_generic {
     #[module(
         imports: [ConfigModule::<TokenTestConfig>::from_env().unwrap()],
         providers: [
-            provide!(ConfiguredName => async |cfg: ConfigService<TokenTestConfig>| {
+            provide!(ConfiguredName => async |cfg: Arc<ConfigService<TokenTestConfig>>| {
                 cfg.get_ref().name.clone()
             }),
         ],

@@ -130,7 +130,7 @@ async fn factory_with_a_dependency() {
     #[module(
         providers: [
             ConfigService,
-            provide!(AppInfo => async |config: ConfigService| {
+            provide!(AppInfo => async |config: Arc<ConfigService>| {
                 format!("App running in {} mode", config.get_env())
             })
         ],
@@ -185,7 +185,7 @@ async fn factory_awaiting_in_its_body() {
     #[module(
         providers: [
             LoggerService,
-            provide!(AsyncStatus => async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: Arc<LoggerService>| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             })
@@ -434,10 +434,10 @@ async fn every_form_in_one_module() {
                     .unwrap()
                     .as_millis())
             }),
-            provide!(AppInfo => async |config: ConfigService| {
+            provide!(AppInfo => async |config: Arc<ConfigService>| {
                 format!("App running in {} mode", config.get_env())
             }),
-            provide!(AsyncStatus => async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: Arc<LoggerService>| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             }),

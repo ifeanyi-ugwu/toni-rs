@@ -129,7 +129,7 @@ impl AppInfo {
 
         // a factory is async; this one reads no dependency
         provide!(async || Duration::from_secs(60)),
-        provide!(AppStatus => async |logger: LoggerService| {
+        provide!(AppStatus => async |logger: Arc<LoggerService>| {
             tokio::time::sleep(Duration::from_millis(1)).await;
             logger.log("System initialized")
         }),

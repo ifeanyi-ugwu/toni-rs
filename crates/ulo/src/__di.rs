@@ -112,15 +112,20 @@ pub fn take_object<T: ?Sized + 'static>(
         .map_err(|_| mismatch(token))
 }
 
-/// What a field or parameter written as a plain `T` takes: a `T` handed out by value.
+/// What a field or parameter written as a plain `T` takes: a `T` handed out by value. A shared
+/// `Arc<T>` is refused, since the field would hold a copy of it.
 pub fn take_value<T: 'static>(
     answer: Box<dyn Any + Send>,
     token: &str,
 ) -> Result<T, ResolutionError> {
-    answer
-        .downcast::<T>()
-        .map(|value| *value)
-        .map_err(|_| mismatch(token))
+    match answer.downcast::<T>() {
+        Ok(value) => Ok(*value),
+        Err(answer) if answer.is::<Arc<T>>() => Err(ResolutionError::SharedByValue {
+            token: token.to_string(),
+            wrote: std::any::type_name::<T>().to_string(),
+        }),
+        Err(_) => Err(mismatch(token)),
+    }
 }
 
 fn mismatch(token: &str) -> ResolutionError {
