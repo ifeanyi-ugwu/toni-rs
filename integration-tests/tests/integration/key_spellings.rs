@@ -160,29 +160,29 @@ mod guards {
 #[injectable]
 pub struct Fields {
     #[inject(Name)]
-    by_bare_marker: String,
+    by_bare_marker: Arc<String>,
     #[inject(keys::Port)]
-    by_qualified_marker: u16,
+    by_qualified_marker: Arc<u16>,
     #[inject(keys::Plugins)]
     by_collection_marker: Vec<Arc<dyn Plugin>>,
     #[inject(dyn Plugin)]
     by_trait_object: Vec<Arc<dyn Plugin>>,
     #[inject(Plain)]
-    by_own_type: Plain,
+    by_own_type: Arc<Plain>,
     #[inject(HTTP)]
-    by_capitals: HTTP,
+    by_capitals: Arc<HTTP>,
     #[inject(Tagged<Staff>)]
-    by_generic: String,
+    by_generic: Arc<String>,
 }
 
 #[injectable]
 pub struct Parameters {
-    port: u16,
+    port: Arc<u16>,
 }
 
 impl Parameters {
     #[new]
-    fn new(#[inject(keys::Port)] port: u16) -> Self {
+    fn new(#[inject(keys::Port)] port: Arc<u16>) -> Self {
         Self { port }
     }
 }
@@ -190,9 +190,9 @@ impl Parameters {
 #[controller("/spell")]
 pub struct SpellingController {
     #[inject]
-    fields: Fields,
+    fields: Arc<Fields>,
     #[inject]
-    parameters: Parameters,
+    parameters: Arc<Parameters>,
 }
 
 #[routes]

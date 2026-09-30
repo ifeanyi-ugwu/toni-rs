@@ -13,6 +13,7 @@
 //! any event is written. A handler's answer is read from its type, not from how the type is
 //! written.
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::common::TestServer;
@@ -81,7 +82,7 @@ type AliasedEvent = Result<SseEvent, std::io::Error>;
 #[controller("/sse")]
 pub struct SseController {
     #[inject]
-    events: EventsService,
+    events: Arc<EventsService>,
 }
 
 #[routes]

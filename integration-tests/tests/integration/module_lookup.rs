@@ -76,7 +76,7 @@ async fn a_static_module_is_found_by_type() {
     let app = UloFactory::create(AppModule).await.unwrap();
 
     let feature = app.get_module::<FeatureModule>().await.unwrap();
-    let service: FeatureService = feature.get().await.unwrap();
+    let service = feature.get::<FeatureService>().await.unwrap();
     assert_eq!(service.label, "feature");
 
     match feature.get::<RootService>().await.err() {
@@ -98,7 +98,7 @@ async fn a_generic_module_is_found_by_type() {
         .get_module::<ConfigModule<LookupConfig>>()
         .await
         .unwrap();
-    let service: ConfigService<LookupConfig> = config.get().await.unwrap();
+    let service = config.get::<ConfigService<LookupConfig>>().await.unwrap();
     assert_eq!(service.get_ref().name, "lookup");
 }
 
@@ -173,8 +173,8 @@ async fn a_dynamic_module_is_found_by_its_base() {
     let app = UloFactory::create(AppModule).await.unwrap();
 
     let dyn_module = app.get_module_by_id("LookupDyn").await.unwrap();
-    let value: u32 = dyn_module.get_key::<LookupValue>().await.unwrap();
-    assert_eq!(value, 7);
+    let value = dyn_module.get_key::<LookupValue>().await.unwrap();
+    assert_eq!(*value, 7);
 }
 
 /// The full key an ambiguity error prints is an address: identity derives

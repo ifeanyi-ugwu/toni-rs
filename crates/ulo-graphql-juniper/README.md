@@ -81,7 +81,7 @@ use async_trait::async_trait;
 #[derive(Clone)]
 struct MyContext {
     user_id: Option<i32>,
-    db: DatabaseService,
+    db: Arc<DatabaseService>,
 }
 
 impl juniper::Context for MyContext {}
@@ -90,9 +90,9 @@ impl juniper::Context for MyContext {}
 #[injectable]
 pub struct MyContextBuilder {
     #[inject]
-    auth_service: AuthService,
+    auth_service: Arc<AuthService>,
     #[inject]
-    db_service: DatabaseService,
+    db_service: Arc<DatabaseService>,
 }
 
 #[async_trait]

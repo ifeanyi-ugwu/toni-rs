@@ -1,6 +1,7 @@
 use crate::dispatch::ControllerFactory;
 use crate::dispatch::transport::{EnhancerSet, Http};
-use crate::error::{SetupResult, StartupError};
+use crate::error::{ResolutionError, SetupResult, StartupError};
+use crate::spi::Shape;
 use rustc_hash::FxHashMap;
 use std::{any::Any, sync::Arc};
 
@@ -46,6 +47,33 @@ fn build_failed(
         token,
         source,
     })
+}
+
+/// Refuses `consumer`'s build when a dependency it reads through a plain field or parameter
+/// hands out one shared instance. A consumer built at startup would meet the same refusal in its
+/// build; this reaches one built per execution, and per-execution enhancers, before a first call.
+fn refuse_shared_by_value(
+    module_token: &str,
+    consumer: &str,
+    value_dependencies: Vec<(String, &'static str)>,
+    resolved: &FxHashMap<String, Registration>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    for (token, wrote) in value_dependencies {
+        let shared = resolved
+            .get(&token)
+            .is_some_and(|registration| registration.instance.shape() == Shape::Shared);
+        if shared {
+            return Err(build_failed(
+                module_token,
+                consumer.to_string(),
+                Box::new(ResolutionError::SharedByValue {
+                    token,
+                    wrote: wrote.to_string(),
+                }),
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl From<LoadError> for Box<dyn std::error::Error + Send + Sync + 'static> {
@@ -329,6 +357,12 @@ impl InstanceLoader {
                 let dependencies = provider_factory.dependency_tokens();
                 let resolved_dependencies =
                     self.resolve_dependencies(&module_token, dependencies, Some(&instances))?;
+                refuse_shared_by_value(
+                    &module_token,
+                    &provider_token,
+                    provider_factory.value_dependencies(),
+                    &resolved_dependencies,
+                )?;
 
                 let registration = provider_factory
                     .build(resolved_dependencies)
@@ -473,8 +507,15 @@ impl InstanceLoader {
         let mut controllers_instances = Vec::new();
         for controller_factory in factories {
             let dependencies = controller_factory.dependency_tokens();
-            let resolved_dependencies = self
-                .resolve_dependencies(&module_token, dependencies, None)?
+            let resolved_dependencies =
+                self.resolve_dependencies(&module_token, dependencies, None)?;
+            refuse_shared_by_value(
+                &module_token,
+                &controller_factory.token(),
+                controller_factory.value_dependencies(),
+                &resolved_dependencies,
+            )?;
+            let resolved_dependencies = resolved_dependencies
                 .into_iter()
                 .map(|(k, registration)| (k, registration.instance))
                 .collect();

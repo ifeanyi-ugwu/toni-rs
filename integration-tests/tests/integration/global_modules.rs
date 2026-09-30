@@ -7,6 +7,7 @@
 //! tries to resolve from it.
 use crate::common::TestServer;
 use serial_test::serial;
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, routes};
 use ulo_config::{Config, ConfigModule, ConfigService};
@@ -61,9 +62,9 @@ impl GlobalInfraModule {}
 #[injectable]
 pub struct UserService {
     #[inject]
-    logger: LoggerService,
+    logger: Arc<LoggerService>,
     #[inject]
-    database: DatabaseService,
+    database: Arc<DatabaseService>,
 }
 
 impl UserService {
@@ -83,7 +84,7 @@ impl UserService {
 #[controller("/users")]
 pub struct UserController {
     #[inject]
-    user_service: UserService,
+    user_service: Arc<UserService>,
 }
 
 #[routes]
@@ -109,11 +110,11 @@ impl UserModule {}
 #[injectable]
 pub struct OrderService {
     #[inject]
-    logger: LoggerService,
+    logger: Arc<LoggerService>,
     #[inject]
-    database: DatabaseService,
+    database: Arc<DatabaseService>,
     #[inject]
-    user_service: UserService,
+    user_service: Arc<UserService>,
 }
 
 impl OrderService {
@@ -131,7 +132,7 @@ impl OrderService {
 #[controller("/orders")]
 pub struct OrderController {
     #[inject]
-    order_service: OrderService,
+    order_service: Arc<OrderService>,
 }
 
 #[routes]
@@ -238,7 +239,7 @@ impl CacheModule {}
 #[injectable]
 pub struct ProductService {
     #[inject]
-    cache: CacheService,
+    cache: Arc<CacheService>,
 }
 
 impl ProductService {
@@ -250,7 +251,7 @@ impl ProductService {
 #[controller("/products")]
 pub struct ProductController {
     #[inject]
-    product_service: ProductService,
+    product_service: Arc<ProductService>,
 }
 
 #[routes]

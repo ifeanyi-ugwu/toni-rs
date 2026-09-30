@@ -12,6 +12,7 @@
 //!     curl http://127.0.0.1:3000/counter
 
 use redis::AsyncCommands;
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, post, routes};
 use ulo_db_redis::{ConnectionManager, RedisModule};
@@ -40,7 +41,7 @@ impl Counter {
 #[controller("/counter")]
 pub struct CounterController {
     #[inject]
-    counter: Counter,
+    counter: Arc<Counter>,
 }
 
 #[routes]

@@ -9,8 +9,8 @@ note: expected this to be `std::string::String`
   |
 4 | ulo::key!(Port: u16);
   |                 ^^^
-note: required by a bound in `ulo::__di::inject_key`
+note: required by a bound in `ulo::__di::Site::<F>::inject_key`
  --> $WORKSPACE/crates/ulo/src/__di.rs
   |
-  | pub fn inject_key<K: Key<Value = V>, V: ?Sized>() -> String {
-  |                          ^^^^^^^^^ required by this bound in `inject_key`
+  |     pub fn inject_key<K: Key<Value = F>>(&self) -> String {
+  |                              ^^^^^^^^^ required by this bound in `Site::<F>::inject_key`

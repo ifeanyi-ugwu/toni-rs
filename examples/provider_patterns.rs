@@ -73,26 +73,26 @@ key!(pub PrimaryConfig: ConfigService);
 pub struct AppInfo {
     // a value under a marker
     #[inject(AppName)]
-    name: String,
+    name: Arc<String>,
 
     #[inject(Port)]
-    port: u16,
+    port: Arc<u16>,
 
     // an alias: the slot `AppPort` answers with the binding under `Port`
     #[inject(AppPort)]
-    app_port: u16,
+    app_port: Arc<u16>,
 
     // a factory with no key, bound under the type it builds
     #[inject]
-    timeout: Duration,
+    timeout: Arc<Duration>,
 
     // an async factory under a marker, built from a dependency
     #[inject(AppStatus)]
-    status: String,
+    status: Arc<String>,
 
     // a type's own declaration under a second slot
     #[inject(PrimaryConfig)]
-    primary: ConfigService,
+    primary: Arc<ConfigService>,
 
     // a trait bound to an implementation
     #[inject]
@@ -129,7 +129,7 @@ impl AppInfo {
 
         // a factory is async; this one reads no dependency
         provide!(async || Duration::from_secs(60)),
-        provide!(AppStatus => async |logger: LoggerService| {
+        provide!(AppStatus => async |logger: Arc<LoggerService>| {
             tokio::time::sleep(Duration::from_millis(1)).await;
             logger.log("System initialized")
         }),

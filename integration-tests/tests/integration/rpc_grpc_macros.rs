@@ -51,11 +51,11 @@ impl OrdersCounter {
 #[controller]
 pub struct OrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl OrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }
@@ -229,11 +229,11 @@ impl ulo::enhancer::Guard<ulo::grpc::GrpcContext> for AdminGuard {
 #[controller]
 pub struct GuardedOrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl GuardedOrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }
@@ -418,11 +418,11 @@ impl ulo::enhancer::Interceptor<ulo::grpc::GrpcContext, ulo::grpc::GrpcHandlerRe
 #[controller]
 pub struct InterceptedOrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl InterceptedOrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }
@@ -496,11 +496,11 @@ struct InterceptedGrpcModule;
 #[controller]
 pub struct DenyOrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl DenyOrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }
@@ -970,11 +970,11 @@ impl ulo::enhancer::ErrorHandler<ulo::grpc::GrpcContext, ulo::grpc::GrpcHandlerR
 #[controller]
 pub struct ErrorHandledOrdersGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl ErrorHandledOrdersGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -1054,11 +1054,11 @@ async fn boot_error_handled() -> (u16, ulo::ShutdownHandle) {
 #[controller]
 pub struct PanickyOrdersGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl PanickyOrdersGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -1349,11 +1349,11 @@ impl ulo::enhancer::Guard<ulo::grpc::GrpcContext> for PanickingGrpcGuard {
 #[controller]
 pub struct GuardPanicGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl GuardPanicGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -1431,11 +1431,11 @@ impl ulo::enhancer::Interceptor<ulo::grpc::GrpcContext, ulo::grpc::GrpcHandlerRe
 #[controller]
 pub struct InterceptorPanicGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl InterceptorPanicGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -1621,11 +1621,11 @@ impl ulo::enhancer::ErrorHandler<ulo::grpc::GrpcContext, ulo::grpc::GrpcHandlerR
 #[controller]
 pub struct ErrorHandlerPanicGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl ErrorHandlerPanicGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -1734,11 +1734,11 @@ async fn grpc_panic_in_error_handler_continues_chain_to_default_rendering() {
 #[controller]
 pub struct SlowOrdersGrpcService {
     #[inject]
-    _counter: OrdersCounter,
+    _counter: Arc<OrdersCounter>,
 }
 
 impl SlowOrdersGrpcService {
-    pub fn new(_counter: OrdersCounter) -> Self {
+    pub fn new(_counter: Arc<OrdersCounter>) -> Self {
         Self { _counter }
     }
 }
@@ -2036,7 +2036,7 @@ pub struct GrpcGuardSaw(u64);
 #[injectable(scope = "execution")]
 pub struct GrpcCallScopedGuard {
     #[inject]
-    scoped: GrpcCallScoped,
+    scoped: Arc<GrpcCallScoped>,
 }
 
 #[ulo::async_trait]
@@ -2054,13 +2054,13 @@ static PER_CALL_GRPC_BUILDS: AtomicU64 = AtomicU64::new(0);
 #[controller(scope = "execution")]
 pub struct PerCallGrpcService {
     #[inject]
-    scoped: GrpcCallScoped,
+    scoped: Arc<GrpcCallScoped>,
     build: u64,
 }
 
 impl PerCallGrpcService {
     #[new]
-    pub fn new(scoped: GrpcCallScoped) -> Self {
+    pub fn new(scoped: Arc<GrpcCallScoped>) -> Self {
         Self {
             scoped,
             build: PER_CALL_GRPC_BUILDS.fetch_add(1, Ordering::SeqCst),
@@ -2340,11 +2340,11 @@ impl ulo::enhancer::Guard<ulo::grpc::GrpcContext> for RecordDeclared {
 #[controller]
 pub struct MetaGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl MetaGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }

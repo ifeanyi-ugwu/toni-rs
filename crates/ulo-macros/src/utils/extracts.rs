@@ -142,11 +142,10 @@ pub fn extract_ident_from_type(ty: &Type) -> Result<&Ident> {
     Err(Error::new(ty.span(), "Invalid type"))
 }
 
-/// Extracts a type token expression: a call to `ulo::di::token_of` with the
-/// written type, resolved in the caller's scope; for `Arc<dyn T>` and `Vec<Arc<dyn T>>`, with the
-/// trait object `dyn T`. The compiler canonicalizes the
-/// spelling — qualified paths, aliases, and generic parameters all produce the
-/// fully-qualified name the registration side uses.
+/// Extracts a type token expression: the key the site of type `ty` reads, computed from the type
+/// the compiler sees: `T` for `Arc<T>`, the element type for a collection `Vec<Arc<T>>`, the type
+/// itself otherwise. The compiler canonicalizes the spelling, so qualified paths, aliases, a
+/// renamed `Arc` and generic parameters all produce the name the registration side uses.
 pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
     // Handle references by unwrapping to inner type
     let actual_type = if let Type::Reference(TypeReference { elem, .. }) = ty {
@@ -155,16 +154,11 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
         ty
     };
 
-    // A collection field `Vec<Arc<dyn T>>` and a binding field `Arc<dyn T>` are keyed by the trait
-    // object as written, which is how `provide!` keys them.
-    if let Some(inner) =
-        extract_vec_arc_dyn_inner(actual_type).or_else(|| extract_arc_dyn_inner(actual_type))
-    {
-        return Ok(quote! { ::ulo::di::token_of::<#inner>() });
-    }
-
     if let Type::Path(_) = actual_type {
-        return Ok(quote! { ::ulo::di::token_of::<#actual_type>() });
+        return Ok(crate::shared::site::site_call(
+            actual_type,
+            quote! { key() },
+        ));
     }
 
     Err(syn::Error::new_spanned(
@@ -173,8 +167,8 @@ pub fn extract_type_token(ty: &Type) -> Result<TokenStream> {
     ))
 }
 
-/// Returns the inner trait-object type if `ty` is `Arc<dyn Trait...>`, otherwise `None`.
-pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
+/// Returns the inner type if `ty` is `Arc<T>`, a trait object included, otherwise `None`.
+pub fn extract_arc_inner(ty: &Type) -> Option<Type> {
     let Type::Path(syn::TypePath { path, .. }) = ty else {
         return None;
     };
@@ -186,15 +180,13 @@ pub fn extract_arc_dyn_inner(ty: &Type) -> Option<Type> {
         return None;
     };
     match args.args.first()? {
-        syn::GenericArgument::Type(inner @ Type::TraitObject(_)) => Some(inner.clone()),
+        syn::GenericArgument::Type(inner) => Some(inner.clone()),
         _ => None,
     }
 }
 
-/// Returns the inner trait-object type if `ty` is `Vec<Arc<dyn Trait...>>`, otherwise `None`.
-///
-/// Used by injection codegen to detect multi-provider fields and generate the
-/// appropriate double-Arc downcast instead of the regular single-value downcast.
+/// Returns the inner trait-object type if `ty` is written `Vec<Arc<dyn Trait...>>`, otherwise
+/// `None`. The compile-time refusal of a plain field skips a site written this way.
 pub fn extract_vec_arc_dyn_inner(ty: &Type) -> Option<Type> {
     let Type::Path(syn::TypePath { path, .. }) = ty else {
         return None;

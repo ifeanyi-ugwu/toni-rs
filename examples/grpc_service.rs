@@ -201,11 +201,11 @@ impl ulo::enhancer::ErrorHandler<ulo::grpc::GrpcContext, ulo::grpc::GrpcHandlerR
 #[controller]
 pub struct OrdersGrpcService {
     #[inject]
-    counter: OrdersCounter,
+    counter: Arc<OrdersCounter>,
 }
 
 impl OrdersGrpcService {
-    pub fn new(counter: OrdersCounter) -> Self {
+    pub fn new(counter: Arc<OrdersCounter>) -> Self {
         Self { counter }
     }
 }

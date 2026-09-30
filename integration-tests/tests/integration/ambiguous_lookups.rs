@@ -2,6 +2,7 @@
 //! module's, and no provider exported to neither; a key with two answers is refused rather than
 //! answered by whichever module the search reached first.
 
+use std::sync::Arc;
 use ulo::di::{ModuleRef, ResolutionError};
 use ulo::{UloFactory, injectable, key, module, provide};
 
@@ -69,7 +70,7 @@ struct SecondPorts;
 #[injectable]
 pub struct Dialer {
     #[inject]
-    port: Port,
+    port: Arc<Port>,
 }
 
 #[module(imports: [FirstPorts, SecondPorts], providers: [Dialer])]
@@ -242,7 +243,7 @@ async fn visible_reads_an_import_before_the_global_registry() {
 
     let looker = ctx.get::<RegionLooker>().await.unwrap();
     let region = looker.module_ref.get_key::<Region>().visible().await;
-    assert_eq!(region.expect("the import answers"), "import");
+    assert_eq!(*region.expect("the import answers"), "import");
 
     let looker = ctx.get::<TwoRegionLooker>().await.unwrap();
     match looker.module_ref.get_key::<Region>().visible().await {

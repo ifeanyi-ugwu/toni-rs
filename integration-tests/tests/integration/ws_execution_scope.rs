@@ -1,5 +1,6 @@
 //! What "execution scope" means on a WebSocket: one instance per message, not per connection.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::common::TestServer;
@@ -30,7 +31,7 @@ pub struct CallId {
 #[injectable(scope = "execution")]
 pub struct StampCallId {
     #[inject]
-    call: CallId,
+    call: Arc<CallId>,
 }
 
 #[async_trait]

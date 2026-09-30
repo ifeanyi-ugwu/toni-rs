@@ -19,6 +19,7 @@
 //!
 //! Run with: cargo run --example lifecycle_hooks
 
+use std::sync::Arc;
 use ulo::prelude::*;
 use ulo_macros::{
     before_application_shutdown, injectable, module, new, on_application_bootstrap,
@@ -109,12 +110,12 @@ impl LoggerService {
 
 #[injectable]
 pub struct UserService {
-    db: DatabaseService,
-    logger: LoggerService,
+    db: Arc<DatabaseService>,
+    logger: Arc<LoggerService>,
 }
 impl UserService {
     #[new]
-    pub fn new(db: DatabaseService, logger: LoggerService) -> Self {
+    pub fn new(db: Arc<DatabaseService>, logger: Arc<LoggerService>) -> Self {
         println!("UserService::new() - Constructor called");
         Self { db, logger }
     }

@@ -8,6 +8,7 @@
 //! covered alongside it, since a path-qualified or stacked attribute that is
 //! dropped looks exactly like an enhancer that chose not to act.
 use crate::common::{ExecutionOrder, TestServer};
+use std::sync::Arc;
 use ulo::async_trait;
 use ulo::context::ExecutionContext;
 use ulo::di::MiddlewareConsumer;
@@ -212,7 +213,7 @@ async fn enhancers_execution_order() {
     #[injectable]
     pub struct TestService {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
     impl TestService {
         pub fn process(&self, message: &str) -> String {
@@ -224,9 +225,9 @@ async fn enhancers_execution_order() {
     #[controller("/api")]
     pub struct EnhancerController {
         #[inject]
-        service: TestService,
+        service: Arc<TestService>,
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
 
     #[routes]
@@ -351,7 +352,7 @@ async fn guard_authorization() {
     #[controller("/api")]
     pub struct TestController {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
 
     key!(Auth: dyn Guard<HttpContext>);
@@ -370,7 +371,7 @@ async fn guard_authorization() {
         controllers: [TestController],
         providers: [
             provide!(get_tracker()),
-            provide!(Auth => async |tracker: ExecutionOrder| AuthGuard::new(tracker)),
+            provide!(Auth => async |tracker: Arc<ExecutionOrder>| AuthGuard::new((*tracker).clone())),
         ],
     )]
     impl TestModule {}
@@ -480,7 +481,7 @@ async fn the_http_role_collections_are_the_global_enhancers() {
     #[injectable]
     pub struct GlobalGuard {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
     #[async_trait]
     impl Guard<HttpContext> for GlobalGuard {
@@ -493,7 +494,7 @@ async fn the_http_role_collections_are_the_global_enhancers() {
     #[injectable]
     pub struct GlobalInterceptor {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
     #[async_trait]
     impl Interceptor<HttpContext, HttpHandlerResult> for GlobalInterceptor {
@@ -512,7 +513,7 @@ async fn the_http_role_collections_are_the_global_enhancers() {
     #[controller("/api")]
     pub struct TestController {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
 
     #[routes]
@@ -570,7 +571,7 @@ async fn path_qualified_enhancer_attrs() {
     #[controller("/api")]
     pub struct TestController {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
 
     #[routes]
@@ -633,7 +634,7 @@ async fn stacked_enhancer_attrs_accumulate() {
     #[controller("/api")]
     pub struct TestController {
         #[inject]
-        tracker: ExecutionOrder,
+        tracker: Arc<ExecutionOrder>,
     }
 
     #[routes]

@@ -157,6 +157,14 @@ pub enum ResolutionError {
     #[error("provider `{token}` is not the requested type")]
     TypeMismatch { token: String },
 
+    /// The provider registered under `token` hands out one shared instance, and a field or
+    /// parameter written as the plain type `wrote` would hold a copy of it.
+    #[error(
+        "provider `{token}` hands out one shared instance, which a field or parameter written \
+         `{wrote}` cannot hold: write `Arc<{wrote}>`"
+    )]
+    SharedByValue { token: String, wrote: String },
+
     /// An execution-scoped provider lives in an execution's cache, and there is nowhere to put one
     /// without an execution. `token` names that provider, or the key a stand-in for it is bound
     /// under, whether it was asked for or reached through something injecting it: a transient

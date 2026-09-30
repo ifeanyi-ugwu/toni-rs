@@ -78,13 +78,13 @@ pub struct OrdersCounter {}
 
 #[controller]
 pub struct OrdersGrpcService {
-    #[inject] counter: OrdersCounter,
+    #[inject] counter: Arc<OrdersCounter>,
 }
 
 #[grpc_methods(orders_pb::orders_server::Orders)]
 impl OrdersGrpcService {
     #[new]
-    pub fn new(counter: OrdersCounter) -> Self { Self { counter } }
+    pub fn new(counter: Arc<OrdersCounter>) -> Self { Self { counter } }
 
     #[grpc_method]
     async fn create(

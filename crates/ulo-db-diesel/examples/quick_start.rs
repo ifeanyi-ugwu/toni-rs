@@ -13,6 +13,7 @@
 
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::Pool;
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_diesel::DieselModule;
@@ -36,7 +37,7 @@ impl DbProbe {
 #[controller("/health")]
 pub struct HealthController {
     #[inject]
-    probe: DbProbe,
+    probe: Arc<DbProbe>,
 }
 
 #[routes]

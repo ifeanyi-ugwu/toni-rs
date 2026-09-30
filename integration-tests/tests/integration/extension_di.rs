@@ -6,6 +6,7 @@
 //!
 //! `extension_bus.rs` covers the enhancer and handler halves.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::common::TestServer;
@@ -53,7 +54,7 @@ impl AuditLog {
 #[injectable(scope = "execution")]
 pub struct OrderService {
     #[inject]
-    audit: AuditLog,
+    audit: Arc<AuditLog>,
 }
 
 impl OrderService {
@@ -65,7 +66,7 @@ impl OrderService {
 #[controller("/orders")]
 pub struct OrderController {
     #[inject]
-    orders: OrderService,
+    orders: Arc<OrderService>,
     #[inject]
     bag: Extensions,
 }

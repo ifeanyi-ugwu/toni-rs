@@ -5,6 +5,7 @@
 //! has no attribute to write it on, and `DynamicModule` carried providers only, so such a target
 //! had to be registered as a provider role instead.
 
+use std::sync::Arc;
 use ulo::di::{DeclaresController, DynamicModule};
 use ulo::dispatch::ControllerFactory;
 use ulo::http::Body;
@@ -24,7 +25,7 @@ pub struct Greeting {
 #[controller("/dyn")]
 pub struct GreetingController {
     #[inject]
-    greeting: Greeting,
+    greeting: Arc<Greeting>,
 }
 
 #[routes]

@@ -76,17 +76,18 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 }
 
 /// Field-injection provider — the way to declare a DI provider. Place it on the struct:
-/// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state. The macro adds
-/// the `Clone` impl the container needs, so the struct carries no derive ceremony.
+/// `#[inject]` fields are dependencies, `#[default(expr)]` fields are owned state.
 ///
-/// `scope = "execution"` or `"transient"` overrides the default, singleton.
+/// `scope = "execution"` or `"transient"` overrides the default, singleton. A singleton or
+/// execution-scoped provider hands out its one instance as an `Arc`, which every holder shares; a
+/// transient hands out a fresh value.
 ///
 /// Construction logic (`#[new]`) and lifecycle hooks (`#[on_module_init]`, …) live on the struct's `impl`.
 ///
 /// ```ignore
 /// #[injectable(scope = "execution")]
 /// pub struct UserService {
-///     #[inject] repo: UserRepo,
+///     #[inject] repo: Arc<UserRepo>,
 /// }
 /// ```
 ///
@@ -94,17 +95,30 @@ fn unconsumed_enhancer_error(name: &str, item: TokenStream) -> TokenStream {
 ///
 /// | Written | Reads |
 /// | --- | --- |
-/// | `#[inject] db: Db` | the slot keyed by the field's type |
+/// | `#[inject] db: Arc<Db>` | the slot keyed by `Db`: its shared instance, or the value it hands out, wrapped |
+/// | `#[inject] pool: PgPool` | the slot keyed by the field's type, when it hands out a value: a transient, or a handle such as a pool |
 /// | `#[inject] logger: Arc<dyn Logger>` | the slot keyed by `dyn Logger` |
 /// | `#[inject] plugins: Vec<Arc<dyn Plugin>>` | the collection keyed by `dyn Plugin` |
-/// | `#[inject(Replica)] db: Db` | the slot under the marker `Replica`, declared `key!(pub Replica: Db)` |
+/// | `#[inject(Replica)] db: Arc<Db>` | the slot under the marker `Replica`, declared `key!(pub Replica: Db)` |
 /// | `#[inject(keys::Audit)] log: Arc<dyn Logger>` | a marker holding `dyn Logger`, qualified or not |
 /// | `#[inject(Legacy)] legacy: Vec<Arc<dyn Plugin>>` | the collection under a marker holding `dyn Plugin` |
 /// | `#[inject(dyn Logger)] logger: Arc<dyn Logger>` | a trait object's own slot, the key written out |
-/// | `#[inject(Repo<User>)] repo: Repo<User>` | a type as its own key, generic or not, when it implements `Key` |
+/// | `#[inject(Repo<User>)] repo: Arc<Repo<User>>` | a type as its own key, generic or not, when it implements `Key` |
 ///
-/// The key is checked against what the field holds, at the key: `V` for a slot holding a sized
-/// type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a collection.
+/// Write `Arc<T>`: it reads any binding of `T`. A plain `T` reads a binding that hands out its
+/// value, a transient or a handle a provider written by hand answers by value, such as
+/// `ConfigService<C>` or a database pool. A plain field of a singleton or execution-scoped
+/// `#[injectable]` type fails to compile, naming the `Arc<T>` to write; over any other binding
+/// sharing one instance, such as a `provide!` value or a factory not declared `.transient()`, it
+/// fails `create` with `StartupError::BuildFailed` carrying `ResolutionError::SharedByValue`.
+///
+/// What a field reads follows its type, however it is spelled: an alias of `Arc<Db>`, or `Arc`
+/// imported under another name, reads `Db`'s slot as `Arc<Db>` does, and an alias of
+/// `Vec<Arc<dyn Plugin>>` reads the collection.
+///
+/// The key is checked against what the field holds, at the key: `V` or `Arc<V>` for a slot holding
+/// a sized type, `Arc<dyn Trait>` for one holding a trait object, `Vec<Arc<dyn Trait>>` for a
+/// collection.
 /// A field holding another type fails to compile there, as do a key that is not a `Key` and a string
 /// key. A `#[new]` parameter, or a `#[controller]` field, takes the same keys, collections included.
 #[proc_macro_attribute]
@@ -121,7 +135,7 @@ pub fn injectable(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[controller("/users")]
-/// pub struct UsersController { #[inject] svc: UserService }
+/// pub struct UsersController { #[inject] svc: Arc<UserService> }
 ///
 /// #[routes]
 /// impl UsersController {
@@ -676,14 +690,14 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
 /// key!(pub Legacy: dyn Plugin);
 ///
 /// providers: [
-///     provide!(Port => 3000u16),                                 // a value under a marker
-///     provide!(ApiKey => value key),                             // a value held in a variable
-///     provide!(async |cfg: Config| Db::connect(&cfg.url).await), // keyed by what it builds
-///     provide!(dyn Logger => ConsoleLogger),                     // a trait bound to an implementation
-///     provide!(Auth => HeaderGuard("x-auth")),                   // a guard: the key's `Value` says so
-///     provide!(into dyn Guard<HttpContext> => RateLimit(100)),   // a global HTTP guard
-///     provide!(into dyn Plugin => async |d: Dep| B(d)),          // a contribution, by element type
-///     provide!(into Legacy => A {}),                             // a contribution to a marker's collection
+///     provide!(Port => 3000u16),                                      // a value under a marker
+///     provide!(ApiKey => value key),                                  // a value held in a variable
+///     provide!(async |cfg: Arc<Config>| Db::connect(&cfg.url).await), // keyed by what it builds
+///     provide!(dyn Logger => ConsoleLogger),                          // a trait bound to an implementation
+///     provide!(Auth => HeaderGuard("x-auth")),                        // a guard: the key's `Value` says so
+///     provide!(into dyn Guard<HttpContext> => RateLimit(100)),        // a global HTTP guard
+///     provide!(into dyn Plugin => async |d: Arc<Dep>| B(d)),          // a contribution, by element type
+///     provide!(into Legacy => A {}),                                  // a contribution to a marker's collection
 /// ]
 /// ```
 ///
@@ -709,7 +723,7 @@ pub fn derive_error(input: TokenStream) -> TokenStream {
 /// | a type | `Db`, `db::Db`, `Repo<User>`, `Repo::<User>` | the type's own `#[injectable]` declaration; under a key, a second instance with the type's roles and hooks |
 /// | a value | `3000u16`, `Config { .. }`, `Client::new(url)` | built where the declaration is written |
 /// | a held value | `value PORT`, `value key` | a value in a const or a variable |
-/// | a factory | `async \|cfg: Config\| ..`, `\|\| async { .. }` | built at startup; each parameter a dependency resolved by its type |
+/// | a factory | `async \|cfg: Arc<Config>\| ..`, `\|\| async { .. }` | built at startup; each parameter an `Arc` of a dependency, resolved by the type it holds |
 /// | a held factory | `factory make_pool` | a factory function held in a path |
 /// | an alias | `alias Port`, `alias dyn Logger`, `alias Db` | a second name for the binding under that type: the same binding, in its scope |
 ///

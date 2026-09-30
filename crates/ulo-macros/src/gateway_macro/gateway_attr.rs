@@ -16,7 +16,7 @@ use quote::quote;
 use syn::{Error, Ident, ItemStruct, LitInt, LitStr, Result, parse2};
 
 use crate::provider_macro::instance_injection::{
-    EnhancerTraits, add_clone_and_inject_fields, generate_provider_from_struct_with_traits,
+    EnhancerTraits, add_inject_fields, generate_provider_from_struct_with_traits,
 };
 use crate::shared::scope_parser::ProviderScope;
 
@@ -105,7 +105,7 @@ pub fn handle_websocket_gateway(attr: TokenStream, item: TokenStream) -> Result<
 
     let struct_name = struct_def.ident.clone();
 
-    let emitted_struct = add_clone_and_inject_fields(&struct_def);
+    let emitted_struct = add_inject_fields(&struct_def);
     let provider_system = generate_provider_from_struct_with_traits(
         &struct_def,
         ProviderScope::Singleton,

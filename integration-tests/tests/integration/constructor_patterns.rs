@@ -5,6 +5,7 @@
 //! attribute says otherwise — so each shape is a distinct claim about what the
 //! macro emits. The parameter case is the one field injection cannot express.
 use crate::common::TestServer;
+use std::sync::Arc;
 use std::time::Duration;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, new, provide, routes};
@@ -33,7 +34,7 @@ async fn provider_constructor_patterns() {
     }
     impl AutoNewService {
         #[new]
-        pub fn new(base: BaseService) -> Self {
+        pub fn new(base: Arc<BaseService>) -> Self {
             Self {
                 base_value: base.get_value(),
             }
@@ -50,7 +51,7 @@ async fn provider_constructor_patterns() {
     }
     impl CustomInitService {
         #[new]
-        fn create(base: BaseService) -> Self {
+        fn create(base: Arc<BaseService>) -> Self {
             Self {
                 combined: format!("custom:{}", base.get_value()),
             }
@@ -69,7 +70,7 @@ async fn provider_constructor_patterns() {
     }
     impl ComplexInitService {
         #[new]
-        fn build(base: BaseService) -> Self {
+        fn build(base: Arc<BaseService>) -> Self {
             let mut settings = Vec::new();
             settings.push(format!("setting:{}", base.get_value()));
             settings.push("s2".to_string());
@@ -101,15 +102,15 @@ async fn provider_constructor_patterns() {
     #[controller("/providers")]
     pub struct ProviderTestController {
         #[inject]
-        base: BaseService,
+        base: Arc<BaseService>,
         #[inject]
-        auto: AutoNewService,
+        auto: Arc<AutoNewService>,
         #[inject]
-        custom: CustomInitService,
+        custom: Arc<CustomInitService>,
         #[inject]
-        complex: ComplexInitService,
+        complex: Arc<ComplexInitService>,
         #[inject]
-        fallback: DefaultFallbackService,
+        fallback: Arc<DefaultFallbackService>,
     }
 
     #[routes]
@@ -177,7 +178,7 @@ async fn controller_constructor_patterns() {
     #[routes]
     impl AutoNewController {
         #[new]
-        pub fn new(data: DataService) -> Self {
+        pub fn new(data: Arc<DataService>) -> Self {
             Self {
                 data_value: data.get_value(),
             }
@@ -197,7 +198,7 @@ async fn controller_constructor_patterns() {
     #[routes]
     impl CustomInitController {
         #[new]
-        fn create(data: DataService) -> Self {
+        fn create(data: Arc<DataService>) -> Self {
             Self {
                 combined: format!("custom: {}", data.get_value()),
             }
@@ -289,7 +290,7 @@ async fn constructor_param_injection_patterns() {
     pub struct BasicParamService {}
     impl BasicParamService {
         #[new]
-        fn new(#[inject] _db: DatabaseService) -> Self {
+        fn new(#[inject] _db: Arc<DatabaseService>) -> Self {
             Self {}
         }
 
@@ -302,7 +303,7 @@ async fn constructor_param_injection_patterns() {
     pub struct TokenParamService {}
     impl TokenParamService {
         #[new]
-        fn new(#[inject(CustomDatabase)] _db: DatabaseService) -> Self {
+        fn new(#[inject(CustomDatabase)] _db: Arc<DatabaseService>) -> Self {
             Self {}
         }
 
@@ -316,8 +317,8 @@ async fn constructor_param_injection_patterns() {
     impl MixedParamService {
         #[new]
         fn new(
-            #[inject] _config: ConfigService,
-            _cache: CacheService, // No #[inject], still works via type token
+            #[inject] _config: Arc<ConfigService>,
+            _cache: Arc<CacheService>, // No #[inject], still works via type token
         ) -> Self {
             Self {}
         }
@@ -330,9 +331,9 @@ async fn constructor_param_injection_patterns() {
     #[controller("/basic")]
     pub struct BasicParamController {
         #[inject]
-        db: DatabaseService,
+        db: Arc<DatabaseService>,
         #[inject]
-        service: BasicParamService,
+        service: Arc<BasicParamService>,
     }
 
     #[routes]
@@ -346,9 +347,9 @@ async fn constructor_param_injection_patterns() {
     #[controller("/token")]
     pub struct TokenParamController {
         #[inject(CustomDatabase)]
-        db: DatabaseService,
+        db: Arc<DatabaseService>,
         #[inject]
-        service: TokenParamService,
+        service: Arc<TokenParamService>,
     }
 
     #[routes]
@@ -362,11 +363,11 @@ async fn constructor_param_injection_patterns() {
     #[controller("/mixed")]
     pub struct MixedParamController {
         #[inject]
-        config: ConfigService,
+        config: Arc<ConfigService>,
         #[inject]
-        cache: CacheService,
+        cache: Arc<CacheService>,
         #[inject]
-        service: MixedParamService,
+        service: Arc<MixedParamService>,
     }
 
     #[routes]

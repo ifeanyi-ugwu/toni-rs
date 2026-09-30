@@ -7,6 +7,7 @@
 //! final test runs them in a single module, where a key collision between two
 //! forms would surface.
 use crate::common::TestServer;
+use std::sync::Arc;
 use std::time::Duration;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, new, provide, routes};
@@ -16,7 +17,7 @@ async fn value_injects_a_constant() {
     #[controller()]
     pub struct TestController {
         #[inject(Port)]
-        port: u16,
+        port: Arc<u16>,
     }
 
     #[routes]
@@ -53,14 +54,14 @@ async fn factory_without_dependencies() {
     #[controller("")]
     pub struct TestController {
         #[inject(RequestId)]
-        request_id: String,
+        request_id: Arc<String>,
     }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text(self.request_id.clone())
+            Body::text(self.request_id.to_string())
         }
     }
 
@@ -115,21 +116,21 @@ async fn factory_with_a_dependency() {
     #[controller("")]
     pub struct TestController {
         #[inject(AppInfo)]
-        value: String,
+        value: Arc<String>,
     }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text(self.value.clone())
+            Body::text(self.value.to_string())
         }
     }
 
     #[module(
         providers: [
             ConfigService,
-            provide!(AppInfo => async |config: ConfigService| {
+            provide!(AppInfo => async |config: Arc<ConfigService>| {
                 format!("App running in {} mode", config.get_env())
             })
         ],
@@ -170,21 +171,21 @@ async fn factory_awaiting_in_its_body() {
     #[controller("")]
     pub struct TestController {
         #[inject(AsyncStatus)]
-        value: String,
+        value: Arc<String>,
     }
 
     #[routes]
     impl TestController {
         #[get("/test")]
         fn test(&self) -> Body {
-            Body::text(self.value.clone())
+            Body::text(self.value.to_string())
         }
     }
 
     #[module(
         providers: [
             LoggerService,
-            provide!(AsyncStatus => async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: Arc<LoggerService>| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             })
@@ -228,9 +229,9 @@ async fn alias_creates_a_second_key() {
     #[injectable]
     pub struct VerifyService {
         #[inject]
-        by_type: ConfigService,
+        by_type: Arc<ConfigService>,
         #[inject(Config)]
-        by_alias: ConfigService,
+        by_alias: Arc<ConfigService>,
     }
     impl VerifyService {
         pub fn report(&self) -> String {
@@ -241,7 +242,7 @@ async fn alias_creates_a_second_key() {
     #[controller("")]
     pub struct TestController {
         #[inject]
-        verify: VerifyService,
+        verify: Arc<VerifyService>,
     }
 
     #[routes]
@@ -297,7 +298,7 @@ async fn type_under_a_marker() {
     #[injectable]
     pub struct AppService {
         #[inject(PrimaryDb)]
-        primary: DatabaseService,
+        primary: Arc<DatabaseService>,
     }
     impl AppService {
         pub fn get_info(&self) -> String {
@@ -308,7 +309,7 @@ async fn type_under_a_marker() {
     #[controller("")]
     pub struct TestController {
         #[inject]
-        app: AppService,
+        app: Arc<AppService>,
     }
 
     #[routes]
@@ -392,9 +393,9 @@ async fn every_form_in_one_module() {
     #[injectable]
     pub struct AliasMarkerConsumer {
         #[inject(Config)]
-        config_via_alias: ConfigService,
+        config_via_alias: Arc<ConfigService>,
         #[inject(PrimaryConfig)]
-        config_via_marker: ConfigService,
+        config_via_marker: Arc<ConfigService>,
     }
     impl AliasMarkerConsumer {
         pub fn report(&self) -> String {
@@ -409,7 +410,7 @@ async fn every_form_in_one_module() {
     #[controller("")]
     pub struct TestController {
         #[inject]
-        consumer: AliasMarkerConsumer,
+        consumer: Arc<AliasMarkerConsumer>,
     }
 
     #[routes]
@@ -433,10 +434,10 @@ async fn every_form_in_one_module() {
                     .unwrap()
                     .as_millis())
             }),
-            provide!(AppInfo => async |config: ConfigService| {
+            provide!(AppInfo => async |config: Arc<ConfigService>| {
                 format!("App running in {} mode", config.get_env())
             }),
-            provide!(AsyncStatus => async |logger: LoggerService| {
+            provide!(AsyncStatus => async |logger: Arc<LoggerService>| {
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 logger.log("System initialized")
             }),

@@ -1,5 +1,6 @@
 #![cfg(feature = "integration")]
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ impl CacheService {
 #[controller("/cache")]
 pub struct CacheController {
     #[inject]
-    service: CacheService,
+    service: Arc<CacheService>,
     #[inject]
     health: HealthCheckService,
     #[inject]

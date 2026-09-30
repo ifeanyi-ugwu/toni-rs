@@ -109,6 +109,10 @@ const DOCUMENTED: &[(&str, &str)] = &[
         "type mismatch resolving `<Port as Key>::Value == String`",
     ),
     ("inject_key_is_a_key", "`Plain` is not a key"),
+    (
+        "inject_a_shared_type_plain",
+        "`Store` is handed out as one shared instance: write `Arc<Store>`",
+    ),
     ("inject_takes_no_string", "a key is a type, not a string"),
     (
         "provide_key_takes_no_string",

@@ -5,8 +5,9 @@
 //! [`UloApplication`](crate::UloApplication) instead.
 
 use parking_lot::RwLock;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
+use crate::__di::take_shared;
 use crate::error::ResolutionError;
 
 use crate::{
@@ -78,22 +79,25 @@ impl UloApplicationContext {
             })
     }
 
-    /// Returns an instance of `T` from the DI container, searching across all modules. A type two
-    /// modules hold answers [`ResolutionError::AmbiguousModule`] with their keys, each of which
-    /// [`get_module_by_id`](Self::get_module_by_id) resolves.
-    pub async fn get<T: 'static>(&self) -> Result<T, ResolutionError> {
+    /// Returns `T` from the DI container, searching across all modules, as an `Arc<T>` field reads
+    /// it. A type two modules hold answers [`ResolutionError::AmbiguousModule`] with their keys,
+    /// each of which [`get_module_by_id`](Self::get_module_by_id) resolves.
+    pub async fn get<T: 'static>(&self) -> Result<Arc<T>, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
 
-        downcast(provider.resolve(Execution::None).await?, &token)
+        take_shared(provider.resolve(Execution::None).await?, &token)
     }
 
-    /// Returns an instance of `T` from a specific module's scope in the DI container
-    pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T, ResolutionError> {
+    /// Returns `T` from a specific module's scope in the DI container. See [`get`](Self::get).
+    pub async fn get_from<T: 'static>(
+        &self,
+        module_token: &str,
+    ) -> Result<Arc<T>, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_module(module_token, &token)?;
 
-        downcast(provider.resolve(Execution::None).await?, &token)
+        take_shared(provider.resolve(Execution::None).await?, &token)
     }
 
     /// The module handle for `M`, found by its identity.
@@ -155,13 +159,13 @@ impl UloApplicationContext {
     async fn module_ref_for(&self, module_id: &str) -> Result<ModuleRef, ResolutionError> {
         let token = crate::di::token_of::<ModuleRef>();
         let provider = self.provider_in_module(module_id, &token)?;
-        downcast(provider.resolve(Execution::None).await?, &token)
+        crate::__di::take_value(provider.resolve(Execution::None).await?, &token)
     }
 
     /// Returns the value under the marker `K`, searching across all modules. A slot holding a
     /// trait object is not reached here: it hands out `Arc<K::Value>`, which a field reads through
     /// `#[inject(K)]`.
-    pub async fn get_key<K>(&self) -> Result<K::Value, ResolutionError>
+    pub async fn get_key<K>(&self) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: Key,
         K::Value: Sized,
@@ -171,7 +175,10 @@ impl UloApplicationContext {
 
     /// Returns the value under the marker `K` from a specific module's scope. See
     /// [`get_key`](Self::get_key).
-    pub async fn get_from_key<K>(&self, module_token: &str) -> Result<K::Value, ResolutionError>
+    pub async fn get_from_key<K>(
+        &self,
+        module_token: &str,
+    ) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: Key,
         K::Value: Sized,
@@ -181,10 +188,10 @@ impl UloApplicationContext {
     }
 
     /// The value registered under `token`, searching across all modules.
-    async fn get_under<T: 'static>(&self, token: String) -> Result<T, ResolutionError> {
+    async fn get_under<T: 'static>(&self, token: String) -> Result<Arc<T>, ResolutionError> {
         let provider = self.provider_in_any_module(&token)?;
 
-        downcast(provider.resolve(Execution::None).await?, &token)
+        take_shared(provider.resolve(Execution::None).await?, &token)
     }
 
     /// The value registered under `token` in one module.
@@ -192,10 +199,10 @@ impl UloApplicationContext {
         &self,
         module_token: &str,
         token: String,
-    ) -> Result<T, ResolutionError> {
+    ) -> Result<Arc<T>, ResolutionError> {
         let provider = self.provider_in_module(module_token, &token)?;
 
-        downcast(provider.resolve(Execution::None).await?, &token)
+        take_shared(provider.resolve(Execution::None).await?, &token)
     }
 
     /// Resolves a provider `T` in an execution.
@@ -219,16 +226,22 @@ impl UloApplicationContext {
     /// let execution: Execution = HttpContext::from_parts(parts).into();
     /// let service = ctx.resolve::<RequestService>(&execution).await?;
     /// ```
-    pub async fn resolve<T: 'static>(&self, execution: &Execution) -> Result<T, ResolutionError> {
+    pub async fn resolve<T: 'static>(
+        &self,
+        execution: &Execution,
+    ) -> Result<Arc<T>, ResolutionError> {
         let token = crate::di::token_of::<T>();
         let provider = self.provider_in_any_module(&token)?;
 
-        downcast(provider.resolve(execution.clone()).await?, &token)
+        take_shared(provider.resolve(execution.clone()).await?, &token)
     }
 
     /// Resolves the value under the marker `K` in an execution. See [`resolve`](Self::resolve)
     /// and [`get_key`](Self::get_key).
-    pub async fn resolve_key<K>(&self, execution: &Execution) -> Result<K::Value, ResolutionError>
+    pub async fn resolve_key<K>(
+        &self,
+        execution: &Execution,
+    ) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: Key,
         K::Value: Sized,
@@ -242,10 +255,10 @@ impl UloApplicationContext {
         &self,
         token: String,
         execution: &Execution,
-    ) -> Result<T, ResolutionError> {
+    ) -> Result<Arc<T>, ResolutionError> {
         let provider = self.provider_in_any_module(&token)?;
 
-        downcast(provider.resolve(execution.clone()).await?, &token)
+        take_shared(provider.resolve(execution.clone()).await?, &token)
     }
 
     pub async fn close(&mut self) {
@@ -341,13 +354,4 @@ impl UloApplicationContext {
             }
         }
     }
-}
-
-fn downcast<T: 'static>(instance: Box<dyn Any + Send>, token: &str) -> Result<T, ResolutionError> {
-    instance
-        .downcast::<T>()
-        .map(|boxed| *boxed)
-        .map_err(|_| ResolutionError::TypeMismatch {
-            token: token.to_string(),
-        })
 }

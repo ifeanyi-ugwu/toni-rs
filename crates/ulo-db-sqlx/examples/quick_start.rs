@@ -11,6 +11,7 @@
 //!     curl http://127.0.0.1:3000/health/db
 
 use sqlx::{Pool, Postgres};
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, key, module, routes};
 use ulo_db_sqlx::SqlxModule;
@@ -39,7 +40,7 @@ impl Reports {
 #[controller("/health")]
 pub struct HealthController {
     #[inject]
-    reports: Reports,
+    reports: Arc<Reports>,
 }
 
 #[routes]

@@ -64,9 +64,9 @@
 //! #[injectable]
 //! pub struct MyContextBuilder {
 //!     #[inject]
-//!     auth_service: AuthService,
+//!     auth_service: Arc<AuthService>,
 //!     #[inject]
-//!     db_pool: DatabasePool,
+//!     db_pool: Arc<DatabasePool>,
 //! }
 //!
 //! #[async_trait]
@@ -107,7 +107,7 @@
 //!
 //!     async fn user(&self, ctx: &Context<'_>, id: i32) -> Result<User> {
 //!         // Get DI service from context
-//!         let db_pool = ctx.data::<DatabasePool>()?;
+//!         let db_pool = ctx.data::<Arc<DatabasePool>>()?;
 //!         db_pool.find_user(id).await
 //!     }
 //! }

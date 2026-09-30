@@ -21,7 +21,7 @@ use crate::grpc::GrpcContext;
 use crate::http::HttpContext;
 use crate::http::middleware::Middleware;
 use crate::rpc::RpcContext;
-use crate::spi::{Provider, ProviderFactory, ProviderRole, Registration};
+use crate::spi::{Provider, ProviderFactory, ProviderRole, Registration, Shape};
 use crate::ws::WsContext;
 
 /// What a value declaration becomes under a slot holding `S`: one item, given where it is declared.
@@ -49,6 +49,10 @@ impl<S: ?Sized + Send + Sync + 'static> Provider for BindingProvider<S> {
 
     async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         Ok(Box::new(self.item.clone()))
+    }
+
+    fn shape(&self) -> Shape {
+        Shape::Shared
     }
 }
 
@@ -190,6 +194,10 @@ impl<S: ?Sized + Send + Sync + 'static> Provider for ScopedBindingProvider<S> {
     async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         Ok(Box::new(self.make.make(ctx).await?))
     }
+
+    fn shape(&self) -> Shape {
+        Shape::Shared
+    }
 }
 
 #[async_trait]
@@ -251,17 +259,18 @@ struct RecastProvider<T, S: ?Sized> {
 }
 
 impl<T: 'static, S: ?Sized + 'static> RecastProvider<T, S> {
+    /// The inner provider's instance converted to `S`. A shared instance keeps its allocation, so
+    /// the slot hands out the instance the inner provider built and runs its hooks on.
     async fn convert(
         inner: &Arc<dyn Provider>,
         cast: fn(Arc<T>) -> Arc<S>,
         ctx: Execution,
     ) -> Result<Arc<S>, ResolutionError> {
-        let value = inner.resolve(ctx).await?.downcast::<T>().map_err(|_| {
-            ResolutionError::TypeMismatch {
-                token: crate::di::token_of::<T>(),
-            }
-        })?;
-        Ok(cast(Arc::new(*value)))
+        let token = crate::di::token_of::<T>();
+        Ok(cast(crate::__di::take_shared(
+            inner.resolve(ctx).await?,
+            &token,
+        )?))
     }
 }
 
@@ -277,6 +286,10 @@ where
 
     fn scope(&self) -> ProviderScope {
         self.inner.scope()
+    }
+
+    fn shape(&self) -> Shape {
+        Shape::Shared
     }
 
     async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
@@ -319,6 +332,10 @@ where
 
     fn dependency_tokens(&self) -> Vec<String> {
         T::provider_factory().dependency_tokens()
+    }
+
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        T::provider_factory().value_dependencies()
     }
 
     fn identity_hint(&self) -> Option<String> {

@@ -356,21 +356,24 @@ impl UloApplication {
         }
     }
 
-    /// Returns an instance of `T` from the DI container, searching across all modules. A type two
-    /// modules hold answers [`ResolutionError::AmbiguousModule`], as
+    /// Returns `T` from the DI container, searching across all modules, as an `Arc<T>` field reads
+    /// it. A type two modules hold answers [`ResolutionError::AmbiguousModule`], as
     /// [`UloApplicationContext::get`](crate::application_context::UloApplicationContext::get) does.
-    pub async fn get<T: 'static>(&self) -> Result<T, ResolutionError> {
+    pub async fn get<T: 'static>(&self) -> Result<Arc<T>, ResolutionError> {
         self.context.get::<T>().await
     }
 
-    /// Returns an instance of `T` from a specific module's scope in the DI container.
-    pub async fn get_from<T: 'static>(&self, module_token: &str) -> Result<T, ResolutionError> {
+    /// Returns `T` from a specific module's scope in the DI container. See [`get`](Self::get).
+    pub async fn get_from<T: 'static>(
+        &self,
+        module_token: &str,
+    ) -> Result<Arc<T>, ResolutionError> {
         self.context.get_from::<T>(module_token).await
     }
 
     /// Returns the value under the marker `K`, searching across all modules. See
     /// [`UloApplicationContext::get_key`](crate::application_context::UloApplicationContext::get_key).
-    pub async fn get_key<K>(&self) -> Result<K::Value, ResolutionError>
+    pub async fn get_key<K>(&self) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: crate::di::Key,
         K::Value: Sized,
@@ -379,7 +382,10 @@ impl UloApplication {
     }
 
     /// Returns the value under the marker `K` from a specific module's scope.
-    pub async fn get_from_key<K>(&self, module_token: &str) -> Result<K::Value, ResolutionError>
+    pub async fn get_from_key<K>(
+        &self,
+        module_token: &str,
+    ) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: crate::di::Key,
         K::Value: Sized,
@@ -413,7 +419,7 @@ impl UloApplication {
     pub async fn resolve<T: 'static>(
         &self,
         execution: &crate::di::Execution,
-    ) -> Result<T, ResolutionError> {
+    ) -> Result<Arc<T>, ResolutionError> {
         self.context.resolve::<T>(execution).await
     }
 
@@ -421,7 +427,7 @@ impl UloApplication {
     pub async fn resolve_key<K>(
         &self,
         execution: &crate::di::Execution,
-    ) -> Result<K::Value, ResolutionError>
+    ) -> Result<Arc<K::Value>, ResolutionError>
     where
         K: crate::di::Key,
         K::Value: Sized,
@@ -506,12 +512,7 @@ impl UloApplication {
 
         // One shared WsClientMap + ConnectionManager when BroadcastService is in DI;
         // otherwise a fresh WsClientMap per gateway (no CM needed).
-        let broadcast_service = self
-            .context
-            .get::<BroadcastService>()
-            .await
-            .ok()
-            .map(Arc::new);
+        let broadcast_service = self.context.get::<BroadcastService>().await.ok();
 
         // Same-port vs separate-port is a property of how the gateway was declared,
         // not of the port number. A gateway with no `port` shares the HTTP listener;

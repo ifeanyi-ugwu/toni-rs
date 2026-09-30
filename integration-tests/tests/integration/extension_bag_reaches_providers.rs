@@ -8,6 +8,7 @@
 //! claim that still passes when scope is wrong, since a singleton returns
 //! whichever request populated it first.
 
+use std::sync::Arc;
 use ulo::http::{Body, Request};
 use ulo::{UloFactory, controller, get, injectable, module, new, routes};
 // ===== 1. Define types to store in extensions =====
@@ -86,9 +87,9 @@ impl UserService {
 #[controller("/users")]
 pub struct UserController {
     #[inject]
-    context: RequestContext, // Execution-scoped context
+    context: Arc<RequestContext>, // Execution-scoped context
     #[inject]
-    user_service: UserService, // Singleton service
+    user_service: Arc<UserService>, // Singleton service
 }
 
 #[routes]

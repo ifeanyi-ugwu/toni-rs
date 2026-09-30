@@ -5,6 +5,7 @@
 //! factory closure's parameter, and `resolve::<T>()` on the app. Generic written
 //! types are where the paths can disagree — each test pins one pair.
 
+use std::sync::Arc;
 use ulo::UloFactory;
 use ulo::di::Execution;
 use ulo::{injectable, key, module, provide};
@@ -24,7 +25,7 @@ mod bare_inject_generic {
     #[injectable]
     pub struct Consumer {
         #[inject]
-        pub handle: Handle<Marker>,
+        pub handle: Arc<Handle<Marker>>,
     }
 
     #[module(
@@ -87,7 +88,7 @@ mod factory_dep_generic {
     #[module(
         imports: [ConfigModule::<TokenTestConfig>::from_env().unwrap()],
         providers: [
-            provide!(ConfiguredName => async |cfg: ConfigService<TokenTestConfig>| {
+            provide!(ConfiguredName => async |cfg: Arc<ConfigService<TokenTestConfig>>| {
                 cfg.get_ref().name.clone()
             }),
         ],
@@ -104,7 +105,7 @@ mod factory_dep_generic {
             .get_key::<ConfiguredName>()
             .await
             .expect("the factory built from its dep");
-        assert_eq!(name, "token-test");
+        assert_eq!(*name, "token-test");
     }
 }
 
@@ -124,7 +125,7 @@ mod qualified_path_inject {
     #[injectable]
     pub struct Consumer {
         #[inject]
-        pub service: helpers::Service,
+        pub service: Arc<helpers::Service>,
     }
 
     #[module(
@@ -162,10 +163,10 @@ mod marker_lookup {
     async fn a_marker_reaches_its_registration() {
         let app = UloFactory::create(TestModule).await.unwrap();
 
-        let value: String = app
+        let value = app
             .get_key::<NamedValue>()
             .await
             .expect("the marker names the same key the registration used");
-        assert_eq!(value, "held");
+        assert_eq!(*value, "held");
     }
 }

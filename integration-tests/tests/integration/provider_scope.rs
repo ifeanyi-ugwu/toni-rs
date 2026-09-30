@@ -5,6 +5,7 @@
 //! - Request: Same instance within one execution, fresh instance for the next
 //! - Transient: Fresh instance per injection point at construction time
 
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{controller, get, module, provide, routes};
 use uuid::Uuid;
@@ -44,13 +45,13 @@ async fn scope_behavior() {
     #[controller("/execution-scoped", scope = "execution")]
     pub struct RequestController {
         #[inject(Singleton)]
-        singleton1: Counter,
+        singleton1: Arc<Counter>,
         #[inject(Singleton)]
-        singleton2: Counter,
+        singleton2: Arc<Counter>,
         #[inject(Request)]
-        request1: Counter,
+        request1: Arc<Counter>,
         #[inject(Request)]
-        request2: Counter,
+        request2: Arc<Counter>,
         #[inject(Transient)]
         transient1: Counter,
         #[inject(Transient)]

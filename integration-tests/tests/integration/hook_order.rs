@@ -4,6 +4,7 @@
 //! order, sibling imports that import nothing fire in the order they are declared, controllers
 //! fire after every provider, and a provider added beside them moves none of that.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use serial_test::serial;
@@ -21,7 +22,7 @@ macro_rules! hooked {
         pub struct $name {
             $(
                 #[inject]
-                $dep: $dep_ty,
+                $dep: std::sync::Arc<$dep_ty>,
             )*
         }
 
@@ -167,7 +168,7 @@ async fn sibling_imports_that_import_nothing_fire_in_declaration_order() {
 #[controller("/uses-global")]
 pub struct UsesGlobal {
     #[inject]
-    dep: GlobalDep,
+    dep: Arc<GlobalDep>,
 }
 
 impl UsesGlobal {

@@ -8,12 +8,15 @@
 //! fn for_root(config: DbConfig) -> DynamicModule {
 //!     DynamicModule::builder("db")
 //!         .provider(Provide::value(config))                                   // under DbConfig
-//!         .provider(Provide::factory(async |cfg: DbConfig| Pool::open(&cfg.url).await))
+//!         .provider(Provide::factory(async |cfg: Arc<DbConfig>| Pool::open(&cfg.url).await))
 //!         .provider(Provide::alias_key::<Primary, Pool>())
 //!         .provider(AuditGuard::provide().under_key_with::<Auth>(|guard| guard))
 //!         .build()
 //! }
 //! ```
+//!
+//! A value, a factory and a type's own singleton or execution-scoped declaration hand out one
+//! shared `Arc`; a transient hands out a fresh value.
 //!
 //! A declaration binds under the type it builds unless a key names another slot. A type is
 //! addressed by a type parameter and a marker through a `_key` form. What may be bound under a
@@ -35,7 +38,7 @@ use crate::di::binding::{Binding, FactoryBinding, Recast};
 use crate::di::collection::{Contribution, Source, declared_source};
 use crate::di::{DeclaresProvider, Execution, Key, ProviderScope, token_of};
 use crate::error::{BuildResult, ResolutionError};
-use crate::spi::{Provider, ProviderFactory, Registration};
+use crate::spi::{Provider, ProviderFactory, Registration, Shape};
 
 pub(crate) type Built = FxHashMap<String, Arc<dyn Provider>>;
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -45,9 +48,12 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct Provide;
 
 impl Provide {
-    /// A value under its own type, built once where it is written and handed out by clone.
+    /// A value under its own type, built once where it is written and handed out as one shared
+    /// `Arc<V>`.
     pub fn value<V: Send + Sync + 'static>(value: V) -> ValueDeclaration<V> {
-        ValueDeclaration { value }
+        ValueDeclaration {
+            value: Arc::new(value),
+        }
     }
 
     /// A value under the marker `K`, whose slot holds the value's type.
@@ -59,10 +65,11 @@ impl Provide {
         Provide::value(value).under_key::<K>()
     }
 
-    /// A value built by an async function, once, under the type it builds.
+    /// A value built by an async function, once, under the type it builds, and handed out as one
+    /// shared `Arc`.
     ///
-    /// Every parameter is resolved by its type. A sync closure is refused: a factory is always
-    /// async, and one written sync gains `async` in front of its bars.
+    /// Every parameter is written `Arc<Dep>` and resolved by `Dep`. A sync closure is refused: a
+    /// factory is always async, and one written sync gains `async` in front of its bars.
     pub fn factory<A, F: IntoFactory<A>>(factory: F) -> FactoryDeclaration<A, F> {
         FactoryDeclaration {
             factory: Arc::new(factory),
@@ -193,7 +200,7 @@ pub trait Declaration: Sized + 'static {
 
 /// What [`Provide::value`] declares.
 pub struct ValueDeclaration<V> {
-    value: V,
+    value: Arc<V>,
 }
 
 pub(crate) struct ValueProvider<V> {
@@ -202,18 +209,22 @@ pub(crate) struct ValueProvider<V> {
 }
 
 #[async_trait]
-impl<V: Clone + Send + Sync + 'static> Provider for ValueProvider<V> {
+impl<V: Send + Sync + 'static> Provider for ValueProvider<V> {
     fn token(&self) -> String {
         self.token.clone()
     }
 
     async fn resolve(&self, _ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
-        Ok(Box::new((*self.value).clone()))
+        Ok(Box::new(self.value.clone()))
+    }
+
+    fn shape(&self) -> Shape {
+        Shape::Shared
     }
 }
 
 #[async_trait]
-impl<V: Clone + Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
+impl<V: Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
     fn token(&self) -> String {
         token_of::<V>()
     }
@@ -221,7 +232,7 @@ impl<V: Clone + Send + Sync + 'static> ProviderFactory for ValueDeclaration<V> {
     async fn build(&self, _deps: FxHashMap<String, Registration>) -> BuildResult<Registration> {
         let provider: Arc<dyn Provider> = Arc::new(ValueProvider {
             token: token_of::<V>(),
-            value: Arc::new(self.value.clone()),
+            value: self.value.clone(),
         });
         Ok(Registration::new(provider, Vec::new()))
     }
@@ -236,7 +247,7 @@ impl<V: Send + Sync + 'static> Declaration for ValueDeclaration<V> {
         token: String,
         cast: fn(Arc<V>) -> Arc<S>,
     ) -> Binding<S> {
-        Binding::new(token, cast(Arc::new(self.value)))
+        Binding::new(token, cast(self.value))
     }
 
     fn __contribute<S: ?Sized + Send + Sync + 'static>(
@@ -244,18 +255,20 @@ impl<V: Send + Sync + 'static> Declaration for ValueDeclaration<V> {
         base: String,
         cast: fn(Arc<V>) -> Arc<S>,
     ) -> Contribution<S> {
-        Contribution::new(base, Source::Item(cast(Arc::new(self.value))))
+        Contribution::new(base, Source::Item(cast(self.value)))
     }
 }
 
 /// An async function whose parameters are the dependencies it is built from.
 ///
-/// Implemented for every `Fn(A1, .., An) -> Fut` up to eight parameters, where `Fut` is a `Send`
-/// future. Each parameter is resolved by its type, `token_of::<A>()`, and handed over by value.
+/// Implemented for every `Fn(Arc<A1>, .., Arc<An>) -> Fut` up to eight parameters, where `Fut` is a
+/// `Send` future. Each parameter is resolved by the type it shares, `token_of::<A>()`, and handed
+/// over as an `Arc<A>` field takes it: a shared instance as it is, a value handed out by value,
+/// wrapped.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an async factory",
-    label = "a factory is an async function of its dependencies",
-    note = "write `async |dep: Dep| ..` or `|dep: Dep| async move {{ .. }}`; a sync closure gains `async`"
+    label = "a factory is an async function of its dependencies, each an `Arc`",
+    note = "write `async |dep: Arc<Dep>| ..` or `|dep: Arc<Dep>| async move {{ .. }}`; a sync closure gains `async`"
 )]
 pub trait IntoFactory<A>: Send + Sync + 'static {
     /// What the factory builds.
@@ -278,10 +291,10 @@ macro_rules! into_factory {
     ($($arg:ident),*) => {
         impl<Func, Fut, R, $($arg),*> IntoFactory<($($arg,)*)> for Func
         where
-            Func: Fn($($arg),*) -> Fut + Send + Sync + 'static,
+            Func: Fn($(Arc<$arg>),*) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = R> + Send,
             R: Send + Sync + 'static,
-            $($arg: Send + 'static,)*
+            $($arg: Send + Sync + 'static,)*
         {
             type Output = R;
 
@@ -314,7 +327,7 @@ into_factory!(A1, A2, A3, A4, A5, A6);
 into_factory!(A1, A2, A3, A4, A5, A6, A7);
 into_factory!(A1, A2, A3, A4, A5, A6, A7, A8);
 
-/// One parameter of a factory, resolved by its type.
+/// One parameter of a factory, resolved by the type it shares.
 ///
 /// The loader builds a declaration only after every token in `dependency_tokens` is built, so an
 /// entry is always present. A value of another type means some declaration registered it under a
@@ -322,17 +335,12 @@ into_factory!(A1, A2, A3, A4, A5, A6, A7, A8);
 async fn resolve_dependency<A: 'static>(
     built: &Built,
     execution: Execution,
-) -> Result<A, ResolutionError> {
+) -> Result<Arc<A>, ResolutionError> {
     let token = token_of::<A>();
     let provider = built
         .get(&token)
         .unwrap_or_else(|| panic!("the loader built `{token}` before its dependents"));
-    provider
-        .resolve(execution)
-        .await?
-        .downcast::<A>()
-        .map(|value| *value)
-        .map_err(|_| ResolutionError::TypeMismatch { token })
+    crate::__di::take_shared(provider.resolve(execution).await?, &token)
 }
 
 /// What [`Provide::factory`] declares: a singleton, built once at startup.
@@ -349,29 +357,29 @@ where
     F: IntoFactory<A>,
     A: 'static,
 {
-    /// Built once inside each execution and shared by everything in it that asks: an injection
-    /// site receives a clone of the one instance. Outside an execution it answers
-    /// [`ResolutionError::ExecutionRequired`], and a singleton depending on it fails its build.
-    pub fn per_execution(self) -> ScopedFactoryDeclaration<A, F>
-    where
-        F::Output: Clone,
-    {
+    /// Built once inside each execution and shared by everything in it that asks, as one `Arc`.
+    /// Outside an execution it answers [`ResolutionError::ExecutionRequired`], and a singleton
+    /// depending on it fails its build.
+    pub fn per_execution(self) -> ScopedFactoryDeclaration<A, F> {
         ScopedFactoryDeclaration {
             factory: self.factory,
             scope: ProviderScope::Execution,
-            take: |shared| (*shared).clone(),
+            take: |shared| Box::new(shared),
             _args: PhantomData,
         }
     }
 
-    /// Built at every resolution.
+    /// Built at every resolution, and handed out by value.
     pub fn transient(self) -> ScopedFactoryDeclaration<A, F> {
         ScopedFactoryDeclaration {
             factory: self.factory,
             scope: ProviderScope::Transient,
             take: |fresh| {
-                Arc::try_unwrap(fresh)
-                    .unwrap_or_else(|_| panic!("a transient value is built for one resolution"))
+                Box::new(
+                    Arc::try_unwrap(fresh).unwrap_or_else(|_| {
+                        panic!("a transient value is built for one resolution")
+                    }),
+                )
             },
             _args: PhantomData,
         }
@@ -382,7 +390,6 @@ where
 impl<A, F> ProviderFactory for FactoryDeclaration<A, F>
 where
     F: IntoFactory<A>,
-    F::Output: Clone,
     A: 'static,
 {
     fn token(&self) -> String {
@@ -442,9 +449,8 @@ impl<A: 'static, F: IntoFactory<A>> Declaration for FactoryDeclaration<A, F> {
 pub struct ScopedFactoryDeclaration<A, F: IntoFactory<A>> {
     factory: Arc<F>,
     scope: ProviderScope,
-    /// How an injection site takes its value from the instance: a clone of the shared one, or the
-    /// fresh one itself.
-    take: fn(Arc<F::Output>) -> F::Output,
+    /// How the provider answers with the instance: the shared `Arc`, or the fresh value itself.
+    take: fn(Arc<F::Output>) -> Box<dyn Any + Send>,
     _args: PhantomData<fn(A)>,
 }
 
@@ -522,7 +528,7 @@ struct ScopedProvider<V> {
     token: String,
     scope: ProviderScope,
     make: Arc<dyn MakeInExecution<V>>,
-    take: fn(Arc<V>) -> V,
+    take: fn(Arc<V>) -> Box<dyn Any + Send>,
 }
 
 #[async_trait]
@@ -535,8 +541,15 @@ impl<V: Send + Sync + 'static> Provider for ScopedProvider<V> {
         self.scope
     }
 
+    fn shape(&self) -> Shape {
+        match self.scope {
+            ProviderScope::Transient => Shape::Value,
+            _ => Shape::Shared,
+        }
+    }
+
     async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
-        Ok(Box::new((self.take)(self.make.make(ctx).await?)))
+        Ok((self.take)(self.make.make(ctx).await?))
     }
 }
 
@@ -592,6 +605,10 @@ impl<T: DeclaresProvider + 'static> ProviderFactory for Declared<T> {
 
     fn dependency_tokens(&self) -> Vec<String> {
         T::provider_factory().dependency_tokens()
+    }
+
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        T::provider_factory().value_dependencies()
     }
 
     fn identity_hint(&self) -> Option<String> {
@@ -675,6 +692,10 @@ impl Provider for Rekeyed {
         self.inner.scope()
     }
 
+    fn shape(&self) -> Shape {
+        self.inner.shape()
+    }
+
     async fn resolve(&self, ctx: Execution) -> Result<Box<dyn Any + Send>, ResolutionError> {
         self.inner.resolve(ctx).await.map_err(|error| match error {
             // A stand-in's inner provider is registered under no token of its own, so a refusal
@@ -746,10 +767,7 @@ where
     A: 'static,
 {
     /// See [`FactoryDeclaration::per_execution`].
-    pub fn per_execution(self) -> Under<ScopedFactoryDeclaration<A, F>>
-    where
-        F::Output: Clone,
-    {
+    pub fn per_execution(self) -> Under<ScopedFactoryDeclaration<A, F>> {
         Under {
             inner: self.inner.per_execution(),
             token: self.token,
@@ -773,6 +791,10 @@ impl<F: ProviderFactory> ProviderFactory for Under<F> {
 
     fn dependency_tokens(&self) -> Vec<String> {
         self.inner.dependency_tokens()
+    }
+
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        self.inner.value_dependencies()
     }
 
     fn identity_hint(&self) -> Option<String> {

@@ -23,6 +23,10 @@ A provider is a plain struct plus its normal `impl`s. One attribute, no restatem
   fields are owned state, `#[injectable(scope = "request" | "transient")]` sets scope. Because it is an
   attribute (it re-emits the item) rather than a derive, it supplies the `Clone` impl the container
   needs — the struct carries no derive ceremony.
+
+  Revisited by [ADR-0058](0058-a-provider-declaration-is-a-value.md), which reads a shared binding
+  as `Arc<K::Value>`: the container clones no instance, and the attribute adds no `Clone` impl,
+  which the paragraph on attributes and derives below gives as its reason.
 - A constructor is a `fn` tagged `#[new]`; a lifecycle hook is a `fn` tagged `#[on_module_init]` (etc.).
   See [0001](0001-dispatch-not-detect-autoref-bridge.md) for how these reach the struct macro.
 - An enhancer is a provider that implements the role trait — `impl Guard<HttpContext> for Foo` *is* the

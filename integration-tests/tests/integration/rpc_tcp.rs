@@ -1071,7 +1071,7 @@ impl PerCall {
 #[injectable(scope = "execution")]
 pub struct ScopedGuardA {
     #[inject]
-    scoped: PerCall,
+    scoped: Arc<PerCall>,
 }
 
 #[async_trait]
@@ -1085,7 +1085,7 @@ impl Guard<RpcContext> for ScopedGuardA {
 #[injectable(scope = "execution")]
 pub struct ScopedGuardB {
     #[inject]
-    scoped: PerCall,
+    scoped: Arc<PerCall>,
 }
 
 #[async_trait]
@@ -1192,7 +1192,7 @@ pub struct GuardSaw(usize);
 #[injectable(scope = "execution")]
 pub struct CallScopedGuard {
     #[inject]
-    scoped: CallScoped,
+    scoped: Arc<CallScoped>,
 }
 
 #[async_trait]
@@ -1209,7 +1209,7 @@ static PER_CALL_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 #[controller(scope = "execution")]
 pub struct PerCallRpcController {
     #[inject]
-    scoped: CallScoped,
+    scoped: Arc<CallScoped>,
     build: usize,
 }
 
@@ -1217,7 +1217,7 @@ pub struct PerCallRpcController {
 #[use_guards(CallScopedGuard)]
 impl PerCallRpcController {
     #[new]
-    pub fn new(scoped: CallScoped) -> Self {
+    pub fn new(scoped: Arc<CallScoped>) -> Self {
         Self {
             scoped,
             build: PER_CALL_CONTROLLER_BUILDS.fetch_add(1, Ordering::SeqCst),
@@ -1344,14 +1344,14 @@ static ELEVATED_CONTROLLER_BUILDS: AtomicUsize = AtomicUsize::new(0);
 #[controller]
 pub struct ElevatedRpcController {
     #[inject]
-    scoped: CallScoped,
+    scoped: Arc<CallScoped>,
     build: usize,
 }
 
 #[patterns]
 impl ElevatedRpcController {
     #[new]
-    pub fn new(scoped: CallScoped) -> Self {
+    pub fn new(scoped: Arc<CallScoped>) -> Self {
         Self {
             scoped,
             build: ELEVATED_CONTROLLER_BUILDS.fetch_add(1, Ordering::SeqCst),

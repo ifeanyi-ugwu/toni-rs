@@ -30,6 +30,14 @@ pub trait Provider: Send + Sync {
         ProviderScope::Singleton
     }
 
+    /// What [`resolve`](Self::resolve) answers inside the box: one shared `Arc<V>`, or a `V` the
+    /// holder owns. A field written as a plain `V` reads only the second. The default is a value,
+    /// which is what a provider written by hand to hand out a handle answers, such as a pool or a
+    /// client whose clone reaches the same connection.
+    fn shape(&self) -> Shape {
+        Shape::Value
+    }
+
     fn multi_base_token(&self) -> Option<String> {
         None
     }
@@ -48,6 +56,16 @@ pub trait Provider: Send + Sync {
     async fn on_module_destroy(&self) {}
     async fn before_application_shutdown(&self, _signal: Option<String>) {}
     async fn on_application_shutdown(&self, _signal: Option<String>) {}
+}
+
+/// What a provider hands out: see [`Provider::shape`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// One instance every holder shares, as an `Arc<V>`: a singleton or execution-scoped
+    /// `#[injectable]`, a `provide!` value or factory, a trait object.
+    Shared,
+    /// A `V` each holder owns: a transient, or a handle whose clone reaches the same thing.
+    Value,
 }
 
 /// Role trait-objects a provider may contribute to the registry.
@@ -100,6 +118,15 @@ pub trait ProviderFactory: Send + Sync {
     fn dependency_tokens(&self) -> Vec<String> {
         vec![]
     }
+
+    /// The dependencies a field or parameter written as a plain type reads, each with the type it
+    /// is written as. The loader refuses the build when one of them hands out one shared instance,
+    /// [`Shape::Shared`](crate::spi::Shape::Shared), which a consumer built per execution would
+    /// otherwise meet at its first resolution.
+    fn value_dependencies(&self) -> Vec<(String, &'static str)> {
+        vec![]
+    }
+
     fn multi_base_token(&self) -> Option<String> {
         None
     }

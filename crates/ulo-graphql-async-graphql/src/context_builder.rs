@@ -37,9 +37,9 @@ use ulo::http::RequestPart;
 /// #[injectable]
 /// pub struct MyContextBuilder {
 ///     #[inject]
-///     auth_service: AuthService,
+///     auth_service: Arc<AuthService>,
 ///     #[inject]
-///     db_pool: DatabasePool,
+///     db_pool: Arc<DatabasePool>,
 /// }
 ///
 /// #[async_trait]

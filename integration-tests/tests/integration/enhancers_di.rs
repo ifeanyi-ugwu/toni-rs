@@ -59,11 +59,11 @@ impl ExecutionTracker {
 
 #[injectable]
 pub struct AuthService {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 impl AuthService {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 
@@ -82,11 +82,11 @@ impl AuthService {
 
 #[injectable]
 pub struct RequestTrackingMiddleware {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 impl RequestTrackingMiddleware {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 }
@@ -105,11 +105,11 @@ impl Middleware for RequestTrackingMiddleware {
 
 #[injectable]
 pub struct HeaderValidationMiddleware {
-    auth_service: AuthService,
+    auth_service: Arc<AuthService>,
 }
 impl HeaderValidationMiddleware {
     #[new]
-    pub fn new(auth_service: AuthService) -> Self {
+    pub fn new(auth_service: Arc<AuthService>) -> Self {
         Self { auth_service }
     }
 }
@@ -134,11 +134,11 @@ impl Middleware for HeaderValidationMiddleware {
 
 #[injectable]
 pub struct AdminGuard {
-    auth_service: AuthService,
+    auth_service: Arc<AuthService>,
 }
 impl AdminGuard {
     #[new]
-    pub fn new(auth_service: AuthService) -> Self {
+    pub fn new(auth_service: Arc<AuthService>) -> Self {
         Self { auth_service }
     }
 }
@@ -153,11 +153,11 @@ impl Guard<HttpContext> for AdminGuard {
 
 #[injectable]
 pub struct UserGuard {
-    auth_service: AuthService,
+    auth_service: Arc<AuthService>,
 }
 impl UserGuard {
     #[new]
-    pub fn new(auth_service: AuthService) -> Self {
+    pub fn new(auth_service: Arc<AuthService>) -> Self {
         Self { auth_service }
     }
 }
@@ -174,11 +174,11 @@ impl Guard<HttpContext> for UserGuard {
 
 #[injectable]
 pub struct LoggingInterceptor {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 impl LoggingInterceptor {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 }
@@ -199,11 +199,11 @@ impl Interceptor<HttpContext, HttpHandlerResult> for LoggingInterceptor {
 
 #[injectable]
 pub struct TimingInterceptor {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 impl TimingInterceptor {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 }
@@ -226,13 +226,13 @@ impl Interceptor<HttpContext, HttpHandlerResult> for TimingInterceptor {
 
 #[controller("/api")]
 pub struct EnhancerTestController {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 
 #[routes]
 impl EnhancerTestController {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 

@@ -11,6 +11,7 @@
 //!     curl http://127.0.0.1:3000/health/db
 
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_seaorm::SeaOrmModule;
@@ -40,7 +41,7 @@ impl DbProbe {
 #[controller("/health")]
 pub struct HealthController {
     #[inject]
-    probe: DbProbe,
+    probe: Arc<DbProbe>,
 }
 
 #[routes]

@@ -132,23 +132,23 @@ pub struct PluginRegistry {
 #[controller("/values")]
 pub struct Values {
     #[inject]
-    keyless: Banner,
+    keyless: Arc<Banner>,
     #[inject]
-    motd: Motd,
+    motd: Arc<Motd>,
     #[inject]
     greeter: Arc<dyn Greeter>,
     #[inject]
     bounded_greeter: Arc<dyn Greeter + Send + Sync>,
     #[inject(Port)]
-    port: u16,
+    port: Arc<u16>,
     #[inject(Replica)]
-    replica: Logger,
+    replica: Arc<Logger>,
     #[inject(Loud)]
     loud: Arc<dyn Greeter>,
     #[inject(Quiet)]
     quiet: Arc<dyn Greeter>,
     #[inject]
-    registry: PluginRegistry,
+    registry: Arc<PluginRegistry>,
 }
 
 #[routes]
@@ -184,8 +184,8 @@ impl Values {
         provide!(PortAlias => alias Port),
         provide!(Seven => value SEVEN),
         provide!(Ten => factory make_ten),
-        provide!(BannerText => async |prefix: Prefix| format!("{}-banner", prefix.value)),
-        provide!(async |prefix: Prefix| Banner(format!("{}-keyless", prefix.value))),
+        provide!(BannerText => async |prefix: Arc<Prefix>| format!("{}-banner", prefix.value)),
+        provide!(async |prefix: Arc<Prefix>| Banner(format!("{}-keyless", prefix.value))),
         provide!(Motd => Motd("welcome".to_string())),
         provide!(Replica => Logger),
         Logger::provide().under_key::<ReplicaAgain>(),
@@ -194,7 +194,7 @@ impl Values {
         provide!(dyn Greeter => EnglishGreeter),
         provide!(dyn Greeter + Send + Sync => EnglishGreeter),
         provide!(into dyn Plugin => A {}),
-        provide!(into dyn Plugin => async |prefix: Prefix| B(prefix.value)),
+        provide!(into dyn Plugin => async |prefix: Arc<Prefix>| B(prefix.value.clone())),
         provide!(into dyn Plugin => C),
         provide!(into Legacy => A {}),
         provide!(into dyn Plugin + Send + Sync => A {}),
@@ -226,11 +226,11 @@ async fn each_declaration_is_read_by_the_key_it_was_written_with() {
 async fn a_declaration_under_a_marker_is_read_by_the_marker() {
     let app = UloFactory::create(ValuesModule).await.unwrap();
 
-    assert_eq!(app.get_key::<Port>().await.unwrap(), 3000);
-    assert_eq!(app.get_key::<PortAlias>().await.unwrap(), 3000);
-    assert_eq!(app.get_key::<Seven>().await.unwrap(), 7);
-    assert_eq!(app.get_key::<Ten>().await.unwrap(), 10);
-    assert_eq!(app.get_key::<BannerText>().await.unwrap(), "app-banner");
+    assert_eq!(*app.get_key::<Port>().await.unwrap(), 3000);
+    assert_eq!(*app.get_key::<PortAlias>().await.unwrap(), 3000);
+    assert_eq!(*app.get_key::<Seven>().await.unwrap(), 7);
+    assert_eq!(*app.get_key::<Ten>().await.unwrap(), 10);
+    assert_eq!(*app.get_key::<BannerText>().await.unwrap(), "app-banner");
     assert_eq!(app.get_key::<Motd>().await.unwrap().0, "welcome");
     assert_eq!(app.get_key::<Replica>().await.unwrap().name, "logger");
     assert_eq!(app.get_key::<ReplicaAgain>().await.unwrap().name, "logger");
@@ -243,14 +243,14 @@ async fn a_marker_is_read_through_a_module() {
     let module = app.get_module::<ValuesModule>().await.unwrap();
 
     assert_eq!(
-        app.get_from_key::<Port>(module.current_module())
+        *app.get_from_key::<Port>(module.current_module())
             .await
             .unwrap(),
         3000
     );
-    assert_eq!(module.get_key::<Seven>().execute().await.unwrap(), 7);
+    assert_eq!(*module.get_key::<Seven>().execute().await.unwrap(), 7);
     assert_eq!(
-        module
+        *module
             .resolve_key::<Ten>(&Execution::standalone())
             .execute()
             .await
@@ -522,7 +522,7 @@ fn a_declaration_carries_the_key_it_was_written_with() {
         [token_of::<Port>()]
     );
     assert_eq!(
-        Provide::factory(async |_: Prefix| String::new()).dependency_tokens(),
+        Provide::factory(async |_: Arc<Prefix>| String::new()).dependency_tokens(),
         [token_of::<Prefix>()]
     );
     assert_eq!(
@@ -553,15 +553,15 @@ key!(pub Fresh: RequestId);
 #[injectable(scope = "execution")]
 pub struct Holder {
     #[inject]
-    id: RequestId,
+    id: Arc<RequestId>,
 }
 
 #[controller("/per-execution", scope = "execution")]
 pub struct PerExecution {
     #[inject]
-    direct: RequestId,
+    direct: Arc<RequestId>,
     #[inject]
-    holder: Holder,
+    holder: Arc<Holder>,
 }
 
 #[routes]

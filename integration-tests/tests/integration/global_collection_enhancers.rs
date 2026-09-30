@@ -65,12 +65,12 @@ impl MockService {
 
 #[injectable]
 pub struct GlobalGuardWithDI {
-    service: MockService,
-    tracker: ExecutionTracker,
+    service: Arc<MockService>,
+    tracker: Arc<ExecutionTracker>,
 }
 impl GlobalGuardWithDI {
     #[new]
-    pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
+    pub fn new(service: Arc<MockService>, tracker: Arc<ExecutionTracker>) -> Self {
         Self { service, tracker }
     }
 }
@@ -86,12 +86,12 @@ impl Guard<HttpContext> for GlobalGuardWithDI {
 
 #[injectable]
 pub struct GlobalInterceptorWithDI {
-    service: MockService,
-    tracker: ExecutionTracker,
+    service: Arc<MockService>,
+    tracker: Arc<ExecutionTracker>,
 }
 impl GlobalInterceptorWithDI {
     #[new]
-    pub fn new(service: MockService, tracker: ExecutionTracker) -> Self {
+    pub fn new(service: Arc<MockService>, tracker: Arc<ExecutionTracker>) -> Self {
         Self { service, tracker }
     }
 }
@@ -118,13 +118,13 @@ impl Interceptor<HttpContext, HttpHandlerResult> for GlobalInterceptorWithDI {
 
 #[controller("/api")]
 pub struct TestController {
-    tracker: ExecutionTracker,
+    tracker: Arc<ExecutionTracker>,
 }
 
 #[routes]
 impl TestController {
     #[new]
-    pub fn new(tracker: ExecutionTracker) -> Self {
+    pub fn new(tracker: Arc<ExecutionTracker>) -> Self {
         Self { tracker }
     }
 

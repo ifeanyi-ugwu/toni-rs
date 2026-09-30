@@ -120,9 +120,10 @@ constructor run per execution. A keyword counts only where the rest does not rea
 expression; `value &X` and `factory |..|` parse as one `&` or `|` expression and are keywords all
 the same.
 
-`#[inject(K)]` fills a field holding `K::Value` in the shape its binding gives an injection point:
-`Arc<K::Value>` for a shared binding, `K::Value` for a transient one, `Vec<Arc<K::Value>>` for a
-collection. `#[inject]` keys by the field's type with that shape removed.
+`#[inject(K)]` fills a field holding `K::Value` in a shape its binding gives an injection point:
+`Arc<K::Value>` for any binding, `K::Value` for one handing out a value (a transient, or a provider
+written by hand to hand out a handle), `Vec<Arc<K::Value>>` for a collection. `#[inject]` keys by
+the field's type with that shape removed.
 
 ```rust
 #[use_guards(AuthGuard, Auth, value &SHARED_LIMITER)]

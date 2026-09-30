@@ -5,6 +5,7 @@
 //! passing says nothing about an async one: the failure mode is a response
 //! written from a future nobody polled.
 use crate::common::TestServer;
+use std::sync::Arc;
 use ulo::http::Body;
 use ulo::{controller, get, injectable, module, routes};
 #[injectable]
@@ -24,7 +25,7 @@ impl AsyncService {
 #[controller("/async")]
 pub struct AsyncController {
     #[inject]
-    service: AsyncService,
+    service: Arc<AsyncService>,
 }
 
 #[routes]

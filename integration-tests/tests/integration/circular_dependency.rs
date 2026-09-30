@@ -6,6 +6,7 @@
 //! leaves the author to find the other half by hand.
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use ulo::prelude::*;
 
 // Global modules keep the import graph acyclic — both get ordered and reach the injector's
@@ -19,7 +20,7 @@ pub struct ServiceA {
 
 impl ServiceA {
     #[new]
-    pub fn new(_b: ServiceB) -> Self {
+    pub fn new(_b: Arc<ServiceB>) -> Self {
         Self { name: "a".into() }
     }
 }
@@ -31,7 +32,7 @@ pub struct ServiceB {
 
 impl ServiceB {
     #[new]
-    pub fn new(_a: ServiceA) -> Self {
+    pub fn new(_a: Arc<ServiceA>) -> Self {
         Self { name: "b".into() }
     }
 }
@@ -76,7 +77,7 @@ pub struct ServiceC {
 
 impl ServiceC {
     #[new]
-    pub fn new(_d: ServiceD) -> Self {
+    pub fn new(_d: Arc<ServiceD>) -> Self {
         Self { name: "c".into() }
     }
 }
@@ -88,7 +89,7 @@ pub struct ServiceD {
 
 impl ServiceD {
     #[new]
-    pub fn new(_c: ServiceC) -> Self {
+    pub fn new(_c: Arc<ServiceC>) -> Self {
         Self { name: "d".into() }
     }
 }

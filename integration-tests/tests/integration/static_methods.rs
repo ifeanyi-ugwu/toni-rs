@@ -6,6 +6,7 @@
 //! because a static handler still runs inside an execution even though it holds
 //! no instance to scope.
 use crate::common::TestServer;
+use std::sync::Arc;
 use ulo::http::{Body, HttpRequest};
 use ulo::{controller, get, injectable, module, routes};
 #[controller("/static")]
@@ -61,7 +62,7 @@ impl MixedService {
 #[controller("/mixed")]
 pub struct MixedController {
     #[inject]
-    service: MixedService,
+    service: Arc<MixedService>,
 }
 
 #[routes]
