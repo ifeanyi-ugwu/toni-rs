@@ -8,10 +8,16 @@
 //! | `expr` | `m.value(expr);` |
 //! | a closure | `singleton` or `try_singleton`, picked by autoref over the closure's own type |
 //! | `into dyn Plugin: [A, B]` | `m.contribute::<dyn Plugin>().provide::<A>(\|a\| a);` per entry |
+//! | `into AnyGuard<Http>: [A]` | `m.enhancer::<AnyGuard<Http>>().provide::<A>(\|a\| a);` per entry |
 //!
 //! A type entry is a plain type path: `Foo`, `db::Pool<Pg>`. A path with parenthesized arguments,
 //! `Config::default()`, is a call and reads as an expression. A bare path naming a constant reads
 //! as a type, so a constant is bound by value with a block, `{ LIMITS }`.
+//!
+//! A role key is recognised by how it is written: a path ending in `AnyGuard`, `AnyInterceptor`
+//! or `AnyErrorHandler`, or `dyn` of the `Erased*` trait each of them aliases. An alias of a role
+//! key under another name lowers to `contribute`, which records a provider contribution. An entry
+//! `X as <role key>` is an error, since a role key takes contributions.
 //!
 //! A type that does not implement `Construct` fails at `provide::<T>()`; the generated call is
 //! spanned at the entry, where the error is reported.
@@ -21,7 +27,7 @@ use quote::{quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Expr, ExprClosure, Ident, PathArguments, Token, Type, bracketed};
+use syn::{Expr, ExprClosure, Ident, PathArguments, Token, Type, TypeParamBound, bracketed};
 
 use crate::module_attr::module_def_param;
 use crate::shared::{check_factory_params, ulo};
@@ -55,7 +61,15 @@ impl Parse for ProviderEntry {
             let ty: Type = input.parse()?;
             if input.peek(Token![as]) {
                 input.parse::<Token![as]>()?;
-                return Ok(ProviderEntry::ProvideAs { ty, as_ty: input.parse()? });
+                let as_ty: Type = input.parse()?;
+                if is_role_key(&as_ty) {
+                    return Err(syn::Error::new_spanned(
+                        as_ty,
+                        "a role key takes contributions, and `as` binds a single instance; \
+                         a global enhancer is written `into AnyGuard<Http>: [AuthGuard]`",
+                    ));
+                }
+                return Ok(ProviderEntry::ProvideAs { ty, as_ty });
             }
             return Ok(ProviderEntry::Provide(ty));
         }
@@ -97,14 +111,33 @@ impl ProviderEntry {
                 }
             },
             ProviderEntry::Contribute { into, items } => {
+                let entry = Ident::new(if is_role_key(into) { "enhancer" } else { "contribute" }, into.span());
                 let contributions = items.iter().map(|item| {
                     quote_spanned! {item.span()=>
-                        #m.contribute::<#into>().provide::<#item>(|a| a);
+                        #m.#entry::<#into>().provide::<#item>(|a| a);
                     }
                 });
                 quote!(#(#contributions)*)
             }
         }
+    }
+}
+
+fn is_role_key(ty: &Type) -> bool {
+    const ALIASES: &[&str] = &["AnyGuard", "AnyInterceptor", "AnyErrorHandler"];
+    const TWINS: &[&str] = &["ErasedGuard", "ErasedInterceptor", "ErasedErrorHandler"];
+    let ends_in = |path: &syn::Path, names: &[&str]| {
+        path.segments.last().is_some_and(|segment| names.iter().any(|name| segment.ident == *name))
+    };
+    match ty {
+        Type::Group(group) => is_role_key(&group.elem),
+        Type::Paren(paren) => is_role_key(&paren.elem),
+        Type::Path(path) => path.qself.is_none() && ends_in(&path.path, ALIASES),
+        Type::TraitObject(object) => object
+            .bounds
+            .iter()
+            .any(|bound| matches!(bound, TypeParamBound::Trait(t) if ends_in(&t.path, TWINS))),
+        _ => false,
     }
 }
 

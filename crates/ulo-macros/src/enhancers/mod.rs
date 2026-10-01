@@ -4,16 +4,18 @@
 //! - `Type`: by type, resolved from the container; `spec.guard::<Type>()`.
 //! - `key = Type`: by type, applied to handlers of the transport whose scope key is `key`
 //!   (`http`, `rpc`, `grpc`, `ws`, as each transport crate declares).
-//! - `value = expr`: by value, built once per handler it applies to and shared by that
-//!   handler's calls; `spec.guard_value(expr)`.
+//! - `value = expr`: by value, on a method only: built once when the handler mounts and shared by
+//!   its calls; `spec.guard_value(expr)`.
 //! - `with = |param: Ty, ..| expr`: by closure, built per execution. The closure's body is
 //!   wrapped as `async move { body }` and handed to `spec.guard_with(..)`, whose parameters are
 //!   injection points. A closure that is already `async`, or whose body is already an `async`
 //!   block, is handed over as written.
 //! - `key(value = expr)` and `key(with = ..)`: the last two, transport-scoped.
 //!
-//! On a method, a transport-scoped entry for another transport than the handler's applies to
-//! nothing and is an error.
+//! On the impl, a `value` entry, scoped or not, is an error: each handler mounts separately, so
+//! the value would be built once per handler and shared by none of them. On a method, a
+//! transport-scoped entry for another transport than the handler's applies to nothing and is an
+//! error.
 //!
 //! Every entry is registered through a local fn named after the handler whose bound is the role
 //! for the handler's transport, so a missing role reads "`AuthGuard` is not a guard for `Rpc`",
@@ -27,7 +29,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, Ident, LitStr, ReturnType, Token, Type, parenthesized, token};
 
-use crate::shared::{check_factory_params, ulo, ulo_at};
+use crate::shared::{check_factory_params, combine, ulo, ulo_at};
 
 /// Which role an attribute declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +92,23 @@ pub(crate) struct EnhancerAttr {
 pub(crate) struct Entry {
     /// The transport scope key, for the transport-scoped forms.
     pub(crate) scope: Option<Ident>,
+    /// `value` or `with` as written, so a diagnostic can span an unscoped entry from its first
+    /// token.
+    pub(crate) keyword: Option<Ident>,
     pub(crate) form: Form,
+}
+
+impl Entry {
+    /// The entry's tokens with their written spans, so an error built from them covers the entry.
+    fn as_written(&self) -> TokenStream {
+        let lead = self.scope.as_ref().or(self.keyword.as_ref());
+        let form = match &self.form {
+            Form::Type(ty) => ty.to_token_stream(),
+            Form::Value(expr) => expr.to_token_stream(),
+            Form::With(closure) => closure.to_token_stream(),
+        };
+        quote!(#lead #form)
+    }
 }
 
 #[derive(Clone)]
@@ -116,11 +134,11 @@ impl Parse for Entry {
             let key: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
             return Ok(if key == "value" {
-                Entry { scope: None, form: Form::Value(input.parse()?) }
+                Entry { scope: None, form: Form::Value(input.parse()?), keyword: Some(key) }
             } else if key == "with" {
-                Entry { scope: None, form: Form::With(parse_closure(input)?) }
+                Entry { scope: None, form: Form::With(parse_closure(input)?), keyword: Some(key) }
             } else {
-                Entry { scope: Some(key), form: Form::Type(input.parse()?) }
+                Entry { scope: Some(key), keyword: None, form: Form::Type(input.parse()?) }
             });
         }
         if input.peek(Ident) && input.peek2(token::Paren) {
@@ -145,9 +163,9 @@ impl Parse for Entry {
             if !content.is_empty() {
                 return Err(content.error("one entry per transport-scoped form"));
             }
-            return Ok(Entry { scope: Some(key), form });
+            return Ok(Entry { scope: Some(key), keyword: Some(inner), form });
         }
-        Ok(Entry { scope: None, form: Form::Type(input.parse()?) })
+        Ok(Entry { scope: None, keyword: None, form: Form::Type(input.parse()?) })
     }
 }
 
@@ -183,6 +201,27 @@ impl EnhancerAttr {
     pub(crate) fn from_attr(role: Role, attr: &syn::Attribute) -> syn::Result<Self> {
         let entries = attr.parse_args_with(Punctuated::<Entry, Token![,]>::parse_terminated)?;
         Ok(EnhancerAttr { role, entries: entries.into_iter().collect(), span: attr.path().span() })
+    }
+}
+
+/// Every `value` entry in the impl's enhancer attributes, as one error per entry spanned on it.
+/// The refusal holds until the transport protocol can share one value across the impl's handlers.
+pub(crate) fn refuse_controller_values(attrs: &[EnhancerAttr]) -> syn::Result<()> {
+    let errors = attrs
+        .iter()
+        .flat_map(|attr| &attr.entries)
+        .filter(|entry| matches!(entry.form, Form::Value(_)))
+        .map(|entry| {
+            syn::Error::new_spanned(
+                entry.as_written(),
+                "a `value` entry on the impl would be built once per handler rather than shared; \
+                 declare it per method, or bind it by type for shared state",
+            )
+        })
+        .collect();
+    match combine(errors) {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }
 

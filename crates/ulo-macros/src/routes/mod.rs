@@ -2,7 +2,8 @@
 //!
 //! It runs before the transports' handler attributes, which sit on the methods inside it, so it
 //! hands each handler's enhancers to them rather than registering handlers itself:
-//! 1. The impl's `#[guards]`, `#[interceptors]` and `#[error_handlers]` are the controller tier.
+//! 1. The impl's `#[guards]`, `#[interceptors]` and `#[error_handlers]` are the controller tier,
+//!    which takes no `value` entry.
 //! 2. A method is a handler when it carries an attribute outside `shared::attrs::is_inert`; that
 //!    attribute is its transport's. Its own enhancer attributes are its method tier.
 //! 3. Each handler's enhancer attributes are removed and one
@@ -22,7 +23,7 @@ use syn::ext::IdentExt;
 use syn::parse::Parser;
 use syn::{Attribute, ImplItem, ImplItemFn, ItemImpl};
 
-use crate::enhancers::{EnhancerAttr, HandlerTokens, Role};
+use crate::enhancers::{EnhancerAttr, HandlerTokens, Role, refuse_controller_values};
 use crate::shared::{attrs, combine, ulo};
 
 pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
@@ -81,9 +82,12 @@ pub(crate) fn expand_impl(mut item: ItemImpl) -> syn::Result<TokenStream> {
     })
 }
 
-/// The impl-level enhancer attributes, removed from the impl.
+/// The impl-level enhancer attributes, removed from the impl. A `value` entry among them is an
+/// error (§7).
 pub(crate) fn controller_tier(item: &mut ItemImpl) -> syn::Result<Vec<EnhancerAttr>> {
-    take_enhancers(&mut item.attrs)
+    let tier = take_enhancers(&mut item.attrs)?;
+    refuse_controller_values(&tier)?;
+    Ok(tier)
 }
 
 /// A handler method; its enhancer attributes travel in the `__handler` attribute.
