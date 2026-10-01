@@ -196,3 +196,95 @@ The last row covers abandoned executions. They're still alive after the timeout,
 9. **Confirmed.**
 
 So you have two decisions: whether to adopt "drain first, cancel only at the timeout", and whether the phase table and `Result<R, Closed>` are right for `execute`. Everything else above is settled.
+
+---
+
+## Fourth response: the before-shutdown move, long-lived calls, and per-hook timeouts
+
+Received 2026-10-01, answering the two proposals, then a question from the user on per-hook
+timeouts. Not yet signed off; under review.
+
+Both changes are improvements. I confirm them, with a few additions, one of which is a real gap.
+
+1. BeforeApplicationShutdown before stop-accepting
+
+Confirmed. Your reasoning holds: that hook's name only means something if it runs while the app is still serving, and moving it fixes the Kubernetes case without adding a sixth hook. Three things go with it.
+
+The phase table gains a phase. During BeforeApplicationShutdown, new executions must still be allowed, because traffic is still flowing. So the table becomes:
+
+Phase	New executions	Singleton lookups
+Running	allowed	allowed
+Stopping (before-shutdown hooks)	allowed	allowed
+Draining	refused (Closed)	allowed
+Destroying onward	refused	LookupError::Closed
+
+Your example needs an injectable timer. self.timer.sleep(..) only works if the app's configured Timer is reachable as a binding. The core should bind it as a singleton, as Dep<dyn Timer>, at wiring time when one is configured. That way services can sleep without a runtime dependency, and a site reading it on an app without a timer becomes an ordinary missing-dependency error.
+
+On the open point, give it its own bound, not drain_timeout. The two windows mean different things. Your example deliberately spends 5 seconds, and sharing a budget would silently cut the drain to 5 seconds. So add a separate before_shutdown_timeout, bounding the whole stage. On expiry, the unfinished hooks are abandoned and recorded as ShutdownFailure::Hook with a timed-out source, and the sequence continues.
+
+The same hang risk applies to OnModuleDestroy and OnApplicationShutdown. A stuck destroy hook blocks close forever. I'd add a hook_timeout applied to each of those hooks individually, with the same failure recording. Without a Timer, none of these bounds can exist. The documentation should say that hooks then run unbounded, in line with your rule that a timerless close abandons executions immediately.
+
+2. Long-lived calls during the drain
+
+Both additions are confirmed. Here's what each needs.
+
+WebSockets. Closing every connection with 1001 at the start of the drain is right. But there's a gap: the phase table refuses new executions during the drain, and a gateway's disconnect handler (presence cleanup, room leave) is itself a new execution. As written, server-initiated closes would silently skip that cleanup, exactly when every connection closes at once.
+
+The fix is a transport-only exemption in the value API: Execution::open_terminal(..). It's permitted during Draining, counted in the drain, and subject to drain_timeout like any other execution. User code can't open one, so the refusal rule stays intact for everything else.
+
+Streams. draining() as a separate signal from cancellation is the right split. Three small points:
+
+Add a synchronous is_draining() next to it, for loops that check between items rather than racing a future.
+draining() resolves when Draining begins, after the before-shutdown stage, not when close is first called. Your text implies this, but it's worth stating, since the two are now separated by a whole stage.
+The transports should use the same moment for their protocol-level equivalents. HTTP/2 and gRPC send GOAWAY, so clients stop opening new streams on the connection. HTTP/1 closes idle keep-alive connections. Otherwise clients keep sending requests into connections that will only refuse them.
+
+The full close sequence then reads:
+
+BeforeApplicationShutdown(signal)        [before_shutdown_timeout; traffic flowing]
+→ stop accepting; draining() fires; WS 1001; GOAWAY; idle keep-alives closed
+→ drain                                  [drain_timeout; terminal executions allowed]
+→ cancel + abandon the rest
+→ OnModuleDestroy                        [hook_timeout each; reverse order]
+→ close sockets
+→ OnApplicationShutdown(signal)          [hook_timeout each; reverse order]
+
+Folding these in means two new knobs (before_shutdown_timeout, hook_timeout), one new phase, the Timer binding, and open_terminal. None of them need a separate decision unless you want different defaults. I'd use 10 seconds for both timeouts, matching drain_timeout.
+
+**The user asked:** "if the API is properly made, should each hook get its own individual timeout?"
+
+**The author answered:**
+
+Yes, each hook should get its own timeout. But the design should also say who sets it, and per-hook timeouts alone aren't enough.
+
+Why per-hook is right
+
+The person who knows how long a hook should take is the one who wrote it. Your Discovery hook deliberately sleeps 5 seconds. A cache flush should take milliseconds. A single stage-wide budget forces both to share a number that fits neither. So the timeout belongs where the hook is declared, with an app-wide default for hooks that don't specify one.
+
+For trait hooks, that's an associated const with a default:
+
+rust
+impl BeforeApplicationShutdown for Discovery {
+    const TIMEOUT: Option<Duration> = Some(Duration::from_secs(10));
+
+    async fn before_application_shutdown(&self, signal: &Signal) { /* ... */ }
+}
+
+None means "use the app's hook_timeout". It's the same for all five hook traits, so startup hooks can't hang connect forever either. An init hook that times out becomes StartupError::Hook with a timed-out source.
+
+For closure hooks there's an API detail to get right. Probe P12 showed .ready(..).retries(..).timeout(..).on_destroy(..) chaining on one handle type, so .timeout attached to the readiness check. Once hooks have timeouts too, a bare .timeout() is ambiguous. ready and each on_* should return a small sub-builder whose .timeout() applies to that item and which forwards everything else back to the binding handle:
+
+rust
+m.singleton(..)
+    .ready(|pool: Dep<PgPool>| ..).retries(5).timeout(secs(10))   // the check's timeout
+    .on_destroy(|pool: Dep<PgPool>| ..).timeout(secs(3));         // the hook's timeout
+What this simplifies, and what it needs in addition
+
+With per-hook timeouts, the before_shutdown_timeout I proposed last time becomes unnecessary. I'd withdraw it. The stage budget only existed because individual hooks had no way to state their own needs.
+
+But per-hook bounds don't bound the whole shutdown. Hooks run one after another in reverse order, so 20 hooks at 10 seconds each can take more than three minutes. Meanwhile the orchestrator kills the process at its grace period (30 seconds by default in Kubernetes), mid-hook, with nothing reported. So add one outer cap, shutdown_timeout, covering the whole close sequence.
+
+When that cap expires, the remaining hooks are abandoned and recorded. Sockets still close, because that step runs no user code and finishes quickly. Then the report is returned.
+
+I'd leave shutdown_timeout unset by default, since the right value depends on the platform. The documentation should recommend setting it a few seconds under the orchestrator's grace period.
+
+The settled set of knobs is then: hook_timeout (default for every hook, 10 seconds), per-hook overrides via TIMEOUT or the sub-builder, drain_timeout, and an optional shutdown_timeout as the outer cap.
