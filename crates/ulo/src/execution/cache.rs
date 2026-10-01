@@ -8,7 +8,7 @@ use crate::binding::Instance;
 use crate::error::LookupError;
 use crate::graph::BindingId;
 
-/// One instance per execution-scoped binding per execution. Two sites resolving the same
+/// One instance per execution-scoped binding per execution. Two injection points resolving the same
 /// binding concurrently get one instance: both await one cell. A failed build is not cached.
 ///
 /// The cell holds the instance as the recipe built it; `AppShared::obtain` widens a
@@ -24,7 +24,7 @@ impl ExecCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Instance, LookupError>>,
     {
-        // The map lock is released before the build is awaited: the build reads other sites,
+        // The map lock is released before the build is awaited: the build reads other dependencies,
         // which come back here for their own cells.
         let cell = {
             let mut cells = self.cells.lock().unwrap_or_else(PoisonError::into_inner);

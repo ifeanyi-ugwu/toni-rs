@@ -2,11 +2,11 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::dependency::{FromContainer, Requirement};
 use crate::error::LookupError;
 use crate::key::Key;
 use crate::resolver::Resolver;
 use crate::scope::{AllowedIn, Scope};
-use crate::site::{Site, SiteDesc};
 
 /// The single binding `T @ Q`, as the shared `Arc` every holder of the binding holds.
 ///
@@ -47,9 +47,9 @@ impl<T: ?Sized, Q> Deref for Dep<T, Q> {
     }
 }
 
-impl<T: ?Sized + Send + Sync + 'static, Q: 'static> Site for Dep<T, Q> {
-    fn describe(d: &mut SiteDesc) {
-        d.dep(Key::of::<T, Q>());
+impl<T: ?Sized + Send + Sync + 'static, Q: 'static> FromContainer for Dep<T, Q> {
+    fn describe(req: &mut Requirement) {
+        req.dep(Key::of::<T, Q>());
     }
 
     async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {

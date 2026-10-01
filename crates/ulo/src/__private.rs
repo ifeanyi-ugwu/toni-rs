@@ -4,21 +4,21 @@
 pub use ulo_macros::{__enhancer_specs, __handler};
 
 use crate::construct::ConstructError;
+use crate::dependency::{Dependencies, FromContainer};
 use crate::scope::{AllowedIn, Scope};
-use crate::site::{Site, Sites};
 use crate::timer::BoxError;
 
-/// A struct field's site, declared under its name. The bounds are the per-site assertion:
-/// `#[injectable]` emits one call per field with `quote_spanned!`, so a field that is not a
-/// `Site`, or that needs an execution in an explicit singleton, fails on that field. Declaring
-/// and asserting in one call keeps a bad field to one error here rather than two.
-pub fn field<S: Site + AllowedIn<Sc>, Sc: Scope>(s: &mut Sites, name: &'static str) {
-    s.field::<S>(name);
+/// A struct field, declared under its name. The bounds are the per-field assertion:
+/// `#[injectable]` emits one call per field with `quote_spanned!`, so a field that is not
+/// `FromContainer`, or that needs an execution in an explicit singleton, fails on that field.
+/// Declaring and asserting in one call keeps a bad field to one error here rather than two.
+pub fn field<S: FromContainer + AllowedIn<Sc>, Sc: Scope>(d: &mut Dependencies, name: &'static str) {
+    d.field::<S>(name);
 }
 
-/// A constructor parameter's site, declared under its name, with the same assertion as [`field`].
-pub fn param<S: Site + AllowedIn<Sc>, Sc: Scope>(s: &mut Sites, name: &'static str) {
-    s.param::<S>(name);
+/// A constructor parameter, declared under its name, with the same assertion as [`field`].
+pub fn param<S: FromContainer + AllowedIn<Sc>, Sc: Scope>(d: &mut Dependencies, name: &'static str) {
+    d.param::<S>(name);
 }
 
 /// What a constructor returns, `Self` or `Result<Self, E>`, decided by type rather than by the

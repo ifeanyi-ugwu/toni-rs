@@ -4,19 +4,20 @@ use std::sync::Arc;
 
 use crate::app::shared::AppShared;
 use crate::binding::{Coercion, Instance, Recipe, downcast_instance};
+use crate::dependency::{Dep, Ext, Many};
 use crate::error::{LookupError, LookupKind};
 use crate::execution::{ExecShared, ExecutionRef};
 use crate::graph::{BindingId, Graph, ModuleId, Visible};
 use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
-use crate::site::{Dep, Ext, Many};
 
-/// The view a site reads through: the graph, the module whose visibility applies, and the
-/// current execution when there is one.
+/// The view an injection point reads through: the graph, the module whose visibility applies,
+/// and the current execution when there is one.
 ///
-/// `Resolver` is `Sync`, which is what lets [`Site::read`](crate::Site::read) and
-/// [`Construct::construct`](crate::Construct::construct) hold it across an await and still
-/// return `Send` futures.
+/// `Resolver` is `Sync`, which is what lets
+/// [`FromContainer::read`](crate::FromContainer::read) and
+/// [`Construct::construct`](crate::Construct::construct) hold it across an await and still return
+/// `Send` futures.
 pub struct Resolver<'a> {
     pub(crate) app: &'a Arc<AppShared>,
     /// A snapshot: `load` swaps the app's graph for an extended one and never mutates this one.
@@ -144,7 +145,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// What `key` names in this module's visibility table. A collection key read as a single is
-    /// `WrongKind`. A key with several sources fails a site that reads it at `wire()`, but a
+    /// `WrongKind`. A key with several sources fails any read of it at `wire()`, but a
     /// runtime lookup in a module other than the root can still meet one; it answers with the
     /// modules that export the key.
     fn locate(&self, key: Key) -> Result<Found, LookupError> {

@@ -6,10 +6,10 @@
 //!   (`http`, `rpc`, `grpc`, `ws`, as each transport crate declares).
 //! - `value = expr`: by value, built once per handler it applies to and shared by that
 //!   handler's calls; `spec.guard_value(expr)`.
-//! - `with = |site: Ty, ..| expr`: by closure, built per execution. The closure's body is
+//! - `with = |param: Ty, ..| expr`: by closure, built per execution. The closure's body is
 //!   wrapped as `async move { body }` and handed to `spec.guard_with(..)`, whose parameters are
-//!   sites. A closure that is already `async`, or whose body is already an `async` block, is
-//!   handed over as written.
+//!   injection points. A closure that is already `async`, or whose body is already an `async`
+//!   block, is handed over as written.
 //! - `key(value = expr)` and `key(with = ..)`: the last two, transport-scoped.
 //!
 //! On a method, a transport-scoped entry for another transport than the handler's applies to
@@ -159,7 +159,7 @@ fn parse_closure(input: ParseStream<'_>) -> syn::Result<ExprClosure> {
         }
         other => Err(syn::Error::new_spanned(
             other,
-            "`with` takes a closure whose parameters are sites, as in `with = |u: Ext<CurrentUser>| RoleGuard::require(u)`",
+            "`with` takes a closure whose parameters are injection points, as in `with = |u: Ext<CurrentUser>| RoleGuard::require(u)`",
         )),
     }
 }

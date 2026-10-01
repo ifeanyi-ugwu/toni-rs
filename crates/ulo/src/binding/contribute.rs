@@ -7,11 +7,11 @@ use crate::binding::factory::{Factory, erase_factory, erase_try_factory};
 use crate::binding::handle::{Contribution, Handle, Open, Set};
 use crate::binding::{BindingRecord, Coercion, ErasedCtor, Qualifier, Recipe, coercion, erase_construct, instance_of};
 use crate::construct::Construct;
+use crate::dependency::Dependencies;
 use crate::hooks::erase_trait_hooks;
 use crate::key::{BindingKind, Key};
 use crate::module::def::ModuleNode;
 use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
-use crate::site::Sites;
 use crate::timer::BoxError;
 
 /// Contributions to the collection `U @ Q`, read as `Many<U, Q>` or, by a transport, through
@@ -47,12 +47,12 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         built: &'static str,
         scope: ScopeKind,
         recipe: Recipe,
-        sites: Sites,
+        dependencies: Dependencies,
         into_primary: Coercion,
         location: &'static Location<'static>,
     ) -> BindingRecord {
         let mut record =
-            BindingRecord::new(Key::of::<U, ()>(), built, BindingKind::Collection, scope, recipe, sites, location);
+            BindingRecord::new(Key::of::<U, ()>(), built, BindingKind::Collection, scope, recipe, dependencies, location);
         record.qualifier = Qualifier::of::<Q>();
         record.into_primary = Some(into_primary);
         record
@@ -72,10 +72,10 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
         location: &'static Location<'static>,
     ) -> Handle<'m, T, K> {
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
         let into_primary = coercion::<T, U, _>(coerce);
-        let record = Self::record(type_name::<T>(), S::KIND, Recipe::Factory(ctor), sites, into_primary, location);
+        let record = Self::record(type_name::<T>(), S::KIND, Recipe::Factory(ctor), dependencies, into_primary, location);
         self.push(record)
     }
 
@@ -86,13 +86,13 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
     ) -> Handle<'m, T, Contribution<T::Scope, Set>> {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        T::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        T::dependencies(&mut dependencies);
         let mut record = Self::record(
             type_name::<T>(),
             <T::Scope as Scope>::KIND,
             Recipe::Construct(erase_construct::<T>()),
-            sites,
+            dependencies,
             coercion::<T, U, _>(coerce),
             location,
         );
@@ -110,7 +110,7 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
             type_name::<U>(),
             ScopeKind::Singleton,
             Recipe::Value(instance_of(value)),
-            Sites::default(),
+            Dependencies::default(),
             coercion::<U, U, _>(|a| a),
             location,
         );

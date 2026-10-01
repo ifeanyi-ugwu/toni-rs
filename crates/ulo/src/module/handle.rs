@@ -2,18 +2,18 @@ use std::any::TypeId;
 use std::sync::Arc;
 
 use crate::app::shared::AppShared;
+use crate::dependency::Dep;
 use crate::error::{Closed, LookupError};
 use crate::execution::{ExecOptions, Execution, ExecutionRef};
 use crate::graph::ModuleId;
 use crate::module::ModuleName;
 use crate::module::meta::Meta;
 use crate::resolver::{Purpose, Resolver};
-use crate::site::Dep;
 
 /// A handle to one module, for runtime lookups limited to what that module sees (§8.5).
 ///
 /// Reached through `app.module::<M>()?`, `app.module_keyed::<M, Q>()?`, `handle.load(..)`, or as
-/// a site naming the enclosing module. As a site read inside an execution it carries that
+/// an injection point naming the enclosing module. Read inside an execution, it carries that
 /// execution, so `get` reaches execution-scoped bindings too.
 ///
 /// During `connect`, `get` for a singleton the eager walk has not built yet is refused with

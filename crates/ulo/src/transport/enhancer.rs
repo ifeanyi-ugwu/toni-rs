@@ -2,17 +2,18 @@ use std::sync::Arc;
 
 use crate::binding::factory::Factory;
 use crate::binding::{Coercion, coercion};
+use crate::dependency::Dependencies;
 use crate::error::LookupError;
 use crate::key::Key;
 use crate::resolver::Resolver;
-use crate::site::Sites;
 use crate::timer::BoxFuture;
 use crate::transport::controller::EnhancerDep;
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErrorHandler, Guard, Interceptor, Transport};
 
 /// The enhancers one tier declares for one handler: the controller's, or the method's. Each is
 /// declared by type (resolved from the container with the controller module's visibility), by
-/// value (built once and shared), or by closure (built per execution, its parameters sites).
+/// value (built once and shared), or by closure (built per execution, its parameters injection
+/// points).
 ///
 /// Within a tier, declarations keep the order written. The stack runs global, then controller,
 /// then method; error handlers run in the reverse.
@@ -39,7 +40,7 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
-    /// A guard by closure, built per execution from the closure's sites.
+    /// A guard by closure, built per execution from the closure's injection points.
     pub fn guard_with<Args, F>(&mut self, build: F) -> &mut Self
     where
         F: Factory<Args>,
@@ -145,8 +146,8 @@ impl<R: ?Sized + Send + Sync + 'static> Decl<R> {
     where
         F: Factory<Args>,
     {
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
         let factory = Arc::new(build);
         let build = erase_build::<R, _>(move |r| {
             let factory = Arc::clone(&factory);
@@ -155,22 +156,22 @@ impl<R: ?Sized + Send + Sync + 'static> Decl<R> {
             });
             fut
         });
-        Decl::Closure(Arc::new(ClosureDecl { sites: Arc::new(sites), build }))
+        Decl::Closure(Arc::new(ClosureDecl { dependencies: Arc::new(dependencies), build }))
     }
 
     fn dep(&self) -> Option<EnhancerDep> {
         match self {
             Decl::Type { key, .. } => Some(EnhancerDep::Type(*key)),
             Decl::Value(_) => None,
-            Decl::Closure(c) => Some(EnhancerDep::Closure(Arc::clone(&c.sites))),
+            Decl::Closure(c) => Some(EnhancerDep::Closure(Arc::clone(&c.dependencies))),
         }
     }
 }
 
 pub(crate) struct ClosureDecl<R: ?Sized> {
-    /// Checked by the wiring pass like a per-execution binding's sites; shared with the
+    /// Checked by the wiring pass like a per-execution binding's dependencies; shared with the
     /// handler record the wiring pass reads.
-    pub(crate) sites: Arc<Sites>,
+    pub(crate) dependencies: Arc<Dependencies>,
     pub(crate) build: Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<R>, LookupError>> + Send + Sync>,
 }
 

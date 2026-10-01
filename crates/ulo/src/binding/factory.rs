@@ -1,38 +1,39 @@
 //! The closure traits behind every factory, readiness check, hook closure and enhancer closure:
-//! parameters are sites, read through the same `Site::read` a field is, and the output type of
-//! the returned future is what the closure produces (§4, §5).
+//! parameters are injection points, read through the same `FromContainer::read` a field is, and
+//! the output type of the returned future is what the closure produces (§4, §5).
 
 use std::future::Future;
 use std::sync::Arc;
 
 use crate::binding::{CheckFn, ErasedCtor, check_fn, ctor_fn, instance_of};
 use crate::construct::ConstructError;
+use crate::dependency::{Dependencies, FromContainer};
 use crate::error::LookupError;
 use crate::hooks::{HookCx, HookFn, hook_fn};
 use crate::resolver::Resolver;
 use crate::signal::Signal;
-use crate::site::{Site, Sites};
 use crate::timer::{BoxError, BoxFuture};
 
-/// A closure whose parameters are sites and which returns a future: `|cfg: Dep<DbConfig>| async
-/// move { .. }`. Implemented for closures of zero to twelve parameters.
+/// A closure whose parameters are injection points and which returns a future:
+/// `|cfg: Dep<DbConfig>| async move { .. }`. Implemented for closures of zero to twelve
+/// parameters.
 ///
-/// Every parameter needs its type written; an unannotated closure parameter has no site type to
-/// read. The output of the future is the binding's key for `singleton`, `execution` and
-/// `transient`, and its `Ok` type for the `try_` forms.
+/// Every parameter needs its type written; an unannotated closure parameter has no type for the
+/// container to read. The output of the future is the binding's key for `singleton`, `execution`
+/// and `transient`, and its `Ok` type for the `try_` forms.
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a factory over sites",
-    label = "expected a closure returning a future, every parameter an injection site",
-    note = "annotate each parameter with its site type, as in `|cfg: Dep<DbConfig>| async move {{ .. }}`"
+    message = "`{Self}` is not a factory the container can call",
+    label = "expected a closure returning a future, every parameter an injection point",
+    note = "annotate each parameter with its type, as in `|cfg: Dep<DbConfig>| async move {{ .. }}`"
 )]
 pub trait Factory<Args>: Send + Sync + 'static {
     type Output: Send + 'static;
 
-    /// The parameters' sites, in order.
-    fn sites(s: &mut Sites);
+    /// The parameters as injection points, in order.
+    fn dependencies(d: &mut Dependencies);
 
-    /// Read every parameter, then call the closure and await its future. A failed read is the
-    /// site's own error.
+    /// Read every parameter, then call the closure and await its future. A failed read's error is
+    /// returned unchanged.
     ///
     /// Parameters are read one after another, in the order written, and the first failure ends
     /// the call: no read starts after one has failed, and none is left running when the call's
@@ -41,14 +42,14 @@ pub trait Factory<Args>: Send + Sync + 'static {
 }
 
 /// A closure `before_shutdown` or `on_shutdown` takes on a binding handle or a `ModuleDef`: the
-/// shutdown's [`Signal`] first, then any number of sites, returning a future of `()`.
+/// shutdown's [`Signal`] first, then any number of injection points, returning a future of `()`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a shutdown hook closure",
-    label = "expected a closure taking the `Signal` first, then injection sites, returning a future of `()`",
+    label = "expected a closure taking the `Signal` first, then injection points, returning a future of `()`",
     note = "write `|signal: Signal, pool: Dep<PgPool>| async move {{ .. }}`"
 )]
 pub trait ShutdownFactory<Args>: Send + Sync + 'static {
-    fn sites(s: &mut Sites);
+    fn dependencies(d: &mut Dependencies);
 
     fn call<'a>(&'a self, signal: Signal, r: &'a Resolver<'a>) -> BoxFuture<'a, Result<(), LookupError>>;
 }
@@ -60,19 +61,19 @@ macro_rules! factory_impls {
             F: Fn($($A),*) -> Fut + Send + Sync + 'static,
             Fut: Future + Send + 'static,
             Fut::Output: Send + 'static,
-            $($A: Site,)*
+            $($A: FromContainer,)*
         {
             type Output = Fut::Output;
 
             #[allow(unused_variables)]
-            fn sites(s: &mut Sites) {
-                $( s.site::<$A>(); )*
+            fn dependencies(d: &mut Dependencies) {
+                $( d.add::<$A>(); )*
             }
 
             #[allow(non_snake_case, unused_variables)]
             fn call<'a>(&'a self, r: &'a Resolver<'a>) -> BoxFuture<'a, Result<Self::Output, LookupError>> {
                 Box::pin(async move {
-                    $( let $A = <$A as Site>::read(r).await?; )*
+                    $( let $A = <$A as FromContainer>::read(r).await?; )*
                     Ok::<_, LookupError>((self)($($A),*).await)
                 })
             }
@@ -82,17 +83,17 @@ macro_rules! factory_impls {
         where
             F: Fn(Signal, $($A),*) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = ()> + Send + 'static,
-            $($A: Site,)*
+            $($A: FromContainer,)*
         {
             #[allow(unused_variables)]
-            fn sites(s: &mut Sites) {
-                $( s.site::<$A>(); )*
+            fn dependencies(d: &mut Dependencies) {
+                $( d.add::<$A>(); )*
             }
 
             #[allow(non_snake_case, unused_variables)]
             fn call<'a>(&'a self, signal: Signal, r: &'a Resolver<'a>) -> BoxFuture<'a, Result<(), LookupError>> {
                 Box::pin(async move {
-                    $( let $A = <$A as Site>::read(r).await?; )*
+                    $( let $A = <$A as FromContainer>::read(r).await?; )*
                     (self)(signal, $($A),*).await;
                     Ok::<(), LookupError>(())
                 })
@@ -155,8 +156,8 @@ where
     })
 }
 
-/// A readiness closure: a failed site read is `ConstructError::Site`, the closure's own `Err`
-/// is `ConstructError::Failed`.
+/// A readiness closure: a failed dependency read is `ConstructError::Dependency`, the
+/// closure's own `Err` is `ConstructError::Failed`.
 pub(crate) fn erase_check<Args, F, E>(f: F) -> CheckFn
 where
     F: Factory<Args, Output = Result<(), E>>,
@@ -175,7 +176,7 @@ where
 }
 
 /// An `on_init` closure: its `Err` fails `connect` as `ConnectError::Hook { reason: Errored }`,
-/// and so does a failed site read, carrying the `LookupError`.
+/// and so does a failed dependency read, carrying the `LookupError`.
 pub(crate) fn erase_init_hook<Args, F, E>(f: F) -> HookFn
 where
     F: Factory<Args, Output = Result<(), E>>,
@@ -196,8 +197,8 @@ where
     })
 }
 
-/// An `on_destroy` closure. It returns `()`, and its only `Err` is a failed site read: the hook
-/// never ran.
+/// An `on_destroy` closure. It returns `()`, and its only `Err` is a failed dependency read:
+/// the hook never ran.
 pub(crate) fn erase_destroy_hook<Args, F>(f: F) -> HookFn
 where
     F: Factory<Args, Output = ()>,

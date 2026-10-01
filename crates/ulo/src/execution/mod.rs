@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app::shared::{AppShared, LiveSlot};
+use crate::dependency::Dep;
 use crate::error::{Closed, LookupError};
 use crate::execution::cache::ExecCache;
 use crate::execution::extensions::{Extensions, Inputs};
@@ -27,13 +28,12 @@ use crate::execution::notify::{Cancelled, Draining, Notify};
 use crate::graph::ModuleId;
 use crate::module::handle::ModuleRef;
 use crate::resolver::{Purpose, Resolver};
-use crate::site::Dep;
 use crate::transport::server::DrainToken;
 
 /// One execution, as its holder owns it. Not `Clone`: a second holder takes [`handle`](Self::handle).
 ///
 /// `Execution: Send + Sync`, and so is the `Resolver` read through it, which is what lets every
-/// site's future be `Send`.
+/// read's future be `Send`.
 pub struct Execution {
     pub(crate) shared: Arc<ExecShared>,
 }
@@ -145,7 +145,7 @@ impl Execution {
         self.resolver().dep::<T>().await
     }
 
-    /// The resolver a transport reads through, for `Resolver::entries` and `Site::read`.
+    /// The resolver a transport reads through, for `Resolver::entries` and `FromContainer::read`.
     pub fn resolver(&self) -> Resolver<'_> {
         self.shared.resolver()
     }

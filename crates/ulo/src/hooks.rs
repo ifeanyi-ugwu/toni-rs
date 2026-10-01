@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use crate::binding::{Instance, downcast_instance};
 use crate::construct::Construct;
+use crate::dependency::Dependencies;
 use crate::key::short_type_name;
 use crate::resolver::Resolver;
 use crate::scope::HookCapable;
 use crate::signal::Signal;
-use crate::site::Sites;
 use crate::timer::{BoxError, BoxFuture, Bound};
 
 pub trait OnModuleInit: Construct<Scope: HookCapable> {
@@ -156,14 +156,15 @@ pub(crate) struct HookRecord {
     pub(crate) kind: HookKind,
     pub(crate) bound: Bound,
     pub(crate) run: HookFn,
-    /// The closure's sites, resolved by the wiring pass like any binding's. Empty for a trait hook.
-    pub(crate) sites: Sites,
+    /// The closure's dependencies, resolved by the wiring pass like any binding's. Empty for a
+    /// trait hook.
+    pub(crate) dependencies: Dependencies,
     pub(crate) location: &'static Location<'static>,
 }
 
 /// Shutdown hooks return `()`, and the erased form answers `Ok(())` for them once they ran. Its
 /// `Err` from a destroy, before-shutdown or shutdown hook means the hook never ran: a closure
-/// hook's site read failed, or the runner handed it no instance or no signal.
+/// hook's dependency read failed, or the runner handed it no instance or no signal.
 pub(crate) type HookFn = Arc<dyn for<'a> Fn(HookCx<'a>) -> BoxFuture<'a, Result<(), BoxError>> + Send + Sync>;
 
 /// Fixes a closure's signature to [`HookFn`]'s higher-ranked one, which a closure only gets from
@@ -195,7 +196,7 @@ pub(crate) fn erase_trait_hooks<T: Construct>(location: &'static Location<'stati
             kind: hook.kind,
             bound: hook.bound,
             run: erase_trait_hook(hook.kind, hook.run),
-            sites: Sites::default(),
+            dependencies: Dependencies::default(),
             location,
         })
         .collect()

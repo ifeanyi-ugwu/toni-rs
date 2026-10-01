@@ -1,7 +1,7 @@
-//! Helpers every macro uses: the path to the core, attribute handling, and site emission.
+//! Helpers every macro uses: the path to the core, attribute handling, and dependency emission.
 
 pub(crate) mod attrs;
-pub(crate) mod sites;
+pub(crate) mod dependencies;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -18,15 +18,15 @@ pub(crate) fn ulo_at(span: Span) -> TokenStream {
     quote_spanned!(span=> ::ulo)
 }
 
-/// A factory's parameters are sites, read by type, so each needs its type written. The macros
-/// check it to report the error on the parameter rather than on a factory bound the closure
-/// fails as a whole.
+/// A factory's parameters are injection points, read by type, so each needs its type written.
+/// The macros check it to report the error on the parameter rather than on a factory bound the
+/// closure fails as a whole.
 pub(crate) fn check_factory_params(closure: &syn::ExprClosure) -> syn::Result<()> {
     for input in &closure.inputs {
         if !matches!(input, syn::Pat::Type(_)) {
             return Err(syn::Error::new_spanned(
                 input,
-                "a factory parameter needs its site type written, as in `cfg: Dep<DbConfig>`",
+                "a factory parameter needs its type written, as in `cfg: Dep<DbConfig>`",
             ));
         }
     }
@@ -41,29 +41,29 @@ pub(crate) fn combine(errors: Vec<syn::Error>) -> Option<syn::Error> {
     })
 }
 
-/// The `Sites` parameter of the generated `Construct::sites`. Mixed-site, so no field or
-/// parameter name the user writes can shadow it.
-pub(crate) fn sites_param() -> Ident {
-    Ident::new("s", Span::mixed_site())
+/// The `Dependencies` parameter of the generated `Construct::dependencies`. Mixed-site, so no
+/// field or parameter name the user writes can shadow it.
+pub(crate) fn dependencies_param() -> Ident {
+    Ident::new("d", Span::mixed_site())
 }
 
 /// The `Resolver` parameter of the generated `Construct::construct`. Mixed-site for the same
-/// reason as [`sites_param`]: a constructor parameter named `r` would otherwise shadow it
+/// reason as [`dependencies_param`]: a constructor parameter named `r` would otherwise shadow it
 /// between two reads.
 pub(crate) fn resolver_param() -> Ident {
     Ident::new("r", Span::mixed_site())
 }
 
 /// The `Construct` impl both forms of `#[injectable]` write: scope, optional `CONSTRUCT_TIMEOUT`,
-/// `sites`, `construct` and the probing `hooks`.
+/// `dependencies`, `construct` and the probing `hooks`.
 pub(crate) struct ConstructImpl<'a> {
     pub(crate) self_ty: &'a syn::Type,
     pub(crate) generics: &'a syn::Generics,
     /// `::ulo::scope::Auto` when no scope is written.
     pub(crate) scope: TokenStream,
     pub(crate) timeout: Option<&'a syn::Expr>,
-    /// The body of `fn sites(s: &mut ::ulo::Sites)`, assertions included.
-    pub(crate) sites: TokenStream,
+    /// The body of `fn dependencies(d: &mut ::ulo::Dependencies)`, assertions included.
+    pub(crate) dependencies: TokenStream,
     /// The body of `async fn construct(r: &::ulo::Resolver<'_>) -> Result<Self, ::ulo::ConstructError>`.
     pub(crate) construct: TokenStream,
     /// Where `construct` is spanned: the constructor for the impl form, so a future that is not
@@ -74,9 +74,9 @@ pub(crate) struct ConstructImpl<'a> {
 impl ConstructImpl<'_> {
     pub(crate) fn emit(&self) -> TokenStream {
         let ulo = ulo();
-        let ConstructImpl { self_ty, generics, scope, timeout, sites, construct, construct_span } = self;
+        let ConstructImpl { self_ty, generics, scope, timeout, dependencies, construct, construct_span } = self;
         let (impl_generics, _, where_clause) = generics.split_for_impl();
-        let s = sites_param();
+        let d = dependencies_param();
         let r = resolver_param();
         let timeout = timeout.map(|expr| {
             quote_spanned! {syn::spanned::Spanned::span(expr)=>
@@ -96,8 +96,8 @@ impl ConstructImpl<'_> {
                 #timeout
 
                 #[allow(unused_variables)]
-                fn sites(#s: &mut #ulo::Sites) {
-                    #sites
+                fn dependencies(#d: &mut #ulo::Dependencies) {
+                    #dependencies
                 }
 
                 #construct_fn

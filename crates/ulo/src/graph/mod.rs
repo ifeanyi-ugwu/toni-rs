@@ -16,13 +16,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::binding::{BindingRecord, Qualifier, Recipe};
+use crate::dependency::{Dependencies, DependencyLabel, DependencyRecord, ReadKind};
 use crate::error::{LookupError, LookupKind};
 use crate::hooks::HookRecord;
 use crate::key::{BindingKind, Key, KeyName, short_type_name};
 use crate::module::meta::FrozenMeta;
 use crate::module::{ModuleIdentity, ModuleName};
 use crate::redact::SecretRegistry;
-use crate::site::{ReadKind, SiteLabel, SiteRecord, Sites};
 use crate::transport::controller::HandlerRecord;
 
 /// A module's position in collection order: depth-first post-order over imports from the root,
@@ -84,10 +84,10 @@ pub(crate) struct FrozenBinding {
     /// Decided by the scope pass (§6.2).
     pub(crate) effective: Effective,
     pub(crate) needs_execution: bool,
-    /// One per site read, resolved against the origin module's visibility by step 3. A read
-    /// that resolved to nothing has no edge: an optional site that found no binding, or a
-    /// missing or ambiguous key already reported. An alias has no sites and so no edges; its
-    /// target is `Recipe::Alias { target }`, looked up in the origin module's table.
+    /// One per dependency read, resolved against the origin module's visibility by step 3. A
+    /// read that resolved to nothing has no edge: an optional read that found no binding, or a
+    /// missing or ambiguous key already reported. An alias has no dependencies and so no edges;
+    /// its target is `Recipe::Alias { target }`, looked up in the origin module's table.
     pub(crate) edges: Vec<Edge>,
 }
 
@@ -110,8 +110,8 @@ pub(crate) enum Effective {
 
 pub(crate) struct Edge {
     pub(crate) target: EdgeTarget,
-    /// Index into `record.sites.list`, for the site named in diagnostics.
-    pub(crate) site: usize,
+    /// Index into `record.dependencies.list`, for the injection point named in diagnostics.
+    pub(crate) dependency: usize,
     pub(crate) optional: bool,
 }
 
@@ -138,7 +138,7 @@ pub(crate) struct VisibilityTable {
 pub(crate) enum Visible {
     Binding(BindingId),
     Input(Key),
-    /// Two sources for one key: a wiring error for any site that reads it, naming every source.
+    /// Two sources for one key: a wiring error for any read of it, naming every source.
     /// One binding reached by two routes, an import's export and its re-export by another
     /// import, is one source. The root's table holds none once wiring passes.
     Ambiguous(Vec<(ModuleId, BindingId)>),
@@ -249,16 +249,16 @@ impl Graph {
         text
     }
 
-    /// What reads site `site` of binding `id`, as a missing-dependency report names it:
-    /// ``UserService (param `mailer`)``, or ``PgPool factory (param #1)`` for a factory.
-    pub(in crate::graph) fn consumer(&self, id: BindingId, site: usize) -> String {
+    /// What reads injection point `index` of binding `id`, as a missing-dependency report names
+    /// it: ``UserService (param `mailer`)``, or ``PgPool factory (param #1)`` for a factory.
+    pub(in crate::graph) fn consumer(&self, id: BindingId, index: usize) -> String {
         let record = &self.binding(id).record;
         let mut text = self.label(id);
         if matches!(record.recipe, Recipe::Factory(_)) && !record.constructs {
             text.push_str(" factory");
         }
-        match record.sites.list.get(site) {
-            Some(site) => format!("{text} ({})", site_label(site.label)),
+        match record.dependencies.list.get(index) {
+            Some(dependency) => format!("{text} ({})", dependency_label(dependency.label)),
             None => text,
         }
     }
@@ -289,11 +289,11 @@ impl Graph {
         deps
     }
 
-    /// The bindings `sites` read when resolved in `module`, for closures the graph keeps no
+    /// The bindings `dependencies` read when resolved in `module`, for closures the graph keeps no
     /// edges for: readiness checks and hooks.
-    pub(in crate::graph) fn sites_deps(&self, module: ModuleId, sites: &Sites) -> Vec<BindingId> {
+    pub(in crate::graph) fn closure_deps(&self, module: ModuleId, dependencies: &Dependencies) -> Vec<BindingId> {
         let mut deps = Vec::new();
-        for read in sites.list.iter().flat_map(|site| &site.desc.reads) {
+        for read in dependencies.list.iter().flat_map(|d| &d.requirement.reads) {
             match &read.kind {
                 ReadKind::Single(key) => {
                     if let Some(Visible::Binding(dep)) = self.lookup(module, *key) {
@@ -314,7 +314,7 @@ impl Graph {
     pub(in crate::graph) fn readiness_deps(&self, id: BindingId) -> Vec<BindingId> {
         let binding = self.binding(id);
         match &binding.record.ready {
-            Some(ready) => self.sites_deps(binding.origin, &ready.sites).into_iter().filter(|dep| *dep != id).collect(),
+            Some(ready) => self.closure_deps(binding.origin, &ready.dependencies).into_iter().filter(|dep| *dep != id).collect(),
             None => Vec::new(),
         }
     }
@@ -344,11 +344,11 @@ impl Graph {
         format!("{}::{}", self.label(handler.controller), handler.decl.name)
     }
 
-    /// Site `site` of binding `id` as the last step of a printed path:
+    /// Injection point `index` of binding `id` as the last step of a printed path:
     /// ``Dep<RequestHead> (field `head`)``.
-    pub(in crate::graph) fn site_step(&self, id: BindingId, site: usize) -> String {
-        match self.binding(id).record.sites.list.get(site) {
-            Some(site) => site_text(site),
+    pub(in crate::graph) fn dependency_step(&self, id: BindingId, index: usize) -> String {
+        match self.binding(id).record.dependencies.list.get(index) {
+            Some(dependency) => dependency_text(dependency),
             None => String::new(),
         }
     }
@@ -369,15 +369,15 @@ pub(in crate::graph) fn boundary_key(keyed: Option<Qualifier>, key: Key) -> Key 
 }
 
 /// ``field `name` ``, ``param `name` ``, or `param #n` for a closure's n-th parameter.
-pub(in crate::graph) fn site_label(label: SiteLabel) -> String {
+pub(in crate::graph) fn dependency_label(label: DependencyLabel) -> String {
     match label {
-        SiteLabel::Field(name) => format!("field `{name}`"),
-        SiteLabel::Param(name) => format!("param `{name}`"),
-        SiteLabel::Position(index) => format!("param #{}", index + 1),
+        DependencyLabel::Field(name) => format!("field `{name}`"),
+        DependencyLabel::Param(name) => format!("param `{name}`"),
+        DependencyLabel::Position(index) => format!("param #{}", index + 1),
     }
 }
 
-/// A site's type and label: ``Dep<RequestHead> (field `head`)``.
-pub(in crate::graph) fn site_text(site: &SiteRecord) -> String {
-    format!("{} ({})", short_type_name(site.type_name), site_label(site.label))
+/// An injection point's type and label: ``Dep<RequestHead> (field `head`)``.
+pub(in crate::graph) fn dependency_text(dependency: &DependencyRecord) -> String {
+    format!("{} ({})", short_type_name(dependency.type_name), dependency_label(dependency.label))
 }

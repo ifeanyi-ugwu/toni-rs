@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::app::load;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
+use crate::dependency::Dep;
 use crate::error::{Closed, LoadError, LookupError, Shutdown, ShutdownError};
 use crate::execution::notify::Draining;
 use crate::execution::{ExecOptions, Execution};
@@ -10,7 +11,6 @@ use crate::lifecycle::shutdown;
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::signal::Signal;
-use crate::site::Dep;
 
 /// A `Clone + Send + Sync` view of the app's shared state, available from `Connected` on.
 ///

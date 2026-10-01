@@ -1,14 +1,14 @@
+use crate::dependency::{FromContainer, Requirement};
 use crate::error::LookupError;
 use crate::execution::ExecutionRef;
 use crate::module::handle::ModuleRef;
 use crate::resolver::Resolver;
 use crate::scope::{AllowedIn, Auto, PerExecution, Scope, Transient};
-use crate::site::{Site, SiteDesc};
 
 /// The module the reading binding belongs to, carrying the current execution when there is one.
-impl Site for ModuleRef {
-    fn describe(d: &mut SiteDesc) {
-        d.module();
+impl FromContainer for ModuleRef {
+    fn describe(req: &mut Requirement) {
+        req.module();
     }
 
     async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
@@ -20,9 +20,9 @@ impl<S: Scope> AllowedIn<S> for ModuleRef {}
 
 /// A handle to the current execution: its cancellation, deadline and extensions. Needs an
 /// execution, so an explicit singleton cannot read one.
-impl Site for ExecutionRef {
-    fn describe(d: &mut SiteDesc) {
-        d.execution();
+impl FromContainer for ExecutionRef {
+    fn describe(req: &mut Requirement) {
+        req.execution();
     }
 
     async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {

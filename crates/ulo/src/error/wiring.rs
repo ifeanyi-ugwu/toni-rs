@@ -122,11 +122,11 @@ pub enum WiringError {
     /// original's keys.
     ReplacementMissingExports { original: ModuleName, replacement: ModuleName, missing: Vec<KeyName> },
 
-    /// Step 3: a site whose key the module cannot see. `consumer` names what reads it, as in
-    /// ``UserService (param `mailer`)``. `near` is a visible key spelled the same up to a trailing
-    /// `+ Send + Sync`, with the module exporting it.
+    /// Step 3: an injection point whose key the module cannot see. `consumer` names what reads
+    /// it, as in ``UserService (param `mailer`)``. `near` is a visible key spelled the same up to
+    /// a trailing `+ Send + Sync`, with the module exporting it.
     Missing { key: KeyName, consumer: String, module: ModuleName, near: Option<(KeyName, ModuleName)> },
-    /// Step 3: a site whose key the module sees from several sources, naming each.
+    /// Step 3: an injection point whose key the module sees from several sources, naming each.
     Ambiguous { key: KeyName, consumer: String, module: ModuleName, sources: Vec<(ModuleName, &'static Location<'static>)> },
 
     /// Step 4: the full path, as in `A → B → C → A`, each step with its module.
@@ -264,7 +264,7 @@ impl fmt::Display for WiringError {
             }
             WiringError::Missing { key, consumer, module, near } => {
                 let help = match near {
-                    Some((bound, exporter)) => format!("help: {exporter} exports `{bound}`; the site reads `{key}`"),
+                    Some((bound, exporter)) => format!("help: {exporter} exports `{bound}`; the injection point reads `{key}`"),
                     None => format!("help: import a module that exports `{key}`, or provide it in {module}"),
                 };
                 tree(f, format!("missing dependency `{key}`"), vec![format!("needed by {consumer} in {module}"), help])

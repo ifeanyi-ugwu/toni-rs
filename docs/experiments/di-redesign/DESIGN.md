@@ -211,7 +211,7 @@ pub trait Construct: Sized + Send + Sync + 'static {
 
 `CONSTRUCT_TIMEOUT` bounds `construct` wherever the instance is built: during `connect` for a singleton, and inside the call for an execution-scoped or transient binding, where a hanging constructor would block the call. `Default` is the app's `construct_timeout`, 30 s. Expiry reports as `FailureReason::TimedOut`, on `ConnectError::Construct` during `connect` and on `LookupError::Construct` inside a call (§10.2). A factory takes the same bound through `.timeout(..)` on its binding handle (§9.1).
 
-`ConstructError` (§10.2) separates a dependency's failure from the constructor's own. `Site(LookupError)` is a dependency read that failed: an input the execution did not seed, `ExecutionRequired`, a nested construction. The core passes it through unchanged, and what the caller gets is the dependency's own error naming the deeper key; an error naming the outer constructor would point at the wrong place. `Failed(BoxError)` is the constructor's own error, the one reported as `Construct { reason: Errored(..) }`. `From<LookupError>` is implemented and no blanket `From<E: Error>` is: `LookupError` implements `Error`, and the two impls would overlap (E0119). `?` on a dependency read is written as is, and the constructor's own error goes through `ConstructError::failed(e)`. `#[injectable]` writes that mapping for a `new` or `#[construct]` fn returning `Result<Self, E>`; a hand-written impl writes `.map_err(ConstructError::failed)?` (§13).
+`ConstructError` (§10.2) separates a dependency's failure from the constructor's own. `Dependency(LookupError)` is a dependency read that failed: an input the execution did not seed, `ExecutionRequired`, a nested construction. The core passes it through unchanged, and what the caller gets is the dependency's own error naming the deeper key; an error naming the outer constructor would point at the wrong place. `Failed(BoxError)` is the constructor's own error, the one reported as `Construct { reason: Errored(..) }`. `From<LookupError>` is implemented and no blanket `From<E: Error>` is: `LookupError` implements `Error`, and the two impls would overlap (E0119). `?` on a dependency read is written as is, and the constructor's own error goes through `ConstructError::failed(e)`. `#[injectable]` writes that mapping for a `new` or `#[construct]` fn returning `Result<Self, E>`; a hand-written impl writes `.map_err(ConstructError::failed)?` (§13).
 
 ### 3.5 Lifecycle traits
 
@@ -1034,16 +1034,16 @@ pub enum LookupError {                                           // [47]
     Closed { key: KeyName },                                      // a singleton lookup from Destroying on (§9.5)
 }
 
-/// What `Construct::construct` fails with (§3.4). `Site` is a dependency's own `LookupError`, reported unchanged;
+/// What `Construct::construct` fails with (§3.4). `Dependency` is a dependency's own `LookupError`, reported unchanged;
 /// `Failed` is the constructor's own error, redacted and reported as `FailureReason::Errored`. A panic or a timeout is
 /// no variant: a constructor cannot report either about itself, and the core records both from outside the poll.
 #[non_exhaustive]
 pub enum ConstructError {
-    Site(LookupError),   // `?` on a dependency read, through `From`
+    Dependency(LookupError),   // `?` on a dependency read, through `From`
     Failed(BoxError),    // `ConstructError::failed(e)`, or the macro's mapping of a constructor's `Result<Self, E>`
 }
 
-impl From<LookupError> for ConstructError { /* `Site` */ }   // no blanket `From<E: Error>`: it would overlap this impl (§3.4)
+impl From<LookupError> for ConstructError { /* `Dependency` */ }   // no blanket `From<E: Error>`: it would overlap this impl (§3.4)
 
 impl ConstructError {
     pub fn failed(e: impl Into<BoxError>) -> Self;   // `Failed`
@@ -1070,7 +1070,7 @@ Neither the core nor the macros panic or exit [45]. Panics inside user construct
 
 `Readiness` keeps `attempts`, and its `reason` is how the check ended, by the rules in §9.3. `Limit::Default` has one meaning, the app default for the item's kind, and `after` carries that default's duration: `construct_timeout` on a check's attempt or a construction, `hook_timeout` on a hook.
 
-The core consumes a `ConstructError` by variant. Inside a call, a `Site` is reported as the `LookupError` it carries, on the path that error was already taking. During `connect`, where `ConnectError` carries no `LookupError`, a `Site` holding a nested build's `Construct { key, reason }` becomes `ConnectError::Construct` naming that deeper key, and one holding any other lookup error, the `NotReady` a constructor's `ModuleRef::get` meets, becomes `ConnectError::Construct` naming the binding itself with `reason: Errored(..)`, the `LookupError` by `downcast_ref`. A `Failed` is reported as `Construct { reason: Errored(..) }`, on `ConnectError` during `connect` and on `LookupError` inside a call. `Failed` holds the error as the constructor returned it, and the redaction function (§9.3) runs when the core stores it as `Errored`. It runs on `Failed` alone: a `LookupError` is the core's own, and any outside error inside it was redacted where it was stored.
+The core consumes a `ConstructError` by variant. Inside a call, a `Dependency` is reported as the `LookupError` it carries, on the path that error was already taking. During `connect`, where `ConnectError` carries no `LookupError`, a `Dependency` holding a nested build's `Construct { key, reason }` becomes `ConnectError::Construct` naming that deeper key, and one holding any other lookup error, the `NotReady` a constructor's `ModuleRef::get` meets, becomes `ConnectError::Construct` naming the binding itself with `reason: Errored(..)`, the `LookupError` by `downcast_ref`. A `Failed` is reported as `Construct { reason: Errored(..) }`, on `ConnectError` during `connect` and on `LookupError` inside a call. `Failed` holds the error as the constructor returned it, and the redaction function (§9.3) runs when the core stores it as `Errored`. It runs on `Failed` alone: a `LookupError` is the core's own, and any outside error inside it was redacted where it was stored.
 
 Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, the `source` of `ShutdownFailure::Close` and of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. `Bind` also carries the one error the core writes itself on that path, `listen()`'s refusal of an app with a transport and no `Timer` (§9.5): a `NoTimer { transport }`, wrapped in the same `Redacted` to keep the field one type, and a struct rather than a message, which lets `downcast_ref::<NoTimer>()` tell a misconfigured app from a port already taken. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
 
@@ -1216,7 +1216,7 @@ impl Construct for Migrations {
     fn dependencies(d: &mut Dependencies) { d.field::<Dep<PgPool>>("pool"); }
 
     async fn construct(r: &Resolver<'_>) -> Result<Self, ConstructError> {
-        let pool = r.dep::<PgPool>().await?;                                 // a `LookupError` passes through as `Site`
+        let pool = r.dep::<PgPool>().await?;                                 // a `LookupError` passes through as `Dependency`
         let set = Migrator::new(Path::new("./migrations")).await.map_err(ConstructError::failed)?;
         Ok(Self { pool, set })
     }

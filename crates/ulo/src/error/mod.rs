@@ -223,7 +223,7 @@ impl Error for ShutdownError {}
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum ShutdownFailure {
-    /// `Errored` only for a closure hook whose site read failed: the shutdown hook traits and
+    /// `Errored` only for a closure hook whose dependency read failed: the shutdown hook traits and
     /// closures return `()`.
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },
     Close { transport: &'static str, source: Redacted },

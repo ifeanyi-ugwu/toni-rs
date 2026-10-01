@@ -1,5 +1,5 @@
-//! `#[injectable]`: the struct form, whose fields are sites, and the impl form, whose
-//! constructor's parameters are sites. Both write a `Construct` impl (§4, §5).
+//! `#[injectable]`: the struct form, whose fields are injection points, and the impl form, whose
+//! constructor's parameters are injection points. Both write a `Construct` impl (§4, §5).
 
 mod args;
 mod impl_form;
@@ -17,7 +17,7 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         Item::Impl(item) => impl_form::expand(args, item),
         other => Err(syn::Error::new_spanned(
             other,
-            "#[injectable] goes on a struct, whose fields are sites, or on an impl block holding its constructor",
+            "#[injectable] goes on a struct, whose fields are injected, or on an impl block holding its constructor",
         )),
     }
 }

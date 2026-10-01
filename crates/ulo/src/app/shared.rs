@@ -10,6 +10,7 @@ use std::task::{Poll, Waker};
 use crate::app::AppConfig;
 use crate::binding::{ErasedCtor, Instance, Qualifier, Recipe};
 use crate::construct::ConstructError;
+use crate::dependency::Dep;
 use crate::error::{Closed, FailureReason, LookupError, LookupKind};
 use crate::execution::cache::ExecCache;
 use crate::execution::extensions::{Extensions, Inputs};
@@ -23,7 +24,6 @@ use crate::lifecycle::shutdown::ShutdownCell;
 use crate::module::handle::ModuleRef;
 use crate::redact::redact;
 use crate::resolver::{Purpose, Resolver};
-use crate::site::Dep;
 use crate::timer::{BoundKind, BoxFuture, resolve_bound};
 use crate::transport::server::ErasedServer;
 
@@ -210,7 +210,7 @@ impl AppShared {
         let secrets = &r.graph.secrets;
         let reason = match run(self.config.timer.as_deref(), bound, None, secrets, ctor(&r)).await {
             Outcome::Done(Ok(instance)) => return Ok(instance),
-            Outcome::Done(Err(ConstructError::Site(e))) => return Err(e),
+            Outcome::Done(Err(ConstructError::Dependency(e))) => return Err(e),
             Outcome::Done(Err(ConstructError::Failed(e))) => FailureReason::Errored(redact(secrets, e)),
             Outcome::Panicked(payload) => FailureReason::Panicked(payload),
             Outcome::TimedOut { after, limit } => FailureReason::TimedOut { after, limit },

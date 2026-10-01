@@ -12,7 +12,7 @@ pub struct Singleton;
 /// Built once per execution and shared inside it.
 pub struct PerExecution;
 
-/// Built fresh at every site.
+/// Built fresh for every injection point that reads it.
 pub struct Transient;
 
 /// What `#[injectable]` means when no scope is written.
@@ -69,12 +69,13 @@ pub trait HookCapable: Scope {}
 impl HookCapable for Singleton {}
 impl HookCapable for Auto {}
 
-/// Implemented per site type and scope: a site that needs an execution is not `AllowedIn`
-/// [`Singleton`]. `#[injectable]` asserts it once per field or parameter, so the error points at
-/// that site. `{Self}` is the site type; the type that cannot read it is the one declared `{S}`.
+/// Implemented per injection-point type and scope: a type that needs an execution is not
+/// `AllowedIn` [`Singleton`]. `#[injectable]` asserts it once per field or parameter, so the error
+/// points at that field or parameter. `{Self}` is the injection point's type; the type that
+/// cannot read it is the one declared `{S}`.
 #[diagnostic::on_unimplemented(
     message = "a `{S}` type cannot read `{Self}`",
-    label = "this site needs an execution",
+    label = "this injection point needs an execution",
     note = "declare the type #[injectable(execution)] or #[injectable(transient)]"
 )]
 pub trait AllowedIn<S: Scope> {}

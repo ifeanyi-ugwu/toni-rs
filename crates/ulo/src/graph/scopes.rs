@@ -1,9 +1,9 @@
 //! Step 5: the needs-execution pass, scope violations, hooks on bindings inferred per-execution,
 //! and the per-handler input check (§6.2, §6.4).
 //!
-//! A binding needs an execution if any of its sites is `Ext`, `ExecutionRef`, an execution
-//! input, or a dependency that itself needs one. Transient and `Auto` bindings pass the need
-//! upward. Then:
+//! A binding needs an execution if any of its injection points is `Ext`, `ExecutionRef`, an
+//! execution input, or a dependency that itself needs one. Transient and `Auto` bindings pass the
+//! need upward. Then:
 //!
 //! | Binding | Needs an execution | Result |
 //! |---|---|---|
@@ -20,11 +20,11 @@ use std::any::type_name;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::binding::Recipe;
+use crate::dependency::ReadKind;
 use crate::error::wiring::WiringError;
-use crate::graph::{BindingId, EdgeTarget, Effective, FrozenBinding, Graph, Role, Visible, record_key, site_text};
+use crate::graph::{BindingId, EdgeTarget, Effective, FrozenBinding, Graph, Role, Visible, dependency_text, record_key};
 use crate::key::{BindingKind, Key};
 use crate::scope::ScopeKind;
-use crate::site::ReadKind;
 use crate::transport::controller::{EnhancerDep, HandlerRecord};
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport};
 
@@ -198,13 +198,13 @@ impl<'g> InputWalk<'g> {
                         roots.push(*id);
                     }
                 }
-                EnhancerDep::Closure(sites) => {
-                    for site in &sites.list {
-                        for read in &site.desc.reads {
+                EnhancerDep::Closure(dependencies) => {
+                    for dependency in &dependencies.list {
+                        for read in &dependency.requirement.reads {
                             match &read.kind {
                                 ReadKind::Single(key) => match graph.lookup(handler.module, *key) {
                                     Some(Visible::Input(input)) if !read.optional => {
-                                        let path = vec![self.head.clone(), "enhancer closure".to_owned(), site_text(site)];
+                                        let path = vec![self.head.clone(), "enhancer closure".to_owned(), dependency_text(dependency)];
                                         self.report(*input, None, path, errors);
                                     }
                                     Some(Visible::Binding(id)) => roots.push(*id),
@@ -233,7 +233,7 @@ impl<'g> InputWalk<'g> {
                     if !edge.optional {
                         let mut path = vec![self.head.clone()];
                         path.extend(chain(&parent, node).into_iter().map(|step| graph.scoped_label(step)));
-                        path.push(graph.site_step(node, edge.site));
+                        path.push(graph.dependency_step(node, edge.dependency));
                         self.report(*input, Some(node), path, errors);
                     }
                 }
@@ -283,7 +283,8 @@ fn chain(parent: &HashMap<BindingId, Option<BindingId>>, node: BindingId) -> Vec
 
 /// The dependency path from `from` to the first binding reading execution data, for a report.
 /// The walk follows only dependencies that pass the need upward, and stops at a binding that
-/// reads execution data itself, or at an execution-scoped one, whose own sites need not read any.
+/// reads execution data itself, or at an execution-scoped one, whose own injection points need
+/// not read any.
 pub(crate) fn execution_path(graph: &Graph, from: BindingId) -> Vec<BindingId> {
     let reached = |id: BindingId| {
         graph.direct_execution_edge(id).is_some() || (id != from && graph.binding(id).effective == Effective::PerExecution)
@@ -318,8 +319,9 @@ pub(crate) fn execution_path(graph: &Graph, from: BindingId) -> Vec<BindingId> {
     vec![from]
 }
 
-/// `execution_path` as a report prints it: the binding, each step with its scope, then the site
-/// that reads execution data, as in `ReportService → AuditContext (execution) → Ext<CurrentUser>`.
+/// `execution_path` as a report prints it: the binding, each step with its scope, then the
+/// injection point that reads execution data, as in
+/// `ReportService → AuditContext (execution) → Ext<CurrentUser>`.
 fn printed_path(graph: &Graph, from: BindingId) -> Vec<String> {
     let ids = execution_path(graph, from);
     let mut steps: Vec<String> = ids
@@ -329,7 +331,7 @@ fn printed_path(graph: &Graph, from: BindingId) -> Vec<String> {
         .collect();
     if let Some(&last) = ids.last() {
         if let Some(edge) = graph.direct_execution_edge(last) {
-            steps.push(graph.site_step(last, edge.site));
+            steps.push(graph.dependency_step(last, edge.dependency));
         }
     }
     steps

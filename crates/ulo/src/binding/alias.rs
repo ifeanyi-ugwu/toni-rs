@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 use std::panic::Location;
 
 use crate::binding::{BindingRecord, Qualifier, Recipe};
+use crate::dependency::Dependencies;
 use crate::key::{BindingKind, Key};
 use crate::module::def::{InputRecord, ModuleNode};
 use crate::scope::ScopeKind;
-use crate::site::Sites;
 use crate::transport::Transport;
 
 /// `alias::<T, Q>()`: the new key `T @ Q`, waiting for the existing one in [`Alias::of`].
@@ -36,7 +36,7 @@ impl<'m, T: ?Sized + Send + Sync + 'static, Q: 'static> Alias<'m, T, Q> {
             BindingKind::Single,
             ScopeKind::Transient,
             Recipe::Alias { target: Key::of::<T, Existing>() },
-            Sites::default(),
+            Dependencies::default(),
             Location::caller(),
         );
         record.qualifier = Qualifier::of::<Q>();

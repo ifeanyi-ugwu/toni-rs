@@ -1,5 +1,5 @@
-//! Bindings as the module definition records them: the recipe, the declared sites, the bounds,
-//! the readiness check and the closure hooks. The value API in `ModuleDef` writes these records
+//! Bindings as the module definition records them: the recipe, the declared dependencies, the
+//! bounds, the readiness check and the closure hooks. The value API in `ModuleDef` writes these records
 //! through the handles in `handle`; the graph freezes them at `wire()` (§2, §4).
 
 pub(crate) mod alias;
@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::construct::{Construct, ConstructError};
+use crate::dependency::Dependencies;
 use crate::hooks::HookRecord;
 use crate::key::{BindingKind, Key};
 use crate::resolver::Resolver;
 use crate::scope::ScopeKind;
-use crate::site::Sites;
 use crate::timer::{BoxFuture, Bound};
 
 /// A built instance as the stores hold it: an `Arc<dyn Any>` wrapping the `Arc<T>` of the key's
@@ -107,7 +107,7 @@ pub(crate) struct BindingRecord {
     /// Set by `ModuleDef::controller`; enhancer roles are found by the wiring pass.
     pub(crate) controller: bool,
     pub(crate) recipe: Recipe,
-    pub(crate) sites: Sites,
+    pub(crate) dependencies: Dependencies,
     pub(crate) construct_bound: Bound,
     /// The check written last. A `.ready(..)` on a handle that already carries one replaces it
     /// and leaves the replaced check's location in `replaced_ready`.
@@ -161,7 +161,7 @@ pub(crate) enum Recipe {
 
 pub(crate) struct ReadyRecord {
     pub(crate) check: CheckFn,
-    pub(crate) sites: Sites,
+    pub(crate) dependencies: Dependencies,
     /// Attempts after the first: `.retries(5)` allows six in all. Zero unless written.
     pub(crate) retries: u32,
     /// The wait between one attempt's end and the next attempt. Zero unless written.
@@ -184,7 +184,7 @@ impl BindingRecord {
         kind: BindingKind,
         scope: ScopeKind,
         recipe: Recipe,
-        sites: Sites,
+        dependencies: Dependencies,
         location: &'static Location<'static>,
     ) -> Self {
         BindingRecord {
@@ -197,7 +197,7 @@ impl BindingRecord {
             scope,
             controller: false,
             recipe,
-            sites,
+            dependencies,
             construct_bound: Bound::Default,
             ready: None,
             replaced_ready: Vec::new(),

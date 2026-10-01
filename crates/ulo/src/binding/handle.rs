@@ -23,10 +23,10 @@ use crate::binding::factory::{
     Factory, ShutdownFactory, erase_check, erase_destroy_hook, erase_init_hook, erase_signalled_hook,
 };
 use crate::binding::{AlsoAs, BindingRecord, Qualifier, ReadyRecord, coercion};
+use crate::dependency::Dependencies;
 use crate::hooks::{HookFn, HookKind, HookRecord};
 use crate::key::Key;
 use crate::scope::HookCapable;
-use crate::site::Sites;
 use crate::timer::{BoxError, Bound};
 
 /// A bound not yet written: `.timeout(..)` and `.unbounded()` exist.
@@ -207,10 +207,10 @@ impl<'m, T: ?Sized, K, C> Handle<'m, T, K, C> {
         self,
         kind: HookKind,
         run: HookFn,
-        sites: Sites,
+        dependencies: Dependencies,
         location: &'static Location<'static>,
     ) -> Handle<'m, T, K2, C> {
-        self.record.hooks.push(HookRecord { kind, bound: Bound::Default, run, sites, location });
+        self.record.hooks.push(HookRecord { kind, bound: Bound::Default, run, dependencies, location });
         self.to()
     }
 }
@@ -249,11 +249,11 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
         let ready = ReadyRecord {
             check: erase_check::<Args, F, E>(check),
-            sites,
+            dependencies,
             retries: 0,
             backoff: Duration::ZERO,
             whole: Bound::Default,
@@ -275,9 +275,9 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
-        self.push_hook(HookKind::OnModuleInit, erase_init_hook::<Args, F, E>(hook), sites, location)
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
+        self.push_hook(HookKind::OnModuleInit, erase_init_hook::<Args, F, E>(hook), dependencies, location)
     }
 
     /// Runs after the drain, in reverse connect order.
@@ -287,9 +287,9 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
         F: Factory<Args, Output = ()>,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
-        self.push_hook(HookKind::OnModuleDestroy, erase_destroy_hook::<Args, F>(hook), sites, location)
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
+        self.push_hook(HookKind::OnModuleDestroy, erase_destroy_hook::<Args, F>(hook), dependencies, location)
     }
 
     /// Runs while the app still serves, before stop-accepting, with the shutdown's signal.
@@ -299,9 +299,9 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
         F: ShutdownFactory<Args>,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as ShutdownFactory<Args>>::sites(&mut sites);
-        self.push_hook(HookKind::BeforeApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
+        let mut dependencies = Dependencies::default();
+        <F as ShutdownFactory<Args>>::dependencies(&mut dependencies);
+        self.push_hook(HookKind::BeforeApplicationShutdown, erase_signalled_hook::<Args, F>(hook), dependencies, location)
     }
 
     /// Runs last in the shutdown sequence, after the sockets close, with the shutdown's signal.
@@ -311,9 +311,9 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
         F: ShutdownFactory<Args>,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as ShutdownFactory<Args>>::sites(&mut sites);
-        self.push_hook(HookKind::OnApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
+        let mut dependencies = Dependencies::default();
+        <F as ShutdownFactory<Args>>::dependencies(&mut dependencies);
+        self.push_hook(HookKind::OnApplicationShutdown, erase_signalled_hook::<Args, F>(hook), dependencies, location)
     }
 }
 

@@ -36,7 +36,7 @@ use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHan
 /// the one `cx` wraps; `call` receives a clone of `cx` and answers the handler's reply.
 ///
 /// Every declaration resolves with the controller module's visibility, inside `exec`, so a
-/// per-execution enhancer is built once per call and shared with the handler's own sites.
+/// per-execution enhancer is built once per call and shared with the handler's own dependencies.
 pub async fn dispatch<T, F, Fut>(handler: &MountedHandler<T>, exec: &ExecutionRef, cx: &T::Cx, call: F) -> Result<T::Reply, BoxError>
 where
     T: Transport,

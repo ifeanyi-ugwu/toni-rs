@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
+use crate::dependency::Dep;
 use crate::error::{Closed, LookupError, NoTimer, Shutdown, ShutdownError, StartupError};
 use crate::execution::{ExecOptions, Execution};
 use crate::graph::{ModuleId, wire};
@@ -28,7 +29,6 @@ use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::redact::{Redacted, redact};
 use crate::signal::Signal;
-use crate::site::Dep;
 use crate::testing::TestPlan;
 use crate::timer::{BoxError, BoxFuture, Defaults, Timer};
 use crate::transport::server::{ErasedServer, Server};

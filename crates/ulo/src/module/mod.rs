@@ -29,8 +29,8 @@ pub trait Module: Send + Sync + 'static {
     /// Declare everything. Synchronous and free of I/O.
     fn register(&self, m: &mut ModuleDef<'_>);
 
-    /// This module as a keyed instance: inside it sites stay unqualified, and at its export
-    /// boundary every unqualified export, re-exports included, is requalified as `T @ Q`.
+    /// This module as a keyed instance: inside it injection points stay unqualified, and at its
+    /// export boundary every unqualified export, re-exports included, is requalified as `T @ Q`.
     /// `DbModule::for_root(url).keyed::<Primary>()`.
     fn keyed<Q: 'static>(self) -> Keyed<Q, Self>
     where

@@ -1,10 +1,10 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::dependency::{FromContainer, Requirement};
 use crate::error::LookupError;
 use crate::resolver::Resolver;
 use crate::scope::{AllowedIn, Auto, PerExecution, Transient};
-use crate::site::{Site, SiteDesc};
 
 /// A typed view of per-execution data: the extension `T` a guard or middleware wrote earlier in
 /// this execution through [`Extensions::insert`](crate::Extensions::insert).
@@ -33,9 +33,9 @@ impl<T> Deref for Ext<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Site for Ext<T> {
-    fn describe(d: &mut SiteDesc) {
-        d.ext::<T>();
+impl<T: Send + Sync + 'static> FromContainer for Ext<T> {
+    fn describe(req: &mut Requirement) {
+        req.ext::<T>();
     }
 
     async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {

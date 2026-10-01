@@ -1,5 +1,5 @@
-//! The `ulo` core: keys, bindings, sites, scopes, executions, modules, lifecycle, errors, and
-//! the enhancer traits a transport implements against.
+//! The `ulo` core: keys, bindings, injection points, scopes, executions, modules, lifecycle,
+//! errors, and the enhancer traits a transport implements against.
 //!
 //! The core has no async runtime. It uses `std::future`, the [`BoxFuture`] alias and a pluggable
 //! [`Timer`]; transports and runtime adapters bring the executor, sockets, timers and signals.
@@ -8,6 +8,7 @@
 
 mod binding;
 mod construct;
+mod dependency;
 mod error;
 mod execution;
 mod graph;
@@ -18,7 +19,6 @@ mod module;
 mod redact;
 mod resolver;
 mod signal;
-mod site;
 mod timer;
 mod transport;
 
@@ -46,6 +46,7 @@ pub use binding::contribute::Contribute;
 pub use binding::factory::{Factory, ShutdownFactory};
 pub use binding::handle::Handle;
 pub use construct::{Construct, ConstructError};
+pub use dependency::{Dep, Dependencies, Ext, FromContainer, Many, Requirement};
 pub use error::{
     Closed, ConnectError, FailureReason, GuardRejected, Limit, LoadError, LoadRefusal, LookupError,
     LookupKind, NoTimer, Shutdown, ShutdownError, ShutdownFailure, StartupError,
@@ -69,7 +70,6 @@ pub use redact::{Redacted, Secret};
 pub use resolver::{Entries, Entry, Resolver};
 pub use scope::{AllowedIn, HookCapable, Scope, ScopeKind};
 pub use signal::Signal;
-pub use site::{Dep, Ext, Many, Site, SiteDesc, Sites};
 pub use timer::{BoxError, BoxFuture, Bound, Timer};
 pub use transport::controller::{Controller, Mount, MountedHandler};
 pub use transport::enhancer::EnhancerSpec;

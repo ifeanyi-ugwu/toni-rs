@@ -2,10 +2,10 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use crate::construct::Construct;
+use crate::dependency::Dependencies;
 use crate::graph::{BindingId, ModuleId};
 use crate::key::{Key, KeyName};
 use crate::module::handle::ModuleRef;
-use crate::site::Sites;
 use crate::transport::enhancer::EnhancerSpec;
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport, transport_name};
 
@@ -125,8 +125,8 @@ pub(crate) struct HandlerDecl {
 pub(crate) enum EnhancerDep {
     /// A by-type declaration: the enhancer's own key.
     Type(Key),
-    /// A closure declaration's sites, built per execution.
-    Closure(Arc<Sites>),
+    /// A closure declaration's dependencies. The closure builds its enhancer per execution.
+    Closure(Arc<Dependencies>),
 }
 
 /// A handler in the frozen graph.

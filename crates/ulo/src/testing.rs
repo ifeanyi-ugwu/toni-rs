@@ -16,10 +16,10 @@ use std::time::Duration;
 use crate::app::{App, AppBuilder, Connected, Wired};
 use crate::binding::factory::{Factory, erase_factory, erase_try_factory};
 use crate::binding::{Instance, Qualifier, Recipe, instance_of};
+use crate::dependency::Dependencies;
 use crate::error::StartupError;
 use crate::key::Key;
 use crate::module::{Module, ModuleIdentity};
-use crate::site::Sites;
 use crate::timer::{BoxError, Timer};
 
 /// No override is waiting to be scoped.
@@ -54,9 +54,10 @@ pub(crate) struct TestPlan {
 pub(crate) struct Override {
     pub(crate) key: Key,
     pub(crate) recipe: Recipe,
-    /// The replacement recipe's own sites: a factory's parameters, empty for a value. They take
-    /// the place of the replaced binding's sites, since the replaced recipe no longer reads them.
-    pub(crate) sites: Sites,
+    /// The replacement recipe's own dependencies: a factory's parameters, empty for a value.
+    /// They take the place of the replaced binding's dependencies, since the replaced recipe no
+    /// longer reads them.
+    pub(crate) dependencies: Dependencies,
     pub(crate) target: OverrideTarget,
     pub(crate) location: &'static Location<'static>,
 }
@@ -100,7 +101,7 @@ impl<S> TestApp<S> {
         self.push_override(Override {
             key: Key::of::<T, ()>(),
             recipe: Recipe::Value(instance_of(value)),
-            sites: Sites::default(),
+            dependencies: Dependencies::default(),
             target: OverrideTarget::Unscoped,
             location,
         })
@@ -114,12 +115,12 @@ impl<S> TestApp<S> {
         F::Output: Send + Sync + 'static,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
         self.push_override(Override {
             key: Key::of::<F::Output, ()>(),
             recipe: Recipe::Factory(erase_factory::<Args, F>(factory)),
-            sites,
+            dependencies,
             target: OverrideTarget::Unscoped,
             location,
         })
@@ -134,12 +135,12 @@ impl<S> TestApp<S> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        <F as Factory<Args>>::sites(&mut sites);
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
         self.push_override(Override {
             key: Key::of::<T, ()>(),
             recipe: Recipe::Factory(erase_try_factory::<Args, F, T, E>(factory)),
-            sites,
+            dependencies,
             target: OverrideTarget::Unscoped,
             location,
         })

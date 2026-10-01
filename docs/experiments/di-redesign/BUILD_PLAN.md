@@ -38,7 +38,7 @@ what it leaves unspecified; those entries await the user's sign-off like any are
 
 Every source file of both crates belongs to exactly one area.
 
-### A. Keys, sites and the resolver
+### A. Keys, injection points and the resolver
 
 | File | Holds |
 |---|---|
@@ -46,17 +46,17 @@ Every source file of both crates belongs to exactly one area.
 | `crates/ulo/src/lib.rs` | the public re-exports; other areas request additions through rule 3 |
 | `crates/ulo/src/key.rs` | `Key`, `KeyName`, `BindingKind`, `short_type_name` |
 | `crates/ulo/src/scope.rs` | scope markers, `Scope`, `ScopeKind`, `HookCapable`, `AllowedIn` |
-| `crates/ulo/src/site/mod.rs` | `Site`, `SiteDesc`, `Sites`, `SiteRead`, `ReadKind`, `SiteRecord`, `SiteLabel` |
-| `crates/ulo/src/site/dep.rs` | `Dep` and its `Site` impl |
-| `crates/ulo/src/site/many.rs` | `Many` and its `Site` impl |
-| `crates/ulo/src/site/ext.rs` | `Ext` and its `Site` impl |
-| `crates/ulo/src/site/option.rs` | `Site for Option<S>` |
-| `crates/ulo/src/site/handles.rs` | `Site` for `ModuleRef` and `ExecutionRef` |
+| `crates/ulo/src/dependency/mod.rs` | `FromContainer`, `Requirement`, `Dependencies`, `Read`, `ReadKind`, `DependencyRecord`, `DependencyLabel` |
+| `crates/ulo/src/dependency/dep.rs` | `Dep` and its `FromContainer` impl |
+| `crates/ulo/src/dependency/many.rs` | `Many` and its `FromContainer` impl |
+| `crates/ulo/src/dependency/ext.rs` | `Ext` and its `FromContainer` impl |
+| `crates/ulo/src/dependency/option.rs` | `FromContainer for Option<S>` |
+| `crates/ulo/src/dependency/handles.rs` | `FromContainer` for `ModuleRef` and `ExecutionRef` |
 | `crates/ulo/src/resolver.rs` | `Resolver`, `Purpose`, `Entries`, `Entry` |
 
 Design sections: §0.5, §3.1, §3.2, §3.3, §5, §8.2 (a lookup naming no module uses the root's
 visibility), §10.2 (`LookupError`: `NotFound`, `WrongType`, `WrongKind`, `ExecutionRequired`),
-§13 (Sites row), §14.1, §14.2, §14.10.
+§13 (Injection points row), §14.1, §14.2, §14.10.
 
 ### B. Bindings, the value API's records, handles, `Timer` and `Bound`
 
@@ -155,7 +155,7 @@ Design sections: §3.7, §6.3 (`open_terminal` and `DrainToken` from the transpo
 | `crates/ulo-macros/src/lib.rs` | every entry point |
 | `crates/ulo-macros/src/shared/mod.rs` | `ulo()`, `ConstructImpl` |
 | `crates/ulo-macros/src/shared/attrs.rs` | attribute matching |
-| `crates/ulo-macros/src/shared/sites.rs` | `SiteSpec`, `SiteLabel`, `declare`, `read` |
+| `crates/ulo-macros/src/shared/dependencies.rs` | `DependencySpec`, `DependencyLabel`, `declare`, `read` |
 | `crates/ulo-macros/src/injectable/mod.rs` | `#[injectable]` dispatch |
 | `crates/ulo-macros/src/injectable/args.rs` | `InjectableArgs`, `ScopeArg` |
 | `crates/ulo-macros/src/injectable/struct_form.rs` | the struct form |
@@ -166,11 +166,11 @@ Design sections: §3.7, §6.3 (`open_terminal` and `DrainToken` from the transpo
 | `crates/ulo-macros/src/module_attr/providers.rs` | `ProviderEntry` and its lowering |
 | `crates/ulo-macros/src/routes/mod.rs` | `#[routes]` |
 | `crates/ulo-macros/src/enhancers/mod.rs` | the enhancer attributes, `__handler`, `__enhancer_specs!` |
-| `crates/ulo/src/__private.rs` | what generated code calls: `assert_site`, the role assertions, `IntoConstructed`, the hook and factory probes |
+| `crates/ulo/src/__private.rs` | what generated code calls: `field` and `param` (each declares a dependency and asserts `FromContainer + AllowedIn`), the role assertions, `IntoConstructed`, the hook and factory probes |
 
-Design sections: §0.2, §4 (the `#[module]` lowering), §5 (compile-time site checks), §6.1, §7 (the
-attributes and the strict controller-level rule), §8.1, §9.1 (probing), §10.3, §12 (compile rows).
-Probes `p02c` (autoref over a closure's output) and `p04` (hook probes).
+Design sections: §0.2, §4 (the `#[module]` lowering), §5 (compile-time injection-point checks),
+§6.1, §7 (the attributes and the strict controller-level rule), §8.1, §9.1 (probing), §10.3, §12
+(compile rows). Probes `p02c` (autoref over a closure's output) and `p04` (hook probes).
 
 ## Cross-area contracts
 
@@ -181,9 +181,9 @@ Each row is an item one area calls in another. The owner keeps it as the spine w
 | Item | Called by | For |
 |---|---|---|
 | `Resolver::new(app, module, exec, purpose)`, `Resolver::in_module`, `Purpose` | D, E | building a resolver for a lookup, a construction or a lifecycle hook |
-| `Resolver::instance(id)` | A's own site reads; F through `Entry::resolve` | one binding's instance, delegated to `AppShared::obtain` |
+| `Resolver::instance(id)` | A's own dependency reads; F through `Entry::resolve` | one binding's instance, delegated to `AppShared::obtain` |
 | `Resolver::entries`, `Entry::resolve` | F | the lazy guard walk |
-| `SiteRead`, `ReadKind`, `SiteRecord`, `SiteLabel`, `Sites.list`, `SiteDesc.reads` | C | resolving sites into edges and naming them in reports |
+| `Read`, `ReadKind`, `DependencyRecord`, `DependencyLabel`, `Dependencies.list`, `Requirement.reads` | C | resolving injection points into edges and naming them in reports |
 | `Key::{requalified, with_qualifier, type_id, qualifier_id, type_name, qualifier_name, is_unqualified, name}` | B, C, E | requalification and diagnostics |
 | `short_type_name` | C, E | every diagnostic type name |
 
@@ -219,7 +219,7 @@ Each row is an item one area calls in another. The owner keeps it as the spine w
 | `LiveSet::{enter, attach, until_empty, cancel_all}`, `LiveSlot` | E (the drain) | live executions |
 | `AppConfig::{defaults, drain, knobs_set}` and its consts | C (`WireEnv`), E | timing configuration |
 | `ExecShared` and its fields, `ExecShared::{resolver, cancelled, draining, is_draining}` | A, E, F | per-execution state |
-| `ExecCache::get_or_build`, `Inputs::{insert, get, get_erased}` | A (site reads through `obtain`) | the cache and inputs |
+| `ExecCache::get_or_build`, `Inputs::{insert, get, get_erased}` | A (dependency reads through `obtain`) | the cache and inputs |
 | `Notify::{new, fire, is_fired, listen}`, `Listen`, `Cancelled::new`, `Draining::new` | E | the waker list |
 | `ModuleRef::new`, its fields | A, F | module handles |
 | `App::from_shared` | E | state transitions after connect and listen |
@@ -260,8 +260,8 @@ These are not settled by the design or by the spine. The owning area decides and
 decision in `divergences/<area>.md`.
 
 - **A.** How `KeyName` shortens type names (`short_type_name`), and `Key`'s `Display` text.
-- **B.** Whether `Factory::call` reads sites concurrently or in order (order is the expectation:
-  a cancellation at one site should not leave half-read others running).
+- **B.** Whether `Factory::call` reads its parameters concurrently or in order (order is the
+  expectation: a cancellation at one parameter should not leave half-read others running).
 - **C.** The exact text of every `WiringError` hint, beyond the samples in §10.1; which keys count
   as role keys for a transport with no handlers.
 - **D.** How `execute` enforces a standalone deadline without a runtime (racing the closure's

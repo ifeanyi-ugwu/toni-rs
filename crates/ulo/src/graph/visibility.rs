@@ -1,15 +1,15 @@
-//! Step 3: the visibility tables and every site resolved against its module's table (§8.2,
-//! §10.1 step 3).
+//! Step 3: the visibility tables and every injection point resolved against its module's table
+//! (§8.2, §10.1 step 3).
 
 use std::collections::{HashMap, HashSet};
 
+use crate::dependency::{Dependencies, ReadKind};
 use crate::error::wiring::WiringError;
 use crate::graph::wire::Declared;
 use crate::graph::{
-    BindingId, Edge, EdgeTarget, Graph, ModuleId, Visible, VisibilityTable, boundary_key, record_key, site_label,
+    BindingId, Edge, EdgeTarget, Graph, ModuleId, Visible, VisibilityTable, boundary_key, dependency_label, record_key,
 };
 use crate::key::{BindingKind, Key, short_type_name};
-use crate::site::{ReadKind, Sites};
 use crate::transport::controller::EnhancerDep;
 
 /// Fills `graph.visibility`: each module's own bindings, its direct imports' exports and the
@@ -125,20 +125,20 @@ fn table_for(graph: &Graph, module: ModuleId) -> VisibilityTable {
     VisibilityTable { entries }
 }
 
-/// Resolves every site of every binding, hook closure, readiness check, enhancer declaration
-/// and metadata value into `Edge`s, and reports missing keys (with the site, the key and the
-/// module) and ambiguous keys (naming every source module). A missing key whose name equals a
-/// bound key's name up to a trailing `+ core::marker::Send + core::marker::Sync` names both
-/// spellings.
+/// Resolves every injection point of every binding, hook closure, readiness check, enhancer
+/// declaration and metadata value into `Edge`s, and reports missing keys (with the injection
+/// point, the key and the module) and ambiguous keys (naming every source module). A missing
+/// key whose name equals a bound key's name up to a trailing
+/// `+ core::marker::Send + core::marker::Sync` names both spellings.
 ///
-/// Only a binding's own sites become edges. Readiness checks, hooks, enhancer closures and
-/// metadata are checked for missing and ambiguous keys alone; the passes that need what they
+/// Only a binding's own dependencies become edges. Readiness checks, hooks, enhancer closures
+/// and metadata are checked for missing and ambiguous keys alone; the passes that need what they
 /// read resolve it again from the tables.
 ///
-/// The root's table is then swept: an ambiguous key there is reported even when no site reads
+/// The root's table is then swept: an ambiguous key there is reported even when nothing reads
 /// it, because a lookup naming no module uses the root's visibility and has no variant for an
 /// ambiguity (§8.2).
-pub(crate) fn resolve_sites(graph: &mut Graph, declared: &Declared, errors: &mut Vec<WiringError>) {
+pub(crate) fn resolve_dependencies(graph: &mut Graph, declared: &Declared, errors: &mut Vec<WiringError>) {
     let mut reported: HashSet<(ModuleId, Key)> = HashSet::new();
 
     for index in declared.first_binding..graph.bindings.len() {
@@ -150,22 +150,22 @@ pub(crate) fn resolve_sites(graph: &mut Graph, declared: &Declared, errors: &mut
     for binding in graph.bindings.iter().skip(declared.first_binding) {
         if let Some(ready) = &binding.record.ready {
             let owner = format!("readiness check of {}", graph.label(binding.id));
-            check_sites(graph, binding.origin, &ready.sites, &owner, errors, &mut reported);
+            check_dependencies(graph, binding.origin, &ready.dependencies, &owner, errors, &mut reported);
         }
         for hook in &binding.record.hooks {
             let owner = format!("{} hook of {}", hook.kind, graph.label(binding.id));
-            check_sites(graph, binding.origin, &hook.sites, &owner, errors, &mut reported);
+            check_dependencies(graph, binding.origin, &hook.dependencies, &owner, errors, &mut reported);
         }
     }
     for module in graph.modules.iter().skip(declared.first_module) {
         for hook in &module.hooks {
             let owner = format!("{} hook of {}", hook.kind, module.name);
-            check_sites(graph, module.id, &hook.sites, &owner, errors, &mut reported);
+            check_dependencies(graph, module.id, &hook.dependencies, &owner, errors, &mut reported);
         }
     }
-    for (module, name, sites) in &declared.meta {
+    for (module, name, dependencies) in &declared.meta {
         let owner = format!("metadata `{}` of {}", short_type_name(*name), graph.module_name(*module));
-        check_sites(graph, *module, sites, &owner, errors, &mut reported);
+        check_dependencies(graph, *module, dependencies, &owner, errors, &mut reported);
     }
     for handler in graph.handlers.iter().skip(declared.first_handler) {
         let name = graph.handler_name(handler);
@@ -188,9 +188,9 @@ pub(crate) fn resolve_sites(graph: &mut Graph, declared: &Declared, errors: &mut
                     let consumer = || format!("{name} (enhancer `{}`)", short_type_name(key.type_name()));
                     check_key(graph, handler.module, *key, false, consumer, errors, &mut reported);
                 }
-                EnhancerDep::Closure(sites) => {
+                EnhancerDep::Closure(dependencies) => {
                     let owner = format!("{name} (enhancer closure)");
-                    check_sites(graph, handler.module, sites, &owner, errors, &mut reported);
+                    check_dependencies(graph, handler.module, dependencies, &owner, errors, &mut reported);
                 }
             }
         }
@@ -226,8 +226,8 @@ fn binding_edges(
 ) -> Vec<Edge> {
     let binding = graph.binding(id);
     let mut edges = Vec::new();
-    for (index, site) in binding.record.sites.list.iter().enumerate() {
-        for read in &site.desc.reads {
+    for (index, dependency) in binding.record.dependencies.list.iter().enumerate() {
+        for read in &dependency.requirement.reads {
             let target = match &read.kind {
                 ReadKind::Single(key) => {
                     let consumer = || graph.consumer(id, index);
@@ -238,34 +238,34 @@ fn binding_edges(
                 ReadKind::Module => Some(EdgeTarget::Module),
             };
             if let Some(target) = target {
-                edges.push(Edge { target, site: index, optional: read.optional });
+                edges.push(Edge { target, dependency: index, optional: read.optional });
             }
         }
     }
     edges
 }
 
-/// Every single-key read of `sites` checked against `module`'s table, each named
+/// Every single-key read of `dependencies` checked against `module`'s table, each named
 /// ``{owner} (param #1)``.
-fn check_sites(
+fn check_dependencies(
     graph: &Graph,
     module: ModuleId,
-    sites: &Sites,
+    dependencies: &Dependencies,
     owner: &str,
     errors: &mut Vec<WiringError>,
     reported: &mut HashSet<(ModuleId, Key)>,
 ) {
-    for site in &sites.list {
-        for read in &site.desc.reads {
+    for dependency in &dependencies.list {
+        for read in &dependency.requirement.reads {
             if let ReadKind::Single(key) = &read.kind {
-                let consumer = || format!("{owner} ({})", site_label(site.label));
+                let consumer = || format!("{owner} ({})", dependency_label(dependency.label));
                 check_key(graph, module, *key, read.optional, consumer, errors, reported);
             }
         }
     }
 }
 
-/// What `key` resolves to in `module`, or the error a site reading it is reported with. A
+/// What `key` resolves to in `module`, or the error a read of it is reported with. A
 /// missing optional read is no error and no edge.
 fn check_key(
     graph: &Graph,

@@ -14,6 +14,7 @@ use crate::binding::factory::{
 use crate::binding::handle::{Binding, Handle, Open, Set};
 use crate::binding::{BindingRecord, Qualifier, Recipe, erase_construct, instance_of};
 use crate::construct::Construct;
+use crate::dependency::Dependencies;
 use crate::hooks::{HookFn, HookKind, HookRecord, erase_trait_hooks};
 use crate::key::{BindingKind, Key};
 use crate::module::Module;
@@ -21,7 +22,6 @@ use crate::module::ModuleIdentity;
 use crate::module::meta::{Meta, MetaMap};
 use crate::redact::Secret;
 use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
-use crate::site::Sites;
 use crate::timer::{BoxError, Bound};
 use crate::transport::controller::{Controller, ControllerRecord};
 
@@ -95,8 +95,8 @@ impl<'a> ModuleDef<'a> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
-        self.push_hook(HookKind::OnModuleInit, erase_init_hook::<Args, F, E>(hook), sites, location)
+        let dependencies = factory_dependencies::<Args, F>();
+        self.push_hook(HookKind::OnModuleInit, erase_init_hook::<Args, F, E>(hook), dependencies, location)
     }
 
     #[track_caller]
@@ -105,8 +105,8 @@ impl<'a> ModuleDef<'a> {
         F: Factory<Args, Output = ()>,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
-        self.push_hook(HookKind::OnModuleDestroy, erase_destroy_hook::<Args, F>(hook), sites, location)
+        let dependencies = factory_dependencies::<Args, F>();
+        self.push_hook(HookKind::OnModuleDestroy, erase_destroy_hook::<Args, F>(hook), dependencies, location)
     }
 
     #[track_caller]
@@ -115,8 +115,8 @@ impl<'a> ModuleDef<'a> {
         F: ShutdownFactory<Args>,
     {
         let location = Location::caller();
-        let sites = shutdown_sites::<Args, F>();
-        self.push_hook(HookKind::BeforeApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
+        let dependencies = shutdown_dependencies::<Args, F>();
+        self.push_hook(HookKind::BeforeApplicationShutdown, erase_signalled_hook::<Args, F>(hook), dependencies, location)
     }
 
     #[track_caller]
@@ -125,8 +125,8 @@ impl<'a> ModuleDef<'a> {
         F: ShutdownFactory<Args>,
     {
         let location = Location::caller();
-        let sites = shutdown_sites::<Args, F>();
-        self.push_hook(HookKind::OnApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
+        let dependencies = shutdown_dependencies::<Args, F>();
+        self.push_hook(HookKind::OnApplicationShutdown, erase_signalled_hook::<Args, F>(hook), dependencies, location)
     }
 
     /// A `Construct` type under its own key, with its declared scope, `CONSTRUCT_TIMEOUT` and
@@ -134,24 +134,24 @@ impl<'a> ModuleDef<'a> {
     #[track_caller]
     pub fn provide<T: Construct>(&mut self) -> Handle<'_, T, Binding<T::Scope, Set>> {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        T::sites(&mut sites);
-        let mut record = construct_record::<T>(Recipe::Construct(erase_construct::<T>()), sites, location);
+        let mut dependencies = Dependencies::default();
+        T::dependencies(&mut dependencies);
+        let mut record = construct_record::<T>(Recipe::Construct(erase_construct::<T>()), dependencies, location);
         record.construct_bound = T::CONSTRUCT_TIMEOUT;
         Handle::new(self.push(record))
     }
 
     /// A `Construct` type built by `factory` instead of `T::construct`: keyed by `T`, with
     /// `T::Scope` and `T::hooks`, which a plain factory never runs. The factory's parameters are
-    /// the binding's sites; `T::sites` describes a constructor that does not run.
+    /// the binding's dependencies; `T::dependencies` describes a constructor that does not run.
     #[track_caller]
     pub fn provide_with<T: Construct, Args>(
         &mut self,
         factory: impl Factory<Args, Output = T>,
     ) -> Handle<'_, T, Binding<T::Scope, Open>> {
         let location = Location::caller();
-        let sites = sites_of::<Args, _>(&factory);
-        let record = construct_record::<T>(Recipe::Factory(erase_factory::<Args, _>(factory)), sites, location);
+        let dependencies = dependencies_of::<Args, _>(&factory);
+        let record = construct_record::<T>(Recipe::Factory(erase_factory::<Args, _>(factory)), dependencies, location);
         Handle::new(self.push(record))
     }
 
@@ -164,9 +164,9 @@ impl<'a> ModuleDef<'a> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let sites = sites_of::<Args, _>(&factory);
+        let dependencies = dependencies_of::<Args, _>(&factory);
         let ctor = erase_try_factory::<Args, _, T, E>(factory);
-        let record = construct_record::<T>(Recipe::Factory(ctor), sites, location);
+        let record = construct_record::<T>(Recipe::Factory(ctor), dependencies, location);
         Handle::new(self.push(record))
     }
 
@@ -202,8 +202,8 @@ impl<'a> ModuleDef<'a> {
         Handle::new(self.push(value_record::<T>(recipe, location)))
     }
 
-    /// A singleton built by an async factory whose parameters are sites; the future's output
-    /// is the key.
+    /// A singleton built by an async factory whose parameters are injection points; the
+    /// future's output is the key.
     #[track_caller]
     pub fn singleton<Args, F>(&mut self, factory: F) -> Handle<'_, F::Output, Binding<Singleton, Open>>
     where
@@ -211,9 +211,9 @@ impl<'a> ModuleDef<'a> {
         F::Output: Send + Sync + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_factory::<Args, F>(factory);
-        Handle::new(self.push(factory_record::<Singleton, F::Output>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<Singleton, F::Output>(ctor, dependencies, location)))
     }
 
     /// A singleton whose factory returns a `Result`; the `Ok` type is the key and an `Err`
@@ -226,9 +226,9 @@ impl<'a> ModuleDef<'a> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_try_factory::<Args, F, T, E>(factory);
-        Handle::new(self.push(factory_record::<Singleton, T>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<Singleton, T>(ctor, dependencies, location)))
     }
 
     #[track_caller]
@@ -238,9 +238,9 @@ impl<'a> ModuleDef<'a> {
         F::Output: Send + Sync + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_factory::<Args, F>(factory);
-        Handle::new(self.push(factory_record::<PerExecution, F::Output>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<PerExecution, F::Output>(ctor, dependencies, location)))
     }
 
     /// An execution-scoped binding whose factory returns a `Result`; an `Err` inside a call
@@ -253,9 +253,9 @@ impl<'a> ModuleDef<'a> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_try_factory::<Args, F, T, E>(factory);
-        Handle::new(self.push(factory_record::<PerExecution, T>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<PerExecution, T>(ctor, dependencies, location)))
     }
 
     #[track_caller]
@@ -265,9 +265,9 @@ impl<'a> ModuleDef<'a> {
         F::Output: Send + Sync + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_factory::<Args, F>(factory);
-        Handle::new(self.push(factory_record::<Transient, F::Output>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<Transient, F::Output>(ctor, dependencies, location)))
     }
 
     #[track_caller]
@@ -278,9 +278,9 @@ impl<'a> ModuleDef<'a> {
         E: Into<BoxError> + Send + 'static,
     {
         let location = Location::caller();
-        let sites = factory_sites::<Args, F>();
+        let dependencies = factory_dependencies::<Args, F>();
         let ctor = erase_try_factory::<Args, F, T, E>(factory);
-        Handle::new(self.push(factory_record::<Transient, T>(ctor, sites, location)))
+        Handle::new(self.push(factory_record::<Transient, T>(ctor, dependencies, location)))
     }
 
     /// Contributions to the collection `U`, from this and any other module.
@@ -303,9 +303,9 @@ impl<'a> ModuleDef<'a> {
     #[track_caller]
     pub fn controller<C: Controller>(&mut self) {
         let location = Location::caller();
-        let mut sites = Sites::default();
-        C::sites(&mut sites);
-        let mut record = construct_record::<C>(Recipe::Construct(erase_construct::<C>()), sites, location);
+        let mut dependencies = Dependencies::default();
+        C::dependencies(&mut dependencies);
+        let mut record = construct_record::<C>(Recipe::Construct(erase_construct::<C>()), dependencies, location);
         record.construct_bound = C::CONSTRUCT_TIMEOUT;
         record.controller = true;
         let binding = self.node.bindings.len();
@@ -332,10 +332,10 @@ impl<'a> ModuleDef<'a> {
         &mut self,
         kind: HookKind,
         run: HookFn,
-        sites: Sites,
+        dependencies: Dependencies,
         location: &'static Location<'static>,
     ) -> ModuleHook<'_> {
-        self.node.hooks.push(HookRecord { kind, bound: Bound::Default, run, sites, location });
+        self.node.hooks.push(HookRecord { kind, bound: Bound::Default, run, dependencies, location });
         ModuleHook::new(&mut *self.node)
     }
 
@@ -350,9 +350,9 @@ impl<'a> ModuleDef<'a> {
 
 /// A binding built by `T::construct` or by a factory standing in for it: `T::Scope` and
 /// `T::hooks` either way.
-fn construct_record<T: Construct>(recipe: Recipe, sites: Sites, location: &'static Location<'static>) -> BindingRecord {
+fn construct_record<T: Construct>(recipe: Recipe, dependencies: Dependencies, location: &'static Location<'static>) -> BindingRecord {
     let kind = <T::Scope as Scope>::KIND;
-    let mut record = BindingRecord::new(Key::of::<T, ()>(), type_name::<T>(), BindingKind::Single, kind, recipe, sites, location);
+    let mut record = BindingRecord::new(Key::of::<T, ()>(), type_name::<T>(), BindingKind::Single, kind, recipe, dependencies, location);
     record.hooks = erase_trait_hooks::<T>(location);
     record.constructs = true;
     record
@@ -360,10 +360,10 @@ fn construct_record<T: Construct>(recipe: Recipe, sites: Sites, location: &'stat
 
 fn factory_record<S: Scope, T: 'static>(
     ctor: crate::binding::ErasedCtor,
-    sites: Sites,
+    dependencies: Dependencies,
     location: &'static Location<'static>,
 ) -> BindingRecord {
-    BindingRecord::new(Key::of::<T, ()>(), type_name::<T>(), BindingKind::Single, S::KIND, Recipe::Factory(ctor), sites, location)
+    BindingRecord::new(Key::of::<T, ()>(), type_name::<T>(), BindingKind::Single, S::KIND, Recipe::Factory(ctor), dependencies, location)
 }
 
 fn value_record<T: 'static>(recipe: Recipe, location: &'static Location<'static>) -> BindingRecord {
@@ -373,25 +373,25 @@ fn value_record<T: 'static>(recipe: Recipe, location: &'static Location<'static>
         BindingKind::Single,
         ScopeKind::Singleton,
         recipe,
-        Sites::default(),
+        Dependencies::default(),
         location,
     )
 }
 
-fn factory_sites<Args, F: Factory<Args>>() -> Sites {
-    let mut sites = Sites::default();
-    <F as Factory<Args>>::sites(&mut sites);
-    sites
+fn factory_dependencies<Args, F: Factory<Args>>() -> Dependencies {
+    let mut dependencies = Dependencies::default();
+    <F as Factory<Args>>::dependencies(&mut dependencies);
+    dependencies
 }
 
-fn sites_of<Args, F: Factory<Args>>(_factory: &F) -> Sites {
-    factory_sites::<Args, F>()
+fn dependencies_of<Args, F: Factory<Args>>(_factory: &F) -> Dependencies {
+    factory_dependencies::<Args, F>()
 }
 
-fn shutdown_sites<Args, F: ShutdownFactory<Args>>() -> Sites {
-    let mut sites = Sites::default();
-    <F as ShutdownFactory<Args>>::sites(&mut sites);
-    sites
+fn shutdown_dependencies<Args, F: ShutdownFactory<Args>>() -> Dependencies {
+    let mut dependencies = Dependencies::default();
+    <F as ShutdownFactory<Args>>::dependencies(&mut dependencies);
+    dependencies
 }
 
 /// The handle a module hook returns: its bound is written once, with `.timeout(..)` or

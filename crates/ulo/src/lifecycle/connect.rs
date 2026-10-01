@@ -69,7 +69,7 @@ pub(crate) async fn build_singleton(shared: &Arc<AppShared>, id: BindingId) -> R
             return Ok(());
         }
         Outcome::Done(Err(ConstructError::Failed(e))) => FailureReason::Errored(redact(&graph.secrets, e)),
-        Outcome::Done(Err(ConstructError::Site(e))) => return Err(site_failure(&graph, binding, e)),
+        Outcome::Done(Err(ConstructError::Dependency(e))) => return Err(dependency_failure(&graph, binding, e)),
         Outcome::Panicked(p) => FailureReason::Panicked(p),
         Outcome::TimedOut { after, limit } => FailureReason::TimedOut { after, limit },
     };
@@ -133,15 +133,15 @@ pub(crate) async fn run_startup_hooks(
     modules: &[ModuleId],
 ) -> Result<(), ConnectError> {
     let graph = shared.graph();
-    for site in hook_plan(&graph, singletons, modules) {
-        for hook in site_hooks(&graph, site).iter().filter(|h| h.kind == kind) {
-            let reason = match run_hook(shared, &graph, site, hook, None, None).await {
+    for owner in hook_plan(&graph, singletons, modules) {
+        for hook in hooks_of(&graph, owner).iter().filter(|h| h.kind == kind) {
+            let reason = match run_hook(shared, &graph, owner, hook, None, None).await {
                 None | Some(Outcome::Done(Ok(()))) => continue,
                 Some(Outcome::Done(Err(e))) => FailureReason::Errored(redact(&graph.secrets, e)),
                 Some(Outcome::Panicked(p)) => FailureReason::Panicked(p),
                 Some(Outcome::TimedOut { after, limit }) => FailureReason::TimedOut { after, limit },
             };
-            return Err(ConnectError::Hook { hook: kind, key: site_key(&graph, site), reason });
+            return Err(ConnectError::Hook { hook: kind, key: owner_key(&graph, owner), reason });
         }
     }
     Ok(())
@@ -149,7 +149,7 @@ pub(crate) async fn run_startup_hooks(
 
 /// What owns a hook: a singleton binding, or a module through its own `on_*` calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HookSite {
+pub(crate) enum HookOwner {
     Binding(BindingId),
     Module(ModuleId),
 }
@@ -157,7 +157,7 @@ pub(crate) enum HookSite {
 /// The order hooks run in at startup; shutdown runs its reverse. Bindings keep connect order,
 /// and each module's own hooks follow the last of its singletons. A module with no singleton
 /// follows the modules before it in collection order.
-pub(crate) fn hook_plan(graph: &Graph, singletons: &[BindingId], modules: &[ModuleId]) -> Vec<HookSite> {
+pub(crate) fn hook_plan(graph: &Graph, singletons: &[BindingId], modules: &[ModuleId]) -> Vec<HookOwner> {
     let mut after_last: HashMap<ModuleId, usize> = HashMap::new();
     for (i, &id) in singletons.iter().enumerate() {
         after_last.insert(graph.binding(id).origin, i + 1);
@@ -181,27 +181,27 @@ pub(crate) fn hook_plan(graph: &Graph, singletons: &[BindingId], modules: &[Modu
             if at > i {
                 break;
             }
-            plan.push(HookSite::Module(m));
+            plan.push(HookOwner::Module(m));
             next.next();
         }
-        plan.push(HookSite::Binding(id));
+        plan.push(HookOwner::Binding(id));
     }
-    plan.extend(next.map(|&(_, m)| HookSite::Module(m)));
+    plan.extend(next.map(|&(_, m)| HookOwner::Module(m)));
     plan
 }
 
-pub(crate) fn site_hooks(graph: &Graph, site: HookSite) -> &[HookRecord] {
-    match site {
-        HookSite::Binding(id) => &graph.binding(id).record.hooks,
-        HookSite::Module(id) => &graph.module(id).hooks,
+pub(crate) fn hooks_of(graph: &Graph, owner: HookOwner) -> &[HookRecord] {
+    match owner {
+        HookOwner::Binding(id) => &graph.binding(id).record.hooks,
+        HookOwner::Module(id) => &graph.module(id).hooks,
     }
 }
 
 /// The key a hook failure names: the binding's, or the module's own type for a module hook.
-pub(crate) fn site_key(graph: &Graph, site: HookSite) -> KeyName {
-    match site {
-        HookSite::Binding(id) => binding_key(graph.binding(id)),
-        HookSite::Module(id) => {
+pub(crate) fn owner_key(graph: &Graph, owner: HookOwner) -> KeyName {
+    match owner {
+        HookOwner::Binding(id) => binding_key(graph.binding(id)),
+        HookOwner::Module(id) => {
             let identity = &graph.module(id).identity;
             let q = identity.qualifier().unwrap_or_else(Qualifier::none);
             Key::from_parts(identity.type_id(), identity.type_name(), q.id, q.name).name(BindingKind::Single)
@@ -215,14 +215,14 @@ pub(crate) fn site_key(graph: &Graph, site: HookSite) -> KeyName {
 pub(crate) async fn run_hook(
     shared: &Arc<AppShared>,
     graph: &Graph,
-    site: HookSite,
+    owner: HookOwner,
     hook: &HookRecord,
     signal: Option<&Signal>,
     cap: Option<Cap>,
 ) -> Option<Outcome<Result<(), BoxError>>> {
-    let (module, instance) = match site {
-        HookSite::Binding(id) => (graph.binding(id).origin, Some(shared.singletons.get(id)?)),
-        HookSite::Module(id) => (id, None),
+    let (module, instance) = match owner {
+        HookOwner::Binding(id) => (graph.binding(id).origin, Some(shared.singletons.get(id)?)),
+        HookOwner::Module(id) => (id, None),
     };
     let timer = shared.config.timer.as_deref();
     let defaults = shared.config.defaults();
@@ -241,10 +241,10 @@ fn module_name(graph: &Graph, id: ModuleId) -> ModuleName {
     graph.module(id).name.clone()
 }
 
-/// A constructor's failed site read during `connect`. A nested construction's failure keeps the
-/// deeper key and its module; any other lookup error is the constructor's failure, since
-/// `ConnectError` has no lookup variant to carry it unchanged.
-fn site_failure(graph: &Graph, binding: &FrozenBinding, error: LookupError) -> ConnectError {
+/// A constructor's failed dependency read during `connect`. A nested construction's failure
+/// keeps the deeper key and its module; any other lookup error is the constructor's failure,
+/// since `ConnectError` has no lookup variant to carry it unchanged.
+fn dependency_failure(graph: &Graph, binding: &FrozenBinding, error: LookupError) -> ConnectError {
     match error {
         LookupError::Construct { key, reason } => {
             let module = owner_of(graph, binding.origin, key.key()).unwrap_or(binding.origin);
@@ -270,7 +270,7 @@ fn owner_of(graph: &Graph, from: ModuleId, key: Key) -> Option<ModuleId> {
 fn construct_error(secrets: &SecretRegistry, error: ConstructError) -> Redacted {
     match error {
         ConstructError::Failed(e) => redact(secrets, e),
-        ConstructError::Site(e) => core_error(e),
+        ConstructError::Dependency(e) => core_error(e),
     }
 }
 

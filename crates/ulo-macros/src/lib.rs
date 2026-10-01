@@ -1,9 +1,9 @@
 //! Macros for `ulo`. Each expands to calls on the core's value-level API, which integration
 //! crates call directly; nothing here does what that API cannot.
 //!
-//! Errors are `syn::Error`s spanned on the offending token, and per-site assertions are emitted
-//! with `quote_spanned!`, so a compile error points at the field, parameter or attribute rather
-//! than at the macro invocation.
+//! Errors are `syn::Error`s spanned on the offending token, and per-field and per-parameter
+//! assertions are emitted with `quote_spanned!`, so a compile error points at the field,
+//! parameter or attribute rather than at the macro invocation.
 
 mod construct_attr;
 mod enhancers;
@@ -16,10 +16,10 @@ use proc_macro::TokenStream;
 
 /// A type the container builds.
 ///
-/// On a struct, every field is a site except one marked `#[injectable(default)]`, which is set
-/// from `Default`. On an impl block, the constructor is the fn named `new`, or the one marked
-/// `#[construct]`; its parameters are sites, it may be `async`, and it may return `Self` or a
-/// `Result<Self, E>`.
+/// On a struct, every field is an injection point except one marked `#[injectable(default)]`,
+/// which is set from `Default`. On an impl block, the constructor is the fn named `new`, or the
+/// one marked `#[construct]`; its parameters are injection points, it may be `async`, and it may
+/// return `Self` or a `Result<Self, E>`.
 ///
 /// Arguments: a scope, `singleton`, `execution` or `transient` (none means `Auto`), and
 /// `timeout = <Duration expr>`, which writes `CONSTRUCT_TIMEOUT`. `Construct::hooks` is filled by
@@ -70,7 +70,7 @@ pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// transport; `http = AuthGuard` limits it to that transport's handlers. A `value = expr` there
 /// is evaluated once per handler it applies to; a guard whose state every handler shares is
 /// declared by type, as a singleton binding. A closure is written synchronously and built per
-/// execution, its parameters sites.
+/// execution, its parameters injection points.
 #[proc_macro_attribute]
 pub fn guards(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::marker("guards", attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()

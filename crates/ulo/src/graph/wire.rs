@@ -8,6 +8,7 @@ use std::panic::Location;
 use std::sync::Arc;
 
 use crate::binding::{AlsoAs, BindingRecord, Qualifier, ReadyRecord, Recipe, instance_of};
+use crate::dependency::{Dependencies, DependencyRecord, Read, ReadKind, Requirement};
 use crate::error::LoadRefusal;
 use crate::error::wiring::{WiringError, WiringErrors};
 use crate::graph::register::{Import, Registry};
@@ -22,7 +23,6 @@ use crate::module::meta::FrozenMeta;
 use crate::module::{Module, ModuleIdentity, ModuleName};
 use crate::redact::redact;
 use crate::scope::ScopeKind;
-use crate::site::{ReadKind, SiteDesc, SiteRead, SiteRecord, Sites};
 use crate::testing::{CollectionOverride, Override, OverrideTarget, TestPlan};
 use crate::timer::{Bound, Timer};
 use crate::transport::controller::{EnhancerDep, HandlerDecl, HandlerRecord, Mount};
@@ -115,8 +115,8 @@ pub(crate) struct Declared {
     pub(crate) first_handler: usize,
     pub(crate) exports: Vec<(ModuleId, ExportRecord)>,
     pub(crate) inputs: Vec<(ModuleId, InputRecord)>,
-    /// Each metadata value's sites, with the metadata type's name.
-    pub(crate) meta: Vec<(ModuleId, &'static str, Sites)>,
+    /// Each metadata value's dependencies, with the metadata type's name.
+    pub(crate) meta: Vec<(ModuleId, &'static str, Dependencies)>,
 }
 
 /// The errors of one run by step, so the report lists them in the order of §10.1 whatever order
@@ -125,7 +125,7 @@ pub(crate) struct Declared {
 struct Steps {
     modules: Vec<WiringError>,
     bindings: Vec<WiringError>,
-    sites: Vec<WiringError>,
+    dependencies: Vec<WiringError>,
     cycles: Vec<WiringError>,
     scopes: Vec<WiringError>,
     environment: Vec<WiringError>,
@@ -135,7 +135,7 @@ impl Steps {
     fn into_errors(self) -> Vec<WiringError> {
         let mut errors = self.modules;
         errors.extend(self.bindings);
-        errors.extend(self.sites);
+        errors.extend(self.dependencies);
         errors.extend(self.cycles);
         errors.extend(self.scopes);
         errors.extend(self.environment);
@@ -143,14 +143,14 @@ impl Steps {
     }
 }
 
-/// Steps 1 to 6 over a frozen graph. The tables come first: re-exports, aliases and every site
-/// resolve against them. Roles come before the scope pass, which reads them; the cycle check
-/// runs on the resolved edges before either.
+/// Steps 1 to 6 over a frozen graph. The tables come first: re-exports, aliases and every
+/// injection point resolve against them. Roles come before the scope pass, which reads them; the
+/// cycle check runs on the resolved edges before either.
 fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Steps) {
     visibility::build_tables(graph, declared);
     check_modules(graph, declared, &mut steps.modules);
     check_bindings(graph, declared, &mut steps.bindings);
-    visibility::resolve_sites(graph, declared, &mut steps.sites);
+    visibility::resolve_dependencies(graph, declared, &mut steps.dependencies);
     cycles::dependency_cycles(graph, &mut steps.cycles);
     scopes::assign_roles(graph);
     scopes::needs_execution(graph);
@@ -175,7 +175,7 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
         BindingKind::Single,
         ScopeKind::Singleton,
         Recipe::Value(instance_of::<dyn Timer>(Arc::clone(timer))),
-        Sites::default(),
+        Dependencies::default(),
         location,
     ));
     node.exports.push(ExportRecord { key, reexport: false, location });
@@ -322,9 +322,9 @@ fn freeze(
         let mut entries: Vec<_> = meta.values.into_iter().collect();
         entries.sort_by_key(|(_, entry)| entry.name);
         for (ty, entry) in entries {
-            let mut sites = Sites::default();
-            (entry.sites)(&*entry.value, &mut sites);
-            declared.meta.push((id, entry.name, sites));
+            let mut dependencies = Dependencies::default();
+            (entry.dependencies)(&*entry.value, &mut dependencies);
+            declared.meta.push((id, entry.name, dependencies));
             frozen_meta.insert(ty, Arc::from(entry.value));
         }
 
@@ -362,10 +362,10 @@ fn freeze(
     declared
 }
 
-/// Step 2, tests: each override replaces the recipe and sites of the bindings it matches, which
-/// keep their origin module, scope, visibility, exports, hooks and readiness check. An override
-/// of an `also_as` key splits that key off into a binding of its own in the same module, since
-/// the override's value is not the type the original builds.
+/// Step 2, tests: each override replaces the recipe and dependencies of the bindings it matches,
+/// which keep their origin module, scope, visibility, exports, hooks and readiness check. An
+/// override of an `also_as` key splits that key off into a binding of its own in the same module,
+/// since the override's value is not the type the original builds.
 fn apply_overrides(registry: &mut Registry, names: &[ModuleName], overrides: Vec<Override>, errors: &mut Vec<WiringError>) {
     let timer = Key::of::<dyn Timer, ()>();
     for ov in overrides {
@@ -478,7 +478,7 @@ fn replace_recipe(node: &mut ModuleNode, position: usize, ov: &Override) {
     let Some(record) = node.bindings.get_mut(position) else { return };
     if record_key(record) == ov.key {
         record.recipe = clone_recipe(&ov.recipe);
-        record.sites = clone_sites(&ov.sites);
+        record.dependencies = clone_dependencies(&ov.dependencies);
         return;
     }
     let qualifier = record.qualifier;
@@ -490,7 +490,7 @@ fn replace_recipe(node: &mut ModuleNode, position: usize, ov: &Override) {
         BindingKind::Single,
         scope,
         clone_recipe(&ov.recipe),
-        clone_sites(&ov.sites),
+        clone_dependencies(&ov.dependencies),
         ov.location,
     );
     split.qualifier = qualifier;
@@ -529,7 +529,7 @@ fn apply_collections(registry: &mut Registry, collections: Vec<CollectionOverrid
                 BindingKind::Collection,
                 ScopeKind::Singleton,
                 Recipe::Value(item),
-                Sites::default(),
+                Dependencies::default(),
                 co.location,
             );
             record.qualifier = qualifier_of(co.key);
@@ -812,21 +812,21 @@ fn refusal(base: &Graph, registry: &Registry) -> Option<LoadRefusal> {
     None
 }
 
-/// Whether anything in `base` reads `key` as a collection: a binding's site, a readiness check
-/// or hook closure, a module hook, an enhancer closure, or a transport's role collection.
+/// Whether anything in `base` reads `key` as a collection: a binding's dependency, a readiness
+/// check or hook closure, a module hook, an enhancer closure, or a transport's role collection.
 fn reads_collection(base: &Graph, key: Key) -> bool {
-    let in_sites = |sites: &Sites| {
-        sites.list.iter().flat_map(|site| &site.desc.reads).any(|read| matches!(&read.kind, ReadKind::Collection(k) if *k == key))
+    let in_dependencies = |dependencies: &Dependencies| {
+        dependencies.list.iter().flat_map(|d| &d.requirement.reads).any(|read| matches!(&read.kind, ReadKind::Collection(k) if *k == key))
     };
     base.bindings.iter().any(|binding| {
         binding.edges.iter().any(|edge| matches!(&edge.target, EdgeTarget::Collection(k) if *k == key))
-            || binding.record.ready.as_ref().is_some_and(|ready| in_sites(&ready.sites))
-            || binding.record.hooks.iter().any(|hook| in_sites(&hook.sites))
-    }) || base.modules.iter().any(|module| module.hooks.iter().any(|hook| in_sites(&hook.sites)))
+            || binding.record.ready.as_ref().is_some_and(|ready| in_dependencies(&ready.dependencies))
+            || binding.record.hooks.iter().any(|hook| in_dependencies(&hook.dependencies))
+    }) || base.modules.iter().any(|module| module.hooks.iter().any(|hook| in_dependencies(&hook.dependencies)))
         || base.handlers.iter().any(|handler| {
             handler.decl.role_keys.contains(&key)
                 || handler.decl.enhancer_deps.iter().any(|dep| match dep {
-                    EnhancerDep::Closure(sites) => in_sites(&**sites),
+                    EnhancerDep::Closure(dependencies) => in_dependencies(&**dependencies),
                     EnhancerDep::Type(_) => false,
                 })
         })
@@ -893,7 +893,7 @@ fn clone_edge(edge: &Edge) -> Edge {
         EdgeTarget::Execution => EdgeTarget::Execution,
         EdgeTarget::Module => EdgeTarget::Module,
     };
-    Edge { target, site: edge.site, optional: edge.optional }
+    Edge { target, dependency: edge.dependency, optional: edge.optional }
 }
 
 fn clone_table(table: &VisibilityTable) -> VisibilityTable {
@@ -927,7 +927,7 @@ fn clone_handler(handler: &HandlerRecord) -> HandlerRecord {
                 .iter()
                 .map(|dep| match dep {
                     EnhancerDep::Type(key) => EnhancerDep::Type(*key),
-                    EnhancerDep::Closure(sites) => EnhancerDep::Closure(Arc::clone(sites)),
+                    EnhancerDep::Closure(dependencies) => EnhancerDep::Closure(Arc::clone(dependencies)),
                 })
                 .collect(),
             specs: Arc::clone(&decl.specs),
@@ -947,7 +947,7 @@ fn clone_record(record: &BindingRecord) -> BindingRecord {
         scope: record.scope,
         controller: record.controller,
         recipe: clone_recipe(&record.recipe),
-        sites: clone_sites(&record.sites),
+        dependencies: clone_dependencies(&record.dependencies),
         construct_bound: record.construct_bound,
         ready: record.ready.as_ref().map(clone_ready),
         replaced_ready: record.replaced_ready.clone(),
@@ -960,7 +960,7 @@ fn clone_record(record: &BindingRecord) -> BindingRecord {
 fn clone_ready(ready: &ReadyRecord) -> ReadyRecord {
     ReadyRecord {
         check: Arc::clone(&ready.check),
-        sites: clone_sites(&ready.sites),
+        dependencies: clone_dependencies(&ready.dependencies),
         retries: ready.retries,
         backoff: ready.backoff,
         whole: ready.whole,
@@ -970,7 +970,7 @@ fn clone_ready(ready: &ReadyRecord) -> ReadyRecord {
 }
 
 fn clone_hook(hook: &HookRecord) -> HookRecord {
-    HookRecord { kind: hook.kind, bound: hook.bound, run: Arc::clone(&hook.run), sites: clone_sites(&hook.sites), location: hook.location }
+    HookRecord { kind: hook.kind, bound: hook.bound, run: Arc::clone(&hook.run), dependencies: clone_dependencies(&hook.dependencies), location: hook.location }
 }
 
 fn clone_recipe(recipe: &Recipe) -> Recipe {
@@ -983,19 +983,19 @@ fn clone_recipe(recipe: &Recipe) -> Recipe {
     }
 }
 
-fn clone_sites(sites: &Sites) -> Sites {
-    let list = sites
+fn clone_dependencies(dependencies: &Dependencies) -> Dependencies {
+    let list = dependencies
         .list
         .iter()
-        .map(|site| SiteRecord {
-            label: site.label,
-            type_name: site.type_name,
-            desc: SiteDesc {
-                reads: site.desc.reads.iter().map(|read| SiteRead { kind: clone_read(&read.kind), optional: read.optional }).collect(),
+        .map(|dependency| DependencyRecord {
+            label: dependency.label,
+            type_name: dependency.type_name,
+            requirement: Requirement {
+                reads: dependency.requirement.reads.iter().map(|read| Read { kind: clone_read(&read.kind), optional: read.optional }).collect(),
             },
         })
         .collect();
-    Sites { list }
+    Dependencies { list }
 }
 
 fn clone_read(kind: &ReadKind) -> ReadKind {

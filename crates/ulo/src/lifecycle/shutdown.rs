@@ -28,7 +28,7 @@ use crate::error::{FailureReason, Shutdown, ShutdownError, ShutdownFailure};
 use crate::execution::notify::{Listen, Notify};
 use crate::graph::{BindingId, Graph, ModuleId};
 use crate::hooks::HookKind;
-use crate::lifecycle::connect::{HookSite, hook_plan, run_hook, site_hooks, site_key};
+use crate::lifecycle::connect::{HookOwner, hook_plan, hooks_of, owner_key, run_hook};
 use crate::lifecycle::phase::Phase;
 use crate::lifecycle::run::{Cap, Outcome, select};
 use crate::redact::redact;
@@ -87,7 +87,7 @@ pub(crate) struct Progress {
     stage: Stage,
     cap: Option<Cap>,
     /// The step under way, as the hooks it runs in order, or nothing between hook steps.
-    plan: Option<Vec<(HookSite, usize)>>,
+    plan: Option<Vec<(HookOwner, usize)>>,
     /// How many hooks of `plan`, or transports of the close step, have started. One that started
     /// is never started again.
     cursor: usize,
@@ -190,9 +190,9 @@ pub(crate) async fn run_hook_step(shared: &Arc<AppShared>, kind: HookKind, signa
     let signal = matches!(kind, HookKind::BeforeApplicationShutdown | HookKind::OnApplicationShutdown).then_some(signal);
     let plan = slot.get_or_insert_with(|| shutdown_plan(&graph, kind));
 
-    while let Some(&(site, index)) = plan.get(*cursor) {
+    while let Some(&(owner, index)) = plan.get(*cursor) {
         *cursor += 1;
-        let Some(hook) = site_hooks(&graph, site).get(index) else { continue };
+        let Some(hook) = hooks_of(&graph, owner).get(index) else { continue };
         let expired = match (cap, timer) {
             (Some(cap), Some(timer)) => cap.expired(timer),
             _ => false,
@@ -200,15 +200,15 @@ pub(crate) async fn run_hook_step(shared: &Arc<AppShared>, kind: HookKind, signa
         let reason = if expired {
             FailureReason::Skipped
         } else {
-            match run_hook(shared, &graph, site, hook, signal, cap).await {
+            match run_hook(shared, &graph, owner, hook, signal, cap).await {
                 None | Some(Outcome::Done(Ok(()))) => continue,
-                // A closure hook whose site read failed: the hook itself returns `()`.
+                // A closure hook whose dependency read failed: the hook itself returns `()`.
                 Some(Outcome::Done(Err(e))) => FailureReason::Errored(redact(&graph.secrets, e)),
                 Some(Outcome::Panicked(p)) => FailureReason::Panicked(p),
                 Some(Outcome::TimedOut { after, limit }) => FailureReason::TimedOut { after, limit },
             }
         };
-        failures.push(ShutdownFailure::Hook { hook: kind, key: site_key(&graph, site), reason });
+        failures.push(ShutdownFailure::Hook { hook: kind, key: owner_key(&graph, owner), reason });
     }
     *slot = None;
     *cursor = 0;
@@ -282,7 +282,7 @@ fn servers_of(shared: &AppShared) -> Vec<Arc<dyn ErasedServer>> {
 
 /// The hooks of `kind` in the order shutdown runs them: each group of lazily loaded modules,
 /// latest load first, then the base graph, each group in the exact reverse of its startup order.
-fn shutdown_plan(graph: &Graph, kind: HookKind) -> Vec<(HookSite, usize)> {
+fn shutdown_plan(graph: &Graph, kind: HookKind) -> Vec<(HookOwner, usize)> {
     let mut loads: Vec<Option<u32>> = graph.modules.iter().map(|m| m.loaded).collect();
     loads.sort_unstable();
     loads.dedup();
@@ -297,10 +297,10 @@ fn shutdown_plan(graph: &Graph, kind: HookKind) -> Vec<(HookSite, usize)> {
             .filter(|&id| graph.module(graph.binding(id).origin).loaded == load)
             .collect();
         let modules: Vec<ModuleId> = graph.modules.iter().filter(|m| m.loaded == load).map(|m| m.id).collect();
-        for site in hook_plan(graph, &singletons, &modules).into_iter().rev() {
-            for (index, hook) in site_hooks(graph, site).iter().enumerate().rev() {
+        for owner in hook_plan(graph, &singletons, &modules).into_iter().rev() {
+            for (index, hook) in hooks_of(graph, owner).iter().enumerate().rev() {
                 if hook.kind == kind {
-                    entries.push((site, index));
+                    entries.push((owner, index));
                 }
             }
         }
