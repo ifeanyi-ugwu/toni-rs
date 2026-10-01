@@ -400,3 +400,54 @@ The documentation should also point out that the drain doesn't track detached ta
 The same bound applies when execution-scoped bindings are built during a call, since a hanging constructor there blocks the call just the same.
 
 **4. The ambiguous `TIMEOUT`.** This is smaller than it looks. *Defining* the const is never ambiguous: inside `impl OnModuleInit for X`, `const TIMEOUT` clearly belongs to `OnModuleInit`. Only *reading* `Self::TIMEOUT` is ambiguous, and the core always reads it fully qualified in generated and internal code. Users almost never need to read it. One line in §9.1 is enough: "to read a hook's bound when a type implements several hook traits, write `<T as OnModuleInit>::TIMEOUT`." Naming the constructor's const `CONSTRUCT_TIMEOUT` rather than `TIMEOUT` keeps it out of this entirely, which is why I named it that way above.
+
+---
+
+## Seventh response: `listen()` without a Timer, and the eleven details of the shutdown fold
+
+Received 2026-10-01. Not yet signed off.
+
+### The question: keep `listen()`'s refusal
+
+Keep it. My wording was loose. "A single slow client could hold shutdown open" described what would happen *if* a served app had no Timer, and the design rules that case out. Your version, "work the application does not control", is the accurate statement of the asymmetry.
+
+Accepting a timerless `listen()` with a zero-length drain would be worse on two counts:
+- Every shutdown would cut every in-flight request, silently. That makes graceful shutdown impossible for anyone who forgot `.timer(..)`, and it isn't detectable until production.
+- Per-call deadlines need a Timer to enforce. A served app without one would accept deadlines it can't keep.
+
+So refusing at `listen()` is the right place to catch it. No change to §9.5, §12, or the defaults rule.
+
+### The eleven details
+
+1. **Confirmed, with one addition.** `TimedOut { after: Duration }`. An error saying a hook timed out without saying after how long sends people into the code to find out. Carrying the bound also shows whether the limit was the per-hook bound, the default, or the outer cap. Panic payloads converted to a message inside `BoxError` is fine.
+
+2. **Confirmed.**
+
+3. **Confirmed.**
+
+4. **Correction.** A readiness check with no bound can hang on its *first* attempt. A ping to a host that silently drops packets never returns, so the retries are never reached. And external I/O is exactly what readiness checks exist for. When a Timer exists, a check with neither `.timeout` nor `.attempt_timeout` should get `construct_timeout` as its attempt bound. Without a Timer, it runs unbounded under the same rule as constructors.
+
+5. **Confirmed.** That's the explicit-bound rule applied consistently.
+
+6. **Confirmed**, for both `ExecutionRef` and `AppHandle`.
+
+7. **Correction: name the type.** `Closed` must fit inside whatever `load` returns, and `load` already has other failures: wiring errors, startup failures, refusals of controllers or late contributions. Give it its own enum:
+
+   ```rust
+   pub enum LoadError {
+       Closed(Closed),
+       Wiring(WiringErrors),
+       Startup(StartupError),
+       Refused(LoadRefusal),   // controllers, middleware, late contributions, global exports
+   }
+   ```
+
+   Leaving it unnamed invites someone to cram `Closed` into `StartupError` later, where it doesn't belong.
+
+8. **Confirmed.**
+
+9. **Confirmed**, assuming the steps are: 1 before-shutdown, 2 stop accepting, 3 drain, 4 cancel and abandon, 5 destroy, 6 close sockets, 7 shutdown. If the document numbers them differently, the mapping follows the meaning: lookups are refused from the first destroy hook onward.
+
+10. **Confirmed, with one practical note.** Transports open terminal executions from connection tasks that they spawned earlier, so the token can't be a short-lived borrow. Make `DrainToken` cheaply `Clone` (an `Arc` inside) while keeping it impossible to construct outside the core. Cloning is harmless: `open_terminal` still checks the phase, so a token used after the drain has ended is refused like anything else.
+
+11. **Confirmed.** Mention one path explicitly: the drain can end early because the `shutdown_timeout` cap expires, and then "end of the drain" fires at that moment rather than at `drain_timeout`. It's not a fourth source, but readers will wonder.
