@@ -193,7 +193,7 @@ pub trait Construct: Sized + Send + Sync + 'static {
 
 `Construct` is not generic over the resolver. That parameter only existed to keep a door open for compile-time modules, and we ruled that approach out. `sites()` is now the single source of truth for dependencies.
 
-`CONSTRUCT_TIMEOUT` bounds `construct` wherever the instance is built: during `connect` for a singleton, and inside the call for an execution-scoped or transient binding, where a hanging constructor would block the call. `Default` is the app's `construct_timeout`, 30 s. Expiry reports as timed out, `StartupError::Construct` during `connect` and `LookupError::Construct` inside a call (§10.2). A factory takes the same bound through `.timeout(..)` on its binding handle (§9.1).
+`CONSTRUCT_TIMEOUT` bounds `construct` wherever the instance is built: during `connect` for a singleton, and inside the call for an execution-scoped or transient binding, where a hanging constructor would block the call. `Default` is the app's `construct_timeout`, 30 s. Expiry reports as `FailureReason::TimedOut`, on `ConnectError::Construct` during `connect` and on `LookupError::Construct` inside a call (§10.2). A factory takes the same bound through `.timeout(..)` on its binding handle (§9.1).
 
 ### 3.5 Lifecycle traits
 
@@ -332,10 +332,12 @@ The core has no clock of its own. Every wait it times, the drain, a hook, a cons
 
 When a `Timer` is configured, the core binds it as a global export under `dyn Timer`, a value in its own global module, so a service writes `Dep<dyn Timer>` and sleeps without a runtime dependency. On an app with no `Timer` that site is an ordinary missing dependency. The binding is app configuration, not a binding to replace: `override_value::<dyn Timer>` in a test is a wiring error with the hint "set it with `TestApp::timer(..)`" (§11), and a module binding `dyn Timer` itself is two sources for one key against the core's export (§10.1 step 3).
 
-`Bound` is how a hook, a constructor or a factory states how long it may take. `Default` takes the app's default for that kind of bound: `hook_timeout` (10 s) for a hook, `construct_timeout` (30 s) for a construction and for one attempt of a readiness check that writes neither of its bounds (§9.3). `After(d)` is an explicit bound. `Unbounded` is no bound, as a variant rather than `Some(Duration::MAX)`: `Instant + Duration::MAX` panics, and a deadline computed from it would turn "unbounded" into a panic in the shutdown path.
+`Bound` is how a hook, a constructor or a factory states how long it may take. `Default` takes the app's default for that kind of bound: `hook_timeout` (10 s) for a hook, `construct_timeout` (30 s) for a construction and for one attempt of a readiness check (§9.3). `After(d)` is an explicit bound. `Unbounded` is no bound, as a variant rather than `Some(Duration::MAX)`: `Instant + Duration::MAX` panics, and a deadline computed from it would turn "unbounded" into a panic in the shutdown path.
+
+Every bounded item, a hook, a construction or a readiness check, is in one of those three states. A trait const writes the variant. A binding handle leaves the item at `Default` by writing nothing, makes it explicit with `.timeout(..)`, or `.attempt_timeout(..)` as well on a readiness check, and writes `Unbounded` with `.unbounded()` (§9.1, §9.3). The states are exclusive on one item: `.unbounded()` beside an explicit bound is a wiring error (§10.1 step 2).
 
 One rule for a bound and the `Timer`:
-- The app defaults apply only when a `Timer` is configured. Without one, a hook or construction left at `Default`, and a readiness check with neither bound written, runs unbounded.
+- The app defaults apply only when a `Timer` is configured. Without one, an item left at `Default` runs unbounded.
 - An explicit bound, `After(..)`, `.timeout(..)` or `.attempt_timeout(..)`, needs a `Timer` and is a wiring error without one (§10.1 step 6). So is a builder knob set on an app with none.
 - `Unbounded` needs no `Timer` and raises no error. The outer `shutdown_timeout` still contains it (§9.5): unbounded per hook is not unbounded overall.
 - The drain is the one asymmetry. Without a `Timer` it is zero-length, and live executions are abandoned at once (§9.5). Hooks run unbounded because they are the application's own code; executions wait on work the application does not control, and a drain with no bound would let one execution that never ends hold shutdown open.
@@ -699,10 +701,11 @@ let reports: ModuleRef = handle.load(ReportsModule).await?;   // Result<ModuleRe
 
 A lazily loaded module is wired against the frozen graph, with all of its errors reported in one pass, and then connected through its own readiness checks and init hooks. Loading the same identity twice returns the existing handle.
 
-`load` fails with `LoadError` (§10.2): `Wiring` for the module's wiring errors, `Startup` for a construction, readiness check or init hook that fails, `Refused(LoadRefusal)` for what the frozen graph cannot take, and `Closed` by phase. `LoadRefusal` names four things, refused because the graph has already been handed out:
+`load` fails with `LoadError` (§10.2): `Wiring` for the module's wiring errors, `Connect(ConnectError)` for a construction, readiness check or init hook that fails, `Refused(LoadRefusal)` for what the frozen graph cannot take, and `Closed` by phase. `LoadRefusal` names five things, refused because the graph has already been handed out:
 - **Controllers and middleware**, because routes are already bound.
 - **Contributions to a collection the module does not introduce itself.** A lazy module cannot contribute to any key that a pre-existing binding reads as `Many<T>`, whatever that binding's scope; the rule is static and checked at `load` without asking what has already run.
 - **Global exports.**
+- **Execution inputs.** Inputs belong to transports (§6.4), and the per-handler input check ran at wiring time over the inputs the graph then had.
 
 Shutdown includes lazily loaded modules, in reverse order of loading. `load` is refused with `LoadError::Closed` from Stopping on (§9.5): a module loaded then would miss the before-shutdown stage already running, and its shutdown would be incomplete.
 
@@ -741,7 +744,7 @@ m.on_init(|users: Dep<UserService>| async move { users.seed_admin().await })   /
     .timeout(Duration::from_secs(5));
 ```
 
-The handle is one type with a state parameter naming the item written last, and the binding is the first item: `.timeout(..)` bounds whatever the state names, construction directly after `singleton(..)`, the check after `.ready(..)`, the hook after `.on_destroy(..)`. `.retries`, `.backoff` and `.attempt_timeout` exist on the readiness item alone, and `also_as` and `qualified` describe the binding and return to it. Misuse is E0599 at the method, naming the handle type the method exists on. A closure's `.timeout` means what the trait const means (§3.9), `Default` when left off, and `.unbounded()` writes `Unbounded`.
+The handle is one type with a state parameter naming the item written last, and the binding is the first item: `.timeout(..)` and `.unbounded()` write the bound of whatever the state names, construction directly after `singleton(..)`, the check after `.ready(..)`, the hook after `.on_destroy(..)`. `.retries`, `.backoff` and `.attempt_timeout` exist on the readiness item alone, and `also_as` and `qualified` describe the binding and return to it. Misuse is E0599 at the method, naming the handle type the method exists on. A closure's `.timeout` means what the trait const means (§3.9), `Default` when left off, and `.unbounded()` writes `Unbounded`; writing both on one item is a wiring error (§10.1 step 2).
 
 A factory's output is a plain value, so trait hooks run only for types the container constructs. This rule is documented, and it's the reason closure hooks exist. It holds even when the output type implements `Construct`: `m.singleton(|| async { Cache::custom() })` binds `Cache` by factory, and its `OnModuleInit` impl compiles and never runs, because the graph learns which types are `Construct` only through `provide`. A `Construct` type that needs a custom build is bound with `m.provide_with::<Cache>(|| async { Cache::custom() })`, which runs `Cache::hooks` like `provide` does (§4).
 
@@ -764,7 +767,7 @@ m.singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect_lazy(cfg.url.expos
     .timeout(Duration::from_secs(10));          // the whole check, retries and backoff included
 ```
 
-A readiness check runs right after its binding is constructed and before anything that depends on it. `.timeout` bounds the whole check, retries and backoff included, so it means what a hook's `.timeout` means; `.attempt_timeout` bounds one attempt and is what catches a single hung ping. Both are optional, and both need a `Timer` and are wiring errors without one (§3.9). A check that writes neither takes `construct_timeout` as its attempt bound when a `Timer` exists, under the rule constructors follow: external I/O is what a readiness check exists for, and a ping to a host that drops packets never returns, so an unbounded first attempt would never reach its retries. Without a `Timer` it runs unbounded. A check that writes either bound takes no default. A check that runs out of time reports as `StartupError::Readiness` with the attempts made.
+A readiness check runs right after its binding is constructed and before anything that depends on it. `.timeout` bounds the whole check, retries and backoff included, so it means what a hook's `.timeout` means; `.attempt_timeout` bounds one attempt and is what catches a single hung ping. Both are optional, and both need a `Timer` and are wiring errors without one (§3.9). A check that writes neither takes `construct_timeout` as its attempt bound when a `Timer` exists, under the rule constructors follow: external I/O is what a readiness check exists for, and a ping to a host that drops packets never returns, so an unbounded first attempt would never reach its retries. Without a `Timer` it runs unbounded. Writing `.timeout`, `.attempt_timeout` or `.unbounded()` opts out of that default. `.unbounded()` runs the check with no bound on an attempt or on the whole, for a dependency the app waits on however long it takes; `.retries` and `.backoff` keep their meaning under it. A check that runs out of time reports as `ConnectError::Readiness` with the attempts made.
 
 Before an error message leaves the core, it goes through a redaction pass. The pass replaces every `Secret<_>` registered with the graph and, as a backstop, strips the userinfo from anything shaped like a URL. Registration is explicit per graph, never a process-wide list, which would leak between tests:
 - `m.secret(&self.url)` in the value API, for a secret a module holds in its configuration and moves into a factory.
@@ -796,7 +799,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`hook_timeout` (10 s unset) and `construct_timeout` (30 s unset) sit beside those two knobs and are the `Default` every hook and construction starts with (§3.9); `construct_timeout` also bounds one attempt of a readiness check that writes no bound of its own (§9.3). All four are timed by the `Timer` and apply only with one; set on a builder with none, each is a wiring error.
+`hook_timeout` (10 s unset) and `construct_timeout` (30 s unset) sit beside those two knobs and are the `Default` every hook and construction starts with (§3.9); `construct_timeout` also bounds one attempt of a readiness check left at `Default` (§9.3). All four are timed by the `Timer` and apply only with one; set on a builder with none, each is a wiring error.
 
 A job, a CLI command or a test stops after `connect()` and uses `get` or `execute`, then calls `close(Signal::new("done"))`, which runs the shutdown sequence with no sockets to close (§9.5). Anything that needs the app while it serves holds an `AppHandle` taken before `serve` (§8.6).
 
@@ -825,7 +828,7 @@ The sequence:
 
 `is_draining()` is `false` throughout Stopping. Draining means new work is refused and the drain window has started; a stream told to end during Stopping would end before the discovery hook has deregistered, which is what the hook's position exists to prevent. Early notice is `BeforeApplicationShutdown`.
 
-**Bounds.** Each hook runs under its own `TIMEOUT` (§3.9), `hook_timeout` where it writes none. The drain runs under `drain_timeout`, ten seconds unset. `shutdown_timeout` caps the whole sequence and is unset by default. Hooks run one after another: twenty hooks at ten seconds each take more than three minutes, while an orchestrator kills the process at its grace period, thirty seconds in Kubernetes, mid-hook and with nothing reported. The cap starts at the trigger, where the orchestrator's clock starts too, and the before-shutdown stage counts against it; a deployment sets it a few seconds under the grace period. When it expires, every remaining step that waits on user code is skipped: hooks not yet run are recorded as skipped, a hook mid-run is dropped and recorded as timed out after the cap, and a drain still open cancels and abandons at once. Stop accepting and the socket close still run, as neither runs user code. A hook declared `Unbounded` is still inside the cap.
+**Bounds.** Each hook runs under its own `TIMEOUT` (§3.9), `hook_timeout` where it writes none. The drain runs under `drain_timeout`, ten seconds unset. `shutdown_timeout` caps the whole sequence and is unset by default. Hooks run one after another: twenty hooks at ten seconds each take more than three minutes, while an orchestrator kills the process at its grace period, thirty seconds in Kubernetes, mid-hook and with nothing reported. The cap starts at the trigger, where the orchestrator's clock starts too, and the before-shutdown stage counts against it; a deployment sets it a few seconds under the grace period. When it expires, every remaining step that waits on user code is skipped: hooks not yet run are recorded as `Skipped`, a hook mid-run is dropped and recorded as `TimedOut` with `limit: ShutdownCap` and the cap's duration as `after` (§10.2), and a drain still open cancels and abandons at once. Stop accepting and the socket close still run, as neither runs user code. A hook declared `Unbounded` is still inside the cap.
 
 **Abandoning a hook** drops its future (§3.9). The hook stops at its next await with its own state as it was, and anything it spawned keeps running. An execution abandoned at the drain's end is cancelled and left running instead: transports and subtasks still hold it. A hook that times out, is skipped by the cap, panics or (an init or bootstrap hook) returns an error is recorded with that reason (§10.2), and a failing step never stops the sequence. The outcome is `Result<Shutdown, ShutdownError>` (§10.2), received by `serve` and by every `close` caller. `ShutdownError` is `Clone` with its contents behind an `Arc`, because one outcome has several receivers.
 
@@ -846,7 +849,7 @@ Without `serve`, a job or CLI on `Connected`, `close` runs the same sequence. Th
 `wire()` runs these steps and **collects** errors. It never stops at the first one.
 
 1. **Module graph:** deduplicate identities, detect import cycles (printing the path of module names), check that re-exports are visible, and refuse an input declared by a keyed module.
-2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, values whose `try_value` recorded an `Err` (naming the module and the key), and overrides that match no binding or more than one (in tests), an `in_module::<M>()` over several instances of `M` among them, and an override of `dyn Timer`, refused with the hint "set it with `TestApp::timer(..)`" (§3.9).
+2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, values whose `try_value` recorded an `Err` (naming the module and the key), and overrides that match no binding or more than one (in tests), an `in_module::<M>()` over several instances of `M` among them, an override of `dyn Timer`, refused with the hint "set it with `TestApp::timer(..)`" (§3.9), and an item on a binding handle writing `.unbounded()` beside an explicit bound.
 3. **Visibility:** resolve every site against its module's visibility table. Report missing keys (with the site, the key and the module) and ambiguous keys (naming every source module). When a missing key's name equals a bound key's name up to a trailing `+ core::marker::Send + core::marker::Sync`, the report names both spellings: `dyn Repo` and `dyn Repo + Send + Sync` are distinct `TypeId`s, and this is the one place the mismatch is visible.
 4. **Dependency cycles:** run a DFS over the resolved edges and print the full path, as in `A → B → C → A`, with the module of each step.
 5. **Scopes:** run the needs-execution pass from §6.2, then report scope violations with the path that introduces the execution dependency, and hooks on types that became per-execution. Then, for each handler, walk its reachable execution-scoped bindings and report every non-optional input that the handler's transport does not seed (§6.4), with the path from the handler to the service that reads the input, the handler's transport and the input's seeder.
@@ -883,20 +886,36 @@ error: wiring failed with 5 errors
 ### 10.2 Error types
 
 ```rust
+#[non_exhaustive]
 pub enum StartupError {
-    Wiring(WiringErrors),                                         // everything from wire()
-    Construct { key: KeyName, module: ModuleName, reason: FailureReason },
-    Readiness { key: KeyName, attempts: u32, source: Redacted },
-    Hook { hook: HookKind, key: KeyName, reason: FailureReason },
+    Wiring(WiringErrors),                                  // everything from wire()
+    Connect(ConnectError),
     Bind { transport: &'static str, source: BoxError },
 }
 
+/// A failure in the connect phase, on `StartupError::Connect` from `connect` and on `LoadError::Connect` from `load`.
+#[non_exhaustive]
+pub enum ConnectError {
+    Construct { key: KeyName, module: ModuleName, reason: FailureReason },
+    Readiness { key: KeyName, attempts: u32, source: Redacted },
+    Hook { hook: HookKind, key: KeyName, reason: FailureReason },
+}
+
 /// Why a hook or a construction did not complete.
+#[non_exhaustive]
 pub enum FailureReason {
-    Panicked(BoxError),              // the payload, converted to a message
-    TimedOut { after: Duration },    // the bound that expired (§3.9): the declared one, the app default, or `shutdown_timeout` cutting a hook mid-run (§9.5)
-    Skipped,                         // never started: `shutdown_timeout` had expired (§9.5); shutdown only
-    Errored(BoxError),               // returned `Err`: a construction, an init hook or a bootstrap hook
+    Panicked(BoxError),                            // the payload, converted to a message
+    TimedOut { after: Duration, limit: Limit },    // `after` is the configured duration of the limit that fired
+    Skipped,                                       // never started: `shutdown_timeout` had expired (§9.5); shutdown only
+    Errored(BoxError),                             // returned `Err`: a construction, an init hook or a bootstrap hook
+}
+
+/// Which limit a `TimedOut` hit.
+#[non_exhaustive]
+pub enum Limit {
+    Item,          // the item's own bound: a trait const's `After(..)`, or `.timeout(..)` on a binding handle (§3.9)
+    Default,       // the app's `hook_timeout` or `construct_timeout`
+    ShutdownCap,   // `shutdown_timeout` cutting a hook mid-run (§9.5)
 }
 
 /// The outcome of a shutdown, received by `serve` and by every `close` caller (§9.5).
@@ -909,6 +928,7 @@ pub struct Shutdown {
 #[derive(Clone)]                                                  // one outcome, several receivers; the failures sit behind the Arc
 pub struct ShutdownError { pub report: Shutdown, pub failures: Arc<[ShutdownFailure]> }
 
+#[non_exhaustive]
 pub enum ShutdownFailure {
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },   // never `Errored`: the shutdown hook traits return `()`
     Close { transport: &'static str, source: BoxError },
@@ -918,19 +938,22 @@ pub enum ShutdownFailure {
 pub struct Closed;
 
 /// Why `load` did not return a `ModuleRef` (§8.6).
+#[non_exhaustive]
 pub enum LoadError {
     Closed(Closed),
     Wiring(WiringErrors),      // the module wired against the frozen graph, every error collected
-    Startup(StartupError),     // a construction, readiness check or init hook of the module failed
+    Connect(ConnectError),     // a construction, readiness check or init hook of the module failed
     Refused(LoadRefusal),
 }
 
 /// What a lazily loaded module may not bring, because the graph has been handed out (§8.6).
+#[non_exhaustive]
 pub enum LoadRefusal {
     Controllers { module: ModuleName },
     Middleware { module: ModuleName },
     Contribution { module: ModuleName, key: KeyName },   // to a collection the module does not introduce
     GlobalExport { module: ModuleName, key: KeyName },
+    Input { module: ModuleName, key: KeyName },          // inputs belong to transports; the per-handler check ran at wiring time (§6.4)
 }
 
 #[non_exhaustive]
@@ -951,7 +974,9 @@ pub struct GuardRejected { pub guard: &'static str }
 
 `WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them. `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
-Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `StartupError::Construct`, `StartupError::Hook` or `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook or a construction can fail, so a timeout reads the same on an init hook, a destroy hook and a constructor; `Skipped` is reachable at shutdown alone, nothing capping startup as a whole. `TimedOut` carries the bound that expired, which tells a declared bound from the app default and from the cap without a trip into the code.
+Every public error enum is `#[non_exhaustive]`: a variant added later breaks no caller that matches on one. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
+
+Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `ConnectError::Construct`, `ConnectError::Hook` or `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook or a construction can fail, so a timeout reads the same on an init hook, a destroy hook and a constructor; `Skipped` is reachable at shutdown alone, nothing capping startup as a whole. `TimedOut` names the limit that fired and carries that limit's configured duration: an item's own bound and the cap are often the same round number, and the duration alone would not tell them apart. A hook still running when the cap expires reports `ShutdownCap`, whatever its own bound was.
 
 `Closed` is a refusal by phase (§9.5): `execute` and `Execution::open` answer it from Draining on, `load` from Stopping on inside `LoadError`, which holds `load`'s other failures beside it; `StartupError` never carries `Closed`. The lookup form is `LookupError::Closed`, from the first destroy hook on, so an abandoned execution is never handed an instance whose destroy hook has run; one it already holds stays a valid object.
 
@@ -1019,11 +1044,12 @@ Override rules:
 | `override_value::<dyn Timer>` | startup (`wire`) | test builder; hint "set it with `TestApp::timer(..)`" (§3.9) |
 | A module binding `dyn Timer` itself | startup (`wire`) | two sources for one key, against the core's global export |
 | An explicit bound, `After(..)`, `.timeout`, `.attempt_timeout` or a builder knob, on an app with no `Timer` | startup (`wire`) | environment pass (§3.9) |
-| A constructor, factory, readiness check or hook fails, panics or times out | startup (`connect`) | typed `StartupError`, the reason on `FailureReason` |
+| `.unbounded()` beside `.timeout` or `.attempt_timeout` on one binding-handle item | startup (`wire`) | binding pass (§3.9) |
+| A constructor, factory, readiness check or hook fails, panics or times out | startup (`connect`) | `StartupError::Connect`, the case named in `ConnectError` and the reason on `FailureReason` |
 | `ModuleRef::get` for a singleton not yet built | startup (`connect`) | `LookupError::NotReady` |
 | A transport bound on an app with no `Timer` | startup (`listen`) | `StartupError::Bind`; the drain is timed by the `Timer` (§9.5) |
-| A lazy module with controllers or middleware, contributions to a collection it doesn't introduce, or global exports | runtime (`load`) | `LoadError::Refused`, the case named in `LoadRefusal` (§8.6) |
-| A lazy module that fails to wire, or whose construction, readiness check or init hook fails | runtime (`load`) | `LoadError::Wiring`, `LoadError::Startup` |
+| A lazy module with controllers or middleware, contributions to a collection it doesn't introduce, global exports, or an execution input | runtime (`load`) | `LoadError::Refused`, the case named in `LoadRefusal` (§8.6) |
+| A lazy module that fails to wire, or whose construction, readiness check or init hook fails | runtime (`load`) | `LoadError::Wiring`, `LoadError::Connect` |
 | `load` from Stopping on | runtime (`load`) | `LoadError::Closed` (§9.5) |
 | `execute` or `Execution::open` from Draining on | runtime | `Closed`; `open_terminal` with a `DrainToken` is allowed in Draining (§6.3) |
 | A singleton lookup from Destroying on | runtime | `LookupError::Closed` |
@@ -1082,12 +1108,12 @@ The value API an integration writes against:
 |---|---|
 | Modules | `Module`, `ModuleIdentity`, `ModuleDef::{import, global, export, reexport, secret, on_init, on_destroy, meta}`, `DynamicModule`, `Keyed` |
 | Bindings | `provide::<T: Construct>`, `provide_with::<T>(factory)`/`try_provide_with`, `value`/`try_value`, `singleton`/`try_singleton`, `execution`/`try_execution`, `transient`/`try_transient`, `contribute::<T>()`, `alias::<T, Q>().of::<Existing>()`, `input::<T>().seeded_by::<Tr>()` |
-| Binding handles | `also_as`, `qualified::<Q>`, `timeout(..)` on the binding itself, `ready(..).retries(..).backoff(..).attempt_timeout(..).timeout(..)`, `on_init`/`on_destroy`/`before_shutdown`/`on_shutdown` each with `.timeout(..)`/`.unbounded()` (singleton handles only) |
+| Binding handles | `also_as`, `qualified::<Q>`, `timeout(..)`/`unbounded()` on the binding itself, `ready(..).retries(..).backoff(..).attempt_timeout(..).timeout(..)`/`.unbounded()`, `on_init`/`on_destroy`/`before_shutdown`/`on_shutdown` each with `.timeout(..)`/`.unbounded()` (singleton handles only) |
 | Sites | `Site`, `SiteDesc`, `Key`, `Resolver::{dep, many, entries, ext, input, module, execution, by_key}` |
 | Construction | `Construct` (with `CONSTRUCT_TIMEOUT`), `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, open_terminal, seed, handle}`, `DrainToken`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
 | Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind` and the drain, which hands over the `DrainToken`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
-| Errors | `StartupError`, `FailureReason`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Secret`, `Redacted` |
+| Errors | `StartupError`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Secret`, `Redacted` |
 
 ---
 
@@ -1106,6 +1132,6 @@ The value API an integration writes against:
 11. **Shutdown is one event.** The first trigger wins, `serve`'s signal or a `close` on any handle, and its signal reaches the hooks; a later `close` joins the running shutdown and ignores its own signal. Every receiver gets the one outcome, which is why `ShutdownError` is `Clone`.
 12. **The drain comes before cancellation.** In-flight executions get `drain_timeout`, ten seconds unset and timed by the `Timer`, to end on their own; `draining()` is the notice at its start and cancellation the deadline signal at its end, `drain_timeout` or the earlier expiry of `shutdown_timeout`. Those still alive are abandoned and counted in `Shutdown::abandoned`. Without a `Timer` the drain is zero-length.
 13. **`BeforeApplicationShutdown` runs while the app still serves.** The order is before-shutdown, stop accepting, drain, destroy, sockets, shutdown. `load` is refused from Stopping on with `LoadError::Closed` and `execute` from Draining on with `Closed`; a singleton lookup from the first destroy hook on is `LookupError::Closed`.
-14. **Every bound is a `Bound`.** A hook defaults to `hook_timeout` (10 s); a construction, and one attempt of a readiness check that writes no bound, to `construct_timeout` (30 s), each overridable where it is declared. The defaults apply only with a `Timer`, an explicit bound without one is a wiring error, and `Unbounded` needs none. `shutdown_timeout` caps the whole sequence from the trigger and is unset by default.
-15. **A timed-out hook is dropped and reports the bound that expired; a timed-out execution is cancelled and left running.** The first stops at its next await, the second is still held by its transport or subtask.
+14. **Every bound is a `Bound`.** A hook defaults to `hook_timeout` (10 s); a construction, and one attempt of a readiness check, to `construct_timeout` (30 s). Every bounded item is in one of the same three states, default, explicit or unbounded, written where it is declared. The defaults apply only with a `Timer`, an explicit bound without one is a wiring error, and `Unbounded` needs none. `shutdown_timeout` caps the whole sequence from the trigger and is unset by default.
+15. **A timed-out hook is dropped and reports which limit fired, the item's own, the app default or the cap, with that limit's duration; a timed-out execution is cancelled and left running.** The first stops at its next await, the second is still held by its transport or subtask.
 16. **Disconnect handlers at shutdown are best effort.** Terminal executions run inside the drain window and no grace window follows it; `Shutdown::terminal_skipped` counts the losses, and state that must survive a crash lives in TTL or heartbeat storage.
