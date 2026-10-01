@@ -12,6 +12,7 @@ use std::any::Any;
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use crate::timer::BoxError;
 
@@ -121,28 +122,142 @@ pub(crate) struct SecretRegistry {
 }
 
 impl SecretRegistry {
+    /// An empty text is ignored: it would match between every two characters.
     pub(crate) fn register(&mut self, text: String) {
-        todo!()
+        if !text.is_empty() && !self.texts.contains(&text) {
+            self.texts.push(text);
+        }
     }
 
     /// Registers the value when `value` is a `Secret<String>`, which is how `m.value(..)`
-    /// registers the secret it binds.
+    /// registers the secret it binds. The stored `Arc<Secret<String>>` of an instance is
+    /// recognized too.
     pub(crate) fn register_if_secret(&mut self, value: &dyn Any) {
-        todo!()
+        let secret = value
+            .downcast_ref::<Secret<String>>()
+            .or_else(|| value.downcast_ref::<Arc<Secret<String>>>().map(|s| &**s));
+        if let Some(secret) = secret {
+            self.register(secret.expose().clone());
+        }
+    }
+
+    /// Every registered text replaced by the marker, longest first, so a secret containing
+    /// another is replaced whole. One pass over the text, so a replacement is never matched
+    /// again by a shorter secret.
+    fn replace(&self, text: &str) -> String {
+        let mut secrets: Vec<&str> = self.texts.iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        if secrets.is_empty() {
+            return text.to_owned();
+        }
+        secrets.sort_by(|a, b| b.len().cmp(&a.len()));
+
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        'scan: while !rest.is_empty() {
+            for secret in &secrets {
+                if let Some(after) = rest.strip_prefix(*secret) {
+                    out.push_str(MARKER);
+                    rest = after;
+                    continue 'scan;
+                }
+            }
+            let mut chars = rest.chars();
+            if let Some(c) = chars.next() {
+                out.push(c);
+            }
+            rest = chars.as_str();
+        }
+        out
     }
 }
 
+const MARKER: &str = "[redacted]";
+
 /// The one function every outside error passes through before a core error type stores it.
+///
+/// The text is the error's message followed by each message down its `source()` chain, since
+/// `Redacted::source()` answers `None` and a reporter can reach no further than the text. A link
+/// whose message the text already holds is not repeated.
 pub(crate) fn redact(secrets: &SecretRegistry, error: BoxError) -> Redacted {
-    todo!()
+    let text = scrub(secrets, &chain_text(&*error));
+    Redacted::from_parts(error, text)
 }
 
 /// A caught panic payload, converted to a message and redacted the same way.
 pub(crate) fn redact_panic(secrets: &SecretRegistry, payload: Box<dyn Any + Send>) -> Redacted {
-    todo!()
+    let message = if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "a panic whose payload is not a string".to_owned()
+    };
+    let text = scrub(secrets, &message);
+    Redacted::from_parts(Box::new(PanicMessage(message)), text)
 }
 
 /// The backstop: `scheme://user:password@host` becomes `scheme://[redacted]@host`.
+///
+/// The authority ends where RFC 3986 ends it, at `/`, `?` or `#`, or at whitespace, a quote or
+/// an angle bracket around a URL in prose; its last `@` ends the userinfo.
 pub(crate) fn strip_userinfo(text: &str) -> String {
-    todo!()
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + "://".len());
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| matches!(c, '/' | '?' | '#' | '"' | '\'' | '`' | '<' | '>') || c.is_whitespace())
+            .unwrap_or(tail.len());
+        let (authority, after) = tail.split_at(end);
+        match authority.rfind('@') {
+            Some(i) => {
+                out.push_str(MARKER);
+                out.push_str(&authority[i..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
+
+fn scrub(secrets: &SecretRegistry, text: &str) -> String {
+    strip_userinfo(&secrets.replace(text))
+}
+
+/// Bounded, in case a `source()` chain loops back on itself.
+const MAX_CHAIN: usize = 32;
+
+fn chain_text(error: &(dyn Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut next = error.source();
+    let mut links = 0;
+    while let Some(cause) = next {
+        if links == MAX_CHAIN {
+            break;
+        }
+        let message = cause.to_string();
+        if !message.is_empty() && !text.contains(&message) {
+            text.push_str(": ");
+            text.push_str(&message);
+        }
+        next = cause.source();
+        links += 1;
+    }
+    text
+}
+
+/// What a panic payload becomes inside a `Redacted`: the message, unredacted, reached only
+/// through `into_inner`.
+#[derive(Debug)]
+struct PanicMessage(String);
+
+impl fmt::Display for PanicMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for PanicMessage {}

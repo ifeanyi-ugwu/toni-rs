@@ -38,6 +38,17 @@ impl Key {
         Key { qualifier, q_name, ..self }
     }
 
+    /// A key rebuilt from ids held as runtime values, as a module's identity holds its type and
+    /// a keyed module its qualifier.
+    pub(crate) fn from_parts(
+        ty: TypeId,
+        ty_name: &'static str,
+        qualifier: TypeId,
+        q_name: &'static str,
+    ) -> Key {
+        Key { ty, qualifier, ty_name, q_name }
+    }
+
     pub(crate) fn type_id(&self) -> TypeId {
         self.ty
     }
