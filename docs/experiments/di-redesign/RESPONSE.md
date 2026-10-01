@@ -451,3 +451,43 @@ So refusing at `listen()` is the right place to catch it. No change to §9.5, §
 10. **Confirmed, with one practical note.** Transports open terminal executions from connection tasks that they spawned earlier, so the token can't be a short-lived borrow. Make `DrainToken` cheaply `Clone` (an `Arc` inside) while keeping it impossible to construct outside the core. Cloning is harmless: `open_terminal` still checks the phase, so a token used after the drain has ended is refused like anything else.
 
 11. **Confirmed.** Mention one path explicitly: the drain can end early because the `shutdown_timeout` cap expires, and then "end of the drain" fires at that moment rather than at `drain_timeout`. It's not a fourth source, but readers will wonder.
+
+---
+
+## Eighth response: the seven details of the seventh fold
+
+Received 2026-10-01. The user sent it to be folded in the same day.
+
+Four of these are fine as written. Three need corrections, and two of those fix problems in what I wrote last time.
+
+1. **Correction: say which limit fired.** Skipped meaning "never started" is right. But `TimedOut { after: shutdown_timeout }` on its own is ambiguous whenever a hook's own bound and the cap have similar values, which is common, since both tend to be round numbers. That ambiguity is exactly what the `after` field was meant to remove. Add the source of the limit:
+
+   ```rust
+   TimedOut { after: Duration, limit: Limit }
+   pub enum Limit { Item, Default, ShutdownCap }   // explicit bound, app default, outer cap
+   ```
+
+   `after` stays the configured duration of whichever limit fired.
+
+2. **Mostly confirmed, with one change.** Writing either bound as the opt-out from the default is right. But I'd give readiness `.unbounded()` too. "Wait for the database however long it takes" is a legitimate startup pattern, and without `.unbounded()` the only way to express it with a Timer present is a huge retry count, which is a workaround. More importantly, every bounded item would then accept the same three states (default, explicit, unbounded). Users learn one vocabulary instead of remembering that readiness is the exception.
+
+3. **Correction: mark them `#[non_exhaustive]`, and StartupError too.** Matching StartupError makes sense for consistency, but the consistency should run the other way. These are public error enums in a framework that will grow. Without `#[non_exhaustive]`, adding any variant later is a breaking change for every user who matches exhaustively. `LookupError` was already marked, so mark all of them.
+
+   The variant list is also missing one case. A lazy module that declares an execution input should be refused, because inputs belong to transports and their per-handler check ran at wiring time. Add `Input { module, key }`.
+
+4. **Correction, to my own earlier suggestion.** As I sketched `LoadError`, `LoadError::Startup(StartupError::Wiring(..))` can be constructed but never happens, because load reports wiring errors through `LoadError::Wiring`. `StartupError::Bind` is unreachable from load as well, since lazy modules bind no transports. The fix is to split the connect-phase failures into their own type and compose the two errors from exact parts:
+
+   ```rust
+   pub enum ConnectError { Construct { .. }, Readiness { .. }, Hook { .. } }
+
+   pub enum StartupError { Wiring(WiringErrors), Connect(ConnectError), Bind { .. } }
+   pub enum LoadError    { Closed(Closed), Wiring(WiringErrors), Connect(ConnectError), Refused(LoadRefusal) }
+   ```
+
+   Every variant combination is then reachable, and code that handles construction failures handles them once, for startup and load alike.
+
+5. **Confirmed.**
+
+6. **Confirmed.**
+
+7. **Confirmed.** While you're in §13, check that `DrainToken` and `Bound` are listed there too. Transports name the first, and every integration that declares a bound names the second.
