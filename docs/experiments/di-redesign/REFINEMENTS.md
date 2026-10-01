@@ -242,6 +242,9 @@ beside this file, one file per probe under `src/bin/`, run one at a time with
 | `p13_reply_static.rs` | `T::Reply` boxed into a `'static` future compiles with only `Reply: Send` written: `Transport: 'static` gives the projection `'static` |
 | `p14_execute_send.rs` | an inherent `async fn execute<F, R>(&self, f: F) -> R where F: AsyncFnOnce(&Execution) -> R`, called as `app.execute(async \|exec\| ..)` from a concrete site, returns a future that passes `fn assert_send<T: Send>(_: &T)`; the closure also takes `exec.handle()` for an owned clone and the run prints `(Ok("borrowed"), "borrowed")` |
 | `p14b_execute_trait_send_fails.rs` | the same `execute` as a trait method returning `impl Future<Output = R> + Send` fails at the impl: "the trait `Send` is not implemented for `<F as AsyncFnOnce<(&Execution,)>>::CallOnceFuture`"; the one bound that would state it, `for<'a> <F as AsyncFnOnce<(&'a Execution,)>>::CallOnceFuture: Send`, is E0658 `async_fn_traits` |
+| `p19_bounded_state.rs` | the handle's state names the item and whether its bound is written: `.timeout`/`.unbounded()` exist on `Open` and return `Set`, which has neither; a readiness item holds two slots written once each in either order, `.unbounded()` closing both while both are open; a third parameter remembers the construction's state, so `also_as`/`qualified` return to the binding as left and its `.timeout` after `also_as` writes the first item; `.retries`/`.backoff` in every readiness state; prints each item's bounds |
+| `p19b_second_timeout_fails.rs` | `.timeout` twice on the check, and the construction's `.timeout` after `also_as` with its bound already written: two E0599, "the method `timeout` exists for struct `Handle<PgPool, ReadyItem<Set, Open>>`, but its trait bounds were not satisfied", the note naming the state's unsatisfied bound (`ReadyItem<Set, Open>: Timeout<Open>`, `Construction<Set>: Timeout<Set>`) |
+| `p19c_unbounded_beside_bound_fails.rs` | `.attempt_timeout(..).unbounded()` and `.unbounded().attempt_timeout(..)`: two E0599, on `unbounded` for `Handle<PgPool, ReadyItem<Open, Set>>` and on `attempt_timeout` for `Handle<PgPool, ReadyItem<Set, Set>>` |
 
 ### Rust 1.88.0 re-run
 
@@ -263,3 +266,5 @@ What differs is presentation:
 | P12 | `#[warn(dead_code)]` on by default | `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default |
 | P14b | the `!Send` error is reported twice, at the async block and at the signature: 4 errors | once, at the signature: 3 errors |
 | all | line numbers in a two-digit gutter are left-aligned (`6  \|`) | right-aligned, the pad before the digit |
+
+P19, P19b and P19c were built on both toolchains after this re-run. Their output is identical on the two once build chatter is stripped, the E0599 text and notes included.
