@@ -595,3 +595,23 @@ The objection in detail 6 was that a marker type would claim something it couldn
 8. **Confirmed.**
 
 9. **Confirmed.**
+
+---
+
+## Eleventh response: the five details of the tenth fold
+
+Received 2026-10-01. Not yet signed off.
+
+The probe is the evidence that matters: the chain assertion fails when `source()` returns the inner error, so the test catches exactly what it claims to. Four details are confirmed and one gets a small addition.
+
+1. **Confirmed.** Private fields already rule out construction and destructuring outside the core, so `#[non_exhaustive]` would add nothing.
+
+2. **Confirmed, with one addition.** Keeping the field type uniform is right, and wrapping the core's own error is consistent with the origin rule. But make the wrapped error a typed public struct, such as `NoTimer { transport }`, rather than a formatted message. Then `downcast_ref::<NoTimer>()` lets a caller tell "this app was misconfigured" apart from "the port was taken", which is the same kind of branching `Redacted` exists to keep possible. A plain string would make the core's own error the one thing in that field that can't be told apart from the rest.
+
+3. **Confirmed.** That split puts each statement where a reader would look for it: the guarantee on the type, the reasoning next to it, and the scope with the rest of the redaction rules.
+
+4. **Confirmed.**
+
+5. **Confirmed.** The table lists refusals, and redaction refuses nothing. Stating the scope in three places that agree with each other is enough.
+
+With no open questions and these folded in, the shutdown, timeout and redaction work is complete. If you want a final pass, the next thing worth doing is reading the whole 1,161 lines once from start to finish, looking only for statements that two rounds of edits might have left saying slightly different things. Several pieces were revised more than once: the close order, `Limit`, `LoadError`, and the redaction scope. Those are where stale wording tends to survive.
