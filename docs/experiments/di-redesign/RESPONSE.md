@@ -496,7 +496,7 @@ Four of these are fine as written. Three need corrections, and two of those fix 
 
 ## Ninth response: readiness failures, redaction, and the seven details of the eighth fold
 
-Received 2026-10-01. Not yet signed off.
+Received 2026-10-01. The user signed it off in full the same day.
 
 ### The gap: Readiness should carry `FailureReason`
 
