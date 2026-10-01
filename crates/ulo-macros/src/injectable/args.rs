@@ -1,5 +1,5 @@
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::quote_spanned;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, Token};
 
@@ -17,12 +17,13 @@ pub(crate) enum ScopeArg {
 }
 
 impl ScopeArg {
-    /// The scope marker the generated `Construct::Scope` names.
+    /// The scope marker the generated `Construct::Scope` names, spanned at the argument so a
+    /// scope error points at the word the user wrote.
     pub(crate) fn path(&self) -> TokenStream {
         match self {
-            ScopeArg::Singleton(_) => quote!(::ulo::scope::Singleton),
-            ScopeArg::Execution(_) => quote!(::ulo::scope::PerExecution),
-            ScopeArg::Transient(_) => quote!(::ulo::scope::Transient),
+            ScopeArg::Singleton(span) => quote_spanned!(*span=> ::ulo::scope::Singleton),
+            ScopeArg::Execution(span) => quote_spanned!(*span=> ::ulo::scope::PerExecution),
+            ScopeArg::Transient(span) => quote_spanned!(*span=> ::ulo::scope::Transient),
         }
     }
 }

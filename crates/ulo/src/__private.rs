@@ -5,22 +5,29 @@ pub use ulo_macros::{__enhancer_specs, __handler};
 
 use crate::construct::ConstructError;
 use crate::scope::{AllowedIn, Scope};
-use crate::site::Site;
+use crate::site::{Site, Sites};
 use crate::timer::BoxError;
-use crate::transport::{ErrorHandler, Guard, Interceptor, Transport};
 
-/// Emitted once per field or parameter with `quote_spanned!`, so a site that is not a `Site`, or
-/// that needs an execution in an explicit singleton, fails on that field or parameter.
-pub fn assert_site<S: Site + AllowedIn<Sc>, Sc: Scope>() {}
+/// A struct field's site, declared under its name. The bounds are the per-site assertion:
+/// `#[injectable]` emits one call per field with `quote_spanned!`, so a field that is not a
+/// `Site`, or that needs an execution in an explicit singleton, fails on that field. Declaring
+/// and asserting in one call keeps a bad field to one error here rather than two.
+pub fn field<S: Site + AllowedIn<Sc>, Sc: Scope>(s: &mut Sites, name: &'static str) {
+    s.field::<S>(name);
+}
 
-/// Emitted once per handler and enhancer, so an enhancer lacking the role for a handler's
-/// transport fails naming the handler (the function's name carries it).
-pub fn assert_guard<G: Guard<T>, T: Transport>() {}
-pub fn assert_interceptor<I: Interceptor<T>, T: Transport>() {}
-pub fn assert_error_handler<E: ErrorHandler<T>, T: Transport>() {}
+/// A constructor parameter's site, declared under its name, with the same assertion as [`field`].
+pub fn param<S: Site + AllowedIn<Sc>, Sc: Scope>(s: &mut Sites, name: &'static str) {
+    s.param::<S>(name);
+}
 
 /// What a constructor returns, `Self` or `Result<Self, E>`, decided by type rather than by the
 /// spelling of the return type, so an alias for a `Result` is read as one.
+#[diagnostic::on_unimplemented(
+    message = "a constructor returns `{T}` or `Result<{T}, E>`, not `{Self}`",
+    label = "returned by this constructor",
+    note = "the error type `E` must convert into `BoxError`, as any `std::error::Error + Send + Sync` does"
+)]
 pub trait IntoConstructed<T> {
     fn into_constructed(self) -> Result<T, ConstructError>;
 }
@@ -125,6 +132,9 @@ pub mod hooks {
 /// The autoref probe `#[module]` writes at a factory's call site in a providers list: a closure
 /// whose future outputs a `Result` reaches the `try_` registration, any other the plain one. The
 /// value API keeps two methods because one method cannot serve both outputs.
+///
+/// `Args` is a parameter of `Probe` rather than of the methods: method probing checks an impl's
+/// where-clauses, which is what lets the ranking fall through, and it never checks a method's.
 pub mod factory {
     use std::cell::Cell;
     use std::marker::PhantomData;
@@ -133,6 +143,8 @@ pub mod factory {
     use crate::module::def::ModuleDef;
     use crate::timer::BoxError;
 
+    /// The factory sits in a `Cell` because the probe methods take `&self`, which the autoref
+    /// ranking needs, and registration moves the factory into the binding.
     pub struct Probe<F, Args> {
         factory: Cell<Option<F>>,
         _a: PhantomData<fn() -> Args>,
@@ -144,7 +156,10 @@ pub mod factory {
         }
     }
 
+    /// `#[track_caller]` on both traits carries the providers entry's location through to the
+    /// binding record, which the wiring errors print.
     pub trait Fallible {
+        #[track_caller]
         fn register_singleton(&self, m: &mut ModuleDef<'_>);
     }
     impl<F, Args, T, E> Fallible for Probe<F, Args>
@@ -153,12 +168,16 @@ pub mod factory {
         T: Send + Sync + 'static,
         E: Into<BoxError> + Send + 'static,
     {
+        #[track_caller]
         fn register_singleton(&self, m: &mut ModuleDef<'_>) {
-            todo!()
+            if let Some(factory) = self.factory.take() {
+                m.try_singleton::<Args, F, T, E>(factory);
+            }
         }
     }
 
     pub trait Plain {
+        #[track_caller]
         fn register_singleton(&self, m: &mut ModuleDef<'_>);
     }
     impl<F, Args> Plain for &Probe<F, Args>
@@ -166,8 +185,11 @@ pub mod factory {
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
+        #[track_caller]
         fn register_singleton(&self, m: &mut ModuleDef<'_>) {
-            todo!()
+            if let Some(factory) = self.factory.take() {
+                m.singleton::<Args, F>(factory);
+            }
         }
     }
 }

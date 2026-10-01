@@ -20,10 +20,6 @@ pub(crate) fn take_all(attrs: &mut Vec<Attribute>, name: &str) -> Vec<Attribute>
     taken
 }
 
-pub(crate) fn has(attrs: &[Attribute], name: &str) -> bool {
-    attrs.iter().any(|a| is(a, name))
-}
-
 /// Attributes that never make a method a handler: the language's own and the ulo enhancer
 /// markers `#[routes]` consumes.
 pub(crate) fn is_inert(attr: &Attribute) -> bool {

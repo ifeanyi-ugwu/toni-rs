@@ -8,7 +8,7 @@ mod struct_form;
 use proc_macro2::TokenStream;
 use syn::Item;
 
-pub(crate) use args::{InjectableArgs, ScopeArg};
+pub(crate) use args::InjectableArgs;
 
 pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let args: InjectableArgs = syn::parse2(attr)?;

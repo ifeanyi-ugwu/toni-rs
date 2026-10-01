@@ -15,6 +15,11 @@ use crate::timer::{BoxError, Bound};
 /// a hand-written impl declares the same sites in [`sites`](Construct::sites) and reads them in
 /// [`construct`](Construct::construct). Registration cannot override [`Construct::Scope`], which
 /// is what keeps the compile-time hook check sound.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a type the container can construct",
+    label = "the container cannot build this",
+    note = "add #[injectable] to the type, or bind it with a factory"
+)]
 pub trait Construct: Sized + Send + Sync + 'static {
     type Scope: Scope;
 

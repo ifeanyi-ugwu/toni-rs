@@ -42,8 +42,9 @@ pub fn construct(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Provider entries: `Type` (`provide::<Type>()`), `Type as dyn Trait` (`also_as`), `expr?`
 /// (`try_value`), `expr` (`value`), a factory closure (`singleton` or `try_singleton`, picked by
-/// the closure's output), and `into dyn Trait: [A, B]` (contributions). Export entries: `Type`
-/// and `reexport Type`.
+/// the closure's output), and `into dyn Trait: [A, B]` (contributions). A bare path reads as a
+/// type, so a constant is bound by value with a block, `{ LIMITS }`. Export entries: `Type` and
+/// `reexport Type`.
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_attr::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -51,8 +52,10 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// A controller's handler impl: writes `impl Controller` whose `mount` registers each handler,
 /// with the impl's `#[guards]`, `#[interceptors]` and `#[error_handlers]` as the controller tier
-/// and each method's as the method tier. A method carrying a transport's handler attribute is a
-/// handler; every other item stays as written.
+/// and each method's as the method tier. A method carrying an attribute other than the
+/// language's own (`doc`, `allow`, `cfg`, `inline` and the like) and the enhancer attributes is a
+/// handler, that attribute being its transport's; every other item stays as written. A helper
+/// method that needs some other attribute goes in a separate impl block.
 #[proc_macro_attribute]
 pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
     routes::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -60,7 +63,14 @@ pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Guards for every handler of a `#[routes]` impl, or for one method: by type (`AuthGuard`),
 /// transport-scoped by type (`http = AuthGuard`), by value (`value = expr`), or by closure
-/// (`with = |u: Ext<CurrentUser>| ..`). Read by `#[routes]`; anywhere else it is an error.
+/// (`with = |u: Ext<CurrentUser>| ..`). Read by `#[routes]`, so on the impl it goes below
+/// `#[routes]`; anywhere else it is an error.
+///
+/// On the impl, an entry applies to every handler and must have the role for each handler's
+/// transport; `http = AuthGuard` limits it to that transport's handlers. A `value = expr` there
+/// is evaluated once per handler it applies to; a guard whose state every handler shares is
+/// declared by type, as a singleton binding. A closure is written synchronously and built per
+/// execution, its parameters sites.
 #[proc_macro_attribute]
 pub fn guards(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::marker("guards", attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
