@@ -202,7 +202,8 @@ So you have two decisions: whether to adopt "drain first, cancel only at the tim
 ## Fourth response: the before-shutdown move, long-lived calls, and per-hook timeouts
 
 Received 2026-10-01, answering the two proposals, then a question from the user on per-hook
-timeouts. Not yet signed off; under review.
+timeouts. Reviewed in `SHUTDOWN_REVIEW.md`. The fifth and sixth responses settle each point of that
+review; on the user's sign-off of those two, this response's proposals are folded as they amend it.
 
 Both changes are improvements. I confirm them, with a few additions, one of which is a real gap.
 
@@ -294,7 +295,8 @@ The settled set of knobs is then: hook_timeout (default for every hook, 10 secon
 ## Fifth response: answers to SHUTDOWN_REVIEW.md
 
 Received 2026-10-01. The author saw a summary of `SHUTDOWN_REVIEW.md`, not the file: its four main
-points, the smaller fixes, and three of its seven questions. Not yet signed off.
+points, the smaller fixes, and three of its seven questions. The user signed it off in full the
+same day, together with the sixth response.
 
 I checked each point myself rather than taking the review's word for it. It's right on almost everything. In a few places I'd refine the fix, and I can't settle two items without material I don't have.
 
@@ -355,7 +357,8 @@ If you disagree and want a guaranteed window, the fallback is a short terminal_g
 ## Sixth response: bounds without a Timer, and the four remaining questions
 
 Received 2026-10-01, answering what the fifth response had not seen: the review's refinement on
-bounds without a `Timer` and its questions 1, 4, 5 and 7. Not yet signed off.
+bounds without a `Timer` and its questions 1, 4, 5 and 7. The user signed it off in full the same
+day, together with the fifth response.
 
 ### The refinement: one rule for bounds without a Timer
 
