@@ -11,37 +11,7 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 
-[features]
-default = ["logger"]
-logger = ["dep:tracing-subscriber"]
-tower-compat = ["dep:tower"]
-
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-rustc-hash = "2.1"
-async-trait.workspace = true
-validator.workspace = true
-serde_urlencoded = "0.7"
-thiserror = "2.0"
-parking_lot.workspace = true
-event-listener = "5"
-base64 = "0.22"
-futures.workspace = true
-bytes.workspace = true
-http-body = "1"
-http-body-util.workspace = true
+# The runtime-free async once-cell behind the per-execution cache and the shutdown outcome.
+async-lock = "3.4"
 ulo-macros = { path = "../ulo-macros" }
-uuid = { workspace = true, features = ["v4"] }
-http.workspace = true
-tower = { workspace = true, features = ["util"], optional = true }
-tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-multer = "3"
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-# Drives the `StartupCheck` tests: it takes no runtime, so proving that needs an executor rather
-# than a runtime.
-futures-executor = "0.3"
-reqwest = { workspace = true, features = ["json"] }

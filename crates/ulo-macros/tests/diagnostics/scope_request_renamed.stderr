@@ -1,5 +1,0 @@
-error: scope = "request" is now scope = "execution". The unit is one execution: one HTTP request, one WebSocket message, one RPC or gRPC call, or one standalone execution.
- --> tests/diagnostics/scope_request_renamed.rs:5:22
-  |
-5 | #[injectable(scope = "request")]
-  |                      ^^^^^^^^^

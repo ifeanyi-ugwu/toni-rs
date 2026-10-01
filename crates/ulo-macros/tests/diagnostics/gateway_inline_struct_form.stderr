@@ -1,5 +1,0 @@
-error: the inline-struct form `#[websocket_gateway("/p", pub struct …)]` has been removed; place `#[websocket_gateway("/p")]` on the struct and `#[subscriptions]` on its impl
- --> tests/diagnostics/gateway_inline_struct_form.rs:6:12
-  |
-6 | pub struct Gateway {}
-  |            ^^^^^^^

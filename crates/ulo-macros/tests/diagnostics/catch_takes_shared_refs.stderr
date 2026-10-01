@@ -1,5 +1,0 @@
-error: #[catch(T)] arguments must be shared references, not &mut
-  --> tests/diagnostics/catch_takes_shared_refs.rs:22:9
-   |
-22 |     _e: &mut MyError,
-   |         ^

@@ -1,5 +1,0 @@
-error: an error handler is built once and shared, so the closure form has nothing to build per execution; write a type name or a value
-  --> tests/diagnostics/error_handler_takes_no_closure.rs:25:27
-   |
-25 | #[ulo::use_error_handlers(|_ctx| Handler)]
-   |                           ^

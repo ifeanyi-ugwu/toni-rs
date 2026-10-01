@@ -1,21 +1,33 @@
-pub mod dependency_info;
-pub mod enhancer_emit;
-pub mod lifecycle_hooks;
-pub mod metadata_info;
-pub mod route_path;
-pub mod scope_parser;
-pub mod set_metadata;
-pub mod token_parser;
+//! Helpers every macro uses: the path to the core, attribute handling, and site emission.
 
-pub use token_parser::TokenType;
+pub(crate) mod attrs;
+pub(crate) mod sites;
 
-/// Returns `true` if the attribute's path ends with `name`.
-///
-/// Unlike [`syn::Path::is_ident`], this matches both the bare form (`#[foo]`)
-/// and any path-qualified form (`#[crate::foo]`, `#[ulo_macros::foo]`).
-pub fn attr_is(attr: &syn::Attribute, name: &str) -> bool {
-    attr.path()
-        .segments
-        .last()
-        .map_or(false, |seg| seg.ident == name)
+use proc_macro2::TokenStream;
+use quote::quote;
+
+/// The path generated code names the core by. The macros are used through `ulo`'s re-exports,
+/// so `::ulo` resolves wherever they expand.
+pub(crate) fn ulo() -> TokenStream {
+    quote!(::ulo)
+}
+
+/// The `Construct` impl both forms of `#[injectable]` write: scope, optional `CONSTRUCT_TIMEOUT`,
+/// `sites`, `construct` and the probing `hooks`.
+pub(crate) struct ConstructImpl<'a> {
+    pub(crate) self_ty: &'a syn::Type,
+    pub(crate) generics: &'a syn::Generics,
+    /// `::ulo::scope::Auto` when no scope is written.
+    pub(crate) scope: TokenStream,
+    pub(crate) timeout: Option<&'a syn::Expr>,
+    /// The body of `fn sites(s: &mut ::ulo::Sites)`, assertions included.
+    pub(crate) sites: TokenStream,
+    /// The body of `async fn construct(r: &::ulo::Resolver<'_>) -> Result<Self, ::ulo::ConstructError>`.
+    pub(crate) construct: TokenStream,
+}
+
+impl ConstructImpl<'_> {
+    pub(crate) fn emit(&self) -> TokenStream {
+        todo!()
+    }
 }

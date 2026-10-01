@@ -1,6 +1,0 @@
-error[E0080]: evaluation panicked: `_raw` and `_typed` both read the request body, and it can only be read once.
-              Keep one of them. If you need more than one view of the body, take `Bytes` (or `HttpRequest`) and parse it yourself.
-  --> tests/diagnostics/one_body_per_handler.rs:15:1
-   |
-15 | #[routes]
-   | ^^^^^^^^^ evaluation of `_` failed here

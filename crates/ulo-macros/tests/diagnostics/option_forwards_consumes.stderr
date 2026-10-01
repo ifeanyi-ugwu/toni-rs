@@ -1,6 +1,0 @@
-error[E0080]: evaluation panicked: `_maybe` and `_raw` both read the request body, and it can only be read once.
-              Keep one of them. If you need more than one view of the body, take `Bytes` (or `HttpRequest`) and parse it yourself.
-  --> tests/diagnostics/option_forwards_consumes.rs:17:1
-   |
-17 | #[routes]
-   | ^^^^^^^^^ evaluation of `_` failed here

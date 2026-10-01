@@ -1,5 +1,0 @@
-error: the inline-struct form `#[controller("/p", pub struct …)]` has been removed; place `#[controller("/p")]` on the struct and `#[routes]` on its impl
- --> tests/diagnostics/controller_inline_struct_form.rs:6:12
-  |
-6 | pub struct Thing {}
-  |            ^^^^^

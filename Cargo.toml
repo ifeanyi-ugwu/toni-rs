@@ -1,7 +1,39 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/*",
+    "crates/ulo",
+    "crates/ulo-macros",
+]
+# Crates not yet ported to the DI redesign; each moves to `members` once it is.
+exclude = [
+    "crates/ulo-build",
+    "crates/ulo-cli",
+    "crates/ulo-config",
+    "crates/ulo-db-diesel",
+    "crates/ulo-db-mongodb",
+    "crates/ulo-db-prisma",
+    "crates/ulo-db-redis",
+    "crates/ulo-db-seaorm",
+    "crates/ulo-db-sqlx",
+    "crates/ulo-graphql-async-graphql",
+    "crates/ulo-graphql-juniper",
+    "crates/ulo-grpc",
+    "crates/ulo-health",
+    "crates/ulo-http-actix",
+    "crates/ulo-http-axum",
+    "crates/ulo-http-poem",
+    "crates/ulo-http-rocket",
+    "crates/ulo-http-salvo",
+    "crates/ulo-rpc-conformance",
+    "crates/ulo-rpc-kafka",
+    "crates/ulo-rpc-mqtt",
+    "crates/ulo-rpc-nats",
+    "crates/ulo-rpc-rabbitmq",
+    "crates/ulo-rpc-redis",
+    "crates/ulo-rpc-tcp",
+    "crates/ulo-rpc-udp",
+    "crates/ulo-ws-redis",
+    "crates/ulo-ws-tungstenite",
     "integration-tests",
     "examples",
 ]
