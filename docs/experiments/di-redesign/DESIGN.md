@@ -34,7 +34,7 @@
 - **Module** is a Rust type with an identity. It declares imports, bindings, controllers and exports.
 - **Graph** is the frozen, validated result of registering every module.
 - **App** is the graph plus the singleton store. It moves through typestates: `Wired` → `Connected` → `Bound` → serving → closed. From `Connected` on it hands out an `AppHandle`, a `Clone + Send + Sync` view of the shared state that outlives `serve`.
-- **Execution** is one call. It holds a per-execution cache, an extension bag, execution inputs (the request or call context), a cancellation signal, and an optional deadline. The framework or the transport holds it; everything else holds a cheap-clone handle to it. Cancellation is fired by the transport while handles are alive. The execution ends when the last handle drops.
+- **Execution** is one call. It holds a per-execution cache, an extension bag, execution inputs (the request or call context), a cancellation signal, and an optional deadline. The framework or the transport holds it; everything else holds a cheap-clone handle to it. Cancellation fires while handles are alive: the transport fires it for a call, and a standalone execution's fires at its deadline or when the app closes. The execution ends when the last handle drops.
 
 The lifecycle runs like this:
 
@@ -45,7 +45,8 @@ register modules (sync)
               readiness checks, init hooks, bootstrap hooks
    → bind: transports bind sockets
    → serve: each call opens an Execution
-   → close(signal): destroy → before-shutdown → sockets closed → shutdown
+   → close(signal), or the signal passed to serve, whichever comes first:
+              destroy → before-shutdown → drain + sockets closed → shutdown
 ```
 
 ---
@@ -269,7 +270,7 @@ pub type AnyErrorHandler<T> = dyn ErasedErrorHandler<T>;
 ### 3.8 Execution
 
 ```rust
-pub struct Execution { /* Arc: cache, extensions, inputs, cancel, deadline, module */ }
+pub struct Execution { /* Arc: cache, extensions, inputs, cancel, deadline, module */ }   // not Clone
 pub struct ExecutionRef { /* a clone of that Arc */ }   // Clone + Send + Sync
 
 impl Execution {
@@ -281,13 +282,15 @@ impl Execution {
     pub fn seed<T: Send + Sync + 'static>(&self, input: T);
     pub async fn get<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Dep<T>, LookupError>;
 }
-// ExecutionRef has the same methods.
+// ExecutionRef has the same methods except `seed`.
 ```
 
 `Execution: Send + Sync`, and `Resolver<'_>` is `Sync` with it. That is what lets `Site::read` and `Construct::construct` hold the resolver across an await and still return `Send` futures; a `!Sync` value anywhere in the execution would make every site's future `!Send`, reported at the trait's `+ Send` rather than at the value. `seed` is bounded `Send + Sync` for the same reason.
 
+`seed` is on `Execution` alone, the holder's handle. A guard or a subtask holds an `ExecutionRef`, and an input seeded there would be one the wiring pass never saw. `Execution` is not `Clone`; a second holder takes `handle()`.
+
 Who holds the execution: the transport for a call, `execute` for a standalone one. Everything else holds a clone, `ExecutionRef` directly or inside a `Cx`. Two events are distinct:
-- **Cancellation** is fired by the transport: the client disconnects, the deadline passes, or shutdown begins. It fires while clones are alive, so a streaming reply observes it.
+- **Cancellation** fires while clones are alive, so a streaming reply observes it. The transport fires it for a call: the client disconnects, the deadline passes, or shutdown begins. A standalone execution's fires at its deadline or when the app closes (§9.5). Completion of `execute` does not fire it, as finishing a response does not cancel a streaming body. A subtask that should stop when the job finishes is awaited by the job, not detached.
 - **End of execution** is when the last clone drops. The per-execution cache is released then and execution-scoped instances are dropped: a streaming reply keeps its instances exactly as long as it runs.
 
 `get` resolves against the visibility of the execution's module: the dispatching controller's module inside a transport call, the root module in a standalone execution opened on the app, or the module whose `execute` opened it (§8.2).
@@ -474,9 +477,9 @@ impl App<Connected> {   // also on AppHandle and ModuleRef
 }
 ```
 
-The closure borrows the execution, which stays owned by `execute`: `execute` drops it when the future completes, and a subtask that outlives the call takes `exec.handle()`, an owned clone that keeps the execution alive until it drops (§3.8). A plain closure returning an `async move` block cannot borrow its argument into the future, which is why the bound is `AsyncFnOnce` and the closure is written `async |exec|`. `execute` is an inherent `async fn` on every type that carries it, never a trait method: its future is `Send` through auto-trait leakage whenever the caller's closure future is, and a trait would have to write that `Send` bound, which stable Rust cannot state for an `AsyncFnOnce` future.
+The closure borrows the execution, which stays owned by `execute`: `execute` drops it when the future completes, and a subtask that outlives the call takes `exec.handle()`, an owned clone that keeps the cache and the execution-scoped instances alive until it drops (§3.8). Completion of `execute` fires no cancellation; a standalone execution is cancelled at its deadline or when the app closes, and a subtask that should end with the job is awaited by the job. A plain closure returning an `async move` block cannot borrow its argument into the future, which is why the bound is `AsyncFnOnce` and the closure is written `async |exec|`. `execute` is an inherent `async fn` on every type that carries it, never a trait method: its future is `Send` through auto-trait leakage whenever the caller's closure future is, and a trait would have to write that `Send` bound, which stable Rust cannot state for an `AsyncFnOnce` future.
 
-An execution opened on the app resolves with the root module's visibility; one opened through `app.module::<M>()?.execute(..)` resolves with `M`'s (§8.2).
+`App::execute` and `AppHandle::execute` resolve with the root module's visibility; `ModuleRef::execute`, reached through `app.module::<M>()?`, resolves with `M`'s (§8.2).
 
 ### 6.4 Execution inputs
 
@@ -490,7 +493,7 @@ m.input::<ClientAddr>().seeded_by::<Http>();
 
 At each call, the transport seeds them with `exec.seed(head)`, bounded `T: Send + Sync + 'static` (§3.8). Inputs are app-wide and belong to transports: a keyed module declaring one is a wiring error.
 
-Wiring walks each handler's reachable execution-scoped bindings and checks every non-optional input against that handler's transport. A per-execution service reading `Dep<RequestHead>` on a path from an RPC controller is a wiring error naming the handler, the service and the input. A service shared across transports reads the input as `Option<Dep<RequestHead>>`, which is `None` where the transport did not seed it.
+Wiring walks each handler's reachable execution-scoped bindings and checks every non-optional input against that handler's transport. A per-execution service reading `Dep<RequestHead>` on a path from an RPC controller is a wiring error naming the handler, the service and the input, printing the dependency path from the handler to the service that reads the input, and naming both transports: the handler's and the one that seeds the input (§10.1). A service shared across transports reads the input as `Option<Dep<RequestHead>>`, which is `None` where the transport did not seed it.
 
 Standalone executions are the one runtime case, since nothing static says what they seed: one that doesn't seed an input which a site reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
 
@@ -546,7 +549,7 @@ The dispatch pipeline for one call [27] runs like this:
 1. The transport opens an `Execution`, seeds the inputs, and builds its `Cx` around a handle to it.
 2. It reads the role collection through `Resolver::entries::<AnyGuard<T>>()`, which hands it one unresolved entry per contribution, and walks them in stack order together with the controller's and the method's declarations. For each guard it obtains that guard (a shared value, the singleton, `resolve().await` for a per-execution build, or the closure call), then runs `can_activate`. On a refusal it stops. **Later guards are never built.** `Many<AnyGuard<T>>` would build every guard first, which is why the transport reads `entries` and not `Many`.
 3. Only once every guard admits does it build the interceptors, then the controller (per call if inferred), then run the handler inside the interceptor chain.
-4. Errors go through the error handlers, method level first, then controller, then global. A refusal is one of them: the pipeline turns `Ok(false)` into the core error `GuardRejected { guard: &'static str }` and routes it like any other, so a handler that downcasts the `BoxError` can reshape the response per route. Unclaimed, the transport renders its forbidden status. A guard that wants another status, 401 rather than 403, returns its own `Err`.
+4. Errors go through the error handlers, method level first, then controller, then global. A refusal is one of them: the pipeline turns `Ok(false)` into the core error `GuardRejected { guard: &'static str }` and routes it like any other, so a handler that downcasts the `BoxError` can reshape the response per route. Unclaimed, the transport renders its forbidden status: 403 on HTTP, `PERMISSION_DENIED` on gRPC, an error reply on RPC, an error frame on WebSocket. Each transport crate documents its mapping. A guard that wants another status, 401 rather than 403, returns its own `Err`.
 5. The transport drops its `Cx` when the reply is written. A streaming reply holds a clone, and the execution ends with the last one (§3.8).
 
 HTTP middleware is configured per module by route [36]. The core stores typed per-module metadata that `fw-http` reads:
@@ -644,7 +647,7 @@ let handle: AppHandle = app.handle();                 // Clone + Send + Sync; ta
 let reports: ModuleRef = handle.load(ReportsModule).await?;
 ```
 
-`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load` and `close` live on it; `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. The graph sits behind a lock that only `load` writes.
+`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load` and `close` live on it; `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. `close` on a handle is one of shutdown's two triggers and ends `serve` (§9.5). The graph sits behind a lock that only `load` writes.
 
 A lazily loaded module is wired against the frozen graph, with all of its errors reported in one pass, and then connected through its own readiness checks and init hooks. Loading the same identity twice returns the existing handle.
 
@@ -694,7 +697,7 @@ A factory's output is a plain value, so trait hooks run only for types the conta
 
 The connect phase walks the singleton graph in a stable topological sort: among the bindings whose dependencies are done, the smallest (module post-order index, declaration index) runs next, the module index being the module's position in collection order (§3.2). For each binding it constructs the instance and runs that binding's readiness check. It then runs all `OnModuleInit` hooks in the same order. A module's own hooks run after the hooks of its providers. Last come all `OnApplicationBootstrap` hooks. Two bindings with no edge between them are ordered by the tie-break, so the order is the same on every run.
 
-Close runs everything in the exact reverse: `OnModuleDestroy`, then `BeforeApplicationShutdown(signal)`, then transports close their sockets, then `OnApplicationShutdown(signal)`.
+Close runs everything in the exact reverse: `OnModuleDestroy`, then `BeforeApplicationShutdown(signal)`, then the drain and the socket close, then `OnApplicationShutdown(signal)` (§9.5).
 
 ### 9.3 Readiness checks [42]
 
@@ -717,9 +720,10 @@ Before an error message leaves the core, it goes through a redaction pass. The p
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<(), fw::StartupError> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::builder(AppModule)
         .timer(fw_tokio::Timer)
+        .drain_timeout(Duration::from_secs(5))      // in-flight executions at shutdown; 10 s unset (§9.5)
         .wire()?;                                   // graph + all wiring errors; no instances, no I/O
 
     let app = app.connect().await?;                 // outbound connections, readiness, hooks
@@ -731,12 +735,31 @@ async fn main() -> Result<(), fw::StartupError> {
         .await?;                                    // sockets
 
     let handle = app.handle();                      // AppHandle: get, module, execute, load, close
-    app.serve(fw_tokio::shutdown_signal()).await?;  // runs until the signal, then closes in order
+    app.serve(fw_tokio::shutdown_signal()).await?;  // until the signal or `handle.close(..)`; returns the `Shutdown` report
     Ok(())
 }
 ```
 
-A job, a CLI command or a test stops after `connect()` and uses `get` or `execute`, then calls `close(Signal::new("done"))`. Anything that needs the app while it serves holds an `AppHandle` taken before `serve` (§8.6).
+A job, a CLI command or a test stops after `connect()` and uses `get` or `execute`, then calls `close(Signal::new("done"))`, which runs the shutdown sequence with no sockets to close (§9.5). Anything that needs the app while it serves holds an `AppHandle` taken before `serve` (§8.6).
+
+### 9.5 Shutdown
+
+Shutdown is one event per app. It has two triggers: the signal future passed to `serve` resolving, and `close(signal)` on the app or on any `AppHandle`. The first to arrive starts the sequence, and its `Signal` is the one `BeforeApplicationShutdown` and `OnApplicationShutdown` receive. `handle.close(..)` ends `serve`: the serve future runs the sequence and returns its outcome.
+
+A `close` during a running shutdown starts nothing. It waits for the same shutdown and returns the same outcome. Its own signal is ignored, as is `serve`'s signal arriving during a handle-initiated close.
+
+The sequence of §9.2, with the drain written out:
+
+1. `OnModuleDestroy` hooks, in reverse connect order.
+2. `BeforeApplicationShutdown(signal)` hooks.
+3. Drain and close. Transports stop accepting. Cancellation fires on every live execution, transport-opened and standalone alike, and the app waits for them to end, up to `drain_timeout`. An execution still alive at the timeout is abandoned: it keeps its cache and its instances until its last handle drops (§3.8), and the outcome counts it. Transports then close their sockets.
+4. `OnApplicationShutdown(signal)` hooks.
+
+A failing step does not stop the sequence. The remaining steps run, and the outcome lists what failed: a shutdown hook that panicked, a transport whose close returned an error. The outcome is `Result<Shutdown, ShutdownError>` (§10.2), received by `serve` and by every `close` caller. `ShutdownError` is `Clone` with its contents behind an `Arc`, because one outcome has several receivers.
+
+Without `serve`, a job or CLI on `Connected`, `close` runs the same sequence. There are no sockets to close, and the drain covers live standalone executions: those whose `handle()` a detached subtask still holds.
+
+`drain_timeout` is set on the builder beside the `Timer`, as in §9.4, and is ten seconds unset. The wait is timed by the app's `Timer`. `listen()` refuses an app that binds a transport without one. A `close` on `Connected` with no `Timer` has nothing to time the wait with and abandons live executions at once.
 
 ---
 
@@ -747,10 +770,10 @@ A job, a CLI command or a test stops after `connect()` and uses `get` or `execut
 `wire()` runs these steps and **collects** errors. It never stops at the first one.
 
 1. **Module graph:** deduplicate identities, detect import cycles (printing the path of module names), check that re-exports are visible, and refuse an input declared by a keyed module.
-2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, values whose `try_value` recorded an `Err` (naming the module and the key), and overrides that match no binding or more than one (in tests).
+2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, values whose `try_value` recorded an `Err` (naming the module and the key), and overrides that match no binding or more than one (in tests), an `in_module::<M>()` over several instances of `M` among them.
 3. **Visibility:** resolve every site against its module's visibility table. Report missing keys (with the site, the key and the module) and ambiguous keys (naming every source module). When a missing key's name equals a bound key's name up to a trailing `+ core::marker::Send + core::marker::Sync`, the report names both spellings: `dyn Repo` and `dyn Repo + Send + Sync` are distinct `TypeId`s, and this is the one place the mismatch is visible.
 4. **Dependency cycles:** run a DFS over the resolved edges and print the full path, as in `A → B → C → A`, with the module of each step.
-5. **Scopes:** run the needs-execution pass from §6.2, then report scope violations with the path that introduces the execution dependency, and hooks on types that became per-execution. Then, for each handler, walk its reachable execution-scoped bindings and report every non-optional input that the handler's transport does not seed (§6.4).
+5. **Scopes:** run the needs-execution pass from §6.2, then report scope violations with the path that introduces the execution dependency, and hooks on types that became per-execution. Then, for each handler, walk its reachable execution-scoped bindings and report every non-optional input that the handler's transport does not seed (§6.4), with the path from the handler to the service that reads the input, the handler's transport and the input's seeder.
 6. **Environment:** check for a timer if checks need one.
 
 Steps that depend on a missing piece skip only the affected edges, so one missing binding doesn't hide unrelated errors.
@@ -758,7 +781,7 @@ Steps that depend on a missing piece skip only the affected edges, so one missin
 A sample of the output:
 
 ```
-error: wiring failed with 4 errors
+error: wiring failed with 5 errors
 
   × missing dependency `dyn Mailer`
     ├─ needed by UserService (param `mailer`) in UsersModule
@@ -775,6 +798,10 @@ error: wiring failed with 4 errors
   × scope violation: singleton `ReportService` depends on per-execution data
     └─ ReportService → AuditContext (execution) → Ext<CurrentUser>
        help: declare ReportService #[injectable(execution)], or inject a factory
+
+  × input `fw_http::RequestHead` is seeded by Http, read on a path from an Rpc handler
+    ├─ UsersController::get_rpc (Rpc) → AuditContext (execution) → Dep<RequestHead> (field `head`)
+    └─ help: read it as `Option<Dep<RequestHead>>` where the path is shared across transports
 ```
 
 ### 10.2 Error types
@@ -786,6 +813,17 @@ pub enum StartupError {
     Readiness { key: KeyName, attempts: u32, source: Redacted },
     Hook { hook: HookKind, key: KeyName, source: BoxError },
     Bind { transport: &'static str, source: BoxError },
+}
+
+/// The outcome of a shutdown, received by `serve` and by every `close` caller (§9.5).
+pub struct Shutdown { pub abandoned: usize }                      // executions still alive at the drain timeout
+
+#[derive(Clone)]                                                  // one outcome, several receivers; the failures sit behind the Arc
+pub struct ShutdownError { pub report: Shutdown, pub failures: Arc<[ShutdownFailure]> }
+
+pub enum ShutdownFailure {
+    Hook { hook: HookKind, key: KeyName, source: BoxError },      // the hook panicked; the shutdown hook traits return `()`
+    Close { transport: &'static str, source: BoxError },
 }
 
 #[non_exhaustive]
@@ -805,7 +843,7 @@ pub struct GuardRejected { pub guard: &'static str }
 
 `WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them. `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
-Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories and hooks are caught at the poll boundary and turned into `StartupError::Construct` or `StartupError::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught.
+Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories and hooks are caught at the poll boundary and turned into `StartupError::Construct` or `StartupError::Hook`, and a shutdown hook's into `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught.
 
 ### 10.3 Compile-time diagnostics [46]
 
@@ -825,6 +863,7 @@ let app = TestApp::of(AppModule)
     .override_factory(|| async { FixedClock::at(t0) })
     .override_try_factory(|| async { TestBus::connect().await })
     .override_value::<AuditLog>(Arc::new(NullAudit)).in_module::<BillingModule>()
+    .override_value::<PgPool>(Arc::new(replica_pool)).in_module_keyed::<DbModule, Replica>()
     .replace_module(MailModule, FakeMailModule)
     .connect()
     .await?;
@@ -834,8 +873,8 @@ let users = app.get::<UserService>().await?;
 
 Override rules:
 - An override replaces the recipe of an existing key and keeps its origin module, its visibility and its exports, so production modules stay untouched.
-- An override that matches no binding is a wiring error, which catches stale mocks after refactors.
-- An override that matches several bindings, two modules each binding the key privately, is a wiring error listing every match. `.in_module::<M>()` on the override picks one; `.everywhere()` replaces all of them explicitly. Replacing several by default would make a test pass for the wrong reason.
+- An override names no module by default and must match exactly one binding. One that matches none is a wiring error, which catches stale mocks after refactors. One that matches several, two modules each binding the key privately, is a wiring error listing every match; `.everywhere()` replaces all of them explicitly. Replacing several by default would make a test pass for the wrong reason.
+- `.in_module::<M>()` scopes an override to one module. Over several instances of `M`, configured or keyed, it is itself ambiguous and fails as one; `.in_module_keyed::<M, Q>()` and `.in_module_of(&config)` name one instance.
 - An override can't change a key's kind (single or collection). `override_many` replaces an entire collection.
 - `override_factory` and `override_try_factory` follow §4's split: the plain one binds the future's output, the `try_` one its `Ok` type.
 - `replace_module` swaps by identity. The replacement must export a superset of the original's keys, or wiring reports what's missing.
@@ -865,13 +904,15 @@ Override rules:
 | A hook on an `Auto` type inferred per-execution | startup (`wire`) | scope pass |
 | A non-optional input read on a path from a transport that doesn't seed it | startup (`wire`) | per-handler input check |
 | An input declared by a keyed module | startup (`wire`) | module graph pass |
-| An override that matches nothing, or more than one binding | startup (`wire`) | test builder |
+| An override that matches nothing, or more than one binding, `in_module::<M>()` over several instances of `M` included | startup (`wire`) | test builder |
 | A constructor, factory, readiness check or hook fails | startup (`connect`) | typed `StartupError` |
 | `ModuleRef::get` for a singleton not yet built | startup (`connect`) | `LookupError::NotReady` |
+| A transport bound on an app with no `Timer` | startup (`listen`) | `StartupError::Bind`; the drain is timed by the `Timer` (§9.5) |
 | A lazy module with controllers, contributions to a collection it doesn't introduce, or global exports | runtime (`load`) | typed error |
 | Lookup not found, not ready, wrong type, wrong kind, no execution, ambiguous module | runtime | `LookupError` |
 | An execution input not seeded by a standalone execution, an extension not written | runtime | `LookupError::NotFound`, or `None` through `Option` |
 | A guard's refusal | runtime | `GuardRejected` through the error handlers |
+| A shutdown hook panics, or a transport fails to close | runtime (`close`) | `ShutdownFailure` inside `ShutdownError`; the later steps still run |
 
 ---
 
@@ -927,8 +968,8 @@ The value API an integration writes against:
 | Sites | `Site`, `SiteDesc`, `Key`, `Resolver::{dep, many, entries, ext, input, module, execution, by_key}` |
 | Construction | `Construct`, `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, seed, handle}`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
-| Runtime | `Timer`, `Signal`, `Server` (implemented by transports for `bind`), `AppHandle` |
-| Errors | `StartupError`, `WiringErrors`, `LookupError`, `GuardRejected`, `Secret`, `Redacted` |
+| Runtime | `Timer`, `Signal`, `Server` (implemented by transports for `bind` and the drain), `AppHandle`, `Shutdown` |
+| Errors | `StartupError`, `WiringErrors`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Secret`, `Redacted` |
 
 ---
 
@@ -942,5 +983,7 @@ The value API an integration writes against:
 6. **Singletons are eager.** They're built during `connect`, never lazily on first use.
 7. **Auto scope** is singleton for providers and inferred for controllers and enhancers. An explicit `singleton` opts out of inference.
 8. **Collection order** is depth-first post-order over imports from the root, imports in the order written, then declaration order inside a module. Hooks and readiness checks tie-break on the same order.
-9. **The transport owns the execution**, or `execute` does for a standalone one; everything else holds a clone. Cancellation is fired by the transport while clones are alive. The execution ends, and its instances drop, when the last clone does.
+9. **The transport owns the execution**, or `execute` does for a standalone one; everything else holds a clone. Cancellation fires while clones are alive: the transport fires it for a call, and a standalone execution's fires at its deadline or when the app closes, never on `execute` completing. The execution ends, and its instances drop, when the last clone does.
 10. **`Many<T>` is eager.** Reading it constructs every contribution. The lazy form, `Resolver::entries::<T>()`, is a transport's surface, not a site.
+11. **Shutdown is one event.** The first trigger wins, `serve`'s signal or a `close` on any handle, and its signal reaches the hooks; a later `close` joins the running shutdown and ignores its own signal. Every receiver gets the one outcome, which is why `ShutdownError` is `Clone`.
+12. **In-flight executions drain for `drain_timeout`**, ten seconds unset, timed by the `Timer`. Those still alive are abandoned and counted in `Shutdown::abandoned`.
