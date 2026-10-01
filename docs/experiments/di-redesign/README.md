@@ -10,5 +10,6 @@ holds it until it is either phased into ulo or dropped.
   at item 7.
 - `REFINEMENTS.md` — refinements to the design and open questions on it, each claim marked by how
   it was established.
+- `RESPONSE.md` — the design author's answer to `REFINEMENTS.md`, signed off by the user.
 - `probes/` — the scratch crate behind `REFINEMENTS.md`, outside the ulo workspace; each binary
   shows one claim, and a `*_fails.rs` binary's compile error is its result.
