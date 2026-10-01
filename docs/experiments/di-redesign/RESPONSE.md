@@ -540,3 +540,58 @@ And the problem is wider than readiness. A factory whose `connect` fails usually
 6. **Confirmed.**
 
 7. **Understood.** The `reason` field replaces `source` on Readiness, so all three `ConnectError` variants report failures the same way.
+
+---
+
+## Tenth response: redaction scope by origin, and the `Redacted` type kept
+
+Received 2026-10-01. Not yet signed off.
+
+### The two redaction questions
+
+**1. `try_value` errors: yes, and look closely at why.** Config loaders are the most likely place for a credential to appear in an error message ("failed to parse DATABASE_URL=postgres://admin:hunter2@..."). But the registry-based part of redaction can't help on this path. The secret that would have been registered is inside the config that failed to load, so it was never registered. Here the URL-userinfo strip is the only protection. That's still worth having, and the documentation should be honest that it's a backstop on this path, not a guarantee.
+
+**2. `Bind`: name it in.** Your question shows the real problem: my list of three types was the wrong way to define the scope. A list has to be extended each time a new error variant appears, and every missed case is a silent leak, which is how both of these questions came up. Define the scope by where the error comes from instead:
+
+> Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type.
+
+That covers `WiringErrors`, `Bind`, `ShutdownFailure::Close`, and anything added later, with no list to maintain. Bind errors rarely contain credentials, but a TLS key path or a proxy URL with a password in it is possible, and the cost is one function call on a path that fails once.
+
+### The ten details
+
+1. **Confirmed.**
+
+2. **Confirmed.**
+
+3. **Confirmed, with the rule written out.** Not making these once-only is a reasonable way to keep the typestate small. A repeated `.retries` is redundant, while a repeated bound conflicts with itself. But the document should state "the last write wins", so it's a rule rather than an accident of implementation.
+
+4. **Confirmed.** A panic signals a bug, not a temporary fault, so retrying it only repeats the bug.
+
+5. **Confirmed.**
+
+6. and 10. **Correction to both, together.** Replacing an error with its redacted text loses something important on the runtime path. `LookupError::Construct` can fire during a call. An execution-scoped constructor that fails with a domain error, such as "tenant not found", needs its error handler to downcast that error and map it to a 404. With the original error discarded, the handler only sees text, and that mapping becomes impossible.
+
+So keep a type, but one that enforces what it claims:
+
+```rust
+pub struct Redacted { inner: BoxError, text: String }
+
+impl Display for Redacted { /* writes `text` */ }
+impl Debug   for Redacted { /* writes `text`; never formats `inner` */ }
+impl Error   for Redacted { /* source() returns None */ }
+
+impl Redacted {
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E>;   // reaches the original
+    pub fn into_inner(self) -> BoxError;
+}
+```
+
+The objection in detail 6 was that a marker type would claim something it couldn't enforce. This type does enforce something: its formatting never prints the original. Logging, `{:?}` and error reports all go through `Display` or `Debug`, so they're safe. Programmatic access to the original error stays possible, but only through an explicit method that a reviewer can find.
+
+`source()` returns `None` on purpose. Otherwise error-chain reporters, which walk `source()` and print every link, would print the original error and bypass the redaction.
+
+7. **Correction**, following from question 2. Narrow the sentence to the origin rule, not to three types.
+
+8. **Confirmed.**
+
+9. **Confirmed.**
