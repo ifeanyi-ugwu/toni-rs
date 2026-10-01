@@ -62,6 +62,16 @@ impl Key {
     pub(crate) fn name(&self, kind: BindingKind) -> KeyName {
         KeyName { key: *self, kind }
     }
+
+    /// Built whole so `Display` can pad it as one string.
+    fn text(&self) -> String {
+        let mut text = short_type_name(self.ty_name);
+        if let Some(q) = self.qualifier_name() {
+            text.push_str(" @ ");
+            text.push_str(&short_type_name(q));
+        }
+        text
+    }
 }
 
 impl PartialEq for Key {
@@ -83,7 +93,7 @@ impl Hash for Key {
 /// [`KeyName`], which carries the kind a bare `Key` does not.
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        f.pad(&self.text())
     }
 }
 
@@ -122,7 +132,11 @@ impl KeyName {
 
 impl fmt::Display for KeyName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        let mut text = self.key.text();
+        if self.kind == BindingKind::Collection {
+            text.push_str(" (collection)");
+        }
+        f.pad(&text)
     }
 }
 
@@ -135,6 +149,49 @@ impl fmt::Debug for KeyName {
 /// The diagnostic spelling of a `type_name`: module paths stripped from every segment, so
 /// `alloc::sync::Arc<my_app::db::PgPool>` reads `Arc<PgPool>`. Shared by `Key`, `KeyName`,
 /// `ModuleName` and every wiring report.
+///
+/// Only the paths change: `dyn my_app::Repo + core::marker::Send` reads `dyn Repo + Send`, and the
+/// punctuation of references, slices, tuples, function pointers and qualified paths is copied as
+/// written. Two types whose last segments match print alike.
 pub(crate) fn short_type_name(full: &'static str) -> String {
-    todo!()
+    let mut out = String::with_capacity(full.len());
+    let mut rest = full;
+    while let Some(c) = rest.chars().next() {
+        if is_path_char(c) {
+            let end = rest.find(|c: char| !is_path_char(c)).unwrap_or(rest.len());
+            push_last_segment(&mut out, &rest[..end]);
+            rest = &rest[end..];
+        } else {
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// The characters of one `a::b::{{closure}}` run. `type_name` writes `:` only inside `::`.
+fn is_path_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | ':' | '{' | '}')
+}
+
+/// Writes the last segment of `path`. A closure segment such as `{{closure}}` keeps the item
+/// that encloses it, which is the part that names it. A leading `::`, as after the `>` of
+/// `<A as Tr>::Out`, is kept.
+fn push_last_segment(out: &mut String, path: &str) {
+    let path = match path.strip_prefix("::") {
+        Some(tail) => {
+            out.push_str("::");
+            tail
+        }
+        None => path,
+    };
+    let mut segments = path.rsplit("::");
+    let last = segments.next().unwrap_or("");
+    if last.starts_with('{') {
+        if let Some(enclosing) = segments.next() {
+            out.push_str(enclosing);
+            out.push_str("::");
+        }
+    }
+    out.push_str(last);
 }
