@@ -245,6 +245,7 @@ beside this file, one file per probe under `src/bin/`, run one at a time with
 | `p19_bounded_state.rs` | the handle's state names the item and whether its bound is written: `.timeout`/`.unbounded()` exist on `Open` and return `Set`, which has neither; a readiness item holds two slots written once each in either order, `.unbounded()` closing both while both are open; a third parameter remembers the construction's state, so `also_as`/`qualified` return to the binding as left and its `.timeout` after `also_as` writes the first item; `.retries`/`.backoff` in every readiness state; prints each item's bounds |
 | `p19b_second_timeout_fails.rs` | `.timeout` twice on the check, and the construction's `.timeout` after `also_as` with its bound already written: two E0599, "the method `timeout` exists for struct `Handle<PgPool, ReadyItem<Set, Open>>`, but its trait bounds were not satisfied", the note naming the state's unsatisfied bound (`ReadyItem<Set, Open>: Timeout<Open>`, `Construction<Set>: Timeout<Set>`) |
 | `p19c_unbounded_beside_bound_fails.rs` | `.attempt_timeout(..).unbounded()` and `.unbounded().attempt_timeout(..)`: two E0599, on `unbounded` for `Handle<PgPool, ReadyItem<Open, Set>>` and on `attempt_timeout` for `Handle<PgPool, ReadyItem<Set, Set>>` |
+| `p20_redacted.rs` | `Redacted { inner: BoxError, text }` built from a `TenantNotFound` whose message carries `postgres://admin:hunter2@..`: `{}` and `{:?}` print the stripped text and nothing of `inner`; `source()` is `None`, so a reporter walking the chain from an outer `LookupError::Construct` prints the text and stops; the derived `Debug` of that outer error goes through `Redacted`'s own `Debug`; an error handler downcasts the `BoxError` to `LookupError`, then the `Redacted` to `TenantNotFound`, and answers 404; `into_inner` gives back the original with its unredacted message; `Redacted: Send + Sync + 'static` and boxes into a `BoxError`. A copy whose `source()` returns `inner` fails the chain assertion, so the assertion reaches what it claims |
 
 ### Rust 1.88.0 re-run
 
@@ -267,4 +268,4 @@ What differs is presentation:
 | P14b | the `!Send` error is reported twice, at the async block and at the signature: 4 errors | once, at the signature: 3 errors |
 | all | line numbers in a two-digit gutter are left-aligned (`6  \|`) | right-aligned, the pad before the digit |
 
-P19, P19b and P19c were built on both toolchains after this re-run. Their output is identical on the two once build chatter is stripped, the E0599 text and notes included.
+P19, P19b, P19c and P20 were built on both toolchains after this re-run. Their output is identical on the two once build chatter is stripped, the E0599 text and notes included.

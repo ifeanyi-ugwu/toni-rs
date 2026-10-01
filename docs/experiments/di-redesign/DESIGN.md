@@ -744,7 +744,7 @@ m.on_init(|users: Dep<UserService>| async move { users.seed_admin().await })   /
     .timeout(Duration::from_secs(5));
 ```
 
-The handle is one type with a state parameter naming the item written last and whether its bound is written, and the binding is the first item: `.timeout(..)` and `.unbounded()` write the bound of whatever the state names, construction directly after `singleton(..)`, the check after `.ready(..)`, the hook after `.on_destroy(..)`, and either call moves the item to a state that has neither method. A second `.timeout`, or `.unbounded()` beside a bound, is E0599 at the second call (§12). `.retries`, `.backoff` and `.attempt_timeout` exist on the readiness item alone, the first two in every one of its states (§9.3). `also_as` and `qualified` describe the binding and return to it in the state it was left in: the handle carries the construction's state across the other items for that return, and the construction's bound is written once wherever the handle is on the binding. Misuse is E0599 at the method, naming the handle type the method exists on and the state bound it lacks. A closure's `.timeout` means what the trait const means (§3.9), `Default` when left off, and `.unbounded()` writes `Unbounded`.
+The handle is one type with a state parameter naming the item written last and whether its bound is written, and the binding is the first item: `.timeout(..)` and `.unbounded()` write the bound of whatever the state names, construction directly after `singleton(..)`, the check after `.ready(..)`, the hook after `.on_destroy(..)`, and either call moves the item to a state that has neither method. A second `.timeout`, or `.unbounded()` beside a bound, is E0599 at the second call (§12). `.retries`, `.backoff` and `.attempt_timeout` exist on the readiness item alone, the first two in every one of its states and repeatable, the last write winning (§9.3). `also_as` and `qualified` describe the binding and return to it in the state it was left in: the handle carries the construction's state across the other items for that return, and the construction's bound is written once wherever the handle is on the binding. Misuse is E0599 at the method, naming the handle type the method exists on and the state bound it lacks. A closure's `.timeout` means what the trait const means (§3.9), `Default` when left off, and `.unbounded()` writes `Unbounded`.
 
 A factory's output is a plain value, so trait hooks run only for types the container constructs. This rule is documented, and it's the reason closure hooks exist. It holds even when the output type implements `Construct`: `m.singleton(|| async { Cache::custom() })` binds `Cache` by factory, and its `OnModuleInit` impl compiles and never runs, because the graph learns which types are `Construct` only through `provide`. A `Construct` type that needs a custom build is bound with `m.provide_with::<Cache>(|| async { Cache::custom() })`, which runs `Cache::hooks` like `provide` does (§4).
 
@@ -767,9 +767,9 @@ m.singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect_lazy(cfg.url.expos
     .timeout(Duration::from_secs(10));          // the whole check, retries and backoff included
 ```
 
-A readiness check runs right after its binding is constructed and before anything that depends on it. `.timeout` bounds the whole check, retries and backoff included, so it means what a hook's `.timeout` means; `.attempt_timeout` bounds one attempt and is what catches a single hung ping. Both are optional, and both need a `Timer` and are wiring errors without one (§3.9). A check that writes neither takes `construct_timeout` as its attempt bound when a `Timer` exists, under the rule constructors follow: external I/O is what a readiness check exists for, and a ping to a host that drops packets never returns, so an unbounded first attempt would never reach its retries. Without a `Timer` it runs unbounded. Writing `.timeout`, `.attempt_timeout` or `.unbounded()` opts out of that default. Each of the two is written once, in either order, and `.unbounded()` stands in for both: it exists only while neither is written, and after it neither exists (§9.1). `.unbounded()` runs the check with no bound on an attempt or on the whole, for a dependency the app waits on however long it takes; `.retries` and `.backoff` keep their meaning under it. An attempt that times out with retries left is retried like one that returned `Err`. A check that fails reports as `ConnectError::Readiness` with the attempts made and a `reason` for how it ended (§10.2): `TimedOut { limit: Item }` when the whole-check bound fired, whatever the attempt underway was doing; `TimedOut { limit: Attempt }` or `TimedOut { limit: Default }` when the last attempt hit its own bound with no retries left; `Errored(..)` holding the last attempt's error when the retries ran out on errors; `Panicked(..)` when an attempt panicked, which ends the check at once.
+A readiness check runs right after its binding is constructed and before anything that depends on it. `.timeout` bounds the whole check, retries and backoff included, so it means what a hook's `.timeout` means; `.attempt_timeout` bounds one attempt and is what catches a single hung ping. Both are optional, and both need a `Timer` and are wiring errors without one (§3.9). A check that writes neither takes `construct_timeout` as its attempt bound when a `Timer` exists, under the rule constructors follow: external I/O is what a readiness check exists for, and a ping to a host that drops packets never returns, so an unbounded first attempt would never reach its retries. Without a `Timer` it runs unbounded. Writing `.timeout`, `.attempt_timeout` or `.unbounded()` opts out of that default. Each of the two is written once, in either order, and `.unbounded()` stands in for both: it exists only while neither is written, and after it neither exists (§9.1). `.unbounded()` runs the check with no bound on an attempt or on the whole, for a dependency the app waits on however long it takes; `.retries` and `.backoff` keep their meaning under it. Neither of those two is once-only: they exist in every state of the item, and a repeated `.retries` or `.backoff` is last write wins. A repeated bound would conflict with itself, which is what the typestate refuses; a repeated count is redundant, and refusing it would cost states. An attempt that times out with retries left is retried like one that returned `Err`. A check that fails reports as `ConnectError::Readiness` with the attempts made and a `reason` for how it ended (§10.2): `TimedOut { limit: Item }` when the whole-check bound fired, whatever the attempt underway was doing; `TimedOut { limit: Attempt }` or `TimedOut { limit: Default }` when the last attempt hit its own bound with no retries left; `Errored(..)` holding the last attempt's error when the retries ran out on errors; `Panicked(..)` when an attempt panicked, which ends the check at once.
 
-One function redacts a `BoxError`, and every path that builds a `ConnectError`, a `ShutdownFailure` or a `LookupError::Construct` passes each `BoxError` through it and boxes the redacted text in its place: the `Errored` and `Panicked` payloads, a panic message among them, and `Close`'s `source`. What the variant holds is that text as an error, not the value user code returned; a downcast to the original type finds nothing. The function replaces every `Secret<_>` registered with the graph and, as a backstop, strips the userinfo from anything shaped like a URL. No type marks a redacted error. The guarantee is the one call on every such path, which is what an audit reads. Registration is explicit per graph, never a process-wide list, which would leak between tests:
+Every error the core did not create itself, from user code, integrations or transports, passes through one redaction function before it is stored in any core error type, and what is stored is a `Redacted` (§10.2): the `Errored` and `Panicked` payloads of a `FailureReason`, a panic message among them, `Close`'s and `Bind`'s `source`, and the `Err` a `try_value` recorded in `WiringErrors`. The scope is the error's origin, not a list of variants, so a variant added later is inside it with no list to extend. The function replaces every `Secret<_>` registered with the graph and, as a backstop, strips the userinfo from anything shaped like a URL. On the `try_value` path the registry has nothing to replace: the secret that would have been registered sits inside the config that failed to load. The strip is the only protection there, a backstop and not a guarantee. A `Redacted` writes the redacted text under `Display` and `Debug` alike, answers `None` from `source()`, and hands over the original through `downcast_ref` and `into_inner` alone (§10.2). Registration is explicit per graph, never a process-wide list, which would leak between tests:
 - `m.secret(&self.url)` in the value API, for a secret a module holds in its configuration and moves into a factory.
 - `#[module]` registers every `Secret<_>` field of a configured module, since it can see the fields.
 - `m.value(Secret<_>)` registers the value it binds.
@@ -890,7 +890,7 @@ error: wiring failed with 5 errors
 pub enum StartupError {
     Wiring(WiringErrors),                                  // everything from wire()
     Connect(ConnectError),
-    Bind { transport: &'static str, source: BoxError },
+    Bind { transport: &'static str, source: Redacted },
 }
 
 /// A failure in the connect phase, on `StartupError::Connect` from `connect` and on `LoadError::Connect` from `load`.
@@ -901,13 +901,13 @@ pub enum ConnectError {
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },
 }
 
-/// Why a hook, a construction or a readiness check did not complete. Every `BoxError` here holds redacted text (§9.3).
+/// Why a hook, a construction or a readiness check did not complete.
 #[non_exhaustive]
 pub enum FailureReason {
-    Panicked(BoxError),                            // the payload, converted to a message
+    Panicked(Redacted),                            // the payload, converted to a message
     TimedOut { after: Duration, limit: Limit },    // `after` is the configured duration of the limit that fired
     Skipped,                                       // never started: `shutdown_timeout` had expired (§9.5); shutdown only
-    Errored(BoxError),                             // returned `Err`: a construction, an init or bootstrap hook, or the last attempt of a readiness check
+    Errored(Redacted),                             // returned `Err`: a construction, an init or bootstrap hook, or the last attempt of a readiness check
 }
 
 /// Which limit a `TimedOut` hit.
@@ -917,6 +917,20 @@ pub enum Limit {
     Attempt,       // an explicit `.attempt_timeout(..)` on a readiness check (§9.3)
     Default,       // the app default for this kind of item: `hook_timeout` for a hook, `construct_timeout` for a construction and for one attempt of a readiness check
     ShutdownCap,   // `shutdown_timeout` cutting a hook mid-run (§9.5)
+}
+
+/// An error from outside the core, after the redaction function (§9.3). Formatting writes the redacted text and never the
+/// original; `source()` is `None`, so a reporter walking the chain stops at the text too. The original is reached through
+/// the two methods alone.
+pub struct Redacted { inner: BoxError, text: String }
+
+impl Display for Redacted { /* writes `text` */ }
+impl Debug   for Redacted { /* writes `text`; never formats `inner` */ }
+impl Error   for Redacted { /* `source()` returns `None` */ }
+
+impl Redacted {
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E>;   // the original, by type
+    pub fn into_inner(self) -> BoxError;
 }
 
 /// The outcome of a shutdown, received by `serve` and by every `close` caller (§9.5).
@@ -934,7 +948,7 @@ pub struct ShutdownError { pub report: Shutdown, pub failures: Arc<[ShutdownFail
 #[non_exhaustive]
 pub enum ShutdownFailure {
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },   // never `Errored`: the shutdown hook traits return `()`
-    Close { transport: &'static str, source: BoxError },            // redacted text (§9.3)
+    Close { transport: &'static str, source: Redacted },
 }
 
 /// `execute` and `Execution::open` from Draining on; `load` carries it in `LoadError::Closed` from Stopping on (§9.5).
@@ -977,15 +991,15 @@ pub enum LookupError {                                           // [47]
 pub struct GuardRejected { pub guard: &'static str }
 ```
 
-`WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them. `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
+`WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them, held as a `Redacted` (§9.3). `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
-Every public error type is `#[non_exhaustive]`, the four structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError` or `GuardRejected` breaks no caller that destructures one, and `Closed` is constructed by the core alone. Code outside the core reads these types and builds none of them. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
+Every public error type is `#[non_exhaustive]`, the four structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError` or `GuardRejected` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
 
 Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories, readiness checks and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `ConnectError::Construct`, `ConnectError::Readiness`, `ConnectError::Hook` or `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook, a construction or a readiness check can fail, so a timeout reads the same on an init hook, a destroy hook, a constructor and a check; `Skipped` is reachable at shutdown alone, nothing capping startup as a whole. `TimedOut` names the limit that fired and carries that limit's configured duration: an item's own bound and the cap are often the same round number, and the duration alone would not tell them apart. A hook still running when the cap expires reports `ShutdownCap`, whatever its own bound was.
 
 `Readiness` keeps `attempts`, and its `reason` is how the check ended, by the rules in §9.3. `Limit::Default` has one meaning, the app default for the item's kind, and `after` carries that default's duration: `construct_timeout` on a check's attempt or a construction, `hook_timeout` on a hook.
 
-Every `BoxError` inside `ConnectError`, `ShutdownFailure` and `LookupError::Construct` went through the redaction function before it was boxed (§9.3). `StartupError::Bind` is outside that set.
+Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, the `source` of `ShutdownFailure::Close` and of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
 
 `Closed` is a refusal by phase (§9.5): `execute` and `Execution::open` answer it from Draining on, `load` from Stopping on inside `LoadError`, which holds `load`'s other failures beside it; `StartupError` never carries `Closed`. The lookup form is `LookupError::Closed`, from the first destroy hook on, so an abandoned execution is never handed an instance whose destroy hook has run; one it already holds stays a valid object.
 
@@ -1122,7 +1136,7 @@ The value API an integration writes against:
 | Construction | `Construct` (with `CONSTRUCT_TIMEOUT`), `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, open_terminal, seed, handle}`, `DrainToken`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
 | Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind` and the drain, which hands over the `DrainToken`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
-| Errors | `StartupError`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Secret` |
+| Errors | `StartupError`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Redacted`, `Secret` |
 
 ---
 
@@ -1144,4 +1158,4 @@ The value API an integration writes against:
 14. **Every bound is a `Bound`.** A hook defaults to `hook_timeout` (10 s); a construction, and one attempt of a readiness check, to `construct_timeout` (30 s). Every bounded item is in one of the same three states, default, explicit or unbounded, written where it is declared and written once: after `.timeout(..)` or `.unbounded()` the handle's state has neither method, and a readiness check writes `.timeout` and `.attempt_timeout` once each or `.unbounded()` in place of both. The defaults apply only with a `Timer`, an explicit bound without one is a wiring error, and `Unbounded` needs none. `shutdown_timeout` caps the whole sequence from the trigger and is unset by default.
 15. **A timed-out hook is dropped and reports which limit fired, the item's own, one attempt's, the app default or the cap, with that limit's duration; a timed-out execution is cancelled and left running.** The first stops at its next await, the second is still held by its transport or subtask.
 16. **Disconnect handlers at shutdown are best effort.** Terminal executions run inside the drain window and no grace window follows it; `Shutdown::terminal_skipped` counts the losses, and state that must survive a crash lives in TTL or heartbeat storage.
-17. **Redaction is one function, not a type.** Every `BoxError` entering `ConnectError`, `ShutdownFailure` or `LookupError::Construct` passes through it and the redacted text is boxed in its place; the guarantee is the call on every such path, read by audit rather than enforced by a type.
+17. **Redaction is scoped by origin and stored as a type.** Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type; the scope is the origin, with no list of variants to maintain. What is stored is a `Redacted`: `Display` and `Debug` write the text, `source()` is `None`, and the original is reached through `downcast_ref` and `into_inner` alone, which is what lets an error handler map a constructor's domain error to a status.
