@@ -600,7 +600,8 @@ The objection in detail 6 was that a marker type would claim something it couldn
 
 ## Eleventh response: the five details of the tenth fold
 
-Received 2026-10-01. Not yet signed off.
+Received 2026-10-01. The user signed it off in full the same day and asked for the closing
+consistency read it proposes.
 
 The probe is the evidence that matters: the chain assertion fails when `source()` returns the inner error, so the test catches exactly what it claims to. Four details are confirmed and one gets a small addition.
 
