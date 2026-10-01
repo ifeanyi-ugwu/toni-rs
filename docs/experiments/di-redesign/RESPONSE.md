@@ -405,7 +405,7 @@ The same bound applies when execution-scoped bindings are built during a call, s
 
 ## Seventh response: `listen()` without a Timer, and the eleven details of the shutdown fold
 
-Received 2026-10-01. Not yet signed off.
+Received 2026-10-01. The user signed it off in full the same day.
 
 ### The question: keep `listen()`'s refusal
 
