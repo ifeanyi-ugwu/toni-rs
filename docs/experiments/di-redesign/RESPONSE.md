@@ -135,3 +135,64 @@ This leaves one decision open that the design doesn't cover yet: what happens to
 11. **Confirmed.**
 
 Apart from the in-flight shutdown rule, nothing else here needs a decision from you.
+
+---
+
+## Third response: drain placement, `execute` after close, and the nine details
+
+Received 2026-10-01. The user adopted both of its decisions, drain first with cancellation only at
+the timeout and the phase table with `Result<R, Closed>`, and sent two proposals back to the author
+before folding: `BeforeApplicationShutdown` moved ahead of stop-accepting, and a WebSocket 1001 close
+plus a `draining()` notice for long-lived calls.
+
+### The drain placement: you're right, it should move
+
+Running destroy hooks while executions are still in flight was a mistake in my placement. An execution could reach a singleton after its `OnModuleDestroy` had run, for example a pool that's already closed, and the result would be confusing failures at the worst moment. The drain moves ahead of the destroy hooks:
+
+> stop accepting → drain → `OnModuleDestroy` → `BeforeApplicationShutdown(signal)` → close sockets → `OnApplicationShutdown(signal)`
+
+This keeps the memo's order for the three hooks and only moves the drain.
+
+While checking this, I found a second problem, also in my own earlier rule, and I'd change it too. I said to fire cancellation on every live execution and *then* wait. That makes graceful shutdown not graceful: every request in flight is told to abort the instant shutdown starts, even ones that would finish in 50 ms. The better rule is:
+
+1. Stop accepting.
+2. Wait for live executions to finish on their own, up to `drain_timeout`.
+3. At the timeout, fire cancellation on whatever is still running, and abandon it.
+
+It's still one knob, and in-flight work gets the whole window to complete normally. Cancellation becomes the deadline signal, not the opening move. Say whether you want this. It's a behavior change to what's in the document.
+
+One tradeoff comes with keeping the memo's hook order: `BeforeApplicationShutdown` now runs after traffic has stopped. So the common Kubernetes pattern of deregistering from discovery *before* you stop accepting can't use that hook. If you need it, it calls for a separate pre-drain hook. I wouldn't add one now. I'm only noting that the order makes it impossible today.
+
+### The gap: `execute` during or after shutdown
+
+It has to be refused. That means changing the signature, because `execute` currently returns the bare `R` and has no way to refuse:
+
+```rust
+pub async fn execute<F, R>(&self, f: F) -> Result<R, Closed>
+```
+
+`Closed` is a small public struct. Users whose closures return `Result` write `.await??`, which is mildly awkward but honest.
+
+This calls for naming the app's phases explicitly, since the refusals line up with them:
+
+| Phase | New executions | Singleton lookups |
+|---|---|---|
+| Running | allowed | allowed |
+| Draining | refused (`Closed`) | allowed, since in-flight work still needs them |
+| Destroying onward | refused | refused: `LookupError::Closed { key }` |
+
+The last row covers abandoned executions. They're still alive after the timeout, and a fresh lookup must not hand them an instance whose destroy hook has run. A `Dep<T>` an execution already holds stays a valid object, and nothing can revoke it. The documentation should say that abandoned work may observe destroyed singletons through dependencies it already holds.
+
+### The nine details
+
+1. **Confirmed.**
+2. **Confirmed.** Running every step is the right call. One stuck hook must not leave sockets open.
+3. **Confirmed.**
+4. **Confirmed.** Under the rule above, it's the window before cancellation fires.
+5. **Confirmed.** `Bind` is the right variant, because the timer's absence only matters once there's a transport to drain. `wire()` can't know that.
+6. **Confirmed.** I did mean the drain still runs on `Connected`.
+7. **Confirmed for the example.** For real applications, consider a small `fw::Error` enum with `From<StartupError>` and `From<ShutdownError>`, so `main` keeps a typed error rather than a boxed one.
+8. **Correction: include the winning signal.** A `close` caller whose own signal lost has no other way to learn what actually ended the app. CLI tools and containers often map signals to exit codes (130 for SIGINT, 143 for SIGTERM). So `Shutdown { signal: Signal, abandoned: usize }`.
+9. **Confirmed.**
+
+So you have two decisions: whether to adopt "drain first, cancel only at the timeout", and whether the phase table and `Result<R, Closed>` are right for `execute`. Everything else above is settled.
