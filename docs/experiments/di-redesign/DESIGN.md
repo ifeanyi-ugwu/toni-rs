@@ -195,6 +195,8 @@ pub trait Construct: Sized + Send + Sync + 'static {
 
 `CONSTRUCT_TIMEOUT` bounds `construct` wherever the instance is built: during `connect` for a singleton, and inside the call for an execution-scoped or transient binding, where a hanging constructor would block the call. `Default` is the app's `construct_timeout`, 30 s. Expiry reports as `FailureReason::TimedOut`, on `ConnectError::Construct` during `connect` and on `LookupError::Construct` inside a call (§10.2). A factory takes the same bound through `.timeout(..)` on its binding handle (§9.1).
 
+`ConstructError` (§10.2) separates a dependency's failure from the constructor's own. `Site(LookupError)` is a site read that failed: an input the execution did not seed, `ExecutionRequired`, a nested construction. The core passes it through unchanged, and what the caller gets is the dependency's own error naming the deeper key; an error naming the outer constructor would point at the wrong place. `Failed(BoxError)` is the constructor's own error, the one reported as `Construct { reason: Errored(..) }`. `From<LookupError>` is implemented and no blanket `From<E: Error>` is: `LookupError` implements `Error`, and the two impls would overlap (E0119). `?` on a site read is written as is, and the constructor's own error goes through `ConstructError::failed(e)`. `#[injectable]` writes that mapping for a `new` or `#[construct]` fn returning `Result<Self, E>`; a hand-written impl writes `.map_err(ConstructError::failed)?` (§13).
+
 ### 3.5 Lifecycle traits
 
 ```rust
@@ -993,6 +995,21 @@ pub enum LookupError {                                           // [47]
     Closed { key: KeyName },                                      // a singleton lookup from Destroying on (§9.5)
 }
 
+/// What `Construct::construct` fails with (§3.4). `Site` is a dependency's own `LookupError`, reported unchanged;
+/// `Failed` is the constructor's own error, redacted and reported as `FailureReason::Errored`. A panic or a timeout is
+/// no variant: a constructor cannot report either about itself, and the core records both from outside the poll.
+#[non_exhaustive]
+pub enum ConstructError {
+    Site(LookupError),   // `?` on a site read, through `From`
+    Failed(BoxError),    // `ConstructError::failed(e)`, or the macro's mapping of a constructor's `Result<Self, E>`
+}
+
+impl From<LookupError> for ConstructError { /* `Site` */ }   // no blanket `From<E: Error>`: it would overlap this impl (§3.4)
+
+impl ConstructError {
+    pub fn failed(e: impl Into<BoxError>) -> Self;   // `Failed`
+}
+
 /// A guard's `Ok(false)`, as the error handlers see it (§7).
 #[non_exhaustive]
 pub struct GuardRejected { pub guard: &'static str }
@@ -1000,11 +1017,13 @@ pub struct GuardRejected { pub guard: &'static str }
 
 `WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them, held as a `Redacted` (§9.3). `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
-Every public error type is `#[non_exhaustive]`, the five structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError`, `GuardRejected` or `NoTimer` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
+Every public error type is `#[non_exhaustive]`, the five structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError`, `GuardRejected` or `NoTimer` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them but `ConstructError`, which a constructor returns. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
 
 Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories, readiness checks and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `ConnectError::Construct`, `ConnectError::Readiness`, `ConnectError::Hook` or `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook, a construction or a readiness check can fail, so a timeout reads the same on an init hook, a destroy hook, a constructor and a check; `Skipped` is reachable at shutdown alone, nothing capping startup as a whole. `TimedOut` names the limit that fired and carries that limit's configured duration: an item's own bound and the cap are often the same round number, and the duration alone would not tell them apart. A hook still running when the cap expires reports `ShutdownCap`, whatever its own bound was.
 
 `Readiness` keeps `attempts`, and its `reason` is how the check ended, by the rules in §9.3. `Limit::Default` has one meaning, the app default for the item's kind, and `after` carries that default's duration: `construct_timeout` on a check's attempt or a construction, `hook_timeout` on a hook.
+
+The core consumes a `ConstructError` by variant. A `Site` is reported as the `LookupError` it carries, on the path that error was already taking; a `Failed` is reported as `Construct { reason: Errored(..) }`, on `ConnectError` during `connect` and on `LookupError` inside a call. `Failed` holds the error as the constructor returned it, and the redaction function (§9.3) runs when the core stores it as `Errored`. It runs on `Failed` alone: a `LookupError` is the core's own, and any outside error inside it was redacted where it was stored.
 
 Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, the `source` of `ShutdownFailure::Close` and of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. `Bind` also carries the one error the core writes itself on that path, `listen()`'s refusal of an app with a transport and no `Timer` (§9.5): a `NoTimer { transport }`, wrapped in the same `Redacted` to keep the field one type, and a struct rather than a message, which lets `downcast_ref::<NoTimer>()` tell a misconfigured app from a port already taken. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
 
@@ -1095,7 +1114,10 @@ Override rules:
 This is a complete database integration written against the public API:
 
 ```rust
-use fw_core::{Module, ModuleDef, ModuleIdentity, Dep, Secret};
+use fw_core::{
+    scope, BoxError, Construct, ConstructError, Dep, Hooks, Module, ModuleDef, ModuleIdentity, OnModuleInit, Resolver,
+    Secret, Sites,
+};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DbModule { url: Secret<String>, max_conns: u32 }
@@ -1124,11 +1146,33 @@ impl Module for DbModule {
         .timeout(Duration::from_secs(10))
         .on_destroy(|pool: Dep<PgPool>| async move { pool.close().await });
 
+        m.provide::<Migrations>();                   // a `Construct` type: its hooks run (§9.1)
+
         m.contribute::<dyn HealthIndicator>()
             .singleton(|pool: Dep<PgPool>| async move { PgHealth::new(pool) }, |a| a);
 
         m.export::<PgPool>();
     }
+}
+
+pub struct Migrations { pool: Dep<PgPool>, set: Migrator }
+
+impl Construct for Migrations {
+    type Scope = scope::Singleton;
+
+    fn sites(s: &mut Sites) { s.site::<Dep<PgPool>>(); }
+
+    async fn construct(r: &Resolver<'_>) -> Result<Self, ConstructError> {
+        let pool = r.dep::<PgPool>().await?;                                 // a `LookupError` passes through as `Site`
+        let set = Migrator::new(Path::new("./migrations")).await.map_err(ConstructError::failed)?;
+        Ok(Self { pool, set })
+    }
+
+    fn hooks(h: &mut Hooks<Self>) { h.on_module_init(); }
+}
+
+impl OnModuleInit for Migrations {
+    async fn on_module_init(&self) -> Result<(), BoxError> { Ok(self.set.run(&*self.pool).await?) }
 }
 ```
 
@@ -1139,7 +1183,7 @@ The value API an integration writes against:
 | Modules | `Module`, `ModuleIdentity`, `ModuleDef::{import, global, export, reexport, secret, on_init, on_destroy, meta}`, `DynamicModule`, `Keyed` |
 | Bindings | `provide::<T: Construct>`, `provide_with::<T>(factory)`/`try_provide_with`, `value`/`try_value`, `singleton`/`try_singleton`, `execution`/`try_execution`, `transient`/`try_transient`, `contribute::<T>()`, `alias::<T, Q>().of::<Existing>()`, `input::<T>().seeded_by::<Tr>()` |
 | Binding handles | `also_as`, `qualified::<Q>`, `timeout(..)`/`unbounded()` on the binding itself, `ready(..).retries(..).backoff(..).attempt_timeout(..).timeout(..)`/`.unbounded()`, `on_init`/`on_destroy`/`before_shutdown`/`on_shutdown` each with `.timeout(..)`/`.unbounded()` (singleton handles only); every bound written once per item (§9.1) |
-| Sites | `Site`, `SiteDesc`, `Key`, `Resolver::{dep, many, entries, ext, input, module, execution, by_key}` |
+| Sites | `Site`, `SiteDesc`, `Sites::site`, `Key`, `Resolver::{dep, many, entries, ext, input, module, execution, by_key}` |
 | Construction | `Construct` (with `CONSTRUCT_TIMEOUT`), `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, open_terminal, seed, handle}`, `DrainToken`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
 | Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind` and the drain, which hands over the `DrainToken`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
