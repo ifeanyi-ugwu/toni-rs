@@ -7,7 +7,7 @@
 ## 0. Principles
 
 1. **One runtime container, validated as a whole graph before anything exists.** Every binding declares its sites statically, so the complete dependency graph is known before a single instance is built. All wiring errors are reported in one pass [44]. Anything that is local to one type (site shapes, hooks, role bounds) is checked by the compiler instead [45].
-2. **Macros are sugar.** Every macro expands to calls on the value-level API in §9, which integration crates call directly.
+2. **Macros are sugar.** Every macro expands to calls on the value-level API in §13, which integration crates call directly.
 3. **Naming.** Types are nouns (`Dep`, `Many`, `Ext`, `ModuleRef`, `Execution`). Traits are capabilities (`Construct`, `Site`, `Module`, `Guard`).
 4. **The core has no runtime.** It uses `std::future`, a `BoxFuture` alias, and a pluggable `Timer` trait (§3.9). Transports and runtime adapters (such as `fw-tokio`) bring the executor, sockets, timers and signals.
 5. **Identity is by type.** Keys are `TypeId`s, so a type alias or a renamed import reads the same binding [9][16].
@@ -110,7 +110,7 @@ pub trait Site: Sized + Send + 'static {
     fn describe(d: &mut SiteDesc);
 
     /// Read the site from the container.
-    fn read(r: &Resolver<'_>) -> impl Future<Output = Result<Self, ResolveError>> + Send;
+    fn read(r: &Resolver<'_>) -> impl Future<Output = Result<Self, LookupError>> + Send;
 }
 ```
 
@@ -423,7 +423,9 @@ Async factories and third-party types [3][8]:
 
 ```rust
 // Parameters are sites. The output type is the key. A `try_` factory's output is a
-// Result whose Ok type is the key; its Err is a startup error.
+// Result whose Ok type is the key; its Err reports as `FailureReason::Errored`, on
+// `ConnectError::Construct` for a singleton and on `LookupError::Construct` for a
+// binding built inside a call (§3.4).
 m.try_singleton(|cfg: Dep<DbConfig>| async move {
     PgPool::connect(cfg.url.expose()).await
 });
@@ -732,7 +734,7 @@ impl OnApplicationShutdown for Cache {
 }
 ```
 
-For factory outputs (such as a third-party pool) and for modules, hooks are closures registered on a **singleton** binding handle. The handle is typed, so the hook methods don't exist on execution-scoped or transient handles [41]:
+For factory outputs (such as a third-party pool), hooks are closures registered on a **singleton** binding handle; for modules, on the `ModuleDef` (§13). The binding handle is typed, so the hook methods don't exist on execution-scoped or transient handles [41]:
 
 ```rust
 m.try_singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect(cfg.url.expose()).await })
@@ -890,8 +892,13 @@ error: wiring failed with 5 errors
 pub enum StartupError {
     Wiring(WiringErrors),                                  // everything from wire()
     Connect(ConnectError),
-    Bind { transport: &'static str, source: Redacted },
+    Bind { transport: &'static str, source: Redacted },    // a transport's own error, or the core's `NoTimer`
 }
+
+/// `listen()`'s refusal of an app that binds a transport with no `Timer` (§9.5), stored in `StartupError::Bind`'s
+/// `source` like a transport's error; `source.downcast_ref::<NoTimer>()` tells it from a port already taken.
+#[non_exhaustive]
+pub struct NoTimer { pub transport: &'static str }
 
 /// A failure in the connect phase, on `StartupError::Connect` from `connect` and on `LoadError::Connect` from `load`.
 #[non_exhaustive]
@@ -937,7 +944,7 @@ impl Redacted {
 #[non_exhaustive]
 pub struct Shutdown {
     pub signal: Signal,            // the trigger that won
-    pub abandoned: usize,          // executions still alive at the drain timeout
+    pub abandoned: usize,          // executions still alive at the drain's end: `drain_timeout`, or the earlier `shutdown_timeout` expiry (§9.5)
     pub terminal_skipped: usize,   // terminal executions refused or abandoned (§9.5)
 }
 
@@ -993,13 +1000,13 @@ pub struct GuardRejected { pub guard: &'static str }
 
 `WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them, held as a `Redacted` (§9.3). `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
-Every public error type is `#[non_exhaustive]`, the four structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError` or `GuardRejected` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
+Every public error type is `#[non_exhaustive]`, the five structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError`, `GuardRejected` or `NoTimer` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
 
 Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories, readiness checks and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `ConnectError::Construct`, `ConnectError::Readiness`, `ConnectError::Hook` or `ShutdownFailure::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook, a construction or a readiness check can fail, so a timeout reads the same on an init hook, a destroy hook, a constructor and a check; `Skipped` is reachable at shutdown alone, nothing capping startup as a whole. `TimedOut` names the limit that fired and carries that limit's configured duration: an item's own bound and the cap are often the same round number, and the duration alone would not tell them apart. A hook still running when the cap expires reports `ShutdownCap`, whatever its own bound was.
 
 `Readiness` keeps `attempts`, and its `reason` is how the check ended, by the rules in §9.3. `Limit::Default` has one meaning, the app default for the item's kind, and `after` carries that default's duration: `construct_timeout` on a check's attempt or a construction, `hook_timeout` on a hook.
 
-Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, the `source` of `ShutdownFailure::Close` and of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
+Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, the `source` of `ShutdownFailure::Close` and of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. `Bind` also carries the one error the core writes itself on that path, `listen()`'s refusal of an app with a transport and no `Timer` (§9.5): a `NoTimer { transport }`, wrapped in the same `Redacted` to keep the field one type, and a struct rather than a message, which lets `downcast_ref::<NoTimer>()` tell a misconfigured app from a port already taken. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
 
 `Closed` is a refusal by phase (§9.5): `execute` and `Execution::open` answer it from Draining on, `load` from Stopping on inside `LoadError`, which holds `load`'s other failures beside it; `StartupError` never carries `Closed`. The lookup form is `LookupError::Closed`, from the first destroy hook on, so an abandoned execution is never handed an instance whose destroy hook has run; one it already holds stays a valid object.
 
@@ -1070,7 +1077,7 @@ Override rules:
 | An explicit bound, `After(..)`, `.timeout`, `.attempt_timeout` or a builder knob, on an app with no `Timer` | startup (`wire`) | environment pass (§3.9) |
 | A constructor, factory, readiness check or hook fails, panics or times out | startup (`connect`) | `StartupError::Connect`, the case named in `ConnectError` and the reason on `FailureReason` |
 | `ModuleRef::get` for a singleton not yet built | startup (`connect`) | `LookupError::NotReady` |
-| A transport bound on an app with no `Timer` | startup (`listen`) | `StartupError::Bind`; the drain is timed by the `Timer` (§9.5) |
+| A transport bound on an app with no `Timer` | startup (`listen`) | `StartupError::Bind` carrying `NoTimer { transport }` in its `source`, reached by `downcast_ref` (§10.2); the drain is timed by the `Timer` (§9.5) |
 | A lazy module with controllers or middleware, contributions to a collection it doesn't introduce, global exports, or an execution input | runtime (`load`) | `LoadError::Refused`, the case named in `LoadRefusal` (§8.6) |
 | A lazy module that fails to wire, or whose construction, readiness check or init hook fails | runtime (`load`) | `LoadError::Wiring`, `LoadError::Connect` |
 | `load` from Stopping on | runtime (`load`) | `LoadError::Closed` (§9.5) |
@@ -1136,7 +1143,7 @@ The value API an integration writes against:
 | Construction | `Construct` (with `CONSTRUCT_TIMEOUT`), `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, open_terminal, seed, handle}`, `DrainToken`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
 | Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind` and the drain, which hands over the `DrainToken`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
-| Errors | `StartupError`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Redacted`, `Secret` |
+| Errors | `StartupError`, `NoTimer`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `Redacted`, `Secret` |
 
 ---
 
@@ -1146,7 +1153,7 @@ The value API an integration writes against:
 2. **The qualifier is a second type parameter:** `Dep<PgPool, Replica>`, defaulting to `()`.
 3. **Collections are app-wide**, not limited by visibility.
 4. **Module structure is synchronous.** Registration can't await. Anything that needs async configuration becomes an async factory. This keeps "no I/O before wiring completes" true.
-5. **Panics in user code are caught** at poll boundaries and reported as startup errors.
+5. **Panics in user code are caught** at poll boundaries and reported as `FailureReason::Panicked` on the error of the phase: `ConnectError` during `connect` and `load`, `ShutdownFailure` during `close`, `LookupError::Construct` inside a call.
 6. **Singletons are eager.** They're built during `connect`, never lazily on first use.
 7. **Auto scope** is singleton for providers and inferred for controllers and enhancers. An explicit `singleton` opts out of inference.
 8. **Collection order** is depth-first post-order over imports from the root, imports in the order written, then declaration order inside a module. Hooks and readiness checks tie-break on the same order.
