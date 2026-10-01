@@ -34,7 +34,7 @@ pub(crate) fn downcast_instance<T: ?Sized + Send + Sync + 'static>(instance: &In
 }
 
 /// The registry slot a constructor is erased into. A closure written inline at the slot does not
-/// get the higher-ranked signature; the `erase_*` helpers' declared types do.
+/// get the higher-ranked signature; one passed through [`ctor_fn`]'s bound does.
 pub(crate) type ErasedCtor =
     Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Instance, ConstructError>> + Send + Sync>;
 
@@ -45,8 +45,29 @@ pub(crate) type Coercion = Arc<dyn Fn(&Instance) -> Instance + Send + Sync>;
 pub(crate) type CheckFn =
     Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<(), ConstructError>> + Send + Sync>;
 
+/// Fixes a closure's signature to [`ErasedCtor`]'s higher-ranked one.
+pub(crate) fn ctor_fn<C>(ctor: C) -> ErasedCtor
+where
+    C: for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Instance, ConstructError>> + Send + Sync + 'static,
+{
+    Arc::new(ctor)
+}
+
+/// Fixes a closure's signature to [`CheckFn`]'s higher-ranked one.
+pub(crate) fn check_fn<C>(check: C) -> CheckFn
+where
+    C: for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<(), ConstructError>> + Send + Sync + 'static,
+{
+    Arc::new(check)
+}
+
 pub(crate) fn erase_construct<T: Construct>() -> ErasedCtor {
-    todo!()
+    ctor_fn(|r| {
+        Box::pin(async move {
+            let value = T::construct(r).await?;
+            Ok::<_, ConstructError>(instance_of(Arc::new(value)))
+        })
+    })
 }
 
 pub(crate) fn coercion<T, U, F>(coerce: F) -> Coercion
@@ -55,7 +76,15 @@ where
     U: ?Sized + Send + Sync + 'static,
     F: Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
 {
-    todo!()
+    Arc::new(move |instance: &Instance| -> Instance {
+        match downcast_instance::<T>(instance) {
+            Some(built) => instance_of::<U>(coerce(built)),
+            // The resolver picks an `also_as` entry by type alone and may hand it an instance
+            // that is not an `Arc<T>`. It passes through unwidened, and the resolver's downcast to
+            // `Arc<U>` answers `WrongType` rather than this closure panicking.
+            None => Arc::clone(instance),
+        }
+    })
 }
 
 /// One binding as `register` declared it, before the graph assigns it an id.
@@ -67,7 +96,9 @@ pub(crate) struct BindingRecord {
     /// `type_name` of the type the recipe builds, which differs from `primary` for a
     /// contribution; diagnostics print it.
     pub(crate) built: &'static str,
-    /// For a contribution: the built `Arc<T>` to the collection's `Arc<U>`.
+    /// For a contribution: the built `Arc<T>` to the collection's `Arc<U>`. Set on every
+    /// contribution, as the identity for `Contribute::value`, whose value is already an `Arc<U>`;
+    /// `None` on a single binding.
     pub(crate) into_primary: Option<Coercion>,
     /// Further keys reaching the same object (`also_as`), unqualified like `primary`.
     pub(crate) also: Vec<AlsoAs>,
@@ -78,7 +109,14 @@ pub(crate) struct BindingRecord {
     pub(crate) recipe: Recipe,
     pub(crate) sites: Sites,
     pub(crate) construct_bound: Bound,
+    /// The check written last. A `.ready(..)` on a handle that already carries one replaces it
+    /// and leaves the replaced check's location in `replaced_ready`.
     pub(crate) ready: Option<ReadyRecord>,
+    /// The locations of checks a later `.ready(..)` replaced, in call order. Non-empty is
+    /// `WiringError::DuplicateReadiness`: the first entry is the first check written, and the
+    /// next entry, or `ready`'s location when there is none, the second.
+    pub(crate) replaced_ready: Vec<&'static Location<'static>>,
+    /// Trait hooks from `T::hooks` first, then closure hooks in the order written.
     pub(crate) hooks: Vec<HookRecord>,
     /// Whether this record is a `Construct` type registered through `provide`, `provide_with`
     /// or `controller`, so `hooks` carries `T::hooks`.
@@ -124,12 +162,16 @@ pub(crate) enum Recipe {
 pub(crate) struct ReadyRecord {
     pub(crate) check: CheckFn,
     pub(crate) sites: Sites,
+    /// Attempts after the first: `.retries(5)` allows six in all. Zero unless written.
     pub(crate) retries: u32,
+    /// The wait between one attempt's end and the next attempt. Zero unless written.
     pub(crate) backoff: Duration,
     /// `.timeout(..)`: the whole check, retries and backoff included. `Limit::Item` on expiry.
     pub(crate) whole: Bound,
     /// `.attempt_timeout(..)`: one attempt. `Limit::Attempt` when written, `Limit::Default`
-    /// (`construct_timeout`) when left at `Default` with a `Timer`.
+    /// (`construct_timeout`) when left at `Default` with a `Timer`. It stays `Default` only on a
+    /// check that writes no bound at all: writing either bound or `.unbounded()` opts out of the
+    /// attempt default (§9.3), so `.timeout(..)` alone writes `Unbounded` here.
     pub(crate) attempt: Bound,
     pub(crate) location: &'static Location<'static>,
 }
@@ -158,6 +200,7 @@ impl BindingRecord {
             sites,
             construct_bound: Bound::Default,
             ready: None,
+            replaced_ready: Vec::new(),
             hooks: Vec::new(),
             constructs: false,
             location,

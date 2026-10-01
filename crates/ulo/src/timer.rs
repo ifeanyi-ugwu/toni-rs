@@ -1,6 +1,7 @@
 use std::error::Error;
-use std::future::Future;
-use std::pin::Pin;
+use std::future::{Future, poll_fn};
+use std::pin::{Pin, pin};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::error::Limit;
@@ -71,11 +72,43 @@ pub(crate) struct Defaults {
 /// readiness attempt), `Default` is the app default only when a `Timer` exists, `Unbounded`
 /// is none. The environment pass has already refused an explicit bound with no `Timer`.
 pub(crate) fn resolve_bound(bound: Bound, kind: BoundKind, defaults: Option<&Defaults>) -> Resolved {
-    todo!()
+    // Without a `Timer` nothing can time the item, whatever it wrote.
+    let Some(defaults) = defaults else {
+        return Resolved::Unbounded;
+    };
+    match bound {
+        Bound::Unbounded => Resolved::Unbounded,
+        Bound::After(after) => {
+            let limit = match kind {
+                BoundKind::ReadinessAttempt => Limit::Attempt,
+                BoundKind::Hook | BoundKind::Construction | BoundKind::ReadinessWhole => Limit::Item,
+            };
+            Resolved::After { after, limit }
+        }
+        Bound::Default => match kind {
+            BoundKind::Hook => Resolved::After { after: defaults.hook_timeout, limit: Limit::Default },
+            BoundKind::Construction | BoundKind::ReadinessAttempt => {
+                Resolved::After { after: defaults.construct_timeout, limit: Limit::Default }
+            }
+            BoundKind::ReadinessWhole => Resolved::Unbounded,
+        },
+    }
 }
 
 /// `fut` raced against `timer.sleep(d)`: `Err(())` when the sleep wins, dropping `fut` at its
-/// current await.
+/// current await. `fut` is polled first: work that completes in the poll the sleep fires in
+/// counts as done.
 pub(crate) async fn timeout<F: Future>(timer: &dyn Timer, d: Duration, fut: F) -> Result<F::Output, ()> {
-    todo!()
+    let mut fut = pin!(fut);
+    let mut sleep = timer.sleep(d);
+    poll_fn(|cx| {
+        if let Poll::Ready(output) = fut.as_mut().poll(cx) {
+            return Poll::Ready(Ok(output));
+        }
+        match sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(())),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }

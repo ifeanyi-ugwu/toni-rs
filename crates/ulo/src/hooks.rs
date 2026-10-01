@@ -8,13 +8,15 @@
 //! The `Construct<Scope: HookCapable>` supertrait makes a hook on an explicitly execution-scoped
 //! or transient type a compile error.
 
+use std::any::type_name;
 use std::fmt;
 use std::future::Future;
 use std::panic::Location;
 use std::sync::Arc;
 
-use crate::binding::Instance;
+use crate::binding::{Instance, downcast_instance};
 use crate::construct::Construct;
+use crate::key::short_type_name;
 use crate::resolver::Resolver;
 use crate::scope::HookCapable;
 use crate::signal::Signal;
@@ -159,9 +161,19 @@ pub(crate) struct HookRecord {
     pub(crate) location: &'static Location<'static>,
 }
 
-/// Shutdown hooks return `()`; the erased form answers `Ok(())` for them, so `Errored` never
-/// reaches a `ShutdownFailure`.
+/// Shutdown hooks return `()`, and the erased form answers `Ok(())` for them once they ran. Its
+/// `Err` from a destroy, before-shutdown or shutdown hook means the hook never ran: a closure
+/// hook's site read failed, or the runner handed it no instance or no signal.
 pub(crate) type HookFn = Arc<dyn for<'a> Fn(HookCx<'a>) -> BoxFuture<'a, Result<(), BoxError>> + Send + Sync>;
+
+/// Fixes a closure's signature to [`HookFn`]'s higher-ranked one, which a closure only gets from
+/// a bound it is passed to.
+pub(crate) fn hook_fn<H>(hook: H) -> HookFn
+where
+    H: for<'a> Fn(HookCx<'a>) -> BoxFuture<'a, Result<(), BoxError>> + Send + Sync + 'static,
+{
+    Arc::new(hook)
+}
 
 pub(crate) struct HookCx<'a> {
     /// Reads with `Purpose::Lifecycle`, in the module the hook belongs to.
@@ -174,7 +186,53 @@ pub(crate) struct HookCx<'a> {
 
 /// The trait hooks `T::hooks` registered, erased into records the binding carries.
 pub(crate) fn erase_trait_hooks<T: Construct>(location: &'static Location<'static>) -> Vec<HookRecord> {
-    todo!()
+    let mut hooks = Hooks::<T>::new();
+    T::hooks(&mut hooks);
+    hooks
+        .slots
+        .into_iter()
+        .map(|hook| HookRecord {
+            kind: hook.kind,
+            bound: hook.bound,
+            run: erase_trait_hook(hook.kind, hook.run),
+            sites: Sites::default(),
+            location,
+        })
+        .collect()
+}
+
+fn erase_trait_hook<T: Construct>(kind: HookKind, run: TraitHookFn<T>) -> HookFn {
+    let run = Arc::new(run);
+    hook_fn(move |cx| {
+        let run = Arc::clone(&run);
+        let HookCx { instance, signal, .. } = cx;
+        let instance = instance.and_then(downcast_instance::<T>);
+        Box::pin(async move {
+            let Some(instance) = instance else {
+                return Err(not_run::<T>(kind, "instance"));
+            };
+            match &*run {
+                TraitHookFn::Startup(hook) => hook(&*instance).await,
+                TraitHookFn::Destroy(hook) => {
+                    hook(&*instance).await;
+                    Ok(())
+                }
+                TraitHookFn::Signalled(hook) => {
+                    let Some(signal) = signal else {
+                        return Err(not_run::<T>(kind, "shutdown signal"));
+                    };
+                    hook(&*instance, signal).await;
+                    Ok(())
+                }
+            }
+        })
+    })
+}
+
+/// The lifecycle runner always passes a trait hook its instance and a shutdown hook its signal;
+/// a record run without one reports this rather than panicking.
+fn not_run<T>(kind: HookKind, missing: &str) -> BoxError {
+    format!("the {kind} hook of `{}` did not run: it was handed no {missing}", short_type_name(type_name::<T>())).into()
 }
 
 /// `Construct::hooks` filled by autoref probing: each of the five hooks registers when the

@@ -1,11 +1,17 @@
+use std::any::type_name;
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::sync::Arc;
 
-use crate::binding::factory::Factory;
+use crate::binding::factory::{Factory, erase_factory, erase_try_factory};
 use crate::binding::handle::{Contribution, Handle, Open, Set};
+use crate::binding::{BindingRecord, Coercion, ErasedCtor, Qualifier, Recipe, coercion, erase_construct, instance_of};
 use crate::construct::Construct;
+use crate::hooks::erase_trait_hooks;
+use crate::key::{BindingKind, Key};
 use crate::module::def::ModuleNode;
-use crate::scope::{PerExecution, Singleton, Transient};
+use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
+use crate::site::Sites;
 use crate::timer::BoxError;
 
 /// Contributions to the collection `U @ Q`, read as `Many<U, Q>` or, by a transport, through
@@ -36,19 +42,79 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         Contribute { node: self.node, _u: PhantomData }
     }
 
-    /// A `Construct` type, with its declared scope and its trait hooks.
+    /// The record of one contribution to `U @ Q`, before what a particular recipe adds.
+    fn record(
+        built: &'static str,
+        scope: ScopeKind,
+        recipe: Recipe,
+        sites: Sites,
+        into_primary: Coercion,
+        location: &'static Location<'static>,
+    ) -> BindingRecord {
+        let mut record =
+            BindingRecord::new(Key::of::<U, ()>(), built, BindingKind::Collection, scope, recipe, sites, location);
+        record.qualifier = Qualifier::of::<Q>();
+        record.into_primary = Some(into_primary);
+        record
+    }
+
+    fn push<T: ?Sized, K>(self, record: BindingRecord) -> Handle<'m, T, K> {
+        let node = self.node;
+        let index = node.bindings.len();
+        node.bindings.push(record);
+        Handle::new(&mut node.bindings[index])
+    }
+
+    /// A factory contribution: a plain factory runs no trait hooks.
+    fn push_factory<T: Send + Sync + 'static, S: Scope, Args, F: Factory<Args>, K>(
+        self,
+        ctor: ErasedCtor,
+        coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
+        location: &'static Location<'static>,
+    ) -> Handle<'m, T, K> {
+        let mut sites = Sites::default();
+        <F as Factory<Args>>::sites(&mut sites);
+        let into_primary = coercion::<T, U, _>(coerce);
+        let record = Self::record(type_name::<T>(), S::KIND, Recipe::Factory(ctor), sites, into_primary, location);
+        self.push(record)
+    }
+
+    /// A `Construct` type, with its declared scope, its `CONSTRUCT_TIMEOUT` and its trait hooks.
     #[track_caller]
     pub fn provide<T: Construct>(
         self,
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
     ) -> Handle<'m, T, Contribution<T::Scope, Set>> {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        T::sites(&mut sites);
+        let mut record = Self::record(
+            type_name::<T>(),
+            <T::Scope as Scope>::KIND,
+            Recipe::Construct(erase_construct::<T>()),
+            sites,
+            coercion::<T, U, _>(coerce),
+            location,
+        );
+        record.construct_bound = T::CONSTRUCT_TIMEOUT;
+        record.hooks = erase_trait_hooks::<T>(location);
+        record.constructs = true;
+        self.push(record)
     }
 
     /// A shared value, already built.
     #[track_caller]
     pub fn value(self, value: Arc<U>) -> Handle<'m, U, Contribution<Singleton, Set>> {
-        todo!()
+        let location = Location::caller();
+        let record = Self::record(
+            type_name::<U>(),
+            ScopeKind::Singleton,
+            Recipe::Value(instance_of(value)),
+            Sites::default(),
+            coercion::<U, U, _>(|a| a),
+            location,
+        );
+        self.push(record)
     }
 
     #[track_caller]
@@ -61,7 +127,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
-        todo!()
+        let ctor = erase_factory::<Args, F>(factory);
+        self.push_factory::<F::Output, Singleton, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]
@@ -75,7 +142,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         T: Send + Sync + 'static,
         E: Into<BoxError> + Send + 'static,
     {
-        todo!()
+        let ctor = erase_try_factory::<Args, F, T, E>(factory);
+        self.push_factory::<T, Singleton, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]
@@ -88,7 +156,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
-        todo!()
+        let ctor = erase_factory::<Args, F>(factory);
+        self.push_factory::<F::Output, PerExecution, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]
@@ -102,7 +171,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         T: Send + Sync + 'static,
         E: Into<BoxError> + Send + 'static,
     {
-        todo!()
+        let ctor = erase_try_factory::<Args, F, T, E>(factory);
+        self.push_factory::<T, PerExecution, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]
@@ -115,7 +185,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
-        todo!()
+        let ctor = erase_factory::<Args, F>(factory);
+        self.push_factory::<F::Output, Transient, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]
@@ -129,6 +200,7 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         T: Send + Sync + 'static,
         E: Into<BoxError> + Send + 'static,
     {
-        todo!()
+        let ctor = erase_try_factory::<Args, F, T, E>(factory);
+        self.push_factory::<T, Transient, Args, F, _>(ctor, coerce, Location::caller())
     }
 }

@@ -15,12 +15,18 @@
 
 use std::convert::Infallible;
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::binding::BindingRecord;
-use crate::binding::factory::{Factory, ShutdownFactory};
+use crate::binding::factory::{
+    Factory, ShutdownFactory, erase_check, erase_destroy_hook, erase_init_hook, erase_signalled_hook,
+};
+use crate::binding::{AlsoAs, BindingRecord, Qualifier, ReadyRecord, coercion};
+use crate::hooks::{HookFn, HookKind, HookRecord};
+use crate::key::Key;
 use crate::scope::HookCapable;
+use crate::site::Sites;
 use crate::timer::{BoxError, Bound};
 
 /// A bound not yet written: `.timeout(..)` and `.unbounded()` exist.
@@ -46,42 +52,57 @@ mod sealed {
     use crate::binding::BindingRecord;
     use crate::timer::Bound;
 
-    /// Which field of the record a state's bound methods write.
+    /// Which field of the record a state's bound methods write. The item a state names is in
+    /// the record whenever the handle is in that state: the readiness item only follows
+    /// `.ready(..)`, and the hook item only follows the push of its hook.
     pub trait State {
-        fn bound(record: &mut BindingRecord) -> &mut Bound;
+        fn write(record: &mut BindingRecord, bound: Bound);
 
         fn write_unbounded(record: &mut BindingRecord) {
-            *Self::bound(record) = Bound::Unbounded;
+            Self::write(record, Bound::Unbounded);
         }
     }
 }
 
 impl<S, B> sealed::State for Binding<S, B> {
-    fn bound(record: &mut BindingRecord) -> &mut Bound {
-        &mut record.construct_bound
+    fn write(record: &mut BindingRecord, bound: Bound) {
+        record.construct_bound = bound;
     }
 }
 
 impl<S, B> sealed::State for Contribution<S, B> {
-    fn bound(record: &mut BindingRecord) -> &mut Bound {
-        &mut record.construct_bound
+    fn write(record: &mut BindingRecord, bound: Bound) {
+        record.construct_bound = bound;
     }
 }
 
 impl<W, A> sealed::State for ReadyItem<W, A> {
-    fn bound(record: &mut BindingRecord) -> &mut Bound {
-        todo!()
+    /// The whole-check bound. Writing it opts the attempt out of its `construct_timeout`
+    /// default (§9.3), so an attempt bound not yet written becomes `Unbounded`; a later
+    /// `.attempt_timeout(..)` still writes it.
+    fn write(record: &mut BindingRecord, bound: Bound) {
+        if let Some(ready) = record.ready.as_mut() {
+            ready.whole = bound;
+            if ready.attempt == Bound::Default {
+                ready.attempt = Bound::Unbounded;
+            }
+        }
     }
 
     /// `.unbounded()` on a readiness check stands in for both bounds.
     fn write_unbounded(record: &mut BindingRecord) {
-        todo!()
+        if let Some(ready) = record.ready.as_mut() {
+            ready.whole = Bound::Unbounded;
+            ready.attempt = Bound::Unbounded;
+        }
     }
 }
 
 impl<B> sealed::State for HookItem<B> {
-    fn bound(record: &mut BindingRecord) -> &mut Bound {
-        todo!()
+    fn write(record: &mut BindingRecord, bound: Bound) {
+        if let Some(hook) = record.hooks.last_mut() {
+            hook.bound = bound;
+        }
     }
 }
 
@@ -181,6 +202,17 @@ impl<'m, T: ?Sized, K, C> Handle<'m, T, K, C> {
     fn to<K2, C2>(self) -> Handle<'m, T, K2, C2> {
         Handle { record: self.record, _s: PhantomData }
     }
+
+    fn push_hook<K2>(
+        self,
+        kind: HookKind,
+        run: HookFn,
+        sites: Sites,
+        location: &'static Location<'static>,
+    ) -> Handle<'m, T, K2, C> {
+        self.record.hooks.push(HookRecord { kind, bound: Bound::Default, run, sites, location });
+        self.to()
+    }
 }
 
 impl<'m, T: ?Sized + Send + Sync + 'static, K, C: SingleBinding> Handle<'m, T, K, C> {
@@ -191,12 +223,15 @@ impl<'m, T: ?Sized + Send + Sync + 'static, K, C: SingleBinding> Handle<'m, T, K
         self,
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
     ) -> Handle<'m, T, C, C> {
-        todo!()
+        self.record.also.push(AlsoAs { key: Key::of::<U, ()>(), coerce: coercion::<T, U, _>(coerce) });
+        self.to()
     }
 
-    /// Qualifies every key of the binding, its `also_as` keys included, with `Q`.
+    /// Qualifies every key of the binding, its `also_as` keys included, with `Q`. A second call
+    /// replaces the first qualifier.
     pub fn qualified<Q: 'static>(self) -> Handle<'m, T, C, C> {
-        todo!()
+        self.record.qualifier = Qualifier::of::<Q>();
+        self.to()
     }
 }
 
@@ -204,61 +239,96 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
     /// A readiness check, run right after the binding is constructed and before anything that
     /// depends on it. A check that writes no bound takes `construct_timeout` as its attempt bound
     /// when a `Timer` exists (§9.3). One check per binding; a second is a wiring error.
+    ///
+    /// `.retries(..)` counts attempts after the first, zero unless written; `.backoff(..)` is the
+    /// wait between attempts, zero unless written.
     #[track_caller]
     pub fn ready<Args, F, E>(self, check: F) -> Handle<'m, T, ReadyItem<Open, Open>, C>
     where
         F: Factory<Args, Output = Result<(), E>>,
         E: Into<BoxError> + Send + 'static,
     {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        <F as Factory<Args>>::sites(&mut sites);
+        let ready = ReadyRecord {
+            check: erase_check::<Args, F, E>(check),
+            sites,
+            retries: 0,
+            backoff: Duration::ZERO,
+            whole: Bound::Default,
+            attempt: Bound::Default,
+            location,
+        };
+        if let Some(replaced) = self.record.ready.replace(ready) {
+            self.record.replaced_ready.push(replaced.location);
+        }
+        self.to()
     }
 
+    /// An init hook, run once every singleton is built and checked, in connect order. Its `Err`
+    /// fails `connect` as `ConnectError::Hook`.
     #[track_caller]
     pub fn on_init<Args, F, E>(self, hook: F) -> Handle<'m, T, HookItem<Open>, C>
     where
         F: Factory<Args, Output = Result<(), E>>,
         E: Into<BoxError> + Send + 'static,
     {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        <F as Factory<Args>>::sites(&mut sites);
+        self.push_hook(HookKind::OnModuleInit, erase_init_hook::<Args, F, E>(hook), sites, location)
     }
 
+    /// Runs after the drain, in reverse connect order.
     #[track_caller]
     pub fn on_destroy<Args, F>(self, hook: F) -> Handle<'m, T, HookItem<Open>, C>
     where
         F: Factory<Args, Output = ()>,
     {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        <F as Factory<Args>>::sites(&mut sites);
+        self.push_hook(HookKind::OnModuleDestroy, erase_destroy_hook::<Args, F>(hook), sites, location)
     }
 
+    /// Runs while the app still serves, before stop-accepting, with the shutdown's signal.
     #[track_caller]
     pub fn before_shutdown<Args, F>(self, hook: F) -> Handle<'m, T, HookItem<Open>, C>
     where
         F: ShutdownFactory<Args>,
     {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        <F as ShutdownFactory<Args>>::sites(&mut sites);
+        self.push_hook(HookKind::BeforeApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
     }
 
+    /// Runs last in the shutdown sequence, after the sockets close, with the shutdown's signal.
     #[track_caller]
     pub fn on_shutdown<Args, F>(self, hook: F) -> Handle<'m, T, HookItem<Open>, C>
     where
         F: ShutdownFactory<Args>,
     {
-        todo!()
+        let location = Location::caller();
+        let mut sites = Sites::default();
+        <F as ShutdownFactory<Args>>::sites(&mut sites);
+        self.push_hook(HookKind::OnApplicationShutdown, erase_signalled_hook::<Args, F>(hook), sites, location)
     }
 }
 
 impl<'m, T: ?Sized, K: Timeout<C>, C> Handle<'m, T, K, C> {
     /// Bounds the item written last: the construction directly after the binding is registered,
     /// the whole check after `.ready(..)`, the hook after an `on_*`. Needs a `Timer`.
-    pub fn timeout(mut self, d: Duration) -> Handle<'m, T, K::Next, K::Construction> {
-        *<K as sealed::State>::bound(&mut *self.record) = Bound::After(d);
+    pub fn timeout(self, d: Duration) -> Handle<'m, T, K::Next, K::Construction> {
+        <K as sealed::State>::write(&mut *self.record, Bound::After(d));
         self.to()
     }
 }
 
 impl<'m, T: ?Sized, K: Unbounded<C>, C> Handle<'m, T, K, C> {
     /// No bound on the item written last; still inside `shutdown_timeout` at shutdown.
-    pub fn unbounded(mut self) -> Handle<'m, T, K::Next, K::Construction> {
+    pub fn unbounded(self) -> Handle<'m, T, K::Next, K::Construction> {
         <K as sealed::State>::write_unbounded(&mut *self.record);
         self.to()
     }
@@ -268,16 +338,28 @@ impl<'m, T: ?Sized, K: AttemptTimeout, C> Handle<'m, T, K, C> {
     /// Bounds one attempt of the readiness check; an attempt that times out with retries left
     /// is retried like one that returned `Err`. Needs a `Timer`.
     pub fn attempt_timeout(self, d: Duration) -> Handle<'m, T, K::Next, C> {
-        todo!()
+        if let Some(ready) = self.record.ready.as_mut() {
+            ready.attempt = Bound::After(d);
+        }
+        self.to()
     }
 }
 
 impl<'m, T: ?Sized, W, A, C> Handle<'m, T, ReadyItem<W, A>, C> {
+    /// Attempts after the first; the last call wins.
     pub fn retries(self, n: u32) -> Self {
-        todo!()
+        if let Some(ready) = self.record.ready.as_mut() {
+            ready.retries = n;
+        }
+        self
     }
 
+    /// The wait between one attempt's end and the next, timed by the `Timer`; the last call
+    /// wins.
     pub fn backoff(self, d: Duration) -> Self {
-        todo!()
+        if let Some(ready) = self.record.ready.as_mut() {
+            ready.backoff = d;
+        }
+        self
     }
 }

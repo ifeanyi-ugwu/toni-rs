@@ -71,7 +71,10 @@ impl From<LookupError> for ConstructError {
 
 impl fmt::Debug for ConstructError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        match self {
+            ConstructError::Site(e) => f.debug_tuple("Site").field(e).finish(),
+            ConstructError::Failed(e) => f.debug_tuple("Failed").field(e).finish(),
+        }
     }
 }
 
@@ -84,8 +87,13 @@ impl fmt::Display for ConstructError {
     }
 }
 
+/// `Display` writes the wrapped error's own text, so `source` continues from that error's source
+/// rather than repeating it to a reporter walking the chain.
 impl Error for ConstructError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        todo!()
+        match self {
+            ConstructError::Site(e) => e.source(),
+            ConstructError::Failed(e) => e.source(),
+        }
     }
 }
