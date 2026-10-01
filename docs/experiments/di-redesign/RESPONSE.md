@@ -491,3 +491,52 @@ Four of these are fine as written. Three need corrections, and two of those fix 
 6. **Confirmed.**
 
 7. **Confirmed.** While you're in §13, check that `DrainToken` and `Bound` are listed there too. Transports name the first, and every integration that declares a bound names the second.
+
+---
+
+## Ninth response: readiness failures, redaction, and the seven details of the eighth fold
+
+Received 2026-10-01. Not yet signed off.
+
+### The gap: Readiness should carry `FailureReason`
+
+Readiness should carry `reason: FailureReason`, the same as every other connect failure. A separate `Limit` type for readiness would split one concept in two. Code that reports or handles timeouts would need two code paths, and users would have to learn which errors use which type.
+
+`Limit` does need to distinguish the whole-check bound from the per-attempt bound, so add one variant:
+
+```rust
+#[non_exhaustive]
+pub enum Limit {
+    Item,         // an explicit bound on the whole item: Bound::After, .timeout(..)
+    Attempt,      // an explicit .attempt_timeout(..)
+    Default,      // the app default that applies to this item
+    ShutdownCap,  // the outer shutdown_timeout
+}
+```
+
+`Default` stays a single variant with one stated meaning: "the app default for this kind of item". For readiness, that default is per attempt (`construct_timeout`, from detail 4 last time). For hooks, it covers the whole run. `after` makes the actual duration explicit.
+
+Readiness keeps `attempts`, and its `reason` describes how the check finally ended:
+- If the whole-check bound fired, it's `TimedOut { limit: Item }`.
+- If the last attempt hit its bound when no retries were left, it's `TimedOut { limit: Attempt }` or `TimedOut { limit: Default }`.
+- If the retries ran out on errors, it's `Errored(..)` holding the last error.
+
+This also exposes a second gap: **redaction no longer has anything to apply to.** `source: Redacted` was what guaranteed redaction [42]. A `FailureReason` holds plain `BoxError`s, so `Errored` and `Panicked` would carry the raw text. Panic messages can contain a URL too.
+
+And the problem is wider than readiness. A factory whose `connect` fails usually reports an error that contains the connection string, so `ConnectError::Construct` leaks the same credentials that readiness was carefully protecting. So run the redaction pass on every `BoxError` before it enters any `ConnectError`, `ShutdownFailure` or `LookupError::Construct`, with the redacted text boxed in its place. The type then guarantees nothing by itself, but every path that builds these errors goes through one function, and that's easy to audit.
+
+### The seven details
+
+1. **Confirmed for the enums. Correction for the structs.** Public structs with public fields need `#[non_exhaustive]` just as much. Adding a field to `Shutdown`, `ShutdownError` or `GuardRejected` later breaks every user who destructures them without `..`. Users can also construct `Closed` if it's a public unit struct, which freezes its shape. Mark all four. Then users can only read them, which is how they're meant to be used.
+
+2. **Correction: this can be a compile error.** Handle items already carry a typestate parameter. Once `.timeout(..)` or `.unbounded()` has been called, the item can move to a "bounded" state that has neither method. That makes conflicting writes, and calling `.timeout` twice, impossible to compile, which follows the brief's "compile time where feasible" [45]. Trait constants can't conflict, because each item has only one constant. So the wiring-error rule isn't needed at all.
+
+3. **Confirmed.** Under the typestate, `.unbounded()` on a readiness check also excludes `.timeout` and `.attempt_timeout`.
+
+4. **Confirmed.**
+
+5. **Confirmed.** `Limit::Attempt` from above covers the remaining explicit spelling.
+
+6. **Confirmed.**
+
+7. **Understood.** The `reason` field replaces `source` on Readiness, so all three `ConnectError` variants report failures the same way.
