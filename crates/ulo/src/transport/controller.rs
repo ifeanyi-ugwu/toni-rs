@@ -6,8 +6,8 @@ use crate::graph::{BindingId, ModuleId};
 use crate::key::{Key, KeyName};
 use crate::module::handle::ModuleRef;
 use crate::site::Sites;
-use crate::transport::Transport;
 use crate::transport::enhancer::EnhancerSpec;
+use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport, transport_name};
 
 /// A dispatch target: a `Construct` type whose handlers `mount` declares, one per transport
 /// route, message pattern, gRPC method or WebSocket event. `#[routes]` writes the impl.
@@ -35,7 +35,18 @@ impl Mount<'_> {
         method: EnhancerSpec<T>,
         handler: H,
     ) {
-        todo!()
+        let mut enhancer_deps = Vec::new();
+        controller.deps(&mut enhancer_deps);
+        method.deps(&mut enhancer_deps);
+        self.handlers.push(HandlerDecl {
+            transport: TypeId::of::<T>(),
+            transport_name: transport_name::<T>(),
+            name,
+            role_keys: [Key::of::<AnyGuard<T>, ()>(), Key::of::<AnyInterceptor<T>, ()>(), Key::of::<AnyErrorHandler<T>, ()>()],
+            enhancer_deps,
+            specs: Arc::new(Tiers { controller, method }),
+            handler: Arc::new(handler),
+        });
     }
 }
 
@@ -70,6 +81,21 @@ impl<T: Transport> MountedHandler<T> {
     /// The value passed to `Mount::handler`, by its type.
     pub fn handler<H: 'static>(&self) -> Option<&H> {
         self.handler.downcast_ref::<H>()
+    }
+}
+
+/// A server receives its handlers borrowed for the length of `bind` and keeps clones to
+/// dispatch with while it serves.
+impl<T: Transport> Clone for MountedHandler<T> {
+    fn clone(&self) -> Self {
+        MountedHandler {
+            name: self.name,
+            controller: self.controller,
+            module: self.module.clone(),
+            controller_spec: self.controller_spec.clone(),
+            method_spec: self.method_spec.clone(),
+            handler: Arc::clone(&self.handler),
+        }
     }
 }
 
@@ -113,6 +139,21 @@ pub(crate) struct HandlerRecord {
 impl HandlerRecord {
     /// The handlers of transport `T`, typed again, for `Server::bind`.
     pub(crate) fn mounted<T: Transport>(&self, module: ModuleRef, controller: KeyName) -> Option<MountedHandler<T>> {
-        todo!()
+        let tiers = self.decl.specs.downcast_ref::<Tiers<T>>()?;
+        Some(MountedHandler {
+            name: self.decl.name,
+            controller,
+            module,
+            controller_spec: tiers.controller.clone(),
+            method_spec: tiers.method.clone(),
+            handler: Arc::clone(&self.decl.handler),
+        })
     }
+}
+
+/// What `HandlerDecl::specs` holds. Its `TypeId` names the transport, so a downcast to another
+/// transport's tiers answers `None`.
+struct Tiers<T: Transport> {
+    controller: EnhancerSpec<T>,
+    method: EnhancerSpec<T>,
 }

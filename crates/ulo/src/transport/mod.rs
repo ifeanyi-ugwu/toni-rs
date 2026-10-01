@@ -106,3 +106,14 @@ impl<T: Transport, E: ErrorHandler<T>> ErasedErrorHandler<T> for E {
 pub type AnyGuard<T> = dyn ErasedGuard<T>;
 pub type AnyInterceptor<T> = dyn ErasedInterceptor<T>;
 pub type AnyErrorHandler<T> = dyn ErasedErrorHandler<T>;
+
+/// The transport as errors and wiring reports name it: the marker's type name without its
+/// module path, `Http` for `ulo_http::Http`. A generic marker keeps its full name, since
+/// stripping the path from its last segment would cut inside the parameter list.
+pub(crate) fn transport_name<T: Transport>() -> &'static str {
+    let full = type_name::<T>();
+    if full.contains('<') {
+        return full;
+    }
+    full.rsplit("::").next().unwrap_or(full)
+}

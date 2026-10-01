@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use crate::binding::Coercion;
 use crate::binding::factory::Factory;
+use crate::binding::{Coercion, coercion};
 use crate::error::LookupError;
 use crate::key::Key;
 use crate::resolver::Resolver;
 use crate::site::Sites;
 use crate::timer::BoxFuture;
+use crate::transport::controller::EnhancerDep;
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErrorHandler, Guard, Interceptor, Transport};
 
 /// The enhancers one tier declares for one handler: the controller's, or the method's. Each is
@@ -28,12 +29,14 @@ impl<T: Transport> EnhancerSpec<T> {
 
     /// A guard by type: the binding of `G`, which must be visible from the controller's module.
     pub fn guard<G: Guard<T>>(&mut self) -> &mut Self {
-        todo!()
+        self.guards.push(Decl::by_type(widen_guard::<T, G>));
+        self
     }
 
     /// A guard by value, built once and shared by every call.
     pub fn guard_value<G: Guard<T>>(&mut self, guard: G) -> &mut Self {
-        todo!()
+        self.guards.push(Decl::by_value(guard, widen_guard::<T, G>));
+        self
     }
 
     /// A guard by closure, built per execution from the closure's sites.
@@ -42,15 +45,18 @@ impl<T: Transport> EnhancerSpec<T> {
         F: Factory<Args>,
         F::Output: Guard<T>,
     {
-        todo!()
+        self.guards.push(Decl::by_closure::<Args, F>(build, widen_guard::<T, F::Output>));
+        self
     }
 
     pub fn interceptor<I: Interceptor<T>>(&mut self) -> &mut Self {
-        todo!()
+        self.interceptors.push(Decl::by_type(widen_interceptor::<T, I>));
+        self
     }
 
     pub fn interceptor_value<I: Interceptor<T>>(&mut self, interceptor: I) -> &mut Self {
-        todo!()
+        self.interceptors.push(Decl::by_value(interceptor, widen_interceptor::<T, I>));
+        self
     }
 
     pub fn interceptor_with<Args, F>(&mut self, build: F) -> &mut Self
@@ -58,15 +64,18 @@ impl<T: Transport> EnhancerSpec<T> {
         F: Factory<Args>,
         F::Output: Interceptor<T>,
     {
-        todo!()
+        self.interceptors.push(Decl::by_closure::<Args, F>(build, widen_interceptor::<T, F::Output>));
+        self
     }
 
     pub fn error_handler<E: ErrorHandler<T>>(&mut self) -> &mut Self {
-        todo!()
+        self.error_handlers.push(Decl::by_type(widen_error_handler::<T, E>));
+        self
     }
 
     pub fn error_handler_value<E: ErrorHandler<T>>(&mut self, handler: E) -> &mut Self {
-        todo!()
+        self.error_handlers.push(Decl::by_value(handler, widen_error_handler::<T, E>));
+        self
     }
 
     pub fn error_handler_with<Args, F>(&mut self, build: F) -> &mut Self
@@ -74,7 +83,16 @@ impl<T: Transport> EnhancerSpec<T> {
         F: Factory<Args>,
         F::Output: ErrorHandler<T>,
     {
-        todo!()
+        self.error_handlers.push(Decl::by_closure::<Args, F>(build, widen_error_handler::<T, F::Output>));
+        self
+    }
+
+    /// What the wiring pass resolves for this tier: guards, then interceptors, then error
+    /// handlers, each in the order written. A by-value declaration depends on nothing.
+    pub(crate) fn deps(&self, out: &mut Vec<EnhancerDep>) {
+        out.extend(self.guards.iter().filter_map(Decl::dep));
+        out.extend(self.interceptors.iter().filter_map(Decl::dep));
+        out.extend(self.error_handlers.iter().filter_map(Decl::dep));
     }
 }
 
@@ -114,9 +132,66 @@ impl<R: ?Sized> Clone for Decl<R> {
     }
 }
 
+impl<R: ?Sized + Send + Sync + 'static> Decl<R> {
+    fn by_type<X: Send + Sync + 'static>(widen: fn(Arc<X>) -> Arc<R>) -> Self {
+        Decl::Type { key: Key::of::<X, ()>(), coerce: coercion(widen) }
+    }
+
+    fn by_value<X>(value: X, widen: fn(Arc<X>) -> Arc<R>) -> Self {
+        Decl::Value(widen(Arc::new(value)))
+    }
+
+    fn by_closure<Args, F>(build: F, widen: fn(Arc<F::Output>) -> Arc<R>) -> Self
+    where
+        F: Factory<Args>,
+    {
+        let mut sites = Sites::default();
+        <F as Factory<Args>>::sites(&mut sites);
+        let factory = Arc::new(build);
+        let build = erase_build::<R, _>(move |r| {
+            let factory = Arc::clone(&factory);
+            let fut: BoxFuture<'_, Result<Arc<R>, LookupError>> = Box::pin(async move {
+                <F as Factory<Args>>::call(&*factory, r).await.map(|built| widen(Arc::new(built)))
+            });
+            fut
+        });
+        Decl::Closure(Arc::new(ClosureDecl { sites: Arc::new(sites), build }))
+    }
+
+    fn dep(&self) -> Option<EnhancerDep> {
+        match self {
+            Decl::Type { key, .. } => Some(EnhancerDep::Type(*key)),
+            Decl::Value(_) => None,
+            Decl::Closure(c) => Some(EnhancerDep::Closure(Arc::clone(&c.sites))),
+        }
+    }
+}
+
 pub(crate) struct ClosureDecl<R: ?Sized> {
     /// Checked by the wiring pass like a per-execution binding's sites; shared with the
     /// handler record the wiring pass reads.
     pub(crate) sites: Arc<Sites>,
     pub(crate) build: Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<R>, LookupError>> + Send + Sync>,
+}
+
+/// Gives a closure the higher-ranked signature of `ClosureDecl::build`: a closure passed where
+/// this bound is expected has its signature deduced from it, which one boxed in place does not.
+fn erase_build<R, F>(f: F) -> Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<R>, LookupError>> + Send + Sync>
+where
+    R: ?Sized + 'static,
+    F: for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<R>, LookupError>> + Send + Sync + 'static,
+{
+    Arc::new(f)
+}
+
+fn widen_guard<T: Transport, G: Guard<T>>(guard: Arc<G>) -> Arc<AnyGuard<T>> {
+    guard
+}
+
+fn widen_interceptor<T: Transport, I: Interceptor<T>>(interceptor: Arc<I>) -> Arc<AnyInterceptor<T>> {
+    interceptor
+}
+
+fn widen_error_handler<T: Transport, E: ErrorHandler<T>>(handler: Arc<E>) -> Arc<AnyErrorHandler<T>> {
+    handler
 }

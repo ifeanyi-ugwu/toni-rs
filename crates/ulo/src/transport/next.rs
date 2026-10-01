@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::timer::{BoxError, BoxFuture};
-use crate::transport::{AnyInterceptor, Transport};
+use crate::transport::{AnyInterceptor, ErasedInterceptor, Transport};
 
 /// The rest of the interceptor chain and the handler, handed to [`Interceptor::intercept`](crate::Interceptor).
 ///
@@ -17,6 +17,10 @@ pub struct Next<'a, T: Transport> {
 impl<'a, T: Transport> Next<'a, T> {
     /// Runs the next interceptor, or the handler after the last one, with the same call.
     pub fn run(self) -> BoxFuture<'a, Result<T::Reply, BoxError>> {
-        todo!()
+        let Next { cx, rest, handler } = self;
+        match rest.split_first() {
+            Some((first, rest)) => <AnyInterceptor<T> as ErasedInterceptor<T>>::intercept(&**first, cx, Next { cx, rest, handler }),
+            None => handler(cx),
+        }
     }
 }

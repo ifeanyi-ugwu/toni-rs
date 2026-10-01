@@ -1,10 +1,13 @@
+use std::any::TypeId;
 use std::future::Future;
 use std::sync::Arc;
 
 use crate::app::AppHandle;
+use crate::error::NoTimer;
+use crate::key::BindingKind;
 use crate::timer::{BoxError, BoxFuture, Timer};
-use crate::transport::Transport;
 use crate::transport::controller::MountedHandler;
+use crate::transport::{Transport, transport_name};
 
 /// Implemented by a transport's server: handed to `app.bind(..)`, bound by `listen()`, driven by
 /// `serve`, drained and closed by the shutdown sequence (§9.4, §9.5).
@@ -82,13 +85,32 @@ pub(crate) trait ErasedServer: Send + Sync + 'static {
 
 impl<S: Server> ErasedServer for S {
     fn transport_name(&self) -> &'static str {
-        todo!()
+        transport_name::<S::Transport>()
     }
 
     /// Collects the graph's handlers for `S::Transport` into `MountedHandler`s and calls
     /// `Server::bind` with them.
     fn bind<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {
-        todo!()
+        Box::pin(async move {
+            // `listen()` refuses a transport on an app with no `Timer` before binding it; this
+            // answers the same refusal rather than handing a server a clock it does not have.
+            let Some(timer) = app.shared.config.timer.clone() else {
+                return Err(BoxError::from(NoTimer { transport: transport_name::<S::Transport>() }));
+            };
+            let handlers: Vec<MountedHandler<S::Transport>> = {
+                let graph = app.shared.graph();
+                graph
+                    .handlers
+                    .iter()
+                    .filter(|h| h.decl.transport == TypeId::of::<S::Transport>())
+                    .filter_map(|h| {
+                        let controller = graph.binding(h.controller).record.keys().next()?.name(BindingKind::Single);
+                        h.mounted(app.shared.module_ref(h.module), controller)
+                    })
+                    .collect()
+            };
+            <S as Server>::bind(self, Mounted { handlers: &handlers, app: app.clone(), timer }).await
+        })
     }
 
     fn serve(&self) -> BoxFuture<'_, Result<(), BoxError>> {
