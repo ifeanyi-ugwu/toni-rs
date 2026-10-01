@@ -288,3 +288,64 @@ When that cap expires, the remaining hooks are abandoned and recorded. Sockets s
 I'd leave shutdown_timeout unset by default, since the right value depends on the platform. The documentation should recommend setting it a few seconds under the orchestrator's grace period.
 
 The settled set of knobs is then: hook_timeout (default for every hook, 10 seconds), per-hook overrides via TIMEOUT or the sub-builder, drain_timeout, and an optional shutdown_timeout as the outer cap.
+
+---
+
+## Fifth response: answers to SHUTDOWN_REVIEW.md
+
+Received 2026-10-01. The author saw a summary of `SHUTDOWN_REVIEW.md`, not the file: its four main
+points, the smaller fixes, and three of its seven questions. Not yet signed off.
+
+I checked each point myself rather than taking the review's word for it. It's right on almost everything. In a few places I'd refine the fix, and I can't settle two items without material I don't have.
+
+The four main points
+1. open_terminal needs a token. Agreed. A public method is callable by anyone, and transports live in separate crates, so the method must be public. A type with a private field that only the core constructs is the standard way to make the restriction real. One consequence is worth stating: anyone who implements Server receives the token, including users writing their own transport. That's the correct semantics, though. The rule was never "only our crates", it was "only transports".
+
+2. Timer needs methods. Agreed, with one addition. fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> is right. 'static lets callers spawn the future, and an async fn would indeed make the trait unusable as dyn.
+
+I'd also add fn now(&self) -> Instant. Without it, deadlines and timeouts are measured with std::time::Instant while sleeps run on the runtime's clock. In tests with a paused or mocked clock, which tokio supports, sleeps advance while deadlines never do. Then every timeout test either hangs or passes for the wrong reason. One trait, one clock.
+
+3. Abandoning a hook must be defined. Agreed. At the timeout, the core drops the hook's future. The documentation should spell out what follows from that: a hook dropped mid-await can leave its own state half-done, and any task it spawned keeps running, because dropping a future doesn't stop work spawned elsewhere. Note that this differs from executions, which are cancelled and then left running, since transports and subtasks still hold them.
+
+4. Closing WebSockets at drain start isn't graceful. Agreed, with one refinement. Strictly speaking, closing with 1001 doesn't stop in-flight executions. They keep running, but their replies have nowhere to go, so the effect is the same and the conclusion holds.
+
+The proposed fix leaves a gap, though. A busy connection keeps receiving messages during the drain, and each one would be a refused execution. So the full rule is:
+
+Idle connections close with 1001 immediately.
+Busy connections stop reading at drain start, finish their in-flight messages, then close with 1001.
+Everything is bounded by drain_timeout.
+That's the exact equivalent of HTTP/1's "finish this request, then close the connection".
+
+The smaller fixes
+One handle type with a state parameter: agreed. It's simpler than forwarding between types, and misuse fails to compile.
+Failure reasons in the report: agreed. The reason is panicked, timed out, skipped by the overall cap, or returned an error, where the hook can return one. Destroy and shutdown hooks return (), so for them it can only be one of the first three.
+load refused from Stopping onward: agreed. A module loaded during Stopping would miss the before-shutdown stage that's already running, so its shutdown would be incomplete. It returns Closed.
+Stale sections in DESIGN.md: I can't check this. The current file isn't in this conversation. Only the probe crate came through. If you paste the document, I'll list every place that still describes the old order or cancel-first.
+The questions
+Does shutdown_timeout start at the trigger? Yes. Its purpose is to finish before the orchestrator kills the process, and the orchestrator's clock starts at SIGTERM. If the cap started later, it could overrun the grace period, which defeats it. So the before-shutdown stage counts against it. Per-hook timeouts still apply inside that window.
+
+Is is_draining() true during Stopping? No. Draining has a precise meaning: new work is refused and the drain window has started. During Stopping, traffic is normal by design. Making is_draining() true early would push streams to end before the discovery hook has even deregistered, which is exactly the problem you moved that hook to solve. If something needs early notice, BeforeApplicationShutdown is that notice.
+
+The rest got cut off. The message stops at "Does a terminal e". If the question is how a terminal execution sees drain state, the answer is that it's opened during the drain, so is_draining() is already true and draining() resolves immediately. Paste the remaining questions and I'll answer each one.
+
+**The user added the last question:** "Does a terminal execution opened just before the drain
+timeout lose its disconnect handler?"
+
+**The author answered:**
+
+Yes, it can lose it, and I think that's the correct outcome, not a gap to close.
+
+Here's what happens. A terminal execution follows the same rules as any execution in the drain. At drain_timeout, its cancellation fires and it's abandoned, meaning it's left running, not dropped. A handler opened just before the timeout gets almost no window. It can keep going after the cancellation, but it then races the destroy hooks. Once Destroying begins, any fresh singleton lookup it makes returns LookupError::Closed, and services it already holds may have been destroyed underneath it. Connections still busy at the timeout are worse off: their terminal execution would open after the drain has ended, so it's refused and the handler never runs.
+
+I wouldn't add a reserved grace window after the timeout to save these handlers, for two reasons.
+
+First, shutdown cleanup can never be the thing correctness depends on. The same disconnect handler also never runs on SIGKILL, an OOM kill, a crash, or a lost node, and those happen in production regardless of how good the drain is. So state that outlives the process, like presence in Redis or room membership in a shared store, has to clean itself up anyway, through TTLs or heartbeats. State that dies with the process doesn't need cleanup at all. Either way, a handler running at shutdown is an optimization.
+
+Second, a grace window only moves the edge. Any handler opened just before the end of the grace window has the same problem, and the app gains another knob.
+
+What the design should do instead:
+
+Document the guarantee plainly. Disconnect handlers at shutdown are best effort. Anything that must survive a crash belongs in TTL- or heartbeat-based state.
+Make losses visible. Count terminal executions that were refused or abandoned in the shutdown report, for example Shutdown { signal, abandoned, terminal_skipped }. The transport should log which connections missed their handler.
+Reduce the window where possible. Under the rule from last time, idle connections close at drain start, so most disconnect handlers start with the full window. Only connections still busy near the timeout are at risk, and those were going to be cut anyway.
+If you disagree and want a guaranteed window, the fallback is a short terminal_grace after drain_timeout during which only terminal executions may run. But I'd wait to see a real case before adding it.
