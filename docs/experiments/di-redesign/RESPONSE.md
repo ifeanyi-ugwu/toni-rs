@@ -616,3 +616,31 @@ The probe is the evidence that matters: the chain assertion fails when `source()
 5. **Confirmed.** The table lists refusals, and redaction refuses nothing. Stating the scope in three places that agree with each other is enough.
 
 With no open questions and these folded in, the shutdown, timeout and redaction work is complete. If you want a final pass, the next thing worth doing is reading the whole 1,161 lines once from start to finish, looking only for statements that two rounds of edits might have left saying slightly different things. Several pieces were revised more than once: the close order, `Limit`, `LoadError`, and the redaction scope. Those are where stale wording tends to survive.
+
+---
+
+## Twelfth response: the closing read, and `ConstructError` defined
+
+Received 2026-10-01, answering the closing consistency read and the one name it found without a
+shape. The user brought it to be folded in the same day.
+
+The six fixes are all correct, and all six are the kind of drift that builds up when sections are revised separately. I have nothing to add to them.
+
+Here's the definition for ConstructError. It's slightly more than one line, because one choice in it matters:
+
+rust
+#[non_exhaustive]
+pub enum ConstructError {
+    Site(LookupError),   // reading a dependency failed; propagated as the dependency's own error
+    Failed(BoxError),    // the constructor's own error; redacted by the core when stored
+}
+
+impl From<LookupError> for ConstructError { .. }
+impl ConstructError { pub fn failed(e: impl Into<BoxError>) -> Self { .. } }
+Why two variants: when a constructor fails because a site read failed (an input that wasn't seeded, ExecutionRequired, a nested construction failure), the user needs the error about the dependency, naming the deeper key. Wrapping it as "constructor X failed" would point them at the wrong place. So the core passes Site errors through unchanged, and turns only Failed into Construct { reason: Errored(Redacted) }. That's also why the origin rule applies only to Failed: a LookupError is the core's own, and any outside error inside it was already redacted where it was stored.
+
+Why there's no blanket From<E: Error>: LookupError itself implements Error, so a blanket impl would overlap From<LookupError>. That's the same E0119 coherence conflict as probe P02a. So ? works directly on site reads, and constructor errors go through ConstructError::failed. The macro does that mapping for #[construct] functions returning Result<Self, E>. People writing Construct by hand use .map_err(ConstructError::failed)?. That line belongs in §13's integration example.
+
+Panics and timeouts aren't ConstructError variants. The core observes them from outside the constructor and records them directly as FailureReason::Panicked and FailureReason::TimedOut. A constructor can't report its own timeout, so the type shouldn't suggest it can.
+
+With that in place, every named type in the design has a shape.
