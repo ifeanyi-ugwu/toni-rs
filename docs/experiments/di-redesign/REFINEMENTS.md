@@ -240,3 +240,26 @@ beside this file, one file per probe under `src/bin/`, run one at a time with
 | `p12_factory_arity_coerce.rs` | one `singleton(f)` over a `Factory<Args>` trait for arities 0, 1, 2 describes sites from the parameter types; `contribute::<dyn HI>().singleton(f, \|a\| a)` infers `T` from the first closure before checking the second; `.ready(..).retries(..).timeout(..).on_destroy(..)` chains on one handle type |
 | `p12b_factory_unannotated_fails.rs` | an unannotated factory parameter is E0283 with "consider giving this closure parameter an explicit type", so every factory parameter carries its site type |
 | `p13_reply_static.rs` | `T::Reply` boxed into a `'static` future compiles with only `Reply: Send` written: `Transport: 'static` gives the projection `'static` |
+| `p14_execute_send.rs` | an inherent `async fn execute<F, R>(&self, f: F) -> R where F: AsyncFnOnce(&Execution) -> R`, called as `app.execute(async \|exec\| ..)` from a concrete site, returns a future that passes `fn assert_send<T: Send>(_: &T)`; the closure also takes `exec.handle()` for an owned clone and the run prints `(Ok("borrowed"), "borrowed")` |
+| `p14b_execute_trait_send_fails.rs` | the same `execute` as a trait method returning `impl Future<Output = R> + Send` fails at the impl: "the trait `Send` is not implemented for `<F as AsyncFnOnce<(&Execution,)>>::CallOnceFuture`"; the one bound that would state it, `for<'a> <F as AsyncFnOnce<(&'a Execution,)>>::CallOnceFuture: Send`, is E0658 `async_fn_traits` |
+
+### Rust 1.88.0 re-run
+
+Every probe was re-run on rustc 1.88.0 (`cargo +1.88`) beside 1.98.1, with the output of the two
+runs diffed after build chatter was stripped. Every probe has the same compile outcome, exit code
+and error codes on both. The diagnostic probes render identically where it matters: `{S}` is
+`Singleton` in P06's label on 1.88, `{Self}` is `Ext<CurrentUser>` in P06's message and
+`PerExecution` in P03b's label, both of P07's notes print, P12b prints "consider giving this
+closure parameter an explicit type", and P08b drops the wrapper's note on both. P02c reaches the
+same autoref arms, P08 prints the same `TypeId` inequality and P11 the same `PgPool @ Replica`.
+
+What differs is presentation:
+
+| Probe | 1.88.0 | 1.98.1 |
+| --- | --- | --- |
+| P01b, P03b, P06, P07, P12b | "the trait `X` is not implemented for `Y`" is an `= help:` line without a span (P01b prints it as the label) | the same text as a `help:` with a span pointing at the type or impl; P01b's label becomes "unsatisfied trait bound" |
+| P03c, P05b, P14b | the `!Send` future's caret underlines the whole `async fn` or return type | the caret sits on the `{` or the `impl Future` span |
+| P12b | ``= note: cannot satisfy `_: Site` `` | ``= note: the type must implement `Site` `` plus "required by a bound introduced by this call" |
+| P12 | `#[warn(dead_code)]` on by default | `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default |
+| P14b | the `!Send` error is reported twice, at the async block and at the signature: 4 errors | once, at the signature: 3 errors |
+| all | line numbers in a two-digit gutter are left-aligned (`6  \|`) | right-aligned, the pad before the digit |

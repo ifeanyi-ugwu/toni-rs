@@ -33,8 +33,8 @@
 - **Site** is a type that describes the key(s) it reads and knows how to read itself: `Dep<T, Q>`, `Many<T, Q>`, `Ext<T>`, `Option<S>`, `ModuleRef`, `ExecutionRef`, plus any site type an integration crate defines.
 - **Module** is a Rust type with an identity. It declares imports, bindings, controllers and exports.
 - **Graph** is the frozen, validated result of registering every module.
-- **App** is the graph plus the singleton store. It moves through typestates: `Wired` → `Connected` → `Bound` → serving → closed.
-- **Execution** is one call. It holds a per-execution cache, an extension bag, execution inputs (the request or call context), a cancellation signal, and an optional deadline.
+- **App** is the graph plus the singleton store. It moves through typestates: `Wired` → `Connected` → `Bound` → serving → closed. From `Connected` on it hands out an `AppHandle`, a `Clone + Send + Sync` view of the shared state that outlives `serve`.
+- **Execution** is one call. It holds a per-execution cache, an extension bag, execution inputs (the request or call context), a cancellation signal, and an optional deadline. The framework or the transport holds it; everything else holds a cheap-clone handle to it. Cancellation is fired by the transport while handles are alive. The execution ends when the last handle drops.
 
 The lifecycle runs like this:
 
@@ -55,12 +55,16 @@ register modules (sync)
 ### 3.1 Keys and qualifiers
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)]
 pub struct Key {
     ty: TypeId,
     qualifier: TypeId,
-    names: &'static KeyNames, // type_name of T and Q, for diagnostics only
+    ty_name: &'static str,   // type_name::<T>(), for diagnostics only
+    q_name: &'static str,    // type_name::<Q>(), for diagnostics only
 }
+// PartialEq, Eq and Hash are written by hand over `ty` and `qualifier`: two keys
+// compare on the TypeIds alone. `type_name` is not a const fn, so the names are
+// read at `of` and carried as plain `&'static str` fields.
 
 impl Key {
     pub fn of<T: ?Sized + 'static, Q: 'static>() -> Key;
@@ -68,7 +72,7 @@ impl Key {
 // Display: "PgPool", "PgPool @ Replica", "dyn Plugin (collection)"
 ```
 
-A qualifier is any `'static` type, usually a unit struct: `pub struct Replica;`. Because keys are types, there are no strings to misspell [9].
+A qualifier is any `'static` type, usually a unit struct: `pub struct Replica;`. Because keys are types, there are no strings to misspell [9]. A `Key` is also a runtime value: an integration crate that holds one can look it up erased through `Resolver::by_key::<T>(key)`, which is the one lookup that can ask for a `T` the key does not hold (§10.2).
 
 ### 3.2 Sites
 
@@ -87,7 +91,7 @@ pub struct Many<T: ?Sized, Q = ()> {
 
 pub struct Ext<T>(Arc<T>);   // a typed view of per-execution data [12]
 pub struct ModuleRef { /* graph + module id + optional execution */ }
-pub struct ExecutionRef { /* cancellation, deadline, extensions */ }
+pub struct ExecutionRef { /* a cheap-clone handle to the current execution (§3.8) */ }
 ```
 
 The `Site` trait is how every injection point is read. Fields, constructor parameters, factory parameters and closure parameters all go through it, which is what gives them one rule [11].
@@ -113,11 +117,17 @@ Implementations in the core:
 | Site | Reads | Notes |
 |---|---|---|
 | `Dep<T, Q>` | single binding `T @ Q` | the shared `Arc` |
-| `Many<T, Q>` | every contribution to `T @ Q` | registration order |
-| `Option<S>` | `S`, or `None` if unbound | optional deps [13] |
+| `Many<T, Q>` | every contribution to `T @ Q` | collection order; eager |
+| `Option<S>` | `S`, or `None` where `S` would fail with `NotFound` | optional deps [13] |
 | `Ext<T>` | extension `T` of the current execution | needs an execution |
 | `ModuleRef` | handle to the enclosing module [37] | |
-| `ExecutionRef` | the current execution's control surface | needs an execution |
+| `ExecutionRef` | a handle to the current execution | needs an execution |
+
+**Collection order** is one rule for every reader of a collection: depth-first post-order over imports from the root, imports in the order written, then declaration order inside a module. A module's contributions follow those of everything it imports, and two modules with no import edge between them are ordered by where the walk reaches them.
+
+`Many<T>` is the eager form: reading it constructs every contribution. Transports read a role collection lazily through `Resolver::entries::<T>()`, which yields one handle per contribution in collection order, each with its own `resolve().await`; §7's pipeline is written against it.
+
+`Option<S>` is `None` exactly when `S` would fail with `LookupError::NotFound`: a key no module binds, an extension no guard has written, an input this execution did not seed. Every other error propagates: a construction failure, `ExecutionRequired`, an ambiguous module.
 
 Execution inputs, meaning the request or call context, are ordinary `Dep<T>` sites. The transport declares the key as an *input* (§6.4). Integration crates can add their own `Site` types, for example `fw-ws` defines `Session<T>` for per-connection state.
 
@@ -143,10 +153,12 @@ pub trait Scope: sealed::Sealed + 'static {
 pub trait HookCapable: Scope {}          // Singleton, Auto
 
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot read per-execution data",
+    message = "a `{S}` type cannot read `{Self}`",
+    label = "this site needs an execution",
     note = "declare the type #[injectable(execution)] or #[injectable(transient)]"
 )]
 pub trait AllowedIn<S: Scope> {}         // implemented per site type and scope
+// `{Self}` is the site type; the type that cannot read it is the one declared `{S}`.
 ```
 
 What `Auto` means depends on the binding's role:
@@ -168,7 +180,8 @@ pub trait Construct: Sized + Send + Sync + 'static {
     fn construct(r: &Resolver<'_>)
         -> impl Future<Output = Result<Self, ConstructError>> + Send;
 
-    /// Lifecycle hooks this type implements. The macro fills this in by probing.
+    /// Lifecycle hooks this type implements. The macro fills this in by probing;
+    /// a hand-written impl calls the `Hooks<Self>` methods it implements (§9.1).
     fn hooks(_h: &mut Hooks<Self>) {}
 }
 ```
@@ -215,6 +228,8 @@ impl ModuleIdentity {
 }
 ```
 
+`register` returns `()` and never returns early. A value that may fail to build goes through `m.try_value(result)`, which records an `Err` on the `ModuleDef` for `wire()` to report beside every other wiring error, under a `WiringErrors` entry naming the module and the key. Stopping at the first failure would hide the rest, which is what [44] rules out.
+
 Identity is the module's `TypeId`, plus its configuration value if it has one, plus a qualifier if it's keyed. Two configurations of one type are two modules. The same configuration imported twice is one module [31].
 
 Diagnostic names are the type name, the key and an optional label, as in `DbModule @ Replica`, or `DbModule #2` when unlabeled. The configuration's `Debug` output is never printed, because it may hold credentials.
@@ -224,20 +239,20 @@ Diagnostic names are the type name, the key and an optional label, as in `DbModu
 ```rust
 /// Implemented by marker types in transport crates: fw_http::Http, fw_rpc::Rpc, ...
 pub trait Transport: 'static {
-    type Cx: Send;       // per-call context
+    type Cx: Clone + Send + Sync;   // per-call context: a cheap-clone handle to the execution
     type Reply: Send;
 }
 
 pub trait Guard<T: Transport>: Send + Sync + 'static {
-    fn can_activate(&self, cx: &mut T::Cx)
+    fn can_activate(&self, cx: &T::Cx)
         -> impl Future<Output = Result<bool, BoxError>> + Send;
 }
 pub trait Interceptor<T: Transport>: Send + Sync + 'static {
-    fn intercept(&self, cx: &mut T::Cx, next: Next<'_, T>)
+    fn intercept(&self, cx: &T::Cx, next: Next<'_, T>)
         -> impl Future<Output = Result<T::Reply, BoxError>> + Send;
 }
 pub trait ErrorHandler<T: Transport>: Send + Sync + 'static {
-    fn handle(&self, err: BoxError, cx: &mut T::Cx)
+    fn handle(&self, err: BoxError, cx: &T::Cx)
         -> impl Future<Output = Result<T::Reply, BoxError>> + Send;
 }
 
@@ -249,19 +264,33 @@ pub type AnyErrorHandler<T> = dyn ErasedErrorHandler<T>;
 
 `Guard<Http>` and `Guard<Rpc>` are different traits, so an HTTP guard and an RPC guard are different roles [25]. A role comes only from a trait implementation.
 
+`Cx` wraps an `ExecutionRef` together with the call's wire data, and every clone is the same call. Everything a guard or interceptor writes goes through a shared reference and interior mutability, which the extension bag already uses. A reply that streams carries a clone of `Cx`, which is how a body, a reply stream or a WebSocket item sequence keeps its per-execution instances and its cancellation signal alive past `intercept`'s return. A request body stream lives on `Cx` behind a take-once slot, not as an execution input: inputs are `Sync` (§6.4) and a body stream is read once.
+
 ### 3.8 Execution
 
 ```rust
-pub struct Execution { /* cache, extensions, inputs, cancel, deadline */ }
+pub struct Execution { /* Arc: cache, extensions, inputs, cancel, deadline, module */ }
+pub struct ExecutionRef { /* a clone of that Arc */ }   // Clone + Send + Sync
 
 impl Execution {
     pub fn extensions(&self) -> &Extensions;               // typed bag [23]
     pub fn cancelled(&self) -> Cancelled<'_>;              // future, runtime-free
     pub fn is_cancelled(&self) -> bool;
     pub fn deadline(&self) -> Option<Instant>;
+    pub fn handle(&self) -> ExecutionRef;                  // an owned clone, for a spawned subtask
+    pub fn seed<T: Send + Sync + 'static>(&self, input: T);
     pub async fn get<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Dep<T>, LookupError>;
 }
+// ExecutionRef has the same methods.
 ```
+
+`Execution: Send + Sync`, and `Resolver<'_>` is `Sync` with it. That is what lets `Site::read` and `Construct::construct` hold the resolver across an await and still return `Send` futures; a `!Sync` value anywhere in the execution would make every site's future `!Send`, reported at the trait's `+ Send` rather than at the value. `seed` is bounded `Send + Sync` for the same reason.
+
+Who holds the execution: the transport for a call, `execute` for a standalone one. Everything else holds a clone, `ExecutionRef` directly or inside a `Cx`. Two events are distinct:
+- **Cancellation** is fired by the transport: the client disconnects, the deadline passes, or shutdown begins. It fires while clones are alive, so a streaming reply observes it.
+- **End of execution** is when the last clone drops. The per-execution cache is released then and execution-scoped instances are dropped: a streaming reply keeps its instances exactly as long as it runs.
+
+`get` resolves against the visibility of the execution's module: the dispatching controller's module inside a transport call, the root module in a standalone execution opened on the app, or the module whose `execute` opened it (§8.2).
 
 The execution cache uses a runtime-agnostic async once-cell (for example from `async-lock`, which is not a runtime). If two sites in one execution resolve the same key concurrently, they get one instance. `Cancelled` is implemented in the core with a waker list. The core stores the deadline, and the transport's runtime enforces it.
 
@@ -330,7 +359,7 @@ impl Module for UsersModule {
         m.import(ConfigModule);
         m.provide::<UserService>();
         m.provide::<PgUserRepo>().also_as::<dyn UserRepo>(|a| a);   // coercion in the closure
-        m.value(AppConfig::from_env());
+        m.try_value(AppConfig::from_env());                          // `expr?` in the macro
         m.contribute::<dyn Plugin>().provide::<MetricsPlugin>(|a| a);
         m.contribute::<dyn Plugin>().provide::<TracingPlugin>(|a| a);
         m.export::<UserService>();
@@ -338,24 +367,33 @@ impl Module for UsersModule {
 }
 ```
 
+`expr?` in a `providers` list lowers to `m.try_value(expr)`: `register` never returns early (§3.6), and an `Err` is reported by `wire()` beside the other wiring errors. `expr` without `?` lowers to `m.value(expr)` and binds whatever type `expr` has, a `Result` included.
+
 Async factories and third-party types [3][8]:
 
 ```rust
-// Parameters are sites. The output type is the key. A Result output is fallible.
-m.singleton(|cfg: Dep<DbConfig>| async move {
+// Parameters are sites. The output type is the key. A `try_` factory's output is a
+// Result whose Ok type is the key; its Err is a startup error.
+m.try_singleton(|cfg: Dep<DbConfig>| async move {
     PgPool::connect(cfg.url.expose()).await
 });
 
-m.execution(|pool: Dep<PgPool>| async move { UnitOfWork::begin(&pool).await });
+m.try_execution(|pool: Dep<PgPool>| async move { UnitOfWork::begin(&pool).await });
 m.transient(|| async { RequestId::new() });
 ```
+
+Each scope has a plain and a fallible method: `singleton`/`try_singleton`, `execution`/`try_execution`, `transient`/`try_transient`. One method cannot serve both outputs, since blanket impls over `T` and `Result<T, E>` overlap, and a marker parameter only moves the failure to the call as a type-annotation error. The `#[module]` macro keeps one spelling: it writes the concrete call site, where autoref ranking over the closure's own type picks the fallible arm for a `Result` future and the plain arm otherwise.
+
+A `Construct` type whose instance needs a custom build goes through `m.provide_with::<T>(factory)` or `m.try_provide_with::<T>(factory)`. The binding is keyed by `T`, uses `T::Scope`, builds through the factory, and runs `T::hooks`, which a plain factory never does (§9.1).
 
 Aliases [6], where both keys reach the same object:
 
 ```rust
-m.alias::<PgPool, ReadOnly, PgPool, Replica>();            // same type, second qualifier
+m.alias::<PgPool, ReadOnly>().of::<Replica>();             // `PgPool @ ReadOnly` reads the `Replica` binding
 m.provide::<RedisCache>().also_as::<dyn Cache>(|a| a);     // second key under a trait
 ```
+
+An alias keeps the type and changes the qualifier; the new key is in the type arguments and the existing one in `of`. A second key under another type is a coercion, which is `also_as`.
 
 Trait coercion is written as `|a| a`. Stable Rust can't unsize generically, but a closure whose expected type is `fn(Arc<RedisCache>) -> Arc<dyn Cache>` coerces at its return. The macro's `X as dyn T` generates exactly this.
 
@@ -382,7 +420,7 @@ Shared instances [17]: `Dep<T>` is an `Arc<T>`, and every holder of a binding ho
 
 Compile-time checks on sites:
 - A field or parameter that isn't a `Site` produces the `Site` diagnostic, which tells the user to write `Dep<T>` or set the value in the constructor.
-- `Dep<T>` requires `T: Send + Sync`.
+- `Dep<T>` requires `T: Send + Sync`. The error is the auto trait's own ("`(dyn Repo + 'static)` cannot be sent between threads safely"), with no hint: rustc reports the unsatisfied `Send` from the bound's where-clause and drops any wrapper trait's `on_unimplemented` note. The fix, `Send + Sync` as supertraits of `Repo`, is documented rather than diagnosed. The other spelling mistake, a binding under `dyn Repo + Send + Sync` read as `dyn Repo` or the reverse, compiles on both sides and is caught at `wire()` (§10.1).
 - `Ext<T>` or `ExecutionRef` in a type explicitly declared `singleton` fails the `AllowedIn` bound. The macro emits one `quote_spanned!` assertion per site so the error lands on that field or parameter.
 - A constructor whose future isn't `Send` fails at the generated `Construct` impl, pointing at the function.
 
@@ -421,24 +459,40 @@ Code opens standalone executions itself:
 
 ```rust
 let report = app
-    .execute(ExecOptions::new().deadline(Instant::now() + Duration::from_secs(30)), |exec| async move {
+    .execute(ExecOptions::new().deadline(Instant::now() + Duration::from_secs(30)), async |exec| {
         let job = exec.get::<ReportJob>().await?;
         job.run().await
     })
     .await?;
 ```
 
+```rust
+impl App<Connected> {   // also on AppHandle and ModuleRef
+    pub async fn execute<F, R>(&self, opts: ExecOptions, f: F) -> R
+    where
+        F: AsyncFnOnce(&Execution) -> R;
+}
+```
+
+The closure borrows the execution, which stays owned by `execute`: `execute` drops it when the future completes, and a subtask that outlives the call takes `exec.handle()`, an owned clone that keeps the execution alive until it drops (§3.8). A plain closure returning an `async move` block cannot borrow its argument into the future, which is why the bound is `AsyncFnOnce` and the closure is written `async |exec|`. `execute` is an inherent `async fn` on every type that carries it, never a trait method: its future is `Send` through auto-trait leakage whenever the caller's closure future is, and a trait would have to write that `Send` bound, which stable Rust cannot state for an `AsyncFnOnce` future.
+
+An execution opened on the app resolves with the root module's visibility; one opened through `app.module::<M>()?.execute(..)` resolves with `M`'s (§8.2).
+
 ### 6.4 Execution inputs
 
-A transport declares the context types it seeds, so the wiring pass knows they exist:
+A transport declares the context types it seeds, together with the transport that seeds them, so the wiring pass knows both:
 
 ```rust
 // inside fw-http's own global module
-m.input::<RequestHead>();
-m.input::<ClientAddr>();
+m.input::<RequestHead>().seeded_by::<Http>();
+m.input::<ClientAddr>().seeded_by::<Http>();
 ```
 
-At each call, the transport seeds them with `exec.seed(head)`. A standalone execution that doesn't seed an input which a site reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
+At each call, the transport seeds them with `exec.seed(head)`, bounded `T: Send + Sync + 'static` (§3.8). Inputs are app-wide and belong to transports: a keyed module declaring one is a wiring error.
+
+Wiring walks each handler's reachable execution-scoped bindings and checks every non-optional input against that handler's transport. A per-execution service reading `Dep<RequestHead>` on a path from an RPC controller is a wiring error naming the handler, the service and the input. A service shared across transports reads the input as `Option<Dep<RequestHead>>`, which is `None` where the transport did not seed it.
+
+Standalone executions are the one runtime case, since nothing static says what they seed: one that doesn't seed an input which a site reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
 
 ---
 
@@ -451,7 +505,7 @@ A guard is any type that implements the role trait:
 pub struct AuthGuard { sessions: Dep<SessionStore> }
 
 impl Guard<Http> for AuthGuard {
-    async fn can_activate(&self, cx: &mut HttpCx) -> Result<bool, BoxError> {
+    async fn can_activate(&self, cx: &HttpCx) -> Result<bool, BoxError> {
         let Some(user) = self.sessions.lookup(cx.head()).await? else { return Ok(false) };
         cx.extensions().insert(CurrentUser(user));     // read later as Ext<CurrentUser>
         Ok(true)
@@ -463,8 +517,8 @@ Declaring enhancers by type, by value or by closure [26]:
 
 ```rust
 #[routes]
-#[guards(AuthGuard)]                                     // by type: resolved from the container
-#[interceptors(TimingInterceptor)]
+#[guards(http = AuthGuard)]                              // by type, HTTP handlers only: AuthGuard is Guard<Http>
+#[interceptors(TimingInterceptor)]                       // every handler: TimingInterceptor is Interceptor<Http> and <Rpc>
 impl UsersController {
     #[fw_http::get("/users/:id")]
     #[guards(value = RateLimit::per_second(100))]        // by value: built once, shared
@@ -476,7 +530,7 @@ impl UsersController {
 }
 ```
 
-`#[guards(AuthGuard)]` expands to `spec.guard::<AuthGuard>()`, which requires `AuthGuard: Guard<Http>` for HTTP handlers. A missing implementation is a compile error at the attribute, with a message like "`AuthGuard` is not a guard for `Http`; implement `Guard<Http>`". For a controller that serves several transports, each transport's handlers check against that transport's role.
+A controller-level enhancer applies to every handler on the impl, strictly. `#[interceptors(TimingInterceptor)]` expands to `spec.interceptor::<TimingInterceptor>()` once per handler, and each expansion requires the role for that handler's transport: `Interceptor<Http>` for `get`, `Interceptor<Rpc>` for `get_rpc`. A handler whose transport lacks the role is a compile error at the attribute naming the handler: written `#[guards(AuthGuard)]`, the impl above fails on `get_rpc` with a message like "`AuthGuard` is not a guard for `Rpc`, needed by `get_rpc`; implement `Guard<Rpc>`". There is no "apply where the role exists": a guard that guards three of four handlers is the bug [25] exists to prevent. A controller that serves several transports scopes an enhancer with the transport-scoped form, `#[guards(http = AuthGuard)]`, which applies it to that transport's handlers alone and checks only their role.
 
 Global enhancers are collection contributions under a role key [28]:
 
@@ -485,14 +539,15 @@ m.contribute::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a);     // a global HT
 m.contribute::<AnyInterceptor<Rpc>>().value(Arc::new(Tracing::default()));
 ```
 
-Stack order is global, then controller, then method [26]. Within the global level, contributions follow module topological order and then declaration order.
+Stack order is global, then controller, then method [26]. Within the global level, contributions follow collection order (§3.2).
 
 The dispatch pipeline for one call [27] runs like this:
 
-1. The transport opens an `Execution` and seeds the inputs.
-2. For each guard in stack order, it obtains that guard (a shared value, the singleton, a per-execution build, or the closure call), then runs `can_activate`. On a refusal it stops. **Later guards are never built.**
+1. The transport opens an `Execution`, seeds the inputs, and builds its `Cx` around a handle to it.
+2. It reads the role collection through `Resolver::entries::<AnyGuard<T>>()`, which hands it one unresolved entry per contribution, and walks them in stack order together with the controller's and the method's declarations. For each guard it obtains that guard (a shared value, the singleton, `resolve().await` for a per-execution build, or the closure call), then runs `can_activate`. On a refusal it stops. **Later guards are never built.** `Many<AnyGuard<T>>` would build every guard first, which is why the transport reads `entries` and not `Many`.
 3. Only once every guard admits does it build the interceptors, then the controller (per call if inferred), then run the handler inside the interceptor chain.
-4. Errors go through the error handlers, method level first, then controller, then global.
+4. Errors go through the error handlers, method level first, then controller, then global. A refusal is one of them: the pipeline turns `Ok(false)` into the core error `GuardRejected { guard: &'static str }` and routes it like any other, so a handler that downcasts the `BoxError` can reshape the response per route. Unclaimed, the transport renders its forbidden status. A guard that wants another status, 401 rather than 403, returns its own `Err`.
+5. The transport drops its `Cx` when the reply is written. A streaming reply holds a clone, and the execution ends with the last one (§3.8).
 
 HTTP middleware is configured per module by route [36]. The core stores typed per-module metadata that `fw-http` reads:
 
@@ -528,6 +583,8 @@ pub struct ConfigModule;
 
 A module can see its own bindings, the exports of its direct imports, and the exports of global modules. That's all. An export is the only way a binding leaves its module [29]. A re-export is allowed only for a key the module can see unambiguously [34].
 
+A lookup that names no module uses the root module's visibility: `app.get`, and `exec.get` inside an execution the app opened, see the root's own bindings, its imports' exports and the globals. The root's table is free of ambiguity once wiring passes, so no lookup variant is needed for it. A service exported only within a subtree is unreachable that way by design; it is reached through `app.module::<M>()?`, and a job that belongs to a subtree runs through that module's `execute`. Inside a transport call, the execution's resolver carries the dispatching controller's module: handlers and their per-execution services see what their module sees.
+
 Collections are the exception: `Many<T>` gathers contributions from every module in the application, because plugins and global enhancers are app-wide by nature [7].
 
 ### 8.3 Configured and keyed modules
@@ -547,7 +604,9 @@ imports = [
 // consumers read Dep<PgPool, Primary> and Dep<PgPool, Replica>
 ```
 
-`Keyed<Q, M>` is itself a module. Inside `M`, sites stay unqualified (`Dep<PgPool>`). At the export boundary, unqualified exports are requalified as `T @ Q`. Its identity includes `Q`, so the two instances are distinct modules.
+`Keyed<Q, M>` is itself a module. Inside `M`, sites stay unqualified (`Dep<PgPool>`). At the export boundary, unqualified exports are requalified as `T @ Q`, re-exports included, since they leave the boundary like any export. Contributions are not exports and keep their key: two keyed databases contribute two `dyn HealthIndicator` entries. Execution inputs are app-wide and belong to transports; a keyed module declaring one is a wiring error.
+
+Its identity includes `Q`, so the two instances are distinct modules, and a bare `DbModule::for_root(url)` beside `DbModule::for_root(url).keyed::<Primary>()` is two modules with two pools and two readiness checks. One pool under two keys is an alias (§4), not a second import.
 
 ### 8.4 Runtime-built modules [33]
 
@@ -576,17 +635,22 @@ async fn from_anywhere(app: &App<Connected>) -> Result<(), LookupError> {
 pub struct PluginHost { here: ModuleRef }                        // the enclosing module
 ```
 
+A `ModuleRef` carries `get` and `execute`, both limited to what its module sees. During `connect`, `get` for a singleton the eager walk has not built yet is refused with `LookupError::NotReady { key }`: building it on demand would break the eager order, and `NotFound` would misdescribe a key that exists. Once `connect` returns, `NotReady` cannot occur.
+
 ### 8.6 Lazy modules [38]
 
 ```rust
-let reports: ModuleRef = app.load(ReportsModule).await?;
+let handle: AppHandle = app.handle();                 // Clone + Send + Sync; taken before serve(self)
+let reports: ModuleRef = handle.load(ReportsModule).await?;
 ```
+
+`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load` and `close` live on it; `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. The graph sits behind a lock that only `load` writes.
 
 A lazily loaded module is wired against the frozen graph, with all of its errors reported in one pass, and then connected through its own readiness checks and init hooks. Loading the same identity twice returns the existing handle.
 
 Some things are refused at load time, because the graph has already been handed out:
 - **Controllers and middleware**, because routes are already bound.
-- **Contributions to a collection that has already been injected**, because the holders' lists would disagree.
+- **Contributions to a collection the module does not introduce itself.** A lazy module cannot contribute to any key that a pre-existing binding reads as `Many<T>`, whatever that binding's scope; the rule is static and checked at `load` without asking what has already run.
 - **Global exports.**
 
 Shutdown includes lazily loaded modules, in reverse order of loading.
@@ -616,19 +680,21 @@ impl OnApplicationShutdown for Cache {
 For factory outputs (such as a third-party pool) and for modules, hooks are closures registered on a **singleton** binding handle. The handle is typed, so the hook methods don't exist on execution-scoped or transient handles [41]:
 
 ```rust
-m.singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect(cfg.url.expose()).await })
+m.try_singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect(cfg.url.expose()).await })
     .on_destroy(|pool: Dep<PgPool>| async move { pool.close().await });
 
 m.on_init(|users: Dep<UserService>| async move { users.seed_admin().await });   // module hook [39]
 ```
 
-A factory's output is a plain value, so trait hooks run only for types the container constructs. This rule is documented, and it's the reason closure hooks exist.
+A factory's output is a plain value, so trait hooks run only for types the container constructs. This rule is documented, and it's the reason closure hooks exist. It holds even when the output type implements `Construct`: `m.singleton(|| async { Cache::custom() })` binds `Cache` by factory, and its `OnModuleInit` impl compiles and never runs, because the graph learns which types are `Construct` only through `provide`. A `Construct` type that needs a custom build is bound with `m.provide_with::<Cache>(|| async { Cache::custom() })`, which runs `Cache::hooks` like `provide` does (§4).
+
+`Hooks<T>` has one method per hook trait, each with a `where` bound, so `h.on_module_init()` compiles only when `T: OnModuleInit`, and likewise `on_application_bootstrap`, `on_module_destroy`, `before_application_shutdown` and `on_application_shutdown`. A hand-written `Construct` impl knows which traits it implemented and calls those methods. `#[injectable]` fills `hooks` with autoref probes over the concrete `Self`; the probe types are macro internals, and `fw::hooks!(h)` is the same probing offered as a macro for a hand-written impl that wants all five checked.
 
 ### 9.2 Order [40]
 
-The connect phase walks the singleton graph in topological order. For each binding it constructs the instance and runs that binding's readiness check. It then runs all `OnModuleInit` hooks in topological order. A module's own hooks run after the hooks of its providers. Last come all `OnApplicationBootstrap` hooks.
+The connect phase walks the singleton graph in a stable topological sort: among the bindings whose dependencies are done, the smallest (module post-order index, declaration index) runs next, the module index being the module's position in collection order (§3.2). For each binding it constructs the instance and runs that binding's readiness check. It then runs all `OnModuleInit` hooks in the same order. A module's own hooks run after the hooks of its providers. Last come all `OnApplicationBootstrap` hooks. Two bindings with no edge between them are ordered by the tie-break, so the order is the same on every run.
 
-Close runs everything in reverse: `OnModuleDestroy`, then `BeforeApplicationShutdown(signal)`, then transports close their sockets, then `OnApplicationShutdown(signal)`.
+Close runs everything in the exact reverse: `OnModuleDestroy`, then `BeforeApplicationShutdown(signal)`, then transports close their sockets, then `OnApplicationShutdown(signal)`.
 
 ### 9.3 Readiness checks [42]
 
@@ -642,7 +708,10 @@ m.singleton(|cfg: Dep<DbConfig>| async move { PgPool::connect_lazy(cfg.url.expos
 
 A readiness check runs right after its binding is constructed and before anything that depends on it. Retries and timeouts use the app's `Timer`. If a check needs a timer and none is configured, that's a wiring error.
 
-Before an error message leaves the core, it goes through a redaction pass. The pass replaces every value registered as `Secret<_>` and strips the userinfo from anything shaped like a URL.
+Before an error message leaves the core, it goes through a redaction pass. The pass replaces every `Secret<_>` registered with the graph and, as a backstop, strips the userinfo from anything shaped like a URL. Registration is explicit per graph, never a process-wide list, which would leak between tests:
+- `m.secret(&self.url)` in the value API, for a secret a module holds in its configuration and moves into a factory.
+- `#[module]` registers every `Secret<_>` field of a configured module, since it can see the fields.
+- `m.value(Secret<_>)` registers the value it binds.
 
 ### 9.4 Phases [43]
 
@@ -661,12 +730,13 @@ async fn main() -> Result<(), fw::StartupError> {
         .listen()
         .await?;                                    // sockets
 
+    let handle = app.handle();                      // AppHandle: get, module, execute, load, close
     app.serve(fw_tokio::shutdown_signal()).await?;  // runs until the signal, then closes in order
     Ok(())
 }
 ```
 
-A job, a CLI command or a test stops after `connect()` and uses `get` or `execute`, then calls `close(Signal::new("done"))`.
+A job, a CLI command or a test stops after `connect()` and uses `get` or `execute`, then calls `close(Signal::new("done"))`. Anything that needs the app while it serves holds an `AppHandle` taken before `serve` (§8.6).
 
 ---
 
@@ -676,11 +746,11 @@ A job, a CLI command or a test stops after `connect()` and uses `get` or `execut
 
 `wire()` runs these steps and **collects** errors. It never stops at the first one.
 
-1. **Module graph:** deduplicate identities, detect import cycles (printing the path of module names), and check that re-exports are visible.
-2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, and overrides that match no binding (in tests).
-3. **Visibility:** resolve every site against its module's visibility table. Report missing keys (with the site, the key and the module) and ambiguous keys (naming every source module).
+1. **Module graph:** deduplicate identities, detect import cycles (printing the path of module names), check that re-exports are visible, and refuse an input declared by a keyed module.
+2. **Bindings:** find duplicate singles, single/collection mixes, aliases pointing at nothing, values whose `try_value` recorded an `Err` (naming the module and the key), and overrides that match no binding or more than one (in tests).
+3. **Visibility:** resolve every site against its module's visibility table. Report missing keys (with the site, the key and the module) and ambiguous keys (naming every source module). When a missing key's name equals a bound key's name up to a trailing `+ core::marker::Send + core::marker::Sync`, the report names both spellings: `dyn Repo` and `dyn Repo + Send + Sync` are distinct `TypeId`s, and this is the one place the mismatch is visible.
 4. **Dependency cycles:** run a DFS over the resolved edges and print the full path, as in `A → B → C → A`, with the module of each step.
-5. **Scopes:** run the needs-execution pass from §6.2, then report scope violations with the path that introduces the execution dependency, and hooks on types that became per-execution.
+5. **Scopes:** run the needs-execution pass from §6.2, then report scope violations with the path that introduces the execution dependency, and hooks on types that became per-execution. Then, for each handler, walk its reachable execution-scoped bindings and report every non-optional input that the handler's transport does not seed (§6.4).
 6. **Environment:** check for a timer if checks need one.
 
 Steps that depend on a missing piece skip only the affected edges, so one missing binding doesn't hide unrelated errors.
@@ -688,11 +758,15 @@ Steps that depend on a missing piece skip only the affected edges, so one missin
 A sample of the output:
 
 ```
-error: wiring failed with 3 errors
+error: wiring failed with 4 errors
 
   × missing dependency `dyn Mailer`
     ├─ needed by UserService (param `mailer`) in UsersModule
     └─ help: import a module that exports `dyn Mailer`, or provide it in UsersModule
+
+  × missing dependency `dyn Repo`
+    ├─ needed by ReportService (field `repo`) in ReportsModule
+    └─ help: PersistenceModule exports `dyn Repo + Send + Sync`; the site reads `dyn Repo`
 
   × ambiguous dependency `dyn UserRepo` in AppModule
     ├─ exported by PersistenceModule   (src/persistence.rs:14)
@@ -717,12 +791,19 @@ pub enum StartupError {
 #[non_exhaustive]
 pub enum LookupError {                                           // [47]
     NotFound { key: KeyName, kind: LookupKind },                  // binding, extension, input
-    WrongType { key: KeyName, expected: BindingKind, found: BindingKind },
+    NotReady { key: KeyName },                                    // a singleton the connect walk has not built yet (§8.5)
+    WrongType { key: KeyName, requested: &'static str },          // an erased `Key` asked for a `T` it does not hold
+    WrongKind { key: KeyName, expected: BindingKind, found: BindingKind },   // single read as collection, or the reverse
     ExecutionRequired { key: KeyName },
     AmbiguousModule { module: &'static str, candidates: Vec<ModuleName> },
     Construct { key: KeyName, source: BoxError },
 }
+
+/// A guard's `Ok(false)`, as the error handlers see it (§7).
+pub struct GuardRejected { pub guard: &'static str }
 ```
+
+`WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them. `WrongType` is reachable from one surface only, `Resolver::by_key::<T>(key)` (§3.1): a typed site's key fixes its `T`, and an erased key does not.
 
 Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories and hooks are caught at the poll boundary and turned into `StartupError::Construct` or `StartupError::Hook`. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught.
 
@@ -742,6 +823,8 @@ The macro emits per-site assertions with `quote_spanned!`, so errors point at th
 let app = TestApp::of(AppModule)
     .override_value::<dyn UserRepo>(Arc::new(InMemoryRepo::default()))
     .override_factory(|| async { FixedClock::at(t0) })
+    .override_try_factory(|| async { TestBus::connect().await })
+    .override_value::<AuditLog>(Arc::new(NullAudit)).in_module::<BillingModule>()
     .replace_module(MailModule, FakeMailModule)
     .connect()
     .await?;
@@ -752,7 +835,9 @@ let users = app.get::<UserService>().await?;
 Override rules:
 - An override replaces the recipe of an existing key and keeps its origin module, its visibility and its exports, so production modules stay untouched.
 - An override that matches no binding is a wiring error, which catches stale mocks after refactors.
+- An override that matches several bindings, two modules each binding the key privately, is a wiring error listing every match. `.in_module::<M>()` on the override picks one; `.everywhere()` replaces all of them explicitly. Replacing several by default would make a test pass for the wrong reason.
 - An override can't change a key's kind (single or collection). `override_many` replaces an entire collection.
+- `override_factory` and `override_try_factory` follow §4's split: the plain one binds the future's output, the `try_` one its `Ok` type.
 - `replace_module` swaps by identity. The replacement must export a superset of the original's keys, or wiring reports what's missing.
 
 ---
@@ -762,25 +847,31 @@ Override rules:
 | Refusal | When | Mechanism |
 |---|---|---|
 | A field or parameter that isn't a site | compile | `Site` bound + `on_unimplemented` |
-| `Dep<T>` with `T` not `Send + Sync` | compile | bound on `Dep` |
+| `Dep<T>` with `T` not `Send + Sync` | compile | bound on `Dep`; the auto trait's own message, no hint |
 | `Ext` / `ExecutionRef` in an explicit singleton | compile | `AllowedIn<S>` |
 | A hook on an explicit execution-scoped or transient type | compile | `Construct<Scope: HookCapable>` |
 | A closure hook on a non-singleton factory | compile | typed binding handle |
-| An enhancer that lacks its role trait | compile | `Guard<T>` and similar bounds |
+| An enhancer that lacks its role trait, including a controller-level one for any handler's transport | compile | `Guard<T>` and similar bounds, one per handler, naming the handler |
 | A constructor that isn't `Send` | compile | generated impl |
 | Two or zero constructors, a bad attribute | compile | macro span error |
 | Trait binding with a non-implementing type | compile | coercion in the closure |
+| `?` on a value whose expression failed | startup (`wire`) | `try_value` record |
 | Missing dependency | startup (`wire`) | visibility pass |
+| `dyn Repo` bound as `dyn Repo + Send + Sync`, or the reverse | startup (`wire`) | missing-dependency report naming both spellings |
 | Two sources for one key | startup (`wire`) | visibility pass, naming both |
 | Duplicate single binding, single/collection mix | startup (`wire`) | binding pass |
 | Dependency cycle, module import cycle | startup (`wire`) | DFS with path |
 | Singleton → execution dependency, including through transients | startup (`wire`) | needs-execution pass |
 | A hook on an `Auto` type inferred per-execution | startup (`wire`) | scope pass |
-| An override that matches nothing | startup (`wire`) | test builder |
+| A non-optional input read on a path from a transport that doesn't seed it | startup (`wire`) | per-handler input check |
+| An input declared by a keyed module | startup (`wire`) | module graph pass |
+| An override that matches nothing, or more than one binding | startup (`wire`) | test builder |
 | A constructor, factory, readiness check or hook fails | startup (`connect`) | typed `StartupError` |
-| A lazy module with controllers, late contributions or global exports | runtime (`load`) | typed error |
-| Lookup not found, wrong kind, no execution, ambiguous module | runtime | `LookupError` |
-| An execution input not seeded, an extension not written | runtime | `LookupError::NotFound` |
+| `ModuleRef::get` for a singleton not yet built | startup (`connect`) | `LookupError::NotReady` |
+| A lazy module with controllers, contributions to a collection it doesn't introduce, or global exports | runtime (`load`) | typed error |
+| Lookup not found, not ready, wrong type, wrong kind, no execution, ambiguous module | runtime | `LookupError` |
+| An execution input not seeded by a standalone execution, an extension not written | runtime | `LookupError::NotFound`, or `None` through `Option` |
+| A guard's refusal | runtime | `GuardRejected` through the error handlers |
 
 ---
 
@@ -807,6 +898,7 @@ impl Module for DbModule {
 
     fn register(&self, m: &mut ModuleDef<'_>) {
         let (url, max) = (self.url.clone(), self.max_conns);
+        m.secret(&self.url);                         // redacted from every error this graph reports
 
         m.singleton(move || {
             let url = url.clone();
@@ -829,14 +921,14 @@ The value API an integration writes against:
 
 | Area | API |
 |---|---|
-| Modules | `Module`, `ModuleIdentity`, `ModuleDef::{import, global, export, reexport, on_init, on_destroy, meta}`, `DynamicModule`, `Keyed` |
-| Bindings | `provide::<T: Construct>`, `value`, `singleton`/`execution`/`transient(factory)`, `contribute::<T>()`, `alias`, `input::<T>` |
+| Modules | `Module`, `ModuleIdentity`, `ModuleDef::{import, global, export, reexport, secret, on_init, on_destroy, meta}`, `DynamicModule`, `Keyed` |
+| Bindings | `provide::<T: Construct>`, `provide_with::<T>(factory)`/`try_provide_with`, `value`/`try_value`, `singleton`/`try_singleton`, `execution`/`try_execution`, `transient`/`try_transient`, `contribute::<T>()`, `alias::<T, Q>().of::<Existing>()`, `input::<T>().seeded_by::<Tr>()` |
 | Binding handles | `also_as`, `qualified::<Q>`, `ready(..).retries(..).timeout(..)`, `on_init`/`on_destroy`/`before_shutdown`/`on_shutdown` (singleton handles only) |
-| Sites | `Site`, `SiteDesc`, `Resolver::{dep, many, ext, input, module, execution}` |
-| Construction | `Construct`, `Hooks<T>`, `ConstructError` |
-| Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, seed}`, `EnhancerSpec`, the `Erased*` role twins |
-| Runtime | `Timer`, `Signal`, `Server` (implemented by transports for `bind`) |
-| Errors | `StartupError`, `WiringErrors`, `LookupError`, `Secret`, `Redacted` |
+| Sites | `Site`, `SiteDesc`, `Key`, `Resolver::{dep, many, entries, ext, input, module, execution, by_key}` |
+| Construction | `Construct`, `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
+| Transports | `Transport`, `Controller::mount`, `Mount`, `Execution::{open, seed, handle}`, `ExecutionRef`, `EnhancerSpec`, the `Erased*` role twins |
+| Runtime | `Timer`, `Signal`, `Server` (implemented by transports for `bind`), `AppHandle` |
+| Errors | `StartupError`, `WiringErrors`, `LookupError`, `GuardRejected`, `Secret`, `Redacted` |
 
 ---
 
@@ -849,3 +941,6 @@ The value API an integration writes against:
 5. **Panics in user code are caught** at poll boundaries and reported as startup errors.
 6. **Singletons are eager.** They're built during `connect`, never lazily on first use.
 7. **Auto scope** is singleton for providers and inferred for controllers and enhancers. An explicit `singleton` opts out of inference.
+8. **Collection order** is depth-first post-order over imports from the root, imports in the order written, then declaration order inside a module. Hooks and readiness checks tie-break on the same order.
+9. **The transport owns the execution**, or `execute` does for a standalone one; everything else holds a clone. Cancellation is fired by the transport while clones are alive. The execution ends, and its instances drop, when the last clone does.
+10. **`Many<T>` is eager.** Reading it constructs every contribution. The lazy form, `Resolver::entries::<T>()`, is a transport's surface, not a site.
