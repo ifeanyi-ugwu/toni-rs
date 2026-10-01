@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
+use crate::app::load;
 use crate::app::shared::AppShared;
+use crate::binding::Qualifier;
 use crate::error::{Closed, LoadError, LookupError, Shutdown, ShutdownError};
 use crate::execution::notify::Draining;
 use crate::execution::{ExecOptions, Execution};
+use crate::lifecycle::shutdown;
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::signal::Signal;
@@ -23,15 +26,16 @@ pub struct AppHandle {
 impl AppHandle {
     /// `T` with the root module's visibility.
     pub async fn get<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Dep<T>, LookupError> {
-        todo!()
+        self.shared.get_root::<T>().await
     }
 
+    /// The one module of type `M`; see [`App::module`](crate::App).
     pub fn module<M: 'static>(&self) -> Result<ModuleRef, LookupError> {
-        todo!()
+        self.shared.find_module::<M>(None)
     }
 
     pub fn module_keyed<M: 'static, Q: 'static>(&self) -> Result<ModuleRef, LookupError> {
-        todo!()
+        self.shared.find_module::<M>(Some(Qualifier::of::<Q>()))
     }
 
     /// A standalone execution with the root module's visibility; see [`App::execute`](crate::App).
@@ -39,29 +43,30 @@ impl AppHandle {
     where
         F: AsyncFnOnce(&Execution) -> R,
     {
-        todo!()
+        let root = self.shared.graph().root;
+        self.shared.execute(root, opts, f).await
     }
 
     /// Wires `module` against the frozen graph, every error collected, then connects it through
     /// its own readiness checks and init hooks. Loading an equal identity twice returns the
     /// existing handle. Refused from Stopping on with `LoadError::Closed` (§8.6).
     pub async fn load(&self, module: impl Module) -> Result<ModuleRef, LoadError> {
-        todo!()
+        load::load(&self.shared, Box::new(module)).await
     }
 
     /// One of shutdown's two triggers; ends `serve`. A `close` during a running shutdown starts
     /// nothing: it waits for the same shutdown, ignores its own signal and returns the same
     /// outcome.
     pub async fn close(&self, signal: Signal) -> Result<Shutdown, ShutdownError> {
-        todo!()
+        shutdown::close(&self.shared, signal).await
     }
 
     /// The same notice an execution's `draining()` gives, resolving at the same moment.
     pub fn draining(&self) -> Draining<'_> {
-        todo!()
+        Draining::new(self.shared.draining.listen())
     }
 
     pub fn is_draining(&self) -> bool {
-        todo!()
+        self.shared.draining.is_fired()
     }
 }

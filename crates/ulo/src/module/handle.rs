@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::sync::Arc;
 
 use crate::app::shared::AppShared;
@@ -6,6 +7,7 @@ use crate::execution::{ExecOptions, Execution, ExecutionRef};
 use crate::graph::ModuleId;
 use crate::module::ModuleName;
 use crate::module::meta::Meta;
+use crate::resolver::{Purpose, Resolver};
 use crate::site::Dep;
 
 /// A handle to one module, for runtime lookups limited to what that module sees (§8.5).
@@ -30,7 +32,9 @@ impl ModuleRef {
 
     /// The binding `T` as this module sees it.
     pub async fn get<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Dep<T>, LookupError> {
-        todo!()
+        let exec = self.exec.as_ref().map(|exec| &exec.shared);
+        let r = Resolver::new(&self.app, self.module, exec, Purpose::Lookup);
+        r.dep::<T>().await
     }
 
     /// A standalone execution resolving with this module's visibility. Refused from Draining on
@@ -39,15 +43,16 @@ impl ModuleRef {
     where
         F: AsyncFnOnce(&Execution) -> R,
     {
-        todo!()
+        self.app.execute(self.module, opts, f).await
     }
 
     pub fn name(&self) -> ModuleName {
-        todo!()
+        self.app.graph().module(self.module).name.clone()
     }
 
     /// The metadata of type `T` this module wrote, if any.
     pub fn meta<T: Meta>(&self) -> Option<Arc<T>> {
-        todo!()
+        let value = Arc::clone(self.app.graph().module(self.module).meta.get(&TypeId::of::<T>())?);
+        value.downcast::<T>().ok()
     }
 }

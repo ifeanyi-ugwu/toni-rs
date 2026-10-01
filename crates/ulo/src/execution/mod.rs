@@ -26,7 +26,7 @@ use crate::execution::extensions::{Extensions, Inputs};
 use crate::execution::notify::{Cancelled, Draining, Notify};
 use crate::graph::ModuleId;
 use crate::module::handle::ModuleRef;
-use crate::resolver::Resolver;
+use crate::resolver::{Purpose, Resolver};
 use crate::site::Dep;
 use crate::transport::server::DrainToken;
 
@@ -85,7 +85,7 @@ impl Execution {
     /// Opens an execution resolving with `module`'s visibility. Refused from Draining on with
     /// `Closed`. For transports and standalone code alike.
     pub fn open(module: &ModuleRef, opts: ExecOptions) -> Result<Execution, Closed> {
-        todo!()
+        module.app.open(module.module, opts, false)
     }
 
     /// Opens a connection's cleanup during the drain: allowed in Draining, counted in the drain
@@ -93,7 +93,8 @@ impl Execution {
     /// opens it; the phase check decides whether it may, so a token used after the drain has
     /// ended gets `Closed`.
     pub fn open_terminal(token: &DrainToken, module: &ModuleRef, opts: ExecOptions) -> Result<Execution, Closed> {
-        todo!()
+        let _ = token;
+        module.app.open(module.module, opts, true)
     }
 
     /// Seeds an execution input. Inputs are `Send + Sync`, like everything the execution holds.
@@ -194,7 +195,7 @@ impl ExecutionRef {
 
 impl ExecShared {
     pub(crate) fn resolver(self: &Arc<Self>) -> Resolver<'_> {
-        todo!()
+        Resolver::new(&self.app, self.module, Some(self), Purpose::Lookup)
     }
 
     pub(crate) fn cancelled(&self) -> Cancelled<'_> {
@@ -202,10 +203,10 @@ impl ExecShared {
     }
 
     pub(crate) fn draining(&self) -> Draining<'_> {
-        todo!()
+        Draining::new(self.app.draining.listen())
     }
 
     pub(crate) fn is_draining(&self) -> bool {
-        todo!()
+        self.app.draining.is_fired()
     }
 }
