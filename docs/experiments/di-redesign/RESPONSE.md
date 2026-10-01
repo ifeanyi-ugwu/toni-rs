@@ -349,3 +349,51 @@ Document the guarantee plainly. Disconnect handlers at shutdown are best effort.
 Make losses visible. Count terminal executions that were refused or abandoned in the shutdown report, for example Shutdown { signal, abandoned, terminal_skipped }. The transport should log which connections missed their handler.
 Reduce the window where possible. Under the rule from last time, idle connections close at drain start, so most disconnect handlers start with the full window. Only connections still busy near the timeout are at risk, and those were going to be cut anyway.
 If you disagree and want a guaranteed window, the fallback is a short terminal_grace after drain_timeout during which only terminal executions may run. But I'd wait to see a real case before adding it.
+
+---
+
+## Sixth response: bounds without a Timer, and the four remaining questions
+
+Received 2026-10-01, answering what the fifth response had not seen: the review's refinement on
+bounds without a `Timer` and its questions 1, 4, 5 and 7. Not yet signed off.
+
+### The refinement: one rule for bounds without a Timer
+
+I agree with the rule: an explicit bound needs a Timer and is a wiring error without one, the app defaults apply only when a Timer exists, and a Timer stays optional otherwise. That's simpler and more honest than what I said.
+
+One existing case should stay deliberately asymmetric. **The drain without a Timer is zero-length, not unbounded.** That was the earlier decision: a timerless close abandons live executions at once. If the drain had no bound, a single slow client could hold shutdown open forever. Hooks without a bound run unbounded because they're the application's own code. Executions depend on clients the app doesn't control. That difference should be stated next to the rule.
+
+**How a hook declares "no bound":** not `Some(Duration::MAX)`. Besides reading as a trick, it's a trap. `Instant + Duration::MAX` overflows, and `Instant`'s `Add` panics on overflow. So every place that computes a deadline would have to remember `checked_add`, and one that forgets turns "unbounded" into a panic in the shutdown path. Three states don't fit `Option` anyway, so give them their own type:
+
+```rust
+pub enum Bound { Default, After(Duration), Unbounded }
+
+impl OnModuleDestroy for Indexer {
+    const TIMEOUT: Bound = Bound::Unbounded;
+    async fn on_module_destroy(&self) { /* ... */ }
+}
+```
+
+`Unbounded` needs no Timer, so it never triggers the wiring error. The outer `shutdown_timeout` cap still applies to it. Unbounded per hook doesn't mean unbounded overall.
+
+**Readiness `.timeout`: per attempt, or across retries?** Make `.timeout` bound the whole check, retries and backoff included, so it means the same thing as a hook's `.timeout`, which bounds the whole run. Add `.attempt_timeout(d)` for the per-attempt bound. Both are optional, and both need a Timer. The total is what startup budgeting cares about, and the attempt bound is what catches a single hung ping. With two names, nobody has to guess which one they're reading.
+
+### The four questions
+
+**1. One timer or two?** One. The app's timer is the `Timer` binding, so overriding it would replace the internal timer as well. But I wouldn't let a test override it as an ordinary binding. A timer is app configuration, and it drives the drain, the hooks and the readiness checks together. So `override_value::<dyn Timer>` should be a wiring error with the hint "set it with `TestApp::timer(..)`".
+
+That keeps one source of truth, and a test that wants a mocked clock sets it in the one place that clearly affects everything. The same applies to any module that tries to bind `dyn Timer` itself. The core's binding is a global export, so a second one is already reported as ambiguous by the existing rules.
+
+**2. `draining()` for tasks without an execution.** Yes, `AppHandle` should have `draining()` and `is_draining()` too, resolving at the same moment as on executions. Background loops such as queue consumers and pollers should stop pulling new work exactly when transports stop accepting, and getting `Closed` from `execute` is far too late as a first notice.
+
+The documentation should also point out that the drain doesn't track detached tasks, only executions. Background work that must finish cleanly should run each unit of work through `execute`, so the drain waits for it.
+
+**3. Unbounded constructors and factories.** `connect_lazy` plus a readiness check is a good idiom, but not every driver offers a lazy connect, so it can't be the only answer. A factory awaiting a network connect hangs `connect` just as surely as a hook would. Constructors should get the same bound as hooks:
+
+- **Factories:** the binding itself is the first item on the handle, so `.timeout(..)` directly after `singleton(..)` bounds construction. This also refines the review's typestate rule: there's never "no item before `.timeout()`", because the binding is always there.
+- **`#[injectable]` types:** `const CONSTRUCT_TIMEOUT: Bound` on `Construct`, set from the macro as `#[injectable(timeout = Duration::from_secs(5))]`.
+- **The app default:** a separate `construct_timeout`, because connecting legitimately takes longer than a hook. I'd default it to 30 seconds. Like the other defaults, it applies only when a Timer exists.
+
+The same bound applies when execution-scoped bindings are built during a call, since a hanging constructor there blocks the call just the same.
+
+**4. The ambiguous `TIMEOUT`.** This is smaller than it looks. *Defining* the const is never ambiguous: inside `impl OnModuleInit for X`, `const TIMEOUT` clearly belongs to `OnModuleInit`. Only *reading* `Self::TIMEOUT` is ambiguous, and the core always reads it fully qualified in generated and internal code. Users almost never need to read it. One line in §9.1 is enough: "to read a hook's bound when a type implements several hook traits, write `<T as OnModuleInit>::TIMEOUT`." Naming the constructor's const `CONSTRUCT_TIMEOUT` rather than `TIMEOUT` keeps it out of this entirely, which is why I named it that way above.
