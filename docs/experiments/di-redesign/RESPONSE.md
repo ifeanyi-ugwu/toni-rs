@@ -644,3 +644,60 @@ Why there's no blanket From<E: Error>: LookupError itself implements Error, so a
 Panics and timeouts aren't ConstructError variants. The core observes them from outside the constructor and records them directly as FailureReason::Panicked and FailureReason::TimedOut. A constructor can't report its own timeout, so the type shouldn't suggest it can.
 
 With that in place, every named type in the design has a shape.
+
+---
+
+## Thirteenth response: the rebuild's divergences, and naming the `Site` family
+
+Received 2026-10-01, answering `DIVERGENCES.md`. Not yet signed off.
+
+### Naming the `Site` family
+
+You're right to raise it, and now is the time. Nothing has compiled yet, so a rename costs one search-and-replace. After the first compile it costs every integration crate.
+
+Here's what's wrong with the current names. The design's own convention says types are nouns and traits are capabilities. `Site` is a noun used as a trait, and "site" isn't established DI vocabulary, so users have to learn it. `Sites` and `SiteDesc` inherit the same problem, and `s.site::<Dep<PgPool>>()` says nothing about what the call does.
+
+What I'd use:
+
+| Now | Proposed | Why |
+|---|---|---|
+| `trait Site` | `trait FromContainer` | It reads as a capability ("can be obtained from the container") and follows axum's `FromRequestParts` and `FromRef`, which Rust web developers already know |
+| `Construct::sites(s: &mut Sites)` | `Construct::dependencies(d: &mut Dependencies)` | It says what's being declared |
+| `Sites::{field, param, site}` | `Dependencies::{field, param, add}` | `field` and `param` add a name for diagnostics. The unnamed form simply adds one |
+| `SiteDesc` | `Requirement` | `Requirement::dep(key)`, `Requirement::optional::<S>()` read as what a read needs |
+
+The compile error then reads: "`PgPool` cannot be obtained from the container. Write `Dep<PgPool>`". The `on_unimplemented` text carries the meaning, so nobody concludes they should implement `FromContainer` for `PgPool` themselves.
+
+Two things stay: `Dep`, `Many` and `Ext`, which are fine nouns, and the prose term "injection point" in the docs. If you rename, D17 disappears.
+
+### The 20 decisions
+
+I agree with the recommendation on 15 of them: D1, D2, D3, D4, D8, D9, D10, D11, D12, D14, D15, D18, D19 and D20, plus D6 as a deferral. Here are the other five.
+
+**D5: agree with the goal, not the form.** Doubling every override method (`override_value_qualified`, `override_factory_qualified`, `override_try_factory_qualified`, and `override_many` will want one too) multiplies the API for one axis of variation. `TestApp<Pending>` already exists precisely to scope the most recent override, so put the qualifier there:
+
+```rust
+.override_value::<PgPool>(fake).qualified::<Replica>().in_module::<DbModule>()
+```
+
+That's one method instead of four. It reads in the same order as the binding it replaces, and the typestate already stops it attaching to the wrong override.
+
+**D7: don't accept it silently. Refuse it until it's fixed.** The design promises "built once, shared", and the built behavior breaks that in a way nobody will notice. A rate limiter declared on the controller limits each handler separately, and the app works, just more permissively than written. Waiting for the transport protocol is reasonable. Shipping a silent semantic difference meanwhile isn't. Make controller-level `value = expr` a compile error, with the hint "declare it per method, or bind it by type for shared state", until the protocol can pass impl-level values down. A refusal that later relaxes into a feature breaks nobody.
+
+**D13: accept for the first compile, but flag it as must-fix before release.** "Resources release as the instances drop" covers pools and file handles. It doesn't cover what init hooks did outside the process: registering with service discovery, taking a distributed lock, starting a lease. A failed startup that leaves the service registered as healthy is the kind of bug that pages someone at night. Filing it as "needs its own design" is right. The priority should be stated as higher than "revisit later" suggests.
+
+**D16: accept, but record why it differs from D8.** Both are a written wait that doesn't wait, and D8 refuses where D16 accepts. The consistent rule is "refuse when the fault is visible at `wire()`". `.backoff` is visible there, but a deadline is a runtime value passed to `execute`, so refusing it would mean widening `execute`'s error type for one rare case. Write that rule down in the document, or the next reviewer will flag the inconsistency again.
+
+**D17:** replaced by the rename above.
+
+### Three items in the reading sections that deserve decisions
+
+These are listed as "for reading", but I'd treat each as a decision.
+
+**Role detection by `type_name` prefix [C 6].** The `type_name` format is explicitly documented as unstable. A compiler upgrade could silently change which contributions count as global guards. As written, the failure is loud, a wiring refusal, but it would surface in an app that worked yesterday, after a toolchain bump. The robust fix is a dedicated, typed entry point for role contributions, such as `m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(..)`, bounded by a sealed `Role` trait that the role key types implement. That makes detection compile-time and independent of the compiler's string format.
+
+**Short type names in diagnostics [A 1].** Cutting `a::Config` and `b::Config` to `Config` produces diagnostics that hide information exactly when two same-named types are involved, such as "missing `Config`" while a different `Config` is bound right there. Keep the short form as the default, but when one report would print two different keys alike, print full paths for those keys. It's a small check at formatting time.
+
+**Transport `close` runs unbounded [E 12].** My earlier reasoning that closing sockets "runs no user code and finishes quickly" was too optimistic. A transport's `close` can wait on a TLS close-notify or a broker acknowledgment. As built, it runs after the `shutdown_timeout` cap with no bound, so one stuck broker hangs shutdown forever. That's exactly what the cap exists to prevent. Bound each transport's `close` by whatever is left of the cap. When there's no cap, use `hook_timeout`, and record a timeout as `ShutdownFailure::Close`.
+
+The rest of sections 2 to 5 reads consistently with the design. One papercut worth a line in the docs: in a `#[routes]` impl, a helper method annotated with `#[tracing::instrument]` is treated as a handler [G 8]. Moving helpers to a separate `impl` block is a fine rule, but people will hit it in their first week, so it belongs in the `#[routes]` documentation.
