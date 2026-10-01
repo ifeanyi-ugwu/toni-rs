@@ -93,3 +93,45 @@ The probes ran on 1.98.1. Stable features only move forward, so that's sound for
 On sharing the probes: if a zip won't upload, you can paste them as plain text, all files concatenated with a `// ==== src/bin/p05_site_read_erased.rs ====` line between them. I can read and reason about them that way. I can't run them here, though, so they'd stay "Read" rather than "Probed" on my side.
 
 Once you sign off, the changes to the document come down to these: the thirteen refinements with my adjustments to R3, R10 and R13; the twelve answers written into their sections; the new variants (`NotReady`, `WrongKind`) and the lazy surfaces (`entries`, `AppHandle`, `provide_with`); and three more defaults in §14.
+
+---
+
+## Second response: the two open questions and the eleven filled details
+
+Received 2026-10-01, answering the two questions and the eleven details raised when the first
+response was folded into `DESIGN.md`. The user signed it off in full the same day, adopting the in-flight
+shutdown rule as proposed.
+
+Good to have both probes settled, and good news that 1.88 matches 1.98 across the board.
+
+## Question 1: When does an execution end?
+
+Your rule is right: `execute` drops its handle when the closure's future completes, and any outstanding `handle()` clone keeps the cache and execution-scoped instances alive until it drops. Force-ending the execution would bring back the problem R13 fixed. A subtask holding a clone would find its instances gone underneath it, so either every handle access would need to be fallible or we'd need a use-after-end error. Neither is worth it.
+
+The text should also say one thing explicitly: **completion of `execute` does not fire cancellation.** That keeps it consistent with transports, where finishing the response doesn't cancel a streaming body. Cancellation for a standalone execution fires only on its deadline or when the app closes. A subtask that should stop when the job finishes has to be awaited by the job, not left detached.
+
+## Question 2: `handle.close(..)` while `serve` is waiting
+
+It ends `serve`. Shutdown is a single, one-time event, and whichever trigger arrives first wins: the signal future passed to `serve`, or a `close` call on any handle. That trigger's signal name is the one the hooks receive.
+
+- **A `close` while shutdown is already running** doesn't restart anything. It waits for the same shutdown to finish and returns the same outcome. Its own signal argument is ignored, and so is `serve`'s signal if it arrives during a handle-initiated close.
+- **Both callers get the outcome.** `serve` and every `close` caller receive the result, so the shutdown error needs to be `Clone`. Wrapping its contents in an `Arc` internally is enough.
+- **Without `serve`** (a job or CLI on `Connected`), `close` runs the same sequence minus the socket step.
+
+This leaves one decision open that the design doesn't cover yet: what happens to in-flight executions during shutdown. I'd do it this way: at the start of the socket step, transports stop accepting, then fire cancellation on every live execution and wait for them to drain, up to a timeout configured with the `Timer`. Executions still alive after the timeout are abandoned, and the shutdown result reports how many. That's a new rule, though, so it's your call.
+
+## The eleven details
+
+1. **Confirmed, with one addition.** `seed` belongs only on `Execution`, the holder's handle, never on `ExecutionRef`. Otherwise a subtask or a guard could inject inputs that the wiring check never saw. `Execution` itself is not `Clone`.
+2. **Confirmed.** `try_provide_with` follows from the same coherence problem.
+3. **Confirmed.** The key already carries the bound type's name, so `{ key, requested }` gives the error everything it needs to show both sides.
+4. **Confirmed.** It's worth one sentence that `ModuleRef::execute` resolves with that module's visibility, while the other two use the root's, as in the Q1 answer.
+5. **Confirmed.**
+6. **Confirmed, with two notes.** First, the unscoped form remains the default and must match exactly one binding. `.everywhere()` is the explicit opt-in, not the default. Second, configured and keyed modules need a way to name one instance, so add `.in_module_keyed::<M, Q>()` and `.in_module_of(&config)`. `in_module::<M>()` alone is ambiguous there, and should fail as an ambiguous override rather than pick one.
+7. **Confirmed.** "Forbidden status" should be defined per transport: HTTP 403, gRPC `PERMISSION_DENIED`, an error reply on RPC, an error frame on WebSockets. Each transport crate documents its mapping.
+8. **Confirmed, with one more element.** The error should also print the dependency path from the handler to the service that reads the input, and both transports involved (the handler's, and the one that seeds the input). Without the path, the user knows what is wrong but not how the input got reached.
+9. **Confirmed.**
+10. **Confirmed.** Using one order for both is the point.
+11. **Confirmed.**
+
+Apart from the in-flight shutdown rule, nothing else here needs a decision from you.
