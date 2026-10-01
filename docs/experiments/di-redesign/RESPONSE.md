@@ -545,7 +545,7 @@ And the problem is wider than readiness. A factory whose `connect` fails usually
 
 ## Tenth response: redaction scope by origin, and the `Redacted` type kept
 
-Received 2026-10-01. Not yet signed off.
+Received 2026-10-01. The user signed it off in full the same day.
 
 ### The two redaction questions
 
