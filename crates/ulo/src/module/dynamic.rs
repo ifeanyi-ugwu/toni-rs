@@ -48,6 +48,14 @@ impl Module for DynamicModule {
     }
 
     fn register(&self, m: &mut ModuleDef<'_>) {
-        todo!()
+        // A poisoned slot still holds the closure, or `None` once taken; a panic elsewhere
+        // under the lock does not change which.
+        let register = match self.register.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(register) = register {
+            register(m);
+        }
     }
 }

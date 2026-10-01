@@ -15,13 +15,14 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::binding::{BindingRecord, Qualifier};
-use crate::error::LookupError;
+use crate::binding::{BindingRecord, Qualifier, Recipe};
+use crate::error::{LookupError, LookupKind};
 use crate::hooks::HookRecord;
-use crate::key::Key;
+use crate::key::{BindingKind, Key, KeyName, short_type_name};
 use crate::module::meta::FrozenMeta;
 use crate::module::{ModuleIdentity, ModuleName};
 use crate::redact::SecretRegistry;
+use crate::site::{ReadKind, SiteLabel, SiteRecord, Sites};
 use crate::transport::controller::HandlerRecord;
 
 /// A module's position in collection order: depth-first post-order over imports from the root,
@@ -44,12 +45,18 @@ pub(crate) struct Graph {
     pub(crate) inputs: HashMap<Key, InputDecl>,
     pub(crate) by_identity: HashMap<ModuleIdentity, ModuleId>,
     pub(crate) root: ModuleId,
-    /// The singletons in the order `connect` builds them: a stable topological sort, the
-    /// smallest `BindingId` among the ready ones first.
+    /// Every singleton in the order `connect` builds them: a stable topological sort, the
+    /// smallest `BindingId` among the ready ones first. Values are in it, so the store holds
+    /// them and their readiness checks and hooks run; aliases are not, being read through their
+    /// target.
     pub(crate) connect_order: Vec<BindingId>,
     /// Every handler the controllers mounted, for every transport.
     pub(crate) handlers: Vec<HandlerRecord>,
     pub(crate) secrets: SecretRegistry,
+    /// By `ModuleId`: each module's exports as an importer sees them, requalified at a keyed
+    /// boundary and resolved to their binding. Freezing drops the export records, and a lazily
+    /// loaded module importing a frozen one reads its exports from here.
+    pub(in crate::graph) exported: Vec<Vec<(Key, BindingId)>>,
 }
 
 pub(crate) struct FrozenModule {
@@ -77,7 +84,10 @@ pub(crate) struct FrozenBinding {
     /// Decided by the scope pass (§6.2).
     pub(crate) effective: Effective,
     pub(crate) needs_execution: bool,
-    /// One per site read, resolved against the origin module's visibility by step 3.
+    /// One per site read, resolved against the origin module's visibility by step 3. A read
+    /// that resolved to nothing has no edge: an optional site that found no binding, or a
+    /// missing or ambiguous key already reported. An alias has no sites and so no edges; its
+    /// target is `Recipe::Alias { target }`, looked up in the origin module's table.
     pub(crate) edges: Vec<Edge>,
 }
 
@@ -116,6 +126,10 @@ pub(crate) enum EdgeTarget {
 
 /// What one module sees: its own bindings, its direct imports' exports and the globals'
 /// exports. Collections are not in it; they are app-wide.
+///
+/// Every key of a binding maps to the same `BindingId`: its primary key, each `also_as` key, and
+/// each export key requalified at a keyed boundary. A reader picks the coercion by type, since a
+/// requalified key's qualifier is not the record's.
 #[derive(Default)]
 pub(crate) struct VisibilityTable {
     pub(crate) entries: HashMap<Key, Visible>,
@@ -125,6 +139,8 @@ pub(crate) enum Visible {
     Binding(BindingId),
     Input(Key),
     /// Two sources for one key: a wiring error for any site that reads it, naming every source.
+    /// One binding reached by two routes, an import's export and its re-export by another
+    /// import, is one source. The root's table holds none once wiring passes.
     Ambiguous(Vec<(ModuleId, BindingId)>),
 }
 
@@ -152,13 +168,216 @@ impl Graph {
 
     /// Every contribution to `key` in collection order; empty when nothing contributes.
     pub(crate) fn collection(&self, key: Key) -> Arc<[BindingId]> {
-        todo!()
+        match self.collections.get(&key) {
+            Some(ids) => Arc::clone(ids),
+            None => Arc::from(Vec::new()),
+        }
     }
 
     /// The one registered module of type `ty` (the type a module's identity names) and
     /// qualifier: `LookupError::AmbiguousModule` over several configurations, `NotFound` with
-    /// `LookupKind::Module` over none.
+    /// `LookupKind::Module` over none. `None` matches every instance of the type, keyed or not,
+    /// so a type imported bare and keyed, or under two keys, is ambiguous without a qualifier.
     pub(crate) fn find_module(&self, ty: TypeId, type_name: &'static str, qualifier: Option<Qualifier>) -> Result<ModuleId, LookupError> {
-        todo!()
+        let found: Vec<&FrozenModule> = self
+            .modules
+            .iter()
+            .filter(|m| m.identity.type_id() == ty && (qualifier.is_none() || m.identity.qualifier() == qualifier))
+            .collect();
+        match found.as_slice() {
+            [one] => Ok(one.id),
+            [] => {
+                let q = qualifier.unwrap_or_else(Qualifier::none);
+                Err(LookupError::NotFound {
+                    key: Key::from_parts(ty, type_name, q.id, q.name).name(BindingKind::Single),
+                    kind: LookupKind::Module,
+                })
+            }
+            several => Err(LookupError::AmbiguousModule {
+                module: type_name,
+                candidates: several.iter().map(|m| m.name.clone()).collect(),
+            }),
+        }
     }
+
+    pub(in crate::graph) fn empty() -> Graph {
+        Graph {
+            modules: Vec::new(),
+            bindings: Vec::new(),
+            visibility: Vec::new(),
+            collections: HashMap::new(),
+            inputs: HashMap::new(),
+            by_identity: HashMap::new(),
+            root: ModuleId(0),
+            connect_order: Vec::new(),
+            handlers: Vec::new(),
+            secrets: SecretRegistry::default(),
+            exported: Vec::new(),
+        }
+    }
+
+    pub(in crate::graph) fn module_name(&self, id: ModuleId) -> ModuleName {
+        self.module(id).name.clone()
+    }
+
+    /// A binding's qualified primary key, as the errors name it.
+    pub(in crate::graph) fn key_name(&self, id: BindingId) -> KeyName {
+        let record = &self.binding(id).record;
+        record_key(record).name(record.kind)
+    }
+
+    /// A binding as a step of a printed path: the type it builds, with its qualifier.
+    pub(in crate::graph) fn label(&self, id: BindingId) -> String {
+        let record = &self.binding(id).record;
+        let mut text = short_type_name(record.built);
+        if record.qualifier != Qualifier::none() {
+            text.push_str(" @ ");
+            text.push_str(&short_type_name(record.qualifier.name));
+        }
+        text
+    }
+
+    /// `label`, followed by the scope the pass decided when it is not a singleton:
+    /// `AuditContext (execution)`.
+    pub(in crate::graph) fn scoped_label(&self, id: BindingId) -> String {
+        let mut text = self.label(id);
+        match self.binding(id).effective {
+            Effective::PerExecution => text.push_str(" (execution)"),
+            Effective::Transient => text.push_str(" (transient)"),
+            Effective::Singleton => {}
+        }
+        text
+    }
+
+    /// What reads site `site` of binding `id`, as a missing-dependency report names it:
+    /// ``UserService (param `mailer`)``, or ``PgPool factory (param #1)`` for a factory.
+    pub(in crate::graph) fn consumer(&self, id: BindingId, site: usize) -> String {
+        let record = &self.binding(id).record;
+        let mut text = self.label(id);
+        if matches!(record.recipe, Recipe::Factory(_)) && !record.constructs {
+            text.push_str(" factory");
+        }
+        match record.sites.list.get(site) {
+            Some(site) => format!("{text} ({})", site_label(site.label)),
+            None => text,
+        }
+    }
+
+    /// The binding an alias reads, one step: `None` for anything else, or a target the alias's
+    /// module does not see as a single binding.
+    pub(in crate::graph) fn alias_target(&self, id: BindingId) -> Option<BindingId> {
+        let binding = self.binding(id);
+        let Recipe::Alias { target } = &binding.record.recipe else { return None };
+        match self.lookup(binding.origin, *target) {
+            Some(Visible::Binding(target)) => Some(*target),
+            _ => None,
+        }
+    }
+
+    /// What building `id` reads: the bindings its edges reach, every contribution of each
+    /// collection it reads, and an alias's target.
+    pub(in crate::graph) fn construction_deps(&self, id: BindingId) -> Vec<BindingId> {
+        let mut deps = Vec::new();
+        for edge in &self.binding(id).edges {
+            match &edge.target {
+                EdgeTarget::Binding(dep) => deps.push(*dep),
+                EdgeTarget::Collection(key) => deps.extend(self.collections.get(key).into_iter().flat_map(|ids| ids.iter().copied())),
+                EdgeTarget::Input(_) | EdgeTarget::Execution | EdgeTarget::Module => {}
+            }
+        }
+        deps.extend(self.alias_target(id));
+        deps
+    }
+
+    /// The bindings `sites` read when resolved in `module`, for closures the graph keeps no
+    /// edges for: readiness checks and hooks.
+    pub(in crate::graph) fn sites_deps(&self, module: ModuleId, sites: &Sites) -> Vec<BindingId> {
+        let mut deps = Vec::new();
+        for read in sites.list.iter().flat_map(|site| &site.desc.reads) {
+            match &read.kind {
+                ReadKind::Single(key) => {
+                    if let Some(Visible::Binding(dep)) = self.lookup(module, *key) {
+                        deps.push(*dep);
+                    }
+                }
+                ReadKind::Collection(key) => {
+                    deps.extend(self.collections.get(key).into_iter().flat_map(|ids| ids.iter().copied()));
+                }
+                ReadKind::Extension(_) | ReadKind::Execution | ReadKind::Module => {}
+            }
+        }
+        deps
+    }
+
+    /// What `id`'s readiness check reads besides `id` itself: the check runs right after `id` is
+    /// built and before anything that depends on it, so these come first.
+    pub(in crate::graph) fn readiness_deps(&self, id: BindingId) -> Vec<BindingId> {
+        let binding = self.binding(id);
+        match &binding.record.ready {
+            Some(ready) => self.sites_deps(binding.origin, &ready.sites).into_iter().filter(|dep| *dep != id).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Whether `id` hands a need for an execution to whatever reads it: an execution-scoped
+    /// binding always does, a transient one when it needs one itself.
+    pub(in crate::graph) fn passes_execution(&self, id: BindingId) -> bool {
+        let binding = self.binding(id);
+        match binding.effective {
+            Effective::PerExecution => true,
+            Effective::Transient => binding.needs_execution,
+            Effective::Singleton => false,
+        }
+    }
+
+    /// The first edge of `id` that reads execution data directly: an extension, the execution,
+    /// or an execution input.
+    pub(in crate::graph) fn direct_execution_edge(&self, id: BindingId) -> Option<&Edge> {
+        self.binding(id)
+            .edges
+            .iter()
+            .find(|edge| matches!(edge.target, EdgeTarget::Execution | EdgeTarget::Input(_)))
+    }
+
+    /// A handler as the reports name it: `UsersController::get_rpc`.
+    pub(in crate::graph) fn handler_name(&self, handler: &HandlerRecord) -> String {
+        format!("{}::{}", self.label(handler.controller), handler.decl.name)
+    }
+
+    /// Site `site` of binding `id` as the last step of a printed path:
+    /// ``Dep<RequestHead> (field `head`)``.
+    pub(in crate::graph) fn site_step(&self, id: BindingId, site: usize) -> String {
+        match self.binding(id).record.sites.list.get(site) {
+            Some(site) => site_text(site),
+            None => String::new(),
+        }
+    }
+}
+
+/// A record's primary key with its qualifier applied.
+pub(in crate::graph) fn record_key(record: &BindingRecord) -> Key {
+    record.primary.with_qualifier(record.qualifier.id, record.qualifier.name)
+}
+
+/// An export key as it leaves a module: an unqualified key leaving a keyed module becomes
+/// `T @ Q`; anything else leaves as written (§8.3).
+pub(in crate::graph) fn boundary_key(keyed: Option<Qualifier>, key: Key) -> Key {
+    match keyed {
+        Some(q) if key.is_unqualified() => key.with_qualifier(q.id, q.name),
+        _ => key,
+    }
+}
+
+/// ``field `name` ``, ``param `name` ``, or `param #n` for a closure's n-th parameter.
+pub(in crate::graph) fn site_label(label: SiteLabel) -> String {
+    match label {
+        SiteLabel::Field(name) => format!("field `{name}`"),
+        SiteLabel::Param(name) => format!("param `{name}`"),
+        SiteLabel::Position(index) => format!("param #{}", index + 1),
+    }
+}
+
+/// A site's type and label: ``Dep<RequestHead> (field `head`)``.
+pub(in crate::graph) fn site_text(site: &SiteRecord) -> String {
+    format!("{} ({})", short_type_name(site.type_name), site_label(site.label))
 }

@@ -9,10 +9,11 @@ pub(crate) mod meta;
 
 use std::any::{Any, TypeId, type_name};
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crate::binding::Qualifier;
+use crate::key::short_type_name;
 use crate::module::def::ModuleDef;
 use crate::module::keyed::Keyed;
 
@@ -72,7 +73,19 @@ impl ModuleIdentity {
 
     /// The owner type `O` with configuration `C`, which is how a `DynamicModule` is identified.
     pub(crate) fn of_owner<O: 'static, C: Eq + Hash + Clone + Send + Sync + 'static>(config: &C) -> Self {
-        todo!()
+        // `DefaultHasher::new` is unkeyed: equal configurations hash alike in every map holding
+        // the identity. The configuration's type is hashed too, which keeps two configurations
+        // of different types apart before the value comparison runs.
+        let mut hasher = DefaultHasher::new();
+        TypeId::of::<C>().hash(&mut hasher);
+        config.hash(&mut hasher);
+        ModuleIdentity {
+            ty: TypeId::of::<O>(),
+            ty_name: type_name::<O>(),
+            config: Some(ConfigKey { hash: hasher.finish(), value: Arc::new(config.clone()) }),
+            qualifier: None,
+            label: None,
+        }
     }
 
     pub(crate) fn keyed_by(self, qualifier: Qualifier) -> Self {
@@ -144,18 +157,30 @@ impl<C: Eq + Send + Sync + 'static> DynKey for C {
     }
 }
 
-/// A module as the errors name it: the type name, the qualifier and an optional label, as in
-/// `DbModule @ Replica`, or `DbModule #2` for a second unlabeled configuration of one type.
+/// A module as the errors name it: the type name or its label, the qualifier, and a position for
+/// a second configuration of one type, as in `DbModule @ Replica` or `DbModule #2`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ModuleName {
     text: Arc<str>,
 }
 
 impl ModuleName {
-    /// Names `identity`; `instance` is its position among the registered modules of its type,
-    /// printed as `#n` for an unlabeled configured module after the first.
+    /// Names `identity`. `instance` is its zero-based position, in collection order, among the
+    /// registered modules of its type and qualifier; from the second on it is printed as `#n`,
+    /// labelled or not, since several configurations commonly share one label.
     pub(crate) fn of(identity: &ModuleIdentity, instance: usize) -> Self {
-        todo!()
+        let mut text = match identity.label {
+            Some(label) => label.to_owned(),
+            None => short_type_name(identity.ty_name),
+        };
+        if let Some(qualifier) = identity.qualifier {
+            text.push_str(" @ ");
+            text.push_str(&short_type_name(qualifier.name));
+        }
+        if instance > 0 {
+            text.push_str(&format!(" #{}", instance + 1));
+        }
+        ModuleName { text: Arc::from(text) }
     }
 
     pub fn as_str(&self) -> &str {
