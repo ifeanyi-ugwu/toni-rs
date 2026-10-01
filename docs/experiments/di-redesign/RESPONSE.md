@@ -649,7 +649,8 @@ With that in place, every named type in the design has a shape.
 
 ## Thirteenth response: the rebuild's divergences, and naming the `Site` family
 
-Received 2026-10-01, answering `DIVERGENCES.md`. Not yet signed off.
+Received 2026-10-01, answering `DIVERGENCES.md`. The user signed it off in full the same day: the
+rename, the positions on D1–D20, the three added decisions and the `#[routes]` documentation line.
 
 ### Naming the `Site` family
 
