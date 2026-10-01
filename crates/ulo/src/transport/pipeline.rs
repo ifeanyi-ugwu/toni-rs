@@ -12,19 +12,30 @@
 //!    error handlers without passing through the interceptors.
 //! 4. Errors go through the error handlers, method first, then controller, then global, each
 //!    tier last-declared first. A refusal is one of them: `Ok(false)` becomes
-//!    `GuardRejected { guard }`. An error no handler claims is returned for the transport to
-//!    render (its forbidden status for `GuardRejected`).
+//!    `GuardRejected { guard }`. A panic is one too: a panic in a guard, an interceptor, the
+//!    handler or an error handler becomes `PanicRecovered { stage, message }`, the message
+//!    redacted. A handler's or an inner interceptor's panic is the `Err` its caller in the chain
+//!    receives from `Next::run`, so the interceptors around it see it like any error. A panicking
+//!    error handler's panic replaces the error and is offered to the handlers after it. An error
+//!    no handler claims is returned for the transport to render (its forbidden status for
+//!    `GuardRejected`, its internal-error status for `PanicRecovered`).
 //! 5. The transport drops its `Cx` when the reply is written; a streaming reply holds a clone.
+//!
+//! A panic inside a construction the container runs, a per-execution guard or the controller,
+//! is caught by that build and arrives as `LookupError::Construct` with `FailureReason::Panicked`
+//! (§3.4). Under `panic = "abort"` nothing can be caught.
 
-use std::any::type_name;
+use std::any::{Any, type_name};
 use std::future::Future;
 use std::sync::Arc;
 
 use crate::binding::downcast_instance;
-use crate::error::{GuardRejected, LookupError, LookupKind};
+use crate::error::{DispatchStage, GuardRejected, LookupError, LookupKind, PanicRecovered};
 use crate::execution::ExecutionRef;
 use crate::graph::{Effective, Graph, ModuleId, Visible};
 use crate::key::BindingKind;
+use crate::lifecycle::run::CatchUnwind;
+use crate::redact::{SecretRegistry, redact_panic};
 use crate::resolver::Resolver;
 use crate::timer::{BoxError, BoxFuture};
 use crate::transport::controller::MountedHandler;
@@ -37,6 +48,8 @@ use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHan
 ///
 /// Every declaration resolves with the controller module's visibility, inside `exec`, so a
 /// per-execution enhancer is built once per call and shared with the handler's own dependencies.
+/// A panic in a guard, an interceptor, `call` or an error handler is caught here and offered to
+/// the error handlers as [`PanicRecovered`](crate::PanicRecovered).
 pub async fn dispatch<T, F, Fut>(handler: &MountedHandler<T>, exec: &ExecutionRef, cx: &T::Cx, call: F) -> Result<T::Reply, BoxError>
 where
     T: Transport,
@@ -46,8 +59,9 @@ where
     let graph = handler.module.app.graph();
     let module = handler.module.module;
     let resolver = exec.resolver().in_module(module);
-    let at = Lookup { graph: &graph, module, resolver: &resolver };
-    let outcome = match admit(handler, &at, cx).await {
+    let secrets = &graph.secrets;
+    let at = Lookup { graph: &graph, module, resolver: &resolver, secrets };
+    let outcome = match caught(DispatchStage::Guard, secrets, admit(handler, &at, cx)).await {
         Ok(()) => respond(handler, &at, cx, call).await,
         Err(err) => Err(err),
     };
@@ -62,6 +76,23 @@ struct Lookup<'s> {
     graph: &'s Graph,
     module: ModuleId,
     resolver: &'s Resolver<'s>,
+    secrets: &'s SecretRegistry,
+}
+
+/// Polls `fut` and turns a panic in it into `PanicRecovered` for `stage`. The panicked future
+/// is dropped, never polled again.
+pub(crate) async fn caught<R, F>(stage: DispatchStage, secrets: &SecretRegistry, fut: F) -> Result<R, BoxError>
+where
+    F: Future<Output = Result<R, BoxError>>,
+{
+    match CatchUnwind::new(fut).await {
+        Ok(out) => out,
+        Err(payload) => Err(recovered(stage, secrets, payload)),
+    }
+}
+
+fn recovered(stage: DispatchStage, secrets: &SecretRegistry, payload: Box<dyn Any + Send>) -> BoxError {
+    BoxError::from(PanicRecovered::new(stage, redact_panic(secrets, payload)))
 }
 
 async fn admit<T: Transport>(handler: &MountedHandler<T>, at: &Lookup<'_>, cx: &T::Cx) -> Result<(), BoxError> {
@@ -90,6 +121,12 @@ where
     F: FnOnce(T::Cx) -> Fut + Send,
     Fut: Future<Output = Result<T::Reply, BoxError>> + Send,
 {
+    let interceptors = caught(DispatchStage::Interceptor, at.secrets, build_interceptors(handler, at)).await?;
+    build_controller(handler, at).await?;
+    chain(cx, &interceptors, at.secrets, call).await
+}
+
+async fn build_interceptors<T: Transport>(handler: &MountedHandler<T>, at: &Lookup<'_>) -> Result<Vec<Arc<AnyInterceptor<T>>>, BoxError> {
     let mut interceptors: Vec<Arc<AnyInterceptor<T>>> = Vec::new();
     for entry in at.resolver.entries::<AnyInterceptor<T>>()? {
         interceptors.push(entry.resolve().await?);
@@ -97,8 +134,7 @@ where
     for decl in handler.controller_spec.interceptors.iter().chain(&handler.method_spec.interceptors) {
         interceptors.push(obtain(decl, at).await?);
     }
-    build_controller(handler, at).await?;
-    chain(cx, &interceptors, call).await
+    Ok(interceptors)
 }
 
 /// Builds the controller into the execution ahead of the chain, so the handler closure's own
@@ -113,7 +149,12 @@ async fn build_controller<T: Transport>(handler: &MountedHandler<T>, at: &Lookup
     Ok(())
 }
 
-fn chain<'a, T, F, Fut>(cx: &'a T::Cx, interceptors: &'a [Arc<AnyInterceptor<T>>], call: F) -> BoxFuture<'a, Result<T::Reply, BoxError>>
+fn chain<'a, T, F, Fut>(
+    cx: &'a T::Cx,
+    interceptors: &'a [Arc<AnyInterceptor<T>>],
+    secrets: &'a SecretRegistry,
+    call: F,
+) -> BoxFuture<'a, Result<T::Reply, BoxError>>
 where
     T: Transport,
     F: FnOnce(T::Cx) -> Fut + Send + 'a,
@@ -121,34 +162,41 @@ where
 {
     let handler: Box<dyn FnOnce(&'a T::Cx) -> BoxFuture<'a, Result<T::Reply, BoxError>> + Send + 'a> =
         Box::new(move |cx: &'a T::Cx| -> BoxFuture<'a, Result<T::Reply, BoxError>> { Box::pin(call(cx.clone())) });
-    Next { cx, rest: interceptors, handler }.run()
+    Next { cx, rest: interceptors, handler, secrets }.run()
 }
 
 /// Offers `err` to each error handler in turn. `Ok` claims it; `Err` hands the next handler the
-/// error returned. A handler that cannot be built hands on its own `LookupError` the same way.
+/// error returned. A handler that cannot be built hands on its own `LookupError` the same way,
+/// and one that panics hands on its `PanicRecovered`.
 async fn recover<T: Transport>(handler: &MountedHandler<T>, at: &Lookup<'_>, cx: &T::Cx, mut err: BoxError) -> Result<T::Reply, BoxError> {
     let declared = handler.method_spec.error_handlers.iter().rev().chain(handler.controller_spec.error_handlers.iter().rev());
     for decl in declared {
-        err = match obtain(decl, at).await {
-            Ok(eh) => match offer(&*eh, err, cx).await {
-                Ok(reply) => return Ok(reply),
-                Err(next) => next,
-            },
-            Err(failed) => BoxError::from(failed),
+        let attempt = async move {
+            match obtain(decl, at).await {
+                Ok(eh) => offer(&*eh, err, cx).await,
+                Err(failed) => Err(BoxError::from(failed)),
+            }
         };
+        match caught(DispatchStage::ErrorHandler, at.secrets, attempt).await {
+            Ok(reply) => return Ok(reply),
+            Err(next) => err = next,
+        }
     }
     let global: Vec<_> = match at.resolver.entries::<AnyErrorHandler<T>>() {
         Ok(entries) => entries.collect(),
         Err(failed) => return Err(BoxError::from(failed)),
     };
     for entry in global.iter().rev() {
-        err = match entry.resolve().await {
-            Ok(eh) => match offer(&*eh, err, cx).await {
-                Ok(reply) => return Ok(reply),
-                Err(next) => next,
-            },
-            Err(failed) => BoxError::from(failed),
+        let attempt = async move {
+            match entry.resolve().await {
+                Ok(eh) => offer(&*eh, err, cx).await,
+                Err(failed) => Err(BoxError::from(failed)),
+            }
         };
+        match caught(DispatchStage::ErrorHandler, at.secrets, attempt).await {
+            Ok(reply) => return Ok(reply),
+            Err(next) => err = next,
+        }
     }
     Err(err)
 }

@@ -43,7 +43,7 @@ pub trait FromContainer: Sized + Send + 'static {
 ///
 /// An injection point may read several keys. An execution input is described with
 /// [`Requirement::dep`]: the graph knows which keys are inputs (§6.4).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Requirement {
     pub(crate) reads: Vec<Read>,
 }
@@ -85,11 +85,13 @@ impl Requirement {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Read {
     pub(crate) kind: ReadKind,
     pub(crate) optional: bool,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum ReadKind {
     Single(Key),
     Collection(Key),
@@ -109,7 +111,7 @@ impl ReadKind {
 /// enhancer closure: what [`Construct::dependencies`](crate::Construct::dependencies) and the
 /// factory traits fill in, and what the wiring pass resolves. The wiring pass learns what a
 /// binding reads from this list alone.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Dependencies {
     pub(crate) list: Vec<DependencyRecord>,
 }
@@ -144,6 +146,7 @@ impl Dependencies {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct DependencyRecord {
     pub(crate) label: DependencyLabel,
     /// `type_name` of the injection point's type, for the `Dep<RequestHead> (field `head`)` step

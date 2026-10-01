@@ -153,6 +153,11 @@ impl fmt::Display for FailureReason {
     }
 }
 
+/// A transport's `close` exceeding its bound is recorded as `ShutdownFailure::Close` with a
+/// `TimedOut` reason in its `source`, where `source.downcast_ref::<FailureReason>()` tells it
+/// from the transport's own error (§9.5).
+impl Error for FailureReason {}
+
 /// Which limit a `TimedOut` hit.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,10 +167,11 @@ pub enum Limit {
     Item,
     /// An explicit `.attempt_timeout(..)` on a readiness check (§9.3).
     Attempt,
-    /// The app default for this kind of item: `hook_timeout` for a hook, `construct_timeout`
-    /// for a construction and for one attempt of a readiness check.
+    /// The app default for this kind of item: `hook_timeout` for a hook and for a transport's
+    /// `close` when no cap is set, `construct_timeout` for a construction and for one attempt of
+    /// a readiness check.
     Default,
-    /// `shutdown_timeout` cutting a hook mid-run (§9.5).
+    /// `shutdown_timeout` cutting a hook or a transport's `close` mid-run (§9.5).
     ShutdownCap,
 }
 
@@ -226,6 +232,8 @@ pub enum ShutdownFailure {
     /// `Errored` only for a closure hook whose dependency read failed: the shutdown hook traits and
     /// closures return `()`.
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },
+    /// The transport's own error, or its `close` exceeding its bound (§9.5), held as a
+    /// `FailureReason::TimedOut` that `source.downcast_ref::<FailureReason>()` reads.
     Close { transport: &'static str, source: Redacted },
 }
 
@@ -349,8 +357,11 @@ pub enum LookupError {
     /// Single read as collection, or the reverse.
     WrongKind { key: KeyName, expected: BindingKind, found: BindingKind },
     ExecutionRequired { key: KeyName },
-    /// `module` is the module type `app.module::<M>()` named, or the type of a key that several
-    /// modules export, met by a lookup outside the root; `candidates` are those modules.
+    /// A runtime lookup of a key two visible exports answer (§8.2): `ModuleRef::get`, `get` in
+    /// an execution opened on a module other than the root, or `by_key`. `sources` are the
+    /// exporting modules. `Option<S>` propagates it.
+    Ambiguous { key: KeyName, sources: Vec<ModuleName> },
+    /// `app.module::<M>()` over several instances of `M` (§8.5); `module` is `M`'s type name.
     AmbiguousModule { module: &'static str, candidates: Vec<ModuleName> },
     /// A build inside a call failed, panicked or timed out (§3.4).
     Construct { key: KeyName, reason: FailureReason },
@@ -375,15 +386,13 @@ impl fmt::Display for LookupError {
                 write!(f, "`{key}` is {}, read as {}", kind_text(*found), kind_text(*expected))
             }
             LookupError::ExecutionRequired { key } => write!(f, "`{key}` needs an execution, and none is open here"),
+            LookupError::Ambiguous { key, sources } => {
+                write!(f, "`{key}` is ambiguous between ")?;
+                write_list(f, sources)
+            }
             LookupError::AmbiguousModule { module, candidates } => {
                 write!(f, "`{}` is ambiguous between ", short_type_name(*module))?;
-                for (i, candidate) in candidates.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{candidate}")?;
-                }
-                Ok(())
+                write_list(f, candidates)
             }
             LookupError::Construct { key, reason } => write!(f, "building `{key}` inside the call failed: {reason}"),
             LookupError::Closed { key } => {
@@ -394,6 +403,16 @@ impl fmt::Display for LookupError {
 }
 
 impl Error for LookupError {}
+
+fn write_list(f: &mut fmt::Formatter<'_>, names: &[ModuleName]) -> fmt::Result {
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{name}")?;
+    }
+    Ok(())
+}
 
 fn kind_text(kind: BindingKind) -> &'static str {
     match kind {
@@ -433,3 +452,48 @@ impl fmt::Display for GuardRejected {
 }
 
 impl Error for GuardRejected {}
+
+/// A panic in the pipeline, caught by `dispatch` and offered to the error handlers as the
+/// call's error (§7). Unclaimed, the transport renders its internal-error status.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct PanicRecovered {
+    pub stage: DispatchStage,
+    /// The payload, converted to a message.
+    pub message: Redacted,
+}
+
+impl PanicRecovered {
+    pub(crate) fn new(stage: DispatchStage, message: Redacted) -> Self {
+        PanicRecovered { stage, message }
+    }
+}
+
+impl fmt::Display for PanicRecovered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the {} panicked: {}", self.stage, self.message)
+    }
+}
+
+impl Error for PanicRecovered {}
+
+/// Which stage of `dispatch` panicked.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DispatchStage {
+    Guard,
+    Interceptor,
+    Handler,
+    ErrorHandler,
+}
+
+impl fmt::Display for DispatchStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DispatchStage::Guard => "guard",
+            DispatchStage::Interceptor => "interceptor",
+            DispatchStage::Handler => "handler",
+            DispatchStage::ErrorHandler => "error handler",
+        })
+    }
+}

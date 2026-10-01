@@ -101,13 +101,16 @@ impl<T: Transport> Clone for MountedHandler<T> {
 
 /// A controller as its module registered it: the binding and the mount function the wiring
 /// pass calls.
+#[derive(Clone, Copy)]
 pub(crate) struct ControllerRecord {
     /// Index into the module node's `bindings`.
     pub(crate) binding: usize,
     pub(crate) mount: fn(&mut Mount<'_>),
 }
 
-/// One handler as `Mount::handler` recorded it, erased over the transport.
+/// One handler as `Mount::handler` recorded it, erased over the transport. A clone shares the
+/// tiers and the handler value with the original.
+#[derive(Clone)]
 pub(crate) struct HandlerDecl {
     pub(crate) transport: TypeId,
     pub(crate) transport_name: &'static str,
@@ -122,6 +125,7 @@ pub(crate) struct HandlerDecl {
     pub(crate) handler: Arc<dyn Any + Send + Sync>,
 }
 
+#[derive(Clone)]
 pub(crate) enum EnhancerDep {
     /// A by-type declaration: the enhancer's own key.
     Type(Key),
@@ -130,6 +134,7 @@ pub(crate) enum EnhancerDep {
 }
 
 /// A handler in the frozen graph.
+#[derive(Clone)]
 pub(crate) struct HandlerRecord {
     pub(crate) controller: BindingId,
     pub(crate) module: ModuleId,

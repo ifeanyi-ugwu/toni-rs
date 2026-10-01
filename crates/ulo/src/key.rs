@@ -74,12 +74,14 @@ impl Key {
         KeyName { key: *self, kind }
     }
 
-    /// Built whole so `Display` can pad it as one string.
-    fn text(&self) -> String {
-        let mut text = short_type_name(self.ty_name);
+    /// Built whole so `Display` can pad it as one string. `full` keeps every path, for a report
+    /// where two keys would otherwise print alike.
+    fn text(&self, full: bool) -> String {
+        let name = |n: &'static str| if full { n.to_owned() } else { short_type_name(n) };
+        let mut text = name(self.ty_name);
         if let Some(q) = self.qualifier_name() {
             text.push_str(" @ ");
-            text.push_str(&short_type_name(q));
+            text.push_str(&name(q));
         }
         text
     }
@@ -101,10 +103,11 @@ impl Hash for Key {
 }
 
 /// `PgPool` or `PgPool @ Replica`. A collection's `(collection)` suffix is written by
-/// [`KeyName`], which carries the kind a bare `Key` does not.
+/// [`KeyName`], which carries the kind a bare `Key` does not. The alternate form, `{:#}`, writes
+/// full type paths: `my_app::db::PgPool @ my_app::Replica`.
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(&self.text())
+        f.pad(&self.text(f.alternate()))
     }
 }
 
@@ -123,8 +126,9 @@ pub enum BindingKind {
 
 /// A key as the errors name it: `PgPool`, `PgPool @ Replica`, `dyn Plugin (collection)`.
 ///
-/// Type names are shortened for display; the key itself, with its `TypeId`s, is reachable
-/// through [`KeyName::key`], so a caller can compare it with `Key::of::<T, Q>()`.
+/// Type names are shortened for display, and `{:#}` writes them with their full paths. The key
+/// itself, with its `TypeId`s, is reachable through [`KeyName::key`], so a caller can compare it
+/// with `Key::of::<T, Q>()`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyName {
     key: Key,
@@ -143,7 +147,7 @@ impl KeyName {
 
 impl fmt::Display for KeyName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut text = self.key.text();
+        let mut text = self.key.text(f.alternate());
         if self.kind == BindingKind::Collection {
             text.push_str(" (collection)");
         }

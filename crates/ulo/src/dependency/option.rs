@@ -5,7 +5,7 @@ use crate::scope::{AllowedIn, Scope};
 
 /// `None` exactly when `S` would fail with `LookupError::NotFound`: a key no module binds, an
 /// extension no guard has written, an input this execution did not seed. Every other error
-/// propagates: a construction failure, `ExecutionRequired`, an ambiguous module.
+/// propagates: a construction failure, `ExecutionRequired`, an ambiguous key or module.
 impl<S: FromContainer> FromContainer for Option<S> {
     fn describe(req: &mut Requirement) {
         req.optional::<S>();

@@ -152,6 +152,7 @@ pub(crate) enum TraitHookFn<T> {
 
 /// One hook as the lifecycle runner executes it, erased over the instance type: a trait hook
 /// from `Construct::hooks`, a closure hook from a binding handle, or a module's own hook.
+#[derive(Clone)]
 pub(crate) struct HookRecord {
     pub(crate) kind: HookKind,
     pub(crate) bound: Bound,

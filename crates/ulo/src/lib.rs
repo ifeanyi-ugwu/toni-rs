@@ -48,8 +48,9 @@ pub use binding::handle::Handle;
 pub use construct::{Construct, ConstructError};
 pub use dependency::{Dep, Dependencies, Ext, FromContainer, Many, Requirement};
 pub use error::{
-    Closed, ConnectError, FailureReason, GuardRejected, Limit, LoadError, LoadRefusal, LookupError,
-    LookupKind, NoTimer, Shutdown, ShutdownError, ShutdownFailure, StartupError,
+    Closed, ConnectError, DispatchStage, FailureReason, GuardRejected, Limit, LoadError, LoadRefusal,
+    LookupError, LookupKind, NoTimer, PanicRecovered, Shutdown, ShutdownError, ShutdownFailure,
+    StartupError,
 };
 pub use error::wiring::{WiringError, WiringErrors};
 pub use execution::extensions::Extensions;
@@ -78,6 +79,6 @@ pub use transport::pipeline::dispatch;
 pub use transport::server::{DrainToken, Mounted, Server};
 pub use transport::{
     AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHandler, ErasedGuard,
-    ErasedInterceptor, ErrorHandler, Guard, Interceptor, Transport,
+    ErasedInterceptor, ErrorHandler, Guard, Interceptor, Role, Transport,
 };
 pub use testing::TestApp;

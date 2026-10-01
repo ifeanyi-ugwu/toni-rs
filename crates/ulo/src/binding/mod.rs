@@ -87,7 +87,9 @@ where
     })
 }
 
-/// One binding as `register` declared it, before the graph assigns it an id.
+/// One binding as `register` declared it, before the graph assigns it an id. A clone shares
+/// every closure and value with the original.
+#[derive(Clone)]
 pub(crate) struct BindingRecord {
     /// `T @ ()` for a single binding, `U @ ()` for a contribution to `U`; the qualifier is
     /// applied from `qualifier` when the graph freezes the record.
@@ -140,11 +142,13 @@ impl Qualifier {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct AlsoAs {
     pub(crate) key: Key,
     pub(crate) coerce: Coercion,
 }
 
+#[derive(Clone)]
 pub(crate) enum Recipe {
     /// `provide::<T>()` and `ModuleDef::controller::<C>()`: `T::construct`.
     Construct(ErasedCtor),
@@ -159,6 +163,7 @@ pub(crate) enum Recipe {
     Failed,
 }
 
+#[derive(Clone)]
 pub(crate) struct ReadyRecord {
     pub(crate) check: CheckFn,
     pub(crate) dependencies: Dependencies,

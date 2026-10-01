@@ -146,15 +146,15 @@ impl<'a> Resolver<'a> {
 
     /// What `key` names in this module's visibility table. A collection key read as a single is
     /// `WrongKind`. A key with several sources fails any read of it at `wire()`, but a
-    /// runtime lookup in a module other than the root can still meet one; it answers with the
-    /// modules that export the key.
+    /// runtime lookup in a module other than the root can still meet one; it answers
+    /// `Ambiguous` with the modules that export the key (§8.2).
     fn locate(&self, key: Key) -> Result<Found, LookupError> {
         match self.graph.lookup(self.module, key) {
             Some(Visible::Binding(id)) => Ok(Found::Binding(*id)),
             Some(Visible::Input(input)) => Ok(Found::Input(*input)),
-            Some(Visible::Ambiguous(sources)) => Err(LookupError::AmbiguousModule {
-                module: key.type_name(),
-                candidates: sources.iter().map(|(module, _)| self.graph.module(*module).name.clone()).collect(),
+            Some(Visible::Ambiguous(sources)) => Err(LookupError::Ambiguous {
+                key: key.name(BindingKind::Single),
+                sources: sources.iter().map(|(module, _)| self.graph.module(*module).name.clone()).collect(),
             }),
             None if !self.graph.collection(key).is_empty() => Err(LookupError::WrongKind {
                 key: key.name(BindingKind::Collection),
