@@ -768,3 +768,27 @@ Two follow-ups:
 A provider collection that genuinely wants a per-execution closure can still say so explicitly. The value API already has .execution(factory, coerce). If you want a macro form, with(execution) = .. is the natural extension of the grammar. I'd only add it when someone needs it.
 value = expr is already consistent across positions: a value is built once and shared everywhere it's declared. That's why D7's controller-level case became a compile error rather than a different meaning. So with is the only spelling that needed this fix.
 DESIGN.md §4 should then drop the sentence describing the difference, and state the role rule once, in §7, where enhancer scopes are already explained.
+
+---
+
+## Sixteenth response: scope as its own axis
+
+Received 2026-10-03, revising the fifteenth. The user replied to it: "ok, i was just thningit should all mean same thing with is a clousre then scopign should be somehow else" Not yet signed off.
+
+Yes, and that's cleaner than the role table I just gave you. It splits two questions that the current design mixes together:
+
+How is it built? By a type (Type), from a value (value = expr), or by a closure (with = closure). That's all with should say.
+How long does it live? Scope. That should be one separate axis, with one default rule and one way to override it, the same everywhere: on types, on closures, in method attributes, in into lists, in the value API.
+The design already has a scope axis for types: #[injectable] means Auto, and #[injectable(execution)] overrides it. Closures can follow the same pattern:
+
+rust
+#[guards(with = |u: Ext<CurrentUser>| RoleGuard::admin(u))]             // Auto
+#[guards(with(execution) = || RequestTimer::start())]                    // explicit
+into dyn Plugin: [with = |cfg: Dep<Config>| MetricsPlugin::new(cfg)]     // Auto
+Auto keeps the meaning it already has. Built once if nothing it reads needs an execution, per call if something does. For a provider, it's a singleton, refused if it needs execution data. So the first guard above becomes per call because it reads Ext, and the plugin is a singleton. The same closure means the same thing wherever you write it.
+
+Two consequences to accept knowingly:
+
+It changes the brief. Item [26] says an enhancer declared by closure is "built per execution". Under this rule, a closure guard that reads nothing per call is built once. That's usually what you want, and cheaper too. But it's a change to your requirement, so amend [26] rather than leave the document silently disagreeing with it.
+Fresh state needs the explicit form. Inference looks at what the closure reads, not at what it does. A closure that reads nothing but must create something new per call, such as || RequestTimer::start() capturing the current time, would be inferred as a singleton and built once. That's a bug that's hard to see. So the docs should say plainly: if the closure creates per-call state, write with(execution). That's the one case where intent can't be inferred, and it's the case the explicit form exists for.
+In the value API, it maps the same way. Contribute::with(factory, coerce) and EnhancerSpec::guard_with(factory) register Auto, and the existing explicit methods (.execution(..), .transient(..)) cover the overrides. So the macro grammar and the value API stay aligned, with no position-dependent meaning anywhere.
