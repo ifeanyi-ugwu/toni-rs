@@ -362,3 +362,50 @@ providers = [
 ```
 
 This lowers to `.with(f).also_as::<dyn Cache>(|a| a)`, the closure's handle plus a coercion, which the value API already supports. As with `X as dyn T`, the concrete type stays bound in the module too, and exports decide what leaves the module. It's unambiguous to parse, it reads as "this key is provided by this closure", and its shape matches the `into` lists users already know: `K: [..]` contributes to a collection, while `K: with = ..` provides a single binding.
+
+---
+
+## Fourth response: race 2a's divergences
+
+Received 2026-10-04, answering `transports/DIVERGENCES.md` (T1–T26). Its T2 answer is narrower than the
+earlier ulo HTTP audit's conclusion (keep the framework adapters for interop and as a conformance asset,
+with `ulo-http-hyper` as the reference); the user sent a separate T2 question on that, whose answer is
+pending. Not yet signed off.
+
+Most of these I'd take as recommended. Five need a different answer or an addition, and one item in the reading sections contradicts a decision we already made.
+
+### Different answers
+
+**T8: don't let a route timeout skip the error handlers.** Accepting it breaks the rule we set for pre-dispatch: every failure reaches the error handlers. It matters in practice. An app that reshapes every error into its own envelope would still send raw problem details on timeouts, and that's the inconsistency clients notice. The concern about an unbounded error handler is valid, so bound it: run the handlers with a `Timeout` `CallError` under a short grace period (say 1 s, using the core's `Bound` vocabulary), and render canonically if the grace runs out.
+
+**Related, from the reading sections: `Middleware::handle` must be able to return `Err`.** As built it answers a `Response` and can fail only by panicking. That contradicts the pre-dispatch decision, whose whole argument was that middleware failures reach the error handlers like any other error. An auth middleware should be able to return `Err(CallError::unauthorized(..))` and have the app's error handlers shape it. Without that, every middleware renders its own errors. Change the signature to `-> Result<Response, BoxError>`.
+
+**T2: rename to `ulo-http-hyper`, and go further.** The four reasons are sound. But if axum supplies only types, drop the axum dependency entirely: hyper and `http-body-util` provide them. That leaves [16] promising axum as a backend, and the honest correction is that axum isn't a server, it's a router on top of hyper. The useful axum integration is the opposite direction: embedding. `ulo_http::Service` is a tower `Service`, so it can be mounted inside an existing axum app (`Router::fallback_service`). Amend [16] to list hyper as the backend and axum as an embedding target.
+
+**T3 and T24: use the core's `Bound` vocabulary, not `Option`.** `Option<Duration>` and `Option<u32>` leave `None` ambiguous: does it mean the default or no limit? T24 already shows the problem, with `None` meaning "hyper's default" while passing `None` through to hyper would mean unlimited. The core solved this once: `Bound::{Default, After(d), Unbounded}`. Use it for the handshake and header timeouts, and a matching `Default | Max(n) | Unlimited` shape for the stream limit. Same follow-up timing as recommended.
+
+**T21: use the typed origin.** `InputOrigin::Transport { name, at }` already exists internally (spine 19), so making it public in `InputConflict { key, first: InputOrigin, second: InputOrigin }` costs almost nothing, and lets a test or a tool inspect the parts. `Missing::consumer` is text because nothing typed existed for it. Here something does.
+
+**T1: yes, with one addition for 404.** A public `MethodNotAllowed` with `allow()` is right, and the name is HTTP's own phrase for the condition. But the 404 has the mirror-image problem: an error handler can't tell "no route matched" from a handler's own `NotFound`. Keep the 404 as `CallError::new(NotFound, ..)` so it renders by kind, and attach a public `NoRoute` marker as its source, so `source_as::<NoRoute>()` tells them apart.
+
+### Taken as recommended
+
+T4, T5, T6, T7, T9, T10, T11, T12, T13, T14, T15, T16, T17, T18, T19, T20, T22, T23, T25 and T26.
+
+Two of these with a short note:
+- **T16:** amend §0.6, as recommended. `from_pem_files` recording a source is still a correct `From`-style constructor, since nothing is fallible until `load`.
+- **T20:** fine to defer. `Classify::challenge` with a default of `None` is additive later, so waiting costs nothing.
+
+### Summary of answers
+
+| | Answer |
+|---|---|
+| T1 | yes, plus `NoRoute` as the 404's source |
+| T2 | rename to `ulo-http-hyper`, drop axum, amend [16] (axum as an embedding target) |
+| T3, T24 | follow-up, using the `Bound` vocabulary |
+| T8 | run the error handlers under a short grace bound |
+| T21 | public `InputOrigin` in the variant |
+| `Middleware::handle` | return `Result<Response, BoxError>` |
+| everything else | as recommended |
+
+For the pre-compile batch, that adds T8 and the `Middleware` signature to T1, T5, T13 and T14. Both touch signatures that would otherwise break after compiling, so they belong before it.
