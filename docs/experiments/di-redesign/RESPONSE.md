@@ -749,7 +749,8 @@ Everything else in sections 2 to 6 reads consistently with the design and the ea
 ## Fifteenth response: what decides the scope of `with = closure`
 
 Received 2026-10-03. The user asked whether `with = closure` building a singleton in an `into` list
-but per execution in `#[guards(..)]` is the better way: "is it relaly the better way? that differnce? i was htining scope that is if it is singltonor others is decided elsewhere and som how elsE?" Not yet signed off.
+but per execution in `#[guards(..)]` is the better way: "is it relaly the better way? that differnce? i was htining scope that is if it is singltonor others is decided elsewhere and som how elsE?" The user signed it off the same day; the `with(execution) = ..` form waits
+until someone needs it.
 
 You're right to question it. As built, with = closure means two different things depending on where it's written: a singleton in an into list, built per call in #[guards(..)]. That's a scope decided by spelling position. Nothing in the design says position should decide scope, and a reader moving a guard from a method to a global into list would silently change when it's built.
 
