@@ -1,0 +1,23 @@
+[package]
+name = "embedding-probes"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# A crate of its own, outside the ulo workspace and beside the core probes, so the host
+# frameworks it depends on never enter the probes crate the core review used.
+[workspace]
+
+[dependencies]
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+salvo = { version = "0.92", features = ["tower-compat"] }
+actix-web = "4"
+rocket = "0.5"
+hyper = "1"
