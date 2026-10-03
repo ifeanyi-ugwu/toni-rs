@@ -77,6 +77,12 @@ impl Activation {
         self.sockets().iter().any(|socket| socket.listener.is_some() && socket.answers_to(name))
     }
 
+    /// How many inherited sockets not yet taken `name` answers for, so a server's `prepare` can
+    /// refuse a name its endpoints list more often than it was inherited.
+    pub fn count(&self, name: &ListenerName) -> usize {
+        self.sockets().iter().filter(|socket| socket.listener.is_some() && socket.answers_to(name)).count()
+    }
+
     /// Takes the inherited socket `name`, non-blocking: the first not yet taken among those the
     /// name answers for.
     pub fn take(&self, name: &ListenerName) -> Result<TcpListener, ActivationError> {

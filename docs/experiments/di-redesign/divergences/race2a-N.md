@@ -111,3 +111,7 @@ signature changed. `endpoint.rs`, both manifests and `spawn_in` were left as the
 - **P3:** `Tls::load` takes `&[&[u8]]`. Byte-string literals of different lengths do not coerce
   in one array literal; write `&[b"h2".as_slice(), b"http/1.1".as_slice()]`.
 - **2b:** entry 3 (UDP inherited sockets) and entry 6 (client certificates for gRPC).
+
+**P's request N1, applied by the orchestrating session after N finished:** `Activation::count(&ListenerName)
+-> usize`, the number of inherited sockets not yet taken that a name answers for, so `prepare` can refuse a
+name listed more often than it was inherited (P2). Additive; no signature changed.
