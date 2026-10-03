@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use crate::binding::{BindingRecord, Qualifier, Recipe};
 use crate::dependency::{Dependencies, DependencyLabel, DependencyRecord, ReadKind};
+use crate::error::wiring::InputOrigin;
 use crate::error::{LookupError, LookupKind};
 use crate::hooks::HookRecord;
 use crate::key::{BindingKind, Key, KeyName, short_type_name};
@@ -158,20 +159,14 @@ pub(crate) enum Visible {
     Ambiguous(Vec<(ModuleId, BindingId)>),
 }
 
+/// One declared input. `origin` is never `InputOrigin::Binding`: a binding under an input's key is
+/// a conflicting source, not a declaration.
 #[derive(Clone)]
 pub(crate) struct InputDecl {
     pub(crate) key: Key,
     pub(crate) seeder: TypeId,
     pub(crate) seeder_name: &'static str,
     pub(crate) origin: InputOrigin,
-}
-
-/// Where an input was declared: a module's `m.input::<T>().seeded_by::<Tr>()`, or a transport's
-/// `Transport::inputs`, which a report prints as "declared by transport `Http`".
-#[derive(Clone, Copy)]
-pub(crate) enum InputOrigin {
-    Module(ModuleId),
-    Transport { name: &'static str, at: &'static std::panic::Location<'static> },
 }
 
 impl Graph {

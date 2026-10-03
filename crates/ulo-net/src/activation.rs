@@ -158,7 +158,7 @@ mod unix {
             // process under `Activation::get`'s `OnceLock`. A descriptor the variables misdescribe
             // fails the check and is neither adopted nor closed.
             let borrowed = unsafe { BorrowedFd::borrow_raw(fd(index)) };
-            if !vet(borrowed) && refused.is_none() {
+            if !vet(index, borrowed) && refused.is_none() {
                 refused = Some(index);
             }
         }
@@ -184,8 +184,8 @@ mod unix {
     }
 
     /// Sets `FD_CLOEXEC` on `fd`, whatever it turns out to be, and answers whether it is a
-    /// listening TCP socket.
-    fn vet(fd: BorrowedFd<'_>) -> bool {
+    /// listening TCP socket. `index` is the descriptor's position, for the log.
+    fn vet(index: usize, fd: BorrowedFd<'_>) -> bool {
         let socket = SockRef::from(&fd);
         let cloexec = socket.set_cloexec(true).is_ok();
         cloexec
@@ -194,9 +194,10 @@ mod unix {
                 .local_addr()
                 .ok()
                 .and_then(|addr| addr.as_socket())
-                .is_some_and(|addr| listening(&socket, addr))
+                .is_some_and(|addr| listening(index, &socket, addr))
     }
 
+    // socket2 reads `SO_ACCEPTCONN` on these targets.
     #[cfg(any(
         target_os = "aix",
         target_os = "android",
@@ -204,13 +205,93 @@ mod unix {
         target_os = "fuchsia",
         target_os = "linux",
     ))]
-    fn listening(socket: &Socket, _: SocketAddr) -> bool {
+    fn listening(_: usize, socket: &Socket, _: SocketAddr) -> bool {
         socket.is_listener().unwrap_or(false)
     }
 
-    // socket2 reads `SO_ACCEPTCONN` on the targets above only. Elsewhere, macOS among them, a
-    // bound port is the closest check: a bound socket that never called `listen` passes, and
-    // fails at its first accept instead.
+    // socket2 does not read `SO_ACCEPTCONN` on these targets.
+    #[cfg(any(target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
+    fn listening(index: usize, socket: &Socket, addr: SocketAddr) -> bool {
+        use std::os::fd::AsRawFd;
+
+        let mut accepting: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: `getsockopt` writes at most `len` bytes through the value pointer and one
+        // `socklen_t` through the length pointer; both point at locals of those sizes that outlive
+        // the call. The descriptor is the one `vet` borrows, open for the borrow's lifetime.
+        let result = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                (&raw mut accepting).cast::<libc::c_void>(),
+                &raw mut len,
+            )
+        };
+        if result == -1 {
+            return unanswered(index, addr, std::io::Error::last_os_error());
+        }
+        accepting != 0
+    }
+
+    // XNU defines `SO_ACCEPTCONN` and refuses it in `getsockopt` with `ENOPROTOOPT`, listening or
+    // not. `TCP_CONNECTION_INFO` reads the TCP state instead: `TCPS_LISTEN` once `listen` ran,
+    // `TCPS_CLOSED` for a socket that is only bound.
+    #[cfg(target_vendor = "apple")]
+    fn listening(index: usize, socket: &Socket, addr: SocketAddr) -> bool {
+        use std::os::fd::AsRawFd;
+
+        // `TCPS_LISTEN` in `<netinet/tcp_fsm.h>`, which libc does not export.
+        const TCPS_LISTEN: u8 = 1;
+
+        // SAFETY: `tcp_connection_info` holds integers and `MaybeUninit` padding only, for which
+        // all-zero bytes are a valid value.
+        let mut info: libc::tcp_connection_info = unsafe { std::mem::zeroed() };
+        // libc's layout is longer than the kernel's, spelling the C bitfields after `tcpi_rttvar`
+        // as whole `u32`s, so the kernel fills a prefix of it; `tcpi_state` is its first byte.
+        let mut len = std::mem::size_of::<libc::tcp_connection_info>() as libc::socklen_t;
+        // SAFETY: `getsockopt` writes at most `len` bytes through the value pointer and one
+        // `socklen_t` through the length pointer; both point at locals of those sizes that outlive
+        // the call. The descriptor is the one `vet` borrows, open for the borrow's lifetime.
+        let result = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_CONNECTION_INFO,
+                (&raw mut info).cast::<libc::c_void>(),
+                &raw mut len,
+            )
+        };
+        if result == -1 {
+            return unanswered(index, addr, std::io::Error::last_os_error());
+        }
+        info.tcpi_state == TCPS_LISTEN
+    }
+
+    #[cfg(not(any(
+        target_os = "aix",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_vendor = "apple",
+    )))]
+    fn listening(index: usize, _: &Socket, addr: SocketAddr) -> bool {
+        bound_port(index, addr)
+    }
+
+    /// A failed listen-state read: a kernel that does not serve the option falls back to the
+    /// bound port, and any other failure refuses the descriptor, as the socket2 read does.
+    #[cfg(any(target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd", target_vendor = "apple"))]
+    fn unanswered(index: usize, addr: SocketAddr, error: std::io::Error) -> bool {
+        error.raw_os_error() == Some(libc::ENOPROTOOPT) && bound_port(index, addr)
+    }
+
+    /// The check where nothing reports the listen state: a nonzero bound port. A bound socket
+    /// that never called `listen` passes, and fails at its first accept in the serve loop.
     #[cfg(not(any(
         target_os = "aix",
         target_os = "android",
@@ -218,8 +299,15 @@ mod unix {
         target_os = "fuchsia",
         target_os = "linux",
     )))]
-    fn listening(_: &Socket, addr: SocketAddr) -> bool {
-        addr.port() != 0
+    fn bound_port(index: usize, addr: SocketAddr) -> bool {
+        let port = addr.port();
+        if port == 0 {
+            return false;
+        }
+        tracing::warn!(
+            "inherited descriptor #{index} is accepted on its bound port {port}: this platform reports no listen state, so a socket that never called `listen` fails at its first accept instead"
+        );
+        true
     }
 
     fn var(name: &'static str) -> Result<Option<String>, ActivationError> {
@@ -232,6 +320,46 @@ mod unix {
 
     fn malformed(variable: &'static str) -> ActivationError {
         ActivationError::Malformed { variable }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::net::{Ipv4Addr, SocketAddr};
+        use std::os::fd::AsFd;
+
+        use socket2::{Domain, SockAddr, Socket, Type};
+
+        use super::vet;
+
+        fn bound() -> Socket {
+            let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a TCP socket");
+            socket.bind(&SockAddr::from(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))).expect("bound to loopback");
+            socket
+        }
+
+        // Where the bound port stands in for the listen state, a socket only bound passes.
+        #[cfg(any(
+            target_os = "aix",
+            target_os = "android",
+            target_os = "freebsd",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_vendor = "apple",
+        ))]
+        #[test]
+        fn a_socket_only_bound_is_refused() {
+            assert!(!vet(0, bound().as_fd()), "a bound socket that never called `listen` passed the check");
+        }
+
+        #[test]
+        fn a_listening_socket_is_accepted() {
+            let socket = bound();
+            socket.listen(16).expect("listening");
+            assert!(vet(0, socket.as_fd()), "a listening socket was refused");
+        }
     }
 }
 

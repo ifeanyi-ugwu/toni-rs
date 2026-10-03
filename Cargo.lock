@@ -772,12 +772,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -824,18 +818,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_urlencoded"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
-dependencies = [
- "form_urlencoded",
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]
@@ -1108,7 +1090,6 @@ dependencies = [
  "pin-project-lite",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "tokio",
  "tower",
  "tracing",
@@ -1124,12 +1105,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http",
- "http-body-util",
  "hyper",
  "hyper-util",
  "tokio",
  "tokio-rustls",
- "tower",
  "tracing",
  "ulo",
  "ulo-http",
@@ -1160,10 +1139,12 @@ dependencies = [
 name = "ulo-net"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rustls",
  "rustls-pki-types",
  "socket2",
  "tokio-rustls",
+ "tracing",
  "ulo",
 ]
 

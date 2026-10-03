@@ -55,7 +55,7 @@ pub use error::{
     Limit, LoadError, LoadRefusal, LookupError, LookupKind, PanicRecovered, Shutdown, ShutdownError,
     ShutdownFailure, StartupError, TimerMissing, is_panic,
 };
-pub use error::wiring::{WiringError, WiringErrors};
+pub use error::wiring::{InputOrigin, WiringError, WiringErrors};
 pub use execution::extensions::Extensions;
 pub use execution::notify::{Cancelled, Draining};
 pub use execution::{CancelReason, ExecOptions, Execution, ExecutionRef, StreamOutcome};

@@ -10,13 +10,13 @@ use std::sync::Arc;
 use crate::binding::{BindingRecord, Qualifier, Recipe, instance_of};
 use crate::dependency::{Dependencies, ReadKind};
 use crate::error::LoadRefusal;
-use crate::error::wiring::{WiringError, WiringErrors};
+use crate::error::wiring::{InputOrigin, WiringError, WiringErrors};
 use crate::graph::register::{Import, Registry};
 use crate::graph::{
-    BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, InputOrigin, ModuleId, Role,
-    Visible, boundary_key, cycles, order, record_key, register, scopes, visibility,
+    BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, ModuleId, Role, Visible,
+    boundary_key, cycles, order, record_key, register, scopes, visibility,
 };
-use crate::key::{BindingKind, Key, KeyName, short_type_name};
+use crate::key::{BindingKind, Key, KeyName};
 use crate::module::def::{ExportRecord, InputRecord, ModuleNode};
 use crate::module::meta::FrozenMeta;
 use crate::module::{Module, ModuleIdentity, ModuleName};
@@ -361,11 +361,15 @@ fn freeze(
         }
 
         for input in inputs {
-            graph.inputs.entry(input.key).or_insert(InputDecl {
+            graph.inputs.entry(input.key).or_insert_with(|| InputDecl {
                 key: input.key,
                 seeder: input.seeder,
                 seeder_name: input.seeder_name,
-                origin: InputOrigin::Module(id),
+                origin: InputOrigin::Module {
+                    module: names[index].clone(),
+                    seeders: vec![input.seeder_name],
+                    at: input.location,
+                },
             });
             declared.inputs.push((id, input));
         }
@@ -857,18 +861,16 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
     // sources and a handler of one of the transports would read it unseeded.
     for (index, input) in declared.transport_inputs.iter().enumerate() {
         let key = || input.key.name(BindingKind::Single);
-        let first = input_site(graph, input);
         for (module, other) in declared.inputs.iter().filter(|(_, other)| other.key == input.key && other.seeder != input.seeder) {
-            let second = format!(
-                "declared in {} with seeder `{}` at {}",
-                graph.module_name(*module),
-                short_type_name(other.seeder_name),
-                place(other.location)
-            );
-            errors.push(WiringError::InputConflict { key: key(), first: first.clone(), second });
+            let second = InputOrigin::Module {
+                module: graph.module_name(*module),
+                seeders: vec![other.seeder_name],
+                at: other.location,
+            };
+            errors.push(WiringError::InputConflict { key: key(), first: input.origin.clone(), second });
         }
         for other in declared.transport_inputs[..index].iter().filter(|other| other.key == input.key && other.seeder != input.seeder) {
-            errors.push(WiringError::InputConflict { key: key(), first: input_site(graph, other), second: first.clone() });
+            errors.push(WiringError::InputConflict { key: key(), first: other.origin.clone(), second: input.origin.clone() });
         }
         // A binding under the key is reported once: by the module loop above when a module
         // declares the input too, otherwise against the key's first transport declaration.
@@ -879,27 +881,11 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
         }
         for binding in &graph.bindings {
             if binding.record.kind == BindingKind::Single && binding.record.keys().any(|bound| bound == input.key) {
-                let second = format!("bound in {} at {}", graph.module_name(binding.origin), place(binding.record.location));
-                errors.push(WiringError::InputConflict { key: key(), first: first.clone(), second });
+                let second = InputOrigin::Binding { module: graph.module_name(binding.origin), at: binding.record.location };
+                errors.push(WiringError::InputConflict { key: key(), first: input.origin.clone(), second });
             }
         }
     }
-}
-
-/// Where an input was declared, as a report line: ``declared by transport `Http` at
-/// src/transport.rs:40`` for a transport, ``declared in AppModule with seeder `Rpc` `` for a
-/// module, whose `InputDecl` keeps no location.
-fn input_site(graph: &Graph, input: &InputDecl) -> String {
-    match input.origin {
-        InputOrigin::Transport { name, at } => format!("declared by transport `{name}` at {}", place(at)),
-        InputOrigin::Module(module) => {
-            format!("declared in {} with seeder `{}`", graph.module_name(module), short_type_name(input.seeder_name))
-        }
-    }
-}
-
-fn place(at: &Location<'_>) -> String {
-    format!("{}:{}", at.file(), at.line())
 }
 
 /// Step 6: a `Timer` wherever a wait is written: a readiness `.timeout`, `.attempt_timeout` or

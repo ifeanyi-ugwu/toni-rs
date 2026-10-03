@@ -131,10 +131,10 @@ pub enum WiringError {
     /// Step 2: two `.ready(..)` checks on one binding.
     DuplicateReadiness { key: KeyName, module: ModuleName, first: &'static Location<'static>, second: &'static Location<'static> },
     /// Step 2: an execution input a transport declares through `Transport::inputs` that has a
-    /// second source: a module's `input::<T>().seeded_by::<Tr>()` naming another seeder, another
-    /// transport's declaration, or a single binding. `first` and `second` are the two sources as
-    /// printed, a transport's as ``declared by transport `Http` at src/transport.rs:40``.
-    InputConflict { key: KeyName, first: String, second: String },
+    /// second source. `first` is a transport's declaration; `second` is a module's
+    /// `input::<T>().seeded_by::<Tr>()` naming another seeder, a later transport's declaration,
+    /// or a single binding.
+    InputConflict { key: KeyName, first: InputOrigin, second: InputOrigin },
     /// Step 2, tests: an override that matches no binding. `keyed` names a keyed module whose
     /// qualifier the override's key carries and which binds the key unqualified, as a keyed
     /// module's bindings are: `.in_module_keyed::<M, Q>()` reaches that binding as written.
@@ -273,8 +273,8 @@ impl WiringError {
                 std::iter::once(module).chain(sources.iter().map(|(source, _)| source)).collect()
             }
             WiringError::Cycle { path } => path.iter().map(|(_, module)| module).collect(),
+            WiringError::InputConflict { first, second, .. } => first.module().into_iter().chain(second.module()).collect(),
             WiringError::OverrideKind { .. }
-            | WiringError::InputConflict { .. }
             | WiringError::TimerOverride { .. }
             | WiringError::ClosureNeedsExecution { .. }
             | WiringError::ClosureScopeViolation { .. }
@@ -416,8 +416,8 @@ impl WiringError {
                 f,
                 format!("execution input `{}` has two sources", show(key)),
                 vec![
-                    first.clone(),
-                    second.clone(),
+                    first.line(&show_module),
+                    second.line(&show_module),
                     "help: an input is seeded by the one transport that declares it, and no module binds it; remove the other source"
                         .to_owned(),
                 ],
@@ -626,6 +626,53 @@ impl fmt::Display for WiringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let full = Collisions { keys: colliding(self.key_names()), modules: colliding_names(self.module_names()) };
         self.render(f, &full)
+    }
+}
+
+/// One source of an execution input's key, as [`WiringError::InputConflict`] names it. `at` is the
+/// call that declared or bound it.
+///
+/// `Display` writes the line the report prints, as in ``declared by transport `Http` at
+/// src/transport.rs:40``; `{:#}` writes a module name with its full path.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub enum InputOrigin {
+    /// The transport's `Transport::inputs`. `name` is the transport as reports name it, `Http`
+    /// for `ulo_http::Http`.
+    Transport { name: &'static str, at: &'static Location<'static> },
+    /// A module's `input::<T>().seeded_by::<Tr>()`. `seeders` holds each `Tr`'s full type name,
+    /// which the line prints by its last path segment.
+    Module { module: ModuleName, seeders: Vec<&'static str>, at: &'static Location<'static> },
+    /// A single binding under the input's key.
+    Binding { module: ModuleName, at: &'static Location<'static> },
+}
+
+impl InputOrigin {
+    fn module(&self) -> Option<&ModuleName> {
+        match self {
+            InputOrigin::Transport { .. } => None,
+            InputOrigin::Module { module, .. } | InputOrigin::Binding { module, .. } => Some(module),
+        }
+    }
+
+    /// The report's line for this source, `module` writing each module name.
+    fn line(&self, module: impl Fn(&ModuleName) -> String) -> String {
+        match self {
+            InputOrigin::Transport { name, at } => format!("declared by transport `{name}` at {}", place(at)),
+            InputOrigin::Module { module: declared_in, seeders, at } => {
+                let noun = if seeders.len() == 1 { "seeder" } else { "seeders" };
+                let names: Vec<String> = seeders.iter().map(|&seeder| format!("`{}`", short_type_name(seeder))).collect();
+                format!("declared in {} with {noun} {} at {}", module(declared_in), names.join(", "), place(at))
+            }
+            InputOrigin::Binding { module: bound_in, at } => format!("bound in {} at {}", module(bound_in), place(at)),
+        }
+    }
+}
+
+impl fmt::Display for InputOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let full = f.alternate();
+        f.write_str(&self.line(|name| if full { format!("{name:#}") } else { name.to_string() }))
     }
 }
 

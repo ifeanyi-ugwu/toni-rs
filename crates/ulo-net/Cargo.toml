@@ -16,3 +16,8 @@ rustls-pki-types = { workspace = true, features = ["std"] }
 tokio-rustls = { workspace = true }
 # `FD_CLOEXEC` on an inherited socket and the socket's type check, which std does not expose.
 socket2 = { workspace = true, features = ["all"] }
+tracing = { workspace = true }
+
+# The listen-state read on the Unix targets where socket2 has no `is_listener`.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

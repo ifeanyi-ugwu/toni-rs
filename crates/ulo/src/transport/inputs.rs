@@ -5,8 +5,9 @@ use crate::key::Key;
 /// The execution inputs one transport seeds, written by [`Transport::inputs`](crate::Transport::inputs)
 /// (transports DESIGN §2.10, X4).
 ///
-/// Each key is recorded with the transport as its seeder; a report naming where the input was
-/// declared prints "declared by transport `Http`" rather than a module.
+/// Each key is recorded with the transport as its seeder and
+/// [`InputOrigin::Transport`](crate::InputOrigin::Transport) as its origin, which a report prints
+/// as "declared by transport `Http`" rather than a module.
 pub struct Inputs {
     pub(crate) keys: Vec<InputKey>,
 }
