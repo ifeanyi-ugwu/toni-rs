@@ -73,11 +73,11 @@ pub(crate) fn mark_role_contributions(graph: &mut Graph, first_binding: usize, e
                 }
             }
             BindingKind::Single => {
-                for key in record.keys().filter(|&key| reported(key)) {
+                for (key, at) in record.keys_located().filter(|&(key, _)| reported(key)) {
                     errors.push(WiringError::SingleRoleBinding {
                         key: key.name(BindingKind::Single),
                         module: graph.module_name(binding.origin),
-                        at: record.location,
+                        at,
                     });
                 }
             }

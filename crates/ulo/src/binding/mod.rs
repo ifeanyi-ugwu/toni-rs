@@ -146,6 +146,8 @@ impl Qualifier {
 pub(crate) struct AlsoAs {
     pub(crate) key: Key,
     pub(crate) coerce: Coercion,
+    /// The `.also_as(..)` call, so a report on this key points at the line that wrote it.
+    pub(crate) location: &'static Location<'static>,
 }
 
 #[derive(Clone)]
@@ -217,8 +219,14 @@ impl BindingRecord {
 
     /// Every key this record answers to, with the qualifier applied.
     pub(crate) fn keys(&self) -> impl Iterator<Item = Key> + '_ {
-        std::iter::once(self.primary)
-            .chain(self.also.iter().map(|a| a.key))
-            .map(|k| k.with_qualifier(self.qualifier.id, self.qualifier.name))
+        self.keys_located().map(|(key, _)| key)
+    }
+
+    /// Each key with the call that wrote it: the binding's own for the primary key, the
+    /// `.also_as(..)` call for each second key.
+    pub(crate) fn keys_located(&self) -> impl Iterator<Item = (Key, &'static Location<'static>)> + '_ {
+        std::iter::once((self.primary, self.location))
+            .chain(self.also.iter().map(|a| (a.key, a.location)))
+            .map(|(k, at)| (k.with_qualifier(self.qualifier.id, self.qualifier.name), at))
     }
 }

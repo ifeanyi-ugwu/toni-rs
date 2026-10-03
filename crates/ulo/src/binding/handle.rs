@@ -219,11 +219,13 @@ impl<'m, T: ?Sized + Send + Sync + 'static, K, C: SingleBinding> Handle<'m, T, K
     /// A second key under another type, reaching the same object: `.also_as::<dyn Cache>(|a| a)`.
     /// The closure's return is where `Arc<T>` unsizes to `Arc<U>`; a `T` that does not implement
     /// the trait fails to compile there.
+    #[track_caller]
     pub fn also_as<U: ?Sized + Send + Sync + 'static>(
         self,
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
     ) -> Handle<'m, T, C, C> {
-        self.record.also.push(AlsoAs { key: Key::of::<U, ()>(), coerce: coercion::<T, U, _>(coerce) });
+        let location = Location::caller();
+        self.record.also.push(AlsoAs { key: Key::of::<U, ()>(), coerce: coercion::<T, U, _>(coerce), location });
         self.to()
     }
 

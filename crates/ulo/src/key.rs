@@ -78,7 +78,7 @@ impl Key {
     /// where two keys would otherwise print alike.
     fn text(&self, full: bool) -> String {
         let name = |n: &'static str| if full { n.to_owned() } else { short_type_name(n) };
-        let mut text = name(self.ty_name);
+        let mut text = role_spelling(&name(self.ty_name));
         if let Some(q) = self.qualifier_name() {
             text.push_str(" @ ");
             text.push_str(&name(q));
@@ -162,6 +162,26 @@ impl fmt::Debug for KeyName {
 }
 
 /// The diagnostic spelling of a `type_name`: module paths stripped from every segment, so
+/// A role key as a user writes it: the key's type, `dyn ErasedGuard<Http>`, reads `AnyGuard<Http>`,
+/// and `dyn ulo::transport::ErasedGuard<..>` reads `ulo::transport::AnyGuard<..>`. Text not opening
+/// with one of the three erased traits is returned as given. Display only: roles themselves are
+/// decided by `TypeId`.
+pub(crate) fn role_spelling(text: &str) -> String {
+    let Some(rest) = text.strip_prefix("dyn ") else { return text.to_owned() };
+    let (path, tail) = rest.split_at(rest.find('<').unwrap_or(rest.len()));
+    let (prefix, last) = match path.rfind("::") {
+        Some(end) => path.split_at(end + 2),
+        None => ("", path),
+    };
+    let alias = match last {
+        "ErasedGuard" => "AnyGuard",
+        "ErasedInterceptor" => "AnyInterceptor",
+        "ErasedErrorHandler" => "AnyErrorHandler",
+        _ => return text.to_owned(),
+    };
+    format!("{prefix}{alias}{tail}")
+}
+
 /// `alloc::sync::Arc<my_app::db::PgPool>` reads `Arc<PgPool>`. Shared by `Key`, `KeyName`,
 /// `ModuleName` and every wiring report.
 ///

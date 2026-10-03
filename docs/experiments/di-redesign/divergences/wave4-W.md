@@ -115,3 +115,16 @@ without consequence. Marking still ignores the qualifier; the refusal is entry 1
 - State the two refusals beside the `TypeId` rule (§3, §7): a qualified contribution and a single
   binding under a role key are wiring errors, found where roles are marked, with entry 4's limit.
 - `Contribute::try_value` joins the value API, and wave 3's W 3 is closed.
+
+## Applied after the first compile, by the orchestrating session
+
+- **Entry 3 resolved.** `role_spelling` moved from `error/wiring.rs` to `key.rs` and runs inside
+  `Key::text`, so every key the core prints reads a role key as `AnyGuard<Http>` (full form
+  `ulo::transport::AnyGuard<..>`), not only `QualifiedRoleContribution` and `SingleRoleBinding`.
+  The calls left in `wiring.rs` are idempotent. Display only; roles stay decided by `TypeId`.
+- **H1 applied.** `Handle::also_as` is `#[track_caller]` and records its call on `AlsoAs::location`;
+  `BindingRecord::keys_located` pairs each key with the call that wrote it, and `SingleRoleBinding`
+  points at the `.also_as(..)` call for a second key and at the registration for the primary one.
+
+`cargo check -p ulo -p ulo-macros` after both: no errors, the same 19 warnings as the first compile
+(seven `private_interfaces` on `State::write*` naming `BindingRecord`, twelve dead-code items).

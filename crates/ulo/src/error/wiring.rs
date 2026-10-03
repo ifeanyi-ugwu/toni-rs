@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::panic::Location;
 
-use crate::key::{BindingKind, Key, KeyName, short_type_name};
+use crate::key::{BindingKind, Key, KeyName, role_spelling, short_type_name};
 use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::scope::ScopeKind;
@@ -646,26 +646,6 @@ fn closed_loop(mut steps: Vec<String>) -> String {
         }
     }
     steps.join(" → ")
-}
-
-/// A role key's text as a user writes the key: the key's type, `dyn ErasedGuard<Http>`, reads
-/// `AnyGuard<Http>`, and `dyn ulo::transport::ErasedGuard<..>` reads `ulo::transport::AnyGuard<..>`.
-/// The rest of the text, a qualifier and a `(collection)` suffix included, is kept. Text not
-/// opening with one of the three erased traits is returned as given.
-fn role_spelling(text: &str) -> String {
-    let Some(rest) = text.strip_prefix("dyn ") else { return text.to_owned() };
-    let (path, tail) = rest.split_at(rest.find('<').unwrap_or(rest.len()));
-    let (prefix, last) = match path.rfind("::") {
-        Some(end) => path.split_at(end + 2),
-        None => ("", path),
-    };
-    let alias = match last {
-        "ErasedGuard" => "AnyGuard",
-        "ErasedInterceptor" => "AnyInterceptor",
-        "ErasedErrorHandler" => "AnyErrorHandler",
-        _ => return text.to_owned(),
-    };
-    format!("{prefix}{alias}{tail}")
 }
 
 fn place(at: &Location<'_>) -> String {
