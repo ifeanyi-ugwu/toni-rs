@@ -707,7 +707,8 @@ The rest of sections 2 to 5 reads consistently with the design. One papercut wor
 
 ## Fourteenth response: wave 2's divergences
 
-Received 2026-10-03, answering `DIVERGENCES.md`'s Wave 2 section. Not yet signed off.
+Received 2026-10-03, answering `DIVERGENCES.md`'s Wave 2 section. The user signed it off in full the
+same day.
 
 Wave 2 tracks the signed decisions closely, and the rename came out well: none of the new texts suggest implementing the trait, which was the risk. I agree with five of the eight new decisions. Of the other three, D22 and D23 have a better fix available than the options listed, and D21 needs one widening.
 
