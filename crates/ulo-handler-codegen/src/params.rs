@@ -9,7 +9,7 @@
 use proc_macro2::Span;
 use quote::ToTokens;
 use syn::spanned::Spanned;
-use syn::{FnArg, GenericParam, Ident, Pat, Signature, Type};
+use syn::{FnArg, GenericArgument, GenericParam, Ident, Pat, PathArguments, Signature, Type};
 
 /// How the handler takes its controller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,9 +40,9 @@ pub struct HandlerSig {
     pub receiver: Receiver,
     pub params: Vec<Param>,
     pub is_async: bool,
-    /// The handler declares a type or const parameter: its opaque return types keep their
-    /// captures, and its parameter checks are read from the mount function rather than from a
-    /// free constant.
+    /// The handler declares a type or const parameter. Its opaque return types keep their
+    /// captures, and [`crate::emit::MountFn::emit`] refuses it: the generated call names each
+    /// parameter's type outside the method, where the method's own parameters are not in scope.
     pub is_generic: bool,
 }
 
@@ -70,9 +70,32 @@ pub fn analyze(sig: &Signature) -> syn::Result<HandlerSig> {
     Ok(HandlerSig { ident: sig.ident.clone(), receiver, params, is_async: sig.asyncness.is_some(), is_generic })
 }
 
+/// `&self`, also written `self: &Self`, or `self: Arc<Self>` with any path ending in `Arc`.
+/// `syn` gives `&self` the type `&Self`, so one match covers both spellings of the first.
 fn receiver_kind(receiver: &syn::Receiver) -> syn::Result<Receiver> {
-    let _ = receiver;
-    todo!("`&self` → Ref; `self: Arc<Self>` (any path ending in `Arc` with argument `Self`) → Arc; anything else a span error naming the two forms")
+    match &*receiver.ty {
+        Type::Reference(reference) if reference.mutability.is_none() && is_self(&reference.elem) => Ok(Receiver::Ref),
+        ty if is_arc_of_self(ty) => Ok(Receiver::Arc),
+        _ => Err(syn::Error::new_spanned(
+            receiver,
+            "a handler takes `&self`, or `self: Arc<Self>` for a reply that outlives the call",
+        )),
+    }
+}
+
+fn is_self(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self"))
+}
+
+fn is_arc_of_self(ty: &Type) -> bool {
+    let Type::Path(path) = ty else { return false };
+    let Some(last) = path.path.segments.last() else { return false };
+    if path.qself.is_some() || last.ident != "Arc" {
+        return false;
+    }
+    let PathArguments::AngleBracketed(arguments) = &last.arguments else { return false };
+    let mut arguments = arguments.args.iter();
+    matches!((arguments.next(), arguments.next()), (Some(GenericArgument::Type(inner)), None) if is_self(inner))
 }
 
 fn param_name(pat: &Pat) -> String {

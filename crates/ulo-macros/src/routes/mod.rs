@@ -10,6 +10,9 @@
 //!    (`ulo_handler_codegen::protocol`) is appended as its last attribute, so it sits after the
 //!    transport attribute whatever else the method carries. The transport attribute consumes it
 //!    and writes `__ULO_KEY_<name>`, `__ULO_CHECKS_<name>` and `__ulo_mount_<name>` into the impl.
+//!    On a controller with type or const parameters, each handler's opaque return types first
+//!    gain `+ use<T, ..>` naming them, which `use<..>` must and which the transport attribute,
+//!    seeing the method alone, cannot learn; it then leaves those types as written.
 //! 4. After the impl: one assertion per controller-level transport key against the handlers'
 //!    `__ULO_KEY_*` constants, and one read of each handler's `__ULO_CHECKS_*`, as free constants;
 //!    for a generic controller, named associated constants that `mount` reads instead (X1).
@@ -24,9 +27,9 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::Parser;
-use syn::{Attribute, Expr, ImplItem, ImplItemFn, ItemImpl};
+use syn::{Attribute, Expr, GenericParam, ImplItem, ImplItemFn, ItemImpl};
 use ulo_handler_codegen::protocol::{self, EnhancerAttr, HandlerTokens, MetaTokens, Role};
-use ulo_handler_codegen::{keys, shared};
+use ulo_handler_codegen::{keys, reply, shared};
 
 use crate::shared::{attrs, combine, ulo};
 
@@ -51,12 +54,19 @@ pub(crate) fn expand_impl(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let controller = take_enhancers(&mut item.attrs)?;
     let controller_meta = protocol::take_meta(&mut item.attrs)?;
 
+    let captures_impl_params =
+        item.generics.params.iter().any(|param| matches!(param, GenericParam::Type(_) | GenericParam::Const(_)));
     let mut handlers = Vec::new();
     let mut errors = Vec::new();
     for impl_item in &mut item.items {
         let ImplItem::Fn(method) = impl_item else { continue };
         match rewrite_handler(method, &controller, &controller_meta) {
-            Ok(Some(handler)) => handlers.push(handler),
+            Ok(Some(handler)) => {
+                if captures_impl_params {
+                    reply::rewrite_opaque_returns_in(&mut method.sig, &item.generics);
+                }
+                handlers.push(handler);
+            }
             Ok(None) => {}
             Err(e) => errors.push(e),
         }

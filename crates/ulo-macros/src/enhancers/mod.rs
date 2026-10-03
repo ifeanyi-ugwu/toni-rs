@@ -198,9 +198,11 @@ fn tier_statements(tier: Tier, at: &Site<'_>, attrs: &[EnhancerAttr], var: &Iden
 fn shared_statement(role: Role, expr: &Expr, shared: &Ident, var: &Ident, position: usize) -> TokenStream {
     let ulo = ulo();
     let method = role.arc_method();
+    // Both fields are interpolated: `.0.` written in the template would lex `0.` as a float.
+    let tuple = Index { index: 0, span: expr.span() };
     let index = Index { index: position as u32, span: expr.span() };
     quote_spanned! {expr.span()=>
-        #var.#method(#ulo::__private::Arc::clone(&#shared.0.#index));
+        #var.#method(#ulo::__private::Arc::clone(&#shared.#tuple.#index));
     }
 }
 

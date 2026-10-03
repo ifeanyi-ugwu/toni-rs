@@ -17,7 +17,8 @@
 //! 1. `const __ULO_KEY_<name>: &'static str = <Tr as ::ulo::Transport>::KEY;` (X1).
 //! 2. `const __ULO_CHECKS_<name>: () = { .. };`, the pairwise body-consumer assertions, `()` when
 //!    the handler has fewer than two parameters. `#[routes]` reads it from a free
-//!    `const _: () = <Ctrl>::__ULO_CHECKS_<name>;`, which evaluates it unconditionally.
+//!    `const _: () = <Ctrl>::__ULO_CHECKS_<name>;`, which evaluates it unconditionally, or on a
+//!    generic controller from `Controller::mount`, which evaluates it when `mount` is instantiated.
 //! 3. `fn __ulo_mount_<name><__UloV0, ..>(m: &mut ::ulo::Mount<'_>, shared: &::ulo::__private::Shared<(Arc<__UloV0>, ..)>)`,
 //!    one type parameter per impl-level `value` entry in the order written across the impl's
 //!    enhancer attributes, each bounded by its role for this transport when the entry applies to

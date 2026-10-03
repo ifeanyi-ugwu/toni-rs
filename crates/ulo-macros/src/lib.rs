@@ -87,7 +87,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// A method carrying an attribute outside the language's own (`doc`, `allow`, `cfg`, `inline` and
 /// the like) and the enhancer and `#[meta]` markers, such as `#[tracing::instrument]`, is treated
-/// as a handler, so helpers go in a separate `impl` block.
+/// as a handler, so helpers go in a separate `impl` block. A handler takes `&self`, or
+/// `self: Arc<Self>` for a reply that outlives the call, and declares no type or const parameter;
+/// the controller itself may be generic.
 #[proc_macro_attribute]
 pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
     routes::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()

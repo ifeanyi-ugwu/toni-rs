@@ -9,10 +9,13 @@
 //! computes it the same way in `#[routes]` and in every transport attribute.
 
 use proc_macro2::TokenStream;
+use quote::{quote, quote_spanned};
+use syn::ext::IdentExt;
+use syn::spanned::Spanned;
 use syn::{Expr, Ident};
 
 use crate::paths::Paths;
-use crate::protocol::{EnhancerAttr, Role};
+use crate::protocol::{EnhancerAttr, Form, Role};
 
 /// One controller-level `value` entry.
 #[derive(Clone)]
@@ -27,8 +30,16 @@ pub struct SharedValue {
 
 /// The controller tier's `value` entries, in order.
 pub fn shared_values(controller: &[EnhancerAttr]) -> Vec<SharedValue> {
-    let _ = controller;
-    todo!("every `Form::Value` entry across the attrs in order, indexed from 0")
+    controller
+        .iter()
+        .flat_map(|attr| attr.entries.iter().map(move |entry| (attr.role, entry)))
+        .filter_map(|(role, entry)| match &entry.form {
+            Form::Value(expr) => Some((role, entry.transport.clone(), expr.clone())),
+            _ => None,
+        })
+        .enumerate()
+        .map(|(index, (role, transport, expr))| SharedValue { index, role, transport, expr })
+        .collect()
 }
 
 /// `__UloV<index>`, the mount function's type parameter for value `index`.
@@ -44,8 +55,12 @@ pub fn shared_ident() -> Ident {
 /// What `Controller::mount` evaluates once: `::ulo::__private::Shared((Arc::new(e0), ..,))`, or
 /// `Shared(())` with no value.
 pub fn construct(values: &[SharedValue]) -> TokenStream {
-    let _ = values;
-    todo!("the tuple of `::ulo::__private::Arc::new(expr)`, each spanned at its expression, trailing comma for one")
+    let elements = values.iter().map(|value| {
+        let expr = &value.expr;
+        quote_spanned!(expr.span()=> ::ulo::__private::Arc::new(#expr))
+    });
+    let trailing = (values.len() == 1).then(|| quote!(,));
+    quote!(::ulo::__private::Shared((#(#elements),* #trailing)))
 }
 
 /// The mount function's generic parameters and the type of its `shared` parameter for a handler
@@ -54,6 +69,23 @@ pub fn construct(values: &[SharedValue]) -> TokenStream {
 /// transport is bounded by its role, spanned at the handler's name, so a value lacking the role
 /// fails E0277 at `Controller::mount`'s call of this handler's mount function.
 pub fn mount_generics(values: &[SharedValue], key: &str, handler: &Ident, paths: &Paths) -> (TokenStream, TokenStream) {
-    let _ = (values, key, handler, paths);
-    todo!("bounded parameters for values that apply to `key`, unbounded for the rest")
+    let core = &paths.core;
+    let marker = &paths.marker;
+    let params = values.iter().map(|value| {
+        let param = type_param(value.index);
+        if value.transport.as_ref().is_none_or(|transport| transport.unraw() == key) {
+            let role = value.role.trait_ident(handler.span());
+            quote_spanned!(handler.span()=> #param: #core::#role<#marker>)
+        } else {
+            quote!(#param)
+        }
+    });
+    let generics = if values.is_empty() { TokenStream::new() } else { quote!(<#(#params),*>) };
+    let elements = values.iter().map(|value| {
+        let param = type_param(value.index);
+        quote!(#core::__private::Arc<#param>)
+    });
+    let trailing = (values.len() == 1).then(|| quote!(,));
+    let shared = quote!(&#core::__private::Shared<(#(#elements),* #trailing)>);
+    (generics, shared)
 }

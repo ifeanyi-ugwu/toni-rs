@@ -9,7 +9,9 @@
 //! which evaluates it when `mount` is instantiated.
 
 use proc_macro2::{Span, TokenStream};
-use syn::{Generics, Ident, Type};
+use quote::{quote, quote_spanned};
+use syn::ext::IdentExt;
+use syn::{Generics, Ident, LitStr, Type};
 
 use crate::paths::Paths;
 use crate::protocol::EnhancerAttr;
@@ -26,16 +28,29 @@ pub fn checks_const_ident(name: &str, span: Span) -> Ident {
 
 /// `const __ULO_KEY_<name>: &'static str = <Marker as ::ulo::Transport>::KEY;`, hidden, with
 /// `non_upper_case_globals` allowed for the method name inside it.
+///
+/// `dead_code` is allowed too: the constant is read only when the impl carries a scoped key.
 pub fn key_const(name: &str, span: Span, paths: &Paths) -> TokenStream {
-    let _ = (name, span, paths);
-    todo!("the associated constant above")
+    let ident = key_const_ident(name, span);
+    let core = &paths.core;
+    let marker = &paths.marker;
+    quote_spanned! {span=>
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals, dead_code)]
+        const #ident: &'static str = <#marker as #core::Transport>::KEY;
+    }
 }
 
 /// Every distinct transport key written at the controller tier, in the order first written, each
 /// with the span of its first occurrence.
 pub fn scoped_keys(controller: &[EnhancerAttr]) -> Vec<Ident> {
-    let _ = controller;
-    todo!("the `transport` of every entry, deduplicated by `unraw` text")
+    let mut keys: Vec<Ident> = Vec::new();
+    for transport in controller.iter().flat_map(|attr| &attr.entries).filter_map(|entry| entry.transport.as_ref()) {
+        if !keys.iter().any(|key| key.unraw() == transport.unraw()) {
+            keys.push(transport.clone());
+        }
+    }
+    keys
 }
 
 /// What `#[routes]` emits for the X1 key assertions and for the per-handler checks constants.
@@ -56,7 +71,59 @@ pub struct Assertions {
 /// The assertions for `keys` over `handlers`, the handler identifiers of the impl. The message
 /// names the key and every handler: "`htpp` is not the key of any handler's transport in this
 /// impl (handlers: get, get_rpc)".
+///
+/// A controller with any generic parameter, a lifetime included, takes the generic form: a free
+/// constant cannot name its type without the parameters in scope.
 pub fn assertions(self_ty: &Type, generics: &Generics, keys: &[Ident], handlers: &[Ident]) -> Assertions {
-    let _ = (self_ty, generics, keys, handlers);
-    todo!("free consts for a non-generic controller; associated consts and mount reads for a generic one")
+    let names: Vec<String> = handlers.iter().map(|handler| handler.unraw().to_string()).collect();
+    let listed = if names.is_empty() { "no handlers".to_owned() } else { format!("handlers: {}", names.join(", ")) };
+    let generic = !generics.params.is_empty();
+    let owner = if generic { quote!(Self) } else { quote!(<#self_ty>) };
+
+    let mut free = TokenStream::new();
+    let mut associated = TokenStream::new();
+    let mut in_mount = TokenStream::new();
+    for key in keys {
+        let text = key.unraw().to_string();
+        let literal = LitStr::new(&text, key.span());
+        let message = format!("`{text}` is not the key of any handler's transport in this impl ({listed})");
+        let reads: Vec<TokenStream> = names
+            .iter()
+            .map(|name| {
+                let key_const = key_const_ident(name, key.span());
+                quote_spanned!(key.span()=> #owner::#key_const)
+            })
+            .collect();
+        let check = quote_spanned! {key.span()=>
+            ::core::assert!(::ulo::__private::key_in(#literal, &[#(#reads),*]), #message)
+        };
+        if generic {
+            let ident = Ident::new(&format!("__ULO_KEYS_CHECK_{text}"), key.span());
+            associated.extend(quote_spanned! {key.span()=>
+                #[doc(hidden)]
+                #[allow(non_upper_case_globals)]
+                const #ident: () = #check;
+            });
+            in_mount.extend(quote_spanned! {key.span()=>
+                let () = Self::#ident;
+            });
+        } else {
+            free.extend(quote_spanned! {key.span()=>
+                const _: () = #check;
+            });
+        }
+    }
+    for (handler, name) in handlers.iter().zip(&names) {
+        let checks = checks_const_ident(name, handler.span());
+        if generic {
+            in_mount.extend(quote_spanned! {handler.span()=>
+                let () = Self::#checks;
+            });
+        } else {
+            free.extend(quote_spanned! {handler.span()=>
+                const _: () = #owner::#checks;
+            });
+        }
+    }
+    Assertions { free, associated, in_mount }
 }
