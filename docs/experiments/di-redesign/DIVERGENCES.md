@@ -1027,3 +1027,171 @@ Compile errors:
   **wave 1 §6's** `lifecycle/connect.rs` `site_key` is `owner_key` [rename 6].
 - The word "site" in D1, D10, D15 and §3's factory entry reads "dependency" or "injection point";
   the decisions stand. [rename]
+
+---
+
+## Wave 3
+
+Wave 3 built D21–D28 as the fourteenth response signed them. Its logs are `divergences/wave3-W.md`,
+`wave3-R.md` and `wave3-M.md`. Citations: `[W3 2]` is entry 2 of `wave3-W.md`, `[W3 L1]` its
+request L1, `[R3 4]` and `[M3 5]` likewise, `[M3 R1]` M's request R1. Nothing here has compiled;
+R's entries 1, 3 and 5 rest on two stub probes compiled with `rustc +1.88 --edition 2024`.
+
+The four items the wave left open were decided on 2026-10-03 and are in `DESIGN.md`. Section 1
+records them; section 2 needs a read.
+
+### 1. Decisions made
+
+**D29. Two dead forms under a role key are refused at `wire()`.** [W3 3; M3 5; M3 R1]
+With roles given by `TypeId` at freeze, `m.contribute::<AnyGuard<Http>>().qualified::<Q>()`
+compiled, took the enhancer role and was read by no transport, D22's fault through the other
+builder. A single binding under a role key, `X as HttpGuards` through `also_as`, an alias, or the
+value API's `provide`/`value`, was bound and guarded nothing, reported only when a contribution to
+the same key made it a single/collection mix. Decided: refuse both in the freeze pass that assigns
+roles, a qualified contribution with "contribute it unqualified" and a single binding with
+"contribute it". A role key no mounted handler reads and no `enhancer` marks is outside the set
+and not checked. `#[module]`'s compile error on `X as <role key>` stays in front of it.
+
+**D30. `Contribute::try_value`.** [M3 3; M3 R2]
+`value = expr?` in an `into` list was a span error, "a contribution has no fallible value form":
+`Contribute` had no `try_value`, and a lowered `?` would sit in `register`, which returns `()`.
+Decided: add `try_value<E: Into<BoxError>>(self, value: Result<Arc<U>, E>)`, recording an `Err`
+for `wire()` as `ModuleDef::try_value` does, under the collection key. `value = expr?` lowers to it
+and reports at `wire()` like a providers list's `expr?`. M's limit on a configured module's
+fallible value built from its own fields, which a `'static` `with` closure cannot reach, goes with
+the refusal.
+
+**D31. A `#[module]` spelling for a role key no mounted handler reads.** [M3 6]
+An `into` list lowers to `contribute` and cannot mark, so a module contributing enhancers for a
+transport the app mounts no handler of, a shared auth module in a worker binary or a test app
+without controllers, is refused at `wire()` when one of its `Auto` enhancers needs an execution.
+M offered `into enhancer K: [..]`, lowering to `m.enhancer::<K>()`. Decided: deferred, stated as a
+known limit in §7. One hand-written `m.enhancer::<K>()` anywhere in the graph covers it, since one
+marked contribution marks the whole key.
+
+**D32. `is_panic` as built.** [R3 3; R3 4; R3 5]
+`pub fn is_panic(error: &BoxError) -> bool`, re-exported at the crate root. It answers `true` for
+`PanicRecovered`, `LookupError::Construct { reason: Panicked }` and a `ConnectError` whose reason
+is `Panicked`, bare or inside `LoadError` or `StartupError`; follows `Errored`'s `Redacted`,
+`ConstructError::Failed` and `source()` chains to 32 levels; and inside a `Redacted` recognises
+the core's own types alone, since `Redacted` hands out its original by type. `&dyn Error` was
+probed on 1.88 and failed E0277 for `is_panic(&err)`, the coercion unsizing the `Box` itself.
+Decided: as built. §10.2's "by downcast of the error itself; no `source()` chain is walked" is
+replaced.
+
+### 2. For reading
+
+Roles and contributions:
+
+- **`Plain` and `Enhancer` are empty enums**, the device `Open`, `Set`, `Pending` and `Wired` use.
+  `Contribute` keeps a private `enhancer: bool` written by each mark's constructor, so the shared
+  `impl<'m, U, Q, M>` carries no bound on `M`; `m.enhancer::<AnyGuard<Http>>().qualified::<Q>()`
+  is E0599 at `.qualified`. [W3 1]
+- **Exported at `ulo::handle`**, beside `Handle`'s state markers, that module's doc widened; a bare
+  `ulo::Enhancer` at the root would read like a trait. [R3 8; W3 L1]
+- **`scopes::mark_role_contributions` runs at the end of `freeze`**, once every controller has
+  mounted. The set is the `role_keys` of every handler in the graph, a lazy load's base included,
+  plus the primary key of every collection binding marked `Enhancer` from `ModuleNode::enhancers`;
+  every collection binding under a key in the set becomes an enhancer. `assign_roles`, which needs
+  the visibility tables, still runs in `check`. [W3 2]
+- **The `X as <role key>` compile error stays**, text unchanged; `written_as_role_key` serves that
+  diagnostic alone, and no lowering depends on it. Its false refusal: a user's own type named
+  `AnyGuard`, `AnyInterceptor` or `AnyErrorHandler`, or a `dyn` of a trait named `ErasedGuard`,
+  `ErasedInterceptor` or `ErasedErrorHandler`, is refused after `as`; renaming the import binds
+  it. [M3 5]
+
+The `into` grammar:
+
+- **A `with` closure in an `into` list is wrapped as `#[guards]` wraps it**: a synchronous body in
+  `async move`, an `async` closure or block kept. Limit: a synchronous body returning a future it
+  does not await, `|c: Dep<C>| Plugin::connect(c)` with `connect` an `async fn`, is a future of a
+  future and fails at the coercion `|a| a`; `#[guards]` has the same limit. [M3 1]
+- **`with` builds a singleton in an `into` list and per execution in `#[guards]`**: a closure
+  reading `Ext<CurrentUser>` works on a handler and is refused at `wire()` in an `into` list as a
+  singleton needing an execution, §6.2's report naming the scope and not the attribute the
+  closure was copied from; a per-execution contribution is `.execution(..)` or
+  `.try_execution(..)` in a hand-written `Module`. [M3 2]
+- **A malformed `into` item** is a span error naming the three forms, with "; an expression is
+  contributed with `value = ..`" when the item parses as one: a call such as
+  `MetricsPlugin::new()`, which wave 2 turned into `provide::<MetricsPlugin::new()>`, a
+  transport-scoped form, or a key before `=` other than `value` and `with`; a non-closure `with`
+  and an untyped closure parameter have their own texts. [M3 4]
+- **What the expansion names:** `m.contribute::<K>()` with `provide::<A>(|a| a)` and
+  `value(Arc<K>)` on the `Plain` builder, `::ulo::__private::Arc`, and
+  `::ulo::__private::factory::{Probe, FallibleContribution, PlainContribution}`, whose impls call
+  `Contribute::try_singleton::<Args, F, T, E>` and `Contribute::singleton::<Args, F>` by
+  turbofish, so the order of those generic parameters is part of the contract. [M3]
+
+Replacements and readiness:
+
+- **`WiringError::DuplicateReplacement { original: ModuleName, first, second }`**, step 2, the two
+  `replace_module` locations; text "two `replace_module` calls replace {original}", "help: keep
+  one; wiring applied only the first". Detected from the test plan's replacements in order; over an
+  original nothing imports, the first call is `ReplacementUnmatched` and each later one
+  `DuplicateReplacement`, never both on one call. [W3 4]
+- **`.backoff(..)` records its location**, `backoff_location: Option<&'static Location<'static>>`,
+  each call overwriting the duration and the location together, a replacing `.ready(..)` starting
+  a new record with `None`; `.backoff(5s)` then `.backoff(Duration::ZERO)` reports nothing, since
+  `wire()` tests the final duration. `BackoffWithoutTimer::at` is that location, its fallback to
+  the `.ready(..)` location unreachable while the check fires only on a non-zero backoff. [R3 6;
+  W3 5]
+
+Shutdown and errors:
+
+- **A panicking transport `close` is caught** and recorded as `Close { transport, reason:
+  Panicked }`, redacted by `redact_panic`; `close` is called inside the caught future, so a
+  `Server::close` panicking before returning its future is caught too. Before this it unwound out
+  of the shutdown sequence into whichever `serve` or `close` call was running it. A `close`
+  exceeding its bound is `TimedOut`, `ShutdownCap` when the cap bounded it, the first-poll case
+  after expiry included, `Default` with `hook_timeout` otherwise; `Skipped` never occurs on
+  `Close`. Text: "transport `Http` failed to close: panicked: " and the redacted message. [R3 1]
+- **`FailureReason` no longer implements `Error`**; `Display` and `Debug` stay. Nothing boxes one
+  now that `Close` holds the reason as a field, and no code under `crates/` used the impl.
+  `BoxError::from(reason)` and `?` into a `BoxError` do not compile; hold it as a field, as `Hook`,
+  `Construct` and `Close` do. [R3 2; R3 R3]
+- **D27's sentence sits on `Next::run`'s doc**, with its warning, stated once on the method that
+  returns the `Err`. `Server::close`'s doc names the three reasons and `transport/pipeline.rs`'s
+  module doc points to `ulo::is_panic`; R wrote both, no agent owning those files this wave.
+  [R3 9; R3 R2]
+
+Full paths on collision:
+
+- **`ModuleName` holds both texts.** `{:#}` writes the type's and the qualifier's full paths with
+  the `#n` suffix, `my_app::db::DbModule @ my_app::Replica #2`; a labelled module keeps its label
+  in both forms and `{:#}` follows it with the type's path, `redis (my_app::Redis) @
+  my_app::Primary`. `Display` writes through `Formatter::pad`, `Debug` passes the flag along, and
+  equality and hashing cover both texts. `module::colliding_names` groups by short text;
+  `WiringErrors`' `Display` runs it over every `ModuleName` field, a `WiringError` displayed alone
+  over its own, and the `Ambiguous` exporter column is padded to the widest name as printed.
+  Limits: `OverrideModuleAmbiguous::module` is a `&'static str` and stays short, its candidates
+  sharing one type; `consumer`, path steps, `item`, `handler` and `closure` stay short. [W3 6]
+- **`LookupError::Ambiguous` and `AmbiguousModule` take the rule** through `write_list`:
+  `billing::Module` and `users::Module` print apart, and two candidates whose qualifiers share a
+  last segment, `DbModule @ Replica` from `a::Replica` and from `b::Replica`, are written apart.
+  [R3 7; W3 R1]
+
+Doc comments: `Contribute`, `ModuleDef::contribute`, `ModuleDef::enhancer`, `Role`, the
+`transport` module, `graph::Role`, `assign_roles` and `freeze` state the `TypeId` rule;
+`enhancer`'s names its remaining job, marking a role key no mounted handler reads;
+`TestApp::replace_module` names `DuplicateReplacement`, and `BackoffWithoutTimer` names the
+`.backoff(..)` call as `at`. [W3 7]
+
+Superseded wave 2 entries:
+
+- **W 3** (a qualified enhancer contribution accepted and unreported) → E0599 on the `Enhancer`
+  builder [W3 1], and the `contribute` form a wiring error (D29).
+- **W 2's** "a contribution through `contribute` under a role key stays a provider", **M 2**,
+  **§2's** "`into K: [A, B]` lowers to `m.enhancer::<K>()` when `K` is written like a role key",
+  **§3's** two limits of token-level recognition and **§5's** look-through → every `into` list
+  lowers to `contribute` and the core gives the role by `TypeId` at freeze [W3 2; M3]; the
+  look-through survives for the `as` diagnostic and the `into` item's call check alone [M3 5].
+- **M 3** stands under D23 [M3 5]. **M 4** (types only) → `value = expr`, `with = closure` (D21)
+  and `value = expr?` (D30). **M R1, M R2, M R3** → applied in `binding/contribute.rs`; the `Role`
+  text serves a hand-written `enhancer` call; the expansion names no `enhancer` [M3].
+- **W 5** (a second replacement unreported) → `DuplicateReplacement` [W3 4]; D25 as signed.
+  **W 7's** `at` on the `.ready(..)` call → the `.backoff(..)` call [W3 5; R3 6]; D26 as signed.
+- **W 9's** limit that `ModuleName`s print short, **§4's** "every `ModuleName` stay short" and
+  **§6's** "Module names still print short" → full paths on collision for module names [W3 6;
+  R3 7].
+- **R 5** (`FailureReason` implements `Error`) → removed [R3 2]; D28 as (b). **§3's** close-bound
+  entry, silent on a panic → caught and `Panicked` [R3 1].
