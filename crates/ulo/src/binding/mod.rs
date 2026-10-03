@@ -171,6 +171,9 @@ pub(crate) struct ReadyRecord {
     pub(crate) retries: u32,
     /// The wait between one attempt's end and the next attempt. Zero unless written.
     pub(crate) backoff: Duration,
+    /// The last `.backoff(..)` call, which `WiringError::BackoffWithoutTimer` names. `None` until
+    /// one is written.
+    pub(crate) backoff_location: Option<&'static Location<'static>>,
     /// `.timeout(..)`: the whole check, retries and backoff included. `Limit::Item` on expiry.
     pub(crate) whole: Bound,
     /// `.attempt_timeout(..)`: one attempt. `Limit::Attempt` when written, `Limit::Default`

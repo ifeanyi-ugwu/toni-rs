@@ -50,7 +50,7 @@ pub use dependency::{Dep, Dependencies, Ext, FromContainer, Many, Requirement};
 pub use error::{
     Closed, ConnectError, DispatchStage, FailureReason, GuardRejected, Limit, LoadError, LoadRefusal,
     LookupError, LookupKind, NoTimer, PanicRecovered, Shutdown, ShutdownError, ShutdownFailure,
-    StartupError,
+    StartupError, is_panic,
 };
 pub use error::wiring::{WiringError, WiringErrors};
 pub use execution::extensions::Extensions;

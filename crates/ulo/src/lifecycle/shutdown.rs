@@ -16,9 +16,11 @@
 //! never stops the sequence. When `shutdown_timeout` expires, hooks not yet run are `Skipped`, a
 //! hook mid-run is dropped as `TimedOut { limit: ShutdownCap }`, and an open drain ends at once.
 //! Stop accepting still runs, and each `close` still starts with nothing left of the cap: one that
-//! does not finish on its first poll is dropped and recorded as `ShutdownFailure::Close`.
+//! does not finish on its first poll is dropped and recorded as `ShutdownFailure::Close` with
+//! `TimedOut { limit: ShutdownCap }`.
 
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -32,10 +34,10 @@ use crate::graph::{BindingId, Graph, ModuleId};
 use crate::hooks::HookKind;
 use crate::lifecycle::connect::{HookOwner, hook_plan, hooks_of, owner_key, run_hook};
 use crate::lifecycle::phase::Phase;
-use crate::lifecycle::run::{Cap, Either, Outcome, select};
-use crate::redact::redact;
+use crate::lifecycle::run::{Cap, CatchUnwind, Either, Outcome, select};
+use crate::redact::{SecretRegistry, redact, redact_panic};
 use crate::signal::Signal;
-use crate::timer::{BoxError, BoxFuture, Timer};
+use crate::timer::{BoxFuture, Timer};
 use crate::transport::server::{DrainToken, ErasedServer};
 
 /// The one shutdown of an app: the winning trigger's signal and the outcome every `serve` and
@@ -265,22 +267,22 @@ async fn settle(mut pending: Vec<BoxFuture<'_, ()>>) {
 }
 
 /// Step 6, in reverse bind order, one `close` after another. A `close` that exceeds its bound is
-/// dropped, its `source` a redacted `FailureReason::TimedOut`: `limit: ShutdownCap` with the
-/// cap's duration when bounded by the cap, `limit: Default` with `hook_timeout` otherwise.
+/// dropped and recorded as `TimedOut`: `limit: ShutdownCap` with the cap's duration when bounded
+/// by the cap, `limit: Default` with `hook_timeout` otherwise.
 ///
 /// Each bound is taken as that `close` starts, so the cap's remainder shrinks with every close
 /// before it. Without a `Timer` there is neither bound, and `close` runs unbounded.
 async fn close_servers(shared: &Arc<AppShared>, progress: &mut Progress) {
     let servers = servers_of(shared);
+    let graph = shared.graph();
     let timer = shared.config.timer.as_deref();
     let hook_timeout = shared.config.defaults().map(|defaults| defaults.hook_timeout);
     while progress.cursor < servers.len() {
         let server = &servers[servers.len() - 1 - progress.cursor];
         progress.cursor += 1;
         let bound = close_bound(timer, progress.cap, hook_timeout);
-        if let Err(e) = bounded_close(&**server, bound).await {
-            let source = redact(&shared.graph().secrets, e);
-            progress.failures.push(ShutdownFailure::Close { transport: server.transport_name(), source });
+        if let Err(reason) = bounded_close(&**server, bound, &graph.secrets).await {
+            progress.failures.push(ShutdownFailure::Close { transport: server.transport_name(), reason });
         }
     }
     progress.cursor = 0;
@@ -308,26 +310,26 @@ fn close_bound(timer: Option<&dyn Timer>, cap: Option<Cap>, hook_timeout: Option
 }
 
 /// The `close` is polled before the bound, so one that completes on the poll where the bound
-/// fires counts as closed.
-async fn bounded_close(server: &dyn ErasedServer, bound: CloseBound) -> Result<(), BoxError> {
-    let mut close = server.close();
-    match bound {
+/// fires counts as closed. The call happens inside the caught future, so a `close` that panics
+/// before returning its future is caught too.
+async fn bounded_close(server: &dyn ErasedServer, bound: CloseBound, secrets: &SecretRegistry) -> Result<(), FailureReason> {
+    let mut close = CatchUnwind::new(async move { server.close().await });
+    let ended = match bound {
         CloseBound::Unbounded => close.await,
-        CloseBound::Expired { after } => match poll_fn(|cx| Poll::Ready(close.as_mut().poll(cx))).await {
-            Poll::Ready(result) => result,
-            Poll::Pending => Err(close_timed_out(after, Limit::ShutdownCap)),
+        CloseBound::Expired { after } => match poll_fn(|cx| Poll::Ready(Pin::new(&mut close).poll(cx))).await {
+            Poll::Ready(ended) => ended,
+            Poll::Pending => return Err(FailureReason::TimedOut { after, limit: Limit::ShutdownCap }),
         },
         CloseBound::Within { sleep, after, limit } => match select(close, sleep).await {
-            Either::Left(result) => result,
-            Either::Right(()) => Err(close_timed_out(after, limit)),
+            Either::Left(ended) => ended,
+            Either::Right(()) => return Err(FailureReason::TimedOut { after, limit }),
         },
+    };
+    match ended {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(FailureReason::Errored(redact(secrets, e))),
+        Err(payload) => Err(FailureReason::Panicked(redact_panic(secrets, payload))),
     }
-}
-
-/// Carried in `ShutdownFailure::Close`'s `source`; `source.downcast_ref::<FailureReason>()`
-/// tells it from the transport's own error.
-fn close_timed_out(after: Duration, limit: Limit) -> BoxError {
-    BoxError::from(FailureReason::TimedOut { after, limit })
 }
 
 fn servers_of(shared: &AppShared) -> Vec<Arc<dyn ErasedServer>> {

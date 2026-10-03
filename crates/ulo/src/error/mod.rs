@@ -13,11 +13,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::construct::ConstructError;
 use crate::hooks::HookKind;
 use crate::key::{BindingKind, KeyName, short_type_name};
 use crate::module::ModuleName;
 use crate::redact::Redacted;
 use crate::signal::Signal;
+use crate::timer::BoxError;
 
 pub use wiring::WiringErrors;
 
@@ -117,9 +119,9 @@ impl fmt::Display for ConnectError {
 
 impl Error for ConnectError {}
 
-/// Why a hook, a construction or a readiness check did not complete. One enum for every place
-/// one can fail, so a timeout reads the same on an init hook, a destroy hook, a constructor and
-/// a check.
+/// Why a hook, a construction, a readiness check or a transport's `close` did not complete. One
+/// enum for every place one can fail, so a timeout reads the same on an init hook, a destroy
+/// hook, a constructor, a check and a `close`.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum FailureReason {
@@ -127,10 +129,10 @@ pub enum FailureReason {
     Panicked(Redacted),
     /// `after` is the configured duration of the limit that fired.
     TimedOut { after: Duration, limit: Limit },
-    /// Never started: `shutdown_timeout` had expired (§9.5); shutdown only.
+    /// Never started: `shutdown_timeout` had expired (§9.5); shutdown hooks only.
     Skipped,
-    /// Returned `Err`: a construction, an init or bootstrap hook, or the last attempt of a
-    /// readiness check.
+    /// Returned `Err`: a construction, an init or bootstrap hook, the last attempt of a
+    /// readiness check, or a transport's `close`.
     Errored(Redacted),
 }
 
@@ -152,11 +154,6 @@ impl fmt::Display for FailureReason {
         }
     }
 }
-
-/// A transport's `close` exceeding its bound is recorded as `ShutdownFailure::Close` with a
-/// `TimedOut` reason in its `source`, where `source.downcast_ref::<FailureReason>()` tells it
-/// from the transport's own error (§9.5).
-impl Error for FailureReason {}
 
 /// Which limit a `TimedOut` hit.
 #[non_exhaustive]
@@ -232,17 +229,19 @@ pub enum ShutdownFailure {
     /// `Errored` only for a closure hook whose dependency read failed: the shutdown hook traits and
     /// closures return `()`.
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },
-    /// The transport's own error, or its `close` exceeding its bound (§9.5), held as a
-    /// `FailureReason::TimedOut` that `source.downcast_ref::<FailureReason>()` reads.
-    Close { transport: &'static str, source: Redacted },
+    /// `Errored` for the transport's own error, `Panicked` for a panic in its `close`, and
+    /// `TimedOut` for a `close` exceeding its bound (§9.5): `limit: ShutdownCap` with the cap's
+    /// duration when the cap bounded it, `limit: Default` with `hook_timeout` otherwise. Never
+    /// `Skipped`: every `close` starts.
+    Close { transport: &'static str, reason: FailureReason },
 }
 
 impl fmt::Display for ShutdownFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ShutdownFailure::Hook { hook, key, reason } => write!(f, "`{hook}` hook of `{key}`: {reason}"),
-            ShutdownFailure::Close { transport, source } => {
-                write!(f, "transport `{}` failed to close: {source}", short_type_name(*transport))
+            ShutdownFailure::Close { transport, reason } => {
+                write!(f, "transport `{}` failed to close: {reason}", short_type_name(*transport))
             }
         }
     }
@@ -495,5 +494,111 @@ impl fmt::Display for DispatchStage {
             DispatchStage::Handler => "handler",
             DispatchStage::ErrorHandler => "error handler",
         })
+    }
+}
+
+/// Whether `error` carries a panic the core caught, whichever shape it arrived in. Inside a call
+/// there are two: [`PanicRecovered`] from a guard, an interceptor, the handler or an error
+/// handler, and [`LookupError::Construct`] with `reason: Panicked` from a build the container
+/// ran for the call, an enhancer, the controller or one of their dependencies. An error handler
+/// that answers every panic alike tests this instead of matching both.
+///
+/// Also true for a `ConnectError` whose reason is `Panicked`, bare or inside `LoadError` or
+/// `StartupError`, which is how a handler calling `load` meets a lazily loaded module's panic.
+///
+/// The panic is found under a constructor or a `try_` factory that returned a dependency's
+/// `LookupError` as its own `Err`, and down any error's `source()` chain. Inside a [`Redacted`],
+/// which hands its original out by type alone, only the core's error types are recognized: a
+/// panic wrapped in another error type before it was redacted is not found.
+pub fn is_panic(error: &BoxError) -> bool {
+    panic_in(&**error, 0)
+}
+
+/// Bounded, in case a `source()` chain loops back on itself.
+const MAX_DEPTH: usize = 32;
+
+fn panic_in(error: &(dyn Error + 'static), depth: usize) -> bool {
+    if depth >= MAX_DEPTH {
+        return false;
+    }
+    match recognized(error, depth) {
+        Some(found) => found,
+        None => error.source().is_some_and(|cause| panic_in(cause, depth + 1)),
+    }
+}
+
+fn redacted_panicked(redacted: &Redacted, depth: usize) -> bool {
+    depth < MAX_DEPTH && recognized(redacted, depth).unwrap_or(false)
+}
+
+/// `Some` when `error` is one of the core's types that can carry a panic, holding whether it
+/// does; `None` for any other type.
+fn recognized<'e>(error: impl ByType<'e>, depth: usize) -> Option<bool> {
+    if error.get::<PanicRecovered>().is_some() {
+        return Some(true);
+    }
+    if let Some(lookup) = error.get::<LookupError>() {
+        return Some(lookup_panicked(lookup, depth));
+    }
+    if let Some(construct) = error.get::<ConstructError>() {
+        return Some(match construct {
+            ConstructError::Dependency(lookup) => lookup_panicked(lookup, depth),
+            ConstructError::Failed(inner) => panic_in(&**inner, depth + 1),
+        });
+    }
+    if let Some(connect) = error.get::<ConnectError>() {
+        return Some(connect_panicked(connect, depth));
+    }
+    if let Some(load) = error.get::<LoadError>() {
+        return Some(matches!(load, LoadError::Connect(connect) if connect_panicked(connect, depth)));
+    }
+    if let Some(startup) = error.get::<StartupError>() {
+        return Some(matches!(startup, StartupError::Connect(connect) if connect_panicked(connect, depth)));
+    }
+    if let Some(redacted) = error.get::<Redacted>() {
+        return Some(redacted_panicked(redacted, depth + 1));
+    }
+    None
+}
+
+fn lookup_panicked(error: &LookupError, depth: usize) -> bool {
+    match error {
+        LookupError::Construct { reason, .. } => reason_panicked(reason, depth),
+        _ => false,
+    }
+}
+
+fn connect_panicked(error: &ConnectError, depth: usize) -> bool {
+    match error {
+        ConnectError::Construct { reason, .. }
+        | ConnectError::Readiness { reason, .. }
+        | ConnectError::Hook { reason, .. } => reason_panicked(reason, depth),
+    }
+}
+
+fn reason_panicked(reason: &FailureReason, depth: usize) -> bool {
+    match reason {
+        FailureReason::Panicked(_) => true,
+        FailureReason::Errored(redacted) => redacted_panicked(redacted, depth + 1),
+        FailureReason::TimedOut { .. } | FailureReason::Skipped => false,
+    }
+}
+
+/// The original by its type, which `dyn Error` and `Redacted` both answer.
+trait ByType<'e> {
+    fn get<E: Error + 'static>(&self) -> Option<&'e E>;
+}
+
+impl<'e> ByType<'e> for &'e (dyn Error + 'static) {
+    fn get<E: Error + 'static>(&self) -> Option<&'e E> {
+        let error: &'e (dyn Error + 'static) = *self;
+        error.downcast_ref::<E>()
+    }
+}
+
+impl<'e> ByType<'e> for &'e Redacted {
+    fn get<E: Error + 'static>(&self) -> Option<&'e E> {
+        let redacted: &'e Redacted = *self;
+        redacted.downcast_ref::<E>()
     }
 }

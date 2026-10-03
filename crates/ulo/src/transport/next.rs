@@ -9,8 +9,7 @@ use crate::transport::{AnyInterceptor, ErasedInterceptor, Transport};
 /// The rest of the interceptor chain and the handler, handed to [`Interceptor::intercept`](crate::Interceptor).
 ///
 /// [`run`](Next::run) consumes it, so the rest of the chain runs at most once; an interceptor
-/// that returns without calling it answers the call itself. A panic further down the chain
-/// comes back from `run` as an `Err` holding [`PanicRecovered`](crate::PanicRecovered).
+/// that returns without calling it answers the call itself.
 pub struct Next<'a, T: Transport> {
     pub(crate) cx: &'a T::Cx,
     /// The interceptors after the current one, already built.
@@ -22,6 +21,10 @@ pub struct Next<'a, T: Transport> {
 
 impl<'a, T: Transport> Next<'a, T> {
     /// Runs the next interceptor, or the handler after the last one, with the same call.
+    ///
+    /// A panic in the handler or an inner interceptor arrives as an `Err` holding
+    /// [`PanicRecovered`](crate::PanicRecovered), and state the panicking stage touched may be
+    /// inconsistent, so treat that `Err` as fatal for the call rather than retrying it.
     pub fn run(self) -> BoxFuture<'a, Result<T::Reply, BoxError>> {
         let Next { cx, rest, handler, secrets } = self;
         // The call happens inside the caught future, so a panic before the callee's first await

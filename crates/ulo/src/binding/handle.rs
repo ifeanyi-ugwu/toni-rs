@@ -256,6 +256,7 @@ impl<'m, T: ?Sized, K, C: HookHost> Handle<'m, T, K, C> {
             dependencies,
             retries: 0,
             backoff: Duration::ZERO,
+            backoff_location: None,
             whole: Bound::Default,
             attempt: Bound::Default,
             location,
@@ -355,10 +356,13 @@ impl<'m, T: ?Sized, W, A, C> Handle<'m, T, ReadyItem<W, A>, C> {
     }
 
     /// The wait between one attempt's end and the next, timed by the `Timer`; the last call
-    /// wins.
+    /// wins. A nonzero wait on an app with no `Timer` is a wiring error naming this call.
+    #[track_caller]
     pub fn backoff(self, d: Duration) -> Self {
+        let location = Location::caller();
         if let Some(ready) = self.record.ready.as_mut() {
             ready.backoff = d;
+            ready.backoff_location = Some(location);
         }
         self
     }
