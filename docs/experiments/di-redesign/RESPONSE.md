@@ -743,3 +743,27 @@ That handles aliases, `macro_rules` wrappers and the value API identically, with
 **`enhancer()` returning a builder that has `qualified`** is D22. If D22 is decided as above, the second-section entry about `enhancer` returning the same builder as `contribute` changes to "the same builder, marked".
 
 Everything else in sections 2 to 6 reads consistently with the design and the earlier rounds. That includes the close bound shrinking with the cap's remainder, the closure scope check exempting enhancer closures, and `.backoff` being refused even with zero retries.
+
+---
+
+## Fifteenth response: what decides the scope of `with = closure`
+
+Received 2026-10-03. The user asked whether `with = closure` building a singleton in an `into` list
+but per execution in `#[guards(..)]` is the better way: "is it relaly the better way? that differnce? i was htining scope that is if it is singltonor others is decided elsewhere and som how elsE?" Not yet signed off.
+
+You're right to question it. As built, with = closure means two different things depending on where it's written: a singleton in an into list, built per call in #[guards(..)]. That's a scope decided by spelling position. Nothing in the design says position should decide scope, and a reader moving a guard from a method to a global into list would silently change when it's built.
+
+The brief already says what decides it. Item [26]: an enhancer "declared by closure" is "built per execution". That's a rule about enhancers, not about method attributes. So the consistent rule follows the role:
+
+Declared by closure as	Scope
+An enhancer, at any tier (method, controller, global)	per execution, as [26] says
+A provider contribution (into dyn Plugin: [with = ..])	the provider rule: a singleton, refused at wiring if it reads execution data
+Under that rule, the two cases you saw only differ when they are different roles. A global guard written into AnyGuard<Http>: [with = |u: Ext<CurrentUser>| ..] works exactly as it would on a method. A plugin closure that reads execution data is refused, for the same reason any singleton provider that needs an execution is refused.
+
+How this fits the D23 fix: under the TypeId approach, the macro no longer knows the role at expansion, and it shouldn't have to. The macro lowers with = closure to one value-API method, say Contribute::with(factory, coerce), whose recipe records "declared by closure" rather than a scope. At freeze, once the role is known, the core resolves it: per execution for enhancers, singleton for providers. One spelling, one meaning per role, decided in the one place that knows the role.
+
+Two follow-ups:
+
+A provider collection that genuinely wants a per-execution closure can still say so explicitly. The value API already has .execution(factory, coerce). If you want a macro form, with(execution) = .. is the natural extension of the grammar. I'd only add it when someone needs it.
+value = expr is already consistent across positions: a value is built once and shared everywhere it's declared. That's why D7's controller-level case became a compile error rather than a different meaning. So with is the only spelling that needed this fix.
+DESIGN.md §4 should then drop the sentence describing the difference, and state the role rule once, in §7, where enhancer scopes are already explained.
