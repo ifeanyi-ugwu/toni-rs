@@ -1,6 +1,8 @@
 //! Support for the code `ulo-macros` generates. Not part of the public API: names and shapes here
 //! change with the macros.
 
+pub use std::sync::Arc;
+
 pub use ulo_macros::{__enhancer_specs, __handler};
 
 use crate::construct::ConstructError;
@@ -129,15 +131,17 @@ pub mod hooks {
     impl<T> NoShutdown<T> for &Probe<T> {}
 }
 
-/// The autoref probe `#[module]` writes at a factory's call site in a providers list: a closure
-/// whose future outputs a `Result` reaches the `try_` registration, any other the plain one. The
-/// value API keeps two methods because one method cannot serve both outputs.
+/// The autoref probe `#[module]` writes at a factory's call site, for a closure in a providers
+/// list and for a `with = ..` entry of an `into` list: a closure whose future outputs a `Result`
+/// reaches the `try_` registration, any other the plain one. The value API keeps two methods
+/// because one method cannot serve both outputs.
 ///
 /// `Args` is a parameter of `Probe` rather than of the methods: method probing checks an impl's
 /// where-clauses, which is what lets the ranking fall through, and it never checks a method's.
 pub mod factory {
     use std::cell::Cell;
     use std::marker::PhantomData;
+    use std::sync::Arc;
 
     use crate::binding::factory::Factory;
     use crate::module::def::ModuleDef;
@@ -189,6 +193,67 @@ pub mod factory {
         fn register_singleton(&self, m: &mut ModuleDef<'_>) {
             if let Some(factory) = self.factory.take() {
                 m.singleton::<Args, F>(factory);
+            }
+        }
+    }
+
+    /// The `into` arm: a singleton contribution to `U`. The coercion closure has to be written in
+    /// the expansion, where `Arc<Built>` and `Arc<U>` are concrete types and the one unsizes to
+    /// the other; a generic body cannot unsize. The expansion cannot name the built type, so
+    /// `Built` is an associated type, resolved once the ranking has picked the arm.
+    pub trait FallibleContribution {
+        type Built: Send + Sync + 'static;
+
+        #[track_caller]
+        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
+    }
+    impl<F, Args, T, E> FallibleContribution for Probe<F, Args>
+    where
+        F: Factory<Args, Output = Result<T, E>>,
+        T: Send + Sync + 'static,
+        E: Into<BoxError> + Send + 'static,
+    {
+        type Built = T;
+
+        #[track_caller]
+        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
+        {
+            if let Some(factory) = self.factory.take() {
+                m.contribute::<U>().try_singleton::<Args, F, T, E>(factory, coerce);
+            }
+        }
+    }
+
+    pub trait PlainContribution {
+        type Built: Send + Sync + 'static;
+
+        #[track_caller]
+        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
+    }
+    impl<F, Args> PlainContribution for &Probe<F, Args>
+    where
+        F: Factory<Args>,
+        F::Output: Send + Sync + 'static,
+    {
+        type Built = <F as Factory<Args>>::Output;
+
+        #[track_caller]
+        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
+        {
+            if let Some(factory) = self.factory.take() {
+                m.contribute::<U>().singleton::<Args, F>(factory, coerce);
             }
         }
     }

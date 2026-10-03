@@ -453,8 +453,9 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
 
 /// `|u: Ext<CurrentUser>| RoleGuard::require(u)` becomes `|u: Ext<CurrentUser>| async move {
 /// RoleGuard::require(u) }`. An explicit return type moves onto a binding inside the block,
-/// since an `async` block cannot carry one.
-fn wrap_async(closure: &ExprClosure) -> ExprClosure {
+/// since an `async` block cannot carry one. `#[module]`'s `into` lists share it, so a `with`
+/// entry is written the same way in both places.
+pub(crate) fn wrap_async(closure: &ExprClosure) -> ExprClosure {
     if closure.asyncness.is_some() || matches!(*closure.body, Expr::Async(_)) {
         return closure.clone();
     }

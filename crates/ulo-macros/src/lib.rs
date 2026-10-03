@@ -42,14 +42,16 @@ pub fn construct(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Provider entries: `Type` (`provide::<Type>()`), `Type as dyn Trait` (`also_as`), `expr?`
 /// (`try_value`), `expr` (`value`), a factory closure (`singleton` or `try_singleton`, picked by
-/// the closure's output), and `into dyn Trait: [A, B]` (contributions). A bare path reads as a
+/// the closure's output), and `into dyn Trait: [..]` (contributions). A bare path reads as a
 /// type, so a constant is bound by value with a block, `{ LIMITS }`. Export entries: `Type` and
 /// `reexport Type`.
 ///
-/// Global enhancers are contributions under a role key, `into AnyGuard<Http>: [AuthGuard]`,
-/// lowered to `enhancer` rather than `contribute`. The role key is recognised by how it is
-/// written, `AnyGuard`, `AnyInterceptor`, `AnyErrorHandler` or `dyn` of their `Erased*` traits,
-/// so an alias of one under another name records a provider contribution.
+/// An `into K: [..]` list takes the forms `#[guards]` does, whatever `K` is: a type
+/// (`provide::<A>`), `value = expr` (a shared value; the macro writes the `Arc::new`) and
+/// `with = |..| ..` (a singleton factory, written as in `#[guards]`, `try_singleton` when its
+/// output is a `Result`). Every item lowers to `contribute::<K>()`. A global enhancer is a
+/// contribution under a role key, `into AnyGuard<Http>: [AuthGuard]`, which the core recognises
+/// by the key's type.
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_attr::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
