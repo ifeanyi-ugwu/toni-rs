@@ -336,7 +336,7 @@ Their pre-dispatch stage takes `Middleware<T>` only, not tower. Their requests a
 
 ## Third response: the two choices made in the fold
 
-Received 2026-10-03, answering the fold's two questions. Not yet signed off.
+Received 2026-10-03, answering the fold's two questions. The user signed it off the same day.
 
 ### 1. WebSocket keeps `unimplemented`
 
