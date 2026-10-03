@@ -12,9 +12,12 @@
 //! with `ViaPath` and `NotPath` imported anonymously, and the route `"/users/{id}"` as
 //! `HandlerSpec::route`.
 
-use proc_macro2::TokenStream;
-use syn::{ImplItemFn, LitStr};
-use ulo_handler_codegen::Paths;
+use proc_macro2::{Span, TokenStream};
+use quote::{quote, quote_spanned};
+use syn::{Ident, ImplItemFn, LitStr};
+use ulo_handler_codegen::emit::{self, MountFn};
+use ulo_handler_codegen::params::{self, HandlerSig};
+use ulo_handler_codegen::{Paths, protocol, reply};
 
 /// The transport's key, which equals `<ulo_http::Http as ulo::Transport>::KEY`.
 pub(crate) const KEY: &str = "http";
@@ -22,12 +25,64 @@ pub(crate) const KEY: &str = "http";
 /// `#[<method>("<pattern>")]` on `item`. `method` is the HTTP method's name as `http::Method`'s
 /// associated constant spells it.
 pub(crate) fn expand(method: &'static str, attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let attr_name = method.to_ascii_lowercase();
+    if attr.is_empty() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("#[{attr_name}] takes the route pattern, as in #[{attr_name}(\"/users/{{id}}\")]"),
+        ));
+    }
     let pattern: LitStr = syn::parse2(attr)?;
     if let Err(reason) = crate::pattern::check(&pattern.value()) {
         return Err(syn::Error::new(pattern.span(), format!("invalid route pattern: {reason}")));
     }
     let mut item: ImplItemFn = syn::parse2(item)?;
+    let Some(tokens) = protocol::take_handler_attr(&mut item.attrs)? else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("#[{attr_name}] goes on a method of a `#[routes]` impl, which hands it the handler's enhancers"),
+        ));
+    };
+    let sig = params::analyze(&item.sig)?;
+    reply::rewrite_opaque_returns(&mut item.sig);
+
     let paths = Paths::new("ulo_http", "Http");
-    let _ = (method, &mut item, &paths, KEY);
-    todo!("take `__handler` (absent: an error saying the attribute goes in a `#[routes]` impl), analyze, rewrite returns, build the handler value, emit `MountFn`")
+    let mount = MountFn {
+        tokens: &tokens,
+        sig: &sig,
+        key: KEY,
+        paths: &paths,
+        handler_value: handler_value(method, &pattern, &sig, &paths),
+        route: Some(quote!(#pattern)),
+        shape: None,
+    }
+    .emit();
+
+    Ok(quote! {
+        #item
+        #mount
+    })
+}
+
+/// The `HttpHandler` the mount function hands `HandlerSpec::new`: the method, the pattern as
+/// written, the call closure, and one `Path<T>` probe per parameter, spanned at its type. A
+/// generic handler never reaches this value: `MountFn::emit` refuses it.
+fn handler_value(method: &str, pattern: &LitStr, sig: &HandlerSig, paths: &Paths) -> TokenStream {
+    let this = &paths.this;
+    let method = Ident::new(method, Span::call_site());
+    let call = emit::call_ident();
+    let checks = sig.params.iter().map(|param| {
+        let ty = &param.ty;
+        quote_spanned! {param.span=>
+            .path_check((&&#this::__private::PathProbe::<#ty>::new()).check())
+        }
+    });
+    quote! {
+        {
+            #[allow(unused_imports)]
+            use #this::__private::{NotPath as _, ViaPath as _};
+            #this::__private::HttpHandler::new(#this::__private::Method::#method, #pattern, #call)
+                #(#checks)*
+        }
+    }
 }
