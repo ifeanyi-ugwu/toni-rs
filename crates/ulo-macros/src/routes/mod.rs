@@ -20,6 +20,11 @@
 //!    into a `::ulo::__private::Shared` and calls every `__ulo_mount_<name>` with it, in method
 //!    order (X2).
 //!
+//! A handler's `#[cfg]` reaches `#[routes]` unevaluated, and rustc removes a cfg'd-out method, its
+//! transport attribute with it, only after `#[routes]` has expanded. Each read of a handler's
+//! `__ULO_KEY_*` or `__ULO_CHECKS_*` in step 4, and its mount call in step 5, carries the
+//! handler's `cfg` gates (`ulo_handler_codegen::cfg::presence_gates`).
+//!
 //! A controller-level enhancer applies to every handler, strictly; the transport-scoped form
 //! `http = AuthGuard` applies to that transport's handlers alone.
 
@@ -29,7 +34,7 @@ use syn::ext::IdentExt;
 use syn::parse::Parser;
 use syn::{Attribute, Expr, GenericParam, ImplItem, ImplItemFn, ItemImpl};
 use ulo_handler_codegen::protocol::{self, EnhancerAttr, HandlerTokens, MetaTokens, Role};
-use ulo_handler_codegen::{keys, reply, shared};
+use ulo_handler_codegen::{cfg, keys, reply, shared};
 
 use crate::shared::{attrs, combine, ulo};
 
@@ -75,14 +80,18 @@ pub(crate) fn expand_impl(mut item: ItemImpl) -> syn::Result<TokenStream> {
         return Err(e);
     }
 
-    let names: Vec<syn::Ident> = handlers.iter().map(|handler| handler.name.clone()).collect();
+    let gated: Vec<keys::GatedHandler<'_>> =
+        handlers.iter().map(|handler| keys::GatedHandler { name: &handler.name, gates: &handler.gates }).collect();
     let scoped = keys::scoped_keys(&controller);
-    let assertions = keys::assertions(&item.self_ty, &item.generics, &scoped, &names);
+    let assertions = keys::assertions(&item.self_ty, &item.generics, &scoped, &gated);
     if !assertions.associated.is_empty() {
         item.items.push(ImplItem::Verbatim(assertions.associated.clone()));
     }
 
-    let mount = syn::Ident::new(if handlers.is_empty() { "_m" } else { "m" }, Span::call_site());
+    // `_m` when every mount call sits behind a `cfg`, or there is none, so a build compiling them
+    // all out raises no unused-parameter warning.
+    let always_mounts = handlers.iter().any(|handler| handler.gates.is_empty());
+    let mount = syn::Ident::new(if always_mounts { "m" } else { "_m" }, Span::call_site());
     let shared = shared::shared_ident();
     let build_shared = (!handlers.is_empty()).then(|| {
         let construct = shared::construct(&shared::shared_values(&controller));
@@ -90,7 +99,9 @@ pub(crate) fn expand_impl(mut item: ItemImpl) -> syn::Result<TokenStream> {
     });
     let calls = handlers.iter().map(|handler| {
         let mount_fn = format_ident!("__ulo_mount_{}", handler.name.unraw());
+        let gates = &handler.gates;
         quote_spanned! {handler.name.span()=>
+            #(#gates)*
             Self::#mount_fn(#mount, &#shared);
         }
     });
@@ -118,6 +129,8 @@ pub(crate) fn expand_impl(mut item: ItemImpl) -> syn::Result<TokenStream> {
 /// A handler method; its enhancer attributes and metadata travel in the `__handler` attribute.
 pub(crate) struct Handler {
     pub(crate) name: syn::Ident,
+    /// The method's attributes that decide whether it is compiled.
+    pub(crate) gates: Vec<Attribute>,
 }
 
 /// Classifies `method`: `Some` for a handler, with its method tier removed and the `__handler`
@@ -150,6 +163,7 @@ pub(crate) fn rewrite_handler(
         return Ok(None);
     }
 
+    let gates = cfg::presence_gates(&method.attrs);
     let tokens = HandlerTokens {
         handler: method.sig.ident.clone(),
         controller: controller.to_vec(),
@@ -158,7 +172,7 @@ pub(crate) fn rewrite_handler(
     };
     let appended = Attribute::parse_outer.parse2(tokens.to_attribute())?;
     method.attrs.extend(appended);
-    Ok(Some(Handler { name: tokens.handler }))
+    Ok(Some(Handler { name: tokens.handler, gates }))
 }
 
 /// Removes every enhancer attribute from `attrs` and parses it, in the order written.

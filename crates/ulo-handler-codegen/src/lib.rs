@@ -1,8 +1,8 @@
 //! A plain library of `syn` functions every transport's attribute macro calls, and `#[routes]`
 //! with them: parameter analysis, the body-consumer check, the reply probe, the `use<>` rewrite on
-//! streaming returns, the `__handler` protocol, and key and shared-value emission (transports
-//! DESIGN §1). Not a proc-macro crate, so a user-written transport's macro crate depends on it as
-//! the shipped ones do.
+//! streaming returns, the `__handler` protocol, key and shared-value emission, and the `cfg`
+//! gates `#[routes]` copies from a handler (transports DESIGN §1). Not a proc-macro crate, so a
+//! user-written transport's macro crate depends on it as the shipped ones do.
 //!
 //! A transport attribute's expansion, in order:
 //! 1. [`protocol::take_handler_attr`] removes and parses the `__handler` tokens `#[routes]`
@@ -13,6 +13,7 @@
 //!    [`emit::MountFn::emit`] writes the three items the protocol owes.
 
 pub mod body;
+pub mod cfg;
 pub mod emit;
 pub mod keys;
 pub mod params;

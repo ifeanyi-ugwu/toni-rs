@@ -85,6 +85,11 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// controller-level transport key that no handler's transport carries, `#[guards(htpp = ..)]`, is
 /// a compile error spanned on the key.
 ///
+/// A handler behind `#[cfg]` is mounted, and its transport key counted, only in a build that
+/// compiles it. A scoped entry for a transport whose handlers all sit behind
+/// `#[cfg(feature = "rpc")]` goes in `#[cfg_attr(feature = "rpc", guards(rpc = ..))]` on the impl,
+/// which rustc evaluates before `#[routes]` reads the impl's attributes.
+///
 /// A method carrying an attribute outside the language's own (`doc`, `allow`, `cfg`, `inline` and
 /// the like) and the enhancer and `#[meta]` markers, such as `#[tracing::instrument]`, is treated
 /// as a handler, so helpers go in a separate `impl` block. A handler takes `&self`, or
