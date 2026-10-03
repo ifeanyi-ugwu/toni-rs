@@ -702,3 +702,43 @@ These are listed as "for reading", but I'd treat each as a decision.
 **Transport `close` runs unbounded [E 12].** My earlier reasoning that closing sockets "runs no user code and finishes quickly" was too optimistic. A transport's `close` can wait on a TLS close-notify or a broker acknowledgment. As built, it runs after the `shutdown_timeout` cap with no bound, so one stuck broker hangs shutdown forever. That's exactly what the cap exists to prevent. Bound each transport's `close` by whatever is left of the cap. When there's no cap, use `hook_timeout`, and record a timeout as `ShutdownFailure::Close`.
 
 The rest of sections 2 to 5 reads consistently with the design. One papercut worth a line in the docs: in a `#[routes]` impl, a helper method annotated with `#[tracing::instrument]` is treated as a handler [G 8]. Moving helpers to a separate `impl` block is a fine rule, but people will hit it in their first week, so it belongs in the `#[routes]` documentation.
+
+---
+
+## Fourteenth response: wave 2's divergences
+
+Received 2026-10-03, answering `DIVERGENCES.md`'s Wave 2 section. Not yet signed off.
+
+Wave 2 tracks the signed decisions closely, and the rename came out well: none of the new texts suggest implementing the trait, which was the risk. I agree with five of the eight new decisions. Of the other three, D22 and D23 have a better fix available than the options listed, and D21 needs one widening.
+
+### The eight decisions
+
+**D21: (b), but for every `into` list, not only role keys.** Reusing the `#[guards]` grammar is right. `value = ..` is safe at module level, because a module registers once, so the per-handler problem that made D7 a compile error can't occur here. But the description scopes it to enhancers, and `into dyn Plugin: [value = MetricsPlugin::new(cfg)]` hits the same gap. Give every `into` list one grammar.
+
+**D22: refuse it at compile time, without giving up the shared builder.** Option (b) is described as costing the shared builder, but it doesn't have to. `Contribute` can take a marker parameter, as in `Contribute<'m, U, Q, Mark = Plain>`, with `qualified` implemented only for `Plain`. `enhancer` returns the `Enhancer`-marked builder. Every other method stays shared through `impl<.., M> Contribute<.., M>`. That's the same typestate device the handles and `TestApp` already use. It turns a wiring error into E0599 at the call, which is what [45] asks for when it's feasible, and here it costs one type parameter.
+
+**D23: none of the three options. Decide roles by `TypeId` at freeze.** The real problem isn't the macro. It's that `contribute::<AnyGuard<Http>>()` and `enhancer::<AnyGuard<Http>>()` register the same key and behave differently, and the macro is left guessing which one the user meant from tokens. But the core can know exactly. `Mount::handler::<T, H>` is generic over the transport `T`, so when a handler is mounted, it can record `TypeId::of::<AnyGuard<T>>()`, `AnyInterceptor<T>` and `AnyErrorHandler<T>`. At freeze, any contribution whose key's `TypeId` is in that set gets the enhancer role, however it was registered.
+
+That handles aliases, `macro_rules` wrappers and the value API identically, with no token inspection and no `type_name`. `into K: [..]` can then always lower to `contribute`, which makes D23's two limits disappear. Keep `m.enhancer()` for the one case the `TypeId` set can't see: a role key for a transport with no mounted handler, where marking it explicitly avoids a spurious scope refusal. With that, the `Role` bound on `enhancer` still catches a type that isn't a role key.
+
+**D24: agree.**
+
+**D25: agree.** Name both calls, the way `DuplicateReadiness` does.
+
+**D26: agree.**
+
+**D27: agree.** It's the right model: a handler's panic is an error like any other error from the inside, and interceptors that log or time calls should see it. One sentence belongs in `Next::run`'s docs: state touched by the panicking stage may be inconsistent, so an interceptor should treat the `Err` as fatal for that call rather than retry.
+
+**D28: (b), agree.** A match arm instead of a downcast, and the same shape as `Hook`.
+
+### Four things in the reading sections
+
+**Two shapes for "a panic during a call".** A panic while the container builds an enhancer or controller arrives as `LookupError::Construct { reason: Panicked }`, and one inside its code as `PanicRecovered` [R 3]. Each is defensible on its own. But the common error handler, "any panic → 500 and an alert", now has to match two unrelated types, and the first one is nested. Add a small public helper, such as `ulo::is_panic(&BoxError) -> bool`, or a method on the error-handler context, so that handler is one line and doesn't depend on knowing the distinction.
+
+**Module names still collide.** The full-paths-on-collision rule covers `KeyName` only [W 9]. Two module types sharing a last path segment, such as `billing::Module` and `users::Module`, still print alike. That's exactly the confusion the rule fixes for keys, and module names appear in the errors where it matters most (`Ambiguous`, `ExportNotBound`). The same grouping pass over `ModuleName` fields is cheap. The rendered strings like `consumer` and path steps can stay short, as the limit says.
+
+**Section 3's role rules change if you take the D23 fix.** "A role is decided at freeze", and the provider-to-enhancer move for a binding named by type, still hold. The two limits of token-level recognition, and the document's note that `contribute` under a role key is a provider "since a negative bound cannot refuse it", become obsolete.
+
+**`enhancer()` returning a builder that has `qualified`** is D22. If D22 is decided as above, the second-section entry about `enhancer` returning the same builder as `contribute` changes to "the same builder, marked".
+
+Everything else in sections 2 to 6 reads consistently with the design and the earlier rounds. That includes the close bound shrinking with the cap's remainder, the closure scope check exempting enhancer closures, and `.backoff` being refused even with zero retries.
