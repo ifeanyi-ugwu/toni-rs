@@ -18,12 +18,18 @@
 //! | `value = expr` | `m.contribute::<K>().value(Arc::new(expr));` |
 //! | `value = expr?` | `m.contribute::<K>().try_value(Result::map(expr, \|v\| -> Arc<K> { Arc::new(v) }));` |
 //! | `with = closure` | `m.contribute::<K>()` then `.with(closure, \|a\| a)` or `.try_with(..)`, by the same autoref ranking |
+//! | `with(singleton) = closure` | `.singleton(..)` or `.try_singleton(..)`, ranked the same way |
+//! | `with(execution) = closure` | `.execution(..)` or `.try_execution(..)` |
+//! | `with(transient) = closure` | `.transient(..)` or `.try_transient(..)` |
 //!
 //! A `with` closure is written as in `#[guards]`: a synchronous body is wrapped in `async move`,
-//! and a closure already `async` is kept. The expansion declares no scope for it: the record says
-//! "declared by closure", and the core resolves the scope at freeze from the role. An enhancer is
-//! built per execution, as a `#[guards]` closure is. A provider contribution is a singleton, as a
-//! providers-list closure is, and `wire()` refuses one that reads execution data.
+//! and a closure already `async` is kept. The scope word is a type argument of the probe, `Auto`
+//! when none is written, and the probe's `ContributionScope` impl for that marker picks the
+//! method. `Auto` builds the contribution once unless what the closure reads needs an execution;
+//! a provider contribution under `Auto` is a singleton, and `wire()` refuses one whose closure
+//! reads execution data. Inference reads the closure's parameters, not its body: a closure that
+//! creates per-call state while reading nothing per call, such as `|| RequestTimer::start()`, is
+//! written `with(execution)`.
 //!
 //! A `value` is evaluated when `register` runs, once per module. `value = expr?` records an `Err`
 //! for `wire()` to report, as a providers list's `expr?` does. Its closure's return type is
@@ -50,10 +56,11 @@ use quote::{quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Expr, ExprClosure, Ident, PathArguments, Token, Type, TypeParamBound, bracketed};
+use syn::{Expr, ExprClosure, Ident, PathArguments, Token, Type, TypeParamBound, bracketed, token};
 
 use crate::enhancers::wrap_async;
 use crate::module_attr::module_def_param;
+use crate::shared::scope::ScopeArg;
 use crate::shared::{check_factory_params, ulo};
 
 pub(crate) enum ProviderEntry {
@@ -71,10 +78,12 @@ pub(crate) enum Contribution {
     Value(Expr),
     /// `value = expr?`, holding `expr` without the `?`.
     TryValue(Expr),
-    With(ExprClosure),
+    /// `scope` is `None` for `with = ..`, which declares `Auto`.
+    With { scope: Option<ScopeArg>, closure: ExprClosure },
 }
 
-const CONTRIBUTION_FORMS: &str = "an `into` entry is a type, `value = expr` or `with = |..| ..`";
+const CONTRIBUTION_FORMS: &str =
+    "an `into` entry is a type, `value = expr`, `with = |..| ..` or `with(<scope>) = |..| ..`";
 
 impl Parse for ProviderEntry {
     /// `into T: [..]` first, then a type followed by `,`, `as` or the end, then an expression.
@@ -121,8 +130,25 @@ impl Parse for ProviderEntry {
 }
 
 impl Parse for Contribution {
-    /// `value = ..` and `with = ..` first, then a type followed by `,` or the end.
+    /// `value = ..`, `with = ..` and `with(<scope>) = ..` first, then a type followed by `,` or
+    /// the end.
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        if input.peek(Ident) && input.peek2(token::Paren) {
+            let fork = input.fork();
+            let key: Ident = fork.parse()?;
+            if key == "with" {
+                input.parse::<Ident>()?;
+                let scope = ScopeArg::parse_parenthesized(input)?;
+                input.parse::<Token![=]>()?;
+                return Ok(Contribution::With { scope: Some(scope), closure: parse_with_closure(input)? });
+            }
+            if key == "value" {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "a `value` is built once and shared, so it takes no scope; write `value = ..`",
+                ));
+            }
+        }
         if input.peek(Ident) && input.peek2(Token![=]) && !input.peek2(Token![==]) && !input.peek2(Token![=>]) {
             let key: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
@@ -133,17 +159,7 @@ impl Parse for Contribution {
                 });
             }
             if key == "with" {
-                return match input.parse::<Expr>()? {
-                    Expr::Closure(closure) => {
-                        check_factory_params(&closure)?;
-                        Ok(Contribution::With(closure))
-                    }
-                    other => Err(syn::Error::new_spanned(
-                        other,
-                        "`with` takes a closure whose parameters are injection points, \
-                         as in `with = |cfg: Dep<MetricsConfig>| MetricsPlugin::new(cfg)`",
-                    )),
-                };
+                return Ok(Contribution::With { scope: None, closure: parse_with_closure(input)? });
             }
             return Err(syn::Error::new(key.span(), CONTRIBUTION_FORMS));
         }
@@ -154,6 +170,20 @@ impl Parse for Contribution {
         }
         let expr: Expr = input.parse()?;
         Err(syn::Error::new_spanned(expr, format!("{CONTRIBUTION_FORMS}; an expression is contributed with `value = ..`")))
+    }
+}
+
+fn parse_with_closure(input: ParseStream<'_>) -> syn::Result<ExprClosure> {
+    match input.parse::<Expr>()? {
+        Expr::Closure(closure) => {
+            check_factory_params(&closure)?;
+            Ok(closure)
+        }
+        other => Err(syn::Error::new_spanned(
+            other,
+            "`with` takes a closure whose parameters are injection points, \
+             as in `with = |cfg: Dep<MetricsConfig>| MetricsPlugin::new(cfg)`",
+        )),
     }
 }
 
@@ -208,14 +238,15 @@ impl Contribution {
                     |v| -> #ulo::__private::Arc<#into> { #ulo::__private::Arc::new(v) },
                 ));
             },
-            Contribution::With(closure) => {
+            Contribution::With { scope, closure } => {
                 let closure = wrap_async(closure);
+                let scope = scope.map_or_else(|| quote!(#ulo::scope::Auto), |scope| scope.path());
                 quote_spanned! {closure.span()=>
                     {
                         #[allow(unused_imports)]
                         use #ulo::__private::factory::{FallibleContribution as _, PlainContribution as _};
                         (&#ulo::__private::factory::Probe::new(#closure))
-                            .contribute_with::<#into, _>(&mut *#m, |a| a);
+                            .contribute_with::<#into, #scope, _>(&mut *#m, |a| a);
                     }
                 }
             }

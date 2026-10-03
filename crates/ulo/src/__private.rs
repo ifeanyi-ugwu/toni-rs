@@ -132,7 +132,7 @@ pub mod hooks {
 }
 
 /// The autoref probe `#[module]` writes at a factory's call site, for a closure in a providers
-/// list and for a `with = ..` entry of an `into` list: a closure whose future outputs a `Result`
+/// list and for a `with` entry of an `into` list: a closure whose future outputs a `Result`
 /// reaches the `try_` registration, any other the plain one. The value API keeps two methods
 /// because one method cannot serve both outputs.
 ///
@@ -143,8 +143,10 @@ pub mod factory {
     use std::marker::PhantomData;
     use std::sync::Arc;
 
+    use crate::binding::contribute::Contribute;
     use crate::binding::factory::Factory;
     use crate::module::def::ModuleDef;
+    use crate::scope::{Auto, PerExecution, Singleton, Transient};
     use crate::timer::BoxError;
 
     /// The factory sits in a `Cell` because the probe methods take `&self`, which the autoref
@@ -197,18 +199,20 @@ pub mod factory {
         }
     }
 
-    /// The `into` arm: a contribution to `U` declared by closure. It carries no scope; the core
-    /// resolves one at freeze from the role (§7). The coercion closure has to be written in the
-    /// expansion, where `Arc<Built>` and `Arc<U>` are concrete types and the one unsizes to the
-    /// other; a generic body cannot unsize. The expansion cannot name the built type, so `Built`
-    /// is an associated type, resolved once the ranking has picked the arm.
+    /// The `into` arm: a contribution to `U` declared by closure, in the scope `S`, which is
+    /// `Auto` for `with = ..` and the written marker for `with(<scope>) = ..`. The coercion
+    /// closure has to be written in the expansion, where `Arc<Built>` and `Arc<U>` are concrete
+    /// types and the one unsizes to the other; a generic body cannot unsize. The expansion cannot
+    /// name the built type, so `Built` is an associated type, resolved once the ranking has
+    /// picked the arm.
     pub trait FallibleContribution {
         type Built: Send + Sync + 'static;
 
         #[track_caller]
-        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
+            S: ContributionScope,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
     }
     impl<F, Args, T, E> FallibleContribution for Probe<F, Args>
@@ -220,13 +224,14 @@ pub mod factory {
         type Built = T;
 
         #[track_caller]
-        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
+            S: ContributionScope,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
         {
             if let Some(factory) = self.factory.take() {
-                m.contribute::<U>().try_with::<Args, F, T, E>(factory, coerce);
+                S::try_contribute::<U, Args, F, T, E, C>(m.contribute::<U>(), factory, coerce);
             }
         }
     }
@@ -235,9 +240,10 @@ pub mod factory {
         type Built: Send + Sync + 'static;
 
         #[track_caller]
-        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
+            S: ContributionScope,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
     }
     impl<F, Args> PlainContribution for &Probe<F, Args>
@@ -248,14 +254,73 @@ pub mod factory {
         type Built = <F as Factory<Args>>::Output;
 
         #[track_caller]
-        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
+            S: ContributionScope,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
         {
             if let Some(factory) = self.factory.take() {
-                m.contribute::<U>().with::<Args, F>(factory, coerce);
+                S::contribute::<U, Args, F, C>(m.contribute::<U>(), factory, coerce);
             }
         }
+    }
+
+    /// A scope marker as an `into` entry's `with` names it, mapped to the `Contribute` method
+    /// that registers a closure in that scope: `Auto` to `with`, `Singleton` to `singleton`,
+    /// `PerExecution` to `execution`, `Transient` to `transient`, each with its `try_` twin.
+    pub trait ContributionScope {
+        #[track_caller]
+        fn contribute<U, Args, F, C>(into: Contribute<'_, U>, factory: F, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            F: Factory<Args>,
+            F::Output: Send + Sync + 'static,
+            C: Fn(Arc<F::Output>) -> Arc<U> + Send + Sync + 'static;
+
+        #[track_caller]
+        fn try_contribute<U, Args, F, T, E, C>(into: Contribute<'_, U>, factory: F, coerce: C)
+        where
+            U: ?Sized + Send + Sync + 'static,
+            F: Factory<Args, Output = Result<T, E>>,
+            T: Send + Sync + 'static,
+            E: Into<BoxError> + Send + 'static,
+            C: Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static;
+    }
+
+    macro_rules! contribution_scope {
+        ($($marker:ty => $plain:ident, $fallible:ident;)*) => {$(
+            impl ContributionScope for $marker {
+                #[track_caller]
+                fn contribute<U, Args, F, C>(into: Contribute<'_, U>, factory: F, coerce: C)
+                where
+                    U: ?Sized + Send + Sync + 'static,
+                    F: Factory<Args>,
+                    F::Output: Send + Sync + 'static,
+                    C: Fn(Arc<F::Output>) -> Arc<U> + Send + Sync + 'static,
+                {
+                    into.$plain::<Args, F>(factory, coerce);
+                }
+
+                #[track_caller]
+                fn try_contribute<U, Args, F, T, E, C>(into: Contribute<'_, U>, factory: F, coerce: C)
+                where
+                    U: ?Sized + Send + Sync + 'static,
+                    F: Factory<Args, Output = Result<T, E>>,
+                    T: Send + Sync + 'static,
+                    E: Into<BoxError> + Send + 'static,
+                    C: Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
+                {
+                    into.$fallible::<Args, F, T, E>(factory, coerce);
+                }
+            }
+        )*};
+    }
+
+    contribution_scope! {
+        Auto => with, try_with;
+        Singleton => singleton, try_singleton;
+        PerExecution => execution, try_execution;
+        Transient => transient, try_transient;
     }
 }

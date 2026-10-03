@@ -2,20 +2,31 @@
 //!
 //! Grammar of `#[guards(..)]`, `#[interceptors(..)]` and `#[error_handlers(..)]`, a comma list of:
 //! - `Type`: by type, resolved from the container; `spec.guard::<Type>()`.
-//! - `key = Type`: by type, applied to handlers of the transport whose scope key is `key`
+//! - `key = Type`: by type, applied to handlers of the transport whose transport key is `key`
 //!   (`http`, `rpc`, `grpc`, `ws`, as each transport crate declares).
 //! - `value = expr`: by value, on a method only: built once when the handler mounts and shared by
 //!   its calls; `spec.guard_value(expr)`.
-//! - `with = |param: Ty, ..| expr`: by closure, built per execution. The closure's body is
-//!   wrapped as `async move { body }` and handed to `spec.guard_with(..)`, whose parameters are
-//!   injection points. A closure that is already `async`, or whose body is already an `async`
-//!   block, is handed over as written.
-//! - `key(value = expr)` and `key(with = ..)`: the last two, transport-scoped.
+//! - `with = |param: Ty, ..| expr`: by closure, scope `Auto`; `spec.guard_with(..)`. The closure's
+//!   body is wrapped as `async move { body }`, and its parameters are injection points. A closure
+//!   that is already `async`, or whose body is already an `async` block, is handed over as
+//!   written.
+//! - `with(singleton) = ..`, `with(execution) = ..`, `with(transient) = ..`: by closure, in the
+//!   scope written; `spec.guard_with_in::<Singleton>(..)`, `::<PerExecution>`, `::<Transient>`.
+//!   Any other word in the parentheses is an error naming the three.
+//! - `key(value = expr)`, `key(with = ..)` and `key(with(<scope>) = ..)`: the last three,
+//!   transport-scoped.
 //!
-//! On the impl, a `value` entry, scoped or not, is an error: each handler mounts separately, so
-//! the value would be built once per handler and shared by none of them. On a method, a
-//! transport-scoped entry for another transport than the handler's applies to nothing and is an
-//! error.
+//! How an enhancer is built (type, value, closure) and how long it lives are separate. `Auto`
+//! builds a closure's enhancer once and shares it, unless what the closure reads needs an
+//! execution; then it is built per execution. Inference reads the closure's parameters, not its
+//! body, so a closure that creates per-call state while reading nothing per call, such as
+//! `|| RequestTimer::start()`, is written `with(execution)`.
+//!
+//! On the impl, a `value` entry, transport-scoped or not, is an error: each handler mounts
+//! separately, so the value would be built once per handler and shared by none of them. On a
+//! method, a transport-scoped entry for another transport than the handler's applies to nothing
+//! and is an error. A scope word in a transport key's place, `execution = AuthGuard`, is an error
+//! too: it names no transport, and on the impl the entry would apply to nothing unreported.
 //!
 //! Every entry is registered through a local fn named after the handler whose bound is the role
 //! for the handler's transport, so a missing role reads "`AuthGuard` is not a guard for `Rpc`",
@@ -29,6 +40,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, Ident, LitStr, ReturnType, Token, Type, parenthesized, token};
 
+use crate::shared::scope::ScopeArg;
 use crate::shared::{check_factory_params, combine, ulo, ulo_at};
 
 /// Which role an attribute declares.
@@ -68,16 +80,31 @@ impl Role {
         }
     }
 
-    /// The `EnhancerSpec` methods for the by-type, by-value and by-closure forms.
-    fn spec_methods(self) -> (Ident, Ident, Ident) {
-        let (by_type, by_value, by_closure) = match self {
-            Role::Guard => ("guard", "guard_value", "guard_with"),
-            Role::Interceptor => ("interceptor", "interceptor_value", "interceptor_with"),
-            Role::ErrorHandler => ("error_handler", "error_handler_value", "error_handler_with"),
+    /// The `EnhancerSpec` methods for the by-type, by-value and by-closure forms, the last as
+    /// `Auto` and in a scope written out.
+    fn spec_methods(self) -> SpecMethods {
+        let [by_type, by_value, by_closure, by_closure_in] = match self {
+            Role::Guard => ["guard", "guard_value", "guard_with", "guard_with_in"],
+            Role::Interceptor => ["interceptor", "interceptor_value", "interceptor_with", "interceptor_with_in"],
+            Role::ErrorHandler => {
+                ["error_handler", "error_handler_value", "error_handler_with", "error_handler_with_in"]
+            }
         };
         let ident = |name: &str| Ident::new(name, Span::call_site());
-        (ident(by_type), ident(by_value), ident(by_closure))
+        SpecMethods {
+            by_type: ident(by_type),
+            by_value: ident(by_value),
+            by_closure: ident(by_closure),
+            by_closure_in: ident(by_closure_in),
+        }
     }
+}
+
+struct SpecMethods {
+    by_type: Ident,
+    by_value: Ident,
+    by_closure: Ident,
+    by_closure_in: Ident,
 }
 
 /// One attribute's entries, with its role.
@@ -90,8 +117,8 @@ pub(crate) struct EnhancerAttr {
 
 #[derive(Clone)]
 pub(crate) struct Entry {
-    /// The transport scope key, for the transport-scoped forms.
-    pub(crate) scope: Option<Ident>,
+    /// The transport key, for the transport-scoped forms.
+    pub(crate) transport: Option<Ident>,
     /// `value` or `with` as written, so a diagnostic can span an unscoped entry from its first
     /// token.
     pub(crate) keyword: Option<Ident>,
@@ -101,11 +128,11 @@ pub(crate) struct Entry {
 impl Entry {
     /// The entry's tokens with their written spans, so an error built from them covers the entry.
     fn as_written(&self) -> TokenStream {
-        let lead = self.scope.as_ref().or(self.keyword.as_ref());
+        let lead = self.transport.as_ref().or(self.keyword.as_ref());
         let form = match &self.form {
             Form::Type(ty) => ty.to_token_stream(),
             Form::Value(expr) => expr.to_token_stream(),
-            Form::With(closure) => closure.to_token_stream(),
+            Form::With { closure, .. } => closure.to_token_stream(),
         };
         quote!(#lead #form)
     }
@@ -115,7 +142,8 @@ impl Entry {
 pub(crate) enum Form {
     Type(Type),
     Value(Expr),
-    With(ExprClosure),
+    /// `scope` is `None` for `with = ..`, which declares `Auto`.
+    With { scope: Option<ScopeArg>, closure: ExprClosure },
 }
 
 impl Form {
@@ -123,50 +151,87 @@ impl Form {
         match self {
             Form::Type(ty) => ty.span(),
             Form::Value(expr) => expr.span(),
-            Form::With(closure) => closure.span(),
+            Form::With { closure, .. } => closure.span(),
         }
     }
 }
 
 impl Parse for Entry {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        if input.peek(Ident) && input.peek2(Token![=]) && !input.peek2(Token![==]) && !input.peek2(Token![=>]) {
-            let key: Ident = input.parse()?;
+        let assigned = input.peek2(Token![=]) && !input.peek2(Token![==]) && !input.peek2(Token![=>]);
+        if !(input.peek(Ident) && (assigned || input.peek2(token::Paren))) {
+            return Ok(Entry { transport: None, keyword: None, form: Form::Type(input.parse()?) });
+        }
+        let key: Ident = input.parse()?;
+        if key == "with" {
+            return Ok(Entry { transport: None, form: parse_with(input)?, keyword: Some(key) });
+        }
+        if key == "value" {
+            if input.peek(token::Paren) {
+                return Err(value_takes_no_scope(&key));
+            }
             input.parse::<Token![=]>()?;
-            return Ok(if key == "value" {
-                Entry { scope: None, form: Form::Value(input.parse()?), keyword: Some(key) }
-            } else if key == "with" {
-                Entry { scope: None, form: Form::With(parse_closure(input)?), keyword: Some(key) }
-            } else {
-                Entry { scope: Some(key), keyword: None, form: Form::Type(input.parse()?) }
-            });
+            return Ok(Entry { transport: None, form: Form::Value(input.parse()?), keyword: Some(key) });
         }
-        if input.peek(Ident) && input.peek2(token::Paren) {
-            let key: Ident = input.parse()?;
-            if key == "value" || key == "with" {
-                return Err(syn::Error::new(key.span(), format!("write `{key} = ..`, or `<transport>({key} = ..)` to scope it")));
+        refuse_scope_word(&key)?;
+        if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            return Ok(Entry { transport: Some(key), keyword: None, form: Form::Type(input.parse()?) });
+        }
+        let content;
+        parenthesized!(content in input);
+        let inner: Ident = content.parse()?;
+        let form = if inner == "with" {
+            parse_with(&content)?
+        } else if inner == "value" {
+            if content.peek(token::Paren) {
+                return Err(value_takes_no_scope(&inner));
             }
-            let content;
-            parenthesized!(content in input);
-            let inner: Ident = content.parse()?;
             content.parse::<Token![=]>()?;
-            let form = if inner == "value" {
-                Form::Value(content.parse()?)
-            } else if inner == "with" {
-                Form::With(parse_closure(&content)?)
-            } else {
-                return Err(syn::Error::new(
-                    inner.span(),
-                    format!("expected `{key}(value = ..)` or `{key}(with = ..)`; a type scoped to `{key}` is written `{key} = Type`"),
-                ));
-            };
-            if !content.is_empty() {
-                return Err(content.error("one entry per transport-scoped form"));
-            }
-            return Ok(Entry { scope: Some(key), keyword: Some(inner), form });
+            Form::Value(content.parse()?)
+        } else {
+            return Err(syn::Error::new(
+                inner.span(),
+                format!(
+                    "expected `{key}(value = ..)` or `{key}(with = ..)`; a type for `{key}` handlers is written `{key} = Type`"
+                ),
+            ));
+        };
+        if !content.is_empty() {
+            return Err(content.error("one entry per transport-scoped form"));
         }
-        Ok(Entry { scope: None, keyword: None, form: Form::Type(input.parse()?) })
+        Ok(Entry { transport: Some(key), keyword: Some(inner), form })
     }
+}
+
+/// What follows the `with` keyword: an optional `(<scope>)`, `=`, and the closure.
+fn parse_with(input: ParseStream<'_>) -> syn::Result<Form> {
+    let scope = if input.peek(token::Paren) { Some(ScopeArg::parse_parenthesized(input)?) } else { None };
+    input.parse::<Token![=]>()?;
+    Ok(Form::With { scope, closure: parse_closure(input)? })
+}
+
+fn value_takes_no_scope(keyword: &Ident) -> syn::Error {
+    syn::Error::new(
+        keyword.span(),
+        "a `value` is built once and shared, so it takes no scope; write `value = ..`, \
+         or `<transport>(value = ..)` for one transport's handlers",
+    )
+}
+
+/// `execution = AuthGuard` names no transport: refused here, since on the impl an entry for a
+/// transport no handler has is skipped.
+fn refuse_scope_word(key: &Ident) -> syn::Result<()> {
+    if ScopeArg::from_ident(key).is_none() {
+        return Ok(());
+    }
+    Err(syn::Error::new(
+        key.span(),
+        format!(
+            "`{key}` is a scope, not a transport key; a type declares its scope on the type, \
+             `#[injectable({key})]`, and a closure is written `with({key}) = ..`"
+        ),
+    ))
 }
 
 fn parse_closure(input: ParseStream<'_>) -> syn::Result<ExprClosure> {
@@ -187,9 +252,13 @@ impl ToTokens for Entry {
         let inner = match &self.form {
             Form::Type(ty) => quote!(#ty),
             Form::Value(expr) => quote!(value = #expr),
-            Form::With(closure) => quote!(with = #closure),
+            Form::With { scope: None, closure } => quote!(with = #closure),
+            Form::With { scope: Some(scope), closure } => {
+                let word = scope.word();
+                quote!(with(#word) = #closure)
+            }
         };
-        match (&self.scope, &self.form) {
+        match (&self.transport, &self.form) {
             (None, _) => inner.to_tokens(tokens),
             (Some(key), Form::Type(ty)) => quote!(#key = #ty).to_tokens(tokens),
             (Some(key), _) => quote!(#key(#inner)).to_tokens(tokens),
@@ -309,7 +378,7 @@ fn tier(input: ParseStream<'_>, name: &str) -> syn::Result<Vec<EnhancerAttr>> {
     Ok(Punctuated::<EnhancerAttr, Token![,]>::parse_terminated(&content)?.into_iter().collect())
 }
 
-/// `<Transport type>, "<scope key>", <__handler tokens>`.
+/// `<Transport type>, "<transport key>", <__handler tokens>`.
 struct SpecsInput {
     transport: Type,
     key: LitStr,
@@ -333,9 +402,9 @@ enum Tier {
     Method,
 }
 
-/// `__enhancer_specs!(<Transport type>, "<scope key>", <__handler tokens>)`: an expression
+/// `__enhancer_specs!(<Transport type>, "<transport key>", <__handler tokens>)`: an expression
 /// evaluating to `(EnhancerSpec<Transport>, EnhancerSpec<Transport>)`, controller tier then
-/// method tier, keeping only the entries unscoped or scoped to this key, with the role
+/// method tier, keeping only the entries for every transport or for this key, with the role
 /// assertions.
 ///
 /// Each tier is built in a local and returned by value: the `EnhancerSpec` methods take and
@@ -374,14 +443,14 @@ fn tier_statements(
     let mut statements = Vec::new();
     for attr in attrs {
         for entry in &attr.entries {
-            if let Some(scope) = &entry.scope {
-                if scope.unraw() != key {
+            if let Some(transport) = &entry.transport {
+                if transport.unraw() != key {
                     if tier == Tier::Method {
                         return Err(syn::Error::new(
-                            scope.span(),
+                            transport.span(),
                             format!(
-                                "`{handler}` is a `{key}` handler, so an entry scoped to `{scope}` applies to nothing; \
-                                 write it unscoped, or on the handler it belongs to",
+                                "`{handler}` is a `{key}` handler, so an entry for `{transport}` applies to nothing; \
+                                 write it for every transport, or on the handler it belongs to",
                                 handler = tokens.handler.unraw(),
                             ),
                         ));
@@ -405,7 +474,7 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
     let handler_span = handler.span();
     let ulo = ulo_at(handler_span);
     let role_trait = role.role_trait(handler_span);
-    let (by_type, by_value, by_closure) = role.spec_methods();
+    let SpecMethods { by_type, by_value, by_closure, by_closure_in } = role.spec_methods();
     let entry_span = form.span();
     match form {
         Form::Type(ty) => {
@@ -431,21 +500,34 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
                 { #def #handler(&mut #var, #value); }
             }
         }
-        Form::With(closure) => {
+        Form::With { scope, closure } => {
             let build = Ident::new(&format!("__ulo_enhancer_{index}"), entry_span);
             let closure = wrap_async(closure);
+            let register = match scope {
+                None => quote_spanned!(handler_span=> spec.#by_closure::<__UloA, __UloF>(build);),
+                Some(scope) => {
+                    let scope = scope.path();
+                    quote_spanned!(handler_span=> spec.#by_closure_in::<#scope, __UloA, __UloF>(build);)
+                }
+            };
+            // The core records `Location::caller()` for a closure declaration. With the fn
+            // `#[track_caller]` and its call spanned at the entry, callee included, that location
+            // is the entry rather than the handler.
+            let mut callee = handler.clone();
+            callee.set_span(entry_span);
             let def = quote_spanned! {handler_span=>
+                #[track_caller]
                 fn #handler<__UloA, __UloF>(spec: &mut #ulo::EnhancerSpec<#transport>, build: __UloF)
                 where
                     __UloF: #ulo::Factory<__UloA>,
                     <__UloF as #ulo::Factory<__UloA>>::Output: #role_trait<#transport>,
                 {
-                    spec.#by_closure::<__UloA, __UloF>(build);
+                    #register
                 }
             };
             quote_spanned! {entry_span=>
                 let #build = #closure;
-                { #def #handler(&mut #var, #build); }
+                { #def #callee(&mut #var, #build); }
             }
         }
     }

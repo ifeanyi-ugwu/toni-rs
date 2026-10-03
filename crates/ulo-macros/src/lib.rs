@@ -47,17 +47,23 @@ pub fn construct(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `reexport Type`.
 ///
 /// An `into K: [..]` list takes the forms `#[guards]` does, whatever `K` is: a type
-/// (`provide::<A>`), `value = expr` (a shared value; the macro writes the `Arc::new`) and
-/// `with = |..| ..` (a factory written as in `#[guards]`, `try_with` when its output is a
-/// `Result`). It also takes `value = expr?` (`try_value`), whose `Err` `wire()` reports as it
-/// reports a providers entry's `expr?`. Every item lowers to `contribute::<K>()`. A global
-/// enhancer is a contribution under a role key, `into AnyGuard<Http>: [AuthGuard]`, which the
-/// core recognises by the key's type.
+/// (`provide::<A>`), `value = expr` (a shared value; the macro writes the `Arc::new`),
+/// `with = |..| ..` (a factory written as in `#[guards]`: `with`, or `try_with` when its output
+/// is a `Result`) and `with(<scope>) = |..| ..` (`singleton`, `execution` or `transient`, or the
+/// `try_` form of each). It also takes `value = expr?` (`try_value`), whose `Err` `wire()`
+/// reports as it reports a providers entry's `expr?`. Every item lowers to `contribute::<K>()`.
+/// A global enhancer is a contribution under a role key, `into AnyGuard<Http>: [AuthGuard]`,
+/// which the core recognises by the key's type.
 ///
-/// A `with` entry's scope follows the role the core gives the contribution at freeze. An enhancer
-/// declared by closure is built per execution, at the global tier as on a method. A provider
-/// contribution declared by closure is a singleton, and `wire()` refuses one that reads execution
-/// data.
+/// `with` says how an item is built: by its closure. How long it lives is a separate argument,
+/// written as on `#[injectable]`. `with = ..` declares `Auto`: built once unless what the closure
+/// reads needs an execution, then built per execution. A provider contribution under `Auto` is a
+/// singleton, and `wire()` refuses one whose closure reads execution data. `with(singleton) = ..`,
+/// `with(execution) = ..` and `with(transient) = ..` write the scope instead.
+///
+/// Inference reads what a closure takes, not what it does. A closure that creates per-call state
+/// but reads nothing per call, such as `|| RequestTimer::start()`, is built once under `Auto`;
+/// it must be written `with(execution) = || RequestTimer::start()`.
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_attr::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -84,8 +90,18 @@ pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// transport; `http = AuthGuard` limits it to that transport's handlers. `value = expr` is
 /// written per method, where it is built once and shared by that handler's calls. On the impl it
 /// is a compile error: a guard whose state every handler shares is declared by type, as a
-/// singleton binding. A closure is written synchronously and built per execution, its parameters
-/// injection points.
+/// singleton binding.
+///
+/// A closure is written synchronously, its parameters injection points. `with` says only that
+/// the closure builds the guard; how long the guard lives is a separate argument, written as on
+/// `#[injectable]`. `with = ..` declares `Auto`: built once and shared unless what the closure
+/// reads needs an execution, then built per execution. `with(singleton) = ..`,
+/// `with(execution) = ..` and `with(transient) = ..` write the scope instead, and
+/// `http(with(execution) = ..)` limits one to a transport's handlers.
+///
+/// Inference reads what a closure takes, not what it does. A closure that creates per-call state
+/// but reads nothing per call, such as `|| RequestTimer::start()`, is built once under `Auto`;
+/// it must be written `with(execution) = || RequestTimer::start()`.
 #[proc_macro_attribute]
 pub fn guards(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::marker("guards", attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -112,7 +128,7 @@ pub fn __handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::unconsumed_handler(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// Invoked by a transport's generated mount code with its transport type, its scope key and the
+/// Invoked by a transport's generated mount code with its transport type, its transport key and the
 /// tokens `__handler` carried: expands to the two `EnhancerSpec`s for one handler, with one role
 /// assertion per enhancer naming the handler.
 #[doc(hidden)]
