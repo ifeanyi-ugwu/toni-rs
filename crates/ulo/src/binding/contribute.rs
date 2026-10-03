@@ -21,11 +21,12 @@ use crate::timer::BoxError;
 /// written `|a| a`. Contributions are app-wide: they are not exports, and a keyed module's keep
 /// their key.
 ///
-/// [`ModuleDef::contribute`](crate::ModuleDef::contribute) records a provider contribution
-/// whatever its key. A global enhancer is contributed through
-/// [`ModuleDef::enhancer`](crate::ModuleDef::enhancer), which returns this builder marked so that
-/// its contributions register as enhancers, and scope inference treats them as it treats a
-/// controller (§3.3, §7).
+/// A contribution under a role key is an enhancer, whichever builder registered it, when a
+/// mounted handler's transport reads that key or when any module contributes under it through
+/// [`ModuleDef::enhancer`](crate::ModuleDef::enhancer); scope inference treats an enhancer as it
+/// treats a controller (§3.3, §7). Any other contribution is a provider contribution. `enhancer`
+/// returns this builder marked [`Enhancer`], which has no `qualified`; it is also how a role key
+/// is marked when no mounted handler's transport reads it.
 ///
 /// ```ignore
 /// m.contribute::<dyn Plugin>().provide::<MetricsPlugin>(|a| a);
@@ -33,29 +34,41 @@ use crate::timer::BoxError;
 /// m.contribute::<dyn HealthIndicator>()
 ///     .singleton(|pool: Dep<PgPool>| async move { PgHealth::new(pool) }, |a| a);
 /// ```
-pub struct Contribute<'m, U: ?Sized, Q = ()> {
+pub struct Contribute<'m, U: ?Sized, Q = (), M = Plain> {
     node: &'m mut ModuleNode,
-    /// Set by `ModuleDef::enhancer`: each record this builder pushes is listed in
+    /// `true` exactly when `M` is `Enhancer`: each record this builder pushes is listed in
     /// `ModuleNode::enhancers`.
     enhancer: bool,
-    _u: PhantomData<fn() -> (PhantomData<U>, Q)>,
+    _u: PhantomData<fn() -> (PhantomData<U>, Q, M)>,
 }
 
-impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
+/// The mark of the builder [`ModuleDef::contribute`](crate::ModuleDef::contribute) returns.
+pub enum Plain {}
+
+/// The mark of the builder [`ModuleDef::enhancer`](crate::ModuleDef::enhancer) returns. It has no
+/// `qualified`: a transport reads only a role key's unqualified collection, so a qualified
+/// enhancer would be read by nothing.
+pub enum Enhancer {}
+
+impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q, Plain> {
     pub(crate) fn new(node: &'m mut ModuleNode) -> Self {
         Contribute { node, enhancer: false, _u: PhantomData }
     }
 
+    /// Contributes to `U @ Q2` instead of the unqualified collection.
+    pub fn qualified<Q2: 'static>(self) -> Contribute<'m, U, Q2, Plain> {
+        Contribute { node: self.node, enhancer: self.enhancer, _u: PhantomData }
+    }
+}
+
+impl<'m, U: ?Sized + Send + Sync + 'static> Contribute<'m, U, (), Enhancer> {
     /// The builder `ModuleDef::enhancer` returns, its `U` a role key.
     pub(crate) fn for_role(node: &'m mut ModuleNode) -> Self {
         Contribute { node, enhancer: true, _u: PhantomData }
     }
+}
 
-    /// Contributes to `U @ Q2` instead of the unqualified collection.
-    pub fn qualified<Q2: 'static>(self) -> Contribute<'m, U, Q2> {
-        Contribute { node: self.node, enhancer: self.enhancer, _u: PhantomData }
-    }
-
+impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, M> {
     /// The record of one contribution to `U @ Q`, before what a particular recipe adds.
     fn record(
         built: &'static str,

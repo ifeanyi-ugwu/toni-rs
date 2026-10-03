@@ -4,7 +4,7 @@ use std::fmt;
 use std::panic::Location;
 
 use crate::key::{BindingKind, Key, KeyName, short_type_name};
-use crate::module::ModuleName;
+use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::scope::ScopeKind;
 
@@ -24,8 +24,10 @@ use crate::scope::ScopeKind;
 /// ```
 ///
 /// Type names are cut to their last path segment. Where the report would print two different
-/// keys alike, `a::Config` and `b::Config`, it prints those keys with their full paths. A
-/// [`WiringError`] displayed on its own applies the same rule to the keys it names.
+/// keys alike, `a::Config` and `b::Config`, or two different modules alike, `billing::Module` and
+/// `users::Module`, it prints those keys or modules with their full paths. Text an entry carries
+/// already rendered, such as what reads a missing key or the steps of a path, stays short. A
+/// [`WiringError`] displayed on its own applies the same rule to the keys and modules it names.
 ///
 /// `Debug` writes the same report, so `main` returning `Box<dyn Error>` prints it.
 pub struct WiringErrors {
@@ -64,7 +66,10 @@ impl fmt::Display for WiringErrors {
         let count = self.errors.len();
         let noun = if count == 1 { "error" } else { "errors" };
         write!(f, "error: wiring failed with {count} {noun}")?;
-        let full = colliding(self.errors.iter().flat_map(|error| error.key_names()));
+        let full = Collisions {
+            keys: colliding(self.errors.iter().flat_map(|error| error.key_names())),
+            modules: colliding_names(self.errors.iter().flat_map(|error| error.module_names())),
+        };
         for error in &self.errors {
             let text = Rendered { error, full: &full }.to_string();
             let mut lines = text.lines();
@@ -137,6 +142,9 @@ pub enum WiringError {
     /// Step 2, tests: a `replace_module` whose original no module imports, the same stale mock an
     /// override that matches nothing is.
     ReplacementUnmatched { original: ModuleName, at: &'static Location<'static> },
+    /// Step 2, tests: a second `replace_module` of an original already replaced, naming both
+    /// calls. Wiring applies the first.
+    DuplicateReplacement { original: ModuleName, first: &'static Location<'static>, second: &'static Location<'static> },
 
     /// Step 3: an injection point whose key the module cannot see. `consumer` names what reads
     /// it, as in ``UserService (param `mailer`)``. `near` is a visible key spelled the same up to
@@ -166,7 +174,8 @@ pub enum WiringError {
     /// ``readiness `.attempt_timeout` of `PgPool` ``.
     BoundWithoutTimer { item: String, at: &'static Location<'static> },
     /// Step 6: a readiness `.backoff(..)` on an app with no `Timer`, which cannot wait between
-    /// attempts. `binding` is the checked binding as printed.
+    /// attempts. `binding` is the checked binding as printed, and `at` the last `.backoff(..)`
+    /// call.
     BackoffWithoutTimer { binding: String, at: &'static Location<'static> },
     /// Step 6: a builder knob set on an app with no `Timer`.
     KnobWithoutTimer { knob: &'static str },
@@ -199,6 +208,7 @@ impl WiringError {
             | WiringError::OverrideModuleAmbiguous { .. }
             | WiringError::TimerOverride { .. }
             | WiringError::ReplacementUnmatched { .. }
+            | WiringError::DuplicateReplacement { .. }
             | WiringError::ClosureNeedsExecution { .. }
             | WiringError::BoundWithoutTimer { .. }
             | WiringError::BackoffWithoutTimer { .. }
@@ -206,17 +216,59 @@ impl WiringError {
         }
     }
 
-    /// The entry, each key in `full` printed with its full paths.
-    fn render(&self, f: &mut fmt::Formatter<'_>, full: &HashSet<Key>) -> fmt::Result {
-        let show = |name: &KeyName| if full.contains(&name.key()) { format!("{name:#}") } else { name.to_string() };
+    /// Every module name this entry holds as a `ModuleName`, for the same check over modules.
+    fn module_names(&self) -> Vec<&ModuleName> {
+        match self {
+            WiringError::ImportCycle { path } => path.iter().collect(),
+            WiringError::ReexportNotVisible { module, .. }
+            | WiringError::KeyedInput { module, .. }
+            | WiringError::ExportNotBound { module, .. }
+            | WiringError::DuplicateBinding { module, .. }
+            | WiringError::KindMix { module, .. }
+            | WiringError::DanglingAlias { module, .. }
+            | WiringError::ValueFailed { module, .. }
+            | WiringError::DuplicateReadiness { module, .. }
+            | WiringError::ScopeViolation { module, .. }
+            | WiringError::HooksOnPerExecution { module, .. } => vec![module],
+            WiringError::ReexportAmbiguous { module, sources, .. } => std::iter::once(module).chain(sources).collect(),
+            WiringError::OverrideUnmatched { keyed, .. } => keyed.iter().collect(),
+            WiringError::OverrideAmbiguous { matches, .. } => matches.iter().collect(),
+            WiringError::OverrideModuleAmbiguous { candidates, .. } => candidates.iter().collect(),
+            WiringError::ReplacementMissingExports { original, replacement, .. } => vec![original, replacement],
+            WiringError::ReplacementUnmatched { original, .. } | WiringError::DuplicateReplacement { original, .. } => {
+                vec![original]
+            }
+            WiringError::Missing { module, near, .. } => {
+                std::iter::once(module).chain(near.iter().map(|(_, exporter)| exporter)).collect()
+            }
+            WiringError::Ambiguous { module, sources, .. } => {
+                std::iter::once(module).chain(sources.iter().map(|(source, _)| source)).collect()
+            }
+            WiringError::Cycle { path } => path.iter().map(|(_, module)| module).collect(),
+            WiringError::OverrideKind { .. }
+            | WiringError::TimerOverride { .. }
+            | WiringError::ClosureNeedsExecution { .. }
+            | WiringError::InputNotSeeded { .. }
+            | WiringError::BoundWithoutTimer { .. }
+            | WiringError::BackoffWithoutTimer { .. }
+            | WiringError::KnobWithoutTimer { .. } => Vec::new(),
+        }
+    }
+
+    /// The entry, each key and module in `full` printed with its full paths.
+    fn render(&self, f: &mut fmt::Formatter<'_>, full: &Collisions) -> fmt::Result {
+        let show = |name: &KeyName| if full.keys.contains(&name.key()) { format!("{name:#}") } else { name.to_string() };
+        let show_module =
+            |name: &ModuleName| if full.modules.contains(name) { format!("{name:#}") } else { name.to_string() };
         match self {
             WiringError::ImportCycle { path } => tree(
                 f,
-                format!("import cycle: {}", closed_loop(path.iter().map(ToString::to_string).collect())),
+                format!("import cycle: {}", closed_loop(path.iter().map(show_module).collect())),
                 vec!["help: move what the modules in the cycle share into a module each of them imports".to_owned()],
             ),
             WiringError::ReexportNotVisible { module, key, at } => {
                 let key = show(key);
+                let module = show_module(module);
                 tree(
                     f,
                     format!("re-export of `{key}` from {module}, which {module} cannot see"),
@@ -228,14 +280,15 @@ impl WiringError {
             }
             WiringError::ReexportAmbiguous { module, key, sources, at } => {
                 let key = show(key);
-                let mut items: Vec<String> = sources.iter().map(|s| format!("exported by {s}")).collect();
+                let module = show_module(module);
+                let mut items: Vec<String> = sources.iter().map(|s| format!("exported by {}", show_module(s))).collect();
                 items.push(format!("declared at {}", place(at)));
                 items.push(format!("help: import `{key}` into {module} from one module only"));
                 tree(f, format!("ambiguous re-export of `{key}` in {module}"), items)
             }
             WiringError::KeyedInput { module, key, at } => tree(
                 f,
-                format!("execution input `{}` declared in the keyed module {module}", show(key)),
+                format!("execution input `{}` declared in the keyed module {}", show(key), show_module(module)),
                 vec![
                     format!("declared at {}", place(at)),
                     "help: inputs are app-wide and belong to transports; declare it in a module that is not keyed"
@@ -244,6 +297,7 @@ impl WiringError {
             ),
             WiringError::ExportNotBound { module, key, imported, near, at } => {
                 let key = show(key);
+                let module = show_module(module);
                 let help = match near {
                     Some(near) => format!("help: {module} binds `{}`; the export names `{key}`", show(near)),
                     None if *imported => format!(
@@ -259,7 +313,7 @@ impl WiringError {
             }
             WiringError::DuplicateBinding { key, module, first, second } => tree(
                 f,
-                format!("duplicate binding for `{}` in {module}", show(key)),
+                format!("duplicate binding for `{}` in {}", show(key), show_module(module)),
                 vec![
                     format!("first bound at {}", place(first)),
                     format!("bound again at {}", place(second)),
@@ -268,7 +322,7 @@ impl WiringError {
             ),
             WiringError::KindMix { key, module, single, collection } => tree(
                 f,
-                format!("`{}` is bound both as a single binding and as a collection in {module}", show(key)),
+                format!("`{}` is bound both as a single binding and as a collection in {}", show(key), show_module(module)),
                 vec![
                     format!("single binding at {}", place(single)),
                     format!("contribution at {}", place(collection)),
@@ -278,6 +332,7 @@ impl WiringError {
             ),
             WiringError::DanglingAlias { alias, target, module, at } => {
                 let target = show(target);
+                let module = show_module(module);
                 tree(
                     f,
                     format!("alias `{}` in {module} points at `{target}`, which {module} cannot see", show(alias)),
@@ -289,12 +344,12 @@ impl WiringError {
             }
             WiringError::ValueFailed { module, key, error, at } => tree(
                 f,
-                format!("the value for `{}` in {module} failed to build: {error}", show(key)),
+                format!("the value for `{}` in {} failed to build: {error}", show(key), show_module(module)),
                 vec![format!("recorded by `try_value` at {}", place(at))],
             ),
             WiringError::DuplicateReadiness { key, module, first, second } => tree(
                 f,
-                format!("two readiness checks on `{}` in {module}", show(key)),
+                format!("two readiness checks on `{}` in {}", show(key), show_module(module)),
                 vec![
                     format!("first `.ready(..)` at {}", place(first)),
                     format!("second `.ready(..)` at {}", place(second)),
@@ -305,21 +360,22 @@ impl WiringError {
                 let key = show(key);
                 let help = match keyed {
                     Some(module) => format!(
-                        "help: {module} binds it unqualified, as a keyed module's bindings are; reach it with `.in_module_keyed::<M, Q>()` and no `.qualified`"
+                        "help: {} binds it unqualified, as a keyed module's bindings are; reach it with `.in_module_keyed::<M, Q>()` and no `.qualified`",
+                        show_module(module)
                     ),
                     None => format!("help: remove the override, or bind `{key}` in the module the test expects"),
                 };
                 tree(f, format!("override of `{key}` matches no binding"), vec![format!("declared at {}", place(at)), help])
             }
             WiringError::OverrideAmbiguous { key, matches, at } => {
-                let mut items: Vec<String> = matches.iter().map(|m| format!("bound in {m}")).collect();
+                let mut items: Vec<String> = matches.iter().map(|m| format!("bound in {}", show_module(m))).collect();
                 items.push(format!("declared at {}", place(at)));
                 items.push("help: scope it with `.in_module::<M>()`, or replace every match with `.everywhere()`".to_owned());
                 tree(f, format!("override of `{}` matches several bindings", show(key)), items)
             }
             WiringError::OverrideModuleAmbiguous { module, candidates, at } => {
                 let module = short_type_name(*module);
-                let mut items: Vec<String> = candidates.iter().map(|c| format!("instance {c}")).collect();
+                let mut items: Vec<String> = candidates.iter().map(|c| format!("instance {}", show_module(c))).collect();
                 items.push(format!("declared at {}", place(at)));
                 items.push(format!("help: name one with `.in_module_keyed::<{module}, Q>()` or `.in_module_of(&config)`"));
                 tree(f, format!("`.in_module::<{module}>()` matches several instances of {module}"), items)
@@ -340,33 +396,49 @@ impl WiringError {
                 vec![format!("declared at {}", place(at)), "help: set it with `TestApp::timer(..)`".to_owned()],
             ),
             WiringError::ReplacementMissingExports { original, replacement, missing } => {
+                let original = show_module(original);
+                let replacement = show_module(replacement);
                 let mut items: Vec<String> = missing.iter().map(|k| format!("missing `{}`", show(k))).collect();
                 items.push(format!("help: export the missing keys from {replacement}"));
                 tree(f, format!("{replacement} replaces {original} without exporting every key {original} exports"), items)
             }
-            WiringError::ReplacementUnmatched { original, at } => tree(
+            WiringError::ReplacementUnmatched { original, at } => {
+                let original = show_module(original);
+                tree(
+                    f,
+                    format!("`replace_module` replaces {original}, which no module imports"),
+                    vec![
+                        format!("declared at {}", place(at)),
+                        format!("help: remove the replacement, or import {original} where the test expects it"),
+                    ],
+                )
+            }
+            WiringError::DuplicateReplacement { original, first, second } => tree(
                 f,
-                format!("`replace_module` replaces {original}, which no module imports"),
+                format!("two `replace_module` calls replace {}", show_module(original)),
                 vec![
-                    format!("declared at {}", place(at)),
-                    format!("help: remove the replacement, or import {original} where the test expects it"),
+                    format!("first `replace_module` at {}", place(first)),
+                    format!("second `replace_module` at {}", place(second)),
+                    "help: keep one; wiring applied only the first".to_owned(),
                 ],
             ),
             WiringError::Missing { key, consumer, module, near } => {
                 let key = show(key);
+                let module = show_module(module);
                 let help = match near {
                     Some((bound, exporter)) => {
-                        format!("help: {exporter} exports `{}`; the injection point reads `{key}`", show(bound))
+                        format!("help: {} exports `{}`; the injection point reads `{key}`", show_module(exporter), show(bound))
                     }
                     None => format!("help: import a module that exports `{key}`, or provide it in {module}"),
                 };
                 tree(f, format!("missing dependency `{key}`"), vec![format!("needed by {consumer} in {module}"), help])
             }
             WiringError::Ambiguous { key, consumer, module, sources } => {
-                let width = sources.iter().map(|(m, _)| m.as_str().chars().count()).max().unwrap_or(0);
+                let shown: Vec<(String, &Location<'static>)> = sources.iter().map(|(m, at)| (show_module(m), *at)).collect();
+                let width = shown.iter().map(|(m, _)| m.chars().count()).max().unwrap_or(0);
                 let mut items = vec![format!("needed by {consumer}")];
-                items.extend(sources.iter().map(|(m, at)| format!("exported by {:<width$}   ({})", m.as_str(), place(at))));
-                tree(f, format!("ambiguous dependency `{}` in {module}", show(key)), items)
+                items.extend(shown.iter().map(|(m, at)| format!("exported by {m:<width$}   ({})", place(at))));
+                tree(f, format!("ambiguous dependency `{}` in {}", show(key), show_module(module)), items)
             }
             WiringError::Cycle { path } => {
                 let mut steps: &[(KeyName, ModuleName)] = path;
@@ -376,13 +448,14 @@ impl WiringError {
                     }
                 }
                 let head = format!("dependency cycle: {}", closed_loop(steps.iter().map(|(k, _)| show(k)).collect()));
-                tree(f, head, steps.iter().map(|(k, m)| format!("`{}` in {m}", show(k))).collect())
+                tree(f, head, steps.iter().map(|(k, m)| format!("`{}` in {}", show(k), show_module(m))).collect())
             }
             WiringError::ScopeViolation { binding, declared, module, path } => {
                 // The path's steps are printed short by the graph, so its first step is matched
                 // against the short name whichever form the binding prints in.
                 let short = binding.to_string();
                 let name = show(binding);
+                let module = show_module(module);
                 let head = match declared {
                     ScopeKind::Singleton => {
                         format!("scope violation: singleton `{name}` in {module} depends on per-execution data")
@@ -407,7 +480,7 @@ impl WiringError {
                 let binding = show(binding);
                 tree(
                     f,
-                    format!("lifecycle hooks on `{binding}` in {module}, which the scope pass inferred per-execution"),
+                    format!("lifecycle hooks on `{binding}` in {}, which the scope pass inferred per-execution", show_module(module)),
                     vec![format!(
                         "help: hooks run on singletons only; move them to a singleton, or remove what makes `{binding}` need an execution"
                     )],
@@ -469,14 +542,22 @@ impl WiringError {
 /// help. `WiringErrors` indents it under its `×`.
 impl fmt::Display for WiringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.render(f, &colliding(self.key_names()))
+        let full = Collisions { keys: colliding(self.key_names()), modules: colliding_names(self.module_names()) };
+        self.render(f, &full)
     }
+}
+
+/// What one report prints with full paths: the keys and the modules whose short form a different
+/// key, or a different module, in the same report shares.
+struct Collisions {
+    keys: HashSet<Key>,
+    modules: HashSet<ModuleName>,
 }
 
 /// An entry rendered against the whole report's collisions.
 struct Rendered<'a> {
     error: &'a WiringError,
-    full: &'a HashSet<Key>,
+    full: &'a Collisions,
 }
 
 impl fmt::Display for Rendered<'_> {

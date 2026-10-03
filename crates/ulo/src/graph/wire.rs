@@ -22,7 +22,7 @@ use crate::module::meta::FrozenMeta;
 use crate::module::{Module, ModuleIdentity, ModuleName};
 use crate::redact::redact;
 use crate::scope::ScopeKind;
-use crate::testing::{CollectionOverride, Override, OverrideTarget, TestPlan};
+use crate::testing::{CollectionOverride, Override, OverrideTarget, Replacement, TestPlan};
 use crate::timer::{Bound, Timer};
 use crate::transport::controller::{EnhancerDep, HandlerRecord, Mount};
 
@@ -190,12 +190,13 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
 /// Appends the registry's modules to `graph` in collection order, assigning ids and roles,
 /// requalifying keyed exports, mounting controllers, and freezing metadata. Along the way it
 /// reports import cycles (step 1) and, for step 2, the `try_value` failures (redacted), a
-/// replacement's missing exports, a replacement whose original nothing imports, and the test
-/// plan's overrides as it applies them. `load` numbers the modules of a lazy load.
+/// replacement's missing exports, a replacement whose original nothing imports, a second
+/// replacement of one original, and the test plan's overrides as it applies them. `load` numbers
+/// the modules of a lazy load.
 ///
-/// A binding's role is decided here from how it was registered: `controller`, a contribution
-/// through `ModuleDef::enhancer`, or a provider. `scopes::assign_roles` adds the bindings an
-/// `EnhancerSpec` names by type once the tables exist.
+/// A binding's role is decided here: `controller`, a contribution under a role key once every
+/// handler is mounted (`scopes::mark_role_contributions`), or a provider. `scopes::assign_roles`
+/// adds the bindings an `EnhancerSpec` names by type once the tables exist.
 fn freeze(
     graph: &mut Graph,
     mut registry: Registry,
@@ -226,8 +227,17 @@ fn freeze(
         }
     }
 
-    for replacement in plan.iter().flat_map(|plan| &plan.replacements) {
-        if !registry.replaced.iter().any(|replaced| replaced.original == replacement.original) {
+    // The registration walk applies the first replacement of an identity; a later one is
+    // reported here rather than as unmatched.
+    let replacements: &[Replacement] = plan.as_ref().map(|plan| plan.replacements.as_slice()).unwrap_or(&[]);
+    for (position, replacement) in replacements.iter().enumerate() {
+        if let Some(first) = replacements[..position].iter().find(|earlier| earlier.original == replacement.original) {
+            steps.bindings.push(WiringError::DuplicateReplacement {
+                original: ModuleName::of(&replacement.original, 0),
+                first: first.location,
+                second: replacement.location,
+            });
+        } else if !registry.replaced.iter().any(|replaced| replaced.original == replacement.original) {
             steps.bindings.push(WiringError::ReplacementUnmatched {
                 original: ModuleName::of(&replacement.original, 0),
                 at: replacement.location,
@@ -380,6 +390,7 @@ fn freeze(
         merged.extend(ids);
         graph.collections.insert(key, Arc::from(merged));
     }
+    scopes::mark_role_contributions(graph);
     declared
 }
 
@@ -812,7 +823,10 @@ fn check_environment(graph: &Graph, env: &WireEnv, declared: &Declared, errors: 
         }
         if let Some(ready) = &record.ready {
             if !ready.backoff.is_zero() {
-                errors.push(WiringError::BackoffWithoutTimer { binding: name.clone(), at: ready.location });
+                errors.push(WiringError::BackoffWithoutTimer {
+                    binding: name.clone(),
+                    at: ready.backoff_location.unwrap_or(ready.location),
+                });
             }
             if matches!(ready.whole, Bound::After(_)) {
                 errors.push(WiringError::BoundWithoutTimer {

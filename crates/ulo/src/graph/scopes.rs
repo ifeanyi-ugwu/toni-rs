@@ -17,6 +17,7 @@
 //! A binding refused this way stays a singleton for its readers, so one violation is reported
 //! once, at the binding that introduces it, and not again at everything above it.
 
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::Location;
 
@@ -29,14 +30,41 @@ use crate::key::{BindingKind, Key, short_type_name};
 use crate::scope::ScopeKind;
 use crate::transport::controller::{EnhancerDep, HandlerRecord};
 
+/// Gives the enhancer role to every contribution under a role key, whichever builder registered
+/// it. The role keys are those a mounted handler's transport reads, `AnyGuard<T>`,
+/// `AnyInterceptor<T>` and `AnyErrorHandler<T>`, and the key of every contribution freezing marked
+/// as written through `ModuleDef::enhancer`, which covers a transport with no mounted handler.
+///
+/// Keys compare by `TypeId` alone: an alias of a role key, or a `macro_rules` wrapper around one,
+/// is the same key, and no type name is read. The qualifier is not compared either. Runs at
+/// freeze, once every handler is mounted; a lazy load re-runs it over the base bindings, whose
+/// roles only ever move from provider to enhancer here.
+pub(crate) fn mark_role_contributions(graph: &mut Graph) {
+    let mut roles: HashSet<TypeId> =
+        graph.handlers.iter().flat_map(|handler| handler.decl.role_keys).map(|key| key.type_id()).collect();
+    roles.extend(
+        graph
+            .bindings
+            .iter()
+            .filter(|binding| binding.record.kind == BindingKind::Collection && binding.role == Role::Enhancer)
+            .map(|binding| binding.record.primary.type_id()),
+    );
+    for binding in &mut graph.bindings {
+        if binding.record.kind == BindingKind::Collection
+            && binding.role == Role::Provider
+            && roles.contains(&binding.record.primary.type_id())
+        {
+            binding.role = Role::Enhancer;
+        }
+    }
+}
+
 /// Marks the bindings an `EnhancerSpec` names by type, resolved against the controller module's
 /// visibility, as enhancers. Runs before `needs_execution`.
 ///
-/// Every other role is decided at freeze, from how the binding was registered: `controller`, a
-/// contribution through `ModuleDef::enhancer`, or anything else as a provider. No key is read to
-/// decide it, so a contribution through `contribute` under a role key stays a provider. A lazy
-/// load re-runs this over the base bindings, whose roles only ever move from provider to
-/// enhancer here.
+/// Every other role is decided at freeze: `controller`, a contribution under a role key
+/// (`mark_role_contributions`), or anything else as a provider. A lazy load re-runs this over
+/// the base bindings, whose roles only ever move from provider to enhancer here.
 pub(crate) fn assign_roles(graph: &mut Graph) {
     let mut named: Vec<BindingId> = Vec::new();
     for handler in &graph.handlers {

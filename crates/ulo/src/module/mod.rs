@@ -8,6 +8,7 @@ pub(crate) mod keyed;
 pub(crate) mod meta;
 
 use std::any::{Any, TypeId, type_name};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -159,9 +160,16 @@ impl<C: Eq + Send + Sync + 'static> DynKey for C {
 
 /// A module as the errors name it: the type name or its label, the qualifier, and a position for
 /// a second configuration of one type, as in `DbModule @ Replica` or `DbModule #2`.
+///
+/// Type names are cut to their last path segment, and `{:#}` writes them with their full paths:
+/// `my_app::db::DbModule @ my_app::Replica #2`. A label is not a path and prints in both forms;
+/// the alternate form follows it with the module type's full path, `redis (my_app::Redis)`, so two
+/// module types sharing a label print apart too. `Debug` passes the flag along, so `{:#?}` writes
+/// full paths as well.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ModuleName {
     text: Arc<str>,
+    full: Arc<str>,
 }
 
 impl ModuleName {
@@ -169,20 +177,30 @@ impl ModuleName {
     /// registered modules of its type and qualifier; from the second on it is printed as `#n`,
     /// labelled or not, since several configurations commonly share one label.
     pub(crate) fn of(identity: &ModuleIdentity, instance: usize) -> Self {
+        ModuleName {
+            text: Arc::from(ModuleName::render(identity, instance, false)),
+            full: Arc::from(ModuleName::render(identity, instance, true)),
+        }
+    }
+
+    fn render(identity: &ModuleIdentity, instance: usize, full: bool) -> String {
+        let path = |name: &'static str| if full { name.to_owned() } else { short_type_name(name) };
         let mut text = match identity.label {
+            Some(label) if full => format!("{label} ({})", identity.ty_name),
             Some(label) => label.to_owned(),
-            None => short_type_name(identity.ty_name),
+            None => path(identity.ty_name),
         };
         if let Some(qualifier) = identity.qualifier {
             text.push_str(" @ ");
-            text.push_str(&short_type_name(qualifier.name));
+            text.push_str(&path(qualifier.name));
         }
         if instance > 0 {
             text.push_str(&format!(" #{}", instance + 1));
         }
-        ModuleName { text: Arc::from(text) }
+        text
     }
 
+    /// The short form, as `{}` writes it.
     pub fn as_str(&self) -> &str {
         &self.text
     }
@@ -190,7 +208,7 @@ impl ModuleName {
 
 impl fmt::Display for ModuleName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        f.pad(if f.alternate() { &self.full } else { &self.text })
     }
 }
 
@@ -198,4 +216,17 @@ impl fmt::Debug for ModuleName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
+}
+
+/// The names among `names` whose short form a different module's name shares, as
+/// `billing::Module` beside `users::Module`: a report prints these with `{:#}`.
+pub(crate) fn colliding_names<'a>(names: impl IntoIterator<Item = &'a ModuleName>) -> HashSet<ModuleName> {
+    let mut by_text: HashMap<&'a str, Vec<&'a ModuleName>> = HashMap::new();
+    for name in names {
+        let group = by_text.entry(name.as_str()).or_default();
+        if !group.contains(&name) {
+            group.push(name);
+        }
+    }
+    by_text.into_values().filter(|group| group.len() > 1).flatten().cloned().collect()
 }

@@ -102,8 +102,9 @@ pub(crate) struct FrozenBinding {
 pub(crate) enum Role {
     Provider,
     Controller,
-    /// Referenced by type from an `EnhancerSpec`, or contributed through `ModuleDef::enhancer`.
-    /// A contribution through `contribute` is a provider whatever its key.
+    /// Referenced by type from an `EnhancerSpec`, or a contribution under a role key that a
+    /// mounted handler's transport reads or that a module contributes to through
+    /// `ModuleDef::enhancer`, whichever builder registered it.
     Enhancer,
 }
 

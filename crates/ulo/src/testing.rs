@@ -177,7 +177,8 @@ impl<S> TestApp<S> {
 
     /// Swaps a module by identity. The replacement must export a superset of the original's
     /// keys, or wiring reports what is missing. An original no module imports is a wiring error,
-    /// `ReplacementUnmatched`, the same stale mock an override that matches nothing is.
+    /// `ReplacementUnmatched`, the same stale mock an override that matches nothing is, and a
+    /// second replacement of one original is `DuplicateReplacement`, naming both calls.
     #[track_caller]
     pub fn replace_module(self, original: impl Module, replacement: impl Module) -> TestApp<Settled> {
         let location = Location::caller();

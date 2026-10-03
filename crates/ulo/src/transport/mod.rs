@@ -3,8 +3,7 @@
 //!
 //! `Guard<Http>` and `Guard<Rpc>` are different traits, so an HTTP guard and an RPC guard are
 //! different roles. A role comes only from a trait implementation; there are no marker
-//! attributes, and a global enhancer is contributed under its role key through
-//! `ModuleDef::enhancer`.
+//! attributes, and a global enhancer is a contribution under its role key.
 
 pub(crate) mod controller;
 pub(crate) mod enhancer;
@@ -121,11 +120,12 @@ mod sealed {
 /// The role keys: `AnyGuard<T>`, `AnyInterceptor<T>` and `AnyErrorHandler<T>` for every
 /// `T: Transport`, and nothing else.
 ///
-/// A global enhancer is contributed through [`ModuleDef::enhancer`](crate::ModuleDef::enhancer),
-/// which this trait bounds, so the graph learns at the contribution that the entry is an enhancer
-/// and reads no type name to find out. The role's kind and transport are the key's own type, which
-/// the contribution's record already carries; the trait adds nothing to them. A contribution
-/// through `contribute` is a provider contribution whatever its key.
+/// [`ModuleDef::enhancer`](crate::ModuleDef::enhancer) takes only a role key, which this trait
+/// bounds. Roles are decided by `TypeId` when the graph freezes: a contribution under a role key
+/// that a mounted handler's transport reads, or that any module contributes to through
+/// `enhancer`, is an enhancer, whichever builder registered it, and no type name is read. The
+/// role's kind and transport are the key's own type, which the contribution's record already
+/// carries; the trait adds nothing to them.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a role key",
     label = "a global enhancer is contributed under a role key",

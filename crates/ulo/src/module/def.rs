@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::binding::alias::{Alias, Input};
-use crate::binding::contribute::Contribute;
+use crate::binding::contribute::{Contribute, Enhancer};
 use crate::binding::factory::{
     Factory, ShutdownFactory, erase_destroy_hook, erase_factory, erase_init_hook, erase_signalled_hook,
     erase_try_factory,
@@ -286,23 +286,29 @@ impl<'a> ModuleDef<'a> {
         Handle::new(self.push(factory_record::<Transient, T>(ctor, dependencies, location)))
     }
 
-    /// Contributions to the collection `U`, from this and any other module. Each is a provider
-    /// contribution whatever `U` is, `Auto` meaning singleton; a global enhancer goes through
-    /// [`enhancer`](Self::enhancer).
+    /// Contributions to the collection `U`, from this and any other module. Under a role key a
+    /// mounted handler's transport reads, or one any module contributes to through
+    /// [`enhancer`](Self::enhancer), each is an enhancer; otherwise each is a provider
+    /// contribution, `Auto` meaning singleton.
     pub fn contribute<U: ?Sized + Send + Sync + 'static>(&mut self) -> Contribute<'_, U> {
         Contribute::new(&mut *self.node)
     }
 
-    /// Global enhancers: contributions to the role key `R`, the same builder
-    /// [`contribute`](Self::contribute) returns, each registered as an enhancer. An `Auto`
+    /// Global enhancers: contributions to the role key `R`, through the builder
+    /// [`contribute`](Self::contribute) returns, marked so that it has no `qualified`. An `Auto`
     /// enhancer is a singleton when nothing below it needs an execution and is built per call
     /// otherwise (§3.3). Stack order puts the global level first, in collection order (§7).
+    ///
+    /// A contribution through `contribute` under a role key a mounted handler's transport reads
+    /// is an enhancer too. This entry is what marks a role key no mounted handler reads: through
+    /// `contribute` its contributions stay providers, and an `Auto` one that needs an execution is
+    /// refused as a singleton.
     ///
     /// ```ignore
     /// m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a);
     /// m.enhancer::<AnyInterceptor<Rpc>>().value(Arc::new(Tracing::default()));
     /// ```
-    pub fn enhancer<R: Role + ?Sized>(&mut self) -> Contribute<'_, R, ()> {
+    pub fn enhancer<R: Role + ?Sized>(&mut self) -> Contribute<'_, R, (), Enhancer> {
         Contribute::for_role(&mut *self.node)
     }
 
@@ -453,7 +459,8 @@ pub(crate) struct ModuleNode {
     /// Declaration order is the tie-break inside a module.
     pub(crate) bindings: Vec<BindingRecord>,
     /// Indices into `bindings` of the contributions written through `ModuleDef::enhancer`, in
-    /// ascending order. Freezing gives them `Role::Enhancer`.
+    /// ascending order. Freezing gives them `Role::Enhancer`, and their key's type marks every
+    /// contribution under it as an enhancer.
     pub(crate) enhancers: Vec<usize>,
     pub(crate) exports: Vec<ExportRecord>,
     pub(crate) controllers: Vec<ControllerRecord>,
