@@ -114,8 +114,11 @@ Extract::extract (last message's suggestion)	FromCall::from_call
 
 Received 2026-10-03, answering the review's 27 refinements, 14 questions, the addendum and §13
 decisions 1 and 4. On R6 the user had independently concluded the providers list should inherit the
-`with` grammar, which is the fix chosen here. Not yet signed off; three points await the user: R15,
-decision 1, and the third error-naming branch (A6.4).
+`with` grammar, which is the fix chosen here. The user decided two of its three open points the same
+day: R15 (`Unavailable` with `ErrorInfo.reason`) and the third error-naming branch (A6.4:
+`ConnectRefused`, the core's `NoTimer` renamed `TimerMissing`). Decision 1 (per-module middleware)
+is open: the user is putting the current ulo design's middleware argument (ADR-0056, proposed) and the
+question of keeping both modes to the author first.
 
 I've checked every item on its merits rather than taking the review's word for it. The review is right on all 27 refinements, and the probes settle the questions that matter. For 21 of them I accept the change as written. For six (R4, R6, R7, R11, R14, R15) I accept the problem but choose a different fix, and the review's questions plus its two open decisions get a direct answer each.
 
