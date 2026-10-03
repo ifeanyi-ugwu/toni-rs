@@ -61,32 +61,35 @@ struct SpecMethods {
 }
 
 /// `#[meta]` reached as an attribute macro: outside a `#[routes]` impl, or above `#[routes]`.
+/// `#[routes]` takes it from the impl and from every method, inside `cfg_attr` or not, so one
+/// written below `#[routes]` never reaches here.
 pub(crate) fn meta_marker(_attr: TokenStream, _item: TokenStream) -> syn::Result<TokenStream> {
-    Err(syn::Error::new(
-        Span::call_site(),
-        "#[meta] goes below #[routes] on a #[routes] impl block, or on one of its handler methods; \
-         #[routes] reads it, and an attribute written above #[routes] expands before it",
-    ))
+    Err(unread("meta"))
 }
 
-/// `#[guards]` and its kin reached as attribute macros: outside a `#[routes]` impl, where
-/// nothing consumed them, or above `#[routes]`, which expands after them.
+/// `#[guards]` and its kin reached as attribute macros, under the same conditions as `#[meta]`.
 pub(crate) fn marker(name: &str, _attr: TokenStream, _item: TokenStream) -> syn::Result<TokenStream> {
-    Err(syn::Error::new(
+    Err(unread(name))
+}
+
+fn unread(name: &str) -> syn::Error {
+    syn::Error::new(
         Span::call_site(),
         format!(
-            "#[{name}] goes below #[routes] on a #[routes] impl block, or on one of its handler methods; \
-             #[routes] reads it, and an attribute written above #[routes] expands before it"
+            "#[{name}] is read by #[routes]: it goes on a #[routes] impl block, below #[routes], or on a method of one; \
+             no #[routes] read this one, so it is outside a #[routes] impl or above #[routes], which expands after it"
         ),
-    ))
+    )
 }
 
-/// `__handler` reached as an attribute macro: the method has no transport attribute that
-/// consumed it.
+/// `__handler` reached as an attribute macro: no transport attribute on the method consumed it.
 pub(crate) fn unconsumed_handler(_attr: TokenStream, _item: TokenStream) -> syn::Result<TokenStream> {
     Err(syn::Error::new(
         Span::call_site(),
-        "this handler's transport attribute did not read its enhancers; the transport crate may not support #[routes]",
+        "no transport attribute read this handler's enhancers: #[routes] took this method for a handler because of an \
+         attribute macro on it, read through `cfg_attr` (one outside any `cfg_attr` counts in every build, otherwise the \
+         first inside one decides), and no transport attribute supporting #[routes] is present in this build; \
+         a helper goes in a separate impl block",
     ))
 }
 
@@ -135,17 +138,31 @@ pub(crate) fn specs(input: TokenStream) -> syn::Result<TokenStream> {
     let at = Site { tokens: &tokens, key: &key, transport: &transport, shared: &shared };
     let controller = tier_statements(Tier::Controller, &at, &tokens.controller, &controller_var, &mut counter)?;
     let method = tier_statements(Tier::Method, &at, &tokens.method, &method_var, &mut counter)?;
-    let controller_mut = (!controller.is_empty()).then(|| quote!(mut));
-    let method_mut = (!method.is_empty()).then(|| quote!(mut));
+    let controller_mut = binding_mut(&controller);
+    let method_mut = binding_mut(&method);
+    let [controller, method] = [controller, method].map(|statements| statements.into_iter().map(|(tokens, _)| tokens));
     Ok(quote! {
         {
-            let #controller_mut #controller_var = #ulo::EnhancerSpec::<#transport>::new();
+            #controller_mut #controller_var = #ulo::EnhancerSpec::<#transport>::new();
             #(#controller)*
-            let #method_mut #method_var = #ulo::EnhancerSpec::<#transport>::new();
+            #method_mut #method_var = #ulo::EnhancerSpec::<#transport>::new();
             #(#method)*
             (#controller_var, #method_var)
         }
     })
+}
+
+/// `let` when no statement registers into the binding, `let mut` when one does in every build,
+/// and `let mut` with `unused_mut` allowed when every one is gated, since a build compiling them
+/// all out never mutates it.
+fn binding_mut(statements: &[(TokenStream, bool)]) -> TokenStream {
+    if statements.is_empty() {
+        quote!(let)
+    } else if statements.iter().all(|(_, gated)| *gated) {
+        quote!(#[allow(unused_mut)] let mut)
+    } else {
+        quote!(let mut)
+    }
 }
 
 /// What every entry of one handler is registered against.
@@ -156,7 +173,14 @@ struct Site<'a> {
     shared: &'a Ident,
 }
 
-fn tier_statements(tier: Tier, at: &Site<'_>, attrs: &[EnhancerAttr], var: &Ident, counter: &mut usize) -> syn::Result<Vec<TokenStream>> {
+/// Each applying entry's statement, under its attribute's gates, with whether it has any.
+fn tier_statements(
+    tier: Tier,
+    at: &Site<'_>,
+    attrs: &[EnhancerAttr],
+    var: &Ident,
+    counter: &mut usize,
+) -> syn::Result<Vec<(TokenStream, bool)>> {
     let mut statements = Vec::new();
     // Counts every impl-level value, those scoped to other transports included: the position in
     // `Shared` is the same for every handler of the impl.
@@ -186,7 +210,8 @@ fn tier_statements(tier: Tier, at: &Site<'_>, attrs: &[EnhancerAttr], var: &Iden
                 (Form::Value(expr), Tier::Controller) => shared_statement(attr.role, expr, at.shared, var, position),
                 (form, _) => entry_statement(attr.role, form, &at.tokens.handler, at.transport, var, *counter),
             };
-            statements.push(statement);
+            let gates = &attr.gates;
+            statements.push((quote!(#(#gates)* #statement), !gates.is_empty()));
             *counter += 1;
         }
     }
@@ -206,7 +231,8 @@ fn shared_statement(role: Role, expr: &Expr, shared: &Ident, var: &Ident, positi
     }
 }
 
-/// One entry other than an impl-level value, registered through a local fn named after the
+/// One entry other than an impl-level value, as one block statement, so the gates of the
+/// attribute holding it cover the whole entry; registered through a local fn named after the
 /// handler. The fn's definition is
 /// spanned at the handler and its call at the entry: an entry lacking the role for this
 /// transport fails at the entry, and the "required by a bound" note names and points at the
@@ -238,8 +264,10 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
                 }
             };
             quote_spanned! {entry_span=>
-                let #value = #expr;
-                { #def #handler(&mut #var, #value); }
+                {
+                    let #value = #expr;
+                    { #def #handler(&mut #var, #value); }
+                }
             }
         }
         Form::With { scope, closure } => {
@@ -268,8 +296,10 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
                 }
             };
             quote_spanned! {entry_span=>
-                let #build = #closure;
-                { #def #callee(&mut #var, #build); }
+                {
+                    let #build = #closure;
+                    { #def #callee(&mut #var, #build); }
+                }
             }
         }
     }

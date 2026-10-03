@@ -48,7 +48,7 @@ use syn::{Ident, LitStr};
 
 use crate::params::{HandlerSig, Receiver};
 use crate::paths::Paths;
-use crate::protocol::{HandlerTokens, MetaTokens};
+use crate::protocol::{HandlerTokens, MetaExpr, MetaTokens};
 use crate::{body, keys, reply, shared};
 
 /// One handler's three owed items.
@@ -244,20 +244,20 @@ pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
 }
 
 /// A block evaluating to the handler's `::ulo::Metadata`: `controller(expr)` per impl-level
-/// declaration and `method(expr)` per method-level one, each spanned at its expression, built
-/// once when the handler mounts.
+/// declaration and `method(expr)` per method-level one, each spanned at its expression and
+/// compiled under its gates, built once when the handler mounts.
 pub fn metadata(meta: &MetaTokens) -> TokenStream {
     let metadata = Ident::new("__ulo_meta", Span::mixed_site());
-    let controller = meta.controller.iter().map(|expr| {
+    let declare = |tier: &str, declared: &MetaExpr| {
+        let MetaExpr { gates, expr } = declared;
+        let tier = Ident::new(tier, expr.span());
         quote_spanned! {expr.span()=>
-            #metadata.controller(#expr);
+            #(#gates)*
+            #metadata.#tier(#expr);
         }
-    });
-    let method = meta.method.iter().map(|expr| {
-        quote_spanned! {expr.span()=>
-            #metadata.method(#expr);
-        }
-    });
+    };
+    let controller = meta.controller.iter().map(|declared| declare("controller", declared));
+    let method = meta.method.iter().map(|declared| declare("method", declared));
     quote! {
         {
             #[allow(unused_mut)]

@@ -38,10 +38,7 @@ pub(crate) fn expand(method: &'static str, attr: TokenStream, item: TokenStream)
     }
     let mut item: ImplItemFn = syn::parse2(item)?;
     let Some(tokens) = protocol::take_handler_attr(&mut item.attrs)? else {
-        return Err(syn::Error::new(
-            Span::call_site(),
-            format!("#[{attr_name}] goes on a method of a `#[routes]` impl, which hands it the handler's enhancers"),
-        ));
+        return Err(protocol::outside_routes(&attr_name));
     };
     let sig = params::analyze(&item.sig)?;
     reply::rewrite_opaque_returns(&mut item.sig);

@@ -8,8 +8,9 @@
 //! name: there `#[routes]` emits a named associated constant and `Controller::mount` reads it,
 //! which evaluates it when `mount` is instantiated.
 //!
-//! A handler behind `#[cfg]` has no `__ULO_KEY_<name>` or `__ULO_CHECKS_<name>` where its `cfg`
-//! fails, so every read of either carries the handler's gates ([`crate::cfg::presence_gates`]).
+//! A handler behind `#[cfg]`, or whose transport attribute sits inside `cfg_attr`, has no
+//! `__ULO_KEY_<name>` or `__ULO_CHECKS_<name>` where its predicate fails, so every read of either
+//! carries the handler's gates ([`crate::cfg::presence_gates`] and [`crate::cfg::gates_of`]).
 //! The key assertion is a block: its first `let` reads the ungated handlers' keys, and each
 //! further `let`, one per gated handler, carries that handler's gates. A handler's key counts
 //! only in a build that compiles the handler, and a scoped key whose handlers are all compiled
@@ -64,7 +65,8 @@ pub fn scoped_keys(controller: &[EnhancerAttr]) -> Vec<Ident> {
 pub struct GatedHandler<'a> {
     pub name: &'a Ident,
     /// The attributes that decide whether the handler is compiled, from
-    /// [`crate::cfg::presence_gates`]; empty for a handler compiled in every configuration.
+    /// [`crate::cfg::presence_gates`], plus a `#[cfg(..)]` per predicate of the `cfg_attr` around
+    /// its transport attribute; empty for a handler compiled in every configuration.
     pub gates: &'a [Attribute],
 }
 
@@ -97,7 +99,7 @@ pub struct Assertions {
 
 /// The assertions for `keys` over `handlers`, the impl's handlers. The message names the key and
 /// every handler, the gated ones apart: "`htpp` is not the key of any handler's transport in this
-/// impl (handlers: get; behind `#[cfg]`: get_rpc)".
+/// impl (handlers: get; behind `cfg`: get_rpc)".
 ///
 /// A controller with any generic parameter, a lifetime included, takes the generic form: a free
 /// constant cannot name its type without the parameters in scope.
@@ -172,7 +174,7 @@ pub fn assertions(self_ty: &Type, generics: &Generics, keys: &[Ident], handlers:
     Assertions { free, associated, in_mount }
 }
 
-/// "handlers: get, get_rpc", or "no handlers"; gated handlers are listed after "behind `#[cfg]`:",
+/// "handlers: get, get_rpc", or "no handlers"; gated handlers are listed after "behind `cfg`:",
 /// since a build that fails the assertion may have compiled them out.
 fn handler_list(handlers: &[GatedHandler<'_>], names: &[String]) -> String {
     let mut ungated = Vec::new();
@@ -187,7 +189,7 @@ fn handler_list(handlers: &[GatedHandler<'_>], names: &[String]) -> String {
     match (ungated.is_empty(), gated.is_empty()) {
         (true, true) => "no handlers".to_owned(),
         (false, true) => format!("handlers: {}", ungated.join(", ")),
-        (true, false) => format!("handlers behind `#[cfg]`: {}", gated.join(", ")),
-        (false, false) => format!("handlers: {}; behind `#[cfg]`: {}", ungated.join(", "), gated.join(", ")),
+        (true, false) => format!("handlers behind `cfg`: {}", gated.join(", ")),
+        (false, false) => format!("handlers: {}; behind `cfg`: {}", ungated.join(", "), gated.join(", ")),
     }
 }

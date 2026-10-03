@@ -80,6 +80,11 @@ pub struct EnhancerAttr {
     pub role: Role,
     pub entries: Vec<Entry>,
     pub span: Span,
+    /// The `#[cfg(..)]` attributes the attribute's entries are compiled under: one per predicate of
+    /// the `cfg_attr`s it was written inside, on a method. Empty for an attribute written outside
+    /// any `cfg_attr`, and always at the controller tier, where rustc has evaluated the impl's
+    /// `cfg_attr`s before `#[routes]` reads them.
+    pub gates: Vec<syn::Attribute>,
 }
 
 #[derive(Clone)]
@@ -244,20 +249,21 @@ impl EnhancerAttr {
     /// `#[guards(..)]` and its kin as written on the impl or a method.
     pub fn from_attr(role: Role, attr: &syn::Attribute) -> syn::Result<Self> {
         let entries = attr.parse_args_with(Punctuated::<Entry, Token![,]>::parse_terminated)?;
-        Ok(EnhancerAttr { role, entries: entries.into_iter().collect(), span: attr.path().span() })
+        Ok(EnhancerAttr { role, entries: entries.into_iter().collect(), span: attr.path().span(), gates: Vec::new() })
     }
 }
 
-/// `guards(..)` as `__handler` carries it.
+/// `guards(..)` as `__handler` carries it, after its gates: `#[cfg(feature = "x")] guards(..)`.
 impl Parse for EnhancerAttr {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let gates = input.call(syn::Attribute::parse_outer)?;
         let name: Ident = input.parse()?;
         let role = Role::of_attr(&name.to_string())
             .ok_or_else(|| syn::Error::new(name.span(), "expected `guards`, `interceptors` or `error_handlers`"))?;
         let content;
         parenthesized!(content in input);
         let entries = Punctuated::<Entry, Token![,]>::parse_terminated(&content)?;
-        Ok(EnhancerAttr { role, entries: entries.into_iter().collect(), span: name.span() })
+        Ok(EnhancerAttr { role, entries: entries.into_iter().collect(), span: name.span(), gates })
     }
 }
 
@@ -265,6 +271,7 @@ impl ToTokens for EnhancerAttr {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let name = Ident::new(self.role.attr_name(), self.span);
         let entries = &self.entries;
-        quote!(#name(#(#entries),*)).to_tokens(tokens);
+        let gates = &self.gates;
+        quote!(#(#gates)* #name(#(#entries),*)).to_tokens(tokens);
     }
 }

@@ -90,11 +90,26 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `#[cfg(feature = "rpc")]` goes in `#[cfg_attr(feature = "rpc", guards(rpc = ..))]` on the impl,
 /// which rustc evaluates before `#[routes]` reads the impl's attributes.
 ///
+/// `#[routes]` reads a method's attributes through `cfg_attr`, at any depth:
+/// - `#[cfg_attr(feature = "x", ulo_http::get("/beta"))]` makes the method a handler only where
+///   the predicate holds, gated like a handler behind `#[cfg]`: mounted, and its key counted, only
+///   in that build. Elsewhere it is a plain method, dead code unless something calls it;
+///   `#[cfg(feature = "x")]` removes it instead.
+/// - `#[cfg_attr(feature = "x", guards(..))]`, and likewise `interceptors`, `error_handlers` and
+///   `meta`, on a handler applies its entries only where the predicate holds.
+/// - One `cfg_attr` may hold several of these beside unrelated attributes,
+///   `#[cfg_attr(feature = "x", ulo_http::get("/beta"), guards(AuthGuard), inline)]`; `#[routes]`
+///   takes the enhancers and `meta` and leaves the rest in place.
+///
 /// A method carrying an attribute outside the language's own (`doc`, `allow`, `cfg`, `inline` and
-/// the like) and the enhancer and `#[meta]` markers, such as `#[tracing::instrument]`, is treated
-/// as a handler, so helpers go in a separate `impl` block. A handler takes `&self`, or
-/// `self: Arc<Self>` for a reply that outlives the call, and declares no type or const parameter;
-/// the controller itself may be generic.
+/// the like) and the enhancer and `#[meta]` markers, such as `#[tracing::instrument]`, inside
+/// `cfg_attr` or not, is treated as a handler, so helpers go in a separate `impl` block. One such
+/// attribute written outside any `cfg_attr` makes the method a handler in every build; when every
+/// one sits inside a `cfg_attr`, the first decides, so the transport attribute goes first. A
+/// transport attribute inside `cfg_attr` beside another attribute macro outside one fails to
+/// compile where the predicate fails. A handler takes `&self`, or `self: Arc<Self>` for a reply
+/// that outlives the call, and declares no type or const parameter; the controller itself may be
+/// generic.
 #[proc_macro_attribute]
 pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
     routes::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -103,7 +118,7 @@ pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Guards for every handler of a `#[routes]` impl, or for one method: by type (`AuthGuard`),
 /// transport-scoped by type (`http = AuthGuard`), by value (`value = expr`), or by closure
 /// (`with = |u: Ext<CurrentUser>| ..`). Read by `#[routes]`, so on the impl it goes below
-/// `#[routes]`; anywhere else it is an error.
+/// `#[routes]`; on a method it may sit inside `cfg_attr`; anywhere else it is an error.
 ///
 /// On the impl, an entry applies to every handler and must have the role for each handler's
 /// transport; `http = AuthGuard` limits it to that transport's handlers. `value = expr` is built
@@ -140,7 +155,8 @@ pub fn error_handlers(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Declared metadata on a handler or on its `#[routes]` impl: plain `Send + Sync + 'static`
 /// values, built once when the handler mounts, which guards and interceptors read through
 /// `cx.exec().handler()`. The method's declaration of a type wins over the impl's. Read by
-/// `#[routes]`, so on the impl it goes below `#[routes]`; anywhere else it is an error.
+/// `#[routes]`, so on the impl it goes below `#[routes]`; on a method it may sit inside
+/// `cfg_attr`; anywhere else it is an error.
 #[proc_macro_attribute]
 pub fn meta(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::meta_marker(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
