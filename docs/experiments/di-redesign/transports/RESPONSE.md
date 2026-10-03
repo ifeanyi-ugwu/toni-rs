@@ -257,3 +257,75 @@ On `Ok` during the late path, the review is right that suppressing the error was
 - **X5 extended:** `CancelReason::Explicit` and `on_stream_end` (R23, Q8). X10 is retired.
 
 What needs your answer: R15 (`Unavailable` for unhandled patterns), decision 1 (module-local middleware), and the third error-naming branch (A6.4).
+
+---
+
+## Second response: per-module middleware and tower
+
+Received 2026-10-03. The user asked the author to weigh the current ulo design's proposed position
+(ADR-0056: retire per-module middleware, keep one path-scoped pre-dispatch stage on every transport)
+against app-wide-by-pattern and module-local, and whether both modes could be kept; then where tower
+fits. Not yet signed off.
+
+### Per-module middleware
+
+Short version: **option 3, no per-module middleware.** The pre-dispatch stage covers the app-wide case, controller interceptors cover the local case, and nothing real falls between them.
+
+| | App-wide by pattern | Module-local | No per-module middleware |
+|---|---|---|---|
+| Shared auth module protecting others | ✓ | ✗ | ✓ through pre-dispatch, path-scoped |
+| Failures inside the error chain | ✗ | ✗ | ✓ in both places |
+| Order decided by something visible | ✗ (import order) | ✓ | ✓ (declaration order) |
+| Works on all four transports | ✗ (HTTP only) | ✗ | ✓ |
+| Concepts a user learns | two stages + interceptors | two stages + interceptors | one stage + interceptors |
+
+**Do you need both modes?** Only if some behavior must run *after routing but before guards*, scoped to *one module*, and can't be expressed as a path scope. I can't find one:
+- **Auth for a group of routes** is pre-dispatch scoped by pattern. It runs before guards, so it can set `CurrentUser`.
+- **Logging, metrics, or transforming a module's responses** is an interceptor.
+- **Rejecting a request** is a guard.
+
+Two details to settle so option 3 holds up:
+
+1. **Pre-dispatch has two sub-steps.** Path rewriting has to happen before route matching, while scoping by route pattern needs the match. So: unscoped entries run first, and can rewrite and see misses; then the route is matched; then pattern-scoped entries run; then dispatch. It's still one stage to the user, in declaration order, and both sub-steps are inside the error chain. Only global error handlers apply to a miss, since no handler matched.
+
+2. **"Every controller in this module" is the one gap**, since interceptors are per controller. If that need appears, don't bring middleware back. Add a **module tier to the enhancer stack** (global, module, controller, method). It's inside the error chain, ordered explicitly, and has the same semantics as the tiers that already exist. Until someone needs it, `.at(prefix)` (R14) plus a pattern-scoped pre-dispatch entry covers it.
+
+This also supports the default you liked: "app-wide by pattern" survives intact as pre-dispatch's scoping. What's retired is the second stage that sat outside the error chain.
+
+### Tower
+
+#### Where tower fits in each option
+
+| Option | Where layers run |
+|---|---|
+| App-wide by pattern | the global pre-routing stage only, unscoped, HTTP only |
+| Module-local | the same; the after-routing stage has no tower position |
+| No per-module middleware (pre-dispatch) | both pre-dispatch sub-steps, so layers can be unscoped or path-scoped |
+
+#### Path-scoped layers under pre-dispatch
+
+Yes, path-scoped layers work. Tower layers are composed once, not per request, and the route table is known in `prepare`. So:
+
+- **Unscoped layers** wrap the whole stage, before matching. They can rewrite and they see misses.
+- **Scoped layers**: for each route, `prepare` builds that route's own stack from the layers whose pattern matches it, in declaration order. A request is matched, then runs its route's prebuilt stack. There's no per-request composition, and routes with the same set of layers share one stack.
+
+```rust
+m.meta::<fw_http::PreDispatch>()
+    .layer(TraceLayer::new_for_http())                          // unscoped
+    .layer_for(["/files/*"], RequestBodyLimitLayer::new(50 * MB))
+    .apply_for::<ApiKeyAuth>(["/admin/*"]);
+```
+
+Being in the error chain needs two clarifications:
+- **A layer's `Err` and its panics** go to the error handlers, as `BoxError` and `PanicRecovered` respectively.
+- **A response a layer builds itself**, such as tower-http's auth answering 401, is a response, not an error, so error handlers don't see it. That's inherent to tower, and the documentation should say so.
+
+#### gRPC
+
+Yes. gRPC is HTTP/2, so `http::Request` and `http::Response` are already its types, and tonic is built on tower. Give gRPC the same pre-dispatch stage with `.layer` and `.layer_for`, scoped by gRPC method paths (`/users.v1.UserService/*`).
+
+One spec point decides how layer responses work there. A generic HTTP layer that answers with a non-200 HTTP status isn't a valid gRPC response. The gRPC transport translates such a response using the gRPC spec's HTTP-to-status mapping (401 to UNAUTHENTICATED, 403 to PERMISSION_DENIED, 429 and 502–504 to UNAVAILABLE, and so on), so clients still receive a proper `grpc-status`.
+
+#### WebSocket and RPC
+
+Their pre-dispatch stage takes `Middleware<T>` only, not tower. Their requests aren't HTTP, and the tower-http ecosystem doesn't apply to them. That's enforced by the type system: `.layer` exists on the HTTP and gRPC pipelines alone, so trying it on RPC is a compile error, not a runtime surprise.
