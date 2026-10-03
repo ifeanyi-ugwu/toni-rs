@@ -331,3 +331,34 @@ One spec point decides how layer responses work there. A generic HTTP layer that
 #### WebSocket and RPC
 
 Their pre-dispatch stage takes `Middleware<T>` only, not tower. Their requests aren't HTTP, and the tower-http ecosystem doesn't apply to them. That's enforced by the type system: `.layer` exists on the HTTP and gRPC pipelines alone, so trying it on RPC is a compile error, not a runtime surprise.
+
+---
+
+## Third response: the two choices made in the fold
+
+Received 2026-10-03, answering the fold's two questions. Not yet signed off.
+
+### 1. WebSocket keeps `unimplemented`
+
+Leave it as written. [32] is about RPC: "a pattern nothing handles is reported the same way on every transport" means every RPC *link*, because a caller using `RpcClient` shouldn't see different answers depending on which broker sits underneath. RPC chose `Unavailable` because most links *can't* know whether a handler exists, so the uniform answer had to be the one that's true on all of them.
+
+A WebSocket gateway isn't one of those links, and it does know for certain. The rule behind both decisions is "answer what's true", and for WebSocket that's `unimplemented`.
+
+### 2. Keep two entries for GraphQL, but add a form for the real gap
+
+**For GraphQL, the two-entry form is right.** `AsyncGraphql<S>` is the adapter crate's own `Construct` type, so `AsyncGraphql<ApiSchema> as dyn Engine` is the natural spelling. Each entry does one job: the closure builds the schema, and the type binds the adapter under the trait.
+
+**But the same split leaves a real gap elsewhere.** `X as dyn T` lowers to `provide::<X>().also_as(..)`, which requires `X: Construct`. A third-party type built by a closure, such as `RedisCache::new(cfg)` that should be read as `dyn Cache`, has no macro spelling today. The user has to implement `Module` by hand. That's a gap, so it's worth a spelling.
+
+**Don't spell it `with = .. as dyn T`.** A closure's body extends as far as it can, so in `with = |cfg| RedisCache::new(cfg) as dyn Cache`, the `as dyn Cache` parses as a cast *inside the body*. The user then gets "non-primitive cast", which says nothing about bindings. Parentheses would fix the parse, but forgetting them would be a common mistake with a confusing error.
+
+**Use a key-first form instead, mirroring `into K: [..]`:**
+
+```rust
+providers = [
+    dyn Cache: with = |cfg: Dep<RedisConfig>| RedisCache::new(cfg),
+    dyn Cache: with(execution) = |..| ..,          // scope axis, as everywhere
+]
+```
+
+This lowers to `.with(f).also_as::<dyn Cache>(|a| a)`, the closure's handle plus a coercion, which the value API already supports. As with `X as dyn T`, the concrete type stays bound in the module too, and exports decide what leaves the module. It's unambiguous to parse, it reads as "this key is provided by this closure", and its shape matches the `into` lists users already know: `K: [..]` contributes to a collection, while `K: with = ..` provides a single binding.
