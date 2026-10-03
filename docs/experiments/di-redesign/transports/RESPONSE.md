@@ -117,8 +117,9 @@ decisions 1 and 4. On R6 the user had independently concluded the providers list
 `with` grammar, which is the fix chosen here. The user decided two of its three open points the same
 day: R15 (`Unavailable` with `ErrorInfo.reason`) and the third error-naming branch (A6.4:
 `ConnectRefused`, the core's `NoTimer` renamed `TimerMissing`). Decision 1 (per-module middleware)
-is open: the user is putting the current ulo design's middleware argument (ADR-0056, proposed) and the
-question of keeping both modes to the author first.
+was put back to the author with the current ulo design's argument (ADR-0056, proposed); see the second
+response. The user signed off the rest of this response the same day, decision 4 included (connect
+guards after the 101, `refuse = handshake` as a per-gateway opt-in).
 
 I've checked every item on its merits rather than taking the review's word for it. The review is right on all 27 refinements, and the probes settle the questions that matter. For 21 of them I accept the change as written. For six (R4, R6, R7, R11, R14, R15) I accept the problem but choose a different fix, and the review's questions plus its two open decisions get a direct answer each.
 
@@ -265,7 +266,8 @@ What needs your answer: R15 (`Unavailable` for unhandled patterns), decision 1 (
 Received 2026-10-03. The user asked the author to weigh the current ulo design's proposed position
 (ADR-0056: retire per-module middleware, keep one path-scoped pre-dispatch stage on every transport)
 against app-wide-by-pattern and module-local, and whether both modes could be kept; then where tower
-fits. Not yet signed off.
+fits. The user signed it off the same day: option 3 (no per-module middleware; one pre-dispatch stage
+in two sub-steps) and the tower answer. The module tier for the enhancer stack waits until a case needs it.
 
 ### Per-module middleware
 
