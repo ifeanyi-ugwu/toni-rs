@@ -25,30 +25,29 @@ use crate::binding::Recipe;
 use crate::dependency::{Dependencies, ReadKind};
 use crate::error::wiring::WiringError;
 use crate::graph::wire::Declared;
-use crate::graph::{BindingId, EdgeTarget, Effective, FrozenBinding, Graph, ModuleId, Role, Visible, dependency_text};
+use crate::graph::{
+    BindingId, EdgeTarget, Effective, FrozenBinding, Graph, ModuleId, Role, Visible, dependency_text, record_key,
+};
 use crate::key::{BindingKind, Key, short_type_name};
 use crate::scope::ScopeKind;
 use crate::transport::controller::{EnhancerDep, HandlerRecord};
 
 /// Gives the enhancer role to every contribution under a role key, whichever builder registered
-/// it. The role keys are those a mounted handler's transport reads, `AnyGuard<T>`,
-/// `AnyInterceptor<T>` and `AnyErrorHandler<T>`, and the key of every contribution freezing marked
-/// as written through `ModuleDef::enhancer`, which covers a transport with no mounted handler.
+/// it, and reports what a transport cannot read under one (step 2): a qualified contribution, as
+/// `QualifiedRoleContribution`, and a single binding through any of its keys, as
+/// `SingleRoleBinding`. The role keys are those `role_types` collects.
 ///
 /// Keys compare by `TypeId` alone: an alias of a role key, or a `macro_rules` wrapper around one,
-/// is the same key, and no type name is read. The qualifier is not compared either. Runs at
-/// freeze, once every handler is mounted; a lazy load re-runs it over the base bindings, whose
-/// roles only ever move from provider to enhancer here.
-pub(crate) fn mark_role_contributions(graph: &mut Graph) {
-    let mut roles: HashSet<TypeId> =
-        graph.handlers.iter().flat_map(|handler| handler.decl.role_keys).map(|key| key.type_id()).collect();
-    roles.extend(
-        graph
-            .bindings
-            .iter()
-            .filter(|binding| binding.record.kind == BindingKind::Collection && binding.role == Role::Enhancer)
-            .map(|binding| binding.record.primary.type_id()),
-    );
+/// is the same key, and no type name is read. A qualified contribution still takes the role, so
+/// the scope pass does not refuse it a second time as a provider. Runs at freeze, once every
+/// handler is mounted; a lazy load re-runs it over the base bindings, whose roles only ever move
+/// from provider to enhancer here.
+///
+/// A lazy load reports a binding it brought, and a base binding only under a role key the load
+/// marked: the base wiring checked the others.
+pub(crate) fn mark_role_contributions(graph: &mut Graph, first_binding: usize, errors: &mut Vec<WiringError>) {
+    let roles = role_types(graph, &graph.bindings);
+    let checked = role_types(graph, &graph.bindings[..first_binding]);
     for binding in &mut graph.bindings {
         if binding.record.kind == BindingKind::Collection
             && binding.role == Role::Provider
@@ -57,6 +56,51 @@ pub(crate) fn mark_role_contributions(graph: &mut Graph) {
             binding.role = Role::Enhancer;
         }
     }
+
+    for binding in &graph.bindings {
+        let record = &binding.record;
+        let new = binding.id.0 as usize >= first_binding;
+        let reported = |key: Key| roles.contains(&key.type_id()) && (new || !checked.contains(&key.type_id()));
+        match record.kind {
+            BindingKind::Collection => {
+                let key = record_key(record);
+                if !key.is_unqualified() && reported(key) {
+                    errors.push(WiringError::QualifiedRoleContribution {
+                        key: key.name(BindingKind::Collection),
+                        module: graph.module_name(binding.origin),
+                        at: record.location,
+                    });
+                }
+            }
+            BindingKind::Single => {
+                for key in record.keys().filter(|&key| reported(key)) {
+                    errors.push(WiringError::SingleRoleBinding {
+                        key: key.name(BindingKind::Single),
+                        module: graph.module_name(binding.origin),
+                        at: record.location,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The role keys' types among `bindings`: those a mounted handler's transport reads,
+/// `AnyGuard<T>`, `AnyInterceptor<T>` and `AnyErrorHandler<T>`, and the key of every
+/// contribution with the enhancer role. Freezing gives that role to a contribution written
+/// through `ModuleDef::enhancer`, which covers a transport with no mounted handler, and
+/// `mark_role_contributions` only to one under a key already in the set; `assign_roles` gives it
+/// to single bindings only. The set is the same before and after either pass.
+pub(crate) fn role_types(graph: &Graph, bindings: &[FrozenBinding]) -> HashSet<TypeId> {
+    let mut roles: HashSet<TypeId> =
+        graph.handlers.iter().flat_map(|handler| handler.decl.role_keys).map(|key| key.type_id()).collect();
+    roles.extend(
+        bindings
+            .iter()
+            .filter(|binding| binding.record.kind == BindingKind::Collection && binding.role == Role::Enhancer)
+            .map(|binding| binding.record.primary.type_id()),
+    );
+    roles
 }
 
 /// Marks the bindings an `EnhancerSpec` names by type, resolved against the controller module's

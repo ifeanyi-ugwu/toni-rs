@@ -117,8 +117,17 @@ pub enum WiringError {
     KindMix { key: KeyName, module: ModuleName, single: &'static Location<'static>, collection: &'static Location<'static> },
     /// Step 2: an alias whose target nothing visible binds.
     DanglingAlias { alias: KeyName, target: KeyName, module: ModuleName, at: &'static Location<'static> },
-    /// Step 2: the `Err` a `try_value` recorded, redacted.
+    /// Step 2: the `Err` a `try_value` recorded, redacted: `ModuleDef::try_value`, or
+    /// `Contribute::try_value`, whose `key` is the collection's.
     ValueFailed { module: ModuleName, key: KeyName, error: Redacted, at: &'static Location<'static> },
+    /// Step 2: a qualified contribution under a role key, `key` the qualified collection. A
+    /// transport reads only the role key's unqualified collection.
+    QualifiedRoleContribution { key: KeyName, module: ModuleName, at: &'static Location<'static> },
+    /// Step 2: a single binding under a role key, through its primary key, an `also_as` key or an
+    /// alias. A transport reads enhancers only from the role key's collection. `key` is the
+    /// binding's key that names the role key, qualified as the binding is, and `at` the call that
+    /// registered the binding.
+    SingleRoleBinding { key: KeyName, module: ModuleName, at: &'static Location<'static> },
     /// Step 2: two `.ready(..)` checks on one binding.
     DuplicateReadiness { key: KeyName, module: ModuleName, first: &'static Location<'static>, second: &'static Location<'static> },
     /// Step 2, tests: an override that matches no binding. `keyed` names a keyed module whose
@@ -192,6 +201,8 @@ impl WiringError {
             | WiringError::DuplicateBinding { key, .. }
             | WiringError::KindMix { key, .. }
             | WiringError::ValueFailed { key, .. }
+            | WiringError::QualifiedRoleContribution { key, .. }
+            | WiringError::SingleRoleBinding { key, .. }
             | WiringError::DuplicateReadiness { key, .. }
             | WiringError::OverrideUnmatched { key, .. }
             | WiringError::OverrideAmbiguous { key, .. }
@@ -227,6 +238,8 @@ impl WiringError {
             | WiringError::KindMix { module, .. }
             | WiringError::DanglingAlias { module, .. }
             | WiringError::ValueFailed { module, .. }
+            | WiringError::QualifiedRoleContribution { module, .. }
+            | WiringError::SingleRoleBinding { module, .. }
             | WiringError::DuplicateReadiness { module, .. }
             | WiringError::ScopeViolation { module, .. }
             | WiringError::HooksOnPerExecution { module, .. } => vec![module],
@@ -260,6 +273,10 @@ impl WiringError {
         let show = |name: &KeyName| if full.keys.contains(&name.key()) { format!("{name:#}") } else { name.to_string() };
         let show_module =
             |name: &ModuleName| if full.modules.contains(name) { format!("{name:#}") } else { name.to_string() };
+        let type_text = |name: &KeyName| {
+            let ty = name.key().type_name();
+            if full.keys.contains(&name.key()) { ty.to_owned() } else { short_type_name(ty) }
+        };
         match self {
             WiringError::ImportCycle { path } => tree(
                 f,
@@ -347,6 +364,28 @@ impl WiringError {
                 format!("the value for `{}` in {} failed to build: {error}", show(key), show_module(module)),
                 vec![format!("recorded by `try_value` at {}", place(at))],
             ),
+            WiringError::QualifiedRoleContribution { key, module, at } => {
+                let role = role_spelling(&type_text(key));
+                tree(
+                    f,
+                    format!("a qualified contribution to the role key `{role}` in {} is read by no transport", show_module(module)),
+                    vec![
+                        format!("contributed as `{}` at {}", role_spelling(&show(key)), place(at)),
+                        format!("help: contribute it unqualified; a transport reads only `{role}`"),
+                    ],
+                )
+            }
+            WiringError::SingleRoleBinding { key, module, at } => {
+                let role = role_spelling(&type_text(key));
+                tree(
+                    f,
+                    format!("a single binding under the role key `{role}` in {} is read by no transport", show_module(module)),
+                    vec![
+                        format!("bound as `{}` at {}", role_spelling(&show(key)), place(at)),
+                        format!("help: contribute it: `into {role}: [..]`, or `m.contribute::<{role}>()`"),
+                    ],
+                )
+            }
             WiringError::DuplicateReadiness { key, module, first, second } => tree(
                 f,
                 format!("two readiness checks on `{}` in {}", show(key), show_module(module)),
@@ -607,6 +646,26 @@ fn closed_loop(mut steps: Vec<String>) -> String {
         }
     }
     steps.join(" → ")
+}
+
+/// A role key's text as a user writes the key: the key's type, `dyn ErasedGuard<Http>`, reads
+/// `AnyGuard<Http>`, and `dyn ulo::transport::ErasedGuard<..>` reads `ulo::transport::AnyGuard<..>`.
+/// The rest of the text, a qualifier and a `(collection)` suffix included, is kept. Text not
+/// opening with one of the three erased traits is returned as given.
+fn role_spelling(text: &str) -> String {
+    let Some(rest) = text.strip_prefix("dyn ") else { return text.to_owned() };
+    let (path, tail) = rest.split_at(rest.find('<').unwrap_or(rest.len()));
+    let (prefix, last) = match path.rfind("::") {
+        Some(end) => path.split_at(end + 2),
+        None => ("", path),
+    };
+    let alias = match last {
+        "ErasedGuard" => "AnyGuard",
+        "ErasedInterceptor" => "AnyInterceptor",
+        "ErasedErrorHandler" => "AnyErrorHandler",
+        _ => return text.to_owned(),
+    };
+    format!("{prefix}{alias}{tail}")
 }
 
 fn place(at: &Location<'_>) -> String {

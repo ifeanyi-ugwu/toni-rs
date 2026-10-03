@@ -191,8 +191,8 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
 /// requalifying keyed exports, mounting controllers, and freezing metadata. Along the way it
 /// reports import cycles (step 1) and, for step 2, the `try_value` failures (redacted), a
 /// replacement's missing exports, a replacement whose original nothing imports, a second
-/// replacement of one original, and the test plan's overrides as it applies them. `load` numbers
-/// the modules of a lazy load.
+/// replacement of one original, the test plan's overrides as it applies them, and qualified
+/// contributions and single bindings under a role key. `load` numbers the modules of a lazy load.
 ///
 /// A binding's role is decided here: `controller`, a contribution under a role key once every
 /// handler is mounted (`scopes::mark_role_contributions`), or a provider. `scopes::assign_roles`
@@ -245,9 +245,10 @@ fn freeze(
         }
     }
 
-    // Paired by order before any override runs: only `try_value` writes a `Failed` record, and
-    // it records the failure in the same call. An override may then replace a failed recipe,
-    // and a failure whose record no longer fails is not reported.
+    // Paired by order before any override runs: only a `try_value`, on `ModuleDef` or on
+    // `Contribute`, writes a `Failed` record, and it records the failure in the same call. An
+    // override may then replace a failed recipe, and `override_many` remove a failed
+    // contribution; a failure whose record no longer fails is not reported.
     let mut failures = Vec::new();
     for (index, node) in registry.nodes.iter_mut().enumerate() {
         let failed: Vec<usize> = node
@@ -268,14 +269,19 @@ fn freeze(
     };
     apply_overrides(&mut registry, &names, overrides, &mut steps.bindings);
 
+    let replaced_collections: HashSet<Key> = collections.iter().map(|co| co.key).collect();
     for (index, position, failure) in failures {
         let Some(record) = registry.nodes[index].bindings.get(position) else { continue };
         if !matches!(record.recipe, Recipe::Failed) {
             continue;
         }
+        // `apply_collections` below removes it.
+        if record.kind == BindingKind::Collection && replaced_collections.contains(&record_key(record)) {
+            continue;
+        }
         steps.bindings.push(WiringError::ValueFailed {
             module: names[index].clone(),
-            key: record_key(record).name(BindingKind::Single),
+            key: record_key(record).name(record.kind),
             error: redact(&graph.secrets, failure.error),
             at: failure.location,
         });
@@ -390,7 +396,7 @@ fn freeze(
         merged.extend(ids);
         graph.collections.insert(key, Arc::from(merged));
     }
-    scopes::mark_role_contributions(graph);
+    scopes::mark_role_contributions(graph, declared.first_binding, &mut steps.bindings);
     declared
 }
 
@@ -717,13 +723,18 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
     }
 
     // Collections are app-wide, so a single binding anywhere under a collection's key mixes the
-    // two kinds. Reported once per key, where either side is new to this wiring.
+    // two kinds. Reported once per key, where either side is new to this wiring. Under a role
+    // key, freezing reported the single binding as `SingleRoleBinding`.
+    let roles = scopes::role_types(graph, &graph.bindings);
     let mut mixed: HashSet<Key> = HashSet::new();
     for binding in &graph.bindings {
         if binding.record.kind != BindingKind::Single {
             continue;
         }
         for key in binding.record.keys() {
+            if roles.contains(&key.type_id()) {
+                continue;
+            }
             let Some(contributions) = graph.collections.get(&key) else { continue };
             let new = binding.id.0 as usize >= declared.first_binding
                 || contributions.iter().any(|id| id.0 as usize >= declared.first_binding);

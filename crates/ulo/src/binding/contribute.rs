@@ -10,7 +10,7 @@ use crate::construct::Construct;
 use crate::dependency::Dependencies;
 use crate::hooks::erase_trait_hooks;
 use crate::key::{BindingKind, Key};
-use crate::module::def::ModuleNode;
+use crate::module::def::{ModuleNode, ValueFailure};
 use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
 use crate::timer::BoxError;
 
@@ -55,7 +55,8 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q, Pla
         Contribute { node, enhancer: false, _u: PhantomData }
     }
 
-    /// Contributes to `U @ Q2` instead of the unqualified collection.
+    /// Contributes to `U @ Q2` instead of the unqualified collection. Under a role key `wire()`
+    /// refuses it: a transport reads only the unqualified collection.
     pub fn qualified<Q2: 'static>(self) -> Contribute<'m, U, Q2, Plain> {
         Contribute { node: self.node, enhancer: self.enhancer, _u: PhantomData }
     }
@@ -140,6 +141,30 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, 
             type_name::<U>(),
             ScopeKind::Singleton,
             Recipe::Value(instance_of(value)),
+            Dependencies::default(),
+            coercion::<U, U, _>(|a| a),
+            location,
+        );
+        self.push(record)
+    }
+
+    /// The lowering of `value = expr?` in an `into` list. An `Err` is recorded, redacted, under a
+    /// `WiringErrors` entry naming the module and the collection; `register` carries on. An `Ok`
+    /// is contributed as [`value`](Self::value) contributes it.
+    #[track_caller]
+    pub fn try_value<E: Into<BoxError>>(self, value: Result<Arc<U>, E>) -> Handle<'m, U, Contribution<Singleton, Set>> {
+        let location = Location::caller();
+        let recipe = match value {
+            Ok(value) => Recipe::Value(instance_of(value)),
+            Err(error) => {
+                self.node.failures.push(ValueFailure { key: Key::of::<U, Q>(), error: error.into(), location });
+                Recipe::Failed
+            }
+        };
+        let record = Self::record(
+            type_name::<U>(),
+            ScopeKind::Singleton,
+            recipe,
             Dependencies::default(),
             coercion::<U, U, _>(|a| a),
             location,
