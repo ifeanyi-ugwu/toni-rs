@@ -23,6 +23,46 @@ pub fn param<S: FromContainer + AllowedIn<Sc>, Sc: Scope>(d: &mut Dependencies, 
     d.param::<S>(name);
 }
 
+/// Whether `key` is one of `keys`, byte for byte: the assertion `#[routes]` emits for each
+/// controller-level transport-scoped enhancer key against the `__ULO_KEY_<name>` constants its
+/// handlers' transport attributes emit (transports DESIGN §2.1, X1, X11). A loop over bytes,
+/// since a trait method such as `PartialEq::eq` is not callable in a `const fn` on stable.
+pub const fn key_in(key: &str, keys: &[&str]) -> bool {
+    let mut i = 0;
+    while i < keys.len() {
+        if bytes_eq(key.as_bytes(), keys[i].as_bytes()) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The impl-level `value` entries of one `#[routes]` impl, each built once by the generated
+/// `Controller::mount` into an `Arc` and handed to every handler's mount function (transports
+/// DESIGN §2.1, X2). `T` is a tuple `(Arc<V0>, Arc<V1>, ..)`, one element per `value` entry in the
+/// order written across the impl's three enhancer attributes, entries scoped to other transports
+/// included; `()` when the impl has none.
+///
+/// A handler's mount function takes `&Shared<(Arc<V0>, ..)>` with one type parameter per entry,
+/// bounding by its transport's role only the entries that apply to it, and registers each with
+/// `EnhancerSpec::{guard,interceptor,error_handler}_arc(Arc::clone(&shared.0.N))`.
+pub struct Shared<T>(pub T);
+
 /// What a constructor returns, `Self` or `Result<Self, E>`, decided by type rather than by the
 /// spelling of the return type, so an alias for a `Result` is read as one.
 #[diagnostic::on_unimplemented(
@@ -131,9 +171,9 @@ pub mod hooks {
     impl<T> NoShutdown<T> for &Probe<T> {}
 }
 
-/// The autoref probe `#[module]` writes at a factory's call site, for a closure in a providers
-/// list and for a `with` entry of an `into` list: a closure whose future outputs a `Result`
-/// reaches the `try_` registration, any other the plain one. The value API keeps two methods
+/// The autoref probe `#[module]` writes at a factory's call site, for a closure entry of a
+/// providers list and for a `with` entry of an `into` list: a closure whose future outputs a
+/// `Result` reaches the `try_` registration, any other the plain one. The value API keeps two methods
 /// because one method cannot serve both outputs.
 ///
 /// `Args` is a parameter of `Probe` rather than of the methods: method probing checks an impl's
@@ -162,41 +202,182 @@ pub mod factory {
         }
     }
 
-    /// `#[track_caller]` on both traits carries the providers entry's location through to the
+    /// The providers arm: a single binding declared by closure, `with = ..`, `with(<scope>) = ..`
+    /// or a bare closure, in the scope `S` (`Auto` for the first and the last). `bind_as` is the
+    /// key-first form `K: with = ..`, which also binds the output under `K` through the coercion
+    /// closure written at the expansion, where `Arc<Built>` and `Arc<K>` are concrete.
+    ///
+    /// `#[track_caller]` on every method carries the providers entry's location through to the
     /// binding record, which the wiring errors print.
-    pub trait Fallible {
+    pub trait FallibleBinding {
+        type Built: Send + Sync + 'static;
+
         #[track_caller]
-        fn register_singleton(&self, m: &mut ModuleDef<'_>);
+        fn bind<S: ProviderScope>(&self, m: &mut ModuleDef<'_>);
+
+        #[track_caller]
+        fn bind_as<K, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            S: ProviderScope,
+            C: Fn(Arc<Self::Built>) -> Arc<K> + Send + Sync + 'static;
     }
-    impl<F, Args, T, E> Fallible for Probe<F, Args>
+    impl<F, Args, T, E> FallibleBinding for Probe<F, Args>
     where
         F: Factory<Args, Output = Result<T, E>>,
         T: Send + Sync + 'static,
         E: Into<BoxError> + Send + 'static,
     {
+        type Built = T;
+
         #[track_caller]
-        fn register_singleton(&self, m: &mut ModuleDef<'_>) {
+        fn bind<S: ProviderScope>(&self, m: &mut ModuleDef<'_>) {
             if let Some(factory) = self.factory.take() {
-                m.try_singleton::<Args, F, T, E>(factory);
+                S::try_bind::<Args, F, T, E>(m, factory);
+            }
+        }
+
+        #[track_caller]
+        fn bind_as<K, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            S: ProviderScope,
+            C: Fn(Arc<Self::Built>) -> Arc<K> + Send + Sync + 'static,
+        {
+            if let Some(factory) = self.factory.take() {
+                S::try_bind_as::<K, Args, F, T, E, C>(m, factory, coerce);
             }
         }
     }
 
-    pub trait Plain {
+    pub trait PlainBinding {
+        type Built: Send + Sync + 'static;
+
         #[track_caller]
-        fn register_singleton(&self, m: &mut ModuleDef<'_>);
+        fn bind<S: ProviderScope>(&self, m: &mut ModuleDef<'_>);
+
+        #[track_caller]
+        fn bind_as<K, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            S: ProviderScope,
+            C: Fn(Arc<Self::Built>) -> Arc<K> + Send + Sync + 'static;
     }
-    impl<F, Args> Plain for &Probe<F, Args>
+    impl<F, Args> PlainBinding for &Probe<F, Args>
     where
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
+        type Built = <F as Factory<Args>>::Output;
+
         #[track_caller]
-        fn register_singleton(&self, m: &mut ModuleDef<'_>) {
+        fn bind<S: ProviderScope>(&self, m: &mut ModuleDef<'_>) {
             if let Some(factory) = self.factory.take() {
-                m.singleton::<Args, F>(factory);
+                S::bind::<Args, F>(m, factory);
             }
         }
+
+        #[track_caller]
+        fn bind_as<K, S, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            S: ProviderScope,
+            C: Fn(Arc<Self::Built>) -> Arc<K> + Send + Sync + 'static,
+        {
+            if let Some(factory) = self.factory.take() {
+                S::bind_as::<K, Args, F, C>(m, factory, coerce);
+            }
+        }
+    }
+
+    /// A scope marker as a providers entry's `with` names it, mapped to the `ModuleDef` method
+    /// that registers a closure in that scope: `Auto` to `with`, `Singleton` to `singleton`,
+    /// `PerExecution` to `execution`, `Transient` to `transient`, each with its `try_` twin.
+    pub trait ProviderScope {
+        #[track_caller]
+        fn bind<Args, F>(m: &mut ModuleDef<'_>, factory: F)
+        where
+            F: Factory<Args>,
+            F::Output: Send + Sync + 'static;
+
+        #[track_caller]
+        fn try_bind<Args, F, T, E>(m: &mut ModuleDef<'_>, factory: F)
+        where
+            F: Factory<Args, Output = Result<T, E>>,
+            T: Send + Sync + 'static,
+            E: Into<BoxError> + Send + 'static;
+
+        #[track_caller]
+        fn bind_as<K, Args, F, C>(m: &mut ModuleDef<'_>, factory: F, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            F: Factory<Args>,
+            F::Output: Send + Sync + 'static,
+            C: Fn(Arc<F::Output>) -> Arc<K> + Send + Sync + 'static;
+
+        #[track_caller]
+        fn try_bind_as<K, Args, F, T, E, C>(m: &mut ModuleDef<'_>, factory: F, coerce: C)
+        where
+            K: ?Sized + Send + Sync + 'static,
+            F: Factory<Args, Output = Result<T, E>>,
+            T: Send + Sync + 'static,
+            E: Into<BoxError> + Send + 'static,
+            C: Fn(Arc<T>) -> Arc<K> + Send + Sync + 'static;
+    }
+
+    macro_rules! provider_scope {
+        ($($marker:ty => $plain:ident, $fallible:ident;)*) => {$(
+            impl ProviderScope for $marker {
+                #[track_caller]
+                fn bind<Args, F>(m: &mut ModuleDef<'_>, factory: F)
+                where
+                    F: Factory<Args>,
+                    F::Output: Send + Sync + 'static,
+                {
+                    m.$plain::<Args, F>(factory);
+                }
+
+                #[track_caller]
+                fn try_bind<Args, F, T, E>(m: &mut ModuleDef<'_>, factory: F)
+                where
+                    F: Factory<Args, Output = Result<T, E>>,
+                    T: Send + Sync + 'static,
+                    E: Into<BoxError> + Send + 'static,
+                {
+                    m.$fallible::<Args, F, T, E>(factory);
+                }
+
+                #[track_caller]
+                fn bind_as<K, Args, F, C>(m: &mut ModuleDef<'_>, factory: F, coerce: C)
+                where
+                    K: ?Sized + Send + Sync + 'static,
+                    F: Factory<Args>,
+                    F::Output: Send + Sync + 'static,
+                    C: Fn(Arc<F::Output>) -> Arc<K> + Send + Sync + 'static,
+                {
+                    m.$plain::<Args, F>(factory).also_as::<K>(coerce);
+                }
+
+                #[track_caller]
+                fn try_bind_as<K, Args, F, T, E, C>(m: &mut ModuleDef<'_>, factory: F, coerce: C)
+                where
+                    K: ?Sized + Send + Sync + 'static,
+                    F: Factory<Args, Output = Result<T, E>>,
+                    T: Send + Sync + 'static,
+                    E: Into<BoxError> + Send + 'static,
+                    C: Fn(Arc<T>) -> Arc<K> + Send + Sync + 'static,
+                {
+                    m.$fallible::<Args, F, T, E>(factory).also_as::<K>(coerce);
+                }
+            }
+        )*};
+    }
+
+    provider_scope! {
+        Auto => with, try_with;
+        Singleton => singleton, try_singleton;
+        PerExecution => execution, try_execution;
+        Transient => transient, try_transient;
     }
 
     /// The `into` arm: a contribution to `U` declared by closure, in the scope `S`, which is

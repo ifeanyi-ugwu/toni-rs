@@ -52,7 +52,7 @@ impl<T: ?Sized + Send + Sync + 'static, Q: 'static> FromContainer for Dep<T, Q> 
         req.dep(Key::of::<T, Q>());
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
         r.dep_qualified::<T, Q>().await
     }
 }

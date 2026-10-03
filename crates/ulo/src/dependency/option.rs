@@ -11,8 +11,8 @@ impl<S: FromContainer> FromContainer for Option<S> {
         req.optional::<S>();
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
-        match S::read(r).await {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
+        match S::from_container(r).await {
             Ok(value) => Ok(Some(value)),
             Err(LookupError::NotFound { .. }) => Ok(None),
             Err(other) => Err(other),

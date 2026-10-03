@@ -7,6 +7,9 @@
 
 pub(crate) mod controller;
 pub(crate) mod enhancer;
+pub(crate) mod handler;
+pub(crate) mod inputs;
+pub(crate) mod metadata;
 pub(crate) mod next;
 pub(crate) mod pipeline;
 pub(crate) mod server;
@@ -15,6 +18,7 @@ use std::any::type_name;
 use std::future::Future;
 
 use crate::timer::{BoxError, BoxFuture};
+use crate::transport::inputs::Inputs;
 use crate::transport::next::Next;
 
 /// Implemented by marker types in transport crates: `ulo_http::Http`, `ulo_rpc::Rpc`, ...
@@ -26,9 +30,26 @@ use crate::transport::next::Next;
 /// lives on `Cx` behind a take-once slot, not as an execution input: inputs are `Sync` and a
 /// body stream is read once.
 pub trait Transport: 'static {
+    /// The key a transport-scoped enhancer entry names: `http`, `ws`, `ws_connect`, `rpc`, `grpc`.
+    ///
+    /// A transport's handler attribute emits `const __ULO_KEY_<name>: &'static str =
+    /// <Tr as Transport>::KEY;` beside each handler's mount function, and `#[routes]` asserts every
+    /// controller-level scoped key against those constants, so `#[guards(htpp = AuthGuard)]` is a
+    /// compile error spanned on `htpp`.
+    const KEY: &'static str;
+
     /// Per-call context: a cheap-clone handle to the execution.
     type Cx: Clone + Send + Sync;
     type Reply: Send;
+
+    /// The execution inputs this transport seeds, recorded with the transport as their seeder:
+    /// `d.input::<RequestHead>().input::<ClientAddr>()`.
+    ///
+    /// The freeze calls it once per transport type, the first time a handler of that transport
+    /// mounts, so an application imports no module to declare a transport's inputs. A module's
+    /// own `m.input::<T>().seeded_by::<Tr>()` with the same key and seeder is the same
+    /// declaration, not a duplicate. A transport whose handlers mount nowhere declares nothing.
+    fn inputs(_d: &mut Inputs) {}
 }
 
 #[diagnostic::on_unimplemented(

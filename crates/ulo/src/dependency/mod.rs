@@ -35,7 +35,7 @@ pub trait FromContainer: Sized + Send + 'static {
     fn describe(req: &mut Requirement);
 
     /// Read the value from the container.
-    fn read(r: &Resolver<'_>) -> impl Future<Output = Result<Self, LookupError>> + Send;
+    fn from_container(r: &Resolver<'_>) -> impl Future<Output = Result<Self, LookupError>> + Send;
 }
 
 /// What one injection point reads, written by [`FromContainer::describe`] and checked by the

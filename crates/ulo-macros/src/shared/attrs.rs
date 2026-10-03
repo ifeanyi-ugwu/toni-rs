@@ -20,12 +20,12 @@ pub(crate) fn take_all(attrs: &mut Vec<Attribute>, name: &str) -> Vec<Attribute>
     taken
 }
 
-/// Attributes that never make a method a handler: the language's own and the ulo enhancer
-/// markers `#[routes]` consumes.
+/// Attributes that never make a method a handler: the language's own, the ulo enhancer markers
+/// and `#[meta]`, which `#[routes]` consumes. A method carrying `#[meta]` alone is not a handler.
 pub(crate) fn is_inert(attr: &Attribute) -> bool {
     const INERT: &[&str] = &[
         "doc", "allow", "warn", "deny", "expect", "cfg", "cfg_attr", "inline", "must_use", "deprecated",
-        "track_caller", "guards", "interceptors", "error_handlers",
+        "track_caller", "guards", "interceptors", "error_handlers", "meta",
     ];
     INERT.iter().any(|name| is(attr, name))
 }

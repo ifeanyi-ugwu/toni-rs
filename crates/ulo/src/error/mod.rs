@@ -6,6 +6,7 @@
 //! and `WiringErrors`, write their `Display` text under `Debug` too, so `main` returning
 //! `Box<dyn Error>` prints the report rather than the structure.
 
+pub(crate) mod configure;
 pub(crate) mod wiring;
 
 use std::error::Error;
@@ -21,6 +22,7 @@ use crate::redact::Redacted;
 use crate::signal::Signal;
 use crate::timer::BoxError;
 
+pub use configure::{ConfigureError, ConfigureErrors};
 pub use wiring::WiringErrors;
 
 #[non_exhaustive]
@@ -28,7 +30,10 @@ pub enum StartupError {
     /// Everything from `wire()`.
     Wiring(WiringErrors),
     Connect(ConnectError),
-    /// A transport's own error, or the core's `NoTimer`.
+    /// Every failure a server's `prepare` reported, collected across every server before any
+    /// binds, so a configuration error is always reported before a port conflict.
+    Configure(ConfigureErrors),
+    /// A transport's own error, or the core's `TimerMissing`.
     Bind { transport: &'static str, source: Redacted },
 }
 
@@ -37,6 +42,7 @@ impl fmt::Display for StartupError {
         match self {
             StartupError::Wiring(e) => fmt::Display::fmt(e, f),
             StartupError::Connect(e) => fmt::Display::fmt(e, f),
+            StartupError::Configure(e) => fmt::Display::fmt(e, f),
             StartupError::Bind { transport, source } => {
                 write!(f, "transport `{}` failed to bind: {source}", short_type_name(*transport))
             }
@@ -57,6 +63,7 @@ impl Error for StartupError {
         match self {
             StartupError::Wiring(e) => e.source(),
             StartupError::Connect(e) => e.source(),
+            StartupError::Configure(e) => e.source(),
             StartupError::Bind { .. } => None,
         }
     }
@@ -74,22 +81,28 @@ impl From<ConnectError> for StartupError {
     }
 }
 
+impl From<ConfigureErrors> for StartupError {
+    fn from(e: ConfigureErrors) -> Self {
+        StartupError::Configure(e)
+    }
+}
+
 /// `listen()`'s refusal of an app that binds a transport with no `Timer` (§9.5), stored in
-/// `StartupError::Bind`'s `source` like a transport's error; `source.downcast_ref::<NoTimer>()`
+/// `StartupError::Bind`'s `source` like a transport's error; `source.downcast_ref::<TimerMissing>()`
 /// tells it from a port already taken.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct NoTimer {
+pub struct TimerMissing {
     pub transport: &'static str,
 }
 
-impl fmt::Display for NoTimer {
+impl fmt::Display for TimerMissing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "transport `{}` is bound on an app with no `Timer`; set one with `.timer(..)`", self.transport)
     }
 }
 
-impl Error for NoTimer {}
+impl Error for TimerMissing {}
 
 /// A failure in the connect phase, on `StartupError::Connect` from `connect` and on
 /// `LoadError::Connect` from `load`.
@@ -489,6 +502,9 @@ pub enum DispatchStage {
     Interceptor,
     Handler,
     ErrorHandler,
+    /// A transport's pre-dispatch stage: a middleware or a tower layer, caught by the transport
+    /// through [`AppHandle::catch_panic`](crate::AppHandle::catch_panic).
+    PreDispatch,
 }
 
 impl fmt::Display for DispatchStage {
@@ -498,9 +514,27 @@ impl fmt::Display for DispatchStage {
             DispatchStage::Interceptor => "interceptor",
             DispatchStage::Handler => "handler",
             DispatchStage::ErrorHandler => "error handler",
+            DispatchStage::PreDispatch => "pre-dispatch stage",
         })
     }
 }
+
+/// The sentinel an error handler returns on the late path to end a stream cleanly, as if it had
+/// returned `None` (transports DESIGN §2.3, X7). Anywhere else it is an ordinary error.
+///
+/// An `Ok` from a handler on the late path is ignored rather than read as a clean end: an `Ok`
+/// written for the pre-stream case is a failure rendering, and ending the stream cleanly on it
+/// would tell the client the stream completed when it failed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndStream;
+
+impl fmt::Display for EndStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the stream ends here")
+    }
+}
+
+impl Error for EndStream {}
 
 /// Whether `error` carries a panic the core caught, whichever shape it arrived in. Inside a call
 /// there are two: [`PanicRecovered`] from a guard, an interceptor, the handler or an error

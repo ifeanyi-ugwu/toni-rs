@@ -1,6 +1,6 @@
 //! The closure traits behind every factory, readiness check, hook closure and enhancer closure:
-//! parameters are injection points, read through the same `FromContainer::read` a field is, and
-//! the output type of the returned future is what the closure produces (§4, §5).
+//! parameters are injection points, read through the same `FromContainer::from_container` a field
+//! is, and the output type of the returned future is what the closure produces (§4, §5).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ macro_rules! factory_impls {
             #[allow(non_snake_case, unused_variables)]
             fn call<'a>(&'a self, r: &'a Resolver<'a>) -> BoxFuture<'a, Result<Self::Output, LookupError>> {
                 Box::pin(async move {
-                    $( let $A = <$A as FromContainer>::read(r).await?; )*
+                    $( let $A = <$A as FromContainer>::from_container(r).await?; )*
                     Ok::<_, LookupError>((self)($($A),*).await)
                 })
             }
@@ -93,7 +93,7 @@ macro_rules! factory_impls {
             #[allow(non_snake_case, unused_variables)]
             fn call<'a>(&'a self, signal: Signal, r: &'a Resolver<'a>) -> BoxFuture<'a, Result<(), LookupError>> {
                 Box::pin(async move {
-                    $( let $A = <$A as FromContainer>::read(r).await?; )*
+                    $( let $A = <$A as FromContainer>::from_container(r).await?; )*
                     (self)(signal, $($A),*).await;
                     Ok::<(), LookupError>(())
                 })

@@ -41,10 +41,17 @@ pub fn construct(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// module, identified by value, and every `Secret<_>` field is registered for redaction.
 ///
 /// Provider entries: `Type` (`provide::<Type>()`), `Type as dyn Trait` (`also_as`), `expr?`
-/// (`try_value`), `expr` (`value`), a factory closure (`singleton` or `try_singleton`, picked by
-/// the closure's output), and `into dyn Trait: [..]` (contributions). A bare path reads as a
+/// (`try_value`), `expr` (`value`), `with = |..| ..` (`with`, or `try_with` when the closure's
+/// output is a `Result`), `with(<scope>) = |..| ..` (`singleton`, `execution` or `transient`, or
+/// the `try_` form), a bare closure (shorthand for `with = closure`), `K: with = |..| ..` and
+/// `K: with(<scope>) = |..| ..` (the same binding, also bound under the trait key `K` with
+/// `also_as::<K>(|a| a)`), and `into dyn Trait: [..]` (contributions). A bare path reads as a
 /// type, so a constant is bound by value with a block, `{ LIMITS }`. Export entries: `Type` and
 /// `reexport Type`.
+///
+/// The key comes first in `K: with = ..` because a closure's body extends as far as it can: in
+/// `with = |cfg| RedisCache::new(cfg) as dyn Cache`, the `as` would parse as a cast inside the
+/// body. As with `X as dyn T`, the concrete type stays bound in the module too.
 ///
 /// An `into K: [..]` list takes the forms `#[guards]` does, whatever `K` is: a type
 /// (`provide::<A>`), `value = expr` (a shared value; the macro writes the `Arc::new`),
@@ -70,12 +77,17 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// A controller's handler impl: writes `impl Controller` whose `mount` registers each handler,
-/// with the impl's `#[guards]`, `#[interceptors]` and `#[error_handlers]` as the controller tier
-/// and each method's as the method tier; every other item stays as written.
+/// with the impl's `#[guards]`, `#[interceptors]`, `#[error_handlers]` and `#[meta]` as the
+/// controller tier and each method's as the method tier; every other item stays as written.
+///
+/// An impl-level `value = expr` is built once by `Controller::mount` and shared by every handler
+/// it applies to, so a rate limiter declared on the impl limits the controller as a whole. A
+/// controller-level transport key that no handler's transport carries, `#[guards(htpp = ..)]`, is
+/// a compile error spanned on the key.
 ///
 /// A method carrying an attribute outside the language's own (`doc`, `allow`, `cfg`, `inline` and
-/// the like), such as `#[tracing::instrument]`, is treated as a handler, so helpers go in a
-/// separate `impl` block.
+/// the like) and the enhancer and `#[meta]` markers, such as `#[tracing::instrument]`, is treated
+/// as a handler, so helpers go in a separate `impl` block.
 #[proc_macro_attribute]
 pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
     routes::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
@@ -87,10 +99,9 @@ pub fn routes(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `#[routes]`; anywhere else it is an error.
 ///
 /// On the impl, an entry applies to every handler and must have the role for each handler's
-/// transport; `http = AuthGuard` limits it to that transport's handlers. `value = expr` is
-/// written per method, where it is built once and shared by that handler's calls. On the impl it
-/// is a compile error: a guard whose state every handler shares is declared by type, as a
-/// singleton binding.
+/// transport; `http = AuthGuard` limits it to that transport's handlers. `value = expr` is built
+/// once and shared: on a method by that handler's calls, on the impl by every handler it applies
+/// to.
 ///
 /// A closure is written synchronously, its parameters injection points. `with` says only that
 /// the closure builds the guard; how long the guard lives is a separate argument, written as on
@@ -119,18 +130,27 @@ pub fn error_handlers(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::marker("error_handlers", attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// Carries a handler's controller-tier and method-tier enhancers from `#[routes]` to the
-/// transport's handler attribute, which consumes it. Reaching expansion means no transport
-/// attribute consumed it.
+/// Declared metadata on a handler or on its `#[routes]` impl: plain `Send + Sync + 'static`
+/// values, built once when the handler mounts, which guards and interceptors read through
+/// `cx.exec().handler()`. The method's declaration of a type wins over the impl's. Read by
+/// `#[routes]`, so on the impl it goes below `#[routes]`; anywhere else it is an error.
+#[proc_macro_attribute]
+pub fn meta(attr: TokenStream, item: TokenStream) -> TokenStream {
+    enhancers::meta_marker(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+/// Carries a handler's controller-tier and method-tier enhancers and metadata from `#[routes]` to
+/// the transport's handler attribute, which consumes it (`ulo_handler_codegen::protocol`).
+/// Reaching expansion means no transport attribute consumed it.
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn __handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     enhancers::unconsumed_handler(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
-/// Invoked by a transport's generated mount code with its transport type, its transport key and the
-/// tokens `__handler` carried: expands to the two `EnhancerSpec`s for one handler, with one role
-/// assertion per enhancer naming the handler.
+/// Invoked by a transport's generated mount function with its transport type, its transport key,
+/// the name of its `shared` parameter and the tokens `__handler` carried: expands to the two
+/// `EnhancerSpec`s for one handler, with one role assertion per enhancer naming the handler.
 #[doc(hidden)]
 #[proc_macro]
 pub fn __enhancer_specs(input: TokenStream) -> TokenStream {

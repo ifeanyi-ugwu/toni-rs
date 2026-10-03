@@ -2,7 +2,7 @@
 //! that depend on a missing piece skip only the affected edges, so one missing binding does not
 //! hide unrelated errors.
 
-use std::any::type_name;
+use std::any::{TypeId, type_name};
 use std::collections::{HashMap, HashSet};
 use std::panic::Location;
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use crate::error::LoadRefusal;
 use crate::error::wiring::{WiringError, WiringErrors};
 use crate::graph::register::{Import, Registry};
 use crate::graph::{
-    BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, ModuleId, Role, Visible,
-    boundary_key, cycles, order, record_key, register, scopes, visibility,
+    BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, InputOrigin, ModuleId, Role,
+    Visible, boundary_key, cycles, order, record_key, register, scopes, visibility,
 };
 use crate::key::{BindingKind, Key, KeyName};
 use crate::module::def::{ExportRecord, InputRecord, ModuleNode};
@@ -24,7 +24,8 @@ use crate::redact::redact;
 use crate::scope::ScopeKind;
 use crate::testing::{CollectionOverride, Override, OverrideTarget, Replacement, TestPlan};
 use crate::timer::{Bound, Timer};
-use crate::transport::controller::{EnhancerDep, HandlerRecord, Mount};
+use crate::transport::controller::{EnhancerDep, HandlerDecl, HandlerRecord, Mount};
+use crate::transport::inputs::Inputs;
 
 /// What the wiring pass needs to know about the app beyond its modules.
 pub(crate) struct WireEnv {
@@ -307,6 +308,7 @@ fn freeze(
     };
 
     let mut contributions: HashMap<Key, Vec<BindingId>> = HashMap::new();
+    let mut transports_seen: HashSet<TypeId> = graph.handlers.iter().map(|handler| handler.decl.transport).collect();
     let mut nodes: Vec<Option<ModuleNode>> = registry.nodes.into_iter().map(Some).collect();
     for (position, &index) in registry.post_order.iter().enumerate() {
         let Some(node) = nodes[index].take() else { continue };
@@ -341,9 +343,17 @@ fn freeze(
 
         for controller in controllers {
             let Some(&binding) = binding_ids.get(controller.binding) else { continue };
+            let controller_key = graph.key_name(binding);
             let mut decls = Vec::new();
-            (controller.mount)(&mut Mount { handlers: &mut decls });
-            graph.handlers.extend(decls.into_iter().map(|decl| HandlerRecord { controller: binding, module: id, decl }));
+            (controller.mount)(&mut Mount::new(&mut decls));
+            for decl in &decls {
+                declare_transport_inputs(graph, decl, &mut transports_seen);
+            }
+            graph.handlers.extend(
+                decls
+                    .into_iter()
+                    .map(|decl| HandlerRecord::new(binding, controller_key, id, controller.prefix.clone(), decl)),
+            );
         }
 
         for input in inputs {
@@ -351,7 +361,7 @@ fn freeze(
                 key: input.key,
                 seeder: input.seeder,
                 seeder_name: input.seeder_name,
-                declared_in: id,
+                origin: InputOrigin::Module(id),
             });
             declared.inputs.push((id, input));
         }
@@ -646,6 +656,26 @@ fn unqualified(key: Key) -> Key {
 fn qualifier_of(key: Key) -> Qualifier {
     let none = Qualifier::none();
     Qualifier { id: key.qualifier_id(), name: key.qualifier_name().unwrap_or(none.name) }
+}
+
+/// `Transport::inputs` of `decl`'s transport, the first time a handler of that transport mounts
+/// (transports DESIGN §2.10, X4). Each key is recorded with the transport as its seeder and its
+/// origin. A module's own declaration of the same key with the same seeder is the same
+/// declaration; one with another seeder, or bound as an ordinary binding, is reported by step 2.
+fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeId>) {
+    if !seen.insert(decl.transport) {
+        return;
+    }
+    let mut inputs = Inputs::new();
+    (decl.inputs)(&mut inputs);
+    for input in inputs.keys {
+        graph.inputs.entry(input.key).or_insert(InputDecl {
+            key: input.key,
+            seeder: decl.transport,
+            seeder_name: decl.transport_name,
+            origin: InputOrigin::Transport { name: decl.transport_name, at: input.location },
+        });
+    }
 }
 
 /// Step 1: re-exports a module cannot see unambiguously, exports of keys a module does not bind,

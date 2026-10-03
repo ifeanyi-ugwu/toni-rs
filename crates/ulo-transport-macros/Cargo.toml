@@ -1,0 +1,18 @@
+[package]
+name = "ulo-transport-macros"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Derives for Ulo's transport-neutral error and validation traits"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["full"] }

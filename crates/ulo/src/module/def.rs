@@ -21,10 +21,10 @@ use crate::module::Module;
 use crate::module::ModuleIdentity;
 use crate::module::meta::{Meta, MetaMap};
 use crate::redact::Secret;
-use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
+use crate::scope::{Auto, PerExecution, Scope, ScopeKind, Singleton, Transient};
 use crate::timer::{BoxError, Bound};
 use crate::transport::Role;
-use crate::transport::controller::{Controller, ControllerRecord};
+use crate::transport::controller::{Controller, ControllerHandle, ControllerRecord};
 
 /// What `Module::register` writes into: imports, bindings, contributions, controllers, exports,
 /// inputs, module hooks, secrets and typed metadata. Registration is synchronous and free of
@@ -205,6 +205,41 @@ impl<'a> ModuleDef<'a> {
         Handle::new(self.push(value_record::<T>(recipe, location)))
     }
 
+    /// A binding built by an async factory whose parameters are injection points, with `Auto`
+    /// scope; the future's output is the key. The lowering of `with = closure`, and of a bare
+    /// closure, in a `#[module]` providers list (§3.3, §4).
+    ///
+    /// For a provider `Auto` behaves as a singleton, so what it builds is what
+    /// [`singleton`](Self::singleton) builds; what differs is the record: the needs-execution pass
+    /// names `with(execution)` in its hint for one that reads execution data, and the hooks rule
+    /// reads it as a singleton's.
+    #[track_caller]
+    pub fn with<Args, F>(&mut self, factory: F) -> Handle<'_, F::Output, Binding<Auto, Open>>
+    where
+        F: Factory<Args>,
+        F::Output: Send + Sync + 'static,
+    {
+        let location = Location::caller();
+        let dependencies = factory_dependencies::<Args, F>();
+        let ctor = erase_factory::<Args, F>(factory);
+        Handle::new(self.push(factory_record::<Auto, F::Output>(ctor, dependencies, location)))
+    }
+
+    /// [`with`](Self::with) for a factory returning a `Result`; the `Ok` type is the key and an
+    /// `Err` fails the construction as [`try_singleton`](Self::try_singleton)'s does.
+    #[track_caller]
+    pub fn try_with<Args, F, T, E>(&mut self, factory: F) -> Handle<'_, T, Binding<Auto, Open>>
+    where
+        F: Factory<Args, Output = Result<T, E>>,
+        T: Send + Sync + 'static,
+        E: Into<BoxError> + Send + 'static,
+    {
+        let location = Location::caller();
+        let dependencies = factory_dependencies::<Args, F>();
+        let ctor = erase_try_factory::<Args, F, T, E>(factory);
+        Handle::new(self.push(factory_record::<Auto, T>(ctor, dependencies, location)))
+    }
+
     /// A singleton built by an async factory whose parameters are injection points; the
     /// future's output is the key.
     #[track_caller]
@@ -324,8 +359,12 @@ impl<'a> ModuleDef<'a> {
 
     /// A controller: a `Construct` type whose handlers `C::mount` declares. With `Auto` scope it
     /// is built per call when anything below it needs an execution.
+    ///
+    /// The handle sets a runtime prefix for every route and gateway path of the controller,
+    /// `m.controller::<GraphqlEndpoint>().at(config.path.clone())` (transports DESIGN §2.5, X3);
+    /// dropped, the controller has none.
     #[track_caller]
-    pub fn controller<C: Controller>(&mut self) {
+    pub fn controller<C: Controller>(&mut self) -> ControllerHandle<'_> {
         let location = Location::caller();
         let mut dependencies = Dependencies::default();
         C::dependencies(&mut dependencies);
@@ -334,7 +373,9 @@ impl<'a> ModuleDef<'a> {
         record.controller = true;
         let binding = self.node.bindings.len();
         self.node.bindings.push(record);
-        self.node.controllers.push(ControllerRecord { binding, mount: C::mount });
+        self.node.controllers.push(ControllerRecord { binding, mount: C::mount, prefix: None });
+        let index = self.node.controllers.len() - 1;
+        ControllerHandle { record: &mut self.node.controllers[index] }
     }
 
     /// Marks this module as the inner module of a `Keyed<Q, M>`.

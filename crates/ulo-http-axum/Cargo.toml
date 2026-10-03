@@ -3,26 +3,24 @@ name = "ulo-http-axum"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Axum adapter for the Ulo framework"
+description = "The axum backend for Ulo's HTTP transport"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "axum", "web", "framework", "adapter"]
+keywords = ["ulo", "axum", "web", "framework", "backend"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-axum = { version = "0.8", features = ["ws"] }
-tower = { workspace = true, features = ["util"] }
-tokio = { workspace = true, features = ["full"] }
-tracing.workspace = true
-serde_json.workspace = true
-futures-util.workspace = true
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
+ulo-net = { path = "../ulo-net" }
+axum = { workspace = true, features = ["http1", "http2", "tokio"] }
+http.workspace = true
 http-body-util.workspace = true
-uuid = { workspace = true, features = ["v4"] }
-
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-tokio-tungstenite.workspace = true
-ulo-macros = { path = "../ulo-macros" }
-serde = { workspace = true, features = ["derive"] }
+# The per-request upgrade future, `hyper::upgrade::on`, and its I/O adapter.
+hyper = { workspace = true, features = ["server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "macros"] }
+tokio-rustls.workspace = true
+tower.workspace = true
+tracing.workspace = true

@@ -3,6 +3,14 @@ resolver = "3"
 members = [
     "crates/ulo",
     "crates/ulo-macros",
+    "crates/ulo-handler-codegen",
+    "crates/ulo-transport",
+    "crates/ulo-transport-macros",
+    "crates/ulo-net",
+    "crates/ulo-tokio",
+    "crates/ulo-http",
+    "crates/ulo-http-macros",
+    "crates/ulo-http-axum",
 ]
 # Crates not yet ported to the DI redesign; each moves to `members` once it is.
 exclude = [
@@ -20,7 +28,6 @@ exclude = [
     "crates/ulo-grpc",
     "crates/ulo-health",
     "crates/ulo-http-actix",
-    "crates/ulo-http-axum",
     "crates/ulo-http-poem",
     "crates/ulo-http-rocket",
     "crates/ulo-http-salvo",
@@ -47,21 +54,39 @@ homepage = "https://github.com/ulo-rs/ulo"
 
 [workspace.dependencies]
 anyhow = "1.0.95"
+async-lock = "3.4"
 async-trait = "0.1.86"
+axum = { version = "0.8", default-features = false }
 bytes = "1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-core = "0.3"
 futures-timer = "3"
 futures-util = "0.3"
+headers = "0.4"
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
+hyper = "1"
+hyper-util = "0.1"
+multer = "3"
 parking_lot = "0.12"
+percent-encoding = "2"
+pin-project-lite = "0.2"
+proc-macro2 = "1.0.92"
+quote = "1.0.38"
 redis = "1"
 reqwest = { version = "0.13", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1.9"
 serde = "1.0.217"
 serde_json = "1.0.137"
+serde_urlencoded = "0.7"
+socket2 = "0.6"
+syn = "2.0.94"
 testcontainers = "0.27.3"
 testcontainers-modules = "0.15.0"
 tokio = { version = "1.47", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-stream = "0.1"
 tokio-tungstenite = "0.28"
 tower = { version = "0.5", default-features = false }

@@ -6,8 +6,19 @@
 //! | `PgUserRepo as dyn UserRepo` | `m.provide::<PgUserRepo>().also_as::<dyn UserRepo>(\|a\| a);` |
 //! | `AppConfig::from_env()?` | `m.try_value(AppConfig::from_env());` |
 //! | `expr` | `m.value(expr);` |
-//! | a closure | `singleton` or `try_singleton`, picked by autoref over the closure's own type |
+//! | `with = closure` | `m.with(closure)` or `m.try_with(..)`, picked by autoref over the closure's own type |
+//! | `with(singleton) = closure` | `m.singleton(..)` or `m.try_singleton(..)`, ranked the same way |
+//! | `with(execution) = closure` | `m.execution(..)` or `m.try_execution(..)` |
+//! | `with(transient) = closure` | `m.transient(..)` or `m.try_transient(..)` |
+//! | a bare closure | as `with = closure`: `Auto`, the same closure meaning the same thing in every position |
+//! | `K: with = closure`, `K: with(<scope>) = closure` | the same call, then `.also_as::<K>(\|a\| a)` |
 //! | `into K: [..]` | one `m.contribute::<K>()` statement per item, below |
+//!
+//! Every closure is written as in `#[guards]`: a synchronous body is wrapped in `async move`, and
+//! a closure already `async` is kept. For a provider `Auto` behaves as a singleton; what differs
+//! from `with(singleton)` is the record, which the needs-execution pass reads to name
+//! `with(execution)` in its hint. The key comes first in `K: with = ..` because a closure's body
+//! extends as far as it can, so a trailing `as dyn Cache` would parse as a cast inside it.
 //!
 //! An `into` list has one grammar for every key, a role key and `dyn Plugin` alike, the one
 //! `#[guards]` uses for a type, a value and a closure:
@@ -68,7 +79,9 @@ pub(crate) enum ProviderEntry {
     ProvideAs { ty: Type, as_ty: Type },
     TryValue(Expr),
     Value(Expr),
-    Factory(ExprClosure),
+    /// `with = ..`, `with(<scope>) = ..` and a bare closure, `key` `None`; `K: with = ..` and
+    /// `K: with(<scope>) = ..`, `key` `Some(K)`. `scope` is `None` for `Auto`.
+    With { key: Option<Type>, scope: Option<ScopeArg>, closure: ExprClosure },
     Contribute { into: Type, items: Vec<Contribution> },
 }
 
@@ -86,8 +99,28 @@ const CONTRIBUTION_FORMS: &str =
     "an `into` entry is a type, `value = expr`, `with = |..| ..` or `with(<scope>) = |..| ..`";
 
 impl Parse for ProviderEntry {
-    /// `into T: [..]` first, then a type followed by `,`, `as` or the end, then an expression.
+    /// `into T: [..]` first, then `with ..`, then `K: with ..`, then a type followed by `,`, `as`
+    /// or the end, then an expression.
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        if is_with(input) {
+            input.parse::<Ident>()?;
+            let (scope, closure) = parse_with(input)?;
+            return Ok(ProviderEntry::With { key: None, scope, closure });
+        }
+        if is_keyed_with(input) {
+            let key: Type = input.parse()?;
+            if written_as_role_key(&key) {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "a role key takes contributions, and `K: with = ..` binds a single instance; \
+                     a global enhancer is written `into AnyGuard<Http>: [with = ..]`",
+                ));
+            }
+            input.parse::<Token![:]>()?;
+            input.parse::<Ident>()?;
+            let (scope, closure) = parse_with(input)?;
+            return Ok(ProviderEntry::With { key: Some(key), scope, closure });
+        }
         if is_contribution(input) {
             input.parse::<Ident>()?;
             let into: Type = input.parse()?;
@@ -122,7 +155,7 @@ impl Parse for ProviderEntry {
             Expr::Try(expr) => ProviderEntry::TryValue(*expr.expr),
             Expr::Closure(closure) => {
                 check_factory_params(&closure)?;
-                ProviderEntry::Factory(closure)
+                ProviderEntry::With { key: None, scope: None, closure }
             }
             expr => ProviderEntry::Value(expr),
         })
@@ -173,6 +206,30 @@ impl Parse for Contribution {
     }
 }
 
+/// What follows `with` in a providers entry: an optional `(<scope>)`, `=`, and the closure.
+fn parse_with(input: ParseStream<'_>) -> syn::Result<(Option<ScopeArg>, ExprClosure)> {
+    let scope = if input.peek(token::Paren) { Some(ScopeArg::parse_parenthesized(input)?) } else { None };
+    input.parse::<Token![=]>()?;
+    Ok((scope, parse_with_closure(input)?))
+}
+
+/// `with =` or `with(`.
+fn is_with(input: ParseStream<'_>) -> bool {
+    let fork = input.fork();
+    let Ok(ident) = fork.parse::<Ident>() else { return false };
+    ident == "with" && ((fork.peek(Token![=]) && !fork.peek(Token![==]) && !fork.peek(Token![=>])) || fork.peek(token::Paren))
+}
+
+/// A type, a single `:`, then `with`: the key-first form.
+fn is_keyed_with(input: ParseStream<'_>) -> bool {
+    let fork = input.fork();
+    if fork.parse::<Type>().is_err() || !fork.peek(Token![:]) || fork.peek(Token![::]) {
+        return false;
+    }
+    let _ = fork.parse::<Token![:]>();
+    fork.parse::<Ident>().is_ok_and(|ident| ident == "with")
+}
+
 fn parse_with_closure(input: ParseStream<'_>) -> syn::Result<ExprClosure> {
     match input.parse::<Expr>()? {
         Expr::Closure(closure) => {
@@ -205,13 +262,21 @@ impl ProviderEntry {
             ProviderEntry::Value(expr) => quote_spanned! {expr.span()=>
                 #m.value(#expr);
             },
-            ProviderEntry::Factory(closure) => quote_spanned! {closure.span()=>
-                {
-                    #[allow(unused_imports)]
-                    use #ulo::__private::factory::{Fallible as _, Plain as _};
-                    (&#ulo::__private::factory::Probe::new(#closure)).register_singleton(&mut *#m);
+            ProviderEntry::With { key, scope, closure } => {
+                let closure = wrap_async(closure);
+                let scope = scope.map_or_else(|| quote!(#ulo::scope::Auto), |scope| scope.path());
+                let bind = match key {
+                    None => quote!(bind::<#scope>(&mut *#m)),
+                    Some(key) => quote!(bind_as::<#key, #scope, _>(&mut *#m, |a| a)),
+                };
+                quote_spanned! {closure.span()=>
+                    {
+                        #[allow(unused_imports)]
+                        use #ulo::__private::factory::{FallibleBinding as _, PlainBinding as _};
+                        (&#ulo::__private::factory::Probe::new(#closure)).#bind;
+                    }
                 }
-            },
+            }
             ProviderEntry::Contribute { into, items } => {
                 let contributions = items.iter().map(|item| item.lower(into));
                 quote!(#(#contributions)*)

@@ -1,16 +1,22 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::app::load;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, LoadError, LookupError, Shutdown, ShutdownError};
+use crate::error::{Closed, DispatchStage, LoadError, LookupError, Shutdown, ShutdownError};
 use crate::execution::notify::Draining;
 use crate::execution::{ExecOptions, Execution};
+use crate::lifecycle::phase::Phase as Stage;
 use crate::lifecycle::shutdown;
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
+use crate::redact::{Redacted, redact};
 use crate::signal::Signal;
+use crate::timer::BoxError;
+use crate::transport::handler::HandlerInfo;
+use crate::transport::pipeline::caught;
 
 /// A `Clone + Send + Sync` view of the app's shared state, available from `Connected` on.
 ///
@@ -69,4 +75,63 @@ impl AppHandle {
     pub fn is_draining(&self) -> bool {
         self.shared.draining.is_fired()
     }
+
+    /// Where the app is in its life (transports DESIGN §11, X13). gRPC health reads it to report
+    /// NOT_SERVING from the drain on, consistent with `is_draining()`.
+    pub fn phase(&self) -> Phase {
+        match self.shared.phase.get() {
+            Stage::Wired | Stage::Connecting | Stage::Running => Phase::Running,
+            Stage::Stopping => Phase::Stopping,
+            Stage::Draining => Phase::Draining,
+            Stage::Destroying => Phase::Destroying,
+            Stage::Closed => Phase::Closed,
+        }
+    }
+
+    /// Runs the graph's own redaction over `err`: every `Secret` registered with this app is
+    /// replaced, and userinfo is stripped from anything shaped like a URL (§9.3, X14). For code
+    /// outside the core that stores an outside error where it may be printed, such as
+    /// `ExtractError::Malformed`'s decoder error.
+    pub fn redact(&self, err: BoxError) -> Redacted {
+        redact(&self.shared.graph().secrets, err)
+    }
+
+    /// Every mounted handler, of every transport, with its transport key, route or pattern and
+    /// metadata, in the order the controllers mounted them (transports DESIGN §2.5, X3).
+    pub fn handlers(&self) -> Vec<Arc<HandlerInfo>> {
+        self.shared.graph().handlers.iter().map(|handler| Arc::clone(&handler.info)).collect()
+    }
+
+    /// The root module, whose visibility a lookup naming no module uses. A transport opens an
+    /// execution here when the route is not known yet, and routes it with `Execution::route_to`.
+    pub fn root(&self) -> ModuleRef {
+        self.shared.root()
+    }
+
+    /// Polls `fut` and turns a panic in it into `PanicRecovered { stage, .. }`, its message
+    /// redacted, as `dispatch` does for its own stages. For a transport's pre-dispatch stage, whose
+    /// entries run outside `dispatch` and still reach the error handlers on a panic.
+    pub async fn catch_panic<R, F>(&self, stage: DispatchStage, fut: F) -> Result<R, BoxError>
+    where
+        F: Future<Output = Result<R, BoxError>>,
+    {
+        let graph = self.shared.graph();
+        caught(stage, &graph.secrets, fut).await
+    }
+}
+
+/// The app's phase as [`AppHandle::phase`] reports it (§9.5). An `AppHandle` exists from
+/// `Connected` on, so the phases before it read as `Running`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Phase {
+    /// Serving, or connected and not yet serving.
+    Running,
+    /// The before-shutdown stage: traffic is normal and `is_draining()` is false.
+    Stopping,
+    /// From stop-accepting to the drain's end: new executions are refused.
+    Draining,
+    /// From the first destroy hook on: singleton lookups answer `LookupError::Closed`.
+    Destroying,
+    Closed,
 }

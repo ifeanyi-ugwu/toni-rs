@@ -48,6 +48,15 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
+    /// A guard already built and shared with other handlers: a controller-level `value = expr`,
+    /// which `Controller::mount` builds once into an `Arc` and hands to every handler's mount
+    /// function (transports DESIGN §2.1, X2). Each handler unsizes its own clone of the `Arc`
+    /// into its transport's role, so the role is checked per handler.
+    pub fn guard_arc<G: Guard<T>>(&mut self, guard: Arc<G>) -> &mut Self {
+        self.guards.push(Decl::Value(widen_guard::<T, G>(guard)));
+        self
+    }
+
     /// A guard by closure, with `Auto` scope: built once if nothing it reads needs an execution,
     /// per execution if something does.
     #[track_caller]
@@ -84,6 +93,12 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
+    /// [`guard_arc`](Self::guard_arc) for an interceptor.
+    pub fn interceptor_arc<I: Interceptor<T>>(&mut self, interceptor: Arc<I>) -> &mut Self {
+        self.interceptors.push(Decl::Value(widen_interceptor::<T, I>(interceptor)));
+        self
+    }
+
     /// [`guard_with`](Self::guard_with) for an interceptor.
     #[track_caller]
     pub fn interceptor_with<Args, F>(&mut self, build: F) -> &mut Self
@@ -116,6 +131,12 @@ impl<T: Transport> EnhancerSpec<T> {
 
     pub fn error_handler_value<E: ErrorHandler<T>>(&mut self, handler: E) -> &mut Self {
         self.error_handlers.push(Decl::by_value(handler, widen_error_handler::<T, E>));
+        self
+    }
+
+    /// [`guard_arc`](Self::guard_arc) for an error handler.
+    pub fn error_handler_arc<E: ErrorHandler<T>>(&mut self, handler: Arc<E>) -> &mut Self {
+        self.error_handlers.push(Decl::Value(widen_error_handler::<T, E>(handler)));
         self
     }
 

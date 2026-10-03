@@ -163,7 +163,15 @@ pub(crate) struct InputDecl {
     pub(crate) key: Key,
     pub(crate) seeder: TypeId,
     pub(crate) seeder_name: &'static str,
-    pub(crate) declared_in: ModuleId,
+    pub(crate) origin: InputOrigin,
+}
+
+/// Where an input was declared: a module's `m.input::<T>().seeded_by::<Tr>()`, or a transport's
+/// `Transport::inputs`, which a report prints as "declared by transport `Http`".
+#[derive(Clone, Copy)]
+pub(crate) enum InputOrigin {
+    Module(ModuleId),
+    Transport { name: &'static str, at: &'static std::panic::Location<'static> },
 }
 
 impl Graph {

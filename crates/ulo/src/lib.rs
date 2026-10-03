@@ -41,9 +41,9 @@ pub mod handle {
 #[doc(hidden)]
 pub mod __private;
 
-pub use ulo_macros::{construct, error_handlers, guards, injectable, interceptors, module, routes};
+pub use ulo_macros::{construct, error_handlers, guards, injectable, interceptors, meta, module, routes};
 
-pub use app::{App, AppBuilder, AppHandle, Connected, Wired};
+pub use app::{App, AppBuilder, AppHandle, Connected, Phase, Wired};
 pub use binding::alias::{Alias, Input};
 pub use binding::contribute::Contribute;
 pub use binding::factory::{Factory, ShutdownFactory};
@@ -51,14 +51,14 @@ pub use binding::handle::Handle;
 pub use construct::{Construct, ConstructError};
 pub use dependency::{Dep, Dependencies, Ext, FromContainer, Many, Requirement};
 pub use error::{
-    Closed, ConnectError, DispatchStage, FailureReason, GuardRejected, Limit, LoadError, LoadRefusal,
-    LookupError, LookupKind, NoTimer, PanicRecovered, Shutdown, ShutdownError, ShutdownFailure,
-    StartupError, is_panic,
+    Closed, ConfigureError, ConfigureErrors, ConnectError, DispatchStage, EndStream, FailureReason, GuardRejected,
+    Limit, LoadError, LoadRefusal, LookupError, LookupKind, PanicRecovered, Shutdown, ShutdownError,
+    ShutdownFailure, StartupError, TimerMissing, is_panic,
 };
 pub use error::wiring::{WiringError, WiringErrors};
 pub use execution::extensions::Extensions;
 pub use execution::notify::{Cancelled, Draining};
-pub use execution::{ExecOptions, Execution, ExecutionRef};
+pub use execution::{CancelReason, ExecOptions, Execution, ExecutionRef, StreamOutcome};
 pub use hooks::{
     BeforeApplicationShutdown, HookKind, Hooks, OnApplicationBootstrap, OnApplicationShutdown,
     OnModuleDestroy, OnModuleInit,
@@ -75,11 +75,14 @@ pub use resolver::{Entries, Entry, Resolver};
 pub use scope::{AllowedIn, HookCapable, Scope, ScopeKind};
 pub use signal::Signal;
 pub use timer::{BoxError, BoxFuture, Bound, Timer};
-pub use transport::controller::{Controller, Mount, MountedHandler};
+pub use transport::controller::{Controller, ControllerHandle, Mount, MountedHandler};
 pub use transport::enhancer::EnhancerSpec;
+pub use transport::handler::{HandlerInfo, HandlerSpec, Shape};
+pub use transport::inputs::Inputs;
+pub use transport::metadata::{MetaTier, Metadata};
 pub use transport::next::Next;
-pub use transport::pipeline::dispatch;
-pub use transport::server::{DrainToken, Mounted, Server};
+pub use transport::pipeline::{LateOutcome, dispatch, dispatch_late, recover};
+pub use transport::server::{BoundAddr, DrainToken, Mounted, Server};
 pub use transport::{
     AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHandler, ErasedGuard,
     ErasedInterceptor, ErrorHandler, Guard, Interceptor, Role, Transport,

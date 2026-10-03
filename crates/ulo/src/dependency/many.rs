@@ -57,7 +57,7 @@ impl<T: ?Sized + Send + Sync + 'static, Q: 'static> FromContainer for Many<T, Q>
         req.many(Key::of::<T, Q>());
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
         r.many_qualified::<T, Q>().await
     }
 }

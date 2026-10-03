@@ -20,10 +20,10 @@ use std::time::Duration;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, LookupError, NoTimer, Shutdown, ShutdownError, StartupError};
+use crate::error::{Closed, ConfigureError, ConfigureErrors, LookupError, Shutdown, ShutdownError, StartupError, TimerMissing};
 use crate::execution::{ExecOptions, Execution};
 use crate::graph::{ModuleId, wire};
-use crate::lifecycle::phase::Phase;
+use crate::lifecycle::phase::Phase as Stage;
 use crate::lifecycle::{connect, shutdown};
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
@@ -31,9 +31,9 @@ use crate::redact::{Redacted, redact};
 use crate::signal::Signal;
 use crate::testing::TestPlan;
 use crate::timer::{BoxError, BoxFuture, Defaults, Timer};
-use crate::transport::server::{ErasedServer, Server};
+use crate::transport::server::{BoundAddr, ErasedServer, Server};
 
-pub use handle::AppHandle;
+pub use handle::{AppHandle, Phase};
 
 /// Wired: the graph is built and every wiring error has been reported. Nothing is built yet.
 pub enum Wired {}
@@ -167,12 +167,12 @@ impl App<Wired> {
     /// it, then every `OnModuleInit` hook, then every `OnApplicationBootstrap` hook (§9.2).
     pub async fn connect(self) -> Result<App<Connected>, StartupError> {
         let shared = self.shared;
-        shared.phase.advance(Phase::Connecting);
+        shared.phase.advance(Stage::Connecting);
         let graph = shared.graph();
         // `ModuleId`s are positions in collection order, the order the hooks take.
         let modules: Vec<ModuleId> = graph.modules.iter().map(|module| module.id).collect();
         connect::connect(&shared, &graph.connect_order, &modules).await?;
-        shared.phase.advance(Phase::Running);
+        shared.phase.advance(Stage::Running);
         Ok(App::from_shared(shared, Vec::new()))
     }
 }
@@ -184,22 +184,41 @@ impl App<Connected> {
         self
     }
 
-    /// Mounts every handler on its transport and acquires the sockets. Refuses an app that binds
-    /// a transport with no `Timer`: `StartupError::Bind` carrying `NoTimer` in its `source`.
+    /// Prepares every queued transport, then binds them in the order they were queued
+    /// (transports DESIGN §2.7, X6).
     ///
-    /// The transports bind in the order they were queued. When one fails, those already bound
-    /// are closed before the error returns, so a refused app holds no sockets.
+    /// 1. `prepare` on every server: route tables, duplicate checks, TLS loading, CORS
+    ///    validation, endpoint parsing, inherited sockets. Every failure is collected and
+    ///    reported together as `StartupError::Configure`; nothing has bound yet, so a
+    ///    configuration error is always reported before a port conflict.
+    /// 2. `bind` on each server in order. When one fails, those already bound are closed before
+    ///    the error returns, so a refused app holds no sockets.
+    ///
+    /// Refuses an app that binds a transport with no `Timer` before either step:
+    /// `StartupError::Bind` carrying `TimerMissing` in its `source`.
     pub async fn listen(mut self) -> Result<App<Bound>, StartupError> {
-        let queued = std::mem::take(&mut self.servers);
+        let mut queued = std::mem::take(&mut self.servers);
         if self.shared.config.timer.is_none()
             && let Some(server) = queued.first()
         {
             let transport = server.transport_name();
-            let refusal = NoTimer { transport };
+            let refusal = TimerMissing { transport };
             let text = refusal.to_string();
             return Err(StartupError::Bind { transport, source: Redacted::from_parts(Box::new(refusal), text) });
         }
         let handle = self.handle();
+
+        let mut failures = Vec::new();
+        for server in &mut queued {
+            if let Err(error) = server.prepare(&handle).await {
+                let source = redact(&self.shared.graph().secrets, error);
+                failures.push(ConfigureError::new(server.transport_name(), source));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(StartupError::Configure(ConfigureErrors::new(failures)));
+        }
+
         let mut bound: Vec<Arc<dyn ErasedServer>> = Vec::with_capacity(queued.len());
         for mut server in queued {
             let transport = server.transport_name();
@@ -260,6 +279,13 @@ impl App<Connected> {
 impl App<Bound> {
     pub fn handle(&self) -> AppHandle {
         AppHandle { shared: Arc::clone(&self.shared) }
+    }
+
+    /// Every address the bound transports listen on, in bind order: port 0 reports the port the
+    /// OS chose (transports DESIGN §2.7, X6).
+    pub fn addresses(&self) -> Vec<BoundAddr> {
+        let servers = self.shared.servers.lock().unwrap_or_else(PoisonError::into_inner);
+        servers.iter().flat_map(|server| server.bound()).collect()
     }
 
     /// Serves until `signal` resolves or a `close` on any handle, whichever comes first, then

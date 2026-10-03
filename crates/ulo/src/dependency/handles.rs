@@ -11,7 +11,7 @@ impl FromContainer for ModuleRef {
         req.module();
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
         Ok(r.module())
     }
 }
@@ -25,7 +25,7 @@ impl FromContainer for ExecutionRef {
         req.execution();
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
         r.execution()
     }
 }

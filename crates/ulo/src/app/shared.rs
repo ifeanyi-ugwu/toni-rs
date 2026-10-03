@@ -4,7 +4,8 @@ use std::any::{TypeId, type_name};
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
 use std::pin::pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 use std::task::{Poll, Waker};
 
 use crate::app::AppConfig;
@@ -13,9 +14,9 @@ use crate::construct::ConstructError;
 use crate::dependency::Dep;
 use crate::error::{Closed, FailureReason, LookupError, LookupKind};
 use crate::execution::cache::{OnceCells, Slot};
-use crate::execution::extensions::{Extensions, Inputs};
+use crate::execution::extensions::{Extensions, Seeded};
 use crate::execution::notify::Notify;
-use crate::execution::{ExecOptions, ExecShared, Execution};
+use crate::execution::{CancelReason, ExecOptions, ExecShared, Execution, StreamEnd};
 use crate::graph::{BindingId, Effective, FrozenBinding, Graph, ModuleId, Visible};
 use crate::key::{BindingKind, Key, KeyName};
 use crate::lifecycle::phase::{Phase, PhaseCell};
@@ -150,11 +151,16 @@ impl AppShared {
         let shared = Arc::new(ExecShared {
             app: Arc::clone(self),
             module,
+            routed: OnceLock::new(),
             cache: OnceCells::default(),
             extensions: Extensions::default(),
-            inputs: Inputs::default(),
+            inputs: Seeded::default(),
             cancel: Notify::new(),
+            cancel_reason: OnceLock::new(),
             deadline: opts.deadline,
+            handler: OnceLock::new(),
+            late: AtomicBool::new(false),
+            stream_end: Mutex::new(StreamEnd::default()),
             terminal,
             live,
         });
@@ -172,7 +178,7 @@ impl AppShared {
         let exec = self.open(module, opts, false)?;
         let out = match self.deadline_sleep(&exec) {
             None => f(&exec).await,
-            Some(sleep) => cancel_at(&exec.shared.cancel, sleep, f(&exec)).await,
+            Some(sleep) => cancel_at(&exec.shared, sleep, f(&exec)).await,
         };
         drop(exec);
         Ok(out)
@@ -186,7 +192,7 @@ impl AppShared {
         let timer = self.config.timer.as_deref()?;
         let left = at.saturating_duration_since(timer.now());
         if left.is_zero() {
-            exec.shared.cancel.fire();
+            exec.shared.cancel_with(CancelReason::Deadline);
             return None;
         }
         Some(timer.sleep(left))
@@ -274,14 +280,14 @@ fn as_key(source: &FrozenBinding, key: Key, instance: Instance) -> Instance {
 
 /// Polls `fut` to completion, firing `cancel` when `sleep` resolves and polling `fut` on past it:
 /// cancellation is a signal to the closure, not the end of its future.
-async fn cancel_at<Fut: Future>(cancel: &Notify, sleep: BoxFuture<'static, ()>, fut: Fut) -> Fut::Output {
+async fn cancel_at<Fut: Future>(exec: &ExecShared, sleep: BoxFuture<'static, ()>, fut: Fut) -> Fut::Output {
     let mut sleep = Some(sleep);
     let mut fut = pin!(fut);
     poll_fn(move |cx| {
         if let Some(pending) = sleep.as_mut() {
             if pending.as_mut().poll(cx).is_ready() {
                 sleep = None;
-                cancel.fire();
+                exec.cancel_with(CancelReason::Deadline);
             }
         }
         fut.as_mut().poll(cx)
@@ -352,7 +358,7 @@ impl LiveSet {
             inner.cancelled
         };
         if cancelled {
-            exec.cancel.fire();
+            exec.cancel_with(CancelReason::Drain);
         }
     }
 
@@ -380,7 +386,7 @@ impl LiveSet {
             inner.executions.values().filter_map(Weak::upgrade).collect()
         };
         for exec in &live {
-            exec.cancel.fire();
+            exec.cancel_with(CancelReason::Drain);
         }
         let terminal = live.iter().filter(|exec| exec.terminal).count();
         (live.len(), terminal)

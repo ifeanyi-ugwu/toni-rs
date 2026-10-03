@@ -62,6 +62,9 @@ where
     F: FnOnce(T::Cx) -> Fut + Send,
     Fut: Future<Output = Result<T::Reply, BoxError>> + Send,
 {
+    // Set before the first guard, so every enhancer reads it through `cx.exec().handler()`. A
+    // second dispatch on one execution keeps the first handler's.
+    let _ = exec.shared.handler.set(Arc::clone(&handler.info));
     let graph = handler.module.app.graph();
     let module = handler.module.module;
     let resolver = exec.resolver().in_module(module);
@@ -75,6 +78,52 @@ where
         Ok(reply) => Ok(reply),
         Err(err) => recover(handler, &at, cx, err).await,
     }
+}
+
+/// What [`dispatch_late`] tells the transport to do with an error raised after its reply began
+/// streaming (transports DESIGN §2.3, X7). An `Err` item cannot change a status, so every outcome
+/// is rendered in the transport's mid-stream form.
+#[non_exhaustive]
+pub enum LateOutcome {
+    /// Render this error in the mid-stream form: the original when no error handler claimed it,
+    /// or the error the last handler returned, reshaped.
+    Render(BoxError),
+    /// An error handler answered `Ok`. Its reply is dropped; the transport logs that and renders
+    /// the canonical form of the original error, which it kept before calling `dispatch_late`,
+    /// since the handler took the original by value.
+    Ignored,
+    /// An error handler answered `Err(EndStream)`: end the stream as if it had returned `None`.
+    End,
+}
+
+/// Runs `handler`'s error handlers over `err`, an error that arrived after the reply started:
+/// an `Err` item of a reply stream, the first included, since `dispatch` returns a streaming
+/// reply without pulling it (transports DESIGN §2.3, X7).
+///
+/// The error handlers run as they do in `dispatch`, method tier first, then controller, then
+/// global, each with `cx.exec().is_late() == true` from here on, so a handler written for both
+/// paths can tell them apart. `exec` is the call's execution, the one `cx` wraps.
+pub async fn dispatch_late<T: Transport>(handler: &MountedHandler<T>, exec: &ExecutionRef, cx: &T::Cx, err: BoxError) -> LateOutcome {
+    let _ = (handler, exec, cx, err);
+    todo!("X7: mark the execution late, run `recover`, and map `Ok` to `Ignored`, `Err(EndStream)` to `End`, any other `Err` to `Render`")
+}
+
+/// Offers `err` to the error handlers where no `dispatch` ran around it: an error or a panic in a
+/// transport's pre-dispatch stage (transports DESIGN §3.3). With `Some(handler)`, a route matched:
+/// `handler`'s method tier, then its controller tier, then the global tier. With `None`, nothing
+/// matched, and only the global error handlers of `T` apply.
+///
+/// `exec` is the call's execution, the one `cx` wraps; with no handler, the global handlers
+/// resolve with the execution's current module. An error no handler claims is returned for the
+/// transport to render.
+pub async fn recover<T: Transport>(
+    handler: Option<&MountedHandler<T>>,
+    exec: &ExecutionRef,
+    cx: &T::Cx,
+    err: BoxError,
+) -> Result<T::Reply, BoxError> {
+    let _ = (handler, exec, cx, err);
+    todo!("run the declared tiers when a handler matched, then the global `AnyErrorHandler<T>` entries, each caught as in `dispatch`")
 }
 
 /// Where a declaration resolves: the controller's module, inside the call's execution.

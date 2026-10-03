@@ -50,6 +50,14 @@ impl ModuleRef {
         self.app.graph().module(self.module).name.clone()
     }
 
+    /// This module's handle carrying `exec`, so `get` resolves with this module's visibility
+    /// inside that execution: a per-execution binding is built once in it, and a binding only
+    /// this module sees resolves as `wire()` checked it (transports DESIGN §3.3, X9). A transport
+    /// resolves a pre-dispatch entry this way through the module that declared it.
+    pub fn with_execution(&self, exec: &ExecutionRef) -> ModuleRef {
+        ModuleRef { app: Arc::clone(&self.app), module: self.module, exec: Some(exec.clone()) }
+    }
+
     /// The metadata of type `T` this module wrote, if any.
     pub fn meta<T: Meta>(&self) -> Option<Arc<T>> {
         let value = Arc::clone(self.app.graph().module(self.module).meta.get(&TypeId::of::<T>())?);

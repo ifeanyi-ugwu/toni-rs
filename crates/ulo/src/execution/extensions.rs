@@ -42,11 +42,11 @@ impl Extensions {
 /// Each input is held as an [`Instance`], the form every stored value takes, so a lookup by an
 /// erased key reads it with `downcast_instance` like any binding's instance.
 #[derive(Default)]
-pub(crate) struct Inputs {
+pub(crate) struct Seeded {
     map: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
-impl Inputs {
+impl Seeded {
     pub(crate) fn insert<T: Send + Sync + 'static>(&self, value: T) {
         self.map().insert(TypeId::of::<T>(), instance_of(Arc::new(value)));
     }

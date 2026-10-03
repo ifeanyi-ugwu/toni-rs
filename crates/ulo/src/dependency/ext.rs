@@ -38,7 +38,7 @@ impl<T: Send + Sync + 'static> FromContainer for Ext<T> {
         req.ext::<T>();
     }
 
-    async fn read(r: &Resolver<'_>) -> Result<Self, LookupError> {
+    async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
         r.ext::<T>()
     }
 }

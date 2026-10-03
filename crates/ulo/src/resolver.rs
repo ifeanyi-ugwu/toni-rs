@@ -15,7 +15,7 @@ use crate::module::handle::ModuleRef;
 /// and the current execution when there is one.
 ///
 /// `Resolver` is `Sync`, which is what lets
-/// [`FromContainer::read`](crate::FromContainer::read) and
+/// [`FromContainer::from_container`](crate::FromContainer::from_container) and
 /// [`Construct::construct`](crate::Construct::construct) hold it across an await and still return
 /// `Send` futures.
 pub struct Resolver<'a> {

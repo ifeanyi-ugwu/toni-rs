@@ -1,0 +1,18 @@
+[package]
+name = "ulo-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Endpoints, socket activation, TLS loading and bound addresses for Ulo transports"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories = ["network-programming"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true, features = ["std"] }
+tokio-rustls = { workspace = true }
+# `FD_CLOEXEC` on an inherited socket and the socket's type check, which std does not expose.
+socket2 = { workspace = true, features = ["all"] }

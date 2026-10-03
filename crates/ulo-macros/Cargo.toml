@@ -15,6 +15,9 @@ path = "src/lib.rs"
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0.92"
-quote = "1.0.38"
-syn = { version = "2.0.94", features = ["full", "visit-mut"] }
+proc-macro2.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["full", "visit-mut"] }
+# The `__handler` grammar and the key and shared-value emission `#[routes]` writes, defined once
+# for `#[routes]` and every transport attribute.
+ulo-handler-codegen = { path = "../ulo-handler-codegen" }

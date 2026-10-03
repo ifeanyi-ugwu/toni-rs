@@ -43,7 +43,7 @@ pub(crate) fn declare(dependencies: &[DependencySpec], scope: &TokenStream) -> T
     quote!(#(#calls)*)
 }
 
-/// `let #binding = <#ty as ::ulo::FromContainer>::read(r).await?;` for each dependency, in
+/// `let #binding = <#ty as ::ulo::FromContainer>::from_container(r).await?;` for each dependency, in
 /// order. A failed read propagates as `ConstructError::Dependency` through `From<LookupError>`.
 pub(crate) fn read(dependencies: &[DependencySpec], bindings: &[Ident]) -> TokenStream {
     let ulo = ulo();
@@ -51,7 +51,7 @@ pub(crate) fn read(dependencies: &[DependencySpec], bindings: &[Ident]) -> Token
     let reads = dependencies.iter().zip(bindings).map(|(dependency, binding)| {
         let ty = &dependency.ty;
         quote_spanned! {dependency.span=>
-            let #binding = <#ty as #ulo::FromContainer>::read(#r).await?;
+            let #binding = <#ty as #ulo::FromContainer>::from_container(#r).await?;
         }
     });
     quote!(#(#reads)*)
