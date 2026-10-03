@@ -12,6 +12,8 @@ pub const MB: u64 = 1024 * 1024;
 pub struct BodyLimit(pub u64);
 
 /// A route's timeout: `#[meta(Timeout(Duration::from_secs(5)))]`. When it passes, the execution is
-/// cancelled with `CancelReason::Deadline` and an answer not yet started renders 504.
+/// cancelled with `CancelReason::Deadline`. An answer not yet started is dropped, and the error
+/// handlers receive `Timeout` under the server's `timeout_grace`: unclaimed, or not answered within
+/// the grace, it renders 504.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timeout(pub Duration);

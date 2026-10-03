@@ -10,6 +10,7 @@ use http::header::{
     ACCESS_CONTROL_REQUEST_METHOD, ORIGIN, VARY,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use ulo::BoxError;
 
 use crate::body::HttpBody;
 use crate::middleware::{Middleware, Next};
@@ -160,20 +161,20 @@ impl Cors {
 }
 
 impl Middleware for Cors {
-    async fn handle(&self, req: Request, next: Next<'_>) -> Response {
+    async fn handle(&self, req: Request, next: Next<'_>) -> Result<Response, BoxError> {
         let origin = req.headers().get(ORIGIN).cloned();
         let is_preflight =
             req.method() == Method::OPTIONS && origin.is_some() && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
         if is_preflight {
-            return self.preflight(&req);
+            return Ok(self.preflight(&req));
         }
-        let mut response = next.run(req).await;
+        let mut response = next.run(req).await?;
         let headers = response.headers_mut();
         // On every response, a request without `Origin` included: a cache must not hand a
         // response without the allow headers to a cross-origin request.
         vary(headers, ORIGIN.as_str());
         let Some(allow_origin) = origin.as_ref().and_then(|origin| self.allowed_origin(origin)) else {
-            return response;
+            return Ok(response);
         };
         headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin);
         if self.credentials {
@@ -182,7 +183,7 @@ impl Middleware for Cors {
         if let Some(expose) = list(self.expose.iter().map(HeaderName::as_str)) {
             headers.insert(ACCESS_CONTROL_EXPOSE_HEADERS, expose);
         }
-        response
+        Ok(response)
     }
 }
 

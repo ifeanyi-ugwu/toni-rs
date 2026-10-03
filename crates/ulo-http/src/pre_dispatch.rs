@@ -8,10 +8,10 @@
 //! 2. The route is matched and the execution routed to the controller's module
 //!    (`Execution::route_to`); then the entries whose scope covers the route run.
 //!
-//! Then `dispatch`. Both sub-steps run inside the error chain: an entry's `Err`, a tower layer's,
-//! reaches the error handlers as a `BoxError` and its panic as `PanicRecovered`; on a miss only the
-//! global error handlers apply. A request that arrives with no execution to open, during the drain,
-//! never reaches the stage.
+//! Then `dispatch`. Both sub-steps run inside the error chain: an entry's `Err`, a middleware's or
+//! a tower layer's, reaches the error handlers as a `BoxError` and its panic as `PanicRecovered`;
+//! on a miss only the global error handlers apply. A request that arrives with no execution to
+//! open, during the drain, never reaches the stage.
 //!
 //! There is no per-module middleware: auth for a group of routes is a scoped entry, which runs
 //! before guards and can set `CurrentUser`; logging or transforming a module's responses is an
@@ -126,7 +126,8 @@ impl PreDispatch {
     /// can rewrite and it sees misses. Composed once, in `prepare`, never per request.
     ///
     /// A response the layer builds itself, tower-http's auth answering 401 for example, is a
-    /// response and not an error, so error handlers do not see it.
+    /// response and not an error, so error handlers do not see it. An `Err` its service returns
+    /// reaches them as a middleware's `Err` does.
     #[track_caller]
     pub fn layer<L, S, B>(&mut self, layer: L) -> &mut Self
     where
@@ -394,9 +395,9 @@ impl StageCx {
 }
 
 /// Runs `steps` from `from` on, then `end`. Each entry runs inside `AppHandle::catch_panic`, and
-/// its panic, or its layer's `Err`, is offered to the error handlers in its place; the entries
-/// after it run inside it and have each been caught already, so what reaches its catch is its
-/// own.
+/// its `Err`, a middleware's or a layer's, or its panic is offered to the error handlers in its
+/// place; the entries after it run inside it and have each been caught already, so what reaches
+/// its catch is its own.
 pub(crate) fn run(at: Arc<StageCx>, steps: Arc<[Runnable]>, from: usize, req: Request, end: Rest) -> BoxFuture<'static, Response> {
     let Some(index) = (from..steps.len()).find(|&index| !steps[index].skips(req.path())) else {
         return end(req);
@@ -422,15 +423,12 @@ impl Runnable {
 
     fn start(&self, exec: &ExecutionRef, req: Request, rest: Rest) -> BoxFuture<'static, Result<Response, BoxError>> {
         match &self.action {
-            Action::Value(middleware) => {
-                let middleware = Arc::clone(middleware);
-                Box::pin(async move { Ok::<_, BoxError>(handle(middleware, req, rest).await) })
-            }
+            Action::Value(middleware) => Box::pin(handle(Arc::clone(middleware), req, rest)),
             Action::ByType(resolve) => {
                 let resolving = resolve(self.module.with_execution(exec));
                 Box::pin(async move {
                     let middleware = resolving.await?;
-                    Ok::<_, BoxError>(handle(middleware, req, rest).await)
+                    handle(middleware, req, rest).await
                 })
             }
             Action::Layer(service) => {
@@ -452,6 +450,10 @@ impl Runnable {
     }
 }
 
-async fn handle(middleware: Arc<dyn ErasedMiddleware>, req: Request, rest: Rest) -> Response {
-    ErasedMiddleware::handle(&*middleware, req, Next::new(move |req| rest(req))).await
+async fn handle(middleware: Arc<dyn ErasedMiddleware>, req: Request, rest: Rest) -> Result<Response, BoxError> {
+    let next = Next::new(move |req| {
+        let answer = rest(req);
+        Box::pin(async move { Ok::<_, BoxError>(answer.await) })
+    });
+    ErasedMiddleware::handle(&*middleware, req, next).await
 }

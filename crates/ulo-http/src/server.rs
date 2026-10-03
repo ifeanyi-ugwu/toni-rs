@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ulo::{BoundAddr, BoxError, DrainToken, Mounted, Transport};
+use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Admission;
 
@@ -100,6 +100,14 @@ impl<B: Backend> Server<B> {
     /// Accept HTTP/2 without TLS, refused in `prepare` on a backend whose limits forbid it.
     pub fn h2c(mut self, enabled: bool) -> Self {
         self.config.h2c = enabled;
+        self
+    }
+
+    /// How long the error handlers may take with the `Timeout` a route timeout offers them before
+    /// the canonical 504 is sent instead: `Bound::Default` is one second, `Bound::Unbounded` waits
+    /// for them.
+    pub fn timeout_grace(mut self, grace: Bound) -> Self {
+        self.config.timeout_grace = grace;
         self
     }
 }

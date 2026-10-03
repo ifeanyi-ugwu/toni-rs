@@ -1,21 +1,22 @@
-use std::error::Error;
 use std::fmt;
 use std::future::{Future, poll_fn};
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue, UPGRADE};
+use http::header::{ALLOW, CONTENT_LENGTH, HeaderName, HeaderValue, UPGRADE};
 use http::{HeaderMap, Method, StatusCode};
 use http_body::{Body as _, Frame, SizeHint};
 use tracing::{Instrument, Span, field};
 use ulo::{AppHandle, BoxError, BoxFuture, CancelReason, ExecOptions, Execution, ExecutionRef, MountedHandler, Timer, Transport};
-use ulo_transport::{Admission, CallError, ErrorKind, Permit, span};
+use ulo_transport::{Admission, Permit, span};
 
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::cx::{CxInner, HttpCx, MatchedRoute, PathParams};
+use crate::miss::{MethodNotAllowed, NoRoute};
 use crate::pre_dispatch::{self, Rest, Stage, StageCx};
 use crate::render;
 use crate::request::{ConnInfo, OnUpgrade, Request};
@@ -37,10 +38,14 @@ use crate::upgrade::UpgradeHandler;
 ///    `ulo_transport::span::call` span entered.
 /// 4. The unscoped pre-dispatch entries, in order, inside `AppHandle::catch_panic`.
 /// 5. An `Upgrade` request on an upgrade path goes to its `UpgradeHandler`. Otherwise routing: a
-///    miss renders 404 or 405 with `Allow` after the global error handlers through
-///    `ulo::recover(None, ..)`; `OPTIONS` with no handler answers 204 with `Allow`.
+///    miss is offered to the global error handlers through `ulo::recover(None, ..)` as a
+///    `CallError` whose source is [`NoRoute`] or [`MethodNotAllowed`], rendered 404, or 405 with
+///    `Allow`, when none claims it; `OPTIONS` with no handler answers 204 with `Allow`.
 /// 6. `Execution::route_to` the controller's module, the route's timeout armed on the app's
-///    `Timer` (`CancelReason::Deadline` when it passes), the scoped entries run.
+///    `Timer`, the scoped entries run. When the timeout passes before an answer, the pipeline is
+///    dropped, the execution cancelled with `CancelReason::Deadline`, and the error handlers, the
+///    matched handler's tiers then the global ones, receive `Timeout` under
+///    `HttpConfig::timeout_grace`: unclaimed, or not answered within the grace, it renders 504.
 /// 7. The `HttpCx` built from the request as the stage leaves it, and `ulo::dispatch` with the
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
@@ -166,20 +171,60 @@ impl ServiceInner {
         call_span.record(span::OTEL_NAME, field::display(RouteName { method: req.method(), pattern: &target.pattern }));
         call_span.record(span::HANDLER, field::display(HandlerName(&target.handler)));
         let timeout = target.timeout;
-        let pipeline = self.scoped(handle.clone(), req, target, params);
         let response = match timeout {
-            None => pipeline.await,
-            Some(after) => match race(pipeline, self.timer.sleep(after)).await {
-                Raced::Done(response, deadline) => {
-                    response.map(|body| HttpBody::new(TimedBody { inner: body, deadline, exec: handle.clone() }))
-                }
-                Raced::Expired => {
-                    handle.cancel_with(CancelReason::Deadline);
-                    render::problem(&render::timed_out(), &self.config)
-                }
-            },
+            None => self.scoped(handle, req, target, params).await,
+            Some(after) => self.timed(handle, req, target, params, after).await,
         };
         if head_from_get { without_body(response) } else { response }
+    }
+
+    /// The scoped sub-step and `dispatch`, raced against the route's timeout.
+    async fn timed(
+        self: &Arc<Self>,
+        exec: ExecutionRef,
+        req: Request,
+        target: Arc<RouteTarget>,
+        params: PathParams,
+        after: Duration,
+    ) -> Response {
+        // The pipeline owns the request, and a timeout drops it with the request inside.
+        let head = Arc::new(RequestHead { parts: req.head.clone() });
+        let conn = req.conn.clone();
+        let pipeline = self.scoped(exec.clone(), req, Arc::clone(&target), params.clone());
+        match race(pipeline, self.timer.sleep(after)).await {
+            Raced::Done(response, deadline) => response.map(|body| HttpBody::new(TimedBody { inner: body, deadline, exec })),
+            Raced::Expired => {
+                exec.cancel_with(CancelReason::Deadline);
+                self.expired(&exec, head, conn, &target, params).await
+            }
+        }
+    }
+
+    /// A route timeout that passed before an answer: the error handlers receive `Timeout` with a
+    /// context built from the head as the scoped sub-step received it, no body and no upgrade.
+    /// What they answer, or the error they return rendered as it stands, is the response; with
+    /// none by the end of the grace, the canonical 504 is, and the headers they wrote are dropped.
+    async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {
+        let route = MatchedRoute {
+            handler: target.handler.clone(),
+            pattern: Arc::clone(&target.pattern),
+            params,
+            body_limit: target.body_limit,
+        };
+        let cx = self.context(exec, head, conn, Some(route), None, None);
+        let recovering = ulo::recover(Some(&target.handler), exec, &cx, Box::new(render::timed_out()));
+        let outcome = match self.config.grace() {
+            Some(grace) => match within(recovering, self.timer.sleep(grace)).await {
+                Some(outcome) => outcome,
+                None => return render::problem(&render::timed_out(), &self.config),
+            },
+            None => recovering.await,
+        };
+        let response = match outcome {
+            Ok(response) => response,
+            Err(err) => render::render_as_is(err, &self.config),
+        };
+        merge_headers(&cx, response)
     }
 
     /// The scoped sub-step, `dispatch` after it.
@@ -223,17 +268,14 @@ impl ServiceInner {
     async fn miss(&self, exec: &ExecutionRef, req: Request, miss: Miss) -> Response {
         let err: BoxError = match miss {
             Miss::Options(allow) => return options(allow),
-            Miss::NotFound => Box::new(CallError::new(ErrorKind::NotFound, "no route matches this path")),
-            Miss::MethodNotAllowed(allow) => Box::new(MethodNotAllowed { method: req.head.method.clone(), allow }),
+            Miss::NotFound => Box::new(NoRoute::error()),
+            Miss::MethodNotAllowed(allow) => Box::new(MethodNotAllowed::new(req.head.method.clone(), allow).into_error()),
         };
         let Request { head, body, conn, upgrade } = req;
         let cx = self.context(exec, Arc::new(RequestHead { parts: head }), conn, None, Some(body), upgrade);
         let response = match ulo::recover::<Http>(None, exec, &cx, err).await {
             Ok(response) => response,
-            Err(err) => match err.downcast::<MethodNotAllowed>() {
-                Ok(refused) => method_not_allowed(&refused),
-                Err(err) => render::render_error(err, exec, &self.config),
-            },
+            Err(err) => render::render_error(err, exec, &self.config),
         };
         merge_headers(&cx, response)
     }
@@ -292,22 +334,6 @@ fn options(allow: HeaderValue) -> Response {
     response
 }
 
-/// 405 as problem details, with the `Allow` RFC 9110 requires. No `ErrorKind` is 405, so this is
-/// rendered here rather than through `CallError`.
-fn method_not_allowed(refused: &MethodNotAllowed) -> Response {
-    let document = serde_json::json!({
-        "type": "about:blank",
-        "title": "Method Not Allowed",
-        "status": 405,
-        "detail": refused.to_string(),
-    });
-    let mut response = Response::new(HttpBody::from(document.to_string()));
-    *response.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/problem+json"));
-    response.headers_mut().insert(ALLOW, refused.allow.clone());
-    response
-}
-
 /// `response` without its body: RFC 9110 has a `HEAD` answer carry the `GET` answer's headers and
 /// no content, a known length kept as `Content-Length`. A 1xx or 204 answer must not carry
 /// `Content-Length` (RFC 9110 §8.6), and a 304 may carry only the length a 200 would have had,
@@ -343,6 +369,19 @@ async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'stat
             Some(Poll::Ready(())) => Poll::Ready(Raced::Expired),
             _ => Poll::Pending,
         }
+    })
+    .await
+}
+
+/// `fut` raced against `sleep`, polled first: `None` when the sleep wins, `fut` dropped at its
+/// current await.
+async fn within<F: Future>(fut: F, mut sleep: BoxFuture<'static, ()>) -> Option<F::Output> {
+    let mut fut = pin!(fut);
+    poll_fn(move |cx| {
+        if let Poll::Ready(output) = fut.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        sleep.as_mut().poll(cx).map(|()| None)
     })
     .await
 }
@@ -455,22 +494,3 @@ impl fmt::Display for HandlerName<'_> {
         write!(f, "{}::{}", self.0.controller(), self.0.name())
     }
 }
-
-/// A path that matches with no handler for the method, as the global error handlers receive it.
-#[derive(Debug)]
-struct MethodNotAllowed {
-    method: Method,
-    allow: HeaderValue,
-}
-
-impl fmt::Display for MethodNotAllowed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "this path does not answer `{}`", self.method)?;
-        if let Ok(allow) = self.allow.to_str() {
-            write!(f, "; it answers {allow}")?;
-        }
-        Ok(())
-    }
-}
-
-impl Error for MethodNotAllowed {}

@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::future::Future;
 use std::time::Duration;
 
-use ulo::BoxError;
+use ulo::{Bound, BoxError};
 use ulo_net::{BoundListener, TlsAcceptor};
 
 use crate::limits::MB;
@@ -109,6 +109,24 @@ pub struct HttpConfig {
     pub challenge: Cow<'static, str>,
     /// Accept HTTP/2 without TLS (prior knowledge).
     pub h2c: bool,
+    /// How long the error handlers may take with the `Timeout` a route timeout offers them before
+    /// the canonical 504 is sent instead: one second for `Bound::Default`, timed by the app's
+    /// `Timer`; `Bound::Unbounded` waits for them.
+    pub timeout_grace: Bound,
+}
+
+/// `HttpConfig::timeout_grace`'s `Bound::Default`.
+const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
+
+impl HttpConfig {
+    /// `timeout_grace` as a duration; `None` for `Bound::Unbounded`.
+    pub(crate) fn grace(&self) -> Option<Duration> {
+        match self.timeout_grace {
+            Bound::Default => Some(DEFAULT_TIMEOUT_GRACE),
+            Bound::After(grace) => Some(grace),
+            Bound::Unbounded => None,
+        }
+    }
 }
 
 impl Default for HttpConfig {
@@ -120,6 +138,7 @@ impl Default for HttpConfig {
             shed_retry_after: Duration::from_secs(1),
             challenge: Cow::Borrowed("Bearer"),
             h2c: false,
+            timeout_grace: Bound::Default,
         }
     }
 }

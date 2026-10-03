@@ -2,10 +2,9 @@
 //! `application/problem+json`, `type` `about:blank`, `title` the status phrase, `status` the code,
 //! `detail` the public message, `details` as an extension member.
 
-use std::error::Error;
 use std::time::Duration;
 
-use http::header::{ACCEPT, CONNECTION, CONTENT_TYPE, HeaderValue, RETRY_AFTER, WWW_AUTHENTICATE};
+use http::header::{ACCEPT, ALLOW, CONNECTION, CONTENT_TYPE, HeaderValue, RETRY_AFTER, WWW_AUTHENTICATE};
 use http::StatusCode;
 use serde::Serialize;
 use ulo::{BoxError, CancelReason, ExecutionRef};
@@ -13,6 +12,7 @@ use ulo_transport::{CallError, Details, ErrorKind, ExtractError};
 
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
+use crate::miss::MethodNotAllowed;
 use crate::response::Response;
 use crate::sse::{Event, EventName};
 
@@ -42,23 +42,39 @@ pub(crate) fn problem(error: &CallError, config: &HttpConfig) -> Response {
 }
 
 /// An error no handler claimed, as a response: `Timeout` when `exec`'s cancel reason is
-/// `Deadline`; otherwise `CallError::from_boxed`, with 413 and 415 for an `ExtractError`'s
-/// `TooLarge` and `UnsupportedMediaType`.
-///
-/// The 413 and 415 apply to an `ExtractError` arriving bare, as extraction raises it, or as the
-/// source of a `CallError` still of its kind, `BadRequest`; an error handler that reshaped it to
-/// another kind is rendered by that kind. A 415 carries `Accept` with the media type the
-/// extractor expected (RFC 9110 §15.5.16).
+/// `Deadline`, otherwise as [`render_as_is`] renders it.
 pub(crate) fn render_error(err: BoxError, exec: &ExecutionRef, config: &HttpConfig) -> Response {
     if exec.cancel_reason() == Some(CancelReason::Deadline) {
         return problem(&timed_out(), config);
     }
-    let own_status = body_refusal(&*err);
-    let error = CallError::from_boxed(err);
-    match own_status {
-        Some((status, expected)) if error.kind() == ErrorKind::BadRequest => {
-            let mut response = document(&error, status, config);
-            if let Some(accept) = expected.and_then(|expected| HeaderValue::from_str(expected).ok()) {
+    render_as_is(err, config)
+}
+
+/// An error no handler claimed, rendered as itself whatever the execution's cancel reason: what a
+/// route timeout's error handlers return, which is the `Timeout` it offered or their reshaping of
+/// it.
+///
+/// `CallError::from_boxed`, with three statuses no kind has, each while the error is still of
+/// kind `BadRequest`: 405 with `Allow` for a `MethodNotAllowed`, and 413 and 415 for an
+/// `ExtractError`'s `TooLarge` and `UnsupportedMediaType`. Each is recognised bare or as the
+/// source of a `CallError`; an error handler that reshaped it to another kind is rendered by that
+/// kind. A 415 carries `Accept` with the media type the extractor expected (RFC 9110 §15.5.16).
+pub(crate) fn render_as_is(err: BoxError, config: &HttpConfig) -> Response {
+    let error = match err.downcast::<MethodNotAllowed>() {
+        Ok(refused) => (*refused).into_error(),
+        Err(err) => CallError::from_boxed(err),
+    };
+    if error.kind() != ErrorKind::BadRequest {
+        return problem(&error, config);
+    }
+    if let Some(refused) = error.source_as::<MethodNotAllowed>() {
+        return method_not_allowed(&error, refused, config);
+    }
+    match error.source_as::<ExtractError>() {
+        Some(ExtractError::TooLarge { .. }) => document(&error, StatusCode::PAYLOAD_TOO_LARGE, config),
+        Some(ExtractError::UnsupportedMediaType { expected, .. }) => {
+            let mut response = document(&error, StatusCode::UNSUPPORTED_MEDIA_TYPE, config);
+            if let Ok(accept) = HeaderValue::from_str(expected) {
                 response.headers_mut().insert(ACCEPT, accept);
             }
             response
@@ -100,17 +116,11 @@ pub(crate) fn timed_out() -> CallError {
     CallError::new(ErrorKind::Timeout, "the request did not complete within its time limit")
 }
 
-/// An `ExtractError` that has its own status: 413 for `TooLarge`, 415 with the expected media type
-/// for `UnsupportedMediaType`.
-fn body_refusal(err: &(dyn Error + Send + Sync + 'static)) -> Option<(StatusCode, Option<&'static str>)> {
-    let extract = err
-        .downcast_ref::<ExtractError>()
-        .or_else(|| err.downcast_ref::<CallError>().and_then(|error| error.source_as::<ExtractError>()))?;
-    match extract {
-        ExtractError::TooLarge { .. } => Some((StatusCode::PAYLOAD_TOO_LARGE, None)),
-        ExtractError::UnsupportedMediaType { expected, .. } => Some((StatusCode::UNSUPPORTED_MEDIA_TYPE, Some(*expected))),
-        _ => None,
-    }
+/// 405 as problem details, with the `Allow` RFC 9110 requires.
+fn method_not_allowed(error: &CallError, refused: &MethodNotAllowed, config: &HttpConfig) -> Response {
+    let mut response = document(error, StatusCode::METHOD_NOT_ALLOWED, config);
+    response.headers_mut().insert(ALLOW, refused.allow().clone());
+    response
 }
 
 /// A 503 that always carries `Retry-After`, the server's `shed_retry_after`.
