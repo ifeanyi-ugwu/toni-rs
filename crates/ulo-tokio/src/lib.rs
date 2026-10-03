@@ -31,9 +31,85 @@ impl ulo::Timer for Timer {
 
 /// Resolves on the first shutdown signal the OS delivers: SIGINT or SIGTERM on Unix, Ctrl-C or
 /// Ctrl-Close on Windows, as a `Signal` named after it (`"SIGTERM"`, `"SIGINT"`, `"CTRL_C"`,
-/// `"CTRL_CLOSE"`). A handler that cannot be installed is skipped and the others still resolve it.
+/// `"CTRL_CLOSE"`). A handler that cannot be installed is skipped and the others still resolve it;
+/// with none installed, or on another platform, the future never resolves.
+///
+/// The handlers are installed when the future is first polled, inside the tokio runtime that
+/// polls it, so the function may be called anywhere. On Unix tokio keeps a handler installed for
+/// the rest of the process, so a second SIGINT during the shutdown sequence does not end it.
 pub fn shutdown_signal() -> impl Future<Output = Signal> + Send + 'static {
-    async { todo!("select over the platform's signal streams; name the `Signal` after the one that fired") }
+    os::shutdown_signal()
+}
+
+#[cfg(unix)]
+mod os {
+    use tokio::signal::unix::{SignalKind, signal};
+    use ulo::Signal;
+
+    pub(super) async fn shutdown_signal() -> Signal {
+        let sigterm = signal(SignalKind::terminate()).ok();
+        let sigint = signal(SignalKind::interrupt()).ok();
+        let terminate = async move {
+            if let Some(mut stream) = sigterm
+                && stream.recv().await.is_some()
+            {
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        let interrupt = async move {
+            if let Some(mut stream) = sigint
+                && stream.recv().await.is_some()
+            {
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = terminate => Signal::new("SIGTERM"),
+            () = interrupt => Signal::new("SIGINT"),
+        }
+    }
+}
+
+#[cfg(windows)]
+mod os {
+    use tokio::signal::windows::{ctrl_c, ctrl_close};
+    use ulo::Signal;
+
+    pub(super) async fn shutdown_signal() -> Signal {
+        let on_ctrl_c = ctrl_c().ok();
+        let on_ctrl_close = ctrl_close().ok();
+        let ctrl_c = async move {
+            if let Some(mut stream) = on_ctrl_c
+                && stream.recv().await.is_some()
+            {
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        let ctrl_close = async move {
+            if let Some(mut stream) = on_ctrl_close
+                && stream.recv().await.is_some()
+            {
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = ctrl_c => Signal::new("CTRL_C"),
+            () = ctrl_close => Signal::new("CTRL_CLOSE"),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod os {
+    use ulo::Signal;
+
+    pub(super) async fn shutdown_signal() -> Signal {
+        std::future::pending().await
+    }
 }
 
 /// Spawns `fut` on the current tokio runtime.

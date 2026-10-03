@@ -16,8 +16,19 @@ pub struct BoundListener {
 impl BoundListener {
     /// Binds `endpoint`, or takes the inherited socket it names.
     pub fn bind(endpoint: &Endpoint) -> Result<BoundListener, BindError> {
-        let _ = (endpoint, Activation::get);
-        todo!("`TcpListener::bind` or `Activation::get()?.take(name)`; set non-blocking; read `local_addr`")
+        let os_error = |source: io::Error| BindError::Io { endpoint: endpoint.clone(), source };
+        let listener = match endpoint {
+            Endpoint::Addr(addr) => {
+                let listener = TcpListener::bind(addr).map_err(os_error)?;
+                listener.set_nonblocking(true).map_err(os_error)?;
+                listener
+            }
+            Endpoint::Inherited(name) => Activation::get()
+                .and_then(|activation| activation.take(name))
+                .map_err(BindError::Activation)?,
+        };
+        let local = listener.local_addr().map_err(os_error)?;
+        Ok(BoundListener { listener, endpoint: endpoint.clone(), local })
     }
 
     /// The actual address: port 0 reports the port the OS chose.

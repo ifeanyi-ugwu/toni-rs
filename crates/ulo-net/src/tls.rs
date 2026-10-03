@@ -1,8 +1,13 @@
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use rustls::ServerConfig;
+use rustls_pki_types::pem::{self, PemObject};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::TlsAcceptor;
 
 /// A server's TLS certificate chain and private key, loaded with rustls.
@@ -36,9 +41,53 @@ impl Tls {
     /// Reads and parses the certificate and key, checks that they match, and builds the acceptor
     /// with `alpn` as the protocols offered, in preference order.
     pub fn load(&self, alpn: &[&[u8]]) -> Result<TlsAcceptor, TlsError> {
-        let _ = (alpn, &self.source);
-        todo!("read the PEM, parse with `rustls_pki_types::pem`, build a `ServerConfig` with the ring provider, set ALPN")
+        let (certs, key) = match &self.source {
+            Source::PemFiles { cert, key } => (
+                certificates(&read(cert)?).map_err(|reason| TlsError::Certificate(in_file(cert, reason)))?,
+                private_key(&read(key)?).map_err(|reason| TlsError::PrivateKey(in_file(key, reason)))?,
+            ),
+            Source::Pem { cert, key } => (
+                certificates(cert).map_err(TlsError::Certificate)?,
+                private_key(key).map_err(TlsError::PrivateKey)?,
+            ),
+        };
+        // An explicit provider rather than the process default, which panics when the build
+        // enables both rustls backends and nothing installed one.
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(TlsError::Rustls)?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(TlsError::Rustls)?;
+        config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
+        Ok(TlsAcceptor::from(Arc::new(config)))
     }
+}
+
+fn read(path: &Path) -> Result<Vec<u8>, TlsError> {
+    fs::read(path).map_err(|source| TlsError::Read { path: path.to_owned(), source })
+}
+
+fn in_file(path: &Path, reason: String) -> String {
+    format!("`{}`: {reason}", path.display())
+}
+
+fn certificates(bytes: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
+    let certs = CertificateDer::pem_slice_iter(bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if certs.is_empty() {
+        return Err("no `CERTIFICATE` section found".to_owned());
+    }
+    Ok(certs)
+}
+
+fn private_key(bytes: &[u8]) -> Result<PrivateKeyDer<'static>, String> {
+    PrivateKeyDer::from_pem_slice(bytes).map_err(|error| match error {
+        pem::Error::NoItemsFound => "no private key section found".to_owned(),
+        error => error.to_string(),
+    })
 }
 
 /// Why a server's TLS configuration could not be loaded.
