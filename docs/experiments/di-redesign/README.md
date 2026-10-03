@@ -19,5 +19,6 @@ rebuild has not been compiled yet.
 - `DIVERGENCES.md` — every place the rebuild departs from the design or fills a gap it leaves,
   grouped by wave, with the user's decisions on each.
 - `divergences/` — the per-area logs `DIVERGENCES.md` is assembled from.
+- `transports/CAPABILITIES.md` — the brief for the transport layer, the second race: what it must do on top of the DI core, with no reference to the previous implementation.
 - `probes/` — the scratch crate behind the reviews, outside the ulo workspace; each binary shows
   one claim, and a `*_fails.rs` binary's compile error is its result.
