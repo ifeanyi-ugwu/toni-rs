@@ -773,7 +773,9 @@ DESIGN.md §4 should then drop the sentence describing the difference, and state
 
 ## Sixteenth response: scope as its own axis
 
-Received 2026-10-03, revising the fifteenth. The user replied to it: "ok, i was just thningit should all mean same thing with is a clousre then scopign should be somehow else" Not yet signed off.
+Received 2026-10-03, revising the fifteenth. The user replied to it: "ok, i was just thningit should all mean same thing with is a clousre then scopign should be somehow else" The user signed it off the same day,
+with all three explicit scopes (`with(singleton | execution | transient) = ..`, mirroring
+`#[injectable(..)]`) and item [26] of the brief amended.
 
 Yes, and that's cleaner than the role table I just gave you. It splits two questions that the current design mixes together:
 

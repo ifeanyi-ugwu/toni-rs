@@ -47,7 +47,7 @@ Scopes and executions
 Enhancers and roles
 24. Guards, interceptors, error handlers, middleware and WebSocket gateways take part in the container, as singletons or built per execution.
 25. A type's role comes from the traits it implements, per transport; an HTTP guard and an RPC guard are different roles. There are no marker attributes.
-26. An enhancer is declared by type (resolved from the container), by value (built once and shared), or by closure (built per execution). Enhancers stack in the order global, then per controller, then per method.
+26. An enhancer is declared by type (resolved from the container), by value (built once and shared), or by closure. A closure's scope follows the same rule as a type's: built once unless something it reads needs an execution, and an explicit scope overrides that, so a closure that creates per-call state declares itself per execution. Enhancers stack in the order global, then per controller, then per method.
 27. Within one call, each guard is built only after the one before it admits, and nothing below the guards is built until all of them admit.
 28. A binding under a key whose declared type is a role (for example, "a guard for HTTP") registers that role.
 
