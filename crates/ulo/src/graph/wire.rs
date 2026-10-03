@@ -144,8 +144,8 @@ impl Steps {
 
 /// Steps 1 to 6 over a frozen graph. The tables come first: re-exports, aliases and every
 /// injection point resolve against them. Roles come before the scope pass, which reads them; the
-/// cycle check runs on the resolved edges before either. The closure check reads the scopes the
-/// pass decided.
+/// cycle check runs on the resolved edges before either. The scopes of enhancers declared by
+/// closure and the closure check read the scopes the pass decided.
 fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Steps) {
     visibility::build_tables(graph, declared);
     check_modules(graph, declared, &mut steps.modules);
@@ -155,6 +155,7 @@ fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Step
     scopes::assign_roles(graph);
     scopes::needs_execution(graph);
     scopes::check_scopes(graph, &mut steps.scopes);
+    scopes::closure_scopes(graph, declared, &mut steps.scopes);
     scopes::check_closures(graph, declared, &mut steps.scopes);
     scopes::check_inputs(graph, &mut steps.scopes);
     check_environment(graph, env, declared, &mut steps.environment);
@@ -196,8 +197,7 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
 ///
 /// A binding's role is decided here: `controller`, a contribution under a role key once every
 /// handler is mounted (`scopes::mark_role_contributions`), or a provider. `scopes::assign_roles`
-/// adds the bindings an `EnhancerSpec` names by type once the tables exist. A contribution
-/// declared by closure takes its scope from its role here (`scopes::resolve_closure_scopes`).
+/// adds the bindings an `EnhancerSpec` names by type once the tables exist.
 fn freeze(
     graph: &mut Graph,
     mut registry: Registry,
@@ -398,7 +398,6 @@ fn freeze(
         graph.collections.insert(key, Arc::from(merged));
     }
     scopes::mark_role_contributions(graph, declared.first_binding, &mut steps.bindings);
-    scopes::resolve_closure_scopes(graph, declared.first_binding);
     declared
 }
 
@@ -922,7 +921,7 @@ fn reads_collection(base: &Graph, key: Key) -> bool {
         || base.handlers.iter().any(|handler| {
             handler.decl.role_keys.contains(&key)
                 || handler.decl.enhancer_deps.iter().any(|dep| match dep {
-                    EnhancerDep::Closure(dependencies) => in_dependencies(&**dependencies),
+                    EnhancerDep::Closure(closure) => in_dependencies(&closure.dependencies),
                     EnhancerDep::Type(_) => false,
                 })
         })

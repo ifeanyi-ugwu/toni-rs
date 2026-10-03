@@ -166,10 +166,18 @@ pub enum WiringError {
     Cycle { path: Vec<(KeyName, ModuleName)> },
 
     /// Step 5: a binding that cannot run in an execution depends on per-execution data. `path`
-    /// is the dependency path that introduces it, each step as printed.
-    ScopeViolation { binding: KeyName, declared: ScopeKind, module: ModuleName, path: Vec<String> },
-    /// Step 5: hooks on an `Auto` binding the scope pass inferred per-execution.
+    /// is the dependency path that introduces it, each step as printed. `by_closure` when a
+    /// factory closure builds the binding rather than a `Construct` type, so its scope is
+    /// written where the closure is registered, not on an `#[injectable]`.
+    ScopeViolation { binding: KeyName, declared: ScopeKind, by_closure: bool, module: ModuleName, path: Vec<String> },
+    /// Step 5: hooks on an `Auto` binding the scope pass inferred per-execution, a contribution
+    /// declared by closure included.
     HooksOnPerExecution { binding: KeyName, module: ModuleName },
+    /// Step 5: an enhancer a handler declares by closure in an explicit singleton scope, which
+    /// reads per-execution data. `closure` names it, as in ``method-level guard #2 of
+    /// UsersController::get (Http)``, `role` as `guard`, `interceptor` or `error handler`;
+    /// `path` runs from the injection point to the read of execution data.
+    ClosureScopeViolation { closure: String, role: &'static str, path: Vec<String>, at: &'static Location<'static> },
     /// Step 5: a hook, readiness, module-hook or metadata closure that reads `Ext`,
     /// `ExecutionRef`, an execution input or a per-execution key, where no execution exists.
     /// `closure` names it, as in ``readiness check of `PgPool` in DbModule``; `path` runs from the
@@ -221,6 +229,7 @@ impl WiringError {
             | WiringError::ReplacementUnmatched { .. }
             | WiringError::DuplicateReplacement { .. }
             | WiringError::ClosureNeedsExecution { .. }
+            | WiringError::ClosureScopeViolation { .. }
             | WiringError::BoundWithoutTimer { .. }
             | WiringError::BackoffWithoutTimer { .. }
             | WiringError::KnobWithoutTimer { .. } => Vec::new(),
@@ -261,6 +270,7 @@ impl WiringError {
             WiringError::OverrideKind { .. }
             | WiringError::TimerOverride { .. }
             | WiringError::ClosureNeedsExecution { .. }
+            | WiringError::ClosureScopeViolation { .. }
             | WiringError::InputNotSeeded { .. }
             | WiringError::BoundWithoutTimer { .. }
             | WiringError::BackoffWithoutTimer { .. }
@@ -489,23 +499,27 @@ impl WiringError {
                 let head = format!("dependency cycle: {}", closed_loop(steps.iter().map(|(k, _)| show(k)).collect()));
                 tree(f, head, steps.iter().map(|(k, m)| format!("`{}` in {}", show(k), show_module(m))).collect())
             }
-            WiringError::ScopeViolation { binding, declared, module, path } => {
+            WiringError::ScopeViolation { binding, declared, by_closure, module, path } => {
                 // The path's steps are printed short by the graph, so its first step is matched
                 // against the short name whichever form the binding prints in.
                 let short = binding.to_string();
                 let name = show(binding);
                 let module = show_module(module);
-                let head = match declared {
-                    ScopeKind::Singleton => {
+                let head = match (declared, by_closure) {
+                    (ScopeKind::Singleton, _) => {
                         format!("scope violation: singleton `{name}` in {module} depends on per-execution data")
                     }
-                    ScopeKind::Auto => format!(
+                    (ScopeKind::Auto, false) => format!(
                         "scope violation: `{name}` in {module} is a provider, so a singleton, and depends on per-execution data"
+                    ),
+                    (ScopeKind::Auto, true) => format!(
+                        "scope violation: `{name}` in {module} is a provider declared by closure with no scope, so a singleton, and depends on per-execution data"
                     ),
                     _ => format!("scope violation: `{name}` in {module} depends on per-execution data"),
                 };
-                let help = match declared {
-                    ScopeKind::Singleton => format!("help: declare {name} #[injectable(execution)], or inject a factory"),
+                let help = match (declared, by_closure) {
+                    (_, true) => "help: declare the closure `with(execution) = ..`, or register it with `.execution(..)`".to_owned(),
+                    (ScopeKind::Singleton, false) => format!("help: declare {name} #[injectable(execution)], or inject a factory"),
                     _ => "help: declare it #[injectable(execution)]".to_owned(),
                 };
                 let item = match path.first() {
@@ -538,6 +552,18 @@ impl WiringError {
                         .to_owned(),
                 );
                 tree(f, format!("{closure} reads per-execution data"), items)
+            }
+            WiringError::ClosureScopeViolation { closure, role, path, at } => {
+                let method = role.replace(' ', "_");
+                let mut items = Vec::new();
+                if !path.is_empty() {
+                    items.push(path.join(" → "));
+                }
+                items.push(format!("declared at {}", place(at)));
+                items.push(format!(
+                    "help: build it per call: drop the scope (`with = ..`, `{method}_with`), or declare it `with(execution) = ..` (`{method}_with_in::<PerExecution>`)"
+                ));
+                tree(f, format!("scope violation: {closure}, declared by closure as a singleton, depends on per-execution data"), items)
             }
             WiringError::InputNotSeeded { handler, transport, input, seeder, path } => {
                 let input = show(input);

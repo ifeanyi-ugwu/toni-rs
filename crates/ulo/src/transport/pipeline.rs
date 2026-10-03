@@ -4,8 +4,9 @@
 //!    its `Cx` around a handle to it.
 //! 2. Guards, global then controller then method: the global ones read through
 //!    `Resolver::entries::<AnyGuard<T>>()`, each obtained only once the one before it admitted
-//!    (the shared value, the singleton, a per-execution build, or the closure call), then
-//!    `can_activate`. On a refusal, later guards are never built.
+//!    (the shared value, the singleton, a per-execution build, or a closure's build in the scope
+//!    the wiring pass decided for it), then `can_activate`. On a refusal, later guards are never
+//!    built.
 //! 3. Once every guard admits: the interceptors, then the controller, then the handler inside
 //!    the interceptor chain. The handler closure resolves the controller itself; a singleton or
 //!    per-execution controller is already built by then, so a failure to build it reaches the
@@ -31,17 +32,18 @@ use std::any::{Any, type_name};
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::binding::downcast_instance;
+use crate::binding::{Instance, downcast_instance, instance_of};
 use crate::error::{DispatchStage, GuardRejected, LookupError, LookupKind, PanicRecovered};
-use crate::execution::ExecutionRef;
+use crate::execution::cache::Slot;
+use crate::execution::{ExecShared, ExecutionRef};
 use crate::graph::{Effective, Graph, ModuleId, Visible};
-use crate::key::BindingKind;
+use crate::key::{BindingKind, Key};
 use crate::lifecycle::run::CatchUnwind;
 use crate::redact::{SecretRegistry, redact_panic};
 use crate::resolver::Resolver;
 use crate::timer::{BoxError, BoxFuture};
 use crate::transport::controller::MountedHandler;
-use crate::transport::enhancer::Decl;
+use crate::transport::enhancer::{ClosureDecl, Decl};
 use crate::transport::next::Next;
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHandler, ErasedGuard, Transport};
 
@@ -50,6 +52,8 @@ use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHan
 ///
 /// Every declaration resolves with the controller module's visibility, inside `exec`, so a
 /// per-execution enhancer is built once per call and shared with the handler's own dependencies.
+/// An enhancer declared by closure that the wiring pass decided is built once resolves outside
+/// it.
 /// A panic in a guard, an interceptor, `call` or an error handler is caught here and offered to
 /// the error handlers as [`PanicRecovered`](crate::PanicRecovered).
 pub async fn dispatch<T, F, Fut>(handler: &MountedHandler<T>, exec: &ExecutionRef, cx: &T::Cx, call: F) -> Result<T::Reply, BoxError>
@@ -62,7 +66,7 @@ where
     let module = handler.module.module;
     let resolver = exec.resolver().in_module(module);
     let secrets = &graph.secrets;
-    let at = Lookup { graph: &graph, module, resolver: &resolver, secrets };
+    let at = Lookup { graph: &graph, module, resolver: &resolver, exec: &exec.shared, secrets };
     let outcome = match caught(DispatchStage::Guard, secrets, admit(handler, &at, cx)).await {
         Ok(()) => respond(handler, &at, cx, call).await,
         Err(err) => Err(err),
@@ -78,6 +82,7 @@ struct Lookup<'s> {
     graph: &'s Graph,
     module: ModuleId,
     resolver: &'s Resolver<'s>,
+    exec: &'s ExecShared,
     secrets: &'s SecretRegistry,
 }
 
@@ -211,7 +216,7 @@ fn offer<'a, T: Transport>(eh: &'a AnyErrorHandler<T>, err: BoxError, cx: &'a T:
 async fn obtain<R: ?Sized + Send + Sync + 'static>(decl: &Decl<R>, at: &Lookup<'_>) -> Result<Arc<R>, LookupError> {
     match decl {
         Decl::Value(value) => Ok(Arc::clone(value)),
-        Decl::Closure(closure) => (closure.build)(at.resolver).await,
+        Decl::Closure(closure) => build_closure(closure, at).await,
         Decl::Type { key, coerce } => {
             let name = key.name(BindingKind::Single);
             // Wiring has refused a by-type enhancer the controller's module cannot see, so a
@@ -223,4 +228,29 @@ async fn obtain<R: ?Sized + Send + Sync + 'static>(decl: &Decl<R>, at: &Lookup<'
             downcast_instance::<R>(&coerce(&instance)).ok_or(LookupError::WrongType { key: name, requested: type_name::<R>() })
         }
     }
+}
+
+/// An enhancer declared by closure, in the scope the wiring pass decided for it: built once and
+/// shared by every call, once per execution, or each time it is obtained.
+///
+/// A once-built closure is built outside the call's execution, so a read of execution data the
+/// wiring pass did not see fails with `ExecutionRequired` instead of handing one call's data to
+/// every later call.
+async fn build_closure<R: ?Sized + Send + Sync + 'static>(closure: &ClosureDecl<R>, at: &Lookup<'_>) -> Result<Arc<R>, LookupError> {
+    let slot = Slot::Closure(closure.id);
+    let built = match at.graph.closures.get(&closure.id) {
+        Some(Effective::Singleton) => {
+            let outside = at.resolver.without_execution();
+            at.resolver.app.closures.get_or_build(slot, || erased_build(closure, &outside)).await?
+        }
+        Some(Effective::PerExecution) => at.exec.cache.get_or_build(slot, || erased_build(closure, at.resolver)).await?,
+        // `None` only for a handler `wire()` did not mount; building at every call shares nothing.
+        Some(Effective::Transient) | None => return (closure.build)(at.resolver).await,
+    };
+    downcast_instance::<R>(&built)
+        .ok_or_else(|| LookupError::WrongType { key: Key::of::<R, ()>().name(BindingKind::Single), requested: type_name::<R>() })
+}
+
+async fn erased_build<R: ?Sized + Send + Sync + 'static>(closure: &ClosureDecl<R>, r: &Resolver<'_>) -> Result<Instance, LookupError> {
+    (closure.build)(r).await.map(instance_of::<R>)
 }

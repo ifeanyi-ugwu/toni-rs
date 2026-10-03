@@ -1,6 +1,6 @@
 //! Step 5: the needs-execution pass, scope violations, hooks on bindings built per execution,
-//! closures that read execution data where none exists, and the per-handler input check (§6.2,
-//! §6.4).
+//! the scope of each enhancer declared by closure, closures that read execution data where none
+//! exists, and the per-handler input check (§6.2, §6.4).
 //!
 //! A binding needs an execution if any of its injection points is `Ext`, `ExecutionRef`, an
 //! execution input, or a dependency that itself needs one. Transient and `Auto` bindings pass the
@@ -11,12 +11,13 @@
 //! | Explicit singleton | yes | refused, with the full path |
 //! | Auto provider | yes | refused, hint "declare it `#[injectable(execution)]`" |
 //! | Auto controller or enhancer | yes | per-execution, built per call |
-//! | With hooks, built per execution | — | refused |
+//! | Auto with hooks, inferred per-execution | — | refused |
 //! | Transient | yes | allowed; every consumer must be able to run in an execution |
 //!
-//! A contribution declared by closure enters the pass with its scope already written from its
-//! role at freeze: an enhancer is per-execution whatever it reads, and a provider is an explicit
-//! singleton.
+//! A binding declared by closure follows the same table: `Contribute::with` registers `Auto`, and
+//! the explicit forms register their scope. Only the hint differs, naming the closure's explicit
+//! form instead of the attribute. An enhancer declared by closure on a handler is no binding, and
+//! `closure_scopes` applies the same rule to it.
 //!
 //! A binding refused this way stays a singleton for its readers, so one violation is reported
 //! once, at the binding that introduces it, and not again at everything above it.
@@ -26,7 +27,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::Location;
 
 use crate::binding::Recipe;
-use crate::dependency::{Dependencies, ReadKind};
+use crate::dependency::{Dependencies, DependencyRecord, ReadKind};
 use crate::error::wiring::WiringError;
 use crate::graph::wire::Declared;
 use crate::graph::{
@@ -85,29 +86,6 @@ pub(crate) fn mark_role_contributions(graph: &mut Graph, first_binding: usize, e
                     });
                 }
             }
-        }
-    }
-}
-
-/// Writes the scope of each contribution declared by closure (`Contribute::with`, `try_with`)
-/// from its role: per execution for an enhancer, as for every enhancer declared by closure, and
-/// singleton for a provider, which `check_scopes` then refuses when it needs an execution, as it
-/// refuses any singleton (§7). Clears the mark: no later pass sees a scope left to the role.
-///
-/// Runs at freeze, after `mark_role_contributions`, over the bindings this wiring added. A
-/// contribution's role is final there: `assign_roles` marks single bindings only. A lazy load
-/// moves a base contribution to the enhancer role only through an unqualified `enhancer`
-/// contribution under its key's type, which the load refuses when the base contributes to that
-/// collection; any other base contribution under that type is qualified, and is refused as
-/// `QualifiedRoleContribution`.
-pub(crate) fn resolve_closure_scopes(graph: &mut Graph, first_binding: usize) {
-    for binding in graph.bindings.iter_mut().skip(first_binding) {
-        if binding.record.scope_by_role {
-            binding.record.scope = match binding.role {
-                Role::Enhancer => ScopeKind::PerExecution,
-                Role::Provider | Role::Controller => ScopeKind::Singleton,
-            };
-            binding.record.scope_by_role = false;
         }
     }
 }
@@ -212,9 +190,9 @@ fn promote(binding: &mut FrozenBinding) {
 /// bindings built per execution. A readiness check counts as a hook here: `connect` runs it,
 /// and a binding built per call never reaches `connect`.
 ///
-/// A binding with hooks built per execution is an `Auto` one the pass inferred so, or an enhancer
-/// declared by closure. An explicitly execution-scoped binding carries neither hooks nor a check:
-/// the handle and the hook traits both require a `HookCapable` scope.
+/// A binding with hooks built per execution is an `Auto` one the pass inferred so. An explicitly
+/// execution-scoped binding carries neither hooks nor a check: the handle and the hook traits
+/// both require a `HookCapable` scope.
 pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
     for binding in &graph.bindings {
         let record = &binding.record;
@@ -231,6 +209,7 @@ pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
             errors.push(WiringError::ScopeViolation {
                 binding: graph.key_name(binding.id),
                 declared: record.scope,
+                by_closure: record.by_closure(),
                 module: graph.module_name(binding.origin),
                 path: printed_path(graph, binding.id),
             });
@@ -243,11 +222,68 @@ pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
     }
 }
 
+/// Decides the scope of each enhancer a handler declares by closure, as `needs_execution` decides
+/// a binding's, and records it in `Graph::closures`, where the pipeline reads it (§7):
+///
+/// | Declared | Reads execution data | Built |
+/// |---|---|---|
+/// | `Auto` | no | once, on first use |
+/// | `Auto` | yes | per execution |
+/// | `Singleton` | no | once, on first use |
+/// | `Singleton` | yes | refused as `ClosureScopeViolation` |
+/// | `PerExecution` | — | per execution |
+/// | `Transient` | — | each time the pipeline obtains it |
+///
+/// A closure reads execution data through the reads `check_closures` looks for: `Ext`,
+/// `ExecutionRef`, an execution input, or a binding that passes an execution need upward. Runs
+/// after `needs_execution`, over the handlers this wiring added: a lazy load mounts none.
+pub(crate) fn closure_scopes(graph: &mut Graph, declared: &Declared, errors: &mut Vec<WiringError>) {
+    let mut decided = Vec::new();
+    for handler in graph.handlers.iter().skip(declared.first_handler) {
+        for dep in &handler.decl.enhancer_deps {
+            let EnhancerDep::Closure(closure) = dep else { continue };
+            let read = closure.dependencies.list.iter().find_map(|dependency| {
+                execution_read(graph, handler.module, None, dependency).map(|steps| {
+                    let mut path = vec![dependency_text(dependency)];
+                    path.extend(steps);
+                    path
+                })
+            });
+            let effective = match closure.scope {
+                ScopeKind::Auto if read.is_some() => Effective::PerExecution,
+                ScopeKind::Auto => Effective::Singleton,
+                ScopeKind::Singleton => {
+                    if let Some(path) = read {
+                        errors.push(WiringError::ClosureScopeViolation {
+                            closure: format!(
+                                "{}-level {} #{} of {} ({})",
+                                closure.tier,
+                                closure.role,
+                                closure.position,
+                                graph.handler_name(handler),
+                                handler.decl.transport_name
+                            ),
+                            role: closure.role,
+                            path,
+                            at: closure.location,
+                        });
+                    }
+                    Effective::Singleton
+                }
+                ScopeKind::PerExecution => Effective::PerExecution,
+                ScopeKind::Transient => Effective::Transient,
+            };
+            decided.push((closure.id, effective));
+        }
+    }
+    graph.closures.extend(decided);
+}
+
 /// A hook, readiness, module-hook or metadata closure runs where no execution exists, so one
 /// that reads `Ext`, `ExecutionRef`, an execution input or a per-execution key is refused here
-/// rather than failing at `connect` (§6.2). Enhancer closures run inside an execution and are not
-/// checked. A read is refused whether or not it is optional: without an execution `Option<S>`
-/// propagates `ExecutionRequired` rather than answering `None`.
+/// rather than failing at `connect` (§6.2). Enhancer closures are left to `closure_scopes`. A
+/// read is refused whether or not it is optional: without an execution `Option<S>` propagates
+/// `ExecutionRequired` rather than answering `None`.
 ///
 /// A closure reading its own binding is left to `HooksOnPerExecution`, which already reports a
 /// binding that hooks and a check cannot run on. One error per offending injection point.
@@ -292,35 +328,38 @@ struct Closure<'a> {
 impl Closure<'_> {
     fn check(&self, graph: &Graph, dependencies: &Dependencies, errors: &mut Vec<WiringError>) {
         for dependency in &dependencies.list {
-            let point = dependency_text(dependency);
-            let found = dependency.requirement.reads.iter().find_map(|read| match &read.kind {
-                ReadKind::Extension(_) | ReadKind::Execution => Some(Vec::new()),
-                ReadKind::Single(key) => match graph.lookup(self.module, *key) {
-                    Some(Visible::Input(input)) => Some(vec![format!("input `{}`", input.name(BindingKind::Single))]),
-                    Some(Visible::Binding(id)) if self.reads_execution_through(graph, *id) => {
-                        Some(execution_steps(graph, *id))
-                    }
-                    _ => None,
-                },
-                ReadKind::Collection(key) => graph
-                    .collection(*key)
-                    .iter()
-                    .copied()
-                    .find(|&id| self.reads_execution_through(graph, id))
-                    .map(|id| execution_steps(graph, id)),
-                ReadKind::Module => None,
-            });
-            if let Some(steps) = found {
-                let mut path = vec![point];
+            if let Some(steps) = execution_read(graph, self.module, self.owner, dependency) {
+                let mut path = vec![dependency_text(dependency)];
                 path.extend(steps);
                 errors.push(WiringError::ClosureNeedsExecution { closure: self.name.to_owned(), path, at: self.at });
             }
         }
     }
+}
 
-    fn reads_execution_through(&self, graph: &Graph, id: BindingId) -> bool {
-        Some(id) != self.owner && graph.passes_execution(id)
-    }
+/// Whether a closure's injection point, resolved in `module`, reads execution data, with the
+/// steps from what it reads to the read that introduces the need; `None` when it reads none. A
+/// binding passes the need when `passes_execution` says so, except `owner`, the binding the
+/// closure belongs to.
+fn execution_read(
+    graph: &Graph,
+    module: ModuleId,
+    owner: Option<BindingId>,
+    dependency: &DependencyRecord,
+) -> Option<Vec<String>> {
+    let through = |id: BindingId| Some(id) != owner && graph.passes_execution(id);
+    dependency.requirement.reads.iter().find_map(|read| match &read.kind {
+        ReadKind::Extension(_) | ReadKind::Execution => Some(Vec::new()),
+        ReadKind::Single(key) => match graph.lookup(module, *key) {
+            Some(Visible::Input(input)) => Some(vec![format!("input `{}`", input.name(BindingKind::Single))]),
+            Some(Visible::Binding(id)) if through(*id) => Some(execution_steps(graph, *id)),
+            _ => None,
+        },
+        ReadKind::Collection(key) => {
+            graph.collection(*key).iter().copied().find(|&id| through(id)).map(|id| execution_steps(graph, id))
+        }
+        ReadKind::Module => None,
+    })
 }
 
 /// The steps from `id`, which passes an execution need upward, to the read of execution data
@@ -341,7 +380,8 @@ fn execution_steps(graph: &Graph, id: BindingId) -> Vec<String> {
 /// reads it, the handler's transport and the input's seeder.
 ///
 /// What a handler reaches: its controller, the global enhancers under its transport's role
-/// keys, the bindings its by-type enhancers name, and what its enhancer closures read. The walk
+/// keys, the bindings its by-type enhancers name, and what its enhancer closures built in an
+/// execution read. The walk
 /// enters execution-scoped and transient bindings only, since a singleton is built at `connect`
 /// with no execution, and one reading an input has already failed the scope check. Each input is
 /// reported once per handler and reading binding.
@@ -379,8 +419,10 @@ impl<'g> InputWalk<'g> {
                         roots.push(*id);
                     }
                 }
-                EnhancerDep::Closure(dependencies) => {
-                    for dependency in &dependencies.list {
+                // A closure built once reads no execution data, or `closure_scopes` refused it.
+                EnhancerDep::Closure(closure) if graph.closures.get(&closure.id) == Some(&Effective::Singleton) => {}
+                EnhancerDep::Closure(closure) => {
+                    for dependency in &closure.dependencies.list {
                         for read in &dependency.requirement.reads {
                             match &read.kind {
                                 ReadKind::Single(key) => match graph.lookup(handler.module, *key) {

@@ -106,10 +106,6 @@ pub(crate) struct BindingRecord {
     pub(crate) also: Vec<AlsoAs>,
     pub(crate) kind: BindingKind,
     pub(crate) scope: ScopeKind,
-    /// Declared by closure through `Contribute::with` or `try_with`, which write no scope:
-    /// `scope` holds `Auto` until freezing writes `PerExecution` for an enhancer or `Singleton`
-    /// for a provider and clears this, so no pass after freezing sees it set (§7).
-    pub(crate) scope_by_role: bool,
     /// Set by `ModuleDef::controller`; enhancer roles are found by the wiring pass.
     pub(crate) controller: bool,
     pub(crate) recipe: Recipe,
@@ -209,7 +205,6 @@ impl BindingRecord {
             also: Vec::new(),
             kind,
             scope,
-            scope_by_role: false,
             controller: false,
             recipe,
             dependencies,
@@ -220,6 +215,12 @@ impl BindingRecord {
             constructs: false,
             location,
         }
+    }
+
+    /// Built by a factory closure rather than by a `Construct` type: its scope is written where
+    /// the closure is registered, never on an `#[injectable]`, which is what a report's help names.
+    pub(crate) fn by_closure(&self) -> bool {
+        matches!(self.recipe, Recipe::Factory(_)) && !self.constructs
     }
 
     /// Every key this record answers to, with the qualifier applied.

@@ -1,4 +1,5 @@
 use std::any::{Any, TypeId};
+use std::panic::Location;
 use std::sync::Arc;
 
 use crate::construct::Construct;
@@ -6,7 +7,8 @@ use crate::dependency::Dependencies;
 use crate::graph::{BindingId, ModuleId};
 use crate::key::{Key, KeyName};
 use crate::module::handle::ModuleRef;
-use crate::transport::enhancer::EnhancerSpec;
+use crate::scope::ScopeKind;
+use crate::transport::enhancer::{ClosureId, EnhancerSpec};
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport, transport_name};
 
 /// A dispatch target: a `Construct` type whose handlers `mount` declares, one per transport
@@ -36,8 +38,8 @@ impl Mount<'_> {
         handler: H,
     ) {
         let mut enhancer_deps = Vec::new();
-        controller.deps(&mut enhancer_deps);
-        method.deps(&mut enhancer_deps);
+        controller.deps("controller", &mut enhancer_deps);
+        method.deps("method", &mut enhancer_deps);
         self.handlers.push(HandlerDecl {
             transport: TypeId::of::<T>(),
             transport_name: transport_name::<T>(),
@@ -129,8 +131,24 @@ pub(crate) struct HandlerDecl {
 pub(crate) enum EnhancerDep {
     /// A by-type declaration: the enhancer's own key.
     Type(Key),
-    /// A closure declaration's dependencies. The closure builds its enhancer per execution.
-    Closure(Arc<Dependencies>),
+    Closure(ClosureDep),
+}
+
+/// A closure declaration as the wiring pass reads it: what its parameters read, the scope it
+/// declares, and where a report finds it.
+#[derive(Clone)]
+pub(crate) struct ClosureDep {
+    /// The key `Graph::closures` records the decided scope under.
+    pub(crate) id: ClosureId,
+    pub(crate) scope: ScopeKind,
+    pub(crate) dependencies: Arc<Dependencies>,
+    /// `guard`, `interceptor` or `error handler`.
+    pub(crate) role: &'static str,
+    /// `controller` or `method`.
+    pub(crate) tier: &'static str,
+    /// From 1, among the tier's declarations of the role, every form counted.
+    pub(crate) position: usize,
+    pub(crate) location: &'static Location<'static>,
 }
 
 /// A handler in the frozen graph.

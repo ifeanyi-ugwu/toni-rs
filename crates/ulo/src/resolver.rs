@@ -51,6 +51,12 @@ impl<'a> Resolver<'a> {
         Resolver { app: self.app, graph: Arc::clone(&self.graph), module, exec: self.exec, purpose: self.purpose }
     }
 
+    /// The same view outside any execution, where a read of execution data answers
+    /// `ExecutionRequired`.
+    pub(crate) fn without_execution(&self) -> Resolver<'a> {
+        Resolver { app: self.app, graph: Arc::clone(&self.graph), module: self.module, exec: None, purpose: self.purpose }
+    }
+
     /// An instance of one binding in this resolver's context: the stored singleton, the
     /// execution's cached instance, or a fresh transient. Owned by the app (§3.8, §9.5).
     pub(crate) async fn instance(&self, id: BindingId) -> Result<Instance, LookupError> {

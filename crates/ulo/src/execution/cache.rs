@@ -7,19 +7,29 @@ use async_lock::OnceCell;
 use crate::binding::Instance;
 use crate::error::LookupError;
 use crate::graph::BindingId;
+use crate::transport::enhancer::ClosureId;
 
-/// One instance per execution-scoped binding per execution. Two injection points resolving the same
-/// binding concurrently get one instance: both await one cell. A failed build is not cached.
-///
-/// The cell holds the instance as the recipe built it; `AppShared::obtain` widens a
-/// contribution to its collection's type on the way out, as it does for a stored singleton.
-#[derive(Default)]
-pub(crate) struct ExecCache {
-    cells: Mutex<HashMap<BindingId, Arc<OnceCell<Instance>>>>,
+/// What one cell holds the instance of: a binding, or an enhancer declared by closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Slot {
+    Binding(BindingId),
+    Closure(ClosureId),
 }
 
-impl ExecCache {
-    pub(crate) async fn get_or_build<F, Fut>(&self, id: BindingId, build: F) -> Result<Instance, LookupError>
+/// One instance per slot, built on first read and shared after. Two readers of one slot
+/// concurrently get one instance: both await one cell. A failed build is not cached.
+///
+/// An execution's cache holds its execution-scoped bindings and its per-execution enhancer
+/// closures; the app's holds the enhancer closures built once. A cell holds the instance as the
+/// recipe built it; `AppShared::obtain` widens a contribution to its collection's type on the way
+/// out, as it does for a stored singleton.
+#[derive(Default)]
+pub(crate) struct OnceCells {
+    cells: Mutex<HashMap<Slot, Arc<OnceCell<Instance>>>>,
+}
+
+impl OnceCells {
+    pub(crate) async fn get_or_build<F, Fut>(&self, slot: Slot, build: F) -> Result<Instance, LookupError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Instance, LookupError>>,
@@ -28,7 +38,7 @@ impl ExecCache {
         // which come back here for their own cells.
         let cell = {
             let mut cells = self.cells.lock().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(cells.entry(id).or_default())
+            Arc::clone(cells.entry(slot).or_default())
         };
         let instance = cell.get_or_try_init(build).await?;
         Ok(Arc::clone(instance))

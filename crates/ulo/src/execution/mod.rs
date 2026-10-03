@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::app::shared::{AppShared, LiveSlot};
 use crate::dependency::Dep;
 use crate::error::{Closed, LookupError};
-use crate::execution::cache::ExecCache;
+use crate::execution::cache::OnceCells;
 use crate::execution::extensions::{Extensions, Inputs};
 use crate::execution::notify::{Cancelled, Draining, Notify};
 use crate::graph::ModuleId;
@@ -69,7 +69,7 @@ pub(crate) struct ExecShared {
     /// The visibility the execution resolves with: the dispatching controller's module, the root
     /// for `App::execute` and `AppHandle::execute`, `M` for `ModuleRef::execute`.
     pub(crate) module: ModuleId,
-    pub(crate) cache: ExecCache,
+    pub(crate) cache: OnceCells,
     pub(crate) extensions: Extensions,
     pub(crate) inputs: Inputs,
     pub(crate) cancel: Notify,

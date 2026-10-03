@@ -12,7 +12,7 @@ use crate::binding::{ErasedCtor, Instance, Qualifier, Recipe};
 use crate::construct::ConstructError;
 use crate::dependency::Dep;
 use crate::error::{Closed, FailureReason, LookupError, LookupKind};
-use crate::execution::cache::ExecCache;
+use crate::execution::cache::{OnceCells, Slot};
 use crate::execution::extensions::{Extensions, Inputs};
 use crate::execution::notify::Notify;
 use crate::execution::{ExecOptions, ExecShared, Execution};
@@ -33,6 +33,9 @@ pub(crate) struct AppShared {
     pub(crate) graph: RwLock<Arc<Graph>>,
     pub(crate) config: AppConfig,
     pub(crate) singletons: SingletonStore,
+    /// The enhancers declared by closure that the wiring pass decided are built once, each on
+    /// its first use by a call (§7).
+    pub(crate) closures: OnceCells,
     pub(crate) phase: PhaseCell,
     /// Fired when the app stops accepting: `draining()` on executions and handles.
     pub(crate) draining: Notify,
@@ -50,6 +53,7 @@ impl AppShared {
             graph: RwLock::new(Arc::new(graph)),
             config,
             singletons: SingletonStore::default(),
+            closures: OnceCells::default(),
             phase: PhaseCell::new(Phase::Wired),
             draining: Notify::new(),
             live: Arc::new(LiveSet::default()),
@@ -121,7 +125,7 @@ impl AppShared {
                 }
                 Effective::PerExecution => {
                     let exec = r.exec.ok_or(LookupError::ExecutionRequired { key })?;
-                    exec.cache.get_or_build(id, || self.build(r, binding, ctor, key)).await?
+                    exec.cache.get_or_build(Slot::Binding(id), || self.build(r, binding, ctor, key)).await?
                 }
                 Effective::Transient => self.build(r, binding, ctor, key).await?,
             },
@@ -146,7 +150,7 @@ impl AppShared {
         let shared = Arc::new(ExecShared {
             app: Arc::clone(self),
             module,
-            cache: ExecCache::default(),
+            cache: OnceCells::default(),
             extensions: Extensions::default(),
             inputs: Inputs::default(),
             cancel: Notify::new(),

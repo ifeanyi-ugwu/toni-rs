@@ -174,8 +174,9 @@ pub trait SingleBinding: sealed::State {}
 impl<S, B> SingleBinding for Binding<S, B> {}
 
 /// The binding states whose handle carries closure hooks and a readiness check: a singleton or
-/// an `Auto` binding. Hooks on an `Auto` binding that the wiring pass infers per-execution are
-/// refused at `wire()`.
+/// an `Auto` binding, which includes a contribution registered through
+/// [`Contribute::with`](crate::Contribute::with). Hooks on an `Auto` binding that the wiring pass
+/// infers per-execution are refused at `wire()`.
 #[diagnostic::on_unimplemented(
     message = "closure hooks and readiness checks exist on singleton handles only",
     label = "this binding is execution-scoped or transient",

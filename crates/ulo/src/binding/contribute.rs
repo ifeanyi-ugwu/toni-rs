@@ -24,11 +24,13 @@ use crate::timer::BoxError;
 /// A contribution under a role key is an enhancer, whichever builder registered it, when a
 /// mounted handler's transport reads that key or when any module contributes under it through
 /// [`ModuleDef::enhancer`](crate::ModuleDef::enhancer); scope inference treats an enhancer as it
-/// treats a controller (§3.3, §7). Any other contribution is a provider contribution. One written
-/// through [`with`](Self::with) takes its scope from that role rather than from inference: per
-/// execution for an enhancer, singleton for a provider. `enhancer` returns this builder marked
-/// [`Enhancer`], which has no `qualified`; it is also how a role key is marked when no mounted
-/// handler's transport reads it.
+/// treats a controller (§3.3, §7). Any other contribution is a provider contribution. `enhancer`
+/// returns this builder marked [`Enhancer`], which has no `qualified`; it is also how a role key
+/// is marked when no mounted handler's transport reads it.
+///
+/// A factory contribution's scope is written by the method that registers it:
+/// [`with`](Self::with) declares `Auto`, and [`singleton`](Self::singleton),
+/// [`execution`](Self::execution) and [`transient`](Self::transient) override it.
 ///
 /// ```ignore
 /// m.contribute::<dyn Plugin>().provide::<MetricsPlugin>(|a| a);
@@ -99,35 +101,16 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, 
     }
 
     /// A factory contribution: a plain factory runs no trait hooks.
-    fn factory_record<T: Send + Sync + 'static, S: Scope, Args, F: Factory<Args>>(
-        ctor: ErasedCtor,
-        coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
-        location: &'static Location<'static>,
-    ) -> BindingRecord {
-        let mut dependencies = Dependencies::default();
-        <F as Factory<Args>>::dependencies(&mut dependencies);
-        let into_primary = coercion::<T, U, _>(coerce);
-        Self::record(type_name::<T>(), S::KIND, Recipe::Factory(ctor), dependencies, into_primary, location)
-    }
-
     fn push_factory<T: Send + Sync + 'static, S: Scope, Args, F: Factory<Args>, K>(
         self,
         ctor: ErasedCtor,
         coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
         location: &'static Location<'static>,
     ) -> Handle<'m, T, K> {
-        let record = Self::factory_record::<T, S, Args, F>(ctor, coerce, location);
-        self.push(record)
-    }
-
-    fn push_by_role<T: Send + Sync + 'static, Args, F: Factory<Args>, K>(
-        self,
-        ctor: ErasedCtor,
-        coerce: impl Fn(Arc<T>) -> Arc<U> + Send + Sync + 'static,
-        location: &'static Location<'static>,
-    ) -> Handle<'m, T, K> {
-        let mut record = Self::factory_record::<T, Auto, Args, F>(ctor, coerce, location);
-        record.scope_by_role = true;
+        let mut dependencies = Dependencies::default();
+        <F as Factory<Args>>::dependencies(&mut dependencies);
+        let into_primary = coercion::<T, U, _>(coerce);
+        let record = Self::record(type_name::<T>(), S::KIND, Recipe::Factory(ctor), dependencies, into_primary, location);
         self.push(record)
     }
 
@@ -193,15 +176,16 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, 
         self.push(record)
     }
 
-    /// A factory contribution whose scope follows its role, decided at `wire()`: built per
-    /// execution when the contribution is an enhancer, as every enhancer declared by closure is,
-    /// and a singleton when it is a provider contribution, refused if it reads execution data.
-    /// The lowering of `with = closure` in an `into` list. [`singleton`](Self::singleton),
-    /// [`execution`](Self::execution) and [`transient`](Self::transient) write the scope instead.
+    /// A factory contribution with `Auto` scope, the lowering of `with = closure` in an `into`
+    /// list. As a provider contribution it is a singleton, refused at `wire()` if it reads
+    /// execution data. As an enhancer it is built once when nothing it reads needs an execution,
+    /// and per execution otherwise (§3.3). [`singleton`](Self::singleton),
+    /// [`execution`](Self::execution) and [`transient`](Self::transient) write the scope instead;
+    /// a closure that creates per-call state while reading nothing per call takes `execution`.
     ///
-    /// The handle's hooks and readiness check run as a singleton's on a provider contribution;
-    /// on an enhancer `wire()` refuses them, since a binding built per call never reaches
-    /// `connect`.
+    /// The handle's hooks and readiness check run as a singleton's; on an enhancer the wiring
+    /// pass infers per-execution, `wire()` refuses them, since a binding built per call never
+    /// reaches `connect`.
     #[track_caller]
     pub fn with<Args, F>(
         self,
@@ -213,7 +197,7 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, 
         F::Output: Send + Sync + 'static,
     {
         let ctor = erase_factory::<Args, F>(factory);
-        self.push_by_role::<F::Output, Args, F, _>(ctor, coerce, Location::caller())
+        self.push_factory::<F::Output, Auto, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     /// [`with`](Self::with) for a factory returning a `Result`: its `Err` fails the construction,
@@ -230,7 +214,7 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static, M> Contribute<'m, U, Q, 
         E: Into<BoxError> + Send + 'static,
     {
         let ctor = erase_try_factory::<Args, F, T, E>(factory);
-        self.push_by_role::<T, Args, F, _>(ctor, coerce, Location::caller())
+        self.push_factory::<T, Auto, Args, F, _>(ctor, coerce, Location::caller())
     }
 
     #[track_caller]

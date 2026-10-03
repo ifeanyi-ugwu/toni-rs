@@ -188,9 +188,9 @@ pub(crate) fn resolve_dependencies(graph: &mut Graph, declared: &Declared, error
                     let consumer = || format!("{name} (enhancer `{}`)", short_type_name(key.type_name()));
                     check_key(graph, handler.module, *key, false, consumer, errors, &mut reported);
                 }
-                EnhancerDep::Closure(dependencies) => {
+                EnhancerDep::Closure(closure) => {
                     let owner = format!("{name} (enhancer closure)");
-                    check_dependencies(graph, handler.module, dependencies, &owner, errors, &mut reported);
+                    check_dependencies(graph, handler.module, &closure.dependencies, &owner, errors, &mut reported);
                 }
             }
         }

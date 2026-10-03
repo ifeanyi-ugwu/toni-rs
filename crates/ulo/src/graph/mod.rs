@@ -24,6 +24,7 @@ use crate::module::meta::FrozenMeta;
 use crate::module::{ModuleIdentity, ModuleName};
 use crate::redact::SecretRegistry;
 use crate::transport::controller::HandlerRecord;
+use crate::transport::enhancer::ClosureId;
 
 /// A module's position in collection order: depth-first post-order over imports from the root,
 /// imports in the order written. Lazily loaded modules follow, in load order.
@@ -55,6 +56,9 @@ pub(crate) struct Graph {
     pub(crate) connect_order: Vec<BindingId>,
     /// Every handler the controllers mounted, for every transport.
     pub(crate) handlers: Vec<HandlerRecord>,
+    /// The scope the wiring pass decided for each enhancer a handler declares by closure
+    /// (`scopes::closure_scopes`).
+    pub(crate) closures: HashMap<ClosureId, Effective>,
     pub(crate) secrets: SecretRegistry,
     /// By `ModuleId`: each module's exports as an importer sees them, requalified at a keyed
     /// boundary and resolved to their binding. Freezing drops the export records, and a lazily
@@ -222,6 +226,7 @@ impl Graph {
             root: ModuleId(0),
             connect_order: Vec::new(),
             handlers: Vec::new(),
+            closures: HashMap::new(),
             secrets: SecretRegistry::default(),
             exported: Vec::new(),
         }

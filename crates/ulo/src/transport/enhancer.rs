@@ -1,4 +1,6 @@
+use std::panic::Location;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::binding::factory::Factory;
 use crate::binding::{Coercion, coercion};
@@ -6,14 +8,20 @@ use crate::dependency::Dependencies;
 use crate::error::LookupError;
 use crate::key::Key;
 use crate::resolver::Resolver;
+use crate::scope::{Auto, ExplicitScope, Scope, ScopeKind};
 use crate::timer::BoxFuture;
-use crate::transport::controller::EnhancerDep;
+use crate::transport::controller::{ClosureDep, EnhancerDep};
 use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, ErrorHandler, Guard, Interceptor, Transport};
 
 /// The enhancers one tier declares for one handler: the controller's, or the method's. Each is
 /// declared by type (resolved from the container with the controller module's visibility), by
-/// value (built once and shared), or by closure (built per execution, its parameters injection
-/// points).
+/// value (built once and shared), or by closure, whose parameters are injection points.
+///
+/// A closure's scope follows the rule a type's does (§3.3). The `_with` forms declare `Auto`:
+/// built once, on first use, when nothing the closure's parameters read needs an execution, and
+/// once per execution otherwise. The `_with_in` forms name the scope instead. Inference reads the
+/// parameters, not the body, so a closure that creates per-call state while reading nothing per
+/// call, such as a timer started when it is built, is declared `_with_in::<PerExecution>`.
 ///
 /// Within a tier, declarations keep the order written. The stack runs global, then controller,
 /// then method; error handlers run in the reverse.
@@ -40,13 +48,29 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
-    /// A guard by closure, built per execution from the closure's injection points.
+    /// A guard by closure, with `Auto` scope: built once if nothing it reads needs an execution,
+    /// per execution if something does.
+    #[track_caller]
     pub fn guard_with<Args, F>(&mut self, build: F) -> &mut Self
     where
         F: Factory<Args>,
         F::Output: Guard<T>,
     {
-        self.guards.push(Decl::by_closure::<Args, F>(build, widen_guard::<T, F::Output>));
+        self.guards.push(Decl::by_closure::<Auto, Args, F>(build, widen_guard::<T, F::Output>, Location::caller()));
+        self
+    }
+
+    /// A guard by closure, in the scope `S`: `Singleton`, built once and refused at `wire()` if
+    /// it reads per-execution data; `PerExecution`; or `Transient`, built each time the pipeline
+    /// obtains it.
+    #[track_caller]
+    pub fn guard_with_in<S, Args, F>(&mut self, build: F) -> &mut Self
+    where
+        S: ExplicitScope,
+        F: Factory<Args>,
+        F::Output: Guard<T>,
+    {
+        self.guards.push(Decl::by_closure::<S, Args, F>(build, widen_guard::<T, F::Output>, Location::caller()));
         self
     }
 
@@ -60,12 +84,28 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
+    /// [`guard_with`](Self::guard_with) for an interceptor.
+    #[track_caller]
     pub fn interceptor_with<Args, F>(&mut self, build: F) -> &mut Self
     where
         F: Factory<Args>,
         F::Output: Interceptor<T>,
     {
-        self.interceptors.push(Decl::by_closure::<Args, F>(build, widen_interceptor::<T, F::Output>));
+        let decl = Decl::by_closure::<Auto, Args, F>(build, widen_interceptor::<T, F::Output>, Location::caller());
+        self.interceptors.push(decl);
+        self
+    }
+
+    /// [`guard_with_in`](Self::guard_with_in) for an interceptor.
+    #[track_caller]
+    pub fn interceptor_with_in<S, Args, F>(&mut self, build: F) -> &mut Self
+    where
+        S: ExplicitScope,
+        F: Factory<Args>,
+        F::Output: Interceptor<T>,
+    {
+        let decl = Decl::by_closure::<S, Args, F>(build, widen_interceptor::<T, F::Output>, Location::caller());
+        self.interceptors.push(decl);
         self
     }
 
@@ -79,22 +119,47 @@ impl<T: Transport> EnhancerSpec<T> {
         self
     }
 
+    /// [`guard_with`](Self::guard_with) for an error handler.
+    #[track_caller]
     pub fn error_handler_with<Args, F>(&mut self, build: F) -> &mut Self
     where
         F: Factory<Args>,
         F::Output: ErrorHandler<T>,
     {
-        self.error_handlers.push(Decl::by_closure::<Args, F>(build, widen_error_handler::<T, F::Output>));
+        let decl = Decl::by_closure::<Auto, Args, F>(build, widen_error_handler::<T, F::Output>, Location::caller());
+        self.error_handlers.push(decl);
+        self
+    }
+
+    /// [`guard_with_in`](Self::guard_with_in) for an error handler.
+    #[track_caller]
+    pub fn error_handler_with_in<S, Args, F>(&mut self, build: F) -> &mut Self
+    where
+        S: ExplicitScope,
+        F: Factory<Args>,
+        F::Output: ErrorHandler<T>,
+    {
+        let decl = Decl::by_closure::<S, Args, F>(build, widen_error_handler::<T, F::Output>, Location::caller());
+        self.error_handlers.push(decl);
         self
     }
 
     /// What the wiring pass resolves for this tier: guards, then interceptors, then error
-    /// handlers, each in the order written. A by-value declaration depends on nothing.
-    pub(crate) fn deps(&self, out: &mut Vec<EnhancerDep>) {
-        out.extend(self.guards.iter().filter_map(Decl::dep));
-        out.extend(self.interceptors.iter().filter_map(Decl::dep));
-        out.extend(self.error_handlers.iter().filter_map(Decl::dep));
+    /// handlers, each in the order written. A by-value declaration depends on nothing. `tier`
+    /// names the tier in reports.
+    pub(crate) fn deps(&self, tier: &'static str, out: &mut Vec<EnhancerDep>) {
+        out.extend(deps_of(&self.guards, "guard", tier));
+        out.extend(deps_of(&self.interceptors, "interceptor", tier));
+        out.extend(deps_of(&self.error_handlers, "error handler", tier));
     }
+}
+
+fn deps_of<'d, R: ?Sized + Send + Sync + 'static>(
+    decls: &'d [Decl<R>],
+    role: &'static str,
+    tier: &'static str,
+) -> impl Iterator<Item = EnhancerDep> + 'd {
+    decls.iter().enumerate().filter_map(move |(index, decl)| decl.dep(role, tier, index + 1))
 }
 
 impl<T: Transport> Default for EnhancerSpec<T> {
@@ -142,8 +207,9 @@ impl<R: ?Sized + Send + Sync + 'static> Decl<R> {
         Decl::Value(widen(Arc::new(value)))
     }
 
-    fn by_closure<Args, F>(build: F, widen: fn(Arc<F::Output>) -> Arc<R>) -> Self
+    fn by_closure<S, Args, F>(build: F, widen: fn(Arc<F::Output>) -> Arc<R>, location: &'static Location<'static>) -> Self
     where
+        S: Scope,
         F: Factory<Args>,
     {
         let mut dependencies = Dependencies::default();
@@ -156,23 +222,52 @@ impl<R: ?Sized + Send + Sync + 'static> Decl<R> {
             });
             fut
         });
-        Decl::Closure(Arc::new(ClosureDecl { dependencies: Arc::new(dependencies), build }))
+        Decl::Closure(Arc::new(ClosureDecl {
+            id: ClosureId::next(),
+            scope: S::KIND,
+            dependencies: Arc::new(dependencies),
+            build,
+            location,
+        }))
     }
 
-    fn dep(&self) -> Option<EnhancerDep> {
+    fn dep(&self, role: &'static str, tier: &'static str, position: usize) -> Option<EnhancerDep> {
         match self {
             Decl::Type { key, .. } => Some(EnhancerDep::Type(*key)),
             Decl::Value(_) => None,
-            Decl::Closure(c) => Some(EnhancerDep::Closure(Arc::clone(&c.dependencies))),
+            Decl::Closure(c) => Some(EnhancerDep::Closure(ClosureDep {
+                id: c.id,
+                scope: c.scope,
+                dependencies: Arc::clone(&c.dependencies),
+                role,
+                tier,
+                position,
+                location: c.location,
+            })),
         }
     }
 }
 
 pub(crate) struct ClosureDecl<R: ?Sized> {
-    /// Checked by the wiring pass like a per-execution binding's dependencies; shared with the
-    /// handler record the wiring pass reads.
+    pub(crate) id: ClosureId,
+    /// As declared; `Graph::closures` holds the scope the wiring pass decided from it.
+    pub(crate) scope: ScopeKind,
+    /// Shared with the handler record the wiring pass reads.
     pub(crate) dependencies: Arc<Dependencies>,
     pub(crate) build: Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<R>, LookupError>> + Send + Sync>,
+    pub(crate) location: &'static Location<'static>,
+}
+
+/// One closure declaration, unique in the process; a clone of the declaration keeps it. The
+/// decided scope, the app's once-built instances and an execution's cache are keyed by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ClosureId(u64);
+
+impl ClosureId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        ClosureId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 /// Gives a closure the higher-ranked signature of `ClosureDecl::build`: a closure passed where
