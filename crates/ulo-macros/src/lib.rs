@@ -49,9 +49,10 @@ pub fn construct(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// An `into K: [..]` list takes the forms `#[guards]` does, whatever `K` is: a type
 /// (`provide::<A>`), `value = expr` (a shared value; the macro writes the `Arc::new`) and
 /// `with = |..| ..` (a singleton factory, written as in `#[guards]`, `try_singleton` when its
-/// output is a `Result`). Every item lowers to `contribute::<K>()`. A global enhancer is a
-/// contribution under a role key, `into AnyGuard<Http>: [AuthGuard]`, which the core recognises
-/// by the key's type.
+/// output is a `Result`). It also takes `value = expr?` (`try_value`), whose `Err` `wire()`
+/// reports as it reports a providers entry's `expr?`. Every item lowers to `contribute::<K>()`.
+/// A global enhancer is a contribution under a role key, `into AnyGuard<Http>: [AuthGuard]`,
+/// which the core recognises by the key's type.
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module_attr::expand(attr.into(), item.into()).unwrap_or_else(syn::Error::into_compile_error).into()

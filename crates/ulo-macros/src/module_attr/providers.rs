@@ -16,11 +16,15 @@
 //! |---|---|
 //! | `A` | `m.contribute::<K>().provide::<A>(\|a\| a);` |
 //! | `value = expr` | `m.contribute::<K>().value(Arc::new(expr));` |
+//! | `value = expr?` | `m.contribute::<K>().try_value(Result::map(expr, \|v\| -> Arc<K> { Arc::new(v) }));` |
 //! | `with = closure` | `m.contribute::<K>()` then `.singleton(closure, \|a\| a)` or `.try_singleton(..)`, by the same autoref ranking |
 //!
 //! A `with` closure is written as in `#[guards]`: a synchronous body is wrapped in `async move`,
 //! and a closure already `async` is kept. It builds a singleton, as a providers-list closure does.
-//! A `value` is evaluated when `register` runs, once per module.
+//! A `value` is evaluated when `register` runs, once per module. `value = expr?` records an `Err`
+//! for `wire()` to report, as a providers list's `expr?` does. Its closure's return type is
+//! written because `Result<Arc<T>, E>` does not coerce to `Result<Arc<K>, E>`; the annotation
+//! makes the closure's tail the coercion site where `Arc<T>` widens to `Arc<K>`.
 //!
 //! The core gives the enhancer role to a contribution under a role key at freeze, from the key's
 //! type, so `into AnyGuard<Http>: [AuthGuard]` registers a global guard and nothing here tells a
@@ -61,6 +65,8 @@ pub(crate) enum ProviderEntry {
 pub(crate) enum Contribution {
     Type(Type),
     Value(Expr),
+    /// `value = expr?`, holding `expr` without the `?`.
+    TryValue(Expr),
     With(ExprClosure),
 }
 
@@ -117,14 +123,10 @@ impl Parse for Contribution {
             let key: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
             if key == "value" {
-                return match input.parse::<Expr>()? {
-                    Expr::Try(expr) => Err(syn::Error::new_spanned(
-                        expr,
-                        "a contribution has no fallible value form; write `with = || expr` without the `?`, \
-                         and an `Err` fails `connect`",
-                    )),
-                    expr => Ok(Contribution::Value(expr)),
-                };
+                return Ok(match input.parse::<Expr>()? {
+                    Expr::Try(expr) => Contribution::TryValue(*expr.expr),
+                    expr => Contribution::Value(expr),
+                });
             }
             if key == "with" {
                 return match input.parse::<Expr>()? {
@@ -195,6 +197,12 @@ impl Contribution {
             },
             Contribution::Value(expr) => quote_spanned! {expr.span()=>
                 #m.contribute::<#into>().value(#ulo::__private::Arc::new(#expr));
+            },
+            Contribution::TryValue(expr) => quote_spanned! {expr.span()=>
+                #m.contribute::<#into>().try_value(::core::result::Result::map(
+                    #expr,
+                    |v| -> #ulo::__private::Arc<#into> { #ulo::__private::Arc::new(v) },
+                ));
             },
             Contribution::With(closure) => {
                 let closure = wrap_async(closure);
