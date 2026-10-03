@@ -197,15 +197,16 @@ pub mod factory {
         }
     }
 
-    /// The `into` arm: a singleton contribution to `U`. The coercion closure has to be written in
-    /// the expansion, where `Arc<Built>` and `Arc<U>` are concrete types and the one unsizes to
-    /// the other; a generic body cannot unsize. The expansion cannot name the built type, so
-    /// `Built` is an associated type, resolved once the ranking has picked the arm.
+    /// The `into` arm: a contribution to `U` declared by closure. It carries no scope; the core
+    /// resolves one at freeze from the role (§7). The coercion closure has to be written in the
+    /// expansion, where `Arc<Built>` and `Arc<U>` are concrete types and the one unsizes to the
+    /// other; a generic body cannot unsize. The expansion cannot name the built type, so `Built`
+    /// is an associated type, resolved once the ranking has picked the arm.
     pub trait FallibleContribution {
         type Built: Send + Sync + 'static;
 
         #[track_caller]
-        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
@@ -219,13 +220,13 @@ pub mod factory {
         type Built = T;
 
         #[track_caller]
-        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
         {
             if let Some(factory) = self.factory.take() {
-                m.contribute::<U>().try_singleton::<Args, F, T, E>(factory, coerce);
+                m.contribute::<U>().try_with::<Args, F, T, E>(factory, coerce);
             }
         }
     }
@@ -234,7 +235,7 @@ pub mod factory {
         type Built: Send + Sync + 'static;
 
         #[track_caller]
-        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static;
@@ -247,13 +248,13 @@ pub mod factory {
         type Built = <F as Factory<Args>>::Output;
 
         #[track_caller]
-        fn contribute_singleton<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
+        fn contribute_with<U, C>(&self, m: &mut ModuleDef<'_>, coerce: C)
         where
             U: ?Sized + Send + Sync + 'static,
             C: Fn(Arc<Self::Built>) -> Arc<U> + Send + Sync + 'static,
         {
             if let Some(factory) = self.factory.take() {
-                m.contribute::<U>().singleton::<Args, F>(factory, coerce);
+                m.contribute::<U>().with::<Args, F>(factory, coerce);
             }
         }
     }

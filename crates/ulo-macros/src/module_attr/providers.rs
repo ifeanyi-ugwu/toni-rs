@@ -17,10 +17,14 @@
 //! | `A` | `m.contribute::<K>().provide::<A>(\|a\| a);` |
 //! | `value = expr` | `m.contribute::<K>().value(Arc::new(expr));` |
 //! | `value = expr?` | `m.contribute::<K>().try_value(Result::map(expr, \|v\| -> Arc<K> { Arc::new(v) }));` |
-//! | `with = closure` | `m.contribute::<K>()` then `.singleton(closure, \|a\| a)` or `.try_singleton(..)`, by the same autoref ranking |
+//! | `with = closure` | `m.contribute::<K>()` then `.with(closure, \|a\| a)` or `.try_with(..)`, by the same autoref ranking |
 //!
 //! A `with` closure is written as in `#[guards]`: a synchronous body is wrapped in `async move`,
-//! and a closure already `async` is kept. It builds a singleton, as a providers-list closure does.
+//! and a closure already `async` is kept. The expansion declares no scope for it: the record says
+//! "declared by closure", and the core resolves the scope at freeze from the role. An enhancer is
+//! built per execution, as a `#[guards]` closure is. A provider contribution is a singleton, as a
+//! providers-list closure is, and `wire()` refuses one that reads execution data.
+//!
 //! A `value` is evaluated when `register` runs, once per module. `value = expr?` records an `Err`
 //! for `wire()` to report, as a providers list's `expr?` does. Its closure's return type is
 //! written because `Result<Arc<T>, E>` does not coerce to `Result<Arc<K>, E>`; the annotation
@@ -211,7 +215,7 @@ impl Contribution {
                         #[allow(unused_imports)]
                         use #ulo::__private::factory::{FallibleContribution as _, PlainContribution as _};
                         (&#ulo::__private::factory::Probe::new(#closure))
-                            .contribute_singleton::<#into, _>(&mut *#m, |a| a);
+                            .contribute_with::<#into, _>(&mut *#m, |a| a);
                     }
                 }
             }
