@@ -270,3 +270,7 @@ other areas are at the end.
 ### HM
 
 6. **Pattern grammar:** confirmed in step (entry 3). No change requested.
+
+**P's request H1, applied by the orchestrating session after H finished:** `HttpCx::head`'s doc now says it is
+the head as the pre-dispatch stage left it, and that the seeded `Dep<RequestHead>` is the head as the client
+sent it. Doc only. P's optional H2 (expose a 405 renderer) is left for after the first compile.

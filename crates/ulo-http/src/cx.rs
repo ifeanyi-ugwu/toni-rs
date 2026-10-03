@@ -70,6 +70,8 @@ impl PathParams {
 }
 
 impl HttpCx {
+    /// The request head as the pre-dispatch stage left it, a rewritten path included. The seeded
+    /// `Dep<RequestHead>` input is the head as the client sent it.
     pub fn head(&self) -> &RequestHead {
         &self.inner.head
     }
