@@ -16,25 +16,25 @@ Below is the transport-layer design. It's written to sit beside DESIGN.md: the s
 
 ## 1. Crate layout
 
-| Crate | Contents | Meets the core through |
-|---|---|---|
-| `fw-transport` | Transport-neutral pieces: `Param`, `Answer`, `CallError`, `ErrorKind`, `Details`, `ExtractError`, validation, `Metadata`, `Admission` (load shedding), span helpers, stream-end tracking | `dispatch`, `Execution`, `ErrorHandler` |
-| `fw-transport-macros` | `#[derive(Validate)]`, `#[derive(Classified)]` | — |
-| `fw-handler-codegen` | A plain library (not a proc-macro crate) of `syn` functions every transport's attribute macro calls: parameter analysis, the body-consumer check, answer probing, the `__handler` protocol, key and shared-value emission. A user-written transport's macro crate uses it too | the `__handler` protocol (X1, X2) |
-| `fw-net` | Endpoints (address, port 0, inherited socket), bound-address reporting, TLS loading with rustls, socket-activation parsing | `Server::prepare` / `bind` (X6) |
-| `fw-http` | `Http`, `HttpCx`, the router, extractors, responses, SSE, global and per-module middleware, CORS, tower bridging, WebSocket upgrade hand-off, `HttpBackend` SPI | `Transport`, `Server`, `Controller`/`Mount` |
-| `fw-http-axum`, `-actix`, `-salvo`, `-poem`, `-rocket` | One `HttpBackend` each | `HttpBackend` |
-| `fw-ws` | `Ws` and `WsConnect`, gateways, sessions, connection hooks, the message envelope, rooms and broadcast, `BroadcastAdapter` SPI, a standalone WebSocket server for a separate port | `Transport` ×2, `Server` |
-| `fw-ws-redis` | `BroadcastAdapter` over Redis pub/sub | `BroadcastAdapter` |
-| `fw-rpc` | `Rpc`, `RpcCx`, the frame grammar, pattern routing, all four call shapes, `RpcClient`, the `Link` SPI | `Transport`, `Server` |
-| `fw-rpc-tcp`, `-udp`, `-nats`, `-redis`, `-amqp`, `-mqtt`, `-kafka` | One `Link` each | `Link` |
-| `fw-rpc-conformance` | A shared test suite every `Link` runs | `Link` |
-| `fw-grpc` | `Grpc`, `GrpcCx`, the `Method` trait, status and details mapping, reflection, health, client modules (on tonic) | `Transport`, `Server` |
-| `fw-grpc-build` | `build.rs` code generation with protox (no system protoc) plus prost and tonic generators | — |
-| `fw-graphql` | GraphQL-over-HTTP endpoint, graphql-transport-ws gateway, playground, `Engine` SPI | `fw-http`, `fw-ws` |
-| `fw-graphql-async`, `fw-graphql-juniper` | One `Engine` each | `Engine` |
-| `fw-tokio` | `Timer`, `shutdown_signal()`, spawn helpers | `Timer`, `Signal` |
-| `fw-dev` (installs `cargo fw`) | Watch, rebuild, restart, socket holding | socket activation (`fw-net`) |
+| Crate                                                               | Contents                                                                                                                                                                                                                                                                      | Meets the core through                      |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `fw-transport`                                                      | Transport-neutral pieces: `Param`, `Answer`, `CallError`, `ErrorKind`, `Details`, `ExtractError`, validation, `Metadata`, `Admission` (load shedding), span helpers, stream-end tracking                                                                                      | `dispatch`, `Execution`, `ErrorHandler`     |
+| `fw-transport-macros`                                               | `#[derive(Validate)]`, `#[derive(Classified)]`                                                                                                                                                                                                                                | —                                           |
+| `fw-handler-codegen`                                                | A plain library (not a proc-macro crate) of `syn` functions every transport's attribute macro calls: parameter analysis, the body-consumer check, answer probing, the `__handler` protocol, key and shared-value emission. A user-written transport's macro crate uses it too | the `__handler` protocol (X1, X2)           |
+| `fw-net`                                                            | Endpoints (address, port 0, inherited socket), bound-address reporting, TLS loading with rustls, socket-activation parsing                                                                                                                                                    | `Server::prepare` / `bind` (X6)             |
+| `fw-http`                                                           | `Http`, `HttpCx`, the router, extractors, responses, SSE, global and per-module middleware, CORS, tower bridging, WebSocket upgrade hand-off, `HttpBackend` SPI                                                                                                               | `Transport`, `Server`, `Controller`/`Mount` |
+| `fw-http-axum`, `-actix`, `-salvo`, `-poem`, `-rocket`              | One `HttpBackend` each                                                                                                                                                                                                                                                        | `HttpBackend`                               |
+| `fw-ws`                                                             | `Ws` and `WsConnect`, gateways, sessions, connection hooks, the message envelope, rooms and broadcast, `BroadcastAdapter` SPI, a standalone WebSocket server for a separate port                                                                                              | `Transport` ×2, `Server`                    |
+| `fw-ws-redis`                                                       | `BroadcastAdapter` over Redis pub/sub                                                                                                                                                                                                                                         | `BroadcastAdapter`                          |
+| `fw-rpc`                                                            | `Rpc`, `RpcCx`, the frame grammar, pattern routing, all four call shapes, `RpcClient`, the `Link` SPI                                                                                                                                                                         | `Transport`, `Server`                       |
+| `fw-rpc-tcp`, `-udp`, `-nats`, `-redis`, `-amqp`, `-mqtt`, `-kafka` | One `Link` each                                                                                                                                                                                                                                                               | `Link`                                      |
+| `fw-rpc-conformance`                                                | A shared test suite every `Link` runs                                                                                                                                                                                                                                         | `Link`                                      |
+| `fw-grpc`                                                           | `Grpc`, `GrpcCx`, the `Method` trait, status and details mapping, reflection, health, client modules (on tonic)                                                                                                                                                               | `Transport`, `Server`                       |
+| `fw-grpc-build`                                                     | `build.rs` code generation with protox (no system protoc) plus prost and tonic generators                                                                                                                                                                                     | —                                           |
+| `fw-graphql`                                                        | GraphQL-over-HTTP endpoint, graphql-transport-ws gateway, playground, `Engine` SPI                                                                                                                                                                                            | `fw-http`, `fw-ws`                          |
+| `fw-graphql-async`, `fw-graphql-juniper`                            | One `Engine` each                                                                                                                                                                                                                                                             | `Engine`                                    |
+| `fw-tokio`                                                          | `Timer`, `shutdown_signal()`, spawn helpers                                                                                                                                                                                                                                   | `Timer`, `Signal`                           |
+| `fw-dev` (installs `cargo fw`)                                      | Watch, rebuild, restart, socket holding                                                                                                                                                                                                                                       | socket activation (`fw-net`)                |
 
 Each transport crate re-exports its attribute macros from one proc-macro crate (`fw-http-macros` and so on). Each of those is a thin layer over `fw-handler-codegen`.
 
@@ -134,7 +134,7 @@ pub trait Answer<T: Transport>: Send + 'static {
 }
 ```
 
-Transports implement `Answer` for their reply types: `Json<T>`, `Sse<S>`, `pb::User`, `impl Stream`, and so on. For a `Result<V, E>`, the generated code doesn't match on the *spelling*. It probes the *type* by autoref, at the concrete call site:
+Transports implement `Answer` for their reply types: `Json<T>`, `Sse<S>`, `pb::User`, `impl Stream`, and so on. For a `Result<V, E>`, the generated code doesn't match on the _spelling_. It probes the _type_ by autoref, at the concrete call site:
 
 ```rust
 let out = Self::get(&this, a, b).await;              // whatever the return type is spelled as
@@ -142,13 +142,15 @@ let out = Self::get(&this, a, b).await;              // whatever the return type
 ```
 
 The probe has three arms:
+
 - `Result<V, E>` where `E: Classified`: `Err` becomes `CallError::classified(e)`.
 - `Result<V, E>` where `E: Into<BoxError>`: `Err` is boxed unchanged.
 - Any `V: Answer<T>`: answered as the value.
 
 The compiler resolves a type alias (`type ApiResult<T> = Result<T, ApiError>`) before method resolution, so an alias takes the same arm as the plain `Result`. That autoref ranking works on 1.88 was shown by probe P02c. In the value API, `Answer::from_result(r)` and `CallError::classified(e)` do the same thing explicitly.
 
-**Errors in the middle of a stream (X7).** An `Err` from the outer `Result`, or from a stream before its first item, goes through `dispatch`'s error handlers like any other error. An `Err` *item* after the first item has been sent can no longer change a status. The core gains `fw::dispatch_late(handler, cx, err) -> LateOutcome`, which runs the same error handlers with `cx.exec().is_late() == true`:
+**Errors in the middle of a stream (X7).** An `Err` from the outer `Result`, or from a stream before its first item, goes through `dispatch`'s error handlers like any other error. An `Err` _item_ after the first item has been sent can no longer change a status. The core gains `fw::dispatch_late(handler, cx, err) -> LateOutcome`, which runs the same error handlers with `cx.exec().is_late() == true`:
+
 - A handler returning `Err(e2)` reshapes the error, and the transport renders `e2` in its mid-stream form (§§3–6).
 - A handler returning `Ok(_)` suppresses the error: the stream ends cleanly and the reply value is discarded.
 
@@ -198,32 +200,32 @@ pub enum Detail {
 
 **Classifying a `BoxError` at render time.** `fw_transport::classify(&BoxError) -> CallError` walks the error and maps the core's own errors:
 
-| Error | Kind |
-|---|---|
-| `CallError` | its own |
-| `ExtractError` | `BadRequest` or `Unprocessable` |
-| `GuardRejected` | `Forbidden` |
-| `PanicRecovered`, and anything `fw::is_panic` recognises | `Internal`, with a generic message |
-| `LookupError::Construct { reason: Errored(r) }` | recurses into `r.downcast_ref::<CallError>()`, so a constructor's "tenant not found" becomes 404, as DESIGN §10.2 requires |
-| `Closed`, `LookupError::Closed` | `Unavailable` |
-| a passed deadline (`CancelReason::Deadline`, X5) | `Timeout` |
-| anything else | `Internal`, with the message withheld |
+| Error                                                    | Kind                                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `CallError`                                              | its own                                                                                                                    |
+| `ExtractError`                                           | `BadRequest` or `Unprocessable`                                                                                            |
+| `GuardRejected`                                          | `Forbidden`                                                                                                                |
+| `PanicRecovered`, and anything `fw::is_panic` recognises | `Internal`, with a generic message                                                                                         |
+| `LookupError::Construct { reason: Errored(r) }`          | recurses into `r.downcast_ref::<CallError>()`, so a constructor's "tenant not found" becomes 404, as DESIGN §10.2 requires |
+| `Closed`, `LookupError::Closed`                          | `Unavailable`                                                                                                              |
+| a passed deadline (`CancelReason::Deadline`, X5)         | `Timeout`                                                                                                                  |
+| anything else                                            | `Internal`, with the message withheld                                                                                      |
 
 **Canonical renderings:**
 
-| Kind | HTTP | gRPC | WebSocket / RPC |
-|---|---|---|---|
-| BadRequest | 400 | INVALID_ARGUMENT | `"bad_request"` |
-| Unauthorized | 401, with a `WWW-Authenticate` challenge (RFC 9110 requires one; the server's default challenge is configurable, and `CallError::unauthorized(challenge)` sets one per error) | UNAUTHENTICATED | `"unauthorized"` |
-| Forbidden | 403 | PERMISSION_DENIED | `"forbidden"` |
-| NotFound | 404 | NOT_FOUND | `"not_found"` |
-| Conflict | 409 | ABORTED | `"conflict"` |
-| Unprocessable | 422 | INVALID_ARGUMENT, with `BadRequest` field violations | `"unprocessable"` |
-| TooManyRequests | 429, plus `Retry-After` from `RetryAfter` | RESOURCE_EXHAUSTED | `"too_many_requests"` |
-| Timeout | 504 | DEADLINE_EXCEEDED | `"timeout"` |
-| Unavailable | 503, plus `Retry-After` | UNAVAILABLE | `"unavailable"` |
-| Unimplemented | 501 | UNIMPLEMENTED | `"unimplemented"` |
-| Internal | 500 | INTERNAL | `"internal"` |
+| Kind            | HTTP                                                                                                                                                                          | gRPC                                                 | WebSocket / RPC       |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | --------------------- |
+| BadRequest      | 400                                                                                                                                                                           | INVALID_ARGUMENT                                     | `"bad_request"`       |
+| Unauthorized    | 401, with a `WWW-Authenticate` challenge (RFC 9110 requires one; the server's default challenge is configurable, and `CallError::unauthorized(challenge)` sets one per error) | UNAUTHENTICATED                                      | `"unauthorized"`      |
+| Forbidden       | 403                                                                                                                                                                           | PERMISSION_DENIED                                    | `"forbidden"`         |
+| NotFound        | 404                                                                                                                                                                           | NOT_FOUND                                            | `"not_found"`         |
+| Conflict        | 409                                                                                                                                                                           | ABORTED                                              | `"conflict"`          |
+| Unprocessable   | 422                                                                                                                                                                           | INVALID_ARGUMENT, with `BadRequest` field violations | `"unprocessable"`     |
+| TooManyRequests | 429, plus `Retry-After` from `RetryAfter`                                                                                                                                     | RESOURCE_EXHAUSTED                                   | `"too_many_requests"` |
+| Timeout         | 504                                                                                                                                                                           | DEADLINE_EXCEEDED                                    | `"timeout"`           |
+| Unavailable     | 503, plus `Retry-After`                                                                                                                                                       | UNAVAILABLE                                          | `"unavailable"`       |
+| Unimplemented   | 501                                                                                                                                                                           | UNIMPLEMENTED                                        | `"unimplemented"`     |
+| Internal        | 500                                                                                                                                                                           | INTERNAL                                             | `"internal"`          |
 
 HTTP bodies are RFC 9457 `application/problem+json`: `type`, `title`, `status`, and `detail`, with `details` as an extension member. gRPC sends the status message plus a `google.rpc.Status` with packed details in `grpc-status-details-bin`. WebSocket and RPC use the envelope `{ "kind", "message", "details" }`.
 
@@ -268,16 +270,19 @@ pub enum CancelReason { Disconnected, ClientCancelled, Deadline, Drain }
 ```
 
 Each transport fires the reason its wire tells it:
+
 - `Disconnected`: a dropped response body, a closed connection, or an h2 `RST_STREAM`.
 - `ClientCancelled`: a WebSocket or RPC `cancel` frame, or a gRPC `RST_STREAM(CANCEL)`.
 - `Deadline`: a passed `grpc-timeout`, RPC `deadline` header, or configured route timeout.
 - `Drain`: the core's end of the drain.
 
 **Clean end versus cut off.** Every streaming answer is wrapped in `fw_transport::Tracked<S>`, which records one of two outcomes:
+
 - `Completed`: the stream returned `None` and the transport finished writing.
 - `CutOff(reason)`: dropped before that.
 
 The handler or an interceptor observes the outcome through `cx.exec().stream_outcome()`, a future that resolves once. On the wire, each transport uses its protocol's own end marker:
+
 - HTTP/1.1: the terminating zero-length chunk, versus a closed connection.
 - HTTP/2: `END_STREAM`, versus `RST_STREAM`.
 - gRPC: trailers with `grpc-status: 0`, versus a non-OK status or a reset.
@@ -313,6 +318,7 @@ pub enum Endpoint {
 ### 2.9 Spans [14]
 
 Each transport wraps `dispatch` in a `tracing` span, created by `fw_transport::span::call(..)`. Span names and attributes follow the OpenTelemetry semantic conventions:
+
 - HTTP: the span is named `GET /users/{id}`, with `http.request.method`, `http.route` and `url.path`.
 - RPC: `rpc.system` (`"fw"`), `rpc.method` (the pattern) and `messaging.system` for brokers.
 - gRPC: `rpc.system = "grpc"`, `rpc.service`, `rpc.method` and `rpc.grpc.status_code`.
@@ -322,6 +328,7 @@ Every span also carries `fw.transport` (the key) and `fw.handler`.
 ### 2.10 Execution inputs without user imports
 
 **X4: transports declare their own inputs.** `Transport` gains `fn inputs(d: &mut InputDecls) {}`. The freeze calls it once per transport type, the first time a handler of that transport mounts. It records the inputs with `seeded_by` set to that transport, so users never import a module just to declare inputs:
+
 - HTTP: `RequestHead`, `ClientAddr`.
 - WebSocket: `ConnectionInfo`, `UpgradeHead`.
 - RPC: `CallHeaders`, `LinkInfo`.
@@ -376,6 +383,7 @@ pub enum UserError {
 **Extractors** [17] are `Path<T>`, `Query<T>`, `Json<T>`, `Form<T>`, `Bytes`, `BodyStream`, `Multipart`, `Header<H>` (typed, from the `headers` crate), `HeaderMap`, `LastEventId`, `HttpCx`, and every container type. `Json`, `Form`, `Bytes`, `BodyStream` and `Multipart` consume the body. The body limit is a server setting (`.body_limit(2 * MB)`) that `#[meta(BodyLimit(..))]` can override per route. Bodies over the limit fail with 413 before deserialization.
 
 **Responses** [18] are any `T: Answer<Http>`:
+
 - `Json<T>`, `Bytes`, `String`, `()` (204), `Created<T>`, `NoContent`, and `(StatusCode, T)`.
 - `WithHeaders<T>`, and `Response::builder()` for any status, headers and body.
 - `Body::stream(s)` for a streaming body.
@@ -384,6 +392,7 @@ pub enum UserError {
 ### 3.2 Routing [15]
 
 `fw-http` owns the router, so every backend routes identically:
+
 - Patterns use `{name}` segments plus an optional trailing `{*rest}`.
 - A trailing slash is insignificant: both the pattern and the request path drop it, except for `/`.
 - Routes are built in `prepare`. Two routes with the same method and the same normalized pattern, or two patterns that differ only in parameter names at one position (`/u/{id}` and `/u/{name}`), are a `Configure` error naming both handlers.
@@ -403,6 +412,7 @@ pub trait Middleware: Send + Sync + 'static {
 ```
 
 Middleware comes in two stages:
+
 - **Global, before routing.** These run for every request, misses included. They can rewrite the path with `req.set_path(..)` and can answer without calling `next`, which is how CORS preflight and authentication work. They're declared in module metadata, in collection order:
 
   ```rust
@@ -412,7 +422,7 @@ Middleware comes in two stages:
       .layer(tower_http::compression::CompressionLayer::new());
   ```
 
-- **Per-module, after routing.** These are selected by route *pattern* with exclusions, as DESIGN §7 already describes: `m.meta::<fw_http::Middleware>().apply::<AuditLog>().for_routes(["/admin/*"]).exclude(["/admin/health"])`. A module's selection applies to every matching route in the app, NestJS-style, and modules apply in collection order (§13, decision 1).
+- **Per-module, after routing.** These are selected by route _pattern_ with exclusions, as DESIGN §7 already describes: `m.meta::<fw_http::Middleware>().apply::<AuditLog>().for_routes(["/admin/*"]).exclude(["/admin/health"])`. A module's selection applies to every matching route in the app, NestJS-style, and modules apply in collection order (§13, decision 1).
 
 The full order per request: global middleware, routing, `route_to` (X8), per-module middleware, then `dispatch` (guards, interceptors, handler, error handlers).
 
@@ -467,12 +477,12 @@ pub struct Request {
 
 `BackendLimits` is enforced in `prepare`: asking a backend for something it declares it can't do is a `Configure` error naming the limit. The table below is the starting point, and the conformance tests confirm each entry before release:
 
-| Backend | Documented limits |
-|---|---|
-| axum (hyper) | none expected |
-| salvo, poem (hyper) | none expected |
-| actix-web | HTTP/2 only over TLS through ALPN, so h2c is refused; its multi-runtime model means our `Send` futures run on actix workers |
-| rocket | inherited sockets and port 0 depend on the version's custom-listener support, and are refused where missing; graceful-shutdown timing follows rocket's own shutdown configuration |
+| Backend             | Documented limits                                                                                                                                                                 |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| axum (hyper)        | none expected                                                                                                                                                                     |
+| salvo, poem (hyper) | none expected                                                                                                                                                                     |
+| actix-web           | HTTP/2 only over TLS through ALPN, so h2c is refused; its multi-runtime model means our `Send` futures run on actix workers                                                       |
+| rocket              | inherited sockets and port 0 depend on the version's custom-listener support, and are refused where missing; graceful-shutdown timing follows rocket's own shutdown configuration |
 
 ---
 
@@ -523,6 +533,7 @@ impl ChatGateway {
 **Sessions** [24]: when the upgrade completes, the session is created before the connect guards run, from `Default` or from a factory declared with `session_with = |head: Dep<UpgradeHead>| ..`. `Session<T>` is a `FromContainer` type reading it, and it's dropped with the connection. Per-message state lives in the message's execution.
 
 **Connection hooks** [25]:
+
 - `on_connect` runs after the connect guards and can refuse.
 - `on_disconnect` receives a `DisconnectReason`: `ClientClose { code, reason }`, `ServerClose { code }`, `ProtocolError`, `Drain`, or `Lost`. During the drain it runs as a terminal execution (DESIGN §6.3), so it's best effort at shutdown.
 - `after_init` runs once per gateway after `listen()`, with a `GatewayRef`.
@@ -542,6 +553,7 @@ The message envelope is defined here, since no specification covers one. Text fr
 A message without an `id` is fire-and-forget: there's no ack, and errors are logged. Control frames (ping, pong, close) are answered by the protocol layer and never reach handlers [26]. Every failure is the one `error` envelope: extraction, a guard, a handler, a panic, or an unknown event (kind `unimplemented`).
 
 **Close codes** [23], from RFC 6455's registry:
+
 - A connect refusal by kind: `Unauthorized` and `Forbidden` close with 1008 (policy), `TooManyRequests` with 1013 (try again later), `Internal` with 1011, and `Unavailable` with 1013.
 - A gateway may map kinds to its subprotocol's own codes, as graphql-transport-ws does with 4401, 4403 and 4429. `Refusal::code(4403, "forbidden")` sets one explicitly.
 - Frames over the size limit close with 1009. Binary frames on a text-only gateway close with 1003. A protocol violation closes with 1002.
@@ -622,7 +634,7 @@ goaway  {t}                 server draining: no new calls on this connection
 
 Reserved headers: `deadline-ms` (remaining time, which becomes the execution deadline) and `traceparent` (W3C Trace Context).
 
-**A pattern nothing handles** answers `err` with kind `unimplemented` and the message "no handler for pattern `x`", on every link. An unhandled *event* is logged and counted, and on brokers it's acknowledged as rejected, so it can't loop on redelivery (AMQP: `basic.reject` without requeue, which routes to a dead-letter exchange if one is configured). A shape mismatch, such as `req` sent to a streamed-request pattern, answers `bad_request`.
+**A pattern nothing handles** answers `err` with kind `unimplemented` and the message "no handler for pattern `x`", on every link. An unhandled _event_ is logged and counted, and on brokers it's acknowledged as rejected, so it can't loop on redelivery (AMQP: `basic.reject` without requeue, which routes to a dead-letter exchange if one is configured). A shape mismatch, such as `req` sent to a streamed-request pattern, answers `bad_request`.
 
 **What a caller sees is uniform.** `RpcError` exposes a kind from §2.4 and maps link-level failures the same way everywhere: no responders, a lost link, or a broker refusal map to `Unavailable`, a client timeout maps to `Timeout`, and an oversized payload maps to `BadRequest` with `ErrorInfo { reason: "payload_too_large" }`. `fw-rpc-conformance` runs one scenario list against every link (unary, each streaming shape, cancel mid-stream, unknown pattern, deadline, binary payload, oversized payload, drain) and asserts the same caller-visible result.
 
@@ -649,15 +661,15 @@ pub struct Delivery { pub frame: Frame, pub reply: ReplyPath, pub ack: Ack }
 
 Per-link mapping and documented limits:
 
-| Link | Request-reply mapping | Limits |
-|---|---|---|
-| TCP | multiplexed by `id` over one connection, with length-prefixed frames | ordered per connection; all shapes |
-| UDP | one frame per datagram, replies sent to the sender's address | unordered, no delivery guarantee, payload at most 65,507 bytes minus the envelope; **unary and events only**, streamed shapes refused at startup; no TLS |
-| NATS | the reply subject (`_INBOX`); stream items on the inbox | at-most-once; ordered per publisher and subject; maximum payload read from the server's `INFO`; no-responders status maps to `Unavailable` |
-| Redis | pub/sub on `pattern`; replies on a per-client reply channel | at-most-once; ordered per channel |
-| RabbitMQ (AMQP 0-9-1) | `reply_to` plus `correlation_id` properties | at-least-once with ack after the handler completes, so **handlers must be idempotent**; ordered per queue with a single consumer; prefetch (`basic.qos`) is the per-connection bound |
-| MQTT v5 | the v5 Response Topic and Correlation Data properties | QoS configurable; ordered per topic and QoS; maximum packet size from CONNACK |
-| Kafka | a reply topic plus a correlation header | ordered per partition (the key is the correlation ID); high latency for request-reply; size limit from broker configuration |
+| Link                  | Request-reply mapping                                                | Limits                                                                                                                                                                               |
+| --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| TCP                   | multiplexed by `id` over one connection, with length-prefixed frames | ordered per connection; all shapes                                                                                                                                                   |
+| UDP                   | one frame per datagram, replies sent to the sender's address         | unordered, no delivery guarantee, payload at most 65,507 bytes minus the envelope; **unary and events only**, streamed shapes refused at startup; no TLS                             |
+| NATS                  | the reply subject (`_INBOX`); stream items on the inbox              | at-most-once; ordered per publisher and subject; maximum payload read from the server's `INFO`; no-responders status maps to `Unavailable`                                           |
+| Redis                 | pub/sub on `pattern`; replies on a per-client reply channel          | at-most-once; ordered per channel                                                                                                                                                    |
+| RabbitMQ (AMQP 0-9-1) | `reply_to` plus `correlation_id` properties                          | at-least-once with ack after the handler completes, so **handlers must be idempotent**; ordered per queue with a single consumer; prefetch (`basic.qos`) is the per-connection bound |
+| MQTT v5               | the v5 Response Topic and Correlation Data properties                | QoS configurable; ordered per topic and QoS; maximum packet size from CONNACK                                                                                                        |
+| Kafka                 | a reply topic plus a correlation header                              | ordered per partition (the key is the correlation ID); high latency for request-reply; size limit from broker configuration                                                          |
 
 Links connect lazily: the server side at `bind`, the client side on its first call. Load shedding refuses with `err` of kind `unavailable` over the server's in-flight limit. Where the broker offers flow control, it's used instead: AMQP prefetch, pausing Kafka partitions, and `credit` frames for NATS and Redis.
 
@@ -780,7 +792,122 @@ The engine SPI, written without macros:
 pub trait Engine: Send + Sync + 'static {
     fn execute(&self, req: GqlRequest, exec: ExecutionRef) -> BoxFuture<'static, GqlResponse>;
     fn subscribe(&self, req: GqlRequest, exec: ExecutionRef) -> BoxStream<'static, GqlResponse>;
-    fn sdl(
+    fn sdl(&self) -> String;
+}
+```
 
+Each engine adapter builds the schema context per execution through `exec.get::<GqlContext>()`. async-graphql receives it as request `Data`, and juniper as its `Context`. Resolvers reach other services through `fw_graphql::dep::<T>(ctx)`.
 
-<!-- Received cut off here: the paste exceeded the chat limit partway through §7. The rest of §7 and §§8-13 (the X1-X13 summary, the refusal table, the chosen defaults) are still to come. -->
+- **HTTP:** the endpoint follows GraphQL-over-HTTP. It accepts POST with `application/json` and GET for queries, and answers `application/graphql-response+json`, using request-error status codes as that spec defines. HTTP guards, interceptors and middleware apply, because the endpoint is an HTTP route.
+- **Subscriptions:** graphql-transport-ws on an `fw-ws` gateway with `event = "type"`. The protocol's own messages (`connection_init`, `connection_ack`, `subscribe`, `next`, `error`, `complete`, `ping`, `pong`) are handled by the gateway, along with its close codes (4400, 4401, 4403, 4408, 4409, 4429).
+- **Playground:** GraphiQL is served on GET with `Accept: text/html` in builds with `debug_assertions`, and never in release builds unless enabled explicitly.
+
+---
+
+## 8. Runtime [38]
+
+`fw-tokio` provides three things:
+
+- `Timer`: sleeps through `tokio::time`, and `now()` through `tokio::time::Instant::now().into_std()`, so a paused test clock drives deadlines and sleeps together, as DESIGN §3.9 requires.
+- `shutdown_signal()`: SIGINT and SIGTERM on Unix, plus Ctrl-C and Ctrl-Close on Windows. It resolves to `Signal::new("SIGTERM")` and so on.
+- `spawn(fut)` and `spawn_in(&exec, fut)`. The second holds an `ExecutionRef` for the task's lifetime and stops the task on the execution's cancellation.
+
+---
+
+## 9. Development command [39]
+
+`cargo fw dev` watches the source (`notify`), rebuilds (`cargo build`), and restarts. When the app's endpoints include `Endpoint::inherited(..)`, which `fw dev` enables automatically through `FW_DEV=1`, the command binds those listening sockets **itself** and passes them to each child using the socket-activation protocol: `LISTEN_FDS`, `LISTEN_FDNAMES` and `LISTEN_PID`. It sets `LISTEN_PID` through a small exec trampoline, so the variable equals the child's process ID.
+
+The restart sequence is:
+
+1. Build the new binary while the old one keeps serving.
+2. Signal the old child, which drains gracefully.
+3. Start the new child on the same sockets.
+
+While no child is accepting, the kernel queues connections in the listen backlog, which `fw dev` keeps open. Clients see a delay, never a refused connection. Socket holding is Unix-only at first. On Windows the command restarts without holding sockets, and documents it.
+
+---
+
+## 10. Shutdown, per transport [8]
+
+All transports follow DESIGN §9.5. Here's what each does at each step:
+
+| Step                     | HTTP                                                                         | WebSocket                                                                     | RPC                                                                          | gRPC                                   |
+| ------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------- |
+| before-shutdown          | serving normally                                                             | serving normally                                                              | serving normally                                                             | health still SERVING                   |
+| `drain` (stop accepting) | GOAWAY (h2); idle keep-alives closed (h1); busy ones get `Connection: close` | idle connections closed with 1001; busy ones stop reading                     | TCP `goaway`; NATS drain; AMQP `basic.cancel`; MQTT unsubscribe; Kafka pause | GOAWAY; health switches to NOT_SERVING |
+| drain window             | requests finish; SSE ends on `draining()`                                    | in-flight messages finish, then 1001; `on_disconnect` as a terminal execution | in-flight calls finish; streams end on `draining()`                          | in-flight calls finish                 |
+| cancel at timeout        | `Drain` reason; connections reset                                            | close 1001                                                                    | `err` of kind `unavailable`                                                  | CANCELLED/UNAVAILABLE per stream       |
+| `close`                  | listeners and connections closed                                             | sockets closed                                                                | links closed, offsets committed                                              | listeners closed                       |
+
+---
+
+## 11. SPI extensions (summary)
+
+| #   | Extension                                                                                                                                         | Where                                | For                                     |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------------- |
+| X1  | `Transport::KEY`; transport attributes emit `__FW_KEY_<name>`; `#[routes]` asserts scoped keys at compile time                                    | `Transport`, `__handler` protocol    | [12], closes D6                         |
+| X2  | Impl-level values built once in `Controller::mount`, passed as `&__FwShared`; `EnhancerSpec::{guard,interceptor,error_handler}_arc`               | `__handler` protocol, `EnhancerSpec` | [13], lifts the D7 refusal              |
+| X3  | `HandlerDecl` builder for `Mount::handler` (metadata, route, shape); `Execution::handler() -> Option<&HandlerInfo>`; `AppHandle::handlers()`      | `Mount`, `Execution`, `AppHandle`    | [6][14]                                 |
+| X4  | `Transport::inputs(d)`, declared at freeze on first mount                                                                                         | `Transport`                          | input declarations without user imports |
+| X5  | `CancelReason`; `cancel_with`, `cancel_reason`; stream outcome                                                                                    | `Execution`                          | [7]                                     |
+| X6  | `Server::prepare` before any bind; `StartupError::Configure`; `Server::bound`, `App<Bound>::addresses()`                                          | `Server`, `listen()`                 | [9][10][15]                             |
+| X7  | `dispatch_late` and `is_late()`, for errors after a stream has started                                                                            | `dispatch`                           | [4][26][29]                             |
+| X8  | `Execution::route_to(&ModuleRef)`, once, holder-only, before `dispatch`                                                                           | `Execution`                          | [19] pre-routing middleware             |
+| X9  | `Mounted::module_meta::<T>()`, iterating every module's metadata in collection order                                                              | `Mounted`                            | [19] per-module middleware              |
+| X10 | `Execution::stream_outcome()` future, set by `Tracked<S>`                                                                                         | `Execution`                          | [7]                                     |
+| X11 | `fw::__private::key_in` (a const fn)                                                                                                              | core private                         | X1                                      |
+| X12 | `GuardRejected` to `Forbidden` and `PanicRecovered` to `Internal` in `classify`; no core change, listed because the mapping depends on core types | `fw-transport`                       | [5]                                     |
+| X13 | `AppHandle::phase()` (Running, Stopping, Draining, Destroying)                                                                                    | `AppHandle`                          | gRPC health; diagnostics                |
+
+X12 needs no core change, and X10 could be folded into X5. I've kept them separate so the core diff stays reviewable.
+
+---
+
+## 12. What is refused, and where
+
+| Refusal                                                                                | When                           | Mechanism                                                                                 |
+| -------------------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------- |
+| Two parameters that consume the body                                                   | compile                        | const assertion naming both (§2.2)                                                        |
+| A parameter type not readable on the handler's transport (`Json<T>` on an RPC handler) | compile                        | `Param<T>` + `on_unimplemented`                                                           |
+| A return type with no `Answer` for the transport (`Sse` on gRPC)                       | compile                        | `Answer<T>` bound                                                                         |
+| A controller-level transport key that matches no handler (`htpp`)                      | compile                        | X1 const assertion, spanned on the key                                                    |
+| An enhancer lacking its role for a handler's transport                                 | compile                        | as in DESIGN §7                                                                           |
+| A gRPC handler whose types or shape don't match its `Method`                           | compile                        | trait bounds on the marker                                                                |
+| An invalid route pattern literal (`/u/{id`)                                            | compile                        | macro span error                                                                          |
+| TLS on UDP                                                                             | compile                        | no method (E0599)                                                                         |
+| A malformed `#[meta]`, `#[fw_ws::gateway]` or handler attribute                        | compile                        | macro span error                                                                          |
+| Duplicate route, or conflicting parameter names at one position                        | startup (`listen` → `prepare`) | `StartupError::Configure` naming both handlers                                            |
+| A `Path<T>` whose fields don't match the route's parameters                            | startup (`prepare`)            | field-recording deserializer                                                              |
+| CORS with `*` and credentials                                                          | startup (`prepare`)            | Fetch specification rule                                                                  |
+| A bad certificate, a mismatched key, an unreadable TLS file                            | startup (`prepare`)            | rustls parse                                                                              |
+| A bad endpoint, a missing inherited socket, `LISTEN_PID` mismatch                      | startup (`prepare`)            | `fw-net`                                                                                  |
+| A backend asked for something its limits forbid (h2c on actix)                         | startup (`prepare`)            | `BackendLimits`                                                                           |
+| Two gateways on one path, two handlers for one RPC pattern or gRPC path                | startup (`prepare`)            | `Configure`                                                                               |
+| A streamed shape on a link that can't carry it (UDP)                                   | startup (`prepare`)            | `Capabilities`                                                                            |
+| A binary payload on a text-codec link                                                  | startup (`prepare`)            | `Capabilities`                                                                            |
+| Port already in use                                                                    | startup (`bind`)               | `StartupError::Bind`, reported only after every `prepare` passed; nothing left half-bound |
+| A non-optional input read on a path from a transport that doesn't seed it              | startup (`wire`)               | DESIGN §6.4, with inputs declared through X4                                              |
+| Global or per-module middleware whose dependencies are missing                         | startup (`wire`)               | metadata declares its dependencies                                                        |
+| Route miss, wrong method                                                               | runtime                        | 404, or 405 with `Allow`                                                                  |
+| Extraction failure                                                                     | runtime                        | `ExtractError` through the error handlers, rendered per transport                         |
+| Unknown WebSocket event, unknown RPC pattern                                           | runtime                        | `unimplemented` envelope or `err` frame, identical across links                           |
+| Over a load-shedding limit                                                             | runtime                        | 503 with `Retry-After`, `REFUSED_STREAM`, close 1013, `unavailable`, or UNAVAILABLE       |
+| Oversized frame or payload                                                             | runtime                        | 413, close 1009, or `bad_request` with `payload_too_large`                                |
+| Connect guard refusal                                                                  | runtime                        | close code by kind or explicit `Refusal::code`                                            |
+| Passed deadline, caller gone                                                           | runtime                        | cancellation with a `CancelReason`; `Timeout` rendering where a reply can still be sent   |
+
+---
+
+## 13. Decisions taken with defaults (open to change)
+
+1. **Per-module middleware applies app-wide by pattern**, NestJS-style, in module collection order. The alternative is "only routes of the declaring module", which gives stronger encapsulation but makes a shared auth module unable to protect other modules' routes.
+2. **`Conflict` maps to gRPC ABORTED.** Google's API guidance pairs HTTP 409 with both ABORTED and ALREADY_EXISTS. `CallError::grpc_code(..)` overrides it per error.
+3. **`Timeout` renders as HTTP 504.** The server ran out of time, usually waiting on something downstream. 408 means the server gave up waiting for the _client's request_, which is a different situation.
+4. **Connect guards run after the 101 handshake** and refuse with a close code, as [23] asks. Refusing the handshake itself with an HTTP 401 or 403 is also valid under RFC 6455, and could be added later as an option.
+5. **The WebSocket and RPC envelopes are this design's own**, with JSON by default and MessagePack or CBOR for binary. Nothing here aims at wire compatibility with NestJS or socket.io.
+6. **A slow WebSocket consumer is disconnected** with 1008 by default, with drop-oldest as an option.
+7. **gRPC reflection is on in debug builds and opt-in in release builds.** The GraphQL playground follows the same rule.
+8. **`fw dev` socket holding is Unix-only** at first.
+
+The two I'd most like you to confirm are 1 and 4. Both change what users write, not just what's on the wire.
