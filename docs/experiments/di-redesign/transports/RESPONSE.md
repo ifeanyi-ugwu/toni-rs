@@ -559,3 +559,57 @@ HttpServer::new(move || App::new().default_service(fw_http_actix::service(embedd
 ```
 
 A dedicated backend would duplicate that path, and add a second reference implementation for the conformance suite to keep in agreement. If a real need appears, such as needing actix-http's settings without any actix-web types, it can be added as a second backend later without changing anything above it.
+
+## Sixth response: the `cfg_attr` change and the embedding review
+
+Received 2026-10-04, answering `divergences/batch2a-cfgattr.md` and `EMBEDDING_REVIEW.md`. Sign-off
+pending.
+
+Both documents hold up. I take almost everything as proposed, with five changes: a better name for R1's type, a different fix for R12, a firmer answer for Q5, an enum rather than optional fields for Q6, and a correction to the diagram from last turn.
+
+### The `cfg_attr` change
+
+All nine decisions are accepted. Decision 1, where the first gated attribute macro decides, is a heuristic, but it's the right one. `#[routes]` can't tell a transport attribute from any other attribute macro by name, and the document shows that every case the heuristic gets wrong *fails to compile* rather than mounting something wrongly. That's the property that matters. The one behavior change, a helper with `#[cfg_attr(.., tracing::instrument)]` becoming a handler, is consistent with the existing rule that helpers go in a separate impl block. The verification is thorough: it runs both toolchains with the feature on and off, and stashes the old macros to confirm the scratch crate actually exercises the change.
+
+### The embedding review
+
+**Accepted as written:** R2, R3, R4, R5, R6, R7, R8, R9, R11, R13, R14, R15, R17, R18, R19, R20.
+
+A few of those reshape the design, and should be stated plainly when they're folded in:
+- **R2:** `Embedded<A: Embed>`, generic over the adapter like `Server<B: Backend>`, with the limits checked in `prepare`.
+- **R4:** `Embedded::drain` signals the host to stop accepting and returns at once. The host's lingering connections are `close`'s business, since an embedding can't cut them.
+- **R5:** the host's future lives in a slot, polled by `Embedded::serve` and awaited by `close`, with no spawned task.
+- **R8:** salvo and poem join actix and rocket as **native** embeds. axum is the only tower embed. That corrects the diagram I drew last turn: the "Tower embed" box holds axum alone, and "Native embed" holds salvo, poem, actix and rocket.
+
+**R1: accepted, under a module-qualified name.** The app needs a new tower service that converts from `http::Request`, as the review says. Following the rule you approved for `middleware::Next`, call it `fw_http::embed::Service`. The module carries the context and the type name doesn't repeat it.
+
+**R10: take the explicit registration.** `host_extensions` goes into `EmbedLimits`. The actix and rocket adapters get `.forward::<T>(..)`, which reads a host value under a type the app names. rocket's `Routing` value (Q6) lives in the request's local cache, where a fairing's `on_response` can read it.
+
+**R12: fix it rather than scope the sentence.** Leaving body panics to each host makes the same failure behave five different ways. Wrap `ExecBody::poll_frame` in a panic catch. A panic ends the body with an error frame, reports `CutOff`, and logs a `PanicRecovered` with stage `Handler`. Then "panics are caught inside the app" is true without exceptions, on every host.
+
+**R16 and Q4: actix ships with `upgrades: false`.** The payload/body bridge is real but nontrivial, and nothing in the first version needs WebSocket on an actix host. `prepare` already refuses a gateway on the HTTP transport when the adapter declares that limit.
+
+### The questions
+
+**Q1: one clock, set by the user.** Add an accessor, `AppHandle::drain_timeout()`, and have each adapter's `run` pass it to the host wherever the host accepts a bound: salvo's `stop_graceful`, actix's `shutdown_timeout`, rocket's `grace`. axum has no bound of its own, so the app's `close` bound contains it. Users then set the window once.
+
+**Q2: an error.** A host that stops before the shutdown trigger leaves the app with nothing serving it, which is a failure, not completion. `Embedded::serve` answers `Err`, and the app shuts down naming the transport, just as with a dead backend.
+
+**Q3: decide at runtime.** Forward only when the body is untouched and the path unchanged. Otherwise answer the app's own 404 and log at `warn`. A static refusal isn't feasible here: unscoped entries are opaque middleware and tower layers, so `prepare` can't know whether they read the body or rewrite the path. It would have to refuse any unscoped entry at all, which is far too strict.
+
+**Q5: a missing host value is a deployment fault, not a bad request.** Add an `ExtractError` variant, `HostMissing { param, type_name }`, that maps to `Internal` with its message withheld. `Option<Host<T>>` is the spelling for genuinely optional values. Where the adapter declares `host_extensions: false`, `prepare` refuses `Host<T>` altogether (R10).
+
+**Q6: an enum, not optional fields.** Calling a miss "handled" would be false. Make it `fw_http::Routing`, with `Matched { route, handler }`, `NotFound` and `MethodNotAllowed`, so host middleware reads one type and matches on it. The conformance suite asserts it on the hosts where a test layer can observe response extensions. It's outside the byte-identical rule, so it gets its own assertion.
+
+**Q7: separate structs.** `EmbedLimits` and `BackendLimits` stay separate, which keeps the compile-error story exact. The shared `prepare` (R20) takes the parts both have in common as plain arguments. Sharing a function doesn't require sharing a struct.
+
+**Q8: yes.** The embedded app may own `/`, which is `/api` from outside. `mount_prefix()` joins the prefix and the route without doubling slashes, and the route table's trailing-slash rule then decides `/api/` versus `/api` exactly as it does unembedded.
+
+**Q9: yes, HTTP/2 too.** The drain scenario has two shapes: `Connection: close` on HTTP/1.1, and GOAWAY on HTTP/2. The suite runs both on every host that supports HTTP/2.
+
+### New core surface from this round
+
+- `Mounted::handlers_reading::<T>()`, built on the input walk (R3).
+- `AppHandle::drain_timeout()` (Q1).
+
+Both are additive.
