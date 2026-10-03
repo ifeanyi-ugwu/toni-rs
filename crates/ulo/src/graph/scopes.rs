@@ -1,4 +1,4 @@
-//! Step 5: the needs-execution pass, scope violations, hooks on bindings inferred per-execution,
+//! Step 5: the needs-execution pass, scope violations, hooks on bindings built per execution,
 //! closures that read execution data where none exists, and the per-handler input check (§6.2,
 //! §6.4).
 //!
@@ -11,8 +11,12 @@
 //! | Explicit singleton | yes | refused, with the full path |
 //! | Auto provider | yes | refused, hint "declare it `#[injectable(execution)]`" |
 //! | Auto controller or enhancer | yes | per-execution, built per call |
-//! | Auto with hooks, inferred per-execution | — | refused |
+//! | With hooks, built per execution | — | refused |
 //! | Transient | yes | allowed; every consumer must be able to run in an execution |
+//!
+//! A contribution declared by closure enters the pass with its scope already written from its
+//! role at freeze: an enhancer is per-execution whatever it reads, and a provider is an explicit
+//! singleton.
 //!
 //! A binding refused this way stays a singleton for its readers, so one violation is reported
 //! once, at the binding that introduces it, and not again at everything above it.
@@ -81,6 +85,29 @@ pub(crate) fn mark_role_contributions(graph: &mut Graph, first_binding: usize, e
                     });
                 }
             }
+        }
+    }
+}
+
+/// Writes the scope of each contribution declared by closure (`Contribute::with`, `try_with`)
+/// from its role: per execution for an enhancer, as for every enhancer declared by closure, and
+/// singleton for a provider, which `check_scopes` then refuses when it needs an execution, as it
+/// refuses any singleton (§7). Clears the mark: no later pass sees a scope left to the role.
+///
+/// Runs at freeze, after `mark_role_contributions`, over the bindings this wiring added. A
+/// contribution's role is final there: `assign_roles` marks single bindings only. A lazy load
+/// moves a base contribution to the enhancer role only through an unqualified `enhancer`
+/// contribution under its key's type, which the load refuses when the base contributes to that
+/// collection; any other base contribution under that type is qualified, and is refused as
+/// `QualifiedRoleContribution`.
+pub(crate) fn resolve_closure_scopes(graph: &mut Graph, first_binding: usize) {
+    for binding in graph.bindings.iter_mut().skip(first_binding) {
+        if binding.record.scope_by_role {
+            binding.record.scope = match binding.role {
+                Role::Enhancer => ScopeKind::PerExecution,
+                Role::Provider | Role::Controller => ScopeKind::Singleton,
+            };
+            binding.record.scope_by_role = false;
         }
     }
 }
@@ -182,8 +209,12 @@ fn promote(binding: &mut FrozenBinding) {
 }
 
 /// Scope violations with the path that introduces the execution dependency, and hooks on
-/// bindings inferred per-execution. A readiness check counts as a hook here: `connect` runs it,
+/// bindings built per execution. A readiness check counts as a hook here: `connect` runs it,
 /// and a binding built per call never reaches `connect`.
+///
+/// A binding with hooks built per execution is an `Auto` one the pass inferred so, or an enhancer
+/// declared by closure. An explicitly execution-scoped binding carries neither hooks nor a check:
+/// the handle and the hook traits both require a `HookCapable` scope.
 pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
     for binding in &graph.bindings {
         let record = &binding.record;
@@ -203,10 +234,7 @@ pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
                 module: graph.module_name(binding.origin),
                 path: printed_path(graph, binding.id),
             });
-        } else if record.scope == ScopeKind::Auto
-            && binding.effective == Effective::PerExecution
-            && (!record.hooks.is_empty() || record.ready.is_some())
-        {
+        } else if binding.effective == Effective::PerExecution && (!record.hooks.is_empty() || record.ready.is_some()) {
             errors.push(WiringError::HooksOnPerExecution {
                 binding: graph.key_name(binding.id),
                 module: graph.module_name(binding.origin),

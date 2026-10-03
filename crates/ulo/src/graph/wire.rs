@@ -196,7 +196,8 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
 ///
 /// A binding's role is decided here: `controller`, a contribution under a role key once every
 /// handler is mounted (`scopes::mark_role_contributions`), or a provider. `scopes::assign_roles`
-/// adds the bindings an `EnhancerSpec` names by type once the tables exist.
+/// adds the bindings an `EnhancerSpec` names by type once the tables exist. A contribution
+/// declared by closure takes its scope from its role here (`scopes::resolve_closure_scopes`).
 fn freeze(
     graph: &mut Graph,
     mut registry: Registry,
@@ -397,6 +398,7 @@ fn freeze(
         graph.collections.insert(key, Arc::from(merged));
     }
     scopes::mark_role_contributions(graph, declared.first_binding, &mut steps.bindings);
+    scopes::resolve_closure_scopes(graph, declared.first_binding);
     declared
 }
 

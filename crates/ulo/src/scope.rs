@@ -5,6 +5,10 @@
 //! enhancer it resolves to singleton when nothing below it needs an execution, and to
 //! per-execution otherwise. Writing `#[injectable(singleton)]` on a controller opts out of the
 //! inference, so a controller declared that way that needs execution data is refused.
+//!
+//! [`Contribute::with`](crate::Contribute::with) also returns an `Auto` handle, and nothing is
+//! inferred for it: `wire()` makes the contribution per-execution when it is an enhancer, whatever
+//! it reads, and a singleton when it is a provider.
 
 /// Built once during `connect` and shared across the application.
 pub struct Singleton;
@@ -15,7 +19,8 @@ pub struct PerExecution;
 /// Built fresh for every injection point that reads it.
 pub struct Transient;
 
-/// What `#[injectable]` means when no scope is written.
+/// What `#[injectable]` means when no scope is written, and the scope on the handle of a
+/// contribution declared by closure, which `wire()` decides from its role.
 pub struct Auto;
 
 mod sealed {
@@ -58,7 +63,8 @@ impl Scope for Auto {
 
 /// The scopes a lifecycle hook may be declared on. A hook on an explicitly execution-scoped or
 /// transient type fails to compile; a hook on an `Auto` type that the wiring pass infers
-/// per-execution is refused at `wire()` (§6.2).
+/// per-execution, or on a contribution declared by closure that is an enhancer, is refused at
+/// `wire()` (§6.2).
 #[diagnostic::on_unimplemented(
     message = "lifecycle hooks are only allowed on singletons",
     label = "`{Self}` scope cannot have hooks",

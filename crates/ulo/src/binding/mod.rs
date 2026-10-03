@@ -106,6 +106,10 @@ pub(crate) struct BindingRecord {
     pub(crate) also: Vec<AlsoAs>,
     pub(crate) kind: BindingKind,
     pub(crate) scope: ScopeKind,
+    /// Declared by closure through `Contribute::with` or `try_with`, which write no scope:
+    /// `scope` holds `Auto` until freezing writes `PerExecution` for an enhancer or `Singleton`
+    /// for a provider and clears this, so no pass after freezing sees it set (§7).
+    pub(crate) scope_by_role: bool,
     /// Set by `ModuleDef::controller`; enhancer roles are found by the wiring pass.
     pub(crate) controller: bool,
     pub(crate) recipe: Recipe,
@@ -154,7 +158,7 @@ pub(crate) struct AlsoAs {
 pub(crate) enum Recipe {
     /// `provide::<T>()` and `ModuleDef::controller::<C>()`: `T::construct`.
     Construct(ErasedCtor),
-    /// A factory closure: `singleton`, `execution`, `transient`, their `try_` forms and
+    /// A factory closure: `singleton`, `execution`, `transient`, `with`, their `try_` forms and
     /// `provide_with`.
     Factory(ErasedCtor),
     Value(Instance),
@@ -205,6 +209,7 @@ impl BindingRecord {
             also: Vec::new(),
             kind,
             scope,
+            scope_by_role: false,
             controller: false,
             recipe,
             dependencies,
