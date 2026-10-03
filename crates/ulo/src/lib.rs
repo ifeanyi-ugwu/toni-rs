@@ -27,8 +27,11 @@ pub mod scope;
 pub mod testing;
 
 /// The binding-handle typestate: the state markers `Handle`'s parameters take and the traits
-/// that decide which methods exist in each state (§9.1).
+/// that decide which methods exist in each state (§9.1). Also the marks on `Contribute`'s last
+/// parameter: `Plain` on the builder `contribute` returns, `Enhancer` on the one `enhancer`
+/// returns, which has no `qualified`.
 pub mod handle {
+    pub use crate::binding::contribute::{Enhancer, Plain};
     pub use crate::binding::handle::{
         AttemptTimeout, Binding, Contribution, Handle, HookHost, HookItem, Open, ReadyItem, Set,
         SingleBinding, Timeout, Unbounded,

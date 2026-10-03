@@ -32,11 +32,12 @@ pub trait Server: Send + Sync + 'static {
     /// connection task.
     fn drain(&self, token: DrainToken) -> impl Future<Output = ()> + Send;
 
-    /// Closes the sockets. An error is recorded as `ShutdownFailure::Close`, redacted.
+    /// Closes the sockets. An error is recorded as `ShutdownFailure::Close` with reason
+    /// `Errored`, redacted, and a panic is recorded there as `Panicked`.
     ///
     /// Bounded by what is left of `shutdown_timeout`, or by `hook_timeout` when no cap is set.
-    /// A `close` that exceeds its bound is dropped and recorded the same way, and once the cap
-    /// has expired, so is one that does not finish on its first poll.
+    /// A `close` that exceeds its bound is dropped and recorded with reason `TimedOut`, and once
+    /// the cap has expired, so is one that does not finish on its first poll.
     fn close(&self) -> impl Future<Output = Result<(), BoxError>> + Send;
 }
 

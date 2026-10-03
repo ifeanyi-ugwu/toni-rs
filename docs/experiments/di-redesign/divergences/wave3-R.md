@@ -20,8 +20,8 @@ with plain `rustc +1.88 --edition 2024` in the scratchpad: the `is_panic` block 
   redacted. A panic is `Panicked`, redacted by `redact_panic`. `close` is called inside the caught
   future, so a hand-written `Server::close` that panics before returning its future is caught as
   well. `Skipped` never occurs on `Close`: every `close` starts. The text is unchanged:
-  "transport `Http` failed to close: timed out after 5s (`shutdown_timeout`)", and "transport
-  `Http` failed to close: panicked: <message>" for a panic.
+  "transport `Http` failed to close: timed out after 5s (`shutdown_timeout`)", and for a panic
+  "transport `Http` failed to close: panicked: " followed by the redacted message.
 - **Why:** before this, a panic in `close` was caught nowhere and unwound out of the shutdown
   sequence into whichever `serve` or `close` call was running it. `Panicked` is the outcome
   `Hook` already reports for a hook's panic.
@@ -91,7 +91,27 @@ with plain `rustc +1.88 --edition 2024` in the scratchpad: the `is_panic` block 
   `.backoff(5s)` followed by `.backoff(Duration::ZERO)` reports nothing, since `wire()` tests the
   final duration.
 
-### 7. Internal: where D27's sentence sits
+### 7. Module names that print alike are written in full in both ambiguity errors [W R1]
+
+- **Design:** the fourteenth response: the full-paths-on-collision rule extends to `ModuleName`
+  fields, `Ambiguous` among them.
+- **R:** `write_list` prints each name `crate::module::colliding_names` returns with `{:#}`, so
+  `billing::Module` and `users::Module` print apart in `LookupError::Ambiguous`. `write_list` also
+  serves `AmbiguousModule`, so its candidates take the same rule. W noted they need nothing, since
+  they share one type. Two candidates whose qualifiers share a last segment, `DbModule @ Replica`
+  from `a::Replica` and from `b::Replica`, still print alike in short form, and the rule writes
+  them apart. Names that already differ are unchanged.
+
+### 8. `Plain` and `Enhancer` are exported under `ulo::handle` [W L1]
+
+- **Design:** D22's signed fix: `Contribute<'m, U, Q, Mark = Plain>`, silent on the marks' path.
+- **R:** `ulo::handle::{Plain, Enhancer}`, beside `Handle`'s state markers, with that module's doc
+  widened to name `Contribute`'s mark, as W suggested. Not at the root: `ulo::Enhancer` reads like
+  a trait, as W noted.
+- **Why:** without the export, `Contribute<'_, AnyGuard<Http>, (), Enhancer>` cannot be named
+  outside the crate.
+
+### 9. Internal: where D27's sentence sits
 
 `Next`'s struct doc carried "a panic further down the chain comes back from `run` as an `Err`
 holding `PanicRecovered`". That sentence moved to `run`'s doc and gained D27's warning, so the
@@ -110,14 +130,15 @@ behaviour is stated once, on the method that returns the `Err`.
   `PanicRecovered`, with entries 4 and 5's scope. `FailureReason`'s doc names a transport's
   `close` among the places it reports.
 
-### R2. W, or this wave's owner of `crates/ulo/src/transport/`: two doc lines
+### R2. Done by R: two doc lines in `crates/ulo/src/transport/`
 
 - **Item:** `Server::close`'s doc in `transport/server.rs`, and the closing paragraph of
   `transport/pipeline.rs`'s module doc.
-- **Request (coordination, no build impact):** `Server::close` says an error is recorded as
-  `ShutdownFailure::Close`; add that a panic is recorded there too, as `Panicked`. The pipeline
-  paragraph on a construction panic arriving as `LookupError::Construct` could point to
-  `ulo::is_panic`, which answers true for both shapes.
+- **Status:** no agent owned these files this wave, and the coordinator assigned them to R.
+  `Server::close` names the reason for each outcome: `Errored` for an error, `Panicked` for a
+  panic, `TimedOut` for the bound. Its "recorded the same way" for the timeout now names
+  `TimedOut`, since the preceding sentence ends on `Panicked`. The pipeline paragraph points to
+  `ulo::is_panic`.
 
 ### R3. W and M: `FailureReason` is not an `Error` any more
 

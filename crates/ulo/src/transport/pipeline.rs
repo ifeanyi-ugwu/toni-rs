@@ -23,7 +23,9 @@
 //!
 //! A panic inside a construction the container runs, a per-execution guard or the controller,
 //! is caught by that build and arrives as `LookupError::Construct` with `FailureReason::Panicked`
-//! (§3.4). Under `panic = "abort"` nothing can be caught.
+//! (§3.4). [`is_panic`](crate::is_panic) answers true for both shapes, so an error handler that
+//! treats every panic alike tests it instead of matching each. Under `panic = "abort"` nothing
+//! can be caught.
 
 use std::any::{Any, type_name};
 use std::future::Future;

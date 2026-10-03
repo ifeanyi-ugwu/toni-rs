@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::construct::ConstructError;
 use crate::hooks::HookKind;
 use crate::key::{BindingKind, KeyName, short_type_name};
-use crate::module::ModuleName;
+use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::signal::Signal;
 use crate::timer::BoxError;
@@ -404,11 +404,16 @@ impl fmt::Display for LookupError {
 impl Error for LookupError {}
 
 fn write_list(f: &mut fmt::Formatter<'_>, names: &[ModuleName]) -> fmt::Result {
+    let colliding = colliding_names(names);
     for (i, name) in names.iter().enumerate() {
         if i > 0 {
             f.write_str(", ")?;
         }
-        write!(f, "{name}")?;
+        if colliding.contains(name) {
+            write!(f, "{name:#}")?;
+        } else {
+            write!(f, "{name}")?;
+        }
     }
     Ok(())
 }
