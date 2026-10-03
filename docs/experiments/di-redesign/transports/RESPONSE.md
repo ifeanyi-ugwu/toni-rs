@@ -370,7 +370,8 @@ This lowers to `.with(f).also_as::<dyn Cache>(|a| a)`, the closure's handle plus
 Received 2026-10-04, answering `transports/DIVERGENCES.md` (T1–T26). Its T2 answer is narrower than the
 earlier ulo HTTP audit's conclusion (keep the framework adapters for interop and as a conformance asset,
 with `ulo-http-hyper` as the reference); the user sent a separate T2 question on that, whose answer is
-pending. Not yet signed off.
+pending. The user signed off everything here except T2 the same day; the pre-compile batch is T1 with
+`NoRoute`, T5, T8, T13, T14, `Middleware::handle -> Result<Response, BoxError>`, and T21.
 
 Most of these I'd take as recommended. Five need a different answer or an addition, and one item in the reading sections contradicts a decision we already made.
 
