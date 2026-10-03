@@ -439,7 +439,158 @@ proc-macro2 1; `app`, with the `ok` and `bad` binaries; `fieldrec`: serde 1 with
 | `p26_rpit_captures_self_fails` | §3.1: `fn events(&self) -> Sse<impl Iterator<..>>` boxed as `'static` | "lifetime may not live long enough" at the box |
 | `p26b_rpit_use_bound` | the same with `+ use<>` | compiles, prints `[1, 2, 3]` |
 | scratch `fieldrec` | §3.2: a serde `Deserializer` that records what `T::deserialize` asks for and returns before producing a value | `struct → Fields(["id", "slug"])` (renamed field by its serde name), `(u64, String) → Tuple(2)`, `u64 → Scalar`, newtype `Id(u64) → Scalar` through `deserialize_newtype_struct`, `HashMap → Map`, `#[serde(flatten)] → Map` (no names) |
+| `p27_classify_from_blanket` | addendum A3 (a): `impl<E: Classify> From<E> for CallError` with `CallError` not `Classify`; `?` on a `Classify` error in a fn returning `Result<_, CallError>`; an `E: Into<CallError>` bound accepting both `UserError` and `CallError` | compiles, prints `not_found`, `not_found`, `internal` |
+| `p27b_classify_from_boxed_impl` | addendum A3 (b): `impl From<BoxError> for CallError` and `impl From<std::io::Error> for CallError` beside that blanket | compiles on both toolchains: coherence accepts the pair, the trait being local |
+| `p27c_classify_for_callerror_fails` | addendum A3 (a): `impl Classify for CallError` added | E0119 "conflicting implementations of trait `From<CallError>` for type `CallError`", "conflicting implementation in crate `core`" |
 
 What the probes do not cover: X5–X8 and X13 against the built core are Read, not run; the
 `HttpBackend` claims about actix and rocket are Asserted; every specification claim is cited and
 not executed. F298 stands: the probes were run on 1.88 by hand.
+
+## Addendum: the naming exchange
+
+On `transports/RESPONSE.md`, "Naming exchange during the review", received while the review above
+was being written and not yet signed off. The stance is the one above: the renames are the
+direction, and what follows maps them onto the review's findings, probes the two coherence claims
+the author asked to have probed, and answers the two questions the exchange leaves open.
+
+### A1. The renames against the review
+
+| Was | Now | Review items that name the old spelling | Substance |
+|---|---|---|---|
+| `Param<T>::extract`, error `ExtractError { param, failure: ExtractFailure }` | `FromCall<T>::from_call`, error `ExtractError` flat (each variant carries `param`, with a `param()` accessor), `ExtractFailure` folded into it | R7 (`Param::dependencies`), R9, R10 (`CONSUMES_BODY`), R16, §12's `Param<T>` row, P23 | None in R7, R10, R16. In R9 the two autoref ranks are `FromCall<T>` over `FromContainer`, both `From*`, which is the visibility the author wants in a diagnostic; the `on_unimplemented` text becomes "`{Self}` cannot be built from a `{T}` call", with the second note naming `FromContainer`. R8 stands under the flat shape as `Malformed { param, source: Redacted }`: the `Redacted` is the problem, whichever shape. (Read.) |
+| `Answer<T>::into_reply`, error `ReplyError` | `IntoReply<T>::into_reply`, error `IntoReplyError` | R1, appendix P24/P24b | R1's substance changes and is restated in A2. §2.3's value-API helper `Answer::from_result(r)` becomes a `from_*` on an `Into*` trait, which points both ways under the author's From/Into rule; with the blanket `From` below it is `r.map_err(CallError::from)`, so the helper can go, or become a free fn. (Read.) |
+| `FromContainer::read` (built) | `FromContainer::from_container` | R9 names the trait only | Mechanical. In `crates/ulo`: the declaration `dependency/mod.rs:38`; the six impls `dependency/dep.rs:55`, `many.rs:60`, `ext.rs:41`, `option.rs:14` with the recursive `S::read` at `:15`, `handles.rs:14` and `:28`; the two `macro_rules` arms in `binding/factory.rs:76` and `:96`; doc comments at `resolver.rs:18`, `execution/mod.rs:148` and `binding/factory.rs:2`. In `crates/ulo-macros`: the generated call `shared/dependencies.rs:54` and its doc at `:46`; the helper `dependencies::read` at `:48` and its callers `injectable/impl_form.rs:35` and `struct_form.rs:44` are the macro's own names and may stay. Documents: core `DESIGN.md` §3.2 (line 113) and §3.8 (line 338); `BUILD_PLAN.md` line 158 lists the helper. `Resolver::dep`/`many`/`ext`/`input` and `Entry::resolve` are the resolver's own reads and are untouched. (Read.) The argument stays a `Resolver`, the view of the container, as `from_str` takes the `&str` it is built from. |
+| `Classified` (`kind`, `public_message`, `details`), `#[derive(Classified)]`, `#[kind(..)]` | `Classify::classify`, `#[derive(Classify)]`, `#[classify(..)]` | R1, §2.4's table, §3.1's example | None beyond A2. A derive helper attribute is scoped to its derive, so `#[classify(not_found)]` sits beside thiserror's `#[error(..)]` without collision. (Read.) |
+| `CallError::classified(e)` | `impl<E: Classify> From<E> for CallError`; `CallError::from(e)` or `?` | R1 | A2 and A3 (a). |
+| free `classify(&BoxError) -> CallError` | `CallError::from_boxed(BoxError)` | R17, X12 | R17 stands: the recogniser cannot see `CancelReason::Deadline`. Under the new name the fix is for the transport to test `cancel_reason()` before calling `from_boxed`, which keeps `from_boxed` a one-argument constructor; a `from_*` with a second argument is not the std shape. The exchange names the function twice, `CallError::from_error(&BoxError)` (its lines 48 and 58) and `from_boxed(err: BoxError)` (lines 102 and 108); by value is what `CallError.source: Option<BoxError>` needs, since the error handlers hand the unclaimed error on by value, so `from_boxed(BoxError)`. A3 (b) removes the coherence reason the exchange gives for not writing it as `From`. |
+| `HttpBackend` | `fw_http::Backend` | R27, the appendix's last paragraph | Spelling only. |
+
+### A2. R1 under the new names
+
+With `impl<E: Classify> From<E> for CallError`, the first arm's bound can be `E: Into<CallError>`
+rather than `E: Classify` (Probed, P27: the bound accepts a `UserError` through the blanket and a
+`CallError` through the reflexive `From`). It then also catches a handler returning
+`Result<_, CallError>` and a user type with its own `From<MyErr> for CallError`. The overlap R1 is
+about remains: everything `Into<CallError>` here is `Into<BoxError>` too, `CallError` being an
+`Error`, so the `Into<CallError>` arm sits on `&&IntoReplyProbe<Result<V, E>>`, the `Into<BoxError>`
+arm on `&IntoReplyProbe<Result<V, E>>` and the `IntoReply` arm on the bare probe. Placed as §2.3
+lists them, a `Classify` error takes the boxing arm and its kind is lost (P24b). The rename widens
+what the first arm catches and removes nothing of the ordering. The first arm's body is
+`BoxError::from(CallError::from(e))`, the second's `BoxError::from(e)`; both reach the handlers as
+`BoxError`, and `from_boxed` finds a `CallError` inside either by downcast, so a `Result<_,
+CallError>` that reached the second arm would still render right; the first arm hands the
+handlers a `CallError` without the detour.
+
+### A3. The two coherence claims
+
+(Probed, P27, P27b, P27c, on 1.98.1 and 1.88.0, same result on both.)
+
+**(a) holds.** `impl<E: Classify> From<E> for CallError` compiles while `CallError` does not
+implement `Classify`, and `?` converts a `Classify` error inside a fn returning `Result<_,
+CallError>` (P27). Adding `impl Classify for CallError` is E0119, "conflicting implementations of
+trait `From<CallError>` for type `CallError`", "conflicting implementation in crate `core`" (P27c).
+The rule "`CallError` keeps an inherent `kind()` and never implements `Classify`" is load-bearing;
+no `on_unimplemented` can carry it, so the E0119 text above is what a future reader meets, and
+the trait's doc should state the rule, as the exchange says.
+
+**(b) is accepted, against the exchange's expectation.** `impl From<BoxError> for CallError` and
+`impl From<std::io::Error> for CallError` both compile beside the blanket (P27b). The pair
+overlaps only if `Box<dyn Error + Send + Sync>: Classify` could hold, and `Classify` is local to
+the defining crate: no downstream crate may implement a foreign trait for a foreign type (`Box` is
+`#[fundamental]`, but `dyn Error` is std's), and no upstream crate knows the trait, so coherence
+treats the obligation as knowable and false. `anyhow` is refused the same impl because its bound
+is std's `Error`, a foreign trait an upstream crate may implement for `Box<dyn Error>` in a future
+version; the local trait is what decides it. (Read, for the reasoning; the compiler's verdict is
+Probed.) So of the exchange's two reasons for a named constructor, the first does not hold and the
+second does: a recogniser that walks an error and maps `GuardRejected`, `PanicRecovered`,
+`LookupError::Construct` and the rest is not a plain conversion, and `From<BoxError>` would let
+`?` run it on every `BoxError` with no visible call. That is the author's decision to make with the
+evidence; coherence does not make it. The same holds for a `From<LookupError>` or
+`From<ExtractError>` beside the blanket; `ExtractError` is better made `Classify` (`BadRequest`,
+`Unprocessable` for `Invalid`) so it converts through the blanket, which is already how §2.2 has
+it reach the handlers. P27b is one crate holding the trait, the type and the impls, which is
+`fw-transport`'s situation.
+
+### A4. GraphQL without HTTP (beside Q4)
+
+(Spec.) The GraphQL specification (October 2021 edition) defines the language, validation and
+execution and names no transport; "GraphQL over HTTP" (GraphQL Foundation working draft) is one
+binding and graphql-transport-ws another. (Read, §7.) The `Engine` SPI is transport-neutral in its
+signature: `execute(GqlRequest, ExecutionRef) -> BoxFuture<GqlResponse>`, `subscribe(..) ->
+BoxStream<GqlResponse>`, `sdl()`, and the per-execution context through `exec.get::<GqlContext>()`
+uses the core alone. What ties it to two transports is the crate, not the trait: the §1 table has
+`fw-graphql` meeting the core "through `fw-http`, `fw-ws`", holding the HTTP endpoint, the
+graphql-transport-ws gateway and the playground beside the SPI, and `GraphqlModule::for_root(
+GraphqlConfig::at("/graphql").subscriptions("/graphql/ws"))` is HTTP-path-shaped. Nothing in §7
+says how an engine is served over an RPC pattern, a plain WebSocket gateway or a gRPC method, and
+an RPC-only application that wants the `Engine` pulls `fw-http` and `fw-ws`.
+
+Refinement, inside the design: split the crate into a neutral `fw-graphql` (`Engine`,
+`GqlRequest`, `GqlResponse`, the `GqlContext` convention, `fw_graphql::dep`) that the two engine
+adapters depend on alone, and the bindings `fw-graphql-http` (the endpoint, the playground, the
+GraphQL-over-HTTP status rules) and `fw-graphql-ws` (the graphql-transport-ws gateway). With
+`GqlRequest: Deserialize` and `GqlResponse: Serialize`, both JSON-shaped in the GraphQL-over-HTTP
+draft, a user serves the same engine over any link with an ordinary handler, `#[fw_rpc::message(
+"gql")] async fn gql(&self, req: Payload<GqlRequest>, engine: Dep<dyn Engine>) -> GqlResponse`, and
+`subscribe`'s stream over RPC's streamed-reply shape. Question for the author: is that split the
+intent, with `GraphqlModule` becoming the HTTP binding's module, and does the neutral crate export
+the engine under `dyn Engine` so a handler on any transport can take `Dep<dyn Engine>`?
+
+### A5. `MiddlewareNext` as `fw_http::Next` (open)
+
+The author's answer is not in the exchange. Evidence on the collision: the core's
+`Next<'a, T: Transport>` holds the interceptor chain and is generic over the transport;
+`fw_http::Next<'_>` would hold the middleware chain and the request. A module that writes `use
+fw::Next;` and `use fw_http::Next;` fails E0252 (name defined twice) and writes one of them
+qualified or `use fw_http::Next as HttpNext`, which is the alias the user suggested; the crate can
+also export `pub type MiddlewareNext<'a> = Next<'a>;` for anyone who wants distinct names. (Read.)
+Precedents for the module-path form: std's `fmt::Result` beside `result::Result`, `io::Error`
+beside `error::Error`, `fmt::Write` beside `io::Write`, imported by module by convention; and the
+core's own `app::Bound`, the typestate after `listen()`, beside `ulo::Bound`, the timeout enum,
+documented as "the timeout enum is `crate::Bound`" (Read, `crates/ulo/src/app/mod.rs:7`). The two
+`Next` types differ in signature, so a wrong import fails at the type. Nothing found bears
+against the rename; it is the author's to confirm.
+
+### A6. The rules applied to every trait and error type in both designs
+
+Rules as the exchange states them: a trait is named after its predominant method, otherwise after
+its role or concept; an error after its operation, or after its domain for a family; `From*`
+builds `Self` from a source, `Into*` consumes `self`; `Try*` only beside an infallible sibling.
+(Read over core `DESIGN.md` §3, §10.2, §13, the built `crates/ulo`, and `transports/DESIGN.md`.)
+
+Pass, listed so the set is settled in one round: method-named `Construct::construct`,
+`Validate::validate`, `OnModuleInit::on_module_init` and the four other hook traits,
+`IntoConstructed::into_constructed` (hidden); roles `Guard`, `Interceptor`, `ErrorHandler`,
+`Middleware`, `Controller`, and the `Erased*` twins; concepts `Module`, `Transport`, `Server`,
+`Timer`, `Factory`, `Meta`, `Link`, `Engine`, `Backend`, `BroadcastAdapter`, `Method` (gRPC),
+`GatewayConfig`; markers `Scope`, `ExplicitScope`, `HookCapable`, `AllowedIn`, `Role`, and the
+`handle` state traits. Errors: `ConstructError`, `LoadError`, `LoadRefusal`, `IntoReplyError`
+(operation); `LookupError`, `ConnectError`, `StartupError`, `ShutdownError`, `ShutdownFailure`,
+`WiringError`/`WiringErrors`, `CallError`, `RpcError` (domain). `Try*`: every `try_*` in the core
+has its infallible sibling (`value`, `singleton`, `execution`, `transient`, `provide_with`, `with`,
+`override_factory`), and the transport design writes none; `Endpoint::parse` and
+`Tls::from_pem_files` return `Result` under plain names. Direction: `Dep::from_arc`/`into_arc`,
+`Redacted::into_inner`, `CallError::from_boxed`, `Tls::from_pem`, `FromCall`, `IntoReply` all point
+the right way; `Key::of`, `ModuleIdentity::of_type`/`of_value` build from a type rather than a
+value and are outside the `From` rule.
+
+To settle:
+
+1. `ExtractError` beside `FromCall::from_call`: the error names an operation the API has no method
+   for. The author's own precedent covers it (`FromStr::from_str` fails with `ParseIntError`, "the
+   operation users think of"), and `FromCallError` is the literal reading; the exchange chose the
+   first and should say so where the rule is written, or the next reader reopens it. (Read.)
+2. `Answer::from_result` (§2.3) under `IntoReply`: a `from_*` on an `Into*` trait (A1). (Read.)
+3. `CallError::from_error(&BoxError)` and `CallError::from_boxed(BoxError)` are both in the
+   exchange for one function (A1). (Read.)
+4. The condition-named errors fall under neither branch of the error rule: core `Closed`,
+   `NoTimer`, `GuardRejected`, `PanicRecovered`, `Redacted`; transport `Refusal` (§4.1), and
+   `GuardRejected` reused. They name what happened rather than an operation or a domain. std has
+   the same third class (`PoisonError`, `Utf8Error`, `AllocError`, `LayoutError`), so the rule is
+   short a branch rather than the names wrong; within the class the core's are past participles and
+   the transport's `Refusal` is a noun, where `ConnectRefused` would match `GuardRejected`. A
+   decision on the branch settles all six at once. (Asserted.)
+5. `HandlerDecl` and `InputDecls` (X3, X4) abbreviate where the core writes `Dependencies` and
+   `Requirement` in full; not one of the stated rules, and R7 already asks for another name for the
+   first. (Asserted.)
