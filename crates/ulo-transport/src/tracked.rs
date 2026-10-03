@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use pin_project_lite::pin_project;
-use ulo::ExecutionRef;
+use ulo::{ExecutionRef, StreamOutcome};
 
 pin_project! {
     /// Every streaming answer, wrapped: it records how the reply stream ended and reports it once
@@ -27,8 +27,12 @@ pin_project! {
     impl<S> PinnedDrop for Tracked<S> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            let _ = (this.exec, this.ended);
-            todo!("report `Completed` if `ended`, else `CutOff(exec.cancel_reason())`")
+            let outcome = if *this.ended {
+                StreamOutcome::Completed
+            } else {
+                StreamOutcome::CutOff(this.exec.cancel_reason())
+            };
+            this.exec.report_stream_end(outcome);
         }
     }
 }

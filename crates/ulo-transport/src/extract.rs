@@ -1,13 +1,14 @@
 //! Handler parameters built from the call (transports DESIGN §2.2).
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
 
 use ulo::{Dependencies, ExecutionRef, FromContainer, LookupError, Redacted, Transport};
 
-use crate::details::FieldViolation;
-use crate::error::{Classify, ErrorKind};
+use crate::details::{Detail, Details, FieldViolation};
+use crate::error::{Classify, ErrorKind, from_lookup};
 
 /// A handler parameter built from the call.
 ///
@@ -141,13 +142,29 @@ impl Error for ExtractError {
 }
 
 /// `BadRequest`, or `Unprocessable` for `Invalid` with its violations as a `FieldViolations`
-/// detail; a `Dependency` takes the kind its lookup error maps to.
+/// detail; a `Dependency` takes the kind, message and details its lookup error maps to, so a
+/// lookup failure's text, which names keys, is withheld as `CallError::from_boxed` withholds it.
 impl Classify for ExtractError {
     fn classify(&self) -> ErrorKind {
-        todo!("`Invalid` → Unprocessable; `Dependency` → the lookup error's kind as `CallError::from_boxed` maps it; the rest BadRequest")
+        match self {
+            ExtractError::Invalid { .. } => ErrorKind::Unprocessable,
+            ExtractError::Dependency { source, .. } => from_lookup(source, 0).kind(),
+            _ => ErrorKind::BadRequest,
+        }
     }
 
-    fn details(&self) -> crate::details::Details {
-        todo!("`Invalid` → one `Detail::FieldViolations`; the rest none")
+    fn public_message(&self) -> Cow<'_, str> {
+        match self {
+            ExtractError::Dependency { source, .. } => Cow::Owned(from_lookup(source, 0).message().to_owned()),
+            _ => Cow::Owned(self.to_string()),
+        }
+    }
+
+    fn details(&self) -> Details {
+        match self {
+            ExtractError::Invalid { violations, .. } => Details::new().with(Detail::FieldViolations(violations.clone())),
+            ExtractError::Dependency { source, .. } => from_lookup(source, 0).details().clone(),
+            _ => Details::new(),
+        }
     }
 }

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use serde::ser::{Serialize, Serializer};
+use serde::ser::{Serialize, SerializeMap, Serializer};
 
 /// A list of typed entries, written as the `details` member of an HTTP problem document and of
 /// the WebSocket and RPC error envelope.
@@ -106,12 +106,106 @@ impl Link {
     }
 }
 
-/// The stable JSON form: an array of objects, each tagged by `"type"` (`"field_violations"`,
-/// `"error_info"`, `"retry_after"` with whole `"seconds"`, `"help"`, `"json"`), so a client
-/// matches on the tag the way a gRPC client matches on the `Any`'s type URL.
+/// The stable JSON form: an array of objects, each tagged by `"type"`, so a client matches on the
+/// tag the way a gRPC client matches on the `Any`'s type URL. `field`, `description`, `reason`,
+/// `domain`, `metadata`, `links` and `url` are the `google.rpc` messages' own field names:
+///
+/// ```json
+/// [
+///   { "type": "field_violations", "violations": [{ "field": "email", "description": "not an email address" }] },
+///   { "type": "error_info", "reason": "QUOTA", "domain": "billing.example", "metadata": { "plan": "free" } },
+///   { "type": "retry_after", "seconds": 30 },
+///   { "type": "help", "links": [{ "description": "plans", "url": "https://example.com/plans" }] },
+///   { "type": "json", "value": { "anything": true } }
+/// ]
+/// ```
+///
+/// `seconds` is whole, a fraction rounded up, so a client honouring it never retries early.
 impl Serialize for Details {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let _ = serializer;
-        todo!("a sequence of tagged objects as documented")
+        serializer.collect_seq(self.0.iter().map(TaggedDetail))
+    }
+}
+
+struct TaggedDetail<'a>(&'a Detail);
+
+impl Serialize for TaggedDetail<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Detail::FieldViolations(violations) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "field_violations")?;
+                map.serialize_entry("violations", &Violations(violations))?;
+                map.end()
+            }
+            Detail::ErrorInfo { reason, domain, metadata } => {
+                let mut map = serializer.serialize_map(Some(4))?;
+                map.serialize_entry("type", "error_info")?;
+                map.serialize_entry("reason", reason)?;
+                map.serialize_entry("domain", domain)?;
+                map.serialize_entry("metadata", metadata)?;
+                map.end()
+            }
+            Detail::RetryAfter(after) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "retry_after")?;
+                map.serialize_entry("seconds", &whole_seconds(*after))?;
+                map.end()
+            }
+            Detail::Help(links) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "help")?;
+                map.serialize_entry("links", &Links(links))?;
+                map.end()
+            }
+            Detail::Json(value) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "json")?;
+                map.serialize_entry("value", value)?;
+                map.end()
+            }
+        }
+    }
+}
+
+fn whole_seconds(after: Duration) -> u64 {
+    let rounded_up = u64::from(after.subsec_nanos() > 0);
+    after.as_secs().saturating_add(rounded_up)
+}
+
+struct Violations<'a>(&'a [FieldViolation]);
+
+impl Serialize for Violations<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|violation| {
+            Pair { first: ("field", violation.field.as_str()), second: ("description", violation.description.as_str()) }
+        }))
+    }
+}
+
+struct Links<'a>(&'a [Link]);
+
+impl Serialize for Links<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.0
+                .iter()
+                .map(|link| Pair { first: ("description", link.description.as_str()), second: ("url", link.url.as_str()) }),
+        )
+    }
+}
+
+/// An object of two string members, in the order given.
+struct Pair<'a> {
+    first: (&'static str, &'a str),
+    second: (&'static str, &'a str),
+}
+
+impl Serialize for Pair<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry(self.first.0, self.first.1)?;
+        map.serialize_entry(self.second.0, self.second.1)?;
+        map.end()
     }
 }

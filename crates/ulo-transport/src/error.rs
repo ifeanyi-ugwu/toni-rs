@@ -6,9 +6,10 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 
-use ulo::BoxError;
+use ulo::{BoxError, Closed, FailureReason, GuardRejected, LookupError, PanicRecovered, Redacted, is_panic};
 
 use crate::details::Details;
+use crate::extract::ExtractError;
 
 /// The transport-neutral kind of a failure, which each transport maps to its own status: HTTP
 /// status codes, gRPC canonical codes, the WebSocket and RPC envelope's `kind` string.
@@ -109,16 +110,43 @@ impl CallError {
     /// | `ExtractError` | `BadRequest` or `Unprocessable`; a `Dependency` as its lookup error maps |
     /// | `GuardRejected` | `Forbidden` |
     /// | `PanicRecovered`, and anything `ulo::is_panic` recognises | `Internal`, with a generic message |
-    /// | `LookupError::Construct { reason: Errored(r) }` | `r.downcast_ref::<CallError>()`'s kind, so a constructor's "tenant not found" is 404 |
+    /// | `LookupError::Construct { reason: Errored(r) }` | `r` by this table, so a constructor's `CallError` "tenant not found" is 404 |
     /// | `Closed`, `LookupError::Closed` | `Unavailable` |
     /// | anything else | `Internal`, with the message withheld |
     ///
     /// A named constructor rather than `From<BoxError>`: a recogniser that walks an error should
     /// not run invisibly on every `?`. A passed deadline is not in the error: a transport tests
     /// `exec.cancel_reason()` first and renders `Timeout` for `CancelReason::Deadline`.
+    ///
+    /// The original is kept as the source. A [`Redacted`] holding one of the errors above, as
+    /// `err` itself or as a constructor's error inside `LookupError::Construct`, maps as its
+    /// original would: redaction changes the text, not the kind. No other `source()` chain is
+    /// walked, so an outside error wrapping a `CallError` is `Internal`.
     pub fn from_boxed(err: BoxError) -> Self {
-        let _ = err;
-        todo!("the table above; the original kept as the source")
+        let err = match err.downcast::<CallError>() {
+            Ok(call) => return *call,
+            Err(err) => err,
+        };
+        let err = match err.downcast::<ExtractError>() {
+            Ok(extract) => return CallError::from_extract(*extract),
+            Err(err) => err,
+        };
+        let recognised = if is_panic(&err) { None } else { recognise(as_error(&err), 0) };
+        let mut call = recognised.unwrap_or_else(internal);
+        call.source = Some(err);
+        call
+    }
+
+    /// The blanket `From`, keeping the challenge of an `Unauthorized` that an execution-scoped
+    /// constructor returned behind a `Dependency`, which `Classify` has no method to carry.
+    pub(crate) fn from_extract(err: ExtractError) -> Self {
+        let challenge = match &err {
+            ExtractError::Dependency { source, .. } => from_lookup(source, 0).challenge,
+            _ => None,
+        };
+        let mut call = CallError::from(err);
+        call.challenge = challenge;
+        call
     }
 
     pub fn with_details(mut self, details: Details) -> Self {
@@ -170,13 +198,94 @@ impl CallError {
 
 impl<E: Classify> From<E> for CallError {
     fn from(e: E) -> Self {
-        CallError {
-            kind: e.classify(),
-            message: e.public_message().into_owned(),
-            details: e.details(),
-            challenge: None,
-            source: Some(Box::new(e)),
+        let mut call = classified(&e);
+        call.source = Some(Box::new(e));
+        call
+    }
+}
+
+const INTERNAL_MESSAGE: &str = "internal error";
+const FORBIDDEN_MESSAGE: &str = "forbidden";
+const CLOSED_MESSAGE: &str = "the application is shutting down";
+
+/// Bounded, in case a chain of `Redacted` and constructor errors loops back on itself.
+const MAX_DEPTH: usize = 32;
+
+/// `Internal` with the message withheld: the original may name keys, types or internals.
+fn internal() -> CallError {
+    CallError::new(ErrorKind::Internal, INTERNAL_MESSAGE)
+}
+
+fn classified<E: Classify + ?Sized>(e: &E) -> CallError {
+    CallError::new(e.classify(), e.public_message().into_owned()).with_details(e.details())
+}
+
+fn as_error(err: &BoxError) -> &(dyn Error + 'static) {
+    &**err
+}
+
+/// A source-less `CallError` for one of the errors `from_boxed` recognises, or `None` for any
+/// other type.
+fn recognise<'e>(error: impl ByType<'e>, depth: usize) -> Option<CallError> {
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    if let Some(call) = error.get::<CallError>() {
+        return Some(call.summary());
+    }
+    if let Some(extract) = error.get::<ExtractError>() {
+        let mut call = classified(extract);
+        if let ExtractError::Dependency { source, .. } = extract {
+            call.challenge = from_lookup(source, depth + 1).challenge;
         }
+        return Some(call);
+    }
+    if error.get::<PanicRecovered>().is_some() {
+        return Some(internal());
+    }
+    if error.get::<GuardRejected>().is_some() {
+        return Some(CallError::new(ErrorKind::Forbidden, FORBIDDEN_MESSAGE));
+    }
+    if let Some(lookup) = error.get::<LookupError>() {
+        return Some(from_lookup(lookup, depth + 1));
+    }
+    if error.get::<Closed>().is_some() {
+        return Some(CallError::new(ErrorKind::Unavailable, CLOSED_MESSAGE));
+    }
+    if let Some(redacted) = error.get::<Redacted>() {
+        return recognise(redacted, depth + 1);
+    }
+    None
+}
+
+/// A lookup error's kind: a constructor's own error maps as `from_boxed` maps it, so an
+/// execution-scoped constructor's "tenant not found" is a 404; a lookup from Destroying on is
+/// `Unavailable`; every other lookup failure, a panic or timeout inside the build included, is
+/// `Internal` with the message withheld.
+pub(crate) fn from_lookup(lookup: &LookupError, depth: usize) -> CallError {
+    match lookup {
+        LookupError::Construct { reason: FailureReason::Errored(cause), .. } => {
+            recognise(cause, depth + 1).unwrap_or_else(internal)
+        }
+        LookupError::Closed { .. } => CallError::new(ErrorKind::Unavailable, CLOSED_MESSAGE),
+        _ => internal(),
+    }
+}
+
+/// The original by its type, which `dyn Error` and `Redacted` both answer.
+trait ByType<'e>: Copy {
+    fn get<E: Error + 'static>(self) -> Option<&'e E>;
+}
+
+impl<'e> ByType<'e> for &'e (dyn Error + 'static) {
+    fn get<E: Error + 'static>(self) -> Option<&'e E> {
+        self.downcast_ref::<E>()
+    }
+}
+
+impl<'e> ByType<'e> for &'e Redacted {
+    fn get<E: Error + 'static>(self) -> Option<&'e E> {
+        self.downcast_ref::<E>()
     }
 }
 

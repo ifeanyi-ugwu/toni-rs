@@ -10,6 +10,7 @@
 //! (the transport's key) and `ulo.handler`.
 
 use tracing::Span;
+use tracing::field::Empty;
 
 pub const OTEL_NAME: &str = "otel.name";
 pub const TRANSPORT: &str = "ulo.transport";
@@ -29,6 +30,22 @@ pub const MESSAGING_SYSTEM: &str = "messaging.system";
 /// `ulo.handler` when a handler matched, every other field above declared empty for the transport
 /// to record.
 pub fn call(transport: &'static str, name: &str, handler: Option<&str>) -> Span {
-    let _ = (transport, name, handler);
-    todo!("`tracing::info_span!` declaring every field above, the three given recorded")
+    // Each field name spells the constant of the same text above; `span.record` finds a field by
+    // that text, and the macro takes names as written, not as constants.
+    tracing::info_span!(
+        "call",
+        otel.name = name,
+        ulo.transport = transport,
+        ulo.handler = handler,
+        http.request.method = Empty,
+        http.route = Empty,
+        url.path = Empty,
+        url.scheme = Empty,
+        http.response.status_code = Empty,
+        rpc.system = Empty,
+        rpc.service = Empty,
+        rpc.method = Empty,
+        rpc.grpc.status_code = Empty,
+        messaging.system = Empty,
+    )
 }

@@ -28,10 +28,15 @@ pub fn derive_classify(input: TokenStream) -> TokenStream {
 }
 
 /// `impl ::ulo_transport::Validate` from `#[validate(..)]` on the fields of a struct with named
-/// fields: `length(min = .., max = ..)` on anything with a `len()`, `email` on a string,
-/// `range(min = .., max = ..)` on an ordered value, either bound optional. Every failing rule is
-/// one `FieldViolation` naming the field, so a value is checked whole rather than to its first
-/// failure. A field with no `#[validate]` is not checked.
+/// fields: `length(min = .., max = ..)` on text, counted in characters, or on a collection,
+/// counted in items; `email` on a string; `range(min = .., max = ..)` on an ordered value. Bounds
+/// are inclusive, either may be left out, and a bound's value is written into the violation's
+/// description, so it implements `Display`. Several rules go in one attribute or in several:
+/// `#[validate(length(max = 254), email)]`.
+///
+/// Every failing rule is one `FieldViolation`, so a value is checked whole rather than to its
+/// first failure. The violation names the field as the request does: serde's `rename` or the
+/// container's `rename_all` when present. A field with no `#[validate]` is not checked.
 #[proc_macro_derive(Validate, attributes(validate))]
 pub fn derive_validate(input: TokenStream) -> TokenStream {
     validate::expand(input.into()).unwrap_or_else(syn::Error::into_compile_error).into()
