@@ -3,7 +3,8 @@
 //!
 //! `Guard<Http>` and `Guard<Rpc>` are different traits, so an HTTP guard and an RPC guard are
 //! different roles. A role comes only from a trait implementation; there are no marker
-//! attributes.
+//! attributes, and a global enhancer is contributed under its role key through
+//! `ModuleDef::enhancer`.
 
 pub(crate) mod controller;
 pub(crate) mod enhancer;
@@ -51,7 +52,8 @@ pub trait Interceptor<T: Transport>: Send + Sync + 'static {
 
 /// Errors reach the error handlers method level first, then controller, then global. `Ok`
 /// claims the error with a reply; `Err` hands the next handler the error it returns, the same
-/// one or a reshaped one. A guard's refusal arrives as `GuardRejected`.
+/// one or a reshaped one. A guard's refusal arrives as `GuardRejected`, and a panic in a guard,
+/// an interceptor, the handler or an earlier error handler as `PanicRecovered`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an error handler for `{T}`",
     label = "an error handler for `{T}` is needed here",
@@ -102,10 +104,38 @@ impl<T: Transport, E: ErrorHandler<T>> ErasedErrorHandler<T> for E {
     }
 }
 
-/// The role key for global guards: `m.contribute::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a)`.
+/// The role key for global guards: `m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a)`.
 pub type AnyGuard<T> = dyn ErasedGuard<T>;
 pub type AnyInterceptor<T> = dyn ErasedInterceptor<T>;
 pub type AnyErrorHandler<T> = dyn ErasedErrorHandler<T>;
+
+mod sealed {
+    use super::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport};
+
+    pub trait Sealed {}
+    impl<T: Transport> Sealed for AnyGuard<T> {}
+    impl<T: Transport> Sealed for AnyInterceptor<T> {}
+    impl<T: Transport> Sealed for AnyErrorHandler<T> {}
+}
+
+/// The role keys: `AnyGuard<T>`, `AnyInterceptor<T>` and `AnyErrorHandler<T>` for every
+/// `T: Transport`, and nothing else.
+///
+/// A global enhancer is contributed through [`ModuleDef::enhancer`](crate::ModuleDef::enhancer),
+/// which this trait bounds, so the graph learns at the contribution that the entry is an enhancer
+/// and reads no type name to find out. The role's kind and transport are the key's own type, which
+/// the contribution's record already carries; the trait adds nothing to them. A contribution
+/// through `contribute` is a provider contribution whatever its key.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a role key",
+    label = "a global enhancer is contributed under a role key",
+    note = "the role keys are `AnyGuard<T>`, `AnyInterceptor<T>` and `AnyErrorHandler<T>` for a `T: Transport`"
+)]
+pub trait Role: sealed::Sealed + Send + Sync + 'static {}
+
+impl<T: Transport> Role for AnyGuard<T> {}
+impl<T: Transport> Role for AnyInterceptor<T> {}
+impl<T: Transport> Role for AnyErrorHandler<T> {}
 
 /// The transport as errors and wiring reports name it: the marker's type name without its
 /// module path, `Http` for `ulo_http::Http`. A generic marker keeps its full name, since

@@ -1,5 +1,6 @@
 //! Step 5: the needs-execution pass, scope violations, hooks on bindings inferred per-execution,
-//! and the per-handler input check (§6.2, §6.4).
+//! closures that read execution data where none exists, and the per-handler input check (§6.2,
+//! §6.4).
 //!
 //! A binding needs an execution if any of its injection points is `Ext`, `ExecutionRef`, an
 //! execution input, or a dependency that itself needs one. Transient and `Auto` bindings pass the
@@ -16,30 +17,27 @@
 //! A binding refused this way stays a singleton for its readers, so one violation is reported
 //! once, at the binding that introduces it, and not again at everything above it.
 
-use std::any::type_name;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::Location;
 
 use crate::binding::Recipe;
-use crate::dependency::ReadKind;
+use crate::dependency::{Dependencies, ReadKind};
 use crate::error::wiring::WiringError;
-use crate::graph::{BindingId, EdgeTarget, Effective, FrozenBinding, Graph, Role, Visible, dependency_text, record_key};
-use crate::key::{BindingKind, Key};
+use crate::graph::wire::Declared;
+use crate::graph::{BindingId, EdgeTarget, Effective, FrozenBinding, Graph, ModuleId, Role, Visible, dependency_text};
+use crate::key::{BindingKind, Key, short_type_name};
 use crate::scope::ScopeKind;
 use crate::transport::controller::{EnhancerDep, HandlerRecord};
-use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport};
 
-/// Marks enhancer roles: bindings named by type in an `EnhancerSpec`, resolved against the
-/// controller module's visibility, and contributions under a role key. Runs before
-/// `needs_execution`.
+/// Marks the bindings an `EnhancerSpec` names by type, resolved against the controller module's
+/// visibility, as enhancers. Runs before `needs_execution`.
 ///
-/// A role key is `AnyGuard<T>`, `AnyInterceptor<T>` or `AnyErrorHandler<T>` for any transport
-/// `T`, whether or not `T` has a handler: the keys a mounted handler names, and any key of the
-/// same three families. A global enhancer for a transport the app mounts nothing on is still an
-/// enhancer, never resolved, rather than a provider refused for reading execution data.
+/// Every other role is decided at freeze, from how the binding was registered: `controller`, a
+/// contribution through `ModuleDef::enhancer`, or anything else as a provider. No key is read to
+/// decide it, so a contribution through `contribute` under a role key stays a provider. A lazy
+/// load re-runs this over the base bindings, whose roles only ever move from provider to
+/// enhancer here.
 pub(crate) fn assign_roles(graph: &mut Graph) {
-    let mounted: HashSet<Key> = graph.handlers.iter().flat_map(|handler| handler.decl.role_keys).collect();
-    let families = role_families();
-
     let mut named: Vec<BindingId> = Vec::new();
     for handler in &graph.handlers {
         for dep in &handler.decl.enhancer_deps {
@@ -51,16 +49,6 @@ pub(crate) fn assign_roles(graph: &mut Graph) {
         }
     }
 
-    for binding in &mut graph.bindings {
-        let record = &binding.record;
-        binding.role = if record.controller {
-            Role::Controller
-        } else if record.kind == BindingKind::Collection && is_role_key(&mounted, &families, record_key(record)) {
-            Role::Enhancer
-        } else {
-            Role::Provider
-        };
-    }
     for id in named {
         let binding = &mut graph.bindings[id.0 as usize];
         if binding.role == Role::Provider {
@@ -153,6 +141,99 @@ pub(crate) fn check_scopes(graph: &Graph, errors: &mut Vec<WiringError>) {
             });
         }
     }
+}
+
+/// A hook, readiness, module-hook or metadata closure runs where no execution exists, so one
+/// that reads `Ext`, `ExecutionRef`, an execution input or a per-execution key is refused here
+/// rather than failing at `connect` (§6.2). Enhancer closures run inside an execution and are not
+/// checked. A read is refused whether or not it is optional: without an execution `Option<S>`
+/// propagates `ExecutionRequired` rather than answering `None`.
+///
+/// A closure reading its own binding is left to `HooksOnPerExecution`, which already reports a
+/// binding that hooks and a check cannot run on. One error per offending injection point.
+pub(crate) fn check_closures(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringError>) {
+    for binding in graph.bindings.iter().skip(declared.first_binding) {
+        let module = graph.module_name(binding.origin);
+        let label = graph.label(binding.id);
+        if let Some(ready) = &binding.record.ready {
+            let closure = format!("readiness check of `{label}` in {module}");
+            let site = Closure { module: binding.origin, owner: Some(binding.id), name: &closure, at: Some(ready.location) };
+            site.check(graph, &ready.dependencies, errors);
+        }
+        for hook in &binding.record.hooks {
+            let closure = format!("`{}` hook of `{label}` in {module}", hook.kind);
+            let site = Closure { module: binding.origin, owner: Some(binding.id), name: &closure, at: Some(hook.location) };
+            site.check(graph, &hook.dependencies, errors);
+        }
+    }
+    for module in graph.modules.iter().skip(declared.first_module) {
+        for hook in &module.hooks {
+            let closure = format!("`{}` hook of module {}", hook.kind, module.name);
+            let site = Closure { module: module.id, owner: None, name: &closure, at: Some(hook.location) };
+            site.check(graph, &hook.dependencies, errors);
+        }
+    }
+    for (module, name, dependencies) in &declared.meta {
+        let closure = format!("metadata `{}` of {}", short_type_name(*name), graph.module_name(*module));
+        let site = Closure { module: *module, owner: None, name: &closure, at: None };
+        site.check(graph, dependencies, errors);
+    }
+}
+
+/// A closure that runs outside any execution, as `check_closures` names it.
+struct Closure<'a> {
+    module: ModuleId,
+    /// The binding the closure belongs to, `None` for a module hook or metadata.
+    owner: Option<BindingId>,
+    name: &'a str,
+    at: Option<&'static Location<'static>>,
+}
+
+impl Closure<'_> {
+    fn check(&self, graph: &Graph, dependencies: &Dependencies, errors: &mut Vec<WiringError>) {
+        for dependency in &dependencies.list {
+            let point = dependency_text(dependency);
+            let found = dependency.requirement.reads.iter().find_map(|read| match &read.kind {
+                ReadKind::Extension(_) | ReadKind::Execution => Some(Vec::new()),
+                ReadKind::Single(key) => match graph.lookup(self.module, *key) {
+                    Some(Visible::Input(input)) => Some(vec![format!("input `{}`", input.name(BindingKind::Single))]),
+                    Some(Visible::Binding(id)) if self.reads_execution_through(graph, *id) => {
+                        Some(execution_steps(graph, *id))
+                    }
+                    _ => None,
+                },
+                ReadKind::Collection(key) => graph
+                    .collection(*key)
+                    .iter()
+                    .copied()
+                    .find(|&id| self.reads_execution_through(graph, id))
+                    .map(|id| execution_steps(graph, id)),
+                ReadKind::Module => None,
+            });
+            if let Some(steps) = found {
+                let mut path = vec![point];
+                path.extend(steps);
+                errors.push(WiringError::ClosureNeedsExecution { closure: self.name.to_owned(), path, at: self.at });
+            }
+        }
+    }
+
+    fn reads_execution_through(&self, graph: &Graph, id: BindingId) -> bool {
+        Some(id) != self.owner && graph.passes_execution(id)
+    }
+}
+
+/// The steps from `id`, which passes an execution need upward, to the read of execution data
+/// that introduces it: `AuditContext (execution) → Ext<CurrentUser> (field `user`)`.
+fn execution_steps(graph: &Graph, id: BindingId) -> Vec<String> {
+    let ids = execution_path(graph, id);
+    let mut steps: Vec<String> = ids.iter().map(|&step| graph.scoped_label(step)).collect();
+    if let Some(&last) = ids.last() {
+        if let Some(edge) = graph.direct_execution_edge(last) {
+            steps.push(graph.dependency_step(last, edge.dependency));
+        }
+    }
+    steps
 }
 
 /// For each handler, every non-optional input on its reachable execution-scoped bindings that
@@ -347,34 +428,4 @@ fn through_aliases(graph: &Graph, mut id: BindingId) -> BindingId {
         }
     }
     id
-}
-
-/// A transport no handler mounts on, whose role keys' type names give the three families'
-/// prefixes.
-struct NoTransport;
-
-impl Transport for NoTransport {
-    type Cx = ();
-    type Reply = ();
-}
-
-/// `dyn ulo::transport::ErasedGuard<` and its two siblings, as `type_name` writes them in this
-/// build, so a key's name is compared with a prefix taken the same way.
-fn role_families() -> [&'static str; 3] {
-    [
-        family(type_name::<AnyGuard<NoTransport>>()),
-        family(type_name::<AnyInterceptor<NoTransport>>()),
-        family(type_name::<AnyErrorHandler<NoTransport>>()),
-    ]
-}
-
-fn family(name: &'static str) -> &'static str {
-    match name.find('<') {
-        Some(open) => &name[..=open],
-        None => name,
-    }
-}
-
-fn is_role_key(mounted: &HashSet<Key>, families: &[&'static str; 3], key: Key) -> bool {
-    mounted.contains(&key) || families.iter().any(|family| key.type_name().starts_with(*family))
 }

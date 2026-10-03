@@ -311,16 +311,10 @@ fn ambiguous_sources(
     list.iter().map(|&(module, id)| (graph.module_name(module), graph.binding(id).record.location)).collect()
 }
 
-/// The bound key whose name prints like `missing` up to the `Send + Sync` suffix, for the hint
-/// on a missing dependency, with the module providing it: one `module` sees first, then any
-/// binding in the graph.
+/// The bound key spelled like `missing`, for the hint on a missing dependency, with the module
+/// providing it: one `module` sees first, then any binding in the graph. See `spelled_alike`.
 pub(crate) fn near_spelling(graph: &Graph, module: ModuleId, missing: Key) -> Option<(Key, ModuleId)> {
-    let wanted = strip_auto_traits(missing.type_name());
-    let near = |key: &Key| {
-        key.qualifier_id() == missing.qualifier_id()
-            && key.type_name() != missing.type_name()
-            && strip_auto_traits(key.type_name()) == wanted
-    };
+    let near = |key: &Key| spelled_alike(*key, missing);
 
     let mut visible: Vec<(Key, ModuleId)> = graph.visibility[module.0 as usize]
         .entries
@@ -340,6 +334,27 @@ pub(crate) fn near_spelling(graph: &Graph, module: ModuleId, missing: Key) -> Op
         .bindings
         .iter()
         .find_map(|binding| binding.record.keys().find(|key| near(key)).map(|key| (key, binding.origin)))
+}
+
+/// A key `module` binds itself spelled like `exported`, for the hint on an export of a key the
+/// module does not bind.
+pub(crate) fn own_near_spelling(graph: &Graph, module: ModuleId, exported: Key) -> Option<Key> {
+    graph.module(module).bindings.iter().find_map(|&id| {
+        let record = &graph.binding(id).record;
+        if record.kind != BindingKind::Single {
+            return None;
+        }
+        record.keys().find(|key| spelled_alike(*key, exported))
+    })
+}
+
+/// Two different keys under one qualifier that a report cannot tell apart at a glance: equal up
+/// to trailing `Send` and `Sync` bounds, which are distinct `TypeId`s, or equal in their last path
+/// segments, `a::Config` beside `b::Config`.
+fn spelled_alike(key: Key, other: Key) -> bool {
+    key.qualifier_id() == other.qualifier_id()
+        && key.type_name() != other.type_name()
+        && short_type_name(strip_auto_traits(key.type_name())) == short_type_name(strip_auto_traits(other.type_name()))
 }
 
 /// `name` without trailing auto-trait bounds, in either order and either spelling.

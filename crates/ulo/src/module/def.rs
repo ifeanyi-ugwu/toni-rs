@@ -23,6 +23,7 @@ use crate::module::meta::{Meta, MetaMap};
 use crate::redact::Secret;
 use crate::scope::{PerExecution, Scope, ScopeKind, Singleton, Transient};
 use crate::timer::{BoxError, Bound};
+use crate::transport::Role;
 use crate::transport::controller::{Controller, ControllerRecord};
 
 /// What `Module::register` writes into: imports, bindings, contributions, controllers, exports,
@@ -51,7 +52,9 @@ impl<'a> ModuleDef<'a> {
         self.node.global = true;
     }
 
-    /// Exports the binding `T @ ()`. An export is the only way a binding leaves its module.
+    /// Exports the binding `T @ ()`. An export is the only way a binding leaves its module. The
+    /// module must bind `T` itself, or `wire()` reports `ExportNotBound`; a key an import
+    /// provides leaves through [`reexport`](Self::reexport).
     #[track_caller]
     pub fn export<T: ?Sized + 'static>(&mut self) {
         self.push_export(Key::of::<T, ()>(), false, Location::caller());
@@ -283,9 +286,24 @@ impl<'a> ModuleDef<'a> {
         Handle::new(self.push(factory_record::<Transient, T>(ctor, dependencies, location)))
     }
 
-    /// Contributions to the collection `U`, from this and any other module.
+    /// Contributions to the collection `U`, from this and any other module. Each is a provider
+    /// contribution whatever `U` is, `Auto` meaning singleton; a global enhancer goes through
+    /// [`enhancer`](Self::enhancer).
     pub fn contribute<U: ?Sized + Send + Sync + 'static>(&mut self) -> Contribute<'_, U> {
         Contribute::new(&mut *self.node)
+    }
+
+    /// Global enhancers: contributions to the role key `R`, the same builder
+    /// [`contribute`](Self::contribute) returns, each registered as an enhancer. An `Auto`
+    /// enhancer is a singleton when nothing below it needs an execution and is built per call
+    /// otherwise (§3.3). Stack order puts the global level first, in collection order (§7).
+    ///
+    /// ```ignore
+    /// m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a);
+    /// m.enhancer::<AnyInterceptor<Rpc>>().value(Arc::new(Tracing::default()));
+    /// ```
+    pub fn enhancer<R: Role + ?Sized>(&mut self) -> Contribute<'_, R, ()> {
+        Contribute::for_role(&mut *self.node)
     }
 
     /// The key `T @ Q` as a second name for an existing binding of `T`, named in `.of::<Existing>()`.
@@ -434,6 +452,9 @@ pub(crate) struct ModuleNode {
     pub(crate) imports: Vec<ImportRecord>,
     /// Declaration order is the tie-break inside a module.
     pub(crate) bindings: Vec<BindingRecord>,
+    /// Indices into `bindings` of the contributions written through `ModuleDef::enhancer`, in
+    /// ascending order. Freezing gives them `Role::Enhancer`.
+    pub(crate) enhancers: Vec<usize>,
     pub(crate) exports: Vec<ExportRecord>,
     pub(crate) controllers: Vec<ControllerRecord>,
     pub(crate) inputs: Vec<InputRecord>,
@@ -453,6 +474,7 @@ impl ModuleNode {
             keyed: None,
             imports: Vec::new(),
             bindings: Vec::new(),
+            enhancers: Vec::new(),
             exports: Vec::new(),
             controllers: Vec::new(),
             inputs: Vec::new(),

@@ -18,28 +18,42 @@ use crate::timer::BoxError;
 /// `Resolver::entries` (§3.2, §7).
 ///
 /// Each contribution is built as its own type and widened to `U` by the coercion closure,
-/// written `|a| a`. Contributions are app-wide: they are not exports, a keyed module's keep their
-/// key, and a binding under a role key such as `AnyGuard<Http>` registers that role.
+/// written `|a| a`. Contributions are app-wide: they are not exports, and a keyed module's keep
+/// their key.
+///
+/// [`ModuleDef::contribute`](crate::ModuleDef::contribute) records a provider contribution
+/// whatever its key. A global enhancer is contributed through
+/// [`ModuleDef::enhancer`](crate::ModuleDef::enhancer), which returns this builder marked so that
+/// its contributions register as enhancers, and scope inference treats them as it treats a
+/// controller (§3.3, §7).
 ///
 /// ```ignore
 /// m.contribute::<dyn Plugin>().provide::<MetricsPlugin>(|a| a);
-/// m.contribute::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a);
+/// m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a);
 /// m.contribute::<dyn HealthIndicator>()
 ///     .singleton(|pool: Dep<PgPool>| async move { PgHealth::new(pool) }, |a| a);
 /// ```
 pub struct Contribute<'m, U: ?Sized, Q = ()> {
     node: &'m mut ModuleNode,
+    /// Set by `ModuleDef::enhancer`: each record this builder pushes is listed in
+    /// `ModuleNode::enhancers`.
+    enhancer: bool,
     _u: PhantomData<fn() -> (PhantomData<U>, Q)>,
 }
 
 impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
     pub(crate) fn new(node: &'m mut ModuleNode) -> Self {
-        Contribute { node, _u: PhantomData }
+        Contribute { node, enhancer: false, _u: PhantomData }
+    }
+
+    /// The builder `ModuleDef::enhancer` returns, its `U` a role key.
+    pub(crate) fn for_role(node: &'m mut ModuleNode) -> Self {
+        Contribute { node, enhancer: true, _u: PhantomData }
     }
 
     /// Contributes to `U @ Q2` instead of the unqualified collection.
     pub fn qualified<Q2: 'static>(self) -> Contribute<'m, U, Q2> {
-        Contribute { node: self.node, _u: PhantomData }
+        Contribute { node: self.node, enhancer: self.enhancer, _u: PhantomData }
     }
 
     /// The record of one contribution to `U @ Q`, before what a particular recipe adds.
@@ -62,6 +76,9 @@ impl<'m, U: ?Sized + Send + Sync + 'static, Q: 'static> Contribute<'m, U, Q> {
         let node = self.node;
         let index = node.bindings.len();
         node.bindings.push(record);
+        if self.enhancer {
+            node.enhancers.push(index);
+        }
         Handle::new(&mut node.bindings[index])
     }
 

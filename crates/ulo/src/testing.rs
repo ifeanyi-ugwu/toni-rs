@@ -6,6 +6,10 @@
 //! binding: one that matches none is a wiring error, which catches stale mocks after refactors,
 //! and one that matches several is a wiring error listing every match. An override cannot change
 //! a key's kind; `override_many` replaces a whole collection.
+//!
+//! An override targets `T @ ()`. A binding written `.qualified::<Q>()` is reached by the same
+//! method on the pending override, after every override kind and before any scope:
+//! `.override_value::<PgPool>(fake).qualified::<Replica>().in_module::<DbModule>()`.
 
 use std::any::{TypeId, type_name};
 use std::marker::PhantomData;
@@ -25,8 +29,13 @@ use crate::timer::{BoxError, Timer};
 /// No override is waiting to be scoped.
 pub enum Settled {}
 
-/// The last call was an override, which `in_module*` or `everywhere` may scope.
+/// The last call was an override, which `qualified` may requalify and `in_module*` or
+/// `everywhere` may scope.
 pub enum Pending {}
+
+/// The last call was `override_many`, which `qualified` may requalify. A collection is
+/// app-wide, so there is no module to scope it to.
+pub enum PendingMany {}
 
 /// The test builder: `TestApp::of(AppModule)`, overrides, then `wire()` or `connect()`.
 ///
@@ -51,6 +60,7 @@ pub(crate) struct TestPlan {
     pub(crate) replacements: Vec<Replacement>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Override {
     pub(crate) key: Key,
     pub(crate) recipe: Recipe,
@@ -62,6 +72,7 @@ pub(crate) struct Override {
     pub(crate) location: &'static Location<'static>,
 }
 
+#[derive(Clone)]
 pub(crate) enum OverrideTarget {
     /// Must match exactly one binding.
     Unscoped,
@@ -72,6 +83,7 @@ pub(crate) enum OverrideTarget {
     Everywhere,
 }
 
+#[derive(Clone)]
 pub(crate) struct CollectionOverride {
     pub(crate) key: Key,
     pub(crate) items: Vec<Instance>,
@@ -146,11 +158,15 @@ impl<S> TestApp<S> {
         })
     }
 
-    /// Replaces every contribution to the collection `T` with `items`.
+    /// Replaces every contribution to the collection `T` with `items`; `.qualified::<Q>()`
+    /// targets the collection `T @ Q` instead.
     #[track_caller]
-    pub fn override_many<T: ?Sized + Send + Sync + 'static>(self, items: impl IntoIterator<Item = Arc<T>>) -> TestApp<Settled> {
+    pub fn override_many<T: ?Sized + Send + Sync + 'static>(
+        self,
+        items: impl IntoIterator<Item = Arc<T>>,
+    ) -> TestApp<PendingMany> {
         let location = Location::caller();
-        let mut this = self.into_state::<Settled>();
+        let mut this = self.into_state::<PendingMany>();
         this.plan().collections.push(CollectionOverride {
             key: Key::of::<T, ()>(),
             items: items.into_iter().map(instance_of).collect(),
@@ -160,7 +176,8 @@ impl<S> TestApp<S> {
     }
 
     /// Swaps a module by identity. The replacement must export a superset of the original's
-    /// keys, or wiring reports what is missing.
+    /// keys, or wiring reports what is missing. An original no module imports is a wiring error,
+    /// `ReplacementUnmatched`, the same stale mock an override that matches nothing is.
     #[track_caller]
     pub fn replace_module(self, original: impl Module, replacement: impl Module) -> TestApp<Settled> {
         let location = Location::caller();
@@ -219,6 +236,17 @@ impl<S> TestApp<S> {
 }
 
 impl TestApp<Pending> {
+    /// Targets the last override at the binding `T @ Q` rather than `T @ ()`. A second call
+    /// replaces the first qualifier. Inside a keyed module a binding's own key is unqualified,
+    /// and `in_module_keyed::<M, Q>()` reaches it without this.
+    pub fn qualified<Q: 'static>(self) -> TestApp<Pending> {
+        let mut this = self;
+        if let Some(last) = this.plan().overrides.last_mut() {
+            last.key = last.key.requalified::<Q>();
+        }
+        this
+    }
+
     /// Scopes the last override to the module of type `M`; over several instances of `M`,
     /// configured or keyed, it is itself ambiguous and fails as one.
     pub fn in_module<M: 'static>(self) -> TestApp<Settled> {
@@ -246,6 +274,18 @@ impl TestApp<Pending> {
         let mut this = self.into_state::<Settled>();
         if let Some(last) = this.plan().overrides.last_mut() {
             last.target = target;
+        }
+        this
+    }
+}
+
+impl TestApp<PendingMany> {
+    /// Targets the last `override_many` at the collection `T @ Q`, the one contributions written
+    /// `.qualified::<Q>()` build and `Many<T, Q>` reads.
+    pub fn qualified<Q: 'static>(self) -> TestApp<Settled> {
+        let mut this = self.into_state::<Settled>();
+        if let Some(last) = this.plan().collections.last_mut() {
+            last.key = last.key.requalified::<Q>();
         }
         this
     }

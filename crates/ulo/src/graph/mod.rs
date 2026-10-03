@@ -35,6 +35,9 @@ pub(crate) struct ModuleId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct BindingId(pub(crate) u32);
 
+/// A clone shares every closure, value and constructor with the original, which is how a lazy
+/// load extends a copy while executions keep reading the graph they started on.
+#[derive(Clone)]
 pub(crate) struct Graph {
     pub(crate) modules: Vec<FrozenModule>,
     pub(crate) bindings: Vec<FrozenBinding>,
@@ -59,6 +62,7 @@ pub(crate) struct Graph {
     pub(in crate::graph) exported: Vec<Vec<(Key, BindingId)>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct FrozenModule {
     pub(crate) id: ModuleId,
     pub(crate) identity: ModuleIdentity,
@@ -75,6 +79,7 @@ pub(crate) struct FrozenModule {
     pub(crate) loaded: Option<u32>,
 }
 
+#[derive(Clone)]
 pub(crate) struct FrozenBinding {
     pub(crate) id: BindingId,
     pub(crate) origin: ModuleId,
@@ -97,7 +102,8 @@ pub(crate) struct FrozenBinding {
 pub(crate) enum Role {
     Provider,
     Controller,
-    /// Referenced by type from an `EnhancerSpec`, or contributed under a role key.
+    /// Referenced by type from an `EnhancerSpec`, or contributed through `ModuleDef::enhancer`.
+    /// A contribution through `contribute` is a provider whatever its key.
     Enhancer,
 }
 
@@ -108,6 +114,7 @@ pub(crate) enum Effective {
     Transient,
 }
 
+#[derive(Clone)]
 pub(crate) struct Edge {
     pub(crate) target: EdgeTarget,
     /// Index into `record.dependencies.list`, for the injection point named in diagnostics.
@@ -115,6 +122,7 @@ pub(crate) struct Edge {
     pub(crate) optional: bool,
 }
 
+#[derive(Clone)]
 pub(crate) enum EdgeTarget {
     Binding(BindingId),
     Collection(Key),
@@ -130,11 +138,12 @@ pub(crate) enum EdgeTarget {
 /// Every key of a binding maps to the same `BindingId`: its primary key, each `also_as` key, and
 /// each export key requalified at a keyed boundary. A reader picks the coercion by type, since a
 /// requalified key's qualifier is not the record's.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct VisibilityTable {
     pub(crate) entries: HashMap<Key, Visible>,
 }
 
+#[derive(Clone)]
 pub(crate) enum Visible {
     Binding(BindingId),
     Input(Key),
@@ -144,6 +153,7 @@ pub(crate) enum Visible {
     Ambiguous(Vec<(ModuleId, BindingId)>),
 }
 
+#[derive(Clone)]
 pub(crate) struct InputDecl {
     pub(crate) key: Key,
     pub(crate) seeder: TypeId,

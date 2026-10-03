@@ -7,16 +7,15 @@ use std::collections::{HashMap, HashSet};
 use std::panic::Location;
 use std::sync::Arc;
 
-use crate::binding::{AlsoAs, BindingRecord, Qualifier, ReadyRecord, Recipe, instance_of};
-use crate::dependency::{Dependencies, DependencyRecord, Read, ReadKind, Requirement};
+use crate::binding::{BindingRecord, Qualifier, Recipe, instance_of};
+use crate::dependency::{Dependencies, ReadKind};
 use crate::error::LoadRefusal;
 use crate::error::wiring::{WiringError, WiringErrors};
 use crate::graph::register::{Import, Registry};
 use crate::graph::{
-    BindingId, Edge, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, ModuleId, Role, Visible,
-    VisibilityTable, boundary_key, cycles, order, record_key, register, scopes, visibility,
+    BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, ModuleId, Role, Visible,
+    boundary_key, cycles, order, record_key, register, scopes, visibility,
 };
-use crate::hooks::HookRecord;
 use crate::key::{BindingKind, Key, KeyName};
 use crate::module::def::{ExportRecord, InputRecord, ModuleNode};
 use crate::module::meta::FrozenMeta;
@@ -25,7 +24,7 @@ use crate::redact::redact;
 use crate::scope::ScopeKind;
 use crate::testing::{CollectionOverride, Override, OverrideTarget, TestPlan};
 use crate::timer::{Bound, Timer};
-use crate::transport::controller::{EnhancerDep, HandlerDecl, HandlerRecord, Mount};
+use crate::transport::controller::{EnhancerDep, HandlerRecord, Mount};
 
 /// What the wiring pass needs to know about the app beyond its modules.
 pub(crate) struct WireEnv {
@@ -63,14 +62,14 @@ pub(crate) fn wire(root: Box<dyn Module>, env: &WireEnv, plan: Option<TestPlan>)
 /// snapshot. An identity the base already holds answers with its module and no new singleton.
 pub(crate) fn wire_lazy(base: &Graph, module: Box<dyn Module>, env: &WireEnv) -> Result<LazyWiring, LazyFailure> {
     if let Some(&existing) = base.by_identity.get(&module.identity()) {
-        return Ok(LazyWiring { graph: clone_graph(base), module: existing, singletons: Vec::new() });
+        return Ok(LazyWiring { graph: base.clone(), module: existing, singletons: Vec::new() });
     }
     let registry = register::register_lazy(base, module);
     if let Some(refusal) = refusal(base, &registry) {
         return Err(LazyFailure::Refused(refusal));
     }
 
-    let mut graph = clone_graph(base);
+    let mut graph = base.clone();
     let load = base.modules.iter().filter_map(|m| m.loaded).max().map_or(0, |last| last + 1);
     let mut steps = Steps::default();
     let declared = freeze(&mut graph, registry, Some(load), None, &mut steps);
@@ -145,7 +144,8 @@ impl Steps {
 
 /// Steps 1 to 6 over a frozen graph. The tables come first: re-exports, aliases and every
 /// injection point resolve against them. Roles come before the scope pass, which reads them; the
-/// cycle check runs on the resolved edges before either.
+/// cycle check runs on the resolved edges before either. The closure check reads the scopes the
+/// pass decided.
 fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Steps) {
     visibility::build_tables(graph, declared);
     check_modules(graph, declared, &mut steps.modules);
@@ -155,6 +155,7 @@ fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Step
     scopes::assign_roles(graph);
     scopes::needs_execution(graph);
     scopes::check_scopes(graph, &mut steps.scopes);
+    scopes::check_closures(graph, declared, &mut steps.scopes);
     scopes::check_inputs(graph, &mut steps.scopes);
     check_environment(graph, env, declared, &mut steps.environment);
 }
@@ -186,11 +187,15 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
     registry.post_order.insert(0, index);
 }
 
-/// Appends the registry's modules to `graph` in collection order, assigning ids, requalifying
-/// keyed exports, mounting controllers, and freezing metadata. Along the way it reports import
-/// cycles (step 1) and, for step 2, the `try_value` failures (redacted), a replacement's missing
-/// exports, and the test plan's overrides as it applies them. `load` numbers the modules of a
-/// lazy load.
+/// Appends the registry's modules to `graph` in collection order, assigning ids and roles,
+/// requalifying keyed exports, mounting controllers, and freezing metadata. Along the way it
+/// reports import cycles (step 1) and, for step 2, the `try_value` failures (redacted), a
+/// replacement's missing exports, a replacement whose original nothing imports, and the test
+/// plan's overrides as it applies them. `load` numbers the modules of a lazy load.
+///
+/// A binding's role is decided here from how it was registered: `controller`, a contribution
+/// through `ModuleDef::enhancer`, or a provider. `scopes::assign_roles` adds the bindings an
+/// `EnhancerSpec` names by type once the tables exist.
 fn freeze(
     graph: &mut Graph,
     mut registry: Registry,
@@ -217,6 +222,15 @@ fn freeze(
                 original: ModuleName::of(&replaced.original, 0),
                 replacement: names[replaced.replacement].clone(),
                 missing,
+            });
+        }
+    }
+
+    for replacement in plan.iter().flat_map(|plan| &plan.replacements) {
+        if !registry.replaced.iter().any(|replaced| replaced.original == replacement.original) {
+            steps.bindings.push(WiringError::ReplacementUnmatched {
+                original: ModuleName::of(&replacement.original, 0),
+                at: replacement.location,
             });
         }
     }
@@ -280,15 +294,22 @@ fn freeze(
     for (position, &index) in registry.post_order.iter().enumerate() {
         let Some(node) = nodes[index].take() else { continue };
         let id = ModuleId((first_module + position) as u32);
-        let ModuleNode { identity, global, keyed, bindings, exports, controllers, inputs, hooks, meta, .. } = node;
+        let ModuleNode { identity, global, keyed, bindings, enhancers, exports, controllers, inputs, hooks, meta, .. } =
+            node;
 
         let mut binding_ids = Vec::with_capacity(bindings.len());
-        for record in bindings {
+        for (slot, record) in bindings.into_iter().enumerate() {
             let binding = BindingId(graph.bindings.len() as u32);
             if record.kind == BindingKind::Collection {
                 contributions.entry(record_key(&record)).or_default().push(binding);
             }
-            let role = if record.controller { Role::Controller } else { Role::Provider };
+            let role = if record.controller {
+                Role::Controller
+            } else if enhancers.contains(&slot) {
+                Role::Enhancer
+            } else {
+                Role::Provider
+            };
             graph.bindings.push(FrozenBinding {
                 id: binding,
                 origin: id,
@@ -388,7 +409,11 @@ fn apply_overrides(registry: &mut Registry, names: &[ModuleName], overrides: Vec
             OverrideTarget::Module(identity) => match registry.by_identity.get(identity) {
                 Some(&module) => vec![module],
                 None => {
-                    errors.push(WiringError::OverrideUnmatched { key: ov.key.name(BindingKind::Single), at: ov.location });
+                    errors.push(WiringError::OverrideUnmatched {
+                        key: ov.key.name(BindingKind::Single),
+                        keyed: None,
+                        at: ov.location,
+                    });
                     continue;
                 }
             },
@@ -421,7 +446,11 @@ fn apply_overrides(registry: &mut Registry, names: &[ModuleName], overrides: Vec
                     at: ov.location,
                 }
             } else {
-                WiringError::OverrideUnmatched { key: ov.key.name(BindingKind::Single), at: ov.location }
+                WiringError::OverrideUnmatched {
+                    key: ov.key.name(BindingKind::Single),
+                    keyed: keyed_binder(registry, names, &modules, ov.key),
+                    at: ov.location,
+                }
             });
             continue;
         }
@@ -460,7 +489,7 @@ fn one_instance(
     match found.as_slice() {
         [one] => Some(*one),
         [] => {
-            errors.push(WiringError::OverrideUnmatched { key: ov.key.name(BindingKind::Single), at: ov.location });
+            errors.push(WiringError::OverrideUnmatched { key: ov.key.name(BindingKind::Single), keyed: None, at: ov.location });
             None
         }
         several => {
@@ -474,23 +503,42 @@ fn one_instance(
     }
 }
 
+/// A module among `modules` keyed by `key`'s qualifier that binds `key` unqualified. A keyed
+/// module's own bindings carry no qualifier, so an override written `.qualified::<Q>()` misses
+/// the binding `.in_module_keyed::<M, Q>()` reaches as written; the report names the module.
+fn keyed_binder(registry: &Registry, names: &[ModuleName], modules: &[usize], key: Key) -> Option<ModuleName> {
+    if key.is_unqualified() {
+        return None;
+    }
+    let bare = unqualified(key);
+    modules
+        .iter()
+        .copied()
+        .find(|&module| {
+            let node = &registry.nodes[module];
+            node.keyed.is_some_and(|q| q.id == key.qualifier_id())
+                && node.bindings.iter().any(|record| record.kind == BindingKind::Single && record.keys().any(|k| k == bare))
+        })
+        .map(|module| names[module].clone())
+}
+
 fn replace_recipe(node: &mut ModuleNode, position: usize, ov: &Override) {
     let Some(record) = node.bindings.get_mut(position) else { return };
     if record_key(record) == ov.key {
-        record.recipe = clone_recipe(&ov.recipe);
-        record.dependencies = clone_dependencies(&ov.dependencies);
+        record.recipe = ov.recipe.clone();
+        record.dependencies = ov.dependencies.clone();
         return;
     }
     let qualifier = record.qualifier;
     let scope = record.scope;
     record.also.retain(|also| also.key.with_qualifier(qualifier.id, qualifier.name) != ov.key);
     let mut split = BindingRecord::new(
-        ov.key,
+        unqualified(ov.key),
         ov.key.type_name(),
         BindingKind::Single,
         scope,
-        clone_recipe(&ov.recipe),
-        clone_dependencies(&ov.dependencies),
+        ov.recipe.clone(),
+        ov.dependencies.clone(),
         ov.location,
     );
     split.qualifier = qualifier;
@@ -515,7 +563,7 @@ fn apply_collections(registry: &mut Registry, collections: Vec<CollectionOverrid
                     at: co.location,
                 }
             } else {
-                WiringError::OverrideUnmatched { key: co.key.name(BindingKind::Collection), at: co.location }
+                WiringError::OverrideUnmatched { key: co.key.name(BindingKind::Collection), keyed: None, at: co.location }
             });
             continue;
         }
@@ -524,7 +572,7 @@ fn apply_collections(registry: &mut Registry, collections: Vec<CollectionOverrid
             // The item is already an `Arc` of the collection's type, so it needs no
             // `into_primary`.
             let mut record = BindingRecord::new(
-                co.key,
+                unqualified(co.key),
                 co.key.type_name(),
                 BindingKind::Collection,
                 ScopeKind::Singleton,
@@ -538,14 +586,18 @@ fn apply_collections(registry: &mut Registry, collections: Vec<CollectionOverrid
     }
 }
 
-/// Removes `node`'s contributions to `key`, keeping each controller pointed at its own record.
+/// Removes `node`'s contributions to `key`, keeping each controller and each enhancer mark
+/// pointed at its own record.
 fn remove_contributions(node: &mut ModuleNode, key: Key) -> usize {
     let mut removed_before = Vec::with_capacity(node.bindings.len());
+    let mut gone = Vec::with_capacity(node.bindings.len());
     let mut kept = Vec::with_capacity(node.bindings.len());
     let mut removed = 0;
     for record in node.bindings.drain(..) {
         removed_before.push(removed);
-        if record.kind == BindingKind::Collection && record_key(&record) == key {
+        let remove = record.kind == BindingKind::Collection && record_key(&record) == key;
+        gone.push(remove);
+        if remove {
             removed += 1;
         } else {
             kept.push(record);
@@ -557,7 +609,20 @@ fn remove_contributions(node: &mut ModuleNode, key: Key) -> usize {
             controller.binding -= shift;
         }
     }
+    node.enhancers.retain(|&position| !gone.get(position).copied().unwrap_or(false));
+    for position in &mut node.enhancers {
+        if let Some(&shift) = removed_before.get(*position) {
+            *position -= shift;
+        }
+    }
     removed
+}
+
+/// `key` under `()`: a record's `primary` is unqualified, its qualifier held apart, and an
+/// override's key may carry one since `.qualified::<Q>()`.
+fn unqualified(key: Key) -> Key {
+    let none = Qualifier::none();
+    key.with_qualifier(none.id, none.name)
 }
 
 fn qualifier_of(key: Key) -> Qualifier {
@@ -585,17 +650,15 @@ fn check_modules(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErro
                 }
             }
         } else if visibility::own_binding(graph, *module, export.key).is_none() {
-            let consumer = if graph.lookup(*module, export.key).is_some() {
-                "its export list (a key an import provides leaves through `reexport`)"
-            } else {
-                "its export list"
-            };
-            errors.push(WiringError::Missing {
-                key,
-                consumer: consumer.to_owned(),
+            // The module binds no such key, so a binding its table holds came from an import or a
+            // global.
+            let imported = matches!(graph.lookup(*module, export.key), Some(Visible::Binding(_) | Visible::Ambiguous(_)));
+            errors.push(WiringError::ExportNotBound {
                 module: graph.module_name(*module),
-                near: visibility::near_spelling(graph, *module, export.key)
-                    .map(|(near, exporter)| (near.name(BindingKind::Single), graph.module_name(exporter))),
+                key,
+                imported,
+                near: visibility::own_near_spelling(graph, *module, export.key).map(|near| near.name(BindingKind::Single)),
+                at: export.location,
             });
         }
     }
@@ -728,9 +791,12 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
     }
 }
 
-/// Step 6: a `Timer` wherever an explicit bound is written, a readiness `.timeout` or
-/// `.attempt_timeout`, a hook's or constructor's `After(..)`, or a builder knob. A lazy load
-/// checks what it brought; the knobs were checked when the app wired.
+/// Step 6: a `Timer` wherever a wait is written: a readiness `.timeout`, `.attempt_timeout` or
+/// `.backoff`, a hook's or constructor's `After(..)`, or a builder knob. A lazy load checks what
+/// it brought; the knobs were checked when the app wired.
+///
+/// The record holds a backoff as a `Duration` that is zero unless written, so `.backoff(ZERO)`
+/// reads as unwritten; it waits for nothing, and nothing needs a `Timer` for it.
 fn check_environment(graph: &Graph, env: &WireEnv, declared: &Declared, errors: &mut Vec<WiringError>) {
     if env.timer.is_some() {
         return;
@@ -745,6 +811,9 @@ fn check_environment(graph: &Graph, env: &WireEnv, declared: &Declared, errors: 
             errors.push(WiringError::BoundWithoutTimer { item: format!("construction of `{name}`"), at: record.location });
         }
         if let Some(ready) = &record.ready {
+            if !ready.backoff.is_zero() {
+                errors.push(WiringError::BackoffWithoutTimer { binding: name.clone(), at: ready.location });
+            }
             if matches!(ready.whole, Bound::After(_)) {
                 errors.push(WiringError::BoundWithoutTimer {
                     item: format!("readiness `.timeout` of `{name}`"),
@@ -830,180 +899,4 @@ fn reads_collection(base: &Graph, key: Key) -> bool {
                     EnhancerDep::Type(_) => false,
                 })
         })
-}
-
-/// A deep copy of a frozen graph, for a lazy load to extend. The records hold `Arc`s to their
-/// closures and values, so the copy shares every instance and constructor with the original.
-fn clone_graph(base: &Graph) -> Graph {
-    Graph {
-        modules: base.modules.iter().map(clone_module).collect(),
-        bindings: base.bindings.iter().map(clone_binding).collect(),
-        visibility: base.visibility.iter().map(clone_table).collect(),
-        collections: base.collections.clone(),
-        inputs: base
-            .inputs
-            .iter()
-            .map(|(key, decl)| {
-                let decl = InputDecl { key: decl.key, seeder: decl.seeder, seeder_name: decl.seeder_name, declared_in: decl.declared_in };
-                (*key, decl)
-            })
-            .collect(),
-        by_identity: base.by_identity.clone(),
-        root: base.root,
-        connect_order: base.connect_order.clone(),
-        handlers: base.handlers.iter().map(clone_handler).collect(),
-        secrets: base.secrets.clone(),
-        exported: base.exported.clone(),
-    }
-}
-
-fn clone_module(module: &FrozenModule) -> FrozenModule {
-    FrozenModule {
-        id: module.id,
-        identity: module.identity.clone(),
-        name: module.name.clone(),
-        global: module.global,
-        keyed: module.keyed,
-        imports: module.imports.clone(),
-        bindings: module.bindings.clone(),
-        exports: module.exports.clone(),
-        hooks: module.hooks.iter().map(clone_hook).collect(),
-        meta: module.meta.clone(),
-        loaded: module.loaded,
-    }
-}
-
-fn clone_binding(binding: &FrozenBinding) -> FrozenBinding {
-    FrozenBinding {
-        id: binding.id,
-        origin: binding.origin,
-        record: clone_record(&binding.record),
-        role: binding.role,
-        effective: binding.effective,
-        needs_execution: binding.needs_execution,
-        edges: binding.edges.iter().map(clone_edge).collect(),
-    }
-}
-
-fn clone_edge(edge: &Edge) -> Edge {
-    let target = match &edge.target {
-        EdgeTarget::Binding(id) => EdgeTarget::Binding(*id),
-        EdgeTarget::Collection(key) => EdgeTarget::Collection(*key),
-        EdgeTarget::Input(key) => EdgeTarget::Input(*key),
-        EdgeTarget::Execution => EdgeTarget::Execution,
-        EdgeTarget::Module => EdgeTarget::Module,
-    };
-    Edge { target, dependency: edge.dependency, optional: edge.optional }
-}
-
-fn clone_table(table: &VisibilityTable) -> VisibilityTable {
-    let entries = table
-        .entries
-        .iter()
-        .map(|(key, visible)| {
-            let visible = match visible {
-                Visible::Binding(id) => Visible::Binding(*id),
-                Visible::Input(input) => Visible::Input(*input),
-                Visible::Ambiguous(list) => Visible::Ambiguous(list.clone()),
-            };
-            (*key, visible)
-        })
-        .collect();
-    VisibilityTable { entries }
-}
-
-fn clone_handler(handler: &HandlerRecord) -> HandlerRecord {
-    let decl = &handler.decl;
-    HandlerRecord {
-        controller: handler.controller,
-        module: handler.module,
-        decl: HandlerDecl {
-            transport: decl.transport,
-            transport_name: decl.transport_name,
-            name: decl.name,
-            role_keys: decl.role_keys,
-            enhancer_deps: decl
-                .enhancer_deps
-                .iter()
-                .map(|dep| match dep {
-                    EnhancerDep::Type(key) => EnhancerDep::Type(*key),
-                    EnhancerDep::Closure(dependencies) => EnhancerDep::Closure(Arc::clone(dependencies)),
-                })
-                .collect(),
-            specs: Arc::clone(&decl.specs),
-            handler: Arc::clone(&decl.handler),
-        },
-    }
-}
-
-fn clone_record(record: &BindingRecord) -> BindingRecord {
-    BindingRecord {
-        primary: record.primary,
-        qualifier: record.qualifier,
-        built: record.built,
-        into_primary: record.into_primary.clone(),
-        also: record.also.iter().map(|also| AlsoAs { key: also.key, coerce: Arc::clone(&also.coerce) }).collect(),
-        kind: record.kind,
-        scope: record.scope,
-        controller: record.controller,
-        recipe: clone_recipe(&record.recipe),
-        dependencies: clone_dependencies(&record.dependencies),
-        construct_bound: record.construct_bound,
-        ready: record.ready.as_ref().map(clone_ready),
-        replaced_ready: record.replaced_ready.clone(),
-        hooks: record.hooks.iter().map(clone_hook).collect(),
-        constructs: record.constructs,
-        location: record.location,
-    }
-}
-
-fn clone_ready(ready: &ReadyRecord) -> ReadyRecord {
-    ReadyRecord {
-        check: Arc::clone(&ready.check),
-        dependencies: clone_dependencies(&ready.dependencies),
-        retries: ready.retries,
-        backoff: ready.backoff,
-        whole: ready.whole,
-        attempt: ready.attempt,
-        location: ready.location,
-    }
-}
-
-fn clone_hook(hook: &HookRecord) -> HookRecord {
-    HookRecord { kind: hook.kind, bound: hook.bound, run: Arc::clone(&hook.run), dependencies: clone_dependencies(&hook.dependencies), location: hook.location }
-}
-
-fn clone_recipe(recipe: &Recipe) -> Recipe {
-    match recipe {
-        Recipe::Construct(ctor) => Recipe::Construct(Arc::clone(ctor)),
-        Recipe::Factory(ctor) => Recipe::Factory(Arc::clone(ctor)),
-        Recipe::Value(instance) => Recipe::Value(Arc::clone(instance)),
-        Recipe::Alias { target } => Recipe::Alias { target: *target },
-        Recipe::Failed => Recipe::Failed,
-    }
-}
-
-fn clone_dependencies(dependencies: &Dependencies) -> Dependencies {
-    let list = dependencies
-        .list
-        .iter()
-        .map(|dependency| DependencyRecord {
-            label: dependency.label,
-            type_name: dependency.type_name,
-            requirement: Requirement {
-                reads: dependency.requirement.reads.iter().map(|read| Read { kind: clone_read(&read.kind), optional: read.optional }).collect(),
-            },
-        })
-        .collect();
-    Dependencies { list }
-}
-
-fn clone_read(kind: &ReadKind) -> ReadKind {
-    match kind {
-        ReadKind::Single(key) => ReadKind::Single(*key),
-        ReadKind::Collection(key) => ReadKind::Collection(*key),
-        ReadKind::Extension(key) => ReadKind::Extension(*key),
-        ReadKind::Execution => ReadKind::Execution,
-        ReadKind::Module => ReadKind::Module,
-    }
 }
