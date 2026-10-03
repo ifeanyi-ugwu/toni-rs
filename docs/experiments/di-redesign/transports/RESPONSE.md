@@ -107,3 +107,150 @@ Classified + #[kind(..)]	Classify::classify + #[derive(Classify)], #[classify(..
 CallError::classified(e)	CallError::from(e), or just ?
 free classify(&BoxError) -> CallError	CallError::from_boxed(BoxError)
 Extract::extract (last message's suggestion)	FromCall::from_call
+
+---
+
+## First response: answers to REVIEW.md
+
+Received 2026-10-03, answering the review's 27 refinements, 14 questions, the addendum and §13
+decisions 1 and 4. On R6 the user had independently concluded the providers list should inherit the
+`with` grammar, which is the fix chosen here. Not yet signed off; three points await the user: R15,
+decision 1, and the third error-naming branch (A6.4).
+
+I've checked every item on its merits rather than taking the review's word for it. The review is right on all 27 refinements, and the probes settle the questions that matter. For 21 of them I accept the change as written. For six (R4, R6, R7, R11, R14, R15) I accept the problem but choose a different fix, and the review's questions plus its two open decisions get a direct answer each.
+
+### Refinements
+
+**R1: accepted. My arm placement was wrong.** I listed the arms in priority order and put them on the wrong reference depths. Combined with A2: `Into<CallError>` on `&&Probe<Result<V,E>>`, `Into<BoxError>` on `&Probe<Result<V,E>>`, `IntoReply` on the bare probe, with the value in a `Cell<Option<_>>` as the core's factory probe already does.
+
+**R2: accepted as written.** A free `const _` after the impl, naming the controller type. For a generic controller, a named associated const that `mount` reads.
+
+**R3: accepted.** `__FwShared<V0, ..>`, with each `value` entry's position in writing order becoming part of the `__handler` contract.
+
+**R4: accepted, with one addition.** The macro appends `+ use<>` to opaque return types, as the review says. The consequence needs stating: a stream that borrows `self` then fails inside the handler body. The reply must be `'static` anyway, so that's correct, but the error will surprise people. So also support `self: Arc<Self>` as a handler receiver (stable arbitrary-self type). A streaming handler then captures the `Arc` instead of borrowing, which is the natural idiom: `async fn watch(self: Arc<Self>, ..) -> impl Stream<..>`. The generated call already holds the controller in an `Arc`.
+
+**R5: accepted.** `meta` goes into the inert list, is parsed at both tiers, and is carried in `__handler`. A stray `#[meta]` is a compile error. The WebSocket hooks are covered under Q1, and they stop being handlers.
+
+**R6: accepted, and the choice is to extend the grammar.** The providers list gains `with = ..` and `with(scope) = ..`. There's one more inconsistency to fix while doing it: today a *bare* closure in a providers list lowers to `singleton`, an explicit scope, while `with = closure` is `Auto`. Under "scope is its own axis" (core §3.3), the same closure must mean the same thing everywhere, so the bare closure becomes shorthand for `with = closure`, meaning `Auto`. For a provider, `Auto` behaves as a singleton, so nothing breaks. The only differences are the wiring hint and the hooks rule, which already treats `Auto` providers as singletons (D9).
+
+**R7: accepted, and the builder gets a different name.** Handler parameters must reach the wiring pass, so the builder gains `.dependencies(..)` filled from each parameter's `FromCall::dependencies`, and the input walk adds those reads to its roots. For the name, take `HandlerSpec`, which matches the core's `EnhancerSpec` and also settles A6.5.
+
+**R8: accepted, taking the second option (X14).** Add `AppHandle::redact(BoxError) -> Redacted`, which runs the graph's own redaction. Transports hold an `AppHandle` from `Mounted`. One redaction rule is worth one core method, and `Malformed { param, source: Redacted }` stays.
+
+**R9: accepted.** One `impl<T, P: FromCall<T>> FromCall<T> for Option<P>`, forwarding `CONSUMES_BODY`. `Valid<P>` gets the same shape.
+
+**R10: accepted.** The skipping sentence was wrong. Emit every pair.
+
+**R11: accepted, with the core's own shape.** `StartupError::Configure(ConfigureErrors)`, mirroring `Wiring(WiringErrors)`, with one entry per failure carrying `{ transport, source: Redacted }`. That's more cohesive than a bare `Vec`.
+
+**R12: accepted.** `module_meta` yields `(ModuleRef, Arc<T>)`. For resolving inside the request's execution, choose `ModuleRef::with_execution(&ExecutionRef) -> ModuleRef`. A `ModuleRef` already carries an optional execution in the core's model, so this just sets it, which is a smaller addition than a new resolver entry point.
+
+**R13: accepted.** Once X4 exists, transports ship no input module. A declaration arriving by both paths with the same `(key, seeder)` counts as one. `InputDecl::declared_in` gains a transport origin, so reports print "declared by transport `Http`" rather than inventing a module. The consequence the review notes, that an unmounted transport declares nothing, is accepted and documented.
+
+**R14: accepted, with a smaller fix.** `route` takes `impl Into<Cow<'static, str>>`. For configured paths, the common need is a prefix, so `ModuleDef::controller::<C>()` returns a handle with `.at(prefix)`, a runtime value applied to every route and gateway path of that controller (NestJS's controller path). It covers GraphQL and health endpoints without exposing `Mount` closures. `controller_with(closure)` stays possible later if a case appears that a prefix can't express.
+
+**R15: accepted, and this needs a decision.** The review is right that brokers can't produce `unimplemented` server-side, and that NATS can't tell "no handler" from "server down". [32] demands one uniform answer, so I'd choose **`Unavailable` for "no handler reachable for this pattern" on every link**, with `ErrorInfo.reason` saying what the link actually knows: `"pattern_unhandled"` where it's certain (TCP and UDP, answered by the server), and `"no_destination"` where it's ambiguous (NATS no-responders, a Redis `PUBLISH` count of 0, AMQP `basic.return`, a Kafka unknown topic). The conformance suite asserts the kind and accepts either reason. The alternative, `Unimplemented` everywhere, would be a false statement whenever the server is simply down.
+
+**R16: accepted.** Handlers are checked in `prepare` from the recorded shape. A client call fails with `RpcError` before any I/O.
+
+**R17: accepted, in A1's form.** The transport tests `cancel_reason()` before calling `from_boxed`.
+
+**R18: accepted.** Split on CR, LF and CRLF. `Event::id` and `Event::event` take `EventId` and `EventName` newtypes, built fallibly, refusing line terminators and (for the ID) U+0000. A bad value fails where it's built, not mid-stream.
+
+**R19: accepted.** Add `url.scheme` and `http.response.status_code`, with gRPC span names as `$package.$service/$method`.
+
+**R20: accepted.** `type` is `about:blank`, `title` is the status phrase, and `detail` is `public_message`.
+
+**R21: accepted, with `Bearer` as the default** (RFC 6750). It's configurable, and `CallError::unauthorized(challenge)` overrides it per error.
+
+**R22: accepted. Answer the envelope without an `id`.** "Fire-and-forget" means no ack on success, not silence on failure, so [26] holds unamended, and a guard's refusal stays visible to the client.
+
+**R23: accepted.** A write-once reason slot, with `cancel_with` on both `Execution` and `ExecutionRef`. `cancel()` stays as `cancel_with(CancelReason::Explicit)`, a new variant, so a cancelled execution never answers `None`. X10's outcome slot changes shape (Q8).
+
+**R24: accepted.** Both behaviors are stated: resolvers created before `route_to` keep the root module, and one key can produce two instances in one execution across the switch.
+
+**R25: accepted.** `Closed` joins the list.
+
+**R26: accepted.** Both wordings get corrected: close code 1013 lives in the IANA registry that RFC 6455 established, and RabbitMQ's prefetch applies per channel or per consumer, not per connection.
+
+**R27: accepted.** `BackendLimits` gains `upgrades`. actix wires upgrades through its service-level hook if the adapter can, and otherwise declares `upgrades: false`, so `prepare` refuses a gateway on its port.
+
+### Questions
+
+**Q1: WebSocket hooks.** These shouldn't be handlers at all. The core's own principle is that a role comes from the traits a type implements, with no marker attributes. So the hooks become traits on the gateway type: `OnConnect`, `OnDisconnect`, and `AfterInit`. They then don't receive `__handler`, and impl-level enhancers don't reach them:
+- **The connect phase** is a `WsConnect` handler that `fw-ws` mounts itself. Its guards are the gateway attribute's `connect_guards(..)`. Its body calls `OnConnect` if the type implements it, which `fw-ws` detects by probing the concrete type.
+- **Impl-level `#[guards]`** apply to message handlers (`Ws`) only.
+- **`on_disconnect`** runs as a terminal execution without guards. Its failures and panics are logged.
+- **`after_init`** is a once-per-gateway lifecycle call, not an execution.
+
+There's one protocol need. `#[routes]` doesn't know the impl is a gateway, so each `fw_ws::message` mount function calls `<Self as GatewayConfig>::mount_gateway(m)`. That needs **X15, `Mount::once::<K>(..)`**, which makes the call idempotent per controller type. A gateway with no message handlers mounts nothing, and the gateway attribute refuses that case at compile time.
+
+**Q2: `open` refused during the drain.** No execution means no pipeline. The transport answers directly:
+- HTTP: 503 with `Retry-After` and `Connection: close`.
+- gRPC: UNAVAILABLE.
+- TCP RPC: an `err` frame of kind `unavailable`.
+- WebSocket: nothing, because busy connections have already stopped reading.
+
+Global middleware doesn't run for these requests, and that should be documented. §10's table gains a row for it.
+
+**Q3: where the first item is pulled.** Not inside `dispatch`. The sentence about the first item goes: every item error, the first included, takes the late path, so SSE headers are never held back.
+
+On `Ok` during the late path, the review is right that suppressing the error was the wrong reading. An `Ok` from a handler written for the pre-stream case is a failure rendering, and turning it into a clean end would tell the client "complete" when the stream failed. So the late-path rules are:
+- `Ok(_)` is ignored and logged, and the original error renders canonically.
+- `Err(e2)` reshapes the error.
+- A clean end requires an explicit sentinel, `Err(fw::EndStream)`.
+
+**Q4: the GraphQL endpoint is a mounted handler.** It's a controller in `fw-graphql-http` mounted `.at(config.path)` (R14), so role keys and inputs work as for any route.
+
+**Q5: forwarding deadlines from inside an execution.** There's no ambient execution, so make it explicit. `RpcClient` calls take `.within(&exec)`, which forwards the remaining deadline and also cancels the call when the execution is cancelled. For tonic, `fw_grpc::outgoing(&exec, request)` sets `grpc-timeout`. The claim that this happens automatically comes out of the design.
+
+**Q6: sessions.** `Session<T>::describe` declares a third WebSocket input, `SessionHandle`, seeded into every connection-scoped execution: the connect phase, every message, and `on_disconnect`. The session lives until the last execution holding it ends, so it *is* readable in `on_disconnect`.
+
+**Q7: a `Path<T>` with no names.** The check follows what the probe can record:
+- A struct is checked by its field names.
+- A tuple is checked by count.
+- A scalar or newtype requires exactly one parameter.
+- A map, a flattened struct, or a `deserialize_any` impl is skipped and documented as unchecked.
+
+§12's row is reworded to match.
+
+**Q8: who awaits the stream outcome.** Nobody should have to. Replace the future with a callback: `exec.on_stream_end(|outcome| ..)`, called synchronously when the reply stream finishes. That's runtime-free, needs no spawned task, and works from an interceptor. The outcome is the *reply* stream's. An inbound stream's end is already visible to the handler that reads it. This also folds X10 into X5, as §11 suggested.
+
+**Q9: dropping an unread body.** That's not a disconnect. `Disconnected` fires only when the backend observes the peer close the connection or reset the stream. The documentation for the `body` field gets corrected.
+
+**Q10: TLS on the standalone WebSocket server and the TCP link.** Yes for both. The standalone WebSocket server (`wss`) and the TCP link both take `fw_net::Tls`.
+
+**Q11: `Retry-After` values.** Load shedding sends a configured value, `.shed_retry_after(..)`, defaulting to 1 second. An `Unavailable` error without a `RetryAfter` detail sends no header, since RFC 9110 makes it optional.
+
+**Q12: Kafka ordering.** Keying by correlation ID was a mistake. The partition key becomes a caller-supplied ordering key, defaulting to the client instance's ID, so one caller's requests stay ordered. The correlation ID moves to a header.
+
+**Q13: socket-activation environment.** Set `FD_CLOEXEC` on every inherited socket: yes. But *don't* unset the environment variables. In edition 2024, `std::env::remove_var` is `unsafe` because it races with other threads, and under `#[tokio::main]` the runtime's threads already exist when user code runs. The systemd protocol already covers stale variables: `LISTEN_PID` must equal the reading process's ID, so a child spawned later rejects them. `fw-net` enforces that check, and the documentation says why the variables stay.
+
+**Q14: non-object `Detail::Json` on gRPC.** Use `google.protobuf.Value`, which holds any JSON value, packed in `Any`, for every `Detail::Json`, not only non-objects.
+
+### Decisions 1 and 4
+
+**Decision 1: I now recommend reversing it, to module-local.** The review's evidence shows the two models cost the same and both have precedent. What decides it is the observation that under app-wide matching, the middleware stack for a route depends on *import order*, which nothing at the route declares. Under module-local matching, a route's middleware comes from its own module, which is explicit and local. App-wide needs are still covered: the global pre-routing stage applies to every request, and guards are the better tool for authentication anyway. It's your call, but I'd take module-local.
+
+**Decision 4: keep connect guards after the 101.** The review's point is decisive here: a browser can only learn *why* it was refused through a close code after the handshake. Refusing the handshake itself becomes an opt-in per gateway (`refuse = handshake`), for non-browser clients and proxy logs.
+
+### The addendum
+
+**A4: yes, that split is the intent.** Use separate crates, as the review proposes, matching the rest of the layout: `fw-graphql` (neutral), `fw-graphql-http`, and `fw-graphql-ws`. The neutral crate exports the engine under `dyn Engine`, so any handler can take `Dep<dyn Engine>`. That drops the `Graphql` wrapper service I proposed last time, which added nothing over the binding itself. `GraphqlModule` becomes the HTTP binding's module.
+
+**A5: already settled.** You approved `fw_http::middleware::Next`, and no alias ships. Users who import both `Next` types write `use .. as ..` themselves.
+
+**A6, the five items to settle:**
+1. **`ExtractError` beside `from_call`: confirmed.** The rule is written as "an error is named after the operation as users understand it", as `FromStr` fails with `ParseIntError`. The rule's text cites that example, so it doesn't get reopened.
+2. **`Answer::from_result` is dropped.** `r.map_err(CallError::from)` covers it.
+3. **`CallError::from_boxed(BoxError)`, by value.** P27b shows coherence *would* accept `From<BoxError>`, so my coherence reason no longer holds. The remaining reason does: a recognizer shouldn't run invisibly on every `?`.
+4. **Condition-named errors are the rule's missing third branch.** The new branch: "an error that reports a condition rather than an operation's failure is named for the condition", as std does with `PoisonError`. Within that branch, use the past-participle form the core already uses (`GuardRejected`, `PanicRecovered`), so `Refusal` becomes **`ConnectRefused`** and `NoTimer` becomes **`TimerMissing`**. `Closed` stays: the subject (the app) is implied wherever it appears. `Redacted` isn't an error at all. It's a wrapper type, named for what was done to its contents, which is correct.
+5. **Abbreviations go.** `HandlerDecl` becomes `HandlerSpec` (R7), and `InputDecls` becomes `Inputs`.
+
+### New SPI items from this round
+
+- **X14:** `AppHandle::redact` (R8).
+- **X15:** `Mount::once::<K>()` (Q1).
+- **X5 extended:** `CancelReason::Explicit` and `on_stream_end` (R23, Q8). X10 is retired.
+
+What needs your answer: R15 (`Unavailable` for unhandled patterns), decision 1 (module-local middleware), and the third error-naming branch (A6.4).
