@@ -611,3 +611,419 @@ Two requests reached areas that had already finished; the orchestrating session 
   qualifier: TypeId, q_name: &'static str) -> Key` in `crates/ulo/src/key.rs`, the argument order
   both callers use (`graph/mod.rs` `find_module`, `lifecycle/connect.rs` `site_key`). It lets a
   module hook's failure name its module as a key (E 2).
+
+---
+
+## Wave 2
+
+Wave 2 built D1–D20 as the thirteenth response signed them, the rename of the `Site` family
+included. Its logs are `divergences/rename.md`, `wave2-W.md`, `wave2-R.md` and `wave2-M.md`.
+Citations: `[W 3]` is entry 3 of `wave2-W.md`, `[W W1]` its request W1, `[R 2]` and `[M 4]`
+likewise, `[rename 2]` entry 2 of `rename.md`; `[design-fold]` is a choice made while correcting
+`DESIGN.md` for D1–D20, and `[orchestrator]` a name the orchestrating session fixed so the agents
+and the design would agree. Nothing here has compiled yet.
+
+Section 1 needs an answer per item, by number. Sections 2 to 6 need a read.
+
+### 1. Decisions for you
+
+**D21. A `#[module]` spelling for an enhancer contribution by value or by factory.** [M 4;
+orchestrator]
+§4's `into dyn Plugin: [MetricsPlugin, TracingPlugin]` lists types; §7 writes a global interceptor
+by value against the value API and gives it no `#[module]` form. Built: an `into` list takes types
+only, and a module needing a value or factory contribution implements `Module` by hand.
+Options: (a) the providers-list rule inside `into` lists: a bare path is a type, anything else an
+expression lowered to `.value(expr)`, which takes `Arc<K>`, so the user writes `Arc::new(..)`;
+(b) the enhancer-attribute grammar, `into AnyInterceptor<Rpc>: [value = Tracing::default()]`, the
+macro writing the `Arc::new`, with `with = closure` from the same grammar for a factory; (c) keep
+the hand-written `Module`.
+Recommendation: (b). It is the grammar `#[guards]` already uses for a value and a closure, and (a)
+has no factory form.
+
+**D22. A qualified enhancer contribution is accepted, read by no transport and reported by
+nothing.** [W 3; orchestrator]
+`m.enhancer::<AnyGuard<Http>>().qualified::<Q>()` compiles, because `enhancer` returns the builder
+`contribute` returns, and registers under `AnyGuard<Http> @ Q`. `dispatch` walks
+`entries::<AnyGuard<T>>()`, which takes no qualifier.
+Options: (a) refuse at `wire()`: a record marked as an enhancer whose key carries a qualifier;
+(b) a builder type for `enhancer` without `qualified`, giving up the shared builder; (c) accept
+and document.
+Recommendation: (a). The record carries both the enhancer mark and the qualifier, and §3.9's rule
+refuses a written thing that does nothing where `wire()` can see it.
+
+**D23. An `into` list tells a role key by how it is written, and an alias of one lowers to
+`contribute`.** [M 2]
+A proc macro sees tokens. `K` in `into K: [..]` is a role key when its last segment is `AnyGuard`,
+`AnyInterceptor` or `AnyErrorHandler`, or when it is a `dyn` type with an `ErasedGuard`,
+`ErasedInterceptor` or `ErasedErrorHandler` bound. `type HttpGuards = AnyGuard<Http>` lowers to
+`contribute`: its entries sit in the collection `dispatch` walks, the key being the same `TypeId`,
+and are scoped as providers, so an `Auto` guard among them that needs an execution is refused at
+`wire()` as a singleton provider with §6.2's hint, which does not name the cause.
+Options: (a) accept and document; (b) refuse at `wire()` every provider contribution under a key a
+mounted handler walks as a role; (c) accept, and add "contribute it through `enhancer`" to the
+`ScopeViolation` report when the refused binding's key is a mounted handler's role key.
+Recommendation: (c). The alias form works for a singleton guard, and (b) would refuse working
+code; (c) names the fix in the one report where the difference shows.
+
+**D24. `override_many` answers `TestApp<PendingMany>`.** [W 6; orchestrator]
+§11: `.qualified::<Q>()` is one spelling for every override kind. Built: `override_many` returns a
+new public state, `TestApp<PendingMany>`, whose `qualified::<Q>()` answers `TestApp<Settled>` and
+targets the collection `T @ Q`; it has no `in_module*`, a collection being app-wide. Every
+`impl<S>` method stays reachable, so `override_many(..).connect()` reads as before; only code
+naming the return type as `TestApp<Settled>` changes.
+Options: accept; keep `Settled` and give a collection override no qualifier.
+Recommendation: accept. `Many<T, Q>` exists, and the state is the device D5's sign-off chose.
+
+**D25. A second `replace_module` of an original already replaced is dropped without a report.**
+[W 5]
+The registration walk takes the first replacement by identity, and the second is applied nowhere.
+`ReplacementUnmatched` reports only an original no module imports.
+Options: report it, naming both calls the way `DuplicateReadiness` names both locations; leave it.
+Recommendation: report it. A replacement applied to nothing is the fault D4 was signed to report.
+
+**D26. `.backoff(..)` as `#[track_caller]`.** [W W1; orchestrator]
+`BackoffWithoutTimer::at` is the `.ready(..)` call: the readiness record keeps no location for
+`.backoff`. R has finished; the change is one attribute on `backoff` and a `backoff_location` on
+`ReadyRecord`, which W then reads.
+Options: add it; keep `at` on `.ready(..)`.
+Recommendation: add it. The line a report names is the line to edit, and `.ready(..)` is not it.
+
+**D27. An interceptor sees a handler's panic before the error handlers do.** [R 2]
+§7 step 4: `dispatch` catches a panic in a guard, an interceptor, the handler or an error handler
+and offers the error handlers `PanicRecovered`; silent on the interceptors around a panicking
+handler. Built: the handler and each interceptor run under their own catch inside `Next::run`.
+The innermost interceptor's `next.run()` returns `Err(PanicRecovered { stage: Handler, .. })`,
+each interceptor further out receives what the one inside it answered, and an interceptor can
+reshape or answer a handler's panic as it can any handler error.
+Options: keep; catch in `dispatch` alone, which unwinds the interceptors.
+Recommendation: keep. A panic unwinding through the interceptors drops each mid-await, loses which
+stage panicked, and takes the failed call from a timing interceptor.
+
+**D28. What `ShutdownFailure::Close` holds for a timeout.** [R 5]
+§9.5 and §10.2: a `close` exceeding its bound is dropped and recorded as `Close { transport,
+source: Redacted }`; silent on what `source` holds then. Built: the redacted
+`FailureReason::TimedOut { after, limit }`, `limit: ShutdownCap` with the cap's duration when the
+cap bounded it, `Default` with `hook_timeout` otherwise. `FailureReason` gains `impl Error`, which
+a `Redacted` needs to hold it, and a caller tells a timeout from the transport's own error by
+`source.downcast_ref::<FailureReason>()`.
+Options: (a) keep; (b) `Close { transport, reason: FailureReason }`, the shape `Hook` has, with
+`Errored(Redacted)` holding the transport's error.
+Recommendation: (b). `Hook` reports the same two outcomes through `reason`, and a match arm is
+what the enum exists for; `NoTimer`'s downcast exists because `Bind`'s field must hold a foreign
+error and the core's own in one type, which `FailureReason` already does.
+
+---
+
+### 2. What you will write differently
+
+The rename:
+
+- **`Construct::dependencies(d: &mut Dependencies)`**, with `d.field::<Dep<PgPool>>("pool")`,
+  `d.param::<S>(name)` and `d.add::<S>()`; §13's hand-written `Construct` is written that way.
+  `Factory`, `ShutdownFactory` and `Meta` declare through `dependencies` too, each a
+  `dependencies(d: &mut Dependencies)`, `Meta`'s taking `&self`. [rename 1; design-fold]
+- **`FromContainer::describe(req: &mut Requirement)`** keeps the by-reference shape; `req` is §3.2's
+  spelling, `d` now being the `Dependencies` parameter. [rename 3; design-fold]
+- **`ConstructError::Dependency`** replaces `ConstructError::Site`; a `match` on the variant
+  changes. [rename 2]
+
+Roles and contributions:
+
+- **`m.enhancer::<AnyGuard<Http>>()`** is the one spelling for a global enhancer. It returns
+  `Contribute<'_, AnyGuard<Http>, ()>`, the builder `contribute` returns, every method reachable,
+  `provide` and `value` included. A `contribute` under a role key is a provider contribution: a
+  negative bound cannot refuse it. [design-fold; W 1; M R3]
+  `m.enhancer::<AnyGuard<Http>>().provide::<AuthGuard>(|a| a)`
+- **`Role: sealed::Sealed + Send + Sync + 'static`**, no items and no `?Sized` supertrait,
+  implemented for `AnyGuard<T>`, `AnyInterceptor<T>` and `AnyErrorHandler<T>` for every
+  `T: Transport`. §3.7 writes `Sealed + 'static`; the two supertraits let `enhancer<R: Role +
+  ?Sized>` build the `Contribute`, whose impl needs `U: Send + Sync`, and every implementor already
+  is through the erased traits. [W 1; design-fold]
+- **In `#[module]`, `into K: [A, B]` lowers to `m.enhancer::<K>()`** when `K` is written like a role
+  key (D23), to `m.contribute::<K>()` otherwise; the list takes types only (D21). [M 2, M 4]
+
+The pipeline:
+
+- **`PanicRecovered { stage: DispatchStage, message: Redacted }` and `DispatchStage { Guard,
+  Interceptor, Handler, ErrorHandler }`**, both `#[non_exhaustive]`, the first named after the
+  event ulo already has. `PanicRecovered` implements `Debug`, `Display` and `Error`; `DispatchStage`
+  derives `Clone`, `Copy`, `PartialEq`, `Eq` and `Hash` beside `Debug` and `Display`. [orchestrator;
+  design-fold; R 4]
+- **`Next::run`'s doc states that a handler's panic arrives as the `Err` it returns** (D27), and
+  `ErrorHandler`'s doc that a panic in a guard, an interceptor, the handler or an earlier error
+  handler arrives as `PanicRecovered`. [R 2; R R4]
+
+Enhancer attributes:
+
+- **A controller-level `value = expr` is a compile error**, in both forms: `#[guards(value = ..)]`
+  and `#[guards(http(value = ..))]` on the impl. Per method both stand. [M 1]
+- **`X as AnyGuard<Http>` in a providers list is a compile error**; a global guard is
+  `into AnyGuard<Http>: [X]`. [M 3]
+
+Lookups and keys:
+
+- **`LookupError::Ambiguous { key: KeyName, sources: Vec<ModuleName> }`** is what `ModuleRef::get`,
+  `exec.get` in an execution opened on a module, and `by_key` answer for a key two visible modules
+  bind; `AmbiguousModule { module, candidates }` is back to `app.module::<M>()` alone. [R 1;
+  design-fold]
+- **`{:#}` on `Key` and `KeyName` prints full paths** on both sides of `@`, as in
+  `my_app::db::PgPool @ my_app::Replica`, the ` (collection)` suffix kept; `{}` is unchanged.
+  `Debug` delegates to `Display` and passes the flag along, so `{:#?}` prints full paths too.
+  [orchestrator; R 7]
+
+Tests:
+
+- **`.qualified::<Q>()` on `TestApp<Pending>`** requalifies the last override's key and returns
+  `TestApp<Pending>`, so `.in_module*` and `.everywhere()` still follow; a second call replaces the
+  first. [W 6]
+  `.override_value::<PgPool>(fake).qualified::<Replica>().in_module::<DbModule>()`
+- **`override_many(..)` returns `TestApp<PendingMany>`** (D24). [W 6]
+
+Additive public impls:
+
+- **`Requirement` and `Dependencies` are `Clone`.** [R 8]
+- **`FailureReason` implements `Error`** (D28). [R 5]
+
+---
+
+### 3. Behaviour that differs or was filled in
+
+Roles:
+
+- **A role is decided at freeze.** `ModuleDef::controller` gives `Controller`, a contribution
+  through `enhancer` gives `Enhancer`, anything else `Provider`; the one later move is a binding an
+  `EnhancerSpec` names by type, from provider to enhancer. A lazy load re-runs that move over the
+  base bindings. `override_many` keeps each controller and enhancer mark on its record when it
+  removes contributions. [W 2]
+- **The two limits of token-level recognition** (D23): an alias of a role key lowers to
+  `contribute`; a type the user named `AnyGuard`, or `dyn ErasedGuard<Http> + Send`, which is a
+  different type from the role key, lowers to `enhancer` and fails the `Role` bound at compile
+  time. [M 2]
+- **A qualified enhancer contribution** registers under `AnyGuard<Http> @ Q` and nothing reads it
+  (D22). [W 3]
+
+The pipeline:
+
+- **Which panics are `PanicRecovered`.** A panic while the container builds an enhancer or the
+  controller, a per-execution by-type guard for example, stays `LookupError::Construct { reason:
+  Panicked(..) }`. A panic in a `with = |..| ..` closure is `PanicRecovered` with the stage of the
+  enhancer it builds. A guard's or interceptor's synchronous code before its first await counts as
+  that stage. [R 3]
+- **A panicking error handler's panic goes to the handlers after it**; unclaimed, the transport
+  renders its internal-error status. [design-fold]
+- **A handler's panic passes back through the interceptors** (D27). [R 2]
+
+Wiring:
+
+- **`.backoff(..)` on a timerless app** is refused at step 6. A zero backoff is not reported: the
+  record holds `Duration::ZERO` when nothing is written, and a zero wait waits for nothing. A
+  non-zero backoff is refused even with zero retries, where it would never run. [W 7]
+- **The closure scope check** (step 5) refuses a hook, readiness, module-hook or metadata closure
+  reading `Ext`, `ExecutionRef`, an input or a per-execution key, one entry per offending injection
+  point. A per-execution key is a binding passing an execution need upward: execution-scoped, or
+  transient needing one; a collection is refused when any contribution does. `Option<S>` is
+  refused too, because without an execution it propagates `ExecutionRequired` rather than answering
+  `None`. A closure reading its own binding is left to `HooksOnPerExecution`. Enhancer closures are
+  exempt. [W 8]
+- **`ExportNotBound.imported`** is true when the module's table holds the key from an import or a
+  global, as a binding or an ambiguous entry. [W 4]
+- **`ReplacementUnmatched`** is one per `replace_module` whose original identity the registration
+  walk never reached; a second replacement of an identity already replaced is applied nowhere
+  (D25). [W 5]
+- **The near-spelling hint also matches a bound key equal in its last path segments**, under the
+  same qualifier: "missing `Config`" beside a bound `b::Config` names it, and both print in full.
+  §10.1 step 3 names only the trailing `+ Send + Sync` case. [W 9]
+
+Tests:
+
+- **Override matching compares keys as registered, qualifier applied**, so a `.qualified::<Q>()`
+  binding is reached. Inside a keyed module the binding's own key is unqualified, and
+  `in_module_keyed::<M, Q>()` reaches it without `.qualified`. [W 6]
+
+Lookups:
+
+- **`Ambiguous.key` carries `BindingKind::Single`**: a collection read gathers from every module
+  and meets no ambiguous entry. `Option<S>` propagates `Ambiguous`. [R 1]
+
+Executions and shutdown:
+
+- **`Execution::open` stores a deadline and enforces nothing**; the transport that opened the
+  execution does. [design-fold]
+- **The close bound is read as each `close` starts**, so the cap's remainder shrinks with every
+  close before it; closes run in reverse bind order, one after another. A `close` is polled before
+  its bound, and one completing in the poll the bound fires in counts as closed, the tie rule hooks
+  use. Once `shutdown_timeout` has expired, a `close` not finished on its first poll is dropped and
+  recorded as `ShutdownFailure::Close`. Without a `Timer` there is no bound and `close` runs
+  unbounded, which cannot occur for a bound server: `listen()` refuses a transport on a timerless
+  app. [R 6; design-fold]
+
+---
+
+### 4. Diagnostics and error text
+
+Texts:
+
+- **`Ambiguous`:** "`dyn UserRepo` is ambiguous between PersistenceModule, LegacyRepoModule", the
+  form `AmbiguousModule` writes. [R 1]
+- **`PanicRecovered`:** "the guard panicked: {message}", with `interceptor`, `handler` and `error
+  handler` for the other stages. The message is `redact_panic`'s output, so registered secrets and
+  URL userinfo are scrubbed from what it prints. [R 4]
+- **`ShutdownFailure::Close` on a timeout:** "transport `Http` failed to close: timed out after 5s
+  (`shutdown_timeout`)" (D28). `Limit`'s docs name the close beside the hook. [R 5]
+- **The `Missing` help reads "the injection point reads"**, §10.1's sample. [rename 4; design-fold]
+- **`#n` on the second and later module of one type and qualifier, labelled or not** (D12): a label
+  names every configuration of an integration alike. [design-fold]
+
+New `WiringError` variants:
+
+- **`ExportNotBound { module, key, imported: bool, near: Option<KeyName>, at }`.** `near` is a key
+  the module binds itself spelled like the export, and when present its hint wins: "{module} binds
+  `dyn Repo + Send + Sync`; the export names `dyn Repo`". Otherwise "an import of {module} provides
+  `{key}`; re-export it with `reexport`, or bind it in {module}", or "bind `{key}` in {module}, or
+  remove the export". [W 4]
+- **`ReplacementUnmatched { original: ModuleName, at }`**, `at` the `replace_module` call. [W 5]
+- **`BackoffWithoutTimer { binding: String, at }`**, its own variant because `BoundWithoutTimer`'s
+  help, "leave the bound at its default or write `.unbounded()`", does not apply to a backoff; `at`
+  is the `.ready(..)` call (D26). [W 7]
+- **`ClosureNeedsExecution { closure: String, path: Vec<String>, at: Option<Location> }`.** `closure`
+  reads ``readiness check of `PgPool` in DbModule``, ``` `OnModuleDestroy` hook of `PgPool` in
+  DbModule ```, ``` `OnModuleInit` hook of module UsersModule ``` or ``metadata `Middleware` of
+  UsersModule``; a metadata value has no location. `path` runs from the injection point to the read
+  of execution data: ``Dep<AuditContext> (param #1) → AuditContext (execution) → Ext<CurrentUser>
+  (field `user`)``, or ``input `RequestHead` `` for an input. [W 8]
+- **`OverrideUnmatched` gains `keyed: Option<ModuleName>`**: for a qualified override matching
+  nothing, a keyed module under that qualifier binding the key unqualified is named, with the help
+  "reach it with `.in_module_keyed::<M, Q>()` and no `.qualified`". [W 6]
+
+Full paths on collision:
+
+- **`WiringErrors`' `Display` gathers every `KeyName` across its entries**, groups them by short
+  text without the ` (collection)` suffix, and prints each key in a group of two or more distinct
+  keys with `{:#}`; a `WiringError` displayed alone applies the rule to its own keys. Limit: only
+  `KeyName` fields are reformatted. The strings rendered before the report exists, `consumer`, path
+  steps, `item`, `handler` and `closure`, and every `ModuleName`, stay short, so two module types
+  sharing a last segment still print alike. [W 9; R 7]
+
+Renamed texts [rename 4]:
+
+| Where | Old | New |
+|---|---|---|
+| `FromContainer` `on_unimplemented` message | `` `{Self}` is not an injection site `` | `` `{Self}` cannot be obtained from the container `` |
+| `AllowedIn` label | `this site needs an execution` | `this injection point needs an execution` |
+| `Factory` message | `` `{Self}` is not a factory over sites `` | `` `{Self}` is not a factory the container can call `` |
+| `Factory` and `ShutdownFactory` labels | `injection site(s)` | `injection point(s)` |
+| `Factory` note | `annotate each parameter with its site type` | `annotate each parameter with its type` |
+| macro: factory parameter without a type | `needs its site type written` | `needs its type written` |
+| macro: constructor with `self` | `each an injection site` | `each an injection point` |
+| macro: constructor parameter pattern | `print as the site's name` | `print as the parameter's name` |
+| macro: `#[injectable(default)]` marker | `every other field is a site` | `every other field is injected` |
+| macro: `#[injectable]` on another item | `whose fields are sites` | `whose fields are injected` |
+| macro: `with = ..` not a closure | `whose parameters are sites` | `whose parameters are injection points` |
+
+`FromContainer`'s second note is kept verbatim:
+`or set it inside the #[construct] fn / mark the field #[injectable(default)]`. None of the text
+suggests implementing the trait.
+
+Compile errors:
+
+- **A controller-level `value`:** "a `value` entry on the impl would be built once per handler
+  rather than shared; declare it per method, or bind it by type for shared state", one error per
+  entry, spanning from the entry's first token, the scope key or `value`, to the end of the
+  expression; in the scoped form the closing parenthesis falls outside the span. [M 1]
+- **`X as <role key>`:** on the role key, "a role key takes contributions, and `as` binds a single
+  instance; a global enhancer is written `into AnyGuard<Http>: [AuthGuard]`". `as` lowers to
+  `also_as`, a second single key, which `entries` never lists and which beside a contribution to the
+  same key is a single/collection mix. [M 3]
+- **`Role`'s `on_unimplemented`:** message "`{Self}` is not a role key", label "a global enhancer is
+  contributed under a role key", note "the role keys are `AnyGuard<T>`, `AnyInterceptor<T>` and
+  `AnyErrorHandler<T>` for a `T: Transport`". A type written like a role key that is not one fails
+  there. [M R2; W 1]
+
+---
+
+### 5. Internal only, listed for completeness
+
+- The enhancer mark: `ModuleDef::enhancer` returns the `Contribute` builder carrying a mark; each
+  record it pushes is listed in `ModuleNode::enhancers`, and freezing gives those bindings
+  `Role::Enhancer`. `scopes::assign_roles` no longer resets roles and reads no key name; C 6's
+  `type_name` probe is replaced. [W 1, W 2]
+- `Graph`, `FrozenModule`, `FrozenBinding`, `Edge`, `EdgeTarget`, `VisibilityTable`, `Visible`,
+  `InputDecl`, `Override`, `OverrideTarget` and `CollectionOverride` derive `Clone`; `wire_lazy`
+  calls `base.clone()`, every `clone_*` helper is gone, and override application clones `Recipe`
+  and `Dependencies` directly. `TestPlan` does not derive: `Replacement` holds a `Box<dyn Module>`.
+  [W 10; R R2]
+- `BindingRecord`, `AlsoAs`, `Recipe`, `ReadyRecord`, `HookRecord`, `HandlerDecl`, `EnhancerDep`,
+  `HandlerRecord`, `ControllerRecord`, `DependencyRecord`, `Read` and `ReadKind` derive `Clone`; the
+  last three, `ControllerRecord`, `Qualifier` and `DependencyLabel` also `Copy`. Every closure field
+  was already an `Arc`: no constructor changed, and a clone shares each closure and value with the
+  original. [R 8]
+- An override's key may carry a qualifier; the record an `also_as` override splits off, and each
+  `override_many` item, keeps `primary` unqualified and the qualifier apart, as every other record
+  does. [W 6]
+- Role-key recognition looks through parentheses and the invisible group a `macro_rules` `$t:ty`
+  produces. [M 2]
+- Rename internals [rename 5, 6, 7]: `crates/ulo/src/site/` → `dependency/`,
+  `ulo-macros/src/shared/sites.rs` → `shared/dependencies.rs`. `SiteRead` → `Read`, `SiteRecord` →
+  `DependencyRecord` (`.desc` → `.requirement`), `SiteLabel` → `DependencyLabel`, every `sites`
+  field → `dependencies`, `Edge.site` → `Edge.dependency`, `Steps.sites` → `Steps.dependencies`,
+  the `site_*` and `*_sites` functions → `dependency_*` and `*_dependencies`, `sites_deps` →
+  `closure_deps`; `HookSite`/`site_hooks`/`site_key` → `HookOwner`/`hooks_of`/`owner_key`, which were
+  not part of the family; the `site: usize` parameters of `Graph::consumer` and
+  `Graph::dependency_step` → `index`. Macros: `SiteSpec`/`SiteLabel` →
+  `DependencySpec`/`DependencyLabel`, `sites_param()` and the generated `s` → `dependencies_param()`
+  and `d`, `ConstructImpl.sites` → `.dependencies`, `FieldRole::Site` → `::Dependency`,
+  `__ulo_site_{i}` → `__ulo_dep_{i}`. Kept: `Span::call_site`, `Span::mixed_site`, "mixed-site", "a
+  factory's call site", "call-site span", `visited`.
+- `BUILD_PLAN.md`'s area G row names `field` and `param` in place of `assert_site`, which
+  `__private.rs` never defined. [rename 8]
+- Doc comments: `AnyGuard` and `Contribute` show `m.enhancer::<AnyGuard<Http>>()`, and `Contribute`
+  states that `contribute` records a provider contribution whatever its key. [W; M R1]
+- Design text placed by the fold [design-fold]: the failed-`connect` limit, what a dropped app's
+  init hooks did outside the process, sits in §9.2 only; the misspelled-transport-key limit (D6) in
+  §7 only; §12's row is worded "A written wait"; `ConstructError::Site` is spelled nowhere in the
+  design, which closes rename 2's open item.
+
+---
+
+### 6. Superseded wave 1 entries
+
+- **C 3, C E1** (an unbound export reported as `Missing` with a consumer string) → `ExportNotBound`
+  [W 4]; D3 as signed.
+- **C 6** (role detection by `type_name` prefix through a probe transport) → `m.enhancer::<R:
+  Role>()` and the role mark at freeze [W 1, W 2, M 2]; the thirteenth response's first added
+  decision.
+- **C 7**, its statement that closure sites are checked for keys and not scope →
+  `ClosureNeedsExecution` [W 8]; D10 as signed.
+- **C 14, C E2** (an unmatched `replace_module` unreported) → `ReplacementUnmatched` [W 5]; D4 as
+  signed.
+- **D 6** (no override spelling reaches a `.qualified::<Q>()` binding) → `.qualified::<Q>()` on
+  `TestApp<Pending>` and `TestApp<PendingMany>` [W 6]; D5 as adjusted.
+- **E 5** (`.backoff` on a timerless app accepted) → `BackoffWithoutTimer` [W 7]; D8 as signed.
+- **A 4, E 11's `AmbiguousModule` reuse** ("`X` is ambiguous between A, B" reading for both) →
+  `LookupError::Ambiguous` carries that text and `AmbiguousModule` names a module type alone [R 1];
+  D2 as signed.
+- **F 4** (a pipeline panic unwinds out of `dispatch`) → caught per boundary, `PanicRecovered {
+  stage, message }` [R 2, R 3, R 4]; D14 as signed.
+- **E 12**, "`close` runs per transport in reverse bind order, one after another, unbounded" →
+  bounded by the cap's remainder or `hook_timeout`, a timeout recorded as `ShutdownFailure::Close`
+  [R 5, R 6]; the thirteenth response's third added decision.
+- **A 1's cost**, "`a::Config` and `b::Config` print alike in every diagnostic" → full paths on
+  collision for keys [W 9, R 7]; the second added decision. Module names still print short.
+- **G 3** (a controller-level `value = expr` built once per handler) → a compile error [M 1]; D7 as
+  adjusted.
+- **D20's `clone_graph`** and its hand copies → derived `Clone` [W 10, R 8].
+- **design-notes 1, spine 23** (`Sites::{field, param, site}`, `SiteDesc`) → `Dependencies::{field,
+  param, add}`, `Requirement` [rename]; D17 replaced by the rename.
+- **spine 8** (`Factory<Args>` and `ShutdownFactory<Args>` over closures whose parameters are each
+  a `Site`) and **spine 16** (`Meta::sites`) → `FromContainer`, `Factory::dependencies`,
+  `ShutdownFactory::dependencies`, `Meta::dependencies` [rename 1].
+- **B 7** (`ConstructError`'s `Debug` writing `Site(..)`) → `Dependency(..)` [rename 2].
+- **G 9** (a non-`Site` field or parameter reporting with "the `Site` message") →
+  `FromContainer`'s text, "`{Self}` cannot be obtained from the container" [rename 4].
+- **spine 32** (`override_many(..)` answering `TestApp<Settled>`) → `TestApp<PendingMany>` [W 6];
+  D24.
+- **Wave 1 §5's** "`__private::{field, param}` replace `assert_site`, declaring and asserting
+  `Site + AllowedIn<Sc>`" → the same two functions asserting `FromContainer + AllowedIn` [rename 8];
+  **wave 1 §6's** `lifecycle/connect.rs` `site_key` is `owner_key` [rename 6].
+- The word "site" in D1, D10, D15 and §3's factory entry reads "dependency" or "injection point";
+  the decisions stand. [rename]
