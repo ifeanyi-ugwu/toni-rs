@@ -6,13 +6,16 @@
 //! [`Service`] takes it from there.
 
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::future::poll_fn;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
+use http::StatusCode;
 use ulo::{BoxError, BoxFuture};
 
 use crate::body::HttpBody;
+use crate::response::Response;
 
 /// The service a pre-dispatch tower layer wraps: the rest of the stage, then routing or dispatch.
 /// `.layer(L)` accepts any `tower::Layer<ulo_http::Service>`.
@@ -21,6 +24,10 @@ use crate::body::HttpBody;
 /// `RequestBodyLimitLayer`, composes; the body is boxed back into an `HttpBody` before the stage
 /// continues. It never fails: the rest of the chain always answers with a response, an error
 /// rendered as one.
+///
+/// The rest of the chain runs once per request. A layer that calls its inner service a second
+/// time for one request, a retry for example, or that builds a new request without the original's
+/// extensions, gets a 500 response from it.
 #[derive(Clone, Default)]
 pub struct Service {
     _private: (),
@@ -40,8 +47,45 @@ where
     }
 
     fn call(&mut self, req: http::Request<B>) -> Self::Future {
-        let _ = req;
-        todo!("take the request's continuation from its extensions and run it with the body boxed")
+        let (mut head, body) = req.into_parts();
+        let rest = head.extensions.remove::<Continuation>().and_then(|continuation| continuation.take());
+        let req = http::Request::from_parts(head, HttpBody::new(body));
+        Box::pin(async move {
+            match rest {
+                Some(rest) => Ok::<_, Infallible>(rest(req).await),
+                None => {
+                    tracing::error!(
+                        "a pre-dispatch tower layer called its inner service without the request's continuation: \
+                         a second call for one request, or a request built without the original's extensions"
+                    );
+                    let mut response = Response::new(HttpBody::empty());
+                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                    Ok(response)
+                }
+            }
+        })
+    }
+}
+
+/// What runs after a layer: the rest of the pre-dispatch chain, then routing or dispatch.
+type Rest = Box<dyn FnOnce(http::Request<HttpBody>) -> BoxFuture<'static, Response> + Send>;
+
+/// The request's continuation, as it travels through a layer in the request's extensions.
+///
+/// `http::Extensions` holds only `Clone` values, and a layer may clone a request's extensions, so
+/// every clone shares the one slot and the first [`Service`] call to reach it takes it.
+#[derive(Clone)]
+pub(crate) struct Continuation {
+    slot: Arc<Mutex<Option<Rest>>>,
+}
+
+impl Continuation {
+    pub(crate) fn new(rest: impl FnOnce(http::Request<HttpBody>) -> BoxFuture<'static, Response> + Send + 'static) -> Self {
+        Continuation { slot: Arc::new(Mutex::new(Some(Box::new(rest)))) }
+    }
+
+    fn take(&self) -> Option<Rest> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 }
 
@@ -69,7 +113,20 @@ where
     B::Error: Into<BoxError>,
 {
     fn layer(&self, inner: Service) -> LayeredService {
-        let _ = inner;
-        todo!("`self.0.layer(inner)`, called per request on a clone after `poll_ready`, the response body boxed")
+        let service = self.0.layer(inner);
+        // `tower::Service::call` takes `&mut self` and readiness belongs to one caller, so each
+        // request drives its own clone, as tower's `oneshot` does.
+        Arc::new(move |req: http::Request<HttpBody>| -> BoxFuture<'static, Result<http::Response<HttpBody>, BoxError>> {
+            let mut service = service.clone();
+            Box::pin(async move {
+                poll_fn(|cx| <S as tower::Service<http::Request<HttpBody>>>::poll_ready(&mut service, cx))
+                    .await
+                    .map_err(Into::<BoxError>::into)?;
+                let response = <S as tower::Service<http::Request<HttpBody>>>::call(&mut service, req)
+                    .await
+                    .map_err(Into::<BoxError>::into)?;
+                Ok::<_, BoxError>(response.map(HttpBody::new))
+            })
+        })
     }
 }

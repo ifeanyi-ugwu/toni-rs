@@ -38,6 +38,12 @@ impl<'a> Next<'a> {
     pub fn run(self, req: Request) -> BoxFuture<'a, Response> {
         (self.rest)(req)
     }
+
+    /// The bound fixes the closure's return type at `BoxFuture<'a, _>`, so a closure answering a
+    /// `'static` future coerces into a `Next` borrowing whatever the middleware's `&self` borrows.
+    pub(crate) fn new(rest: impl FnOnce(Request) -> BoxFuture<'a, Response> + Send + 'a) -> Self {
+        Next { rest: Box::new(rest) }
+    }
 }
 
 /// The dyn-compatible twin of [`Middleware`] the stage stores.

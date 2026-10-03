@@ -41,6 +41,9 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Stops accepting: HTTP/2 GOAWAY, idle HTTP/1.1 keep-alive connections closed, busy ones
     /// marked `Connection: close` on their next response.
+    ///
+    /// It may return only once its connections have ended, so `close` does not cut a response
+    /// still being written; the core drops a drain still running at its drain deadline.
     fn drain(&self) -> impl Future<Output = ()> + Send;
 
     /// Closes every listener and connection left.
