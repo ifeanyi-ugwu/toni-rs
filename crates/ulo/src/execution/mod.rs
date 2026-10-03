@@ -17,6 +17,7 @@ pub(crate) mod cache;
 pub(crate) mod extensions;
 pub(crate) mod notify;
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
@@ -224,7 +225,8 @@ impl Execution {
     /// Registers `f` to run once, synchronously, when the reply stream finishes, with how it
     /// ended. Runtime-free and callable from an interceptor, which returns the reply before the
     /// stream is consumed. Registered after the end, `f` runs at once with the recorded outcome.
-    /// A reply that never streams never runs it.
+    /// A reply that never streams never runs it. A panic in `f` is caught and dropped wherever it
+    /// runs; the callbacks after it still run.
     pub fn on_stream_end(&self, f: impl FnOnce(StreamOutcome) + Send + 'static) {
         self.shared.on_stream_end(Box::new(f));
     }
@@ -302,8 +304,9 @@ impl ExecutionRef {
     }
 
     /// Records how the reply stream ended and runs every `on_stream_end` callback once, in the
-    /// order registered. For `ulo_transport::Tracked`, which wraps every streaming answer; a
-    /// later report changes nothing.
+    /// order registered. For `ulo_transport::Tracked`, which wraps every streaming answer and
+    /// reports from its `Drop`; a later report changes nothing. A callback's panic is caught, so
+    /// the report never panics.
     pub fn report_stream_end(&self, outcome: StreamOutcome) {
         self.shared.report_stream_end(outcome);
     }
@@ -359,7 +362,7 @@ impl ExecShared {
         match end.outcome {
             Some(outcome) => {
                 drop(end);
-                f(outcome);
+                run_stream_end(f, outcome);
             }
             None => end.callbacks.push(f),
         }
@@ -376,7 +379,14 @@ impl ExecShared {
             std::mem::take(&mut end.callbacks)
         };
         for callback in callbacks {
-            callback(outcome);
+            run_stream_end(callback, outcome);
         }
     }
+}
+
+/// Runs one `on_stream_end` callback, dropping its panic. `Tracked` reports from its `Drop`, where
+/// a panic during an unwind aborts the process and any other panic skips the callbacks after it.
+/// The panic hook has already reported the panic by the time it is caught.
+fn run_stream_end(callback: StreamEndFn, outcome: StreamOutcome) {
+    let _ = catch_unwind(AssertUnwindSafe(move || callback(outcome)));
 }

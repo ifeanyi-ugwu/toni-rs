@@ -31,9 +31,10 @@
 use std::any::{Any, type_name};
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::binding::{Instance, downcast_instance, instance_of};
-use crate::error::{DispatchStage, GuardRejected, LookupError, LookupKind, PanicRecovered};
+use crate::error::{DispatchStage, EndStream, GuardRejected, LookupError, LookupKind, PanicRecovered};
 use crate::execution::cache::Slot;
 use crate::execution::{ExecShared, ExecutionRef};
 use crate::graph::{Effective, Graph, ModuleId, Visible};
@@ -76,7 +77,7 @@ where
     };
     match outcome {
         Ok(reply) => Ok(reply),
-        Err(err) => recover(handler, &at, cx, err).await,
+        Err(err) => claim(Some(handler), &at, cx, err).await,
     }
 }
 
@@ -104,8 +105,12 @@ pub enum LateOutcome {
 /// global, each with `cx.exec().is_late() == true` from here on, so a handler written for both
 /// paths can tell them apart. `exec` is the call's execution, the one `cx` wraps.
 pub async fn dispatch_late<T: Transport>(handler: &MountedHandler<T>, exec: &ExecutionRef, cx: &T::Cx, err: BoxError) -> LateOutcome {
-    let _ = (handler, exec, cx, err);
-    todo!("X7: mark the execution late, run `recover`, and map `Ok` to `Ignored`, `Err(EndStream)` to `End`, any other `Err` to `Render`")
+    exec.shared.late.store(true, Ordering::Release);
+    match recover(Some(handler), exec, cx, err).await {
+        Ok(_ignored) => LateOutcome::Ignored,
+        Err(err) if err.is::<EndStream>() => LateOutcome::End,
+        Err(err) => LateOutcome::Render(err),
+    }
 }
 
 /// Offers `err` to the error handlers where no `dispatch` ran around it: an error or a panic in a
@@ -113,20 +118,39 @@ pub async fn dispatch_late<T: Transport>(handler: &MountedHandler<T>, exec: &Exe
 /// `handler`'s method tier, then its controller tier, then the global tier. With `None`, nothing
 /// matched, and only the global error handlers of `T` apply.
 ///
-/// `exec` is the call's execution, the one `cx` wraps; with no handler, the global handlers
-/// resolve with the execution's current module. An error no handler claims is returned for the
-/// transport to render.
+/// `exec` is the call's execution, the one `cx` wraps. With a handler, its `HandlerInfo` is set on
+/// the execution first, as `dispatch` sets it, so an error handler reads the matched route through
+/// `cx.exec().handler()`; with none, `handler()` stays `None`. With a handler, the error handlers
+/// resolve with the controller's module; with none, with the execution's current module, the root
+/// for a transport that routes after opening. Each runs under its own catch, as in `dispatch`. An
+/// error no handler claims is returned for the transport to render.
 pub async fn recover<T: Transport>(
     handler: Option<&MountedHandler<T>>,
     exec: &ExecutionRef,
     cx: &T::Cx,
     err: BoxError,
 ) -> Result<T::Reply, BoxError> {
-    let _ = (handler, exec, cx, err);
-    todo!("run the declared tiers when a handler matched, then the global `AnyErrorHandler<T>` entries, each caught as in `dispatch`")
+    match handler {
+        Some(handler) => {
+            let _ = exec.shared.handler.set(Arc::clone(&handler.info));
+            let graph = handler.module.app.graph();
+            let module = handler.module.module;
+            let resolver = exec.resolver().in_module(module);
+            let at = Lookup { graph: &graph, module, resolver: &resolver, exec: &exec.shared, secrets: &graph.secrets };
+            claim(Some(handler), &at, cx, err).await
+        }
+        None => {
+            let resolver = exec.resolver();
+            let graph = Arc::clone(&resolver.graph);
+            let module = resolver.module;
+            let at = Lookup { graph: &graph, module, resolver: &resolver, exec: &exec.shared, secrets: &graph.secrets };
+            claim(None, &at, cx, err).await
+        }
+    }
 }
 
-/// Where a declaration resolves: the controller's module, inside the call's execution.
+/// Where a declaration resolves, inside the call's execution: the controller's module, or the
+/// execution's own for an error offered by `recover` with no handler matched.
 struct Lookup<'s> {
     graph: &'s Graph,
     module: ModuleId,
@@ -221,21 +245,25 @@ where
     Next { cx, rest: interceptors, handler, secrets }.run()
 }
 
-/// Offers `err` to each error handler in turn. `Ok` claims it; `Err` hands the next handler the
-/// error returned. A handler that cannot be built hands on its own `LookupError` the same way,
-/// and one that panics hands on its `PanicRecovered`.
-async fn recover<T: Transport>(handler: &MountedHandler<T>, at: &Lookup<'_>, cx: &T::Cx, mut err: BoxError) -> Result<T::Reply, BoxError> {
-    let declared = handler.method_spec.error_handlers.iter().rev().chain(handler.controller_spec.error_handlers.iter().rev());
-    for decl in declared {
-        let attempt = async move {
-            match obtain(decl, at).await {
-                Ok(eh) => offer(&*eh, err, cx).await,
-                Err(failed) => Err(BoxError::from(failed)),
+/// Offers `err` to each error handler in turn: `handler`'s method tier, then its controller tier,
+/// each last-declared first, then the global tier, also last-contributed first. `Ok` claims it;
+/// `Err` hands the next handler the error returned. A handler that cannot be built hands on its
+/// own `LookupError` the same way, and one that panics hands on its `PanicRecovered`.
+async fn claim<T: Transport>(handler: Option<&MountedHandler<T>>, at: &Lookup<'_>, cx: &T::Cx, mut err: BoxError) -> Result<T::Reply, BoxError> {
+    if let Some(handler) = handler {
+        let declared =
+            handler.method_spec.error_handlers.iter().rev().chain(handler.controller_spec.error_handlers.iter().rev());
+        for decl in declared {
+            let attempt = async move {
+                match obtain(decl, at).await {
+                    Ok(eh) => offer(&*eh, err, cx).await,
+                    Err(failed) => Err(BoxError::from(failed)),
+                }
+            };
+            match caught(DispatchStage::ErrorHandler, at.secrets, attempt).await {
+                Ok(reply) => return Ok(reply),
+                Err(next) => err = next,
             }
-        };
-        match caught(DispatchStage::ErrorHandler, at.secrets, attempt).await {
-            Ok(reply) => return Ok(reply),
-            Err(next) => err = next,
         }
     }
     let global: Vec<_> = match at.resolver.entries::<AnyErrorHandler<T>>() {

@@ -125,15 +125,16 @@ fn table_for(graph: &Graph, module: ModuleId) -> VisibilityTable {
     VisibilityTable { entries }
 }
 
-/// Resolves every injection point of every binding, hook closure, readiness check, enhancer
-/// declaration and metadata value into `Edge`s, and reports missing keys (with the injection
-/// point, the key and the module) and ambiguous keys (naming every source module). A missing
-/// key whose name equals a bound key's name up to a trailing
+/// Resolves every injection point of every binding, hook closure, readiness check, handler
+/// parameter, enhancer declaration and metadata value into `Edge`s, and reports missing keys
+/// (with the injection point, the key and the module) and ambiguous keys (naming every source
+/// module). A missing key whose name equals a bound key's name up to a trailing
 /// `+ core::marker::Send + core::marker::Sync` names both spellings.
 ///
-/// Only a binding's own dependencies become edges. Readiness checks, hooks, enhancer closures
-/// and metadata are checked for missing and ambiguous keys alone; the passes that need what they
-/// read resolve it again from the tables.
+/// Only a binding's own dependencies become edges. Readiness checks, hooks, handler parameters,
+/// enhancer closures and metadata are checked for missing and ambiguous keys alone; the passes
+/// that need what they read resolve it again from the tables. A handler's parameters resolve
+/// against its controller's module, where the pipeline reads them.
 ///
 /// The root's table is then swept: an ambiguous key there is reported even when nothing reads
 /// it, because a lookup naming no module uses the root's visibility and has no variant for an
@@ -182,6 +183,7 @@ pub(crate) fn resolve_dependencies(graph: &mut Graph, declared: &Declared, error
                 });
             }
         }
+        check_dependencies(graph, handler.module, &handler.decl.dependencies, &name, errors, &mut reported);
         for dep in &handler.decl.enhancer_deps {
             match dep {
                 EnhancerDep::Type(key) => {

@@ -130,6 +130,11 @@ pub enum WiringError {
     SingleRoleBinding { key: KeyName, module: ModuleName, at: &'static Location<'static> },
     /// Step 2: two `.ready(..)` checks on one binding.
     DuplicateReadiness { key: KeyName, module: ModuleName, first: &'static Location<'static>, second: &'static Location<'static> },
+    /// Step 2: an execution input a transport declares through `Transport::inputs` that has a
+    /// second source: a module's `input::<T>().seeded_by::<Tr>()` naming another seeder, another
+    /// transport's declaration, or a single binding. `first` and `second` are the two sources as
+    /// printed, a transport's as ``declared by transport `Http` at src/transport.rs:40``.
+    InputConflict { key: KeyName, first: String, second: String },
     /// Step 2, tests: an override that matches no binding. `keyed` names a keyed module whose
     /// qualifier the override's key carries and which binds the key unqualified, as a keyed
     /// module's bindings are: `.in_module_keyed::<M, Q>()` reaches that binding as written.
@@ -212,6 +217,7 @@ impl WiringError {
             | WiringError::QualifiedRoleContribution { key, .. }
             | WiringError::SingleRoleBinding { key, .. }
             | WiringError::DuplicateReadiness { key, .. }
+            | WiringError::InputConflict { key, .. }
             | WiringError::OverrideUnmatched { key, .. }
             | WiringError::OverrideAmbiguous { key, .. }
             | WiringError::OverrideKind { key, .. }
@@ -268,6 +274,7 @@ impl WiringError {
             }
             WiringError::Cycle { path } => path.iter().map(|(_, module)| module).collect(),
             WiringError::OverrideKind { .. }
+            | WiringError::InputConflict { .. }
             | WiringError::TimerOverride { .. }
             | WiringError::ClosureNeedsExecution { .. }
             | WiringError::ClosureScopeViolation { .. }
@@ -403,6 +410,16 @@ impl WiringError {
                     format!("first `.ready(..)` at {}", place(first)),
                     format!("second `.ready(..)` at {}", place(second)),
                     "help: fold both into one check".to_owned(),
+                ],
+            ),
+            WiringError::InputConflict { key, first, second } => tree(
+                f,
+                format!("execution input `{}` has two sources", show(key)),
+                vec![
+                    first.clone(),
+                    second.clone(),
+                    "help: an input is seeded by the one transport that declares it, and no module binds it; remove the other source"
+                        .to_owned(),
                 ],
             ),
             WiringError::OverrideUnmatched { key, keyed, at } => {

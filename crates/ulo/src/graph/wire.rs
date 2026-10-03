@@ -16,7 +16,7 @@ use crate::graph::{
     BindingId, EdgeTarget, Effective, FrozenBinding, FrozenModule, Graph, InputDecl, InputOrigin, ModuleId, Role,
     Visible, boundary_key, cycles, order, record_key, register, scopes, visibility,
 };
-use crate::key::{BindingKind, Key, KeyName};
+use crate::key::{BindingKind, Key, KeyName, short_type_name};
 use crate::module::def::{ExportRecord, InputRecord, ModuleNode};
 use crate::module::meta::FrozenMeta;
 use crate::module::{Module, ModuleIdentity, ModuleName};
@@ -115,6 +115,9 @@ pub(crate) struct Declared {
     pub(crate) first_handler: usize,
     pub(crate) exports: Vec<(ModuleId, ExportRecord)>,
     pub(crate) inputs: Vec<(ModuleId, InputRecord)>,
+    /// Every input a `Transport::inputs` declared, in mount order, each with its transport origin.
+    /// A lazy load mounts no handler and declares none.
+    pub(crate) transport_inputs: Vec<InputDecl>,
     /// Each metadata value's dependencies, with the metadata type's name.
     pub(crate) meta: Vec<(ModuleId, &'static str, Dependencies)>,
 }
@@ -304,6 +307,7 @@ fn freeze(
         first_handler: graph.handlers.len(),
         exports: Vec::new(),
         inputs: Vec::new(),
+        transport_inputs: Vec::new(),
         meta: Vec::new(),
     };
 
@@ -347,7 +351,7 @@ fn freeze(
             let mut decls = Vec::new();
             (controller.mount)(&mut Mount::new(&mut decls));
             for decl in &decls {
-                declare_transport_inputs(graph, decl, &mut transports_seen);
+                declare_transport_inputs(graph, decl, &mut transports_seen, &mut declared.transport_inputs);
             }
             graph.handlers.extend(
                 decls
@@ -660,21 +664,24 @@ fn qualifier_of(key: Key) -> Qualifier {
 
 /// `Transport::inputs` of `decl`'s transport, the first time a handler of that transport mounts
 /// (transports DESIGN §2.10, X4). Each key is recorded with the transport as its seeder and its
-/// origin. A module's own declaration of the same key with the same seeder is the same
-/// declaration; one with another seeder, or bound as an ordinary binding, is reported by step 2.
-fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeId>) {
+/// origin, in `graph` and in `declared` for step 2. A module's own declaration of the same key
+/// with the same seeder is the same declaration; one with another seeder, another transport's
+/// declaration of the key, or a single binding under it is reported by step 2.
+fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeId>, declared: &mut Vec<InputDecl>) {
     if !seen.insert(decl.transport) {
         return;
     }
     let mut inputs = Inputs::new();
     (decl.inputs)(&mut inputs);
     for input in inputs.keys {
-        graph.inputs.entry(input.key).or_insert(InputDecl {
+        let declaration = InputDecl {
             key: input.key,
             seeder: decl.transport,
             seeder_name: decl.transport_name,
             origin: InputOrigin::Transport { name: decl.transport_name, at: input.location },
-        });
+        };
+        graph.inputs.entry(input.key).or_insert_with(|| declaration.clone());
+        declared.push(declaration);
     }
 }
 
@@ -722,7 +729,9 @@ fn check_modules(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErro
 }
 
 /// Step 2: duplicate single bindings, single/collection mixes, aliases pointing at nothing, two
-/// readiness checks on one binding, and an execution input declared twice or also bound.
+/// readiness checks on one binding, an execution input declared by two modules or also bound,
+/// and an input a transport declares that a module declares with another seeder, another
+/// transport also declares, or a module binds.
 fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringError>) {
     for module in graph.modules.iter().skip(declared.first_module) {
         let mut first: HashMap<Key, BindingId> = HashMap::new();
@@ -842,6 +851,55 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
             }
         }
     }
+
+    // A transport's declaration and a module's of the same key and seeder are one declaration;
+    // with another seeder, or beside another transport's or a single binding, the input has two
+    // sources and a handler of one of the transports would read it unseeded.
+    for (index, input) in declared.transport_inputs.iter().enumerate() {
+        let key = || input.key.name(BindingKind::Single);
+        let first = input_site(graph, input);
+        for (module, other) in declared.inputs.iter().filter(|(_, other)| other.key == input.key && other.seeder != input.seeder) {
+            let second = format!(
+                "declared in {} with seeder `{}` at {}",
+                graph.module_name(*module),
+                short_type_name(other.seeder_name),
+                place(other.location)
+            );
+            errors.push(WiringError::InputConflict { key: key(), first: first.clone(), second });
+        }
+        for other in declared.transport_inputs[..index].iter().filter(|other| other.key == input.key && other.seeder != input.seeder) {
+            errors.push(WiringError::InputConflict { key: key(), first: input_site(graph, other), second: first.clone() });
+        }
+        // A binding under the key is reported once: by the module loop above when a module
+        // declares the input too, otherwise against the key's first transport declaration.
+        let reported = declared.inputs.iter().any(|(_, other)| other.key == input.key)
+            || declared.transport_inputs[..index].iter().any(|other| other.key == input.key);
+        if reported {
+            continue;
+        }
+        for binding in &graph.bindings {
+            if binding.record.kind == BindingKind::Single && binding.record.keys().any(|bound| bound == input.key) {
+                let second = format!("bound in {} at {}", graph.module_name(binding.origin), place(binding.record.location));
+                errors.push(WiringError::InputConflict { key: key(), first: first.clone(), second });
+            }
+        }
+    }
+}
+
+/// Where an input was declared, as a report line: ``declared by transport `Http` at
+/// src/transport.rs:40`` for a transport, ``declared in AppModule with seeder `Rpc` `` for a
+/// module, whose `InputDecl` keeps no location.
+fn input_site(graph: &Graph, input: &InputDecl) -> String {
+    match input.origin {
+        InputOrigin::Transport { name, at } => format!("declared by transport `{name}` at {}", place(at)),
+        InputOrigin::Module(module) => {
+            format!("declared in {} with seeder `{}`", graph.module_name(module), short_type_name(input.seeder_name))
+        }
+    }
+}
+
+fn place(at: &Location<'_>) -> String {
+    format!("{}:{}", at.file(), at.line())
 }
 
 /// Step 6: a `Timer` wherever a wait is written: a readiness `.timeout`, `.attempt_timeout` or
@@ -938,7 +996,8 @@ fn refusal(base: &Graph, registry: &Registry) -> Option<LoadRefusal> {
 }
 
 /// Whether anything in `base` reads `key` as a collection: a binding's dependency, a readiness
-/// check or hook closure, a module hook, an enhancer closure, or a transport's role collection.
+/// check or hook closure, a module hook, a handler's parameter, an enhancer closure, or a
+/// transport's role collection.
 fn reads_collection(base: &Graph, key: Key) -> bool {
     let in_dependencies = |dependencies: &Dependencies| {
         dependencies.list.iter().flat_map(|d| &d.requirement.reads).any(|read| matches!(&read.kind, ReadKind::Collection(k) if *k == key))
@@ -950,6 +1009,7 @@ fn reads_collection(base: &Graph, key: Key) -> bool {
     }) || base.modules.iter().any(|module| module.hooks.iter().any(|hook| in_dependencies(&hook.dependencies)))
         || base.handlers.iter().any(|handler| {
             handler.decl.role_keys.contains(&key)
+                || in_dependencies(&handler.decl.dependencies)
                 || handler.decl.enhancer_deps.iter().any(|dep| match dep {
                     EnhancerDep::Closure(closure) => in_dependencies(&closure.dependencies),
                     EnhancerDep::Type(_) => false,

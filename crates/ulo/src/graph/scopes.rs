@@ -380,11 +380,12 @@ fn execution_steps(graph: &Graph, id: BindingId) -> Vec<String> {
 /// reads it, the handler's transport and the input's seeder.
 ///
 /// What a handler reaches: its controller, the global enhancers under its transport's role
-/// keys, the bindings its by-type enhancers name, and what its enhancer closures built in an
-/// execution read. The walk
-/// enters execution-scoped and transient bindings only, since a singleton is built at `connect`
-/// with no execution, and one reading an input has already failed the scope check. Each input is
-/// reported once per handler and reading binding.
+/// keys, what its own parameters read (`HandlerSpec::dependencies`), the bindings its by-type
+/// enhancers name, and what its enhancer closures built in an execution read. An input a
+/// parameter or a closure reads directly is checked there. The walk enters execution-scoped and
+/// transient bindings only, since a singleton is built at `connect` with no execution, and one
+/// reading an input has already failed the scope check. Each input is reported once per handler
+/// and reading binding.
 pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
     for handler in &graph.handlers {
         InputWalk::new(graph, handler).run(errors);
@@ -412,6 +413,7 @@ impl<'g> InputWalk<'g> {
         for key in handler.decl.role_keys {
             roots.extend(graph.collection(key).iter().copied());
         }
+        self.read_roots(&handler.decl.dependencies, None, &mut roots, errors);
         for dep in &handler.decl.enhancer_deps {
             match dep {
                 EnhancerDep::Type(key) => {
@@ -422,22 +424,7 @@ impl<'g> InputWalk<'g> {
                 // A closure built once reads no execution data, or `closure_scopes` refused it.
                 EnhancerDep::Closure(closure) if graph.closures.get(&closure.id) == Some(&Effective::Singleton) => {}
                 EnhancerDep::Closure(closure) => {
-                    for dependency in &closure.dependencies.list {
-                        for read in &dependency.requirement.reads {
-                            match &read.kind {
-                                ReadKind::Single(key) => match graph.lookup(handler.module, *key) {
-                                    Some(Visible::Input(input)) if !read.optional => {
-                                        let path = vec![self.head.clone(), "enhancer closure".to_owned(), dependency_text(dependency)];
-                                        self.report(*input, None, path, errors);
-                                    }
-                                    Some(Visible::Binding(id)) => roots.push(*id),
-                                    _ => {}
-                                },
-                                ReadKind::Collection(key) => roots.extend(graph.collection(*key).iter().copied()),
-                                ReadKind::Extension(_) | ReadKind::Execution | ReadKind::Module => {}
-                            }
-                        }
-                    }
+                    self.read_roots(&closure.dependencies, Some("enhancer closure"), &mut roots, errors);
                 }
             }
         }
@@ -465,6 +452,39 @@ impl<'g> InputWalk<'g> {
                 if in_execution(graph, dep) && !parent.contains_key(&dep) {
                     parent.insert(dep, Some(node));
                     queue.push_back(dep);
+                }
+            }
+        }
+    }
+
+    /// What `dependencies`, read inside the handler's execution, reach: each binding a single read
+    /// resolves to and every contribution of a collection read, pushed onto `roots`, and each
+    /// non-optional input read directly, reported here. `via` names what reads them between the
+    /// handler and the injection point, `None` for the handler's own parameters.
+    fn read_roots(
+        &mut self,
+        dependencies: &Dependencies,
+        via: Option<&str>,
+        roots: &mut Vec<BindingId>,
+        errors: &mut Vec<WiringError>,
+    ) {
+        let graph = self.graph;
+        let module = self.handler.module;
+        for dependency in &dependencies.list {
+            for read in &dependency.requirement.reads {
+                match &read.kind {
+                    ReadKind::Single(key) => match graph.lookup(module, *key) {
+                        Some(Visible::Input(input)) if !read.optional => {
+                            let mut path = vec![self.head.clone()];
+                            path.extend(via.map(str::to_owned));
+                            path.push(dependency_text(dependency));
+                            self.report(*input, None, path, errors);
+                        }
+                        Some(Visible::Binding(id)) => roots.push(*id),
+                        _ => {}
+                    },
+                    ReadKind::Collection(key) => roots.extend(graph.collection(*key).iter().copied()),
+                    ReadKind::Extension(_) | ReadKind::Execution | ReadKind::Module => {}
                 }
             }
         }
