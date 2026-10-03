@@ -144,7 +144,7 @@ pub async fn recover<T: Transport>(
             let graph = Arc::clone(&resolver.graph);
             let module = resolver.module;
             let at = Lookup { graph: &graph, module, resolver: &resolver, exec: &exec.shared, secrets: &graph.secrets };
-            claim(None, &at, cx, err).await
+            claim::<T>(None, &at, cx, err).await
         }
     }
 }

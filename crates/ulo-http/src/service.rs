@@ -75,7 +75,7 @@ impl AppService {
     }
 
     /// Answers one request; never fails, an error being rendered as a response.
-    pub fn call(&self, req: Request) -> impl Future<Output = Response> + Send + 'static {
+    pub fn call(&self, req: Request) -> impl Future<Output = Response> + Send + use<> {
         let inner = Arc::clone(&self.inner);
         async move { inner.respond(req).await }
     }
