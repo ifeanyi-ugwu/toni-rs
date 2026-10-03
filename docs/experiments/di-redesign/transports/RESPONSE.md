@@ -410,3 +410,152 @@ Two of these with a short note:
 | everything else | as recommended |
 
 For the pre-compile batch, that adds T8 and the `Middleware` signature to T1, T5, T13 and T14. Both touch signatures that would otherwise break after compiling, so they belong before it.
+
+## Fifth response: T2, backends and embedding
+
+Received 2026-10-04, answering the user's T2 follow-up: keep the framework adapters, as the earlier ulo
+HTTP audit concluded, for interop and as a conformance asset, with `ulo-http-hyper` as the reference.
+It restates [16] and designs the embedding surface. The second part answers the user's question on
+how the engines and the adapters relate. Sign-off is pending Fable's review.
+
+### [16] restated
+
+> **Backends and embedding.** `fw-http-hyper` is the reference backend and the default: it owns the listener and serves connections. Each framework adapter (`fw-http-axum`, `-salvo`, `-poem`, `-actix`, `-rocket`) runs the app *inside* that framework instead: nested under a path or as the fallback, with the framework's own middleware around it, and with the host keeping its own server setup. Routing, extraction, pre-dispatch, dispatch and error rendering run inside the app either way. One conformance suite runs every adapter against the hyper reference, with documented limits where a host can't do something.
+
+### 1. Two roles, two types
+
+A `Backend` (§3.7) owns sockets. An embedding owns none. It's a second `Server` implementation that binds nothing, so the app still goes through `listen()`, and `prepare` still builds the route table, checks CORS, and validates paths before anything serves.
+
+```rust
+let (server, embedded) = fw_http::Embedded::new()     // app-level settings only (§5)
+    .body_limit(4 * MB)
+    .max_inflight(512);
+
+let app = App::builder(AppModule).timer(fw_tokio::Timer).wire()?
+    .connect().await?
+    .bind(server)
+    .listen().await?;
+```
+
+`embedded` is a cheap-clone handle, usable before `listen()` returns, so the host's router can be built first. Requests that arrive before the app is bound get 503. That ordering is the host's responsibility, and the documentation says so.
+
+Server-level settings belong to the host: endpoints, TLS, h2c and `max_concurrent_streams`. `Embedded` has no methods for them, so trying one is a compile error (E0599), not a setting silently ignored.
+
+### 2. How each host sees the app
+
+| Adapter | Exposed as | Mounting |
+|---|---|---|
+| axum | `tower::Service` | `Router::nest_service("/api", ..)` or `.fallback_service(..)` |
+| salvo, poem | `tower::Service`, through each framework's tower bridge | nested or fallback |
+| actix-web | a native `HttpServiceFactory` | `App::service(fw_http_actix::scope("/api", embedded))` or `default_service` |
+| rocket | a native `Handler`, mounted as one catch-all route per method | `rocket.mount("/api", fw_http_rocket::routes(embedded))` |
+
+Each adapter is mostly conversion:
+- **actix:** its request payload is `!Send`, while the app's body must be `Send` (the core needs `Execution: Send + Sync`). The adapter forwards payload chunks through a bounded channel from actix's worker-local task, so the app reads a `Send` stream.
+- **rocket:** rocket 0.5 is on `http` 0.2, so the adapter converts at its edge.
+- **The three tower hosts:** these share `fw_http::Service` directly.
+
+**Prefix.** Hosts like axum strip the nest prefix before the app sees the request. The adapter takes the prefix (`.nested_at("/api")`), so the app routes on the stripped path but records the *full* route in its span (`http.route = /api/users/{id}`), and `HttpCx::mount_prefix()` gives handlers what they need to build `Location` headers.
+
+### 3. What host middleware sees, in both directions
+
+The app's `Execution` opens *inside* the app's service, so host middleware runs before any execution exists and never touches it. Information crosses the boundary in two defined places:
+
+- **Host to app, through request extensions.** Host middleware writes a value into the request's `http::Extensions` (axum's `Extension` pattern). The app reads it with the `Host<T>` extractor, or copies it into the execution with a pre-dispatch entry, `.adopt::<T>()`, so guards and services read it as `Ext<T>`. That's how a host's auth layer hands its user to the app's guards.
+- **App to host, through response extensions.** Every response carries a `Handled` value in its response extensions: the matched route, the handler's name, and the transport key. Host logging and metrics can then record the app's route rather than the raw path.
+
+Errors render *inside* the app. Host middleware sees the finished response (problem details, through the app's error handlers), never a `BoxError`, so the app's error shape is the same embedded or not. Panics in the app are caught inside it, so they never reach the host's panic handling.
+
+**Host code reaching the app's container.** A host handler that wants the app's services holds the `AppHandle` and calls `handle.execute(..)` for anything execution-scoped, or `handle.get::<T>()` for a singleton. That serves the case of an existing application adopting this framework's DI one route at a time.
+
+### 4. Routes, misses, and who answers
+
+- **Nested:** the app answers everything under its prefix, misses included. Its 404 and 405 go through its global error handlers (with `NoRoute` and `MethodNotAllowed`), exactly as on the reference backend. The host answers everything else.
+- **Fallback:** the app answers whatever the host didn't match, and its 404 is final.
+
+Unscoped pre-dispatch entries run for every request that reaches the app, misses included, in both modes.
+
+**Passing a miss back to the host** only works where the host supports fallthrough. Rocket does: a handler can return `Outcome::Forward`, so with `.on_miss(Miss::Forward)` an app miss lets rocket try its lower-ranked routes. A tower `Service` can't hand a request back to an axum router, so `prepare` refuses `Miss::Forward` on the adapters that can't honor it.
+
+### 5. Lifecycle and shutdown when the host owns the server
+
+**One owner for signals: the app.** The app's `serve(signal)` stays the single trigger, as DESIGN §9.5 requires. The host's own signal handling is turned off (actix `disable_signals()`, rocket's `shutdown.ctrlc = false`). Two owners would race.
+
+The core's sequence maps onto the host like this:
+
+| Core step | Embedded |
+|---|---|
+| 1. before-shutdown hooks | host still serving normally |
+| 2. stop accepting | `Embedded`'s `drain` resolves `handle.draining()`, which the host's graceful shutdown is wired to: axum's `with_graceful_shutdown`, actix's `ServerHandle::stop(true)`, rocket's `Shutdown::notify()`. From this point the app answers new requests 503 with `Connection: close` (Q2's rule). |
+| 3–4. drain, then cancel | in-flight *executions* drain under `drain_timeout`; the host independently drains its *connections* |
+| 5. destroy hooks | as usual |
+| 6. close | `Embedded::close` awaits the host server's own future, bounded by what remains of the cap, so the app's shutdown report includes a host that didn't stop |
+| 7. shutdown hooks | as usual |
+
+Each adapter provides one helper that does the wiring, so users don't assemble it by hand:
+
+```rust
+let router = axum::Router::new()
+    .route("/legacy", get(legacy))
+    .nest_service("/api", embedded.service());
+
+fw_http_axum::run(app, axum::serve(listener, router), fw_tokio::shutdown_signal()).await?;
+```
+
+`run` connects the host's graceful shutdown to `draining()`, hands the host's future to `Embedded::close`, and returns the app's `Shutdown` outcome.
+
+### 6. What the app can't know, and how it's refused
+
+Each adapter declares `EmbedLimits`, and `prepare` checks the app against them, the same mechanism as `BackendLimits`:
+
+| Limit | Why it varies | Refused in `prepare` |
+|---|---|---|
+| `peer_addr` | axum supplies it only through `ConnectInfo` | a handler reading non-optional `Dep<ClientAddr>` when the adapter isn't told the host provides it (`.peer_addr(true)`) |
+| `upgrades` | hyper hosts pass `OnUpgrade`; actix and rocket use their own mechanisms | a gateway on the HTTP transport when the adapter can't upgrade |
+| `forward_miss` | rocket only | `Miss::Forward` elsewhere |
+| `tls_info` | depends on whether the host terminates TLS | nothing refused; `ConnInfo::tls` is `None` |
+
+### 7. Conformance
+
+One scenario list runs against the hyper reference, and against every adapter in both modes (nested and fallback). It asserts byte-identical responses wherever a scenario doesn't depend on a declared limit, and it covers routing, misses, extraction failures, problem details, SSE, cancellation on disconnect, upgrades, and the drain. The suite also checks the limits table in the other direction: an adapter that *passes* a scenario it declares unsupported fails, so the declared limits stay honest.
+
+This uses the core and transport SPIs as they are: `Embedded` is just another `Server`, its `drain` and `close` are the core's steps, and its `prepare` reads `HandlerSpec` dependencies (R7) for the `peer_addr` check.
+
+### Engines and adapters
+
+The user asked how the engines and the adapters relate.
+
+The key distinction is **who owns the sockets**, and the engine underneath follows from that choice.
+
+**Engines** are what parse HTTP off the wire: framing, keep-alive, HTTP/2 streams, upgrades. There are really only three in play: hyper 1.x, actix-http, and the older hyper 0.14 that Rocket 0.5 still uses. The framework never talks to an engine directly. It talks to whatever sits on top of one.
+
+**The backend** is the case where the app owns the sockets. `fw-http-hyper` binds the listeners, runs the accept loop, and drives hyper connections into `fw_http::Service`. This is the reference path and the default, and it's the one the conformance suite compares everything else against.
+
+**Adapters** are the case where a host framework owns the sockets and the app runs inside it. They split into two kinds by how they connect:
+
+- **Tower embed (axum, salvo, poem).** These hosts already speak tower, so the adapter is thin. It hands the host `fw_http::Service` as a tower service, and the host nests it or uses it as a fallback. All three sit on hyper 1.x, so behaviorally they're closest to the reference.
+- **Native embed (actix, rocket).** These hosts don't speak tower, so each adapter implements the host's own handler trait. The actix adapter bridges actix's `!Send` payload into a `Send` stream. The rocket adapter converts between `http` 0.2 and 1.x, and is the only host that can pass a miss back to its own router.
+
+```rust
+// Backend: the app owns the sockets.
+let app = app.bind(fw_http_hyper::Server::new("0.0.0.0:8080")).listen().await?;
+app.serve(fw_tokio::shutdown_signal()).await?;
+
+// Adapter: the host owns the sockets; the app binds an `Embedded` server that opens none.
+let (server, embedded) = fw_http::Embedded::new();
+let app = app.bind(server).listen().await?;
+let router = axum::Router::new().nest_service("/api", embedded.service());
+fw_http_axum::run(app, axum::serve(listener, router), fw_tokio::shutdown_signal()).await?;
+```
+
+The actix adapter keeps actix's runtime model: actix runs one single-threaded runtime per core with no work-stealing, and the app's pipeline runs inside those per-core workers, so a user who picks actix for thread-per-core behaviour still gets it.
+
+**Should actix-http also get a backend?** That would be a second socket-owning path, so someone could get actix's thread-per-core model without writing an actix-web app. I'd skip it, at least at first. The actix adapter already gives exactly that with a three-line host:
+
+```rust
+HttpServer::new(move || App::new().default_service(fw_http_actix::service(embedded.clone())))
+    .disable_signals()
+    .bind("0.0.0.0:8080")?
+```
+
+A dedicated backend would duplicate that path, and add a second reference implementation for the conformance suite to keep in agreement. If a real need appears, such as needing actix-http's settings without any actix-web types, it can be added as a second backend later without changing anything above it.
