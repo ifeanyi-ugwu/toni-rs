@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use http::request::Parts;
-use http::{HeaderMap, Method};
+use http::uri::PathAndQuery;
+use http::{HeaderMap, Method, Uri};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use ulo::{BoxError, BoxFuture};
 
@@ -20,7 +21,8 @@ pub struct Request {
     pub body: HttpBody,
     pub conn: ConnInfo,
     /// Resolves to the connection's I/O once the response with status 101 has been written.
-    /// `None` on a backend whose limits declare `upgrades: false`.
+    /// `None` when the request asks for no upgrade, and on every request to a backend whose limits
+    /// declare `upgrades: false`.
     pub upgrade: Option<OnUpgrade>,
 }
 
@@ -39,9 +41,20 @@ impl Request {
 
     /// Rewrites the path, keeping the query. In an unscoped pre-dispatch entry it changes which
     /// route matches, since unscoped entries run before routing.
+    ///
+    /// A path without a leading `/` gets one, since an origin-form request target always starts
+    /// with it (RFC 9112 §3.2.1). A path that is not a valid URI path fails and leaves the request
+    /// unchanged.
     pub fn set_path(&mut self, path: &str) -> Result<(), http::Error> {
-        let _ = path;
-        todo!("rebuild the URI's path-and-query with `path` and the existing query")
+        let slash = if path.starts_with('/') { "" } else { "/" };
+        let path_and_query = match self.head.uri.query() {
+            Some(query) => format!("{slash}{path}?{query}"),
+            None => format!("{slash}{path}"),
+        };
+        let mut parts = self.head.uri.clone().into_parts();
+        parts.path_and_query = Some(PathAndQuery::try_from(path_and_query)?);
+        self.head.uri = Uri::from_parts(parts)?;
+        Ok(())
     }
 }
 

@@ -2,7 +2,7 @@
 //! its extractor in `extract::body`, and `Sse<S>`'s in `sse`.
 
 use bytes::Bytes;
-use http::header::{HeaderName, HeaderValue};
+use http::header::{CONTENT_TYPE, HeaderName, HeaderValue, LOCATION};
 use http::StatusCode;
 use ulo_transport::{IntoReply, IntoReplyError};
 
@@ -48,17 +48,19 @@ impl<T> WithHeaders<T> {
     }
 }
 
+/// As built. A body of unknown length is wrapped in `Tracked`, as every streaming answer is.
 impl IntoReply<Http> for Response {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        let _ = cx;
-        Ok(self)
+        Ok(self.map(|body| body.tracked(cx.exec().clone())))
     }
 }
 
+/// 200 with this body and no `Content-Type`. A body of unknown length, `Body::stream(s)`, is
+/// wrapped in `Tracked` with the call's execution, so `on_stream_end` callbacks learn whether it
+/// was written to its end.
 impl IntoReply<Http> for HttpBody {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        let _ = cx;
-        todo!("200 with this body; a streaming body wrapped in `Tracked` with the call's execution")
+        Ok(Response::new(self.tracked(cx.exec().clone())))
     }
 }
 
@@ -82,7 +84,7 @@ impl IntoReply<Http> for NoContent {
 impl IntoReply<Http> for Bytes {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
         let _ = cx;
-        todo!("200, `content-type: application/octet-stream`")
+        Ok(with_content_type(HttpBody::from_bytes(self), "application/octet-stream"))
     }
 }
 
@@ -90,7 +92,7 @@ impl IntoReply<Http> for Bytes {
 impl IntoReply<Http> for String {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
         let _ = cx;
-        todo!("200, `content-type: text/plain; charset=utf-8`")
+        Ok(with_content_type(HttpBody::from_bytes(self), "text/plain; charset=utf-8"))
     }
 }
 
@@ -100,10 +102,15 @@ impl IntoReply<Http> for &'static str {
     }
 }
 
+/// The body's reply with status 201 and `Location`. A location that is not a valid header value
+/// fails the reply before anything is written.
 impl<T: IntoReply<Http>> IntoReply<Http> for Created<T> {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        let _ = (cx, &self.location, &self.body);
-        todo!("the body's reply with status 201 and `Location`")
+        let location = HeaderValue::try_from(self.location).map_err(IntoReplyError::new)?;
+        let mut response = self.body.into_reply(cx)?;
+        *response.status_mut() = StatusCode::CREATED;
+        response.headers_mut().insert(LOCATION, location);
+        Ok(response)
     }
 }
 
@@ -127,4 +134,10 @@ impl<T: IntoReply<Http>> IntoReply<Http> for WithHeaders<T> {
         }
         Ok(response)
     }
+}
+
+fn with_content_type(body: HttpBody, content_type: &'static str) -> Response {
+    let mut response = Response::new(body);
+    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
 }

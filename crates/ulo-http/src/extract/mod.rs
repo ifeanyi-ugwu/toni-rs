@@ -8,12 +8,12 @@
 //! violations in the problem document's `details`.
 
 mod body;
+mod de;
 mod head;
 mod path;
 mod query;
 
 pub use body::{BodyStream, Form, Json, Multipart};
 pub use head::{Header, LastEventId};
-pub(crate) use path::check_path;
 pub use path::{Path, PathCheck};
 pub use query::Query;

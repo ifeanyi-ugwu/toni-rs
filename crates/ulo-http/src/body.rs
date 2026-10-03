@@ -3,9 +3,10 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_core::Stream;
-use http_body::{Frame, SizeHint};
+use http_body::{Body as _, Frame, SizeHint};
 use http_body_util::combinators::UnsyncBoxBody;
-use ulo::BoxError;
+use ulo::{BoxError, ExecutionRef};
+use ulo_transport::Tracked;
 
 /// The one body type of requests and responses: a stream of `Bytes` frames, the `http_body::Body`
 /// every backend converts to and from at its edge.
@@ -35,8 +36,9 @@ impl HttpBody {
         S: Stream<Item = Result<Bytes, E>> + Send + 'static,
         E: Into<BoxError>,
     {
-        let _ = stream;
-        todo!("`http_body_util::StreamBody` over the stream mapped to data frames")
+        use futures_util::StreamExt;
+        let frames = stream.map(|chunk: Result<Bytes, E>| -> Result<Frame<Bytes>, BoxError> { chunk.map(Frame::data).map_err(Into::into) });
+        HttpBody::new(http_body_util::StreamBody::new(frames))
     }
 
     /// Any `http_body::Body` of `Bytes`, its error boxed.
@@ -47,6 +49,16 @@ impl HttpBody {
     {
         use http_body_util::BodyExt;
         HttpBody { inner: body.map_err(Into::into).boxed_unsync() }
+    }
+
+    /// This body wrapped in `Tracked`, so the execution's `on_stream_end` callbacks learn whether
+    /// it was written to its end. A body of known length is written whole and returned as it is.
+    pub(crate) fn tracked(self, exec: ExecutionRef) -> HttpBody {
+        if self.size_hint().exact().is_some() {
+            return self;
+        }
+        let frames = Tracked::new(http_body_util::BodyStream::new(self), exec);
+        HttpBody::new(http_body_util::StreamBody::new(frames))
     }
 }
 

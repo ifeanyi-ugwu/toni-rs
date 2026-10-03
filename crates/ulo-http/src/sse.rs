@@ -2,13 +2,21 @@
 
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures_core::Stream;
+use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use serde::Serialize;
-use ulo_transport::{CallError, IntoReply, IntoReplyError};
+use ulo::{BoxError, BoxFuture, CancelReason, LateOutcome, MountedHandler, StreamOutcome};
+use ulo_transport::{CallError, IntoReply, IntoReplyError, Tracked};
 
+use crate::body::HttpBody;
 use crate::cx::HttpCx;
+use crate::render;
 use crate::response::Response;
 use crate::transport::Http;
 
@@ -91,9 +99,37 @@ impl Event {
         Event { comment: Some(text.into()), ..self }
     }
 
-    /// The event's wire form, ending with the blank line that dispatches it.
+    /// The event's wire form, ending with the blank line that dispatches it: comment lines, then
+    /// `event`, `id`, `retry`, then the data lines.
+    ///
+    /// Every field is written as `name: value`; a reader drops the one space after the colon, so a
+    /// value keeps a leading space of its own. Data keeps the piece after a trailing terminator:
+    /// `"a\n"` is written as `data: a` and `data: `, which a reader joins back into `"a\n"`. Empty
+    /// data is one `data: ` line, which a reader dispatches as an event carrying `""`; an event
+    /// without data has no `data` line, and a reader dispatches nothing for it.
     pub(crate) fn encode(&self) -> String {
-        todo!("comment, event, id, retry, then data lines split at CR, LF and CRLF, then a blank line")
+        let mut out = String::new();
+        if let Some(comment) = &self.comment {
+            for line in lines(comment) {
+                field(&mut out, "", line);
+            }
+        }
+        if let Some(name) = &self.event {
+            field(&mut out, "event", name.as_str());
+        }
+        if let Some(id) = &self.id {
+            field(&mut out, "id", id.as_str());
+        }
+        if let Some(retry) = self.retry {
+            field(&mut out, "retry", &retry.as_millis().to_string());
+        }
+        if let Some(data) = &self.data {
+            for line in lines(data) {
+                field(&mut out, "data", line);
+            }
+        }
+        out.push('\n');
+        out
     }
 }
 
@@ -136,6 +172,11 @@ impl EventName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// `error`, the name of the event an error after the stream began is written as.
+    pub(crate) fn error() -> Self {
+        EventName(String::from("error"))
+    }
 }
 
 /// `EventId::new` or `EventName::new` refused a value.
@@ -172,13 +213,216 @@ impl<E: Into<CallError> + Send + 'static> SseItem for Result<Event, E> {
     }
 }
 
+/// Status 200, `text/event-stream; charset=utf-8`, `Cache-Control: no-cache`, the events written as
+/// the stream yields them.
+///
+/// A keep-alive comment is written whenever the keep-alive period passes with nothing written,
+/// the clock starting again at every event; while the stream yields events back to back none is
+/// written. An `Err` item runs the matched handler's error handlers through `ulo::dispatch_late`;
+/// unless they end the stream with `EndStream`, the error is written as an `error` event, the
+/// stream reports `StreamOutcome::CutOff(None)` and then ends.
 impl<S> IntoReply<Http> for Sse<S>
 where
     S: Stream + Send + 'static,
     S::Item: SseItem,
 {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        let _ = (cx, self.stream, self.keep_alive, self.end_event);
-        todo!("validate `end_event`; a body encoding each event, keep-alive comments on a tokio interval, item errors through `dispatch_late` with the matched handler, wrapped in `Tracked`")
+        let end_event = self.end_event.map(|name| EventName::new(name)).transpose().map_err(IntoReplyError::new)?;
+        let body = SseBody {
+            stream: Box::pin(self.stream),
+            keep_alive: self.keep_alive.map(|every| KeepAlive { every, timer: None }),
+            end_event,
+            handler: cx.matched().map(|route| route.handler.clone()),
+            cx: cx.clone(),
+            state: State::Streaming,
+        };
+        let mut response = Response::new(HttpBody::stream(Tracked::new(body, cx.exec().clone())));
+        let headers = response.headers_mut();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        Ok(response)
+    }
+}
+
+/// The lines of `text`, split at CR, LF and CRLF alike, keeping the piece after a trailing
+/// terminator.
+fn lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\r' => {
+                lines.push(&text[start..at]);
+                if bytes.get(at + 1) == Some(&b'\n') {
+                    at += 1;
+                }
+                start = at + 1;
+            }
+            b'\n' => {
+                lines.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    lines.push(&text[start..]);
+    lines
+}
+
+/// One `name: value` line; an empty name writes a comment.
+fn field(out: &mut String, name: &str, value: &str) {
+    out.push_str(name);
+    out.push_str(": ");
+    out.push_str(value);
+    out.push('\n');
+}
+
+const KEEP_ALIVE: &[u8] = b": keepalive\n\n";
+
+/// The response body of an `Sse`: the stream's events encoded, keep-alive comments between them,
+/// and the late path for an `Err` item.
+struct SseBody<S> {
+    stream: Pin<Box<S>>,
+    keep_alive: Option<KeepAlive>,
+    end_event: Option<EventName>,
+    /// The matched route's handler, whose error handlers an `Err` item reaches. `None` for an
+    /// `Sse` an error handler answered a miss with, whose item errors are written unreshaped.
+    handler: Option<MountedHandler<Http>>,
+    /// Held while the stream runs, which keeps the execution's instances and its cancellation
+    /// signal alive.
+    cx: HttpCx,
+    state: State,
+}
+
+struct KeepAlive {
+    every: Duration,
+    /// Created on the first poll, which runs on the backend's runtime.
+    timer: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+enum State {
+    Streaming,
+    /// An `Err` item in the error handlers, with the canonical form of the original kept for an
+    /// error handler answering `Ok`.
+    Late { original: CallError, outcome: BoxFuture<'static, LateOutcome> },
+    /// The stream ended cleanly: the end event, if one is set, is written next.
+    Ending,
+    Done,
+}
+
+impl KeepAlive {
+    /// Whether the period passed with nothing written; the clock starts again when it did.
+    fn poll_due(&mut self, cx: &mut Context<'_>) -> bool {
+        let deadline = tokio::time::Instant::now() + self.every;
+        let timer = self.timer.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+        if timer.as_mut().poll(cx).is_pending() {
+            return false;
+        }
+        timer.as_mut().reset(deadline);
+        true
+    }
+
+    /// Something was written: the period starts again.
+    fn restart(&mut self) {
+        if let Some(timer) = &mut self.timer {
+            timer.as_mut().reset(tokio::time::Instant::now() + self.every);
+        }
+    }
+}
+
+impl<S> SseBody<S>
+where
+    S: Stream,
+    S::Item: SseItem,
+{
+    /// The `error` event for a late error, `Timeout` when the execution's deadline cancelled it.
+    fn late(&self, error: CallError) -> Bytes {
+        let error = if self.cx.exec().cancel_reason() == Some(CancelReason::Deadline) { render::timed_out() } else { error };
+        self.cx.exec().report_stream_end(StreamOutcome::CutOff(None));
+        Bytes::from(render::late_event(&error).encode())
+    }
+
+    fn written(&mut self, bytes: Bytes) -> Poll<Option<Result<Bytes, BoxError>>> {
+        if let Some(keep_alive) = &mut self.keep_alive {
+            keep_alive.restart();
+        }
+        Poll::Ready(Some(Ok(bytes)))
+    }
+}
+
+impl<S> Stream for SseBody<S>
+where
+    S: Stream,
+    S::Item: SseItem,
+{
+    type Item = Result<Bytes, BoxError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            match &mut this.state {
+                State::Streaming => match this.stream.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(item)) => match item.into_event() {
+                        Ok(event) => return this.written(Bytes::from(event.encode())),
+                        Err(error) => {
+                            let original = error.summary();
+                            match &this.handler {
+                                Some(handler) => {
+                                    let handler = handler.clone();
+                                    let exec = this.cx.exec().clone();
+                                    let call_cx = this.cx.clone();
+                                    let outcome: BoxFuture<'static, LateOutcome> =
+                                        Box::pin(async move { ulo::dispatch_late(&handler, &exec, &call_cx, BoxError::from(error)).await });
+                                    this.state = State::Late { original, outcome };
+                                }
+                                None => {
+                                    this.state = State::Done;
+                                    let bytes = this.late(error);
+                                    return this.written(bytes);
+                                }
+                            }
+                        }
+                    },
+                    Poll::Ready(None) => this.state = State::Ending,
+                    Poll::Pending => {
+                        if this.keep_alive.as_mut().is_some_and(|keep_alive| keep_alive.poll_due(cx)) {
+                            return Poll::Ready(Some(Ok(Bytes::from_static(KEEP_ALIVE))));
+                        }
+                        return Poll::Pending;
+                    }
+                },
+                State::Late { original, outcome } => {
+                    let error = match ready!(outcome.as_mut().poll(cx)) {
+                        LateOutcome::End => {
+                            this.state = State::Ending;
+                            continue;
+                        }
+                        LateOutcome::Render(error) => CallError::from_boxed(error),
+                        LateOutcome::Ignored => {
+                            tracing::warn!(
+                                handler = this.handler.as_ref().map(|handler| handler.name()),
+                                "an error handler answered `Ok` to an error raised after the event stream began; its reply is dropped and the original error is written"
+                            );
+                            original.summary()
+                        }
+                        _ => original.summary(),
+                    };
+                    this.state = State::Done;
+                    let bytes = this.late(error);
+                    return this.written(bytes);
+                }
+                State::Ending => {
+                    this.state = State::Done;
+                    if let Some(name) = this.end_event.take() {
+                        let bytes = Bytes::from(Event::default().event(name).data("").encode());
+                        return this.written(bytes);
+                    }
+                }
+                State::Done => return Poll::Ready(None),
+            }
+        }
     }
 }

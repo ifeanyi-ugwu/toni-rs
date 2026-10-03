@@ -27,7 +27,6 @@ percent-encoding.workspace = true
 pin-project-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-serde_urlencoded.workspace = true
 # SSE keep-alive ticks and route timeouts, and the I/O traits an upgraded connection implements.
 tokio = { workspace = true, features = ["time", "io-util"] }
 tower.workspace = true
