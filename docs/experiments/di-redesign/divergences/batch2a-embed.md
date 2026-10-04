@@ -673,3 +673,127 @@ where A: Embed<HostRequest = http::request::Parts>, ..;
   byte for byte, and the clean run repeated.
 - The rocket probe of entry 36 is at the scratchpad's `rocket_probe/` (`main_plain.rs` fails,
   `main_gat.rs` compiles).
+
+# Fourth round: the ninth response
+
+The changes the ninth response (signed off 2026-10-04) asks of this build: `type HostRequest<'r>;`
+with `forward`'s copy bound over every `'r`, the cost of entry 30 stated in the `supplies` docs
+(item 1), and a `supplies` written after an `adopt` refused (the open question). The adapter
+aliases of item 3 arrive with the adapters. Entries continue the numbering above.
+
+Files changed: `crates/ulo-http/src/{embed.rs, pre_dispatch.rs}`. `server.rs` is unchanged: both
+servers build the stage through `prepare_app`, whose `Stage::build` raises the new refusal.
+`extract/host.rs` is unchanged: `Host<T>`'s doc names no host request type.
+
+## The signature, changed
+
+```rust
+// ulo_http::embed
+pub trait Embed: Send + Sync + 'static {
+    const NAME: &'static str;
+    type HostRequest<'r>;                          // was `type HostRequest;`
+    fn limits() -> EmbedLimits;
+}
+impl<A: Embed> Embedded<A> {
+    pub fn forward<T: Clone + Send + Sync + 'static>(
+        self,
+        copy: impl for<'r> Fn(&A::HostRequest<'r>) -> Option<T> + Send + Sync + 'static,
+    ) -> Self;
+}
+impl<A: Embed> Service<A> {
+    pub fn respond(&self, host: &A::HostRequest<'_>, req: Request) -> impl Future<Output = Response> + Send + use<A>;
+}
+impl<A, B> tower::Service<http::Request<B>> for Service<A>
+where A: for<'r> Embed<HostRequest<'r> = http::request::Parts>, ..;
+```
+
+## Decisions
+
+### 37. The tower impl's bound is `A: for<'r> Embed<HostRequest<'r> = http::request::Parts>`
+
+- **Written:** the higher-ranked projection bound above, on the impl's `where` clause.
+- **Found:** it compiles on rustc 1.98.1 and 1.88, and normalizes for a host outside the crate:
+  the scratch crate's `TestHost` and `NoExt` write `type HostRequest<'r> = http::request::Parts;`
+  and are driven through `ServiceExt::oneshot`, and a helper bounded the same way accepts them.
+  `Service<FakeHost>`, whose request is a struct of its own, has no `oneshot` (E0599 on both
+  toolchains).
+
+### 38. `respond`'s future captures neither lifetime of the host's request
+
+- **Written:** `host: &A::HostRequest<'_>`, both lifetimes elided, and the return type keeps
+  `use<A>`. The copies run before `respond` returns, so nothing in the future borrows `host`.
+- **Consequence:** a rocket handler passes its `&'r Request<'_>` unchanged, and the answer can be
+  awaited after the host's request is gone: the scratch crate drops a borrowed request and the
+  `String` it borrows from before awaiting the answer, which then carries the copied value.
+
+### 39. A `supplies` after an `adopt` is kept off the entry
+
+- **Written:** `PreDispatch::supplies` records the call site in `PreDispatch::adopt_supplies` when
+  the last entry is an `adopt`, and pushes nothing onto that entry. `Stage::build` reports each:
+  "`supplies` at src/main.rs:259:92 follows an `adopt` entry: `adopt` copies a value out of the
+  request and inserts none; declare the `supplies` after the entry that inserts it". The refusal
+  holds on a backend and on every embedding, whatever its `host_extensions`, and whatever the two
+  types: `.adopt::<U>().supplies::<T>()` is refused for any `T`.
+- **Why off the entry:** the declaration supplies nothing, and the `host_extensions: false` check
+  then counts only what does.
+- **Consequence:** under `host_extensions: false`, an `adopt::<T>()` that only such a declaration
+  would have reached reports "nothing supplies it" beside the refusal. The `Host<T>` reads go
+  unchecked until the refusal is fixed, by entry 31, since the stage failed.
+- **Sign-off needed:** kept off the entry, or counted on it, which reports the refusal alone.
+
+### 40. The `supplies` docs name two placements for a supplying entry
+
+- **Written:** the paragraph on entry 30 states that an unscoped entry's `exclude` is not
+  consulted, that a supply after an excluding entry therefore lifts the refusal for the routes it
+  excludes, which then answer 500 (`HostMissing`) per request, and the advice: put the supplying
+  entry where its exclusion matches the routes that read the value, "an `exclude` covering none of
+  them, or a scoped entry, whose exclusions are applied to routes when the server prepares".
+- **Why the second placement:** a scoped entry's exclusions are applied per route in
+  `Stage::scoped_for`, and the check reads a scoped supply only on the routes its stage holds. It
+  reaches no `adopt`, which the paragraph before it states.
+- **Sign-off needed:** the scoped placement kept, or the advice cut to the response's sentence.
+
+## Not covered
+
+- The adapter aliases (`ulo_http_axum::Handle`, `ulo_http_axum::Service`), with the adapters.
+- The transports DESIGN's `Embed`, `forward` and `respond` signatures: the design document is not
+  this build's to edit.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, is identical before
+  and after the change on both toolchains: the 17 in `crates/ulo/src`. The comparison reports a
+  planted `fn probe_unused` in `pre_dispatch.rs` as one added line; the file was restored by `cp`
+  and compared byte for byte. `cargo test --workspace` and `RUSTDOCFLAGS="-D warnings" cargo doc
+  -p ulo-http --no-deps` exit 0.
+- Scratch crate `embed`: the 45 checks of the third round, plus 4 new ones, 49 in all, pass with
+  identical output on rustc 1.98.1 and 1.88 under `#![deny(warnings)]`. `TestHost`, `NoExt` and
+  `FakeHost` name `HostRequest<'r>`; a fourth host, `BorrowHost`, declares
+  `type HostRequest<'r> = BorrowedRequest<'r>`, a struct holding `Option<&'r str>`.
+
+| Check | Result |
+| --- | --- |
+| `Embedded::<BorrowHost>::new().forward(\|req: &BorrowedRequest<'_>\| req.name.map(\|n\| Name(n.to_owned())))`, `respond` on a request borrowing a local `String`, both dropped before the answer is awaited | 200, "erin" |
+| `.apply_value(InsertUser).supplies::<User>().adopt::<User>().supplies::<User>()` on `TestHost` | refused, naming src/main.rs:259:92 and not the first `supplies` at 259:55 |
+| the same on `NoExt` | the same refusal alone: the `supplies` before the `adopt` still counts for it |
+| the same on the hyper backend | the same refusal |
+
+- The borrowed check is shown to need the lifetime: with `type HostRequest<'r> =
+  BorrowedRequest<'static>` the crate fails to compile, E0597 (`owned` does not live long enough)
+  and E0505.
+- Against a known violation, two runs, each a mutation of the restored `pre_dispatch.rs`. Run 1:
+  the `adopt` arm in `supplies` removed, so the declaration goes onto the `adopt` entry; the 3
+  refusal checks fail, the other 46 pass. Run 2: the arm kept and the loop reporting
+  `adopt_supplies` iterating nothing; the same 3 fail. The source was restored by `cp` from a copy
+  taken before the mutations and compared byte for byte.
+- The rocket probe at the scratchpad's `rocket_probe/` (`main_real.rs`, rocket 0.5.1, edition
+  2024) depends on `ulo`, `ulo-http` and `ulo-tokio` by path and implements the real
+  `ulo_http::embed::Embed` with `type HostRequest<'r> = rocket::Request<'r>` and
+  `host_extensions: false`. Its rocket `Handler` calls `Service::<RocketHost>::respond(&service,
+  req, app_req)` with the `&'r Request<'_>` it receives; the app has `Embedded::forward` copying the
+  `x-user` header into a `User` that a handler reads as `Host<User>`, and it listens. Driven through
+  rocket's local client, `GET /who` with `x-user: frank` answers 200 "frank" and without the header
+  500, on rustc 1.98.1 and 1.88. The copy written without a parameter annotation,
+  `.forward(|req| req.headers().get_one("x-user") ..)`, compiles on both (`main_unannotated.rs`).
+  The round-three files (`main_plain.rs`, `main_gat.rs`, `Cargo.toml.round3`) are kept beside it.

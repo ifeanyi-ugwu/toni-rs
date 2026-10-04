@@ -59,8 +59,8 @@ use crate::transport::RequestHead;
 /// checks that the declaring module sees them.
 ///
 /// `prepare` refuses a scope or an exclusion that does not parse, a scoped entry naming no pattern,
-/// an `exclude` or a `supplies` written before any entry, and a `Cors` value the Fetch
-/// specification forbids.
+/// an `exclude` or a `supplies` written before any entry, a `supplies` written after an `adopt`,
+/// and a `Cors` value the Fetch specification forbids.
 #[derive(Default)]
 pub struct PreDispatch {
     pub(crate) entries: Vec<Entry>,
@@ -68,6 +68,9 @@ pub struct PreDispatch {
     pub(crate) stray_excludes: Vec<&'static Location<'static>>,
     /// Where `supplies` was called with no entry before it, for `prepare` to report.
     pub(crate) stray_supplies: Vec<&'static Location<'static>>,
+    /// Where `supplies` was called after an `adopt` entry, for `prepare` to report. The
+    /// declaration is kept off the entry, so the embedding's check never counts it.
+    pub(crate) adopt_supplies: Vec<&'static Location<'static>>,
 }
 
 /// One entry as declared.
@@ -201,16 +204,23 @@ impl PreDispatch {
     /// `Host<T>` and an `adopt::<T>()` entry unless `T` reaches them, and reads the declaration
     /// where the entry runs. After a scoped entry it reaches the handlers of the routes that
     /// entry covers; after an unscoped one, every handler, and the `adopt` entries written after
-    /// it. A scoped entry runs after routing, so its declaration reaches no `adopt`. An unscoped
-    /// entry's `exclude` is not consulted: it matches the path as that entry receives it, which an
-    /// entry after it may rewrite before routing. A value the host keeps is copied in by
-    /// `Embedded::forward::<T>(..)`, which reaches everything.
+    /// it. A scoped entry runs after routing, so its declaration reaches no `adopt`. A value the
+    /// host keeps is copied in by `Embedded::forward::<T>(..)`, which reaches everything.
     ///
-    /// With no entry before it, `prepare` reports the call.
+    /// An unscoped entry's `exclude` is not consulted: it matches the path as that entry receives
+    /// it, which an entry after it may rewrite before routing. A supply after an excluding entry
+    /// therefore lifts the refusal for the routes it excludes too, and a handler there reading
+    /// `Host<T>` answers 500 (`HostMissing`) per request. Put the supplying entry where its
+    /// exclusion matches the routes that read the value: an `exclude` covering none of them, or
+    /// a scoped entry, whose exclusions are applied to routes when the server prepares.
+    ///
+    /// `prepare` reports the call, on a backend as well, when no entry is before it, and when the
+    /// entry before it is an `adopt`, which inserts nothing into the request.
     #[track_caller]
     pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
         let supply = Supply { ty: HostType::of::<T>(), location: Location::caller() };
         match self.entries.last_mut() {
+            Some(Entry { step: Step::Adopt(..), .. }) => self.adopt_supplies.push(supply.location),
             Some(entry) => entry.supplies.push(supply),
             None => self.stray_supplies.push(supply.location),
         }
@@ -337,6 +347,12 @@ impl Stage {
                 failures.push(format!(
                     "`supplies` at {location} follows no pre-dispatch entry; it declares what the entry before it inserts, \
                      and a value the host keeps is copied in by the embedding with `Embedded::forward`"
+                ));
+            }
+            for location in &meta.adopt_supplies {
+                failures.push(format!(
+                    "`supplies` at {location} follows an `adopt` entry: `adopt` copies a value out of the request and \
+                     inserts none; declare the `supplies` after the entry that inserts it"
                 ));
             }
             for (index, entry) in meta.entries.iter().enumerate() {

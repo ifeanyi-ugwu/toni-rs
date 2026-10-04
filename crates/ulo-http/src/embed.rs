@@ -65,10 +65,12 @@ pub trait Embed: Send + Sync + 'static {
     const NAME: &'static str;
 
     /// The request the host's handlers receive, which each copy [`Embedded::forward`] registers
-    /// reads: actix's `HttpRequest`. A host that mounts tower services names
+    /// reads, borrowed for one call: rocket's `Request<'r>`, which its handler holds for the
+    /// lifetime `'r`. A request that borrows nothing ignores the lifetime, as actix's
+    /// `type HostRequest<'r> = HttpRequest;` does. A host that mounts tower services names
     /// `http::request::Parts`, the head of the `http::Request` it hands over, and only then is
     /// [`Service`] a `tower::Service`.
-    type HostRequest;
+    type HostRequest<'r>;
 
     /// What the host cannot do, checked in `prepare`: asking for it is a
     /// `StartupError::Configure` naming the limit.
@@ -319,7 +321,7 @@ impl<A: Embed> Embedded<A> {
     /// inserts nothing and is logged at `error`.
     pub fn forward<T: Clone + Send + Sync + 'static>(
         mut self,
-        copy: impl Fn(&A::HostRequest) -> Option<T> + Send + Sync + 'static,
+        copy: impl for<'r> Fn(&A::HostRequest<'r>) -> Option<T> + Send + Sync + 'static,
     ) -> Self {
         self.forwarded.push(HostCopy {
             ty: HostType::of::<T>(),
@@ -662,7 +664,7 @@ impl Shared {
 /// extensions.
 struct HostCopy<A: Embed> {
     ty: HostType,
-    run: Box<dyn Fn(&A::HostRequest, &mut http::Extensions) + Send + Sync>,
+    run: Box<dyn for<'r> Fn(&A::HostRequest<'r>, &mut http::Extensions) + Send + Sync>,
 }
 
 /// The handle to an [`Embedded`] server for host `A`: cheap to clone, usable before `listen()`.
@@ -745,7 +747,8 @@ impl Future for Stopping {
 
 /// The app as a service of host `A`: through [`respond`](Self::respond) for an adapter that
 /// builds the app's request itself, and as a tower `Service` over `http::Request<B>` for a host
-/// that mounts tower services, whose `Embed::HostRequest` is `http::request::Parts`.
+/// that mounts tower services, whose `Embed::HostRequest<'r>` is `http::request::Parts` for
+/// every `'r`.
 ///
 /// Each tower request becomes the app's [`Request`]: its parts as they arrive, extensions
 /// included, with what each [`Embedded::forward`] copy read off them added, its body as an
@@ -770,14 +773,14 @@ impl<A: Embed> Service<A> {
     /// [`Embedded::forward`] copy runs on `host` first, inserting what it finds into `req`'s
     /// extensions. Then 503 "not yet listening" before `listen()`, 503 with `Connection: close`
     /// after `close`, and the app's answer between.
-    pub fn respond(&self, host: &A::HostRequest, mut req: Request) -> impl Future<Output = Response> + Send + use<A> {
+    pub fn respond(&self, host: &A::HostRequest<'_>, mut req: Request) -> impl Future<Output = Response> + Send + use<A> {
         self.copy(host, &mut req.head.extensions);
         self.answer(req)
     }
 
     /// Runs every `forward` copy on `host` into `extensions`. A copy that panics inserts nothing:
     /// the handler reading its value then answers `HostMissing`, as for a value the host left out.
-    fn copy(&self, host: &A::HostRequest, extensions: &mut http::Extensions) {
+    fn copy(&self, host: &A::HostRequest<'_>, extensions: &mut http::Extensions) {
         for copy in self.copies.get().into_iter().flatten() {
             if catch_unwind(AssertUnwindSafe(|| (copy.run)(host, extensions))).is_err() {
                 tracing::error!(host = A::NAME, r#type = copy.ty.name, "an `Embedded::forward` copy panicked; it inserts nothing");
@@ -818,7 +821,7 @@ impl<A: Embed> Service<A> {
 
 impl<A, B> tower::Service<http::Request<B>> for Service<A>
 where
-    A: Embed<HostRequest = http::request::Parts>,
+    A: for<'r> Embed<HostRequest<'r> = http::request::Parts>,
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<BoxError>,
 {
