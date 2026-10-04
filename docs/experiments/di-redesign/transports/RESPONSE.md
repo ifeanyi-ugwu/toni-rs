@@ -891,3 +891,22 @@ Five of the six decisions are accepted. Decision 6 needs one change, and `Count`
 **`Bound::After(Duration::ZERO)` should be refused in `prepare`.** A zero timeout is almost certainly a mistake, since it would close every connection before its first byte. Testing what hyper does with one would only confirm a behavior nobody wants. Refuse it as a `Configure` error with the hint "write `Bound::Unbounded` to turn the timeout off". It's visible before anything binds, so it falls under the refuse-what-`prepare`-can-see rule.
 
 The same reasoning applies in the core: `After(Duration::ZERO)` on a hook, a construction, or a readiness check is the same mistake. A matching check in the wiring pass's environment step (§10.1, step 6) would keep the rule uniform. That's worth filing, even though it's outside this race.
+
+## Seventeenth response: re-exports and zero limits
+
+Received 2026-10-04, answering `divergences/batch2a-followups.md` "Second round" decisions 1-5.
+Sign-off pending.
+
+Three are accepted as built. On the other two I'd go a different way, and item 2 hides a real hazard.
+
+**1. Re-export the types in `ulo-http`'s own signatures.** The current rule ("re-export no type from another ulo crate") is tidy, but it pushes a cost onto users. To configure one server they must add `ulo-net` for `Tls` and now `ulo-transport` for `Count`, crates they otherwise never think about. Rust's API guidelines point the other way: when a type appears in your public API, re-export it, so callers don't need a direct dependency or have to keep versions aligned. So put them under a `ulo_http::config` module (`Bound`, `Count`, `Tls`), with the defining crates as their canonical homes. Users configuring HTTP then import from one place, and nothing is duplicated, because they're the same types.
+
+**2. Refuse `Timeout(Duration::ZERO)`, and treat a zero `keep_alive` as off.** The route timeout is visible in `prepare` and would cancel every request on that route, which is exactly the case the zero refusal exists for. Refuse it with the same hint as the other three.
+
+`Sse::keep_alive(0)` is the hazard. Taken literally, a zero period means writing a comment, finding the stream waiting, and writing another, in a tight loop that spins a task and floods the connection. Since `prepare` can't see it, define it instead: a zero period means keep-alive off, stated in the method's docs. Accepting `shed_retry_after(0)` is right, since `Retry-After: 0` is a meaningful value.
+
+**3. Refuse `Count::Max(0)` on both.** It's the `Count` version of the zero timeout: a configuration that does something no one intends as a standing setting. Every request is shed, or no stream may open, and RFC 9113 only sanctions a zero stream limit briefly, never as configuration. Refuse with "write `Count::Unlimited` to remove the limit". An app that wants to refuse traffic temporarily should do it with a middleware it can switch, not a zero in its config.
+
+**4. Accepted.** The two contexts are different. The compile error carries a span, so the reader sees the pattern in their source right there, and its text is the clearest label. The wiring report has no span, so a position the user can count is the useful label. The difference in format follows the difference in context.
+
+**5. Accepted.** A parameter that declares two reads is still one parameter, and both lines should name it.
