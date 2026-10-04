@@ -44,6 +44,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use hyper_util::rt::TokioIo;
 use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase, TypeName};
+use ulo_transport::Count;
 
 use crate::__private::HttpHandler;
 use crate::backend::HttpConfig;
@@ -273,8 +274,9 @@ impl<A: Embed> Embedded<A> {
         self.configure(|config| config.body_limit = bytes)
     }
 
-    pub fn max_inflight(self, requests: usize) -> Self {
-        self.configure(|config| config.max_inflight = Some(requests))
+    /// The app's in-flight bound; see [`Server::max_inflight`](crate::Server::max_inflight).
+    pub fn max_inflight(self, requests: Count) -> Self {
+        self.configure(|config| config.max_inflight = requests)
     }
 
     /// `Retry-After` on a load-shedding refusal, a request refused during the drain, and one

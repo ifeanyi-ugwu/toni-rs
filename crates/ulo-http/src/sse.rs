@@ -44,9 +44,12 @@ impl<S> Sse<S> {
         Sse { stream, keep_alive: None, end_event: None }
     }
 
-    /// A `: keepalive` comment whenever `every` passes without an event, so an idle stream is not
-    /// closed by an intermediary. The period is timed by the app's `Timer`, which `HttpCx::timer`
-    /// reads.
+    /// A `: keepalive` comment after at least `every` of idleness, so an intermediary does not
+    /// close the stream as idle. The period starts when the stream is next found waiting after a
+    /// write, so a comment comes `every` after the last write or a little later, never sooner.
+    /// Choose a period comfortably below the shortest proxy idle timeout in the deployment.
+    ///
+    /// The period is timed by the app's `Timer`, which `HttpCx::timer` reads.
     pub fn keep_alive(self, every: Duration) -> Self {
         Sse { keep_alive: Some(every), ..self }
     }
@@ -217,9 +220,9 @@ impl<E: Into<CallError> + Send + 'static> SseItem for Result<Event, E> {
 /// Status 200, `text/event-stream; charset=utf-8`, `Cache-Control: no-cache`, the events written as
 /// the stream yields them.
 ///
-/// A keep-alive comment is written whenever the keep-alive period, timed by the app's `Timer`,
-/// passes with nothing written, the clock starting again at every event; while the stream yields
-/// events back to back none is written. An `Err` item runs the matched handler's error handlers
+/// A keep-alive comment is written once the stream has been idle for at least the keep-alive
+/// period, timed by the app's `Timer`, the clock starting again after every event; while the
+/// stream yields events back to back none is written. An `Err` item runs the matched handler's error handlers
 /// through `ulo::dispatch_late`; unless they end the stream with `EndStream`, the error is written
 /// as an `error` event, the stream reports `StreamOutcome::CutOff(None)` and then ends.
 impl<S> IntoReply<Http> for Sse<S>

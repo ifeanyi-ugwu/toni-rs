@@ -2,13 +2,14 @@
 //! parameter is built from a call ([`FromCall`]), how a handler's answer becomes a reply
 //! ([`IntoReply`]), the one error model ([`CallError`], [`ErrorKind`], [`Classify`], [`Details`]),
 //! extraction failures ([`ExtractError`]), declarative validation ([`Valid`], [`Validate`]),
-//! declared metadata ([`Metadata`]), load shedding ([`Admission`]), call spans ([`span`]) and
-//! stream-end tracking ([`Tracked`]).
+//! declared metadata ([`Metadata`]), load shedding ([`Admission`]), the count a server setting
+//! bounds ([`Count`]), call spans ([`span`]) and stream-end tracking ([`Tracked`]).
 //!
 //! Each transport says only how these look on its wire. A transport's `Cx` implements
 //! `AsRef<ExecutionRef>`, which is how the impls here reach the call's execution.
 
 mod admission;
+mod count;
 mod details;
 mod error;
 mod extract;
@@ -22,6 +23,7 @@ pub mod span;
 pub mod __private;
 
 pub use admission::{Admission, ConnectionAdmission, Permit};
+pub use count::Count;
 pub use details::{Detail, Details, FieldViolation, Link};
 pub use error::{CallError, Classify, ErrorKind};
 pub use extract::{ExtractError, FromCall, Injected};

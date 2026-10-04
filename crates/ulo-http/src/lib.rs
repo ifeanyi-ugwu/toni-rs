@@ -44,7 +44,7 @@ pub mod middleware;
 #[doc(hidden)]
 pub mod __private;
 
-pub use backend::{Backend, BackendLimits, Count, HttpConfig};
+pub use backend::{Backend, BackendLimits, HttpConfig};
 pub use body::{Body, HttpBody};
 pub use cors::{Cors, CorsError};
 pub use cx::{HttpCx, PathParams};

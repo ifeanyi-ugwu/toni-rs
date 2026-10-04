@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareError, Transport, TypeName};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
-use ulo_transport::Admission;
+use ulo_transport::{Admission, Count};
 
-use crate::backend::{Backend, BackendLimits, Count, HttpConfig};
+use crate::backend::{Backend, BackendLimits, HttpConfig};
 use crate::pre_dispatch::{PreDispatch, Stage};
 use crate::router::Router;
 use crate::router::pattern::Pattern;
@@ -75,8 +75,10 @@ impl<B: Backend> Server<B> {
         self
     }
 
-    pub fn max_inflight(mut self, requests: usize) -> Self {
-        self.config.max_inflight = Some(requests);
+    /// The server's in-flight bound: over it a request is answered 503 with `Retry-After`.
+    /// `Count::Default`, the value unset, bounds nothing, as `Count::Unlimited` does.
+    pub fn max_inflight(mut self, requests: Count) -> Self {
+        self.config.max_inflight = requests;
         self
     }
 
@@ -106,7 +108,7 @@ impl<B: Backend> Server<B> {
 
     /// How long the error handlers may take with the `Timeout` a route timeout offers them before
     /// the canonical 504 is sent instead: `Bound::Default` is one second, `Bound::Unbounded` waits
-    /// for them.
+    /// for them. `Bound::After(Duration::ZERO)` is refused in `prepare`.
     pub fn timeout_grace(mut self, grace: Bound) -> Self {
         self.config.timeout_grace = grace;
         self
@@ -115,7 +117,10 @@ impl<B: Backend> Server<B> {
     /// How long a request head may take to arrive, from the moment the backend starts reading it;
     /// the clock also runs while a keep-alive connection waits for its next request.
     /// `Bound::Default` is 30 seconds. `Bound::Unbounded` turns the clock off, under which a peer
-    /// can hold a connection open until the drain's deadline.
+    /// can hold a connection open until the drain's deadline. `Bound::After(Duration::ZERO)` is
+    /// refused in `prepare`.
+    ///
+    /// HTTP/1.1 only; HTTP/2 connections are bounded by the backend's own HTTP/2 limits.
     pub fn header_timeout(mut self, timeout: Bound) -> Self {
         self.config.header_timeout = timeout;
         self
@@ -123,7 +128,7 @@ impl<B: Backend> Server<B> {
 
     /// How long a TLS handshake may take before the connection is dropped. `Bound::Default` is 30
     /// seconds. `Bound::Unbounded` turns the clock off, under which a peer can hold a connection
-    /// open until the drain's deadline.
+    /// open until the drain's deadline. `Bound::After(Duration::ZERO)` is refused in `prepare`.
     pub fn handshake_timeout(mut self, timeout: Bound) -> Self {
         self.config.handshake_timeout = timeout;
         self
@@ -235,6 +240,23 @@ fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Failures) -> Vec<(P
     paths
 }
 
+/// Each timeout set to `Bound::After(Duration::ZERO)`, which would end what it times before it
+/// could begin. `Bound::Unbounded` is the spelling of no timeout.
+fn check_zero_timeouts(config: &HttpConfig, failures: &mut Failures) {
+    let timeouts = [
+        ("header_timeout", config.header_timeout, "close every connection before its first request head"),
+        ("handshake_timeout", config.handshake_timeout, "drop every TLS connection before its handshake"),
+        ("timeout_grace", config.timeout_grace, "send the 504 before any error handler could answer a route timeout"),
+    ];
+    for (setting, bound, effect) in timeouts {
+        if bound == Bound::After(Duration::ZERO) {
+            failures.push(format!(
+                "`.{setting}(Bound::After(Duration::ZERO))` would {effect}; write `Bound::Unbounded` to turn the timeout off"
+            ));
+        }
+    }
+}
+
 /// What both HTTP servers build in `prepare` from the app, [`Server`] over a backend and
 /// `embed::Embedded` over a host (R20): the pre-dispatch stage, the route table, the upgrade paths
 /// and the admission, as one [`AppService`]. Its failures go to `failures`; the service is `None`
@@ -267,6 +289,7 @@ pub(crate) fn prepare_app(
             None
         }
     };
+    check_zero_timeouts(config, failures);
     let upgrades = upgrade_paths(mounted, failures);
     let upgrading = !upgrades.is_empty();
     let service = router.map(|router| {
@@ -276,7 +299,7 @@ pub(crate) fn prepare_app(
             router,
             stage,
             upgrades,
-            admission: Admission::new(config.max_inflight).retry_after(config.shed_retry_after),
+            admission: Admission::new(config.inflight_limit()).retry_after(config.shed_retry_after),
             config,
             timer: Arc::clone(mounted.timer()),
             mount: Arc::from(mount),

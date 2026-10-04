@@ -6,7 +6,7 @@ pub use std::sync::Arc;
 pub use ulo_macros::{__enhancer_specs, __handler};
 
 use crate::construct::ConstructError;
-use crate::dependency::{Dependencies, FromContainer};
+use crate::dependency::{Dependencies, DependencyLabel, FromContainer};
 use crate::scope::{AllowedIn, Scope};
 use crate::timer::BoxError;
 
@@ -21,6 +21,31 @@ pub fn field<S: FromContainer + AllowedIn<Sc>, Sc: Scope>(d: &mut Dependencies, 
 /// A constructor parameter, declared under its name, with the same assertion as [`field`].
 pub fn param<S: FromContainer + AllowedIn<Sc>, Sc: Scope>(d: &mut Dependencies, name: &'static str) {
     d.param::<S>(name);
+}
+
+/// How a wiring report names a handler parameter: by the identifier its signature writes, or, for
+/// a destructuring pattern, by its position among the parameters after the receiver, from 0, which
+/// the report prints from 1 as `param #n`.
+#[derive(Clone, Copy, Debug)]
+pub enum HandlerParam {
+    Named(&'static str),
+    At(usize),
+}
+
+/// Everything `declare` adds to `d`, labelled as the handler parameter `param` whatever label
+/// `declare` gave it: a transport's handler attribute declares each parameter's reads through
+/// this, so a parameter built from the call names its container reads as one built from the
+/// container does.
+pub fn handler_param(d: &mut Dependencies, param: HandlerParam, declare: impl FnOnce(&mut Dependencies)) {
+    let start = d.list.len();
+    declare(d);
+    let label = match param {
+        HandlerParam::Named(name) => DependencyLabel::Param(name),
+        HandlerParam::At(index) => DependencyLabel::Position(index),
+    };
+    for record in &mut d.list[start..] {
+        record.label = label;
+    }
 }
 
 /// Whether `key` is one of `keys`, byte for byte: the assertion `#[routes]` emits for each

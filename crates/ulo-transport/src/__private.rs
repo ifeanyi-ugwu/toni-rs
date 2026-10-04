@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomData;
 
+use ulo::__private::{HandlerParam, handler_param};
 use ulo::{BoxError, Dep, Dependencies, ExecutionRef, FromContainer, Transport};
 
 use crate::error::{CallError, ErrorKind};
@@ -32,10 +33,10 @@ pub enum ViaContainer {}
 pub trait Param<T: Transport, M>: Sized + Send + 'static {
     const CONSUMES_BODY: bool;
 
-    /// What the parameter reads from the container, for the wiring pass. `name` is the parameter
-    /// as the handler's signature writes it, which a wiring report prints as ``param `name` ``
-    /// for a container-read parameter; a `FromCall` type declares its own reads, unnamed.
-    fn dependencies_named(d: &mut Dependencies, name: &'static str);
+    /// What the parameter reads from the container, for the wiring pass, every read labelled
+    /// `param`: a wiring report prints ``param `name` `` for a parameter the signature names and
+    /// `param #n` for a destructuring pattern, `n` its position in the signature.
+    fn dependencies(d: &mut Dependencies, param: HandlerParam);
 
     /// The parameter, or the failure for the error handlers: a `CallError` of the
     /// `ExtractError`'s kind, holding it as its source (transports DESIGN §2.2).
@@ -45,8 +46,8 @@ pub trait Param<T: Transport, M>: Sized + Send + 'static {
 impl<T: Transport, P: FromCall<T>> Param<T, ViaCall> for P {
     const CONSUMES_BODY: bool = P::CONSUMES_BODY;
 
-    fn dependencies_named(d: &mut Dependencies, _name: &'static str) {
-        P::dependencies(d);
+    fn dependencies(d: &mut Dependencies, param: HandlerParam) {
+        handler_param(d, param, P::dependencies);
     }
 
     async fn extract(cx: &T::Cx) -> Result<Self, BoxError> {
@@ -62,8 +63,10 @@ where
 {
     const CONSUMES_BODY: bool = false;
 
-    fn dependencies_named(d: &mut Dependencies, name: &'static str) {
-        d.param::<S>(name);
+    fn dependencies(d: &mut Dependencies, param: HandlerParam) {
+        handler_param(d, param, |d| {
+            d.add::<S>();
+        });
     }
 
     async fn extract(cx: &T::Cx) -> Result<Self, BoxError> {

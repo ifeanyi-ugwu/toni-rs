@@ -192,3 +192,187 @@ stable and on 1.88, with identical results on both:
 
 No check outside its item failed under any plant. Each file was restored by `cp` from a saved
 copy and touched, and `cmp` confirmed it byte-identical before the final runs.
+
+## Second round: the sixteenth response
+
+`transports/RESPONSE.md` "Sixteenth response" accepted decisions 2 to 5, moved `Count` to
+`ulo-transport` (decision 1), changed the fallback number of decision 6, and asked for three of
+this build's findings to be acted on: `max_inflight` as a `Count`, the HTTP/1.1 scope of
+`header_timeout` on the setting itself, and a refusal of a zero timeout in `prepare`. The core's
+zero-timeout check is F313 in the workspace gaps ledger and is not built here.
+
+Files changed: `crates/ulo-transport/src/{count.rs (new), lib.rs, __private.rs}`,
+`crates/ulo-http/src/{backend.rs, server.rs, embed.rs, sse.rs, lib.rs}`,
+`crates/ulo-http-hyper/{Cargo.toml, src/backend.rs}`, `crates/ulo/src/{__private.rs, graph/mod.rs}`,
+`crates/ulo-handler-codegen/src/{params.rs, emit.rs}`, `Cargo.lock`.
+
+### The signatures
+
+```rust
+// ulo_transport (moved from ulo_http, unchanged otherwise)
+pub enum Count { #[default] Default, Max(u32), Unlimited }      // Clone, Copy, Debug, Default, PartialEq, Eq, Hash
+
+// ulo_http::HttpConfig
+pub max_inflight: Count,                                         // was Option<usize>
+
+// ulo_http::Server<B> and ulo_http::embed::Embedded<A>
+pub fn max_inflight(self, requests: Count) -> Self;              // was (self, requests: usize)
+
+// ulo::__private (macro protocol)
+pub enum HandlerParam { Named(&'static str), At(usize) }
+pub fn handler_param(d: &mut Dependencies, param: HandlerParam, declare: impl FnOnce(&mut Dependencies));
+
+// ulo_transport::__private::Param<T, M> (macro protocol)
+fn dependencies(d: &mut Dependencies, param: HandlerParam);      // replaces fn dependencies_named(d, name)
+```
+
+### What each item does
+
+1. **`Count` in `ulo-transport`.** `ulo_transport::Count`, exported at the crate root beside
+   `Admission`. Its `Default` variant now reads "the setting's own default", which each setting
+   documents. `ulo-http` no longer exports it, and `ulo-http-hyper` gains a `ulo-transport`
+   dependency for its `match` on `max_concurrent_streams`.
+2. **`max_inflight` as a `Count`.** `Count::Default` is the value unset and bounds nothing, which
+   is what `None` meant: the server and the embedding admitted every request. `Count::Unlimited`
+   behaves the same today. `Count::Max(n)` sheds over `n`. The conversion to `Admission::new`'s
+   `Option<usize>` happens in one place, the crate-private `HttpConfig::inflight_limit`, with
+   `usize::try_from(n)`, which cannot fail on a 32- or 64-bit target.
+3. **The `keep_alive` doc.** `Sse::keep_alive` now states the guarantee: a comment after at least
+   `every` of idleness, `every` after the last write or a little later, never sooner, since the
+   period starts when the stream is next found waiting. It advises a period comfortably below the
+   shortest proxy idle timeout in the deployment. The `IntoReply` impl's doc says the same in its
+   own sentence.
+4. **`header_timeout`'s scope.** "HTTP/1.1 only; HTTP/2 connections are bounded by the backend's
+   own HTTP/2 limits." is on `HttpConfig::header_timeout` and `Server::header_timeout`.
+5. **Zero timeouts refused.** `prepare_app`, which `Server<B>::prepare` and `Embedded<A>::prepare`
+   both call, pushes one `Configure` failure per timeout equal to `Bound::After(Duration::ZERO)`:
+   ``.header_timeout(Bound::After(Duration::ZERO))` would close every connection before its first
+   request head; write `Bound::Unbounded` to turn the timeout off``, and the same form for
+   `handshake_timeout` ("drop every TLS connection before its handshake") and `timeout_grace`
+   ("send the 504 before any error handler could answer a route timeout"). They join the other
+   `prepare` failures in the one report. Each of the three builder methods documents the refusal.
+6. **Parameter names everywhere.** The generated `dependencies` block passes
+   `HandlerParam::Named("<ident>")` for a parameter bound to an identifier and
+   `HandlerParam::At(<index>)` for a destructuring pattern, `index` counted from 0 among the
+   parameters after the receiver. Both `Param` impls go through `ulo::__private::handler_param`,
+   which runs the declaration and relabels every record it added: `ViaCall` declares through
+   `P::dependencies`, `ViaContainer` through `Dependencies::add`. A call-read parameter such as
+   `svc: Injected<Dep<Unbound>>` now reports ``InjectedParams::injected (param `svc`)``, and
+   `Injected(svc): Injected<Dep<Unbound>>` written third reports
+   `DestructuredParams::destructured (param #3)`.
+
+### Decisions for sign-off
+
+#### 1. `ulo-http` does not re-export `Count`
+
+- **Written:** users write `ulo_transport::Count`.
+- **Why:** `ulo-http` re-exports no type of a sibling `ulo` crate. Its builder already takes
+  `ulo::Bound` and `ulo_net::Tls` under their own crates' paths, and the transport-neutral types it
+  reads (`CallError`, `ErrorKind`, `Admission`, `Injected`) are reached through `ulo_transport`.
+  Its only re-exports are of external crates, `bytes::Bytes` and four `http` types. A re-export
+  would give `Count` two paths where `Bound` has one.
+- **Alternative:** `pub use ulo_transport::Count` at the `ulo-http` root, saving an application
+  the `ulo-transport` dependency when it uses no other neutral type.
+
+#### 2. The zero refusal covers the three `Bound` settings and no `Duration` setting
+
+- **Written:** `header_timeout`, `handshake_timeout` and `timeout_grace`, which are every `Bound`
+  `HttpConfig` holds. The embedding refuses `timeout_grace`; it has no builder for the other two,
+  so their `Bound::Default` never trips the check there.
+- **Not refused:** the `Duration` settings. `shed_retry_after(Duration::ZERO)` is a valid
+  `Retry-After: 0`. `Sse::keep_alive(Duration::ZERO)` is built per response, after `prepare`, so
+  `prepare` cannot see it. `#[meta(Timeout(Duration::ZERO))]` is visible in `prepare`, since the
+  router reads each route's metadata there, and would cancel every request on the route; it falls
+  under the same refuse-what-`prepare`-can-see rule but is not a `Bound`, so it is left for an
+  answer.
+
+#### 3. `Count::Max(0)` is accepted
+
+- **Written:** `max_inflight(Count::Max(0))` sheds every request, and
+  `max_concurrent_streams(Count::Max(0))` advertises zero streams. Neither is refused.
+- **Why:** the answer asked for zero refusals on timeouts only. Both are visible in `prepare`, and
+  both make the server refuse everything: `max_inflight` sheds every request, and RFC 9113 §6.5.2
+  allows a zero `SETTINGS_MAX_CONCURRENT_STREAMS` but says a server SHOULD set it only for short
+  durations and close the connection if it does not wish to accept requests. A configured zero is
+  not short.
+- **Alternative:** refuse `Count::Max(0)` on both in `prepare` with the hint "write
+  `Count::Unlimited` to remove the limit".
+
+#### 4. The compile-time body diagnostic keeps the pattern text
+
+- **Written:** codegen's `Param` carries `name`, the identifier or the pattern as token text, and
+  a new `ident`, the identifier only. The wiring report reads `ident` and falls back to the
+  position. The `CONSUMES_BODY` assertion still reads `name`, so two body-consuming parameters
+  written `Json(a)` and `Form(b)` are named as written in that compile error.
+- **Why:** the compile error points at the signature, where the pattern is in front of the
+  reader. A wiring report has no span to point at, which is the case the answer's number serves.
+- **Changed behaviour:** the previous round's ``param `Config (c)` `` for a destructured
+  `FromContainer` tuple struct is now `param #n`.
+
+#### 5. `handler_param` relabels whatever the declaration added
+
+- **Written:** every record `declare` pushes takes the parameter's label, whatever label the
+  `FromCall` impl gave it. One parameter whose impl declares two reads prints the same name for
+  both.
+- **Why:** the reads belong to that parameter, and a `FromCall` impl has no name of its own to
+  give them. Relabelling after the fact keeps `FromCall::dependencies(d)` unchanged for transport
+  crates.
+
+### Divergences
+
+1. **DESIGN §3.6 does not say where `Count` lives, what `max_inflight` at `Default` means, that a
+   zero timeout is refused, or that `header_timeout` bounds HTTP/1.1 only.** Each is now in the
+   rustdoc of the setting. DESIGN.md is not edited here.
+2. **DESIGN §X3 names a handler parameter "by its identifier" and has no rule for a destructuring
+   pattern.** The build prints `param #n` from the signature position, as the answer specifies.
+3. **DESIGN §3.1 still describes the keep-alive clock as `tokio::time::Sleep`.** First-round
+   divergence 1 stands.
+
+### Not covered
+
+- The core's zero-timeout check (F313).
+- The old crates' `with_max_inflight(usize)` on `ulo-rpc-tcp`, `ulo-rpc-udp` and `ulo-grpc`, which
+  this branch has not rebuilt.
+
+### Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning lists (cargo JSON, deduplicated by crate, file and message) are identical to HEAD's,
+  17 entries on each toolchain, all in `crates/ulo/src`. The comparison reported a planted unused
+  import in `crates/ulo-http/src/cx.rs` as one new entry, and matched HEAD again once it was
+  removed.
+- `cargo test --workspace` passes: 20 test binaries, 3 passed, 12 ignored, none failed.
+- `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-transport -p ulo-http -p ulo-http-hyper
+  --no-deps` passes, as does the same for `ulo-handler-codegen`.
+- The scratch crate `embed` (`#![deny(warnings)]`, now also depending on `ulo-transport`) keeps
+  its 80 checks, with `Count` imported from `ulo_transport` and the round-2 shedding check written
+  `max_inflight(Count::Max(1))`, and adds 10. All 90 pass on rustc stable and on 1.88, with
+  identical labels. The new checks:
+
+| Check | Server or app | Result |
+| --- | --- | --- |
+| The second request while the first response is held | `Embedded`, `max_inflight(Count::Max(1))` | `503` |
+| The same | `max_inflight(Count::Unlimited)` | `200` |
+| The same | `max_inflight(Count::Default)` | `200` |
+| `listen()` refuses, naming ``.header_timeout(Bound::After(Duration::ZERO))`` and the hint | hyper, `header_timeout(After(0))` | refused |
+| The same for `handshake_timeout` | hyper, `handshake_timeout(After(0))` | refused |
+| The same for `timeout_grace` | hyper, `timeout_grace(After(0))` | refused |
+| The same for `timeout_grace` | `Embedded`, `timeout_grace(After(0))` | refused |
+| All three zeros give `3 problems:` and the hint three times | hyper, all three at `After(0)` | as stated |
+| Wiring report for an unbound `svc: Injected<Dep<Unbound>>` after `id: Path<u32>` | `#[routes]` controller | ``InjectedParams::injected (param `svc`)``, no `param #` |
+| Wiring report for `Injected(svc): Injected<Dep<Unbound>>` after `Path(id): Path<u32>` and `cx: HttpCx` | `#[routes]` controller | `DestructuredParams::destructured (param #3)`, no parameter printed by name |
+
+Against known violations, each one planted alone into `crates/` and the scratch crate rerun on
+stable and on 1.88, with identical results on both:
+
+| Plant | Fails |
+| --- | --- |
+| `inflight_limit` maps `Count::Max(_)` to `None` | the round-2 shedding check and `Count::Max(1)` (both `200`) |
+| `inflight_limit` maps `Count::Unlimited` to `Some(1)` | `Count::Unlimited` (`503`) |
+| `prepare_app` does not call `check_zero_timeouts` | all five zero-timeout checks (`listen()` succeeds) |
+| `check_zero_timeouts` checks `header_timeout` only | the `handshake_timeout`, both `timeout_grace` and the three-in-one checks |
+| `ViaCall` declares through `P::dependencies(d)`, as at HEAD | both report checks, which print `param #1` |
+| `handler_param` numbers `HandlerParam::At` by the records before it | the destructuring check, which prints `param #1`; the named one still prints ``param `svc` `` |
+
+No check outside its item failed under any plant. Each file was restored by `cp` from a saved
+copy and touched, and `cmp` confirmed it byte-identical before the final runs.

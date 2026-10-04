@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ulo::{Bound, BoxError};
 use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_transport::Count;
 
 use crate::limits::MB;
 use crate::service::AppService;
@@ -98,7 +99,8 @@ pub struct HttpConfig {
     /// The body limit a route without `#[meta(BodyLimit(..))]` takes: 2 MiB unset.
     pub body_limit: u64,
     /// The server's in-flight bound; over it a request is answered 503 with `Retry-After`.
-    pub max_inflight: Option<usize>,
+    /// `Count::Default`, the value unset, bounds nothing, as `Count::Unlimited` does.
+    pub max_inflight: Count,
     /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per connection: excess streams are refused with
     /// `RST_STREAM(REFUSED_STREAM)` by the backend. `Count::Default` leaves the backend's own
     /// value.
@@ -118,20 +120,12 @@ pub struct HttpConfig {
     /// a clock that also runs while a keep-alive connection waits for its next request: 30
     /// seconds for `Bound::Default`; `Bound::Unbounded` turns the clock off. Read through
     /// [`header_timeout_after`](Self::header_timeout_after).
+    ///
+    /// HTTP/1.1 only; HTTP/2 connections are bounded by the backend's own HTTP/2 limits.
     pub header_timeout: Bound,
     /// How long a TLS handshake may take: 30 seconds for `Bound::Default`; `Bound::Unbounded`
     /// turns the clock off. Read through [`handshake_timeout_after`](Self::handshake_timeout_after).
     pub handshake_timeout: Bound,
-}
-
-/// A count a server setting bounds, where "the default" and "no limit" are distinct answers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Count {
-    /// Left to whoever applies the setting: for `max_concurrent_streams`, the backend.
-    #[default]
-    Default,
-    Max(u32),
-    Unlimited,
 }
 
 /// `HttpConfig::timeout_grace`'s `Bound::Default`.
@@ -151,6 +145,14 @@ impl HttpConfig {
     /// `Bound::Unbounded`, which a backend applies as no clock at all.
     pub fn handshake_timeout_after(&self) -> Option<Duration> {
         connection_timeout(self.handshake_timeout)
+    }
+
+    /// `max_inflight` as `Admission` takes it; `None` admits every request.
+    pub(crate) fn inflight_limit(&self) -> Option<usize> {
+        match self.max_inflight {
+            Count::Max(requests) => Some(usize::try_from(requests).unwrap_or(usize::MAX)),
+            Count::Default | Count::Unlimited => None,
+        }
     }
 
     /// `timeout_grace` as a duration; `None` for `Bound::Unbounded`.
@@ -175,7 +177,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         HttpConfig {
             body_limit: 2 * MB,
-            max_inflight: None,
+            max_inflight: Count::Default,
             max_concurrent_streams: Count::Default,
             shed_retry_after: Duration::from_secs(1),
             challenge: Cow::Borrowed("Bearer"),

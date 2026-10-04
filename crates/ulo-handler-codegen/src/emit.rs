@@ -221,9 +221,12 @@ pub fn call_body(sig: &HandlerSig, cx: &Ident, paths: &Paths) -> TokenStream {
 }
 
 /// `let mut dependencies = ::ulo::Dependencies::default();` followed by each parameter's
-/// `<Ty as Param<Marker, _>>::dependencies_named(&mut dependencies, "name");`, evaluating to
-/// `dependencies`. The name is [`Param::name`](crate::params::Param::name), so a wiring report
-/// names a container-read parameter as ``param `svc` `` rather than by its position.
+/// `<Ty as Param<Marker, _>>::dependencies(&mut dependencies, label);`, evaluating to
+/// `dependencies`. The label is `HandlerParam::Named` with
+/// [`Param::ident`](crate::params::Param::ident), so a wiring report names a parameter reading the
+/// container as ``param `svc` `` whether the call or the container builds it; for a destructuring
+/// pattern it is `HandlerParam::At` with [`Param::index`](crate::params::Param::index), printed as
+/// `param #n` from the parameter's position in the signature.
 pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
     let core = &paths.core;
     let transport = &paths.transport;
@@ -231,9 +234,15 @@ pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
     let dependencies = Ident::new("__ulo_dependencies", Span::mixed_site());
     let reads = sig.params.iter().map(|param| {
         let ty = &param.ty;
-        let name = &param.name;
+        let label = match &param.ident {
+            Some(ident) => quote!(#core::__private::HandlerParam::Named(#ident)),
+            None => {
+                let index = param.index;
+                quote!(#core::__private::HandlerParam::At(#index))
+            }
+        };
         quote_spanned! {param.span=>
-            <#ty as #transport::__private::Param<#marker, _>>::dependencies_named(&mut #dependencies, #name);
+            <#ty as #transport::__private::Param<#marker, _>>::dependencies(&mut #dependencies, #label);
         }
     });
     quote! {

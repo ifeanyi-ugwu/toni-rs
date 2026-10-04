@@ -387,7 +387,8 @@ pub(in crate::graph) fn boundary_key(keyed: Option<Qualifier>, key: Key) -> Key 
     }
 }
 
-/// ``field `name` ``, ``param `name` ``, or `param #n` for a closure's n-th parameter.
+/// ``field `name` ``, ``param `name` ``, or `param #n` for a closure's n-th parameter and for a
+/// handler parameter written as a destructuring pattern.
 pub(in crate::graph) fn dependency_label(label: DependencyLabel) -> String {
     match label {
         DependencyLabel::Field(name) => format!("field `{name}`"),

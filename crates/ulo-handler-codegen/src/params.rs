@@ -29,6 +29,9 @@ pub struct Param {
     /// As diagnostics name it: the binding's identifier, or the pattern as written for a
     /// destructuring pattern such as `Path(id)`.
     pub name: String,
+    /// The binding's identifier, unraw'd, as a wiring report names the parameter; `None` for a
+    /// destructuring pattern, which the report names by `index`.
+    pub ident: Option<String>,
     pub ty: Type,
     /// The parameter's type, where an assertion about it points.
     pub span: Span,
@@ -62,7 +65,13 @@ pub fn analyze(sig: &Signature) -> syn::Result<HandlerSig> {
     let params = inputs
         .enumerate()
         .map(|(index, input)| match input {
-            FnArg::Typed(typed) => Ok(Param { index, name: param_name(&typed.pat), ty: (*typed.ty).clone(), span: typed.ty.span() }),
+            FnArg::Typed(typed) => Ok(Param {
+                index,
+                name: param_name(&typed.pat),
+                ident: param_ident(&typed.pat),
+                ty: (*typed.ty).clone(),
+                span: typed.ty.span(),
+            }),
             FnArg::Receiver(receiver) => Err(syn::Error::new_spanned(receiver, "a second receiver")),
         })
         .collect::<syn::Result<Vec<_>>>()?;
@@ -99,8 +108,16 @@ fn is_arc_of_self(ty: &Type) -> bool {
 }
 
 fn param_name(pat: &Pat) -> String {
+    match param_ident(pat) {
+        Some(ident) => ident,
+        None => pat.to_token_stream().to_string(),
+    }
+}
+
+/// `mut` and a `@` subpattern dropped: `mut r#type` and `r#type @ Path(..)` both give `type`.
+fn param_ident(pat: &Pat) -> Option<String> {
     match pat {
-        Pat::Ident(ident) => syn::ext::IdentExt::unraw(&ident.ident).to_string(),
-        other => other.to_token_stream().to_string(),
+        Pat::Ident(ident) => Some(syn::ext::IdentExt::unraw(&ident.ident).to_string()),
+        _ => None,
     }
 }

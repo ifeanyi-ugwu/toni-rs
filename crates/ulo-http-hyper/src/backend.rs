@@ -11,8 +11,9 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use ulo::BoxError;
-use ulo_http::{AppService, Backend, BackendLimits, Count, HttpConfig};
+use ulo_http::{AppService, Backend, BackendLimits, HttpConfig};
 use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_transport::Count;
 
 use crate::convert::{self, Conn};
 use crate::listener::{self, Io, Listener};

@@ -14,6 +14,7 @@ categories = ["web-programming::http-server"]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
 ulo-net = { path = "../ulo-net" }
+ulo-transport = { path = "../ulo-transport" }
 http.workspace = true
 # The connection builders, configured from the server's settings; the per-request upgrade future
 # and its I/O adapter come from the same two crates.

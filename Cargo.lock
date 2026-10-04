@@ -1050,6 +1050,7 @@ dependencies = [
  "ulo",
  "ulo-http",
  "ulo-net",
+ "ulo-transport",
 ]
 
 [[package]]
