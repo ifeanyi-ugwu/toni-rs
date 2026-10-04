@@ -66,9 +66,6 @@ pub struct PreDispatch {
     pub(crate) entries: Vec<Entry>,
     /// Where `exclude` was called with no entry before it, for `prepare` to report.
     pub(crate) stray_excludes: Vec<&'static Location<'static>>,
-    /// The types `supplies` declared, which an embedding declaring `host_extensions: false`
-    /// exempts from its refusal of `Host<T>` and `adopt::<T>()`.
-    pub(crate) supplied: Vec<HostType>,
     /// Where `supplies` was called with no entry before it, for `prepare` to report.
     pub(crate) stray_supplies: Vec<&'static Location<'static>>,
 }
@@ -81,6 +78,10 @@ pub(crate) struct Entry {
     pub(crate) scoped: bool,
     pub(crate) scope: Vec<Cow<'static, str>>,
     pub(crate) exclude: Vec<Cow<'static, str>>,
+    /// What the `supplies` calls written after it declare this entry inserts: an embedding
+    /// declaring `host_extensions: false` reads them where the entry runs, for the routes its
+    /// scope covers or, unscoped, for every route and every `adopt` written after it.
+    pub(crate) supplies: Vec<Supply>,
     /// `Dep<M>` for a by-type middleware; nothing otherwise.
     pub(crate) dependencies: fn(&mut Dependencies),
     /// A check `prepare` runs, for a value it can validate: CORS refusing `*` with credentials.
@@ -89,6 +90,12 @@ pub(crate) struct Entry {
 }
 
 pub(crate) type Check = Arc<dyn Fn() -> Result<(), BoxError> + Send + Sync>;
+
+/// One `supplies::<T>()`: the type, and where it was written, for a refusal to name.
+pub(crate) struct Supply {
+    pub(crate) ty: HostType,
+    pub(crate) location: &'static Location<'static>,
+}
 
 /// What an entry runs.
 pub(crate) enum Step {
@@ -179,28 +186,34 @@ impl PreDispatch {
     /// `T` passes unchanged, and `Ext<T>` then fails with `LookupError::NotFound`.
     ///
     /// That is how a host's auth layer hands its user to the app's guards; a handler reads a host
-    /// value directly with `Host<T>`. An embedding declaring `host_extensions: false` refuses it,
-    /// as it refuses `Host<T>`, unless something declares it supplies `T`.
+    /// value directly with `Host<T>`. An embedding declaring `host_extensions: false` refuses it
+    /// unless `T` is supplied before it runs: by `Embedded::forward::<T>(..)`, or by an unscoped
+    /// entry written before it and declared with `.supplies::<T>()`.
     #[track_caller]
     pub fn adopt<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
         self.push(Step::Adopt(adopt::<T>, HostType::of::<T>()), None, declare_nothing, None)
     }
 
     /// Declares that the entry written before it puts `T` in the request's `http::Extensions`,
-    /// as a tower layer authenticating the request does. An embedding whose adapter declares
-    /// `host_extensions: false` then accepts a handler reading `Host<T>` and an `adopt::<T>()`
-    /// entry, which it refuses for a type nothing supplies. Runs nothing, on a backend or
-    /// embedded.
+    /// as a tower layer authenticating the request does. Runs nothing, on a backend or embedded.
     ///
-    /// The declaration joins one set with `Embedded::supplies::<T>()`, written by an adapter for a
-    /// value it inserts itself; it is checked as a set, whatever the scope of the entry before it
-    /// and wherever an `adopt::<T>()` stands. With no entry before it, `prepare` reports the call.
+    /// An embedding whose adapter declares `host_extensions: false` refuses a handler reading
+    /// `Host<T>` and an `adopt::<T>()` entry unless `T` reaches them, and reads the declaration
+    /// where the entry runs. After a scoped entry it reaches the handlers of the routes that
+    /// entry covers; after an unscoped one, every handler, and the `adopt` entries written after
+    /// it. A scoped entry runs after routing, so its declaration reaches no `adopt`. An unscoped
+    /// entry's `exclude` is not consulted: it matches the path as that entry receives it, which an
+    /// entry after it may rewrite before routing. A value the host keeps is copied in by
+    /// `Embedded::forward::<T>(..)`, which reaches everything.
+    ///
+    /// With no entry before it, `prepare` reports the call.
     #[track_caller]
     pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        if self.entries.is_empty() {
-            self.stray_supplies.push(Location::caller());
+        let supply = Supply { ty: HostType::of::<T>(), location: Location::caller() };
+        match self.entries.last_mut() {
+            Some(entry) => entry.supplies.push(supply),
+            None => self.stray_supplies.push(supply.location),
         }
-        self.supplied.push(HostType::of::<T>());
         self
     }
 
@@ -228,6 +241,7 @@ impl PreDispatch {
             scoped: scope.is_some(),
             scope: scope.unwrap_or_default(),
             exclude: Vec::new(),
+            supplies: Vec::new(),
             dependencies,
             check,
             location: Location::caller(),
@@ -322,7 +336,7 @@ impl Stage {
             for location in &meta.stray_supplies {
                 failures.push(format!(
                     "`supplies` at {location} follows no pre-dispatch entry; it declares what the entry before it inserts, \
-                     and a value the host inserts is declared on the embedding with `Embedded::supplies`"
+                     and a value the host keeps is copied in by the embedding with `Embedded::forward`"
                 ));
             }
             for (index, entry) in meta.entries.iter().enumerate() {

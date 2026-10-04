@@ -225,6 +225,9 @@ fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Vec<String>) -> Vec
 /// `mount` is the embedding's normalized prefix and `forward` its `Miss::Forward`; a backend
 /// passes `""` and `false`. Answers whether any upgrade path is registered, for the caller's own
 /// `upgrades` limit.
+///
+/// After a failed stage the route table is still built against an empty one, for its own
+/// failures. The service is then `None`, since every route's scoped stage in it reads as empty.
 pub(crate) fn prepare_app(
     mounted: &Mounted<'_, Http>,
     config: &HttpConfig,
@@ -232,15 +235,15 @@ pub(crate) fn prepare_app(
     forward: bool,
     failures: &mut Vec<String>,
 ) -> (Option<AppService>, bool) {
-    let stage = match Stage::build(mounted.module_meta::<PreDispatch>()) {
-        Ok(stage) => stage,
+    let (stage, staged) = match Stage::build(mounted.module_meta::<PreDispatch>()) {
+        Ok(stage) => (stage, true),
         Err(errors) => {
             failures.extend(errors);
-            Stage::empty()
+            (Stage::empty(), false)
         }
     };
     let router = match Router::build(mounted.handlers(), config.body_limit, &stage, mount) {
-        Ok(router) => Some(router),
+        Ok(router) => Some(router).filter(|_| staged),
         Err(errors) => {
             failures.extend(errors.into_iter().map(|error| error.message));
             None

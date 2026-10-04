@@ -16,10 +16,10 @@ const HOST: &str = "host";
 /// Absent is `ExtractError::HostMissing`, a deployment fault: it renders 500 with its message
 /// withheld. `Option<Host<T>>` is the spelling for a value the host may leave out, `None` then.
 /// An embedding whose adapter declares `host_extensions: false` refuses a handler reading either
-/// form when the app listens, unless something declares it supplies `T`: a pre-dispatch
-/// `.supplies::<T>()` after the entry that inserts it, or `Embedded::supplies::<T>()` for a value
-/// the adapter inserts. Guards and services read a host value as `Ext<T>` once a pre-dispatch
-/// `adopt::<T>()` entry has copied it into the execution.
+/// form when the app listens, unless `T` is supplied on its route: copied from the host's request
+/// by `Embedded::forward::<T>(..)`, or declared with `.supplies::<T>()` after a pre-dispatch entry
+/// that runs for the route and inserts it. Guards and services read a host value as `Ext<T>` once
+/// a pre-dispatch `adopt::<T>()` entry has copied it into the execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Host<T>(pub T);
 

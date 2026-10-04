@@ -474,3 +474,202 @@ impl<A: Embed> Embedded<A> { pub fn supplies<T: Clone + Send + Sync + 'static>(s
   taken before the mutation, compared byte for byte, and the clean run repeated.
 - The prose scan over the added source lines for the banned register and em-dashes returns
   nothing, and returns its line for a planted "just" and em-dash.
+
+# Third round: the eighth response
+
+The changes the eighth response (signed off 2026-10-04, item 3 removing `Embedded::supplies`) asks
+of this build: the precise supplied check (item 1), the stray-`supplies` refusal kept with its text
+pointing to `Embedded::forward` (item 2), and `Embed::HostRequest` with `Embedded::forward`
+replacing `Embedded::supplies` (item 3). Entries continue the numbering above.
+
+Files changed: `crates/ulo-http/src/{embed.rs, pre_dispatch.rs, server.rs, extract/host.rs}`.
+`__private.rs`, `extract/mod.rs` and `router/` are unchanged: the check reads the router's
+existing `RouteTarget::stage`.
+
+## The signature, changed
+
+```rust
+// ulo_http::embed
+pub trait Embed: Send + Sync + 'static {
+    const NAME: &'static str;
+    type HostRequest;                              // new
+    fn limits() -> EmbedLimits;
+}
+impl<A: Embed> Embedded<A> {
+    pub fn forward<T: Clone + Send + Sync + 'static>(
+        self,
+        copy: impl Fn(&A::HostRequest) -> Option<T> + Send + Sync + 'static,
+    ) -> Self;                                     // replaces `supplies::<T>()`
+    pub fn handle(&self) -> Handle<A>;             // was `Handle`
+}
+pub struct Handle<A: Embed> { .. }                 // Clone; was `Handle`
+impl<A: Embed> Handle<A> { pub fn service(&self) -> Service<A>; /* host, stopping, app unchanged */ }
+pub struct Service<A: Embed> { .. }                // Clone; was `Service`
+impl<A: Embed> Service<A> {
+    pub fn respond(&self, host: &A::HostRequest, req: Request) -> impl Future<Output = Response> + Send + use<A>;
+}
+impl<A, B> tower::Service<http::Request<B>> for Service<A>
+where A: Embed<HostRequest = http::request::Parts>, ..;
+```
+
+## Decisions
+
+### 28. A supply belongs to the entry it follows, and the check reads it where that entry runs
+
+- **Written:** `PreDispatch::supplies::<T>()` pushes `{ type, call site }` onto the last entry's
+  `supplies`; `PreDispatch::supplied` is gone. Under `host_extensions: false`, `prepare` walks the
+  unscoped entries in the order the unscoped sub-step runs them (modules in collection order,
+  entries as written). A `Host<T>` read is checked per route, over `ServiceInner::router`'s
+  targets: it is supplied by a `forward::<T>`, by any unscoped entry's supply, or by a supply on a
+  scoped entry that the route's `ScopedStage::steps` holds, compared by the declaring
+  `Arc<PreDispatch>` and the entry's index, as `ScopedStage::holds` compares them. An
+  `adopt::<T>()` is supplied by a `forward::<T>` or by a supply on an unscoped entry at an earlier
+  position.
+- **The refusal for a route:** "`Api::maybe` on `GET /maybe` reads `Host<embed::User>`, and the
+  noext embedding declares `host_extensions: false`: the `.supplies::<embed::User>()` at
+  src/main.rs:227:83 follows a scoped entry whose scope does not cover `/maybe`, so it does not
+  reach this route". The route is the app's pattern, the one scopes are matched against, not the
+  mounted one. With no supply of `T` anywhere: "nothing supplies it. A value the host keeps is
+  copied in with `Embedded::forward::<T>(..)`, and a pre-dispatch entry inserting it is declared
+  with `.supplies::<T>()` after it". Refusals for routes come in the router's precedence order
+  rather than the handlers' mount order.
+
+### 29. An `adopt` refusal names each supply that misses it
+
+- **Written:** an `adopt::<T>()` nothing reaches lists every reason that applies, joined by `;`:
+  a supply on an unscoped entry at or after its position "follows an entry that runs after this
+  `adopt`, which then finds nothing; write the `adopt` after it"; a supply on a scoped entry
+  "follows a scoped entry, which runs after routing and so after every `adopt`". With neither, the
+  "nothing supplies it" text of entry 28.
+
+### 30. An unscoped entry's `exclude` is not consulted
+
+- **Written:** a supply after an unscoped entry counts for every route, whatever that entry's
+  `exclude`.
+- **Why:** an unscoped exclusion matches the request path as that entry receives it, and an entry
+  after it may still rewrite the path before routing. Comparing the exclusion with route patterns
+  would refuse a route that every request reaches through a rewrite, a false refusal; the
+  opposite case passes either way. Item 1 asks for the scope of scoped entries, whose exclusions
+  `Stage::scoped_for` has already applied to each route's stage.
+- **Consequence:** `.apply_value(Auth).exclude(["/public/*"]).supplies::<User>()` lifts `Host<User>`
+  on `/public/*` routes, which answer `HostMissing` (500) per request.
+- **Sign-off needed:** not consulting it, or comparing it with route patterns and accepting the
+  false refusal behind a rewrite.
+
+### 31. A failed stage leaves the `Host<T>` reads unchecked
+
+- **Written:** `prepare_app` answers no service when `Stage::build` failed, as its doc already
+  claimed; before this change it answered one built over an empty stage. Without a service the
+  `Host<T>` check does not run, since every route's scoped stage in it would read as empty and
+  refuse reads a scoped supply covers. The `adopt` check runs regardless: stage order needs only
+  the metadata. A backend's `prepare` is unaffected, since a failed stage is a failure there too.
+- **Consequence:** a `Host<T>` refusal appears only once the stage's own failures are fixed.
+
+### 32. `HostRequest` has no bounds; a tower host names `http::request::Parts`
+
+- **Written:** `type HostRequest;` with no bounds. `Service<A>` is a `tower::Service` only for
+  `A: Embed<HostRequest = http::request::Parts>`, and its `call` runs every copy on the request's
+  head before converting it, the copies' values added to the head's extensions through
+  `Extensions::extend`. The axum adapter (race 2b) names `Parts`.
+- **Why:** the tower impl has to run the copies, or a `forward` on a tower host would declare `T`
+  supplied and copy nothing, the false declaration item 3 removes. `Parts` is what a tower host
+  hands over besides the body, and it is the only request a copy on such a host can read. A host
+  with a request type of its own calls `respond`, so the restriction costs it nothing.
+- **Sign-off needed:** the tower impl restricted to `HostRequest = http::request::Parts`.
+
+### 33. `Handle` and `Service` take the host as a type parameter
+
+- **Written:** `Handle<A>` and `Service<A>`, each holding the copies as
+  `Arc<OnceLock<Box<[HostCopy<A>]>>>` beside the untyped shared state. `Stopping` stays
+  unparameterised. `Embedded::forward` collects into the builder, and `prepare` moves the list into
+  the `OnceLock` once the app is accepted, so a handle taken before `.forward(..)` runs the copies
+  too. Before `prepare` the list is empty, and a request then answers 503 regardless.
+- **Why:** a copy is typed over `A::HostRequest`, and running it needs that type at the call.
+  Erasing it behind `Any` would need `HostRequest: 'static` and check the host type at runtime.
+- **Consequence:** a user naming the handle's type writes `Handle<ulo_http_axum::Host>`, or the
+  adapter's alias.
+- **Sign-off needed:** the type parameter on both public types.
+
+### 34. The adapters' API is `Service::respond(host, req)`
+
+- **Written:** `respond` takes the host's request beside the app's, runs every copy on `host` into
+  `req.head.extensions`, then answers as before. There is no separate method to run the copies.
+- **Why:** an adapter reaches the app through `respond` or the tower impl, and both run the copies,
+  so no adapter can answer a request without them.
+- **Sign-off needed:** the copies inside `respond` rather than a method an adapter calls before it.
+
+### 35. A copy that panics inserts nothing
+
+- **Written:** each copy runs under `catch_unwind`; a panic inserts nothing for that copy, is
+  logged at `error` with the host and the type, and the request goes on. A handler reading the
+  value then answers `HostMissing`.
+- **Why:** the copy is code the app author writes, and it runs in the host's request task before
+  an execution exists, so no error handler can be offered the panic. Letting it unwind would hand
+  the panic to the host.
+
+### 36. `type HostRequest;` cannot be rocket's request
+
+- **Found:** rocket's handler receives `&'r Request<'_>`, an arbitrary lifetime, and
+  `HostRequest = rocket::Request<'static>` cannot accept it. A probe crate against rocket 0.5.1
+  with the trait as written, a rocket `Handler` passing its request to a function over
+  `&A::HostRequest`, fails with E0521, "argument requires that `'life1` must outlive `'static`".
+  The same probe with `type HostRequest<'r>;`, `type HostRequest<'r> = rocket::Request<'r>` and
+  copies stored as `dyn for<'r> Fn(&A::HostRequest<'r>) -> Option<T>` compiles.
+- **Written:** the trait as signed, with no lifetime parameter. Actix's `HttpRequest` and `Parts`
+  carry none, so race 2b's actix and axum work is unaffected.
+- **Sign-off needed before race 2b's rocket adapter:** a generic associated type
+  `type HostRequest<'r>;`, which changes `forward`'s bound to `for<'r> Fn(&A::HostRequest<'r>)`,
+  or a rocket adapter that names something other than its request.
+
+## Not covered
+
+- An `.adopt::<U>().supplies::<T>()` declares that the `adopt` entry inserts `T` into the request's
+  extensions, which an `adopt` never does, and is accepted. Refusing a `supplies` after an `adopt`
+  entry would follow the stray-`supplies` rule; it is not in the response.
+- The axum adapter naming `Parts`, actix's adapter calling `respond` with its `HttpRequest`, and
+  rocket's, which waits on entry 36 (race 2b).
+- The transports DESIGN's `Embedded::supplies`, `Handle`, `Service` and `respond`: the design
+  document is not this build's to edit.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass;
+  the warning list on stable is identical to the one taken before the change, the 17 in
+  `crates/ulo/src`, and on 1.88 no warning points outside `crates/ulo/src`. `cargo test
+  --workspace` passes. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo-http --no-deps` passes.
+- Scratch crate `embed`: the 37 checks of the second round, less the one on `Embedded::supplies`
+  and with two amended (the `Host<T>` refusal now names the route; the stray refusal must name
+  `Embedded::forward`), plus 9 new ones, 45 in all, pass with identical output on rustc 1.98.1 and
+  1.88 under `#![deny(warnings)]`. A third host, `FakeHost`, declares
+  `type HostRequest = FakeRequest` (a struct carrying an optional user) and
+  `host_extensions: false`, and is driven through `Service::respond`; `TestHost` and `NoExt` name
+  `Parts` and are driven through the tower impl.
+
+| Check | Result |
+| --- | --- |
+| `.apply_for::<ScopedInsert>(["/host"]).supplies::<User>()` on `NoExt` | refused: "`Api::maybe` on `GET /maybe` reads `Host<embed::User>` .. follows a scoped entry whose scope does not cover `/maybe`, so it does not reach this route"; `Api::host` not named |
+| the same scoped to `["/host", "/maybe"]` | listens; `Host<User>` answers "dave", the scoped entry's value |
+| `.adopt::<User>().apply_value(InsertUser).supplies::<User>()` on `NoExt` | refused: "`adopt::<embed::User>()` at src/main.rs:242:33 .. the `.supplies::<embed::User>()` at src/main.rs:242:73 follows an entry that runs after this `adopt`, which then finds nothing; write the `adopt` after it"; no `Host<User>` refusal |
+| `.apply_value(InsertUser).supplies::<User>().adopt::<User>()` (second round) | listens; "bob" and 200 |
+| `.apply_value(InsertUser).exclude(["/host"]).supplies::<User>()` on `NoExt` | listens (entry 30) |
+| `Embedded::<FakeHost>::new().forward(\|req: &FakeRequest\| req.user.map(User))` with `AppModule` | listens |
+| `respond(&FakeRequest { user: Some("carol") }, ..)` on `/host`, `/guarded` | "carol"; 200, the adopted `Ext<User>` admitting |
+| the same with `user: None` | 500 (`HostMissing`); 403 |
+| a copy that panics | 500, the panic not reaching the caller |
+| `.supplies::<User>()` with no entry before it | refused: ".. and a value the host keeps is copied in by the embedding with `Embedded::forward`" |
+
+- Against a known violation: three runs, each with mutations applied to the restored sources, the
+  crate still compiling. Run 1: scoped supplies counted for every route, the `adopt` position test
+  answering `true`, the copies not run, and the stray text naming `Embedded::supplies`; 5 checks
+  fail: the stray refusal, the scoped refusal, the one reading the scoped refusal for `Api::host`
+  (no refusal is produced), the late-`adopt` refusal, and the copy reaching `Host<User>`. Run 2:
+  the scope test answering `false`, the `adopt` position test answering `false`, and `forward`'s
+  types left out of the check; 5 checks fail: the scope covering both routes, `Api::host` accepted
+  inside its scope, the supply before the `adopt`, the exclusion check (through its `adopt`), and
+  `forward` lifting the refusals (the three `respond` checks after it do not run). Run 3: the copy
+  called outside `catch_unwind`; the run exits 101 at the copy's panic, 38 checks passed before
+  it. The `None` check asserts an absence and passes under every mutation; the exclusion check
+  pins entry 30, and no mutation consults the exclusion. The sources were restored by `cp` from copies taken before the mutations, compared
+  byte for byte, and the clean run repeated.
+- The rocket probe of entry 36 is at the scratchpad's `rocket_probe/` (`main_plain.rs` fails,
+  `main_gat.rs` compiles).
