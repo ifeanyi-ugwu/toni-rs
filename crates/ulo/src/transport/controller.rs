@@ -14,7 +14,8 @@ use crate::transport::enhancer::{ClosureId, EnhancerSpec};
 use crate::transport::handler::{HandlerInfo, HandlerSpec, Shape};
 use crate::transport::inputs::Inputs;
 use crate::transport::metadata::Metadata;
-use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport, transport_name};
+use crate::transport::{AnyErrorHandler, AnyGuard, AnyInterceptor, Transport};
+use crate::type_name::TypeName;
 
 /// A dispatch target: a `Construct` type whose handlers `mount` declares, one per transport
 /// route, message pattern, gRPC method or WebSocket event. `#[routes]` writes the impl.
@@ -47,8 +48,7 @@ impl<'a> Mount<'a> {
         controller.deps("controller", &mut enhancer_deps);
         method.deps("method", &mut enhancer_deps);
         self.handlers.push(HandlerDecl {
-            transport: TypeId::of::<T>(),
-            transport_name: transport_name::<T>(),
+            transport: TypeName::of::<T>(),
             key: T::KEY,
             inputs: T::inputs,
             name,
@@ -161,8 +161,7 @@ pub(crate) struct ControllerRecord {
 /// tiers, the handler value and the parameter reads with the original.
 #[derive(Clone)]
 pub(crate) struct HandlerDecl {
-    pub(crate) transport: TypeId,
-    pub(crate) transport_name: &'static str,
+    pub(crate) transport: TypeName,
     /// `Transport::KEY`.
     pub(crate) key: &'static str,
     /// `Transport::inputs`, which the freeze calls the first time a handler of this transport

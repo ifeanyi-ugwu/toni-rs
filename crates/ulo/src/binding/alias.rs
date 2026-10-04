@@ -1,4 +1,4 @@
-use std::any::{TypeId, type_name};
+use std::any::type_name;
 use std::marker::PhantomData;
 use std::panic::Location;
 
@@ -8,6 +8,7 @@ use crate::key::{BindingKind, Key};
 use crate::module::def::{InputRecord, ModuleNode};
 use crate::scope::ScopeKind;
 use crate::transport::Transport;
+use crate::type_name::TypeName;
 
 /// `alias::<T, Q>()`: the new key `T @ Q`, waiting for the existing one in [`Alias::of`].
 ///
@@ -65,8 +66,7 @@ impl<'m, T: Send + Sync + 'static> Input<'m, T> {
     pub fn seeded_by<Tr: Transport>(self) {
         self.node.inputs.push(InputRecord {
             key: Key::of::<T, ()>(),
-            seeder: TypeId::of::<Tr>(),
-            seeder_name: type_name::<Tr>(),
+            seeder: TypeName::of::<Tr>(),
             location: Location::caller(),
         });
     }

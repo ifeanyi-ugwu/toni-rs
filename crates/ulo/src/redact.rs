@@ -183,10 +183,10 @@ pub(crate) fn redact(secrets: &SecretRegistry, error: BoxError) -> Redacted {
     Redacted::from_parts(error, text)
 }
 
-/// An outside error under a text the core wrote for it, such as a [`PrepareFailure`] written
+/// An outside error under a text the core wrote for it, such as a [`PrepareError`] written
 /// against the whole startup report's names, scrubbed the same way.
 ///
-/// [`PrepareFailure`]: crate::PrepareFailure
+/// [`PrepareError`]: crate::PrepareError
 pub(crate) fn redact_as(secrets: &SecretRegistry, error: BoxError, text: String) -> Redacted {
     Redacted::from_parts(error, scrub(secrets, &text))
 }

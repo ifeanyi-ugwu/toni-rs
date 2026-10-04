@@ -26,7 +26,7 @@ use crate::module::{ModuleIdentity, ModuleName};
 use crate::redact::SecretRegistry;
 use crate::transport::controller::HandlerRecord;
 use crate::transport::enhancer::ClosureId;
-use crate::type_name::short_type_name;
+use crate::type_name::{TypeName, short_type_name};
 
 /// A module's position in collection order: depth-first post-order over imports from the root,
 /// imports in the order written. Lazily loaded modules follow, in load order.
@@ -165,8 +165,7 @@ pub(crate) enum Visible {
 #[derive(Clone)]
 pub(crate) struct InputDecl {
     pub(crate) key: Key,
-    pub(crate) seeder: TypeId,
-    pub(crate) seeder_name: &'static str,
+    pub(crate) seeder: TypeName,
     pub(crate) origin: InputOrigin,
 }
 

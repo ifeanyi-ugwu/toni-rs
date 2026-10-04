@@ -9,6 +9,7 @@
 pub(crate) mod configure;
 pub(crate) mod wiring;
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -21,9 +22,9 @@ use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::signal::Signal;
 use crate::timer::BoxError;
-use crate::type_name::short_type_name;
+use crate::type_name::{TypeName, short_type_name};
 
-pub use configure::{ConfigureError, ConfigureErrors, PrepareFailure};
+pub use configure::{ConfigureError, ConfigureErrors, PrepareError};
 pub use wiring::WiringErrors;
 
 #[non_exhaustive]
@@ -34,8 +35,9 @@ pub enum StartupError {
     /// Every failure a server's `prepare` reported, collected across every server before any
     /// binds, so a configuration error is always reported before a port conflict.
     Configure(ConfigureErrors),
-    /// A transport's own error, or the core's `TimerMissing`.
-    Bind { transport: &'static str, source: Redacted },
+    /// A transport's own error, or the core's `TimerMissing`. The one type name it prints,
+    /// `transport`, has nothing to collide with and prints short.
+    Bind { transport: TypeName, source: Redacted },
 }
 
 impl fmt::Display for StartupError {
@@ -45,7 +47,7 @@ impl fmt::Display for StartupError {
             StartupError::Connect(e) => fmt::Display::fmt(e, f),
             StartupError::Configure(e) => fmt::Display::fmt(e, f),
             StartupError::Bind { transport, source } => {
-                write!(f, "transport `{}` failed to bind: {source}", short_type_name(*transport))
+                write!(f, "transport `{transport}` failed to bind: {source}")
             }
         }
     }
@@ -94,7 +96,7 @@ impl From<ConfigureErrors> for StartupError {
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct TimerMissing {
-    pub transport: &'static str,
+    pub transport: TypeName,
 }
 
 impl fmt::Display for TimerMissing {
@@ -200,6 +202,10 @@ pub struct Shutdown {
 }
 
 /// One outcome, several receivers; the failures sit behind the `Arc`.
+///
+/// `Display` applies the wiring report's naming rule across every failure: two different types
+/// printing alike anywhere in the report, a key's type or qualifier or a transport, print with
+/// their full paths. A [`ShutdownFailure`] displayed on its own applies it to its own names.
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct ShutdownError {
@@ -212,8 +218,9 @@ impl fmt::Display for ShutdownError {
         let count = self.failures.len();
         let noun = if count == 1 { "failure" } else { "failures" };
         write!(f, "shutdown on `{}` finished with {count} {noun}", self.report.signal)?;
+        let full = TypeName::colliding(self.failures.iter().flat_map(ShutdownFailure::type_names));
         for failure in self.failures.iter() {
-            write!(f, "\n  × {failure}")?;
+            write!(f, "\n  × {}", failure.text(&full))?;
         }
         let abandoned = self.report.abandoned;
         if abandoned > 0 {
@@ -247,17 +254,32 @@ pub enum ShutdownFailure {
     /// `TimedOut` for a `close` exceeding its bound (§9.5): `limit: ShutdownCap` with the cap's
     /// duration when the cap bounded it, `limit: Default` with `hook_timeout` otherwise. Never
     /// `Skipped`: every `close` starts.
-    Close { transport: &'static str, reason: FailureReason },
+    Close { transport: TypeName, reason: FailureReason },
+}
+
+impl ShutdownFailure {
+    /// Every type name this failure prints, for the report's collision check.
+    fn type_names(&self) -> Vec<TypeName> {
+        match self {
+            ShutdownFailure::Hook { key, .. } => key.key().type_names().collect(),
+            ShutdownFailure::Close { transport, .. } => vec![*transport],
+        }
+    }
+
+    /// The failure, each type name in `full` written with its full path.
+    fn text(&self, full: &HashSet<TypeName>) -> String {
+        match self {
+            ShutdownFailure::Hook { hook, key, reason } => format!("`{hook}` hook of `{}`: {reason}", key.text_in(full)),
+            ShutdownFailure::Close { transport, reason } => {
+                format!("transport `{}` failed to close: {reason}", transport.written(full))
+            }
+        }
+    }
 }
 
 impl fmt::Display for ShutdownFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ShutdownFailure::Hook { hook, key, reason } => write!(f, "`{hook}` hook of `{key}`: {reason}"),
-            ShutdownFailure::Close { transport, reason } => {
-                write!(f, "transport `{}` failed to close: {reason}", short_type_name(*transport))
-            }
-        }
+        f.write_str(&self.text(&TypeName::colliding(self.type_names())))
     }
 }
 

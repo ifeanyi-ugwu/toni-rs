@@ -2,7 +2,7 @@
 //! that depend on a missing piece skip only the affected edges, so one missing binding does not
 //! hide unrelated errors.
 
-use std::any::{TypeId, type_name};
+use std::any::type_name;
 use std::collections::{HashMap, HashSet};
 use std::panic::Location;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ use crate::testing::{CollectionOverride, Override, OverrideTarget, Replacement, 
 use crate::timer::{Bound, Timer};
 use crate::transport::controller::{EnhancerDep, HandlerDecl, HandlerRecord, Mount};
 use crate::transport::inputs::Inputs;
+use crate::type_name::TypeName;
 
 /// What the wiring pass needs to know about the app beyond its modules.
 pub(crate) struct WireEnv {
@@ -312,7 +313,7 @@ fn freeze(
     };
 
     let mut contributions: HashMap<Key, Vec<BindingId>> = HashMap::new();
-    let mut transports_seen: HashSet<TypeId> = graph.handlers.iter().map(|handler| handler.decl.transport).collect();
+    let mut transports_seen: HashSet<TypeName> = graph.handlers.iter().map(|handler| handler.decl.transport).collect();
     let mut nodes: Vec<Option<ModuleNode>> = registry.nodes.into_iter().map(Some).collect();
     for (position, &index) in registry.post_order.iter().enumerate() {
         let Some(node) = nodes[index].take() else { continue };
@@ -364,10 +365,9 @@ fn freeze(
             graph.inputs.entry(input.key).or_insert_with(|| InputDecl {
                 key: input.key,
                 seeder: input.seeder,
-                seeder_name: input.seeder_name,
                 origin: InputOrigin::Module {
                     module: names[index].clone(),
-                    seeders: vec![input.seeder_name],
+                    seeders: vec![input.seeder],
                     at: input.location,
                 },
             });
@@ -671,7 +671,7 @@ fn qualifier_of(key: Key) -> Qualifier {
 /// origin, in `graph` and in `declared` for step 2. A module's own declaration of the same key
 /// with the same seeder is the same declaration; one with another seeder, another transport's
 /// declaration of the key, or a single binding under it is reported by step 2.
-fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeId>, declared: &mut Vec<InputDecl>) {
+fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeName>, declared: &mut Vec<InputDecl>) {
     if !seen.insert(decl.transport) {
         return;
     }
@@ -681,8 +681,7 @@ fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut Ha
         let declaration = InputDecl {
             key: input.key,
             seeder: decl.transport,
-            seeder_name: decl.transport_name,
-            origin: InputOrigin::Transport { name: decl.transport_name, at: input.location },
+            origin: InputOrigin::Transport { name: decl.transport, at: input.location },
         };
         graph.inputs.entry(input.key).or_insert_with(|| declaration.clone());
         declared.push(declaration);
@@ -864,7 +863,7 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
         for (module, other) in declared.inputs.iter().filter(|(_, other)| other.key == input.key && other.seeder != input.seeder) {
             let second = InputOrigin::Module {
                 module: graph.module_name(*module),
-                seeders: vec![other.seeder_name],
+                seeders: vec![other.seeder],
                 at: other.location,
             };
             errors.push(WiringError::InputConflict { key: key(), first: input.origin.clone(), second });

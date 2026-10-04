@@ -25,8 +25,8 @@ use crate::type_name::{TypeName, short_type_name};
 /// ```
 ///
 /// Type names are cut to their last path segment. Where the report would print two different
-/// types alike, `a::Config` and `b::Config`, whether as a key's type or as its qualifier, it
-/// prints those types with their full paths, and the rest of each key short; two different
+/// types alike, `a::Config` and `b::Config`, whether as a key's type, as its qualifier or as a
+/// transport, it prints those types with their full paths, and the rest of each key short; two different
 /// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Text an entry carries
 /// already rendered, such as what reads a missing key or the steps of a path, stays short. A
 /// [`WiringError`] displayed on its own applies the same rule to the keys and modules it names.
@@ -69,7 +69,7 @@ impl fmt::Display for WiringErrors {
         let noun = if count == 1 { "error" } else { "errors" };
         write!(f, "error: wiring failed with {count} {noun}")?;
         let full = Collisions {
-            types: colliding(self.errors.iter().flat_map(|error| error.key_names())),
+            types: TypeName::colliding(self.errors.iter().flat_map(WiringError::type_names)),
             modules: colliding_names(self.errors.iter().flat_map(|error| error.module_names())),
         };
         for error in &self.errors {
@@ -192,7 +192,7 @@ pub enum WiringError {
     ClosureNeedsExecution { closure: String, path: Vec<String>, at: Option<&'static Location<'static>> },
     /// Step 5: a non-optional input read on a path from a handler whose transport does not seed
     /// it, with the path from the handler to the service that reads it.
-    InputNotSeeded { handler: String, transport: &'static str, input: KeyName, seeder: &'static str, path: Vec<String> },
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, path: Vec<String> },
 
     /// Step 6: an explicit bound with no `Timer`. `item` names the bounded item, as in
     /// ``readiness `.attempt_timeout` of `PgPool` ``.
@@ -244,6 +244,19 @@ impl WiringError {
         }
     }
 
+    /// Every type name this entry prints, for the check that decides which print with their full
+    /// paths: each key's type and qualifier, and the transports an input entry names. A key's
+    /// kind plays no part: `a::Config` and `b::Config (collection)` collide too.
+    fn type_names(&self) -> Vec<TypeName> {
+        let keys = self.key_names().into_iter().flat_map(|name| name.key().type_names());
+        let transports = match self {
+            WiringError::InputNotSeeded { transport, seeder, .. } => vec![*transport, *seeder],
+            WiringError::InputConflict { first, second, .. } => first.type_names().into_iter().chain(second.type_names()).collect(),
+            _ => Vec::new(),
+        };
+        keys.chain(transports).collect()
+    }
+
     /// Every module name this entry holds as a `ModuleName`, for the same check over modules.
     fn module_names(&self) -> Vec<&ModuleName> {
         match self {
@@ -293,6 +306,7 @@ impl WiringError {
         let show_module =
             |name: &ModuleName| if full.modules.contains(name) { format!("{name:#}") } else { name.to_string() };
         let type_text = |name: &KeyName| name.key().type_name().written(&full.types);
+        let show_type = |name: TypeName| name.written(&full.types);
         match self {
             WiringError::ImportCycle { path } => tree(
                 f,
@@ -415,8 +429,8 @@ impl WiringError {
                 f,
                 format!("execution input `{}` has two sources", show(key)),
                 vec![
-                    first.line(&show_module),
-                    second.line(&show_module),
+                    first.line(&show_module, &show_type),
+                    second.line(&show_module, &show_type),
                     "help: an input is seeded by the one transport that declares it, and no module binds it; remove the other source"
                         .to_owned(),
                 ],
@@ -583,8 +597,8 @@ impl WiringError {
             }
             WiringError::InputNotSeeded { handler, transport, input, seeder, path } => {
                 let input = show(input);
-                let transport = short_type_name(*transport);
-                let seeder = short_type_name(*seeder);
+                let transport = show_type(*transport);
+                let seeder = show_type(*seeder);
                 let start = format!("{handler} ({transport})");
                 let route = match path.first() {
                     None => start,
@@ -623,7 +637,7 @@ impl WiringError {
 /// help. `WiringErrors` indents it under its `×`.
 impl fmt::Display for WiringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let full = Collisions { types: colliding(self.key_names()), modules: colliding_names(self.module_names()) };
+        let full = Collisions { types: TypeName::colliding(self.type_names()), modules: colliding_names(self.module_names()) };
         self.render(f, &full)
     }
 }
@@ -632,16 +646,16 @@ impl fmt::Display for WiringError {
 /// call that declared or bound it.
 ///
 /// `Display` writes the line the report prints, as in ``declared by transport `Http` at
-/// src/transport.rs:40``; `{:#}` writes a module name with its full path.
+/// src/transport.rs:40``; `{:#}` writes a module name with its full path. A transport prints
+/// short unless another, different one on the same line prints alike.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum InputOrigin {
-    /// The transport's `Transport::inputs`. `name` is the transport as reports name it, `Http`
-    /// for `ulo_http::Http`.
-    Transport { name: &'static str, at: &'static Location<'static> },
-    /// A module's `input::<T>().seeded_by::<Tr>()`. `seeders` holds each `Tr`'s full type name,
-    /// which the line prints by its last path segment.
-    Module { module: ModuleName, seeders: Vec<&'static str>, at: &'static Location<'static> },
+    /// The transport's `Transport::inputs`. `name` is the transport's marker type; a report
+    /// prints `ulo_http::Http` as `Http`.
+    Transport { name: TypeName, at: &'static Location<'static> },
+    /// A module's `input::<T>().seeded_by::<Tr>()`. `seeders` holds each `Tr`.
+    Module { module: ModuleName, seeders: Vec<TypeName>, at: &'static Location<'static> },
     /// A single binding under the input's key.
     Binding { module: ModuleName, at: &'static Location<'static> },
 }
@@ -654,13 +668,23 @@ impl InputOrigin {
         }
     }
 
-    /// The report's line for this source, `module` writing each module name.
-    fn line(&self, module: impl Fn(&ModuleName) -> String) -> String {
+    /// The transports this source names.
+    fn type_names(&self) -> Vec<TypeName> {
         match self {
-            InputOrigin::Transport { name, at } => format!("declared by transport `{name}` at {}", place(at)),
+            InputOrigin::Transport { name, .. } => vec![*name],
+            InputOrigin::Module { seeders, .. } => seeders.clone(),
+            InputOrigin::Binding { .. } => Vec::new(),
+        }
+    }
+
+    /// The report's line for this source, `module` writing each module name and `ty` each
+    /// transport.
+    fn line(&self, module: impl Fn(&ModuleName) -> String, ty: impl Fn(TypeName) -> String) -> String {
+        match self {
+            InputOrigin::Transport { name, at } => format!("declared by transport `{}` at {}", ty(*name), place(at)),
             InputOrigin::Module { module: declared_in, seeders, at } => {
                 let noun = if seeders.len() == 1 { "seeder" } else { "seeders" };
-                let names: Vec<String> = seeders.iter().map(|&seeder| format!("`{}`", short_type_name(seeder))).collect();
+                let names: Vec<String> = seeders.iter().map(|&seeder| format!("`{}`", ty(seeder))).collect();
                 format!("declared in {} with {noun} {} at {}", module(declared_in), names.join(", "), place(at))
             }
             InputOrigin::Binding { module: bound_in, at } => format!("bound in {} at {}", module(bound_in), place(at)),
@@ -671,7 +695,8 @@ impl InputOrigin {
 impl fmt::Display for InputOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let full = f.alternate();
-        f.write_str(&self.line(|name| if full { format!("{name:#}") } else { name.to_string() }))
+        let types = TypeName::colliding(self.type_names());
+        f.write_str(&self.line(|name| if full { format!("{name:#}") } else { name.to_string() }, |name| name.written(&types)))
     }
 }
 
@@ -692,13 +717,6 @@ impl fmt::Display for Rendered<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.render(f, self.full)
     }
-}
-
-/// The types among the keys of `names` whose short form another, different type shares,
-/// `a::Config` beside `b::Config`, each key counting its type and its qualifier. A key's kind
-/// plays no part: `a::Config` and `b::Config (collection)` collide too.
-fn colliding<'a>(names: impl IntoIterator<Item = &'a KeyName>) -> HashSet<TypeName> {
-    TypeName::colliding(names.into_iter().flat_map(|name| name.key().type_names()))
 }
 
 /// Writes `head`, then each item on its own line under `├─`, the last under `└─`. A line break

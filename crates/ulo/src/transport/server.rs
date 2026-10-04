@@ -10,8 +10,9 @@ use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
 use crate::module::meta::Meta;
 use crate::timer::{BoxError, BoxFuture, Timer};
+use crate::transport::Transport;
 use crate::transport::controller::MountedHandler;
-use crate::transport::{Transport, transport_name};
+use crate::type_name::TypeName;
 
 /// Implemented by a transport's server: handed to `app.bind(..)`, prepared and bound by
 /// `listen()`, driven by `serve`, drained and closed by the shutdown sequence (§9.4, §9.5).
@@ -191,7 +192,7 @@ impl DrainToken {
 
 /// The dyn-compatible twin of `Server` the app stores, one per bound transport.
 pub(crate) trait ErasedServer: Send + Sync + 'static {
-    fn transport_name(&self) -> &'static str;
+    fn transport_name(&self) -> TypeName;
     fn prepare<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>>;
     fn bind<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>>;
     fn serve(&self) -> BoxFuture<'_, Result<(), BoxError>>;
@@ -205,13 +206,13 @@ pub(crate) trait ErasedServer: Send + Sync + 'static {
 /// than handing a server a clock it does not have.
 fn mounted_parts<T: Transport>(app: &AppHandle) -> Result<(Vec<MountedHandler<T>>, Arc<dyn Timer>), BoxError> {
     let Some(timer) = app.shared.config.timer.clone() else {
-        return Err(BoxError::from(TimerMissing { transport: transport_name::<T>() }));
+        return Err(BoxError::from(TimerMissing { transport: TypeName::of::<T>() }));
     };
     let graph = app.shared.graph();
     let handlers = graph
         .handlers
         .iter()
-        .filter(|h| h.decl.transport == TypeId::of::<T>())
+        .filter(|h| h.decl.transport == TypeName::of::<T>())
         .filter_map(|h| {
             let controller = graph.binding(h.controller).record.keys().next()?.name(BindingKind::Single);
             h.mounted(app.shared.module_ref(h.module), controller)
@@ -221,8 +222,8 @@ fn mounted_parts<T: Transport>(app: &AppHandle) -> Result<(Vec<MountedHandler<T>
 }
 
 impl<S: Server> ErasedServer for S {
-    fn transport_name(&self) -> &'static str {
-        transport_name::<S::Transport>()
+    fn transport_name(&self) -> TypeName {
+        TypeName::of::<S::Transport>()
     }
 
     fn prepare<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {

@@ -157,14 +157,3 @@ pub trait Role: sealed::Sealed + Send + Sync + 'static {}
 impl<T: Transport> Role for AnyGuard<T> {}
 impl<T: Transport> Role for AnyInterceptor<T> {}
 impl<T: Transport> Role for AnyErrorHandler<T> {}
-
-/// The transport as errors and wiring reports name it: the marker's type name without its
-/// module path, `Http` for `ulo_http::Http`. A generic marker keeps its full name, since
-/// stripping the path from its last segment would cut inside the parameter list.
-pub(crate) fn transport_name<T: Transport>() -> &'static str {
-    let full = type_name::<T>();
-    if full.contains('<') {
-        return full;
-    }
-    full.rsplit("::").next().unwrap_or(full)
-}

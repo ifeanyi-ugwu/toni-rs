@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareFailure, Transport, TypeName};
+use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareError, Transport, TypeName};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Admission;
 
@@ -286,9 +286,9 @@ impl Failures {
     /// each failure against the types of every transport's failures: a type prints by its last
     /// path segment unless another type in the report prints alike, as in the core's wiring
     /// report.
-    pub(crate) fn into_error(self) -> PrepareFailure {
+    pub(crate) fn into_error(self) -> PrepareError {
         let names: Vec<TypeName> = self.0.iter().flat_map(Failure::names).copied().collect();
-        PrepareFailure::new(names, move |full| {
+        PrepareError::new(names, move |full| {
             let names = Names { full };
             match self.0.as_slice() {
                 [] => "the route table could not be built".to_owned(),

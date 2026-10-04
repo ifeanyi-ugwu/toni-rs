@@ -1,4 +1,4 @@
-use std::any::{Any, TypeId, type_name};
+use std::any::{Any, type_name};
 use std::fmt;
 use std::marker::PhantomData;
 use std::panic::Location;
@@ -25,6 +25,7 @@ use crate::scope::{Auto, PerExecution, Scope, ScopeKind, Singleton, Transient};
 use crate::timer::{BoxError, Bound};
 use crate::transport::Role;
 use crate::transport::controller::{Controller, ControllerHandle, ControllerRecord};
+use crate::type_name::TypeName;
 
 /// What `Module::register` writes into: imports, bindings, contributions, controllers, exports,
 /// inputs, module hooks, secrets and typed metadata. Registration is synchronous and free of
@@ -548,8 +549,7 @@ pub(crate) struct ExportRecord {
 
 pub(crate) struct InputRecord {
     pub(crate) key: Key,
-    pub(crate) seeder: TypeId,
-    pub(crate) seeder_name: &'static str,
+    pub(crate) seeder: TypeName,
     pub(crate) location: &'static Location<'static>,
 }
 

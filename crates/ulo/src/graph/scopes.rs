@@ -262,7 +262,7 @@ pub(crate) fn closure_scopes(graph: &mut Graph, declared: &Declared, errors: &mu
                                 closure.role,
                                 closure.position,
                                 graph.handler_name(handler),
-                                handler.decl.transport_name
+                                handler.decl.transport
                             ),
                             role: closure.role,
                             path,
@@ -389,9 +389,9 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
             }
             errors.push(WiringError::InputNotSeeded {
                 handler: graph.handler_name(handler),
-                transport: handler.decl.transport_name,
+                transport: handler.decl.transport,
                 input: read.input.name(BindingKind::Single),
-                seeder: decl.seeder_name,
+                seeder: decl.seeder,
                 path: read.path,
             });
         }
@@ -433,7 +433,7 @@ struct InputWalk<'g> {
 
 impl<'g> InputWalk<'g> {
     fn new(graph: &'g Graph, handler: &'g HandlerRecord) -> Self {
-        let head = format!("{} ({})", graph.handler_name(handler), handler.decl.transport_name);
+        let head = format!("{} ({})", graph.handler_name(handler), handler.decl.transport);
         InputWalk { graph, handler, head, seen: HashSet::new(), reads: Vec::new() }
     }
 

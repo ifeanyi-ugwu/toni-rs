@@ -8,9 +8,10 @@ use std::hash::{Hash, Hasher};
 ///
 /// Two names compare on their `TypeId`s, so a type alias or a renamed import names the same type.
 /// A report decides which names it writes with `{:#}` by running [`TypeName::colliding`] over
-/// every name it holds: the wiring report does, through each [`Key`](crate::Key)'s type and
-/// qualifier, and a transport's `prepare` failures do, through a
-/// [`PrepareFailure`](crate::PrepareFailure).
+/// every name it holds: the wiring report over each [`Key`](crate::Key)'s type and qualifier and
+/// the transports it names, the startup report over each failing transport and the names of each
+/// [`PrepareError`](crate::PrepareError), and the shutdown report over its keys and transports.
+/// A transport is named by its marker type, `TypeName::of::<Http>()`.
 #[derive(Clone, Copy)]
 pub struct TypeName {
     id: TypeId,

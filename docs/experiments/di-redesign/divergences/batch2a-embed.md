@@ -1103,3 +1103,162 @@ impl PrepareFailure {
   type and not its qualifier: the wiring check fails, `Replica` short, and the other 52 pass. Each
   source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
   and a rerun passes 53.
+
+# Seventh round: the twelfth response
+
+The change the twelfth response (signed off 2026-10-04) asks of this build: the core's
+`PrepareFailure` renamed `PrepareError`, and every transport name the core stores for a report
+held as a `TypeName` of the transport's marker type and entered into the collision pass of the
+report that prints it. Entries continue the numbering above.
+
+Files changed: `crates/ulo/src/{type_name.rs, lib.rs, redact.rs, error/configure.rs, error/mod.rs,
+error/wiring.rs, transport/mod.rs, transport/controller.rs, transport/server.rs, binding/alias.rs,
+module/def.rs, graph/mod.rs, graph/wire.rs, graph/scopes.rs}`, `crates/ulo-http/src/server.rs`.
+`app/mod.rs` and `lifecycle/shutdown.rs` are unchanged: they pass `ErasedServer::transport_name()`
+through, and its type changed under them.
+
+## The signature, changed
+
+```rust
+// ulo
+pub struct PrepareError { .. }                   // was `PrepareFailure`; same API
+
+pub struct ConfigureError { pub transport: TypeName, pub source: Redacted, .. }  // was `&'static str`
+pub enum StartupError { .., Bind { transport: TypeName, source: Redacted } }
+pub struct TimerMissing { pub transport: TypeName }
+pub enum ShutdownFailure { .., Close { transport: TypeName, reason: FailureReason } }
+pub enum WiringError {
+    ..,
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, path: Vec<String> },
+    ..
+}
+pub enum InputOrigin {
+    Transport { name: TypeName, at: &'static Location<'static> },
+    Module { module: ModuleName, seeders: Vec<TypeName>, at: &'static Location<'static> },
+    Binding { .. },                              // unchanged
+}
+```
+
+## Decisions
+
+### 52. `PrepareFailure` is `PrepareError`
+
+- **Written:** the type, its export, every doc link to it in `ulo` (`type_name.rs`, `redact.rs`,
+  `error/configure.rs`) and `ulo-http`'s `Failures::into_error`. The doctest's binding and
+  `ConfigureErrors::collect`'s closure argument, both `failure`, are now `error` and `prepared`.
+- **Not touched:** the earlier rounds of this log, which record the name as built then.
+
+### 53. A transport name is a `TypeName` wherever the core stores one for a report
+
+- **Written:** the three fields the response names, and four more the search found:
+  `TimerMissing::transport`, which `StartupError::Bind` carries in its `source`;
+  `WiringError::InputNotSeeded`'s `transport` and `seeder`; `InputOrigin::Transport::name`; and
+  `InputOrigin::Module::seeders`, each a `seeded_by::<Tr>()` transport.
+- **Inside the core:** `HandlerDecl` held a `TypeId` and a `&'static str` for its transport, and
+  `InputRecord` and `InputDecl` the same pair for a seeder. Each pair is now one `TypeName`, which
+  compares on the `TypeId` the pair compared on. `ErasedServer::transport_name` answers a
+  `TypeName`. `transport_name::<T>()` is gone.
+- **Left as text:** `HandlerInfo::transport()` and `BoundAddr::transport`, both `Transport::KEY`,
+  a lookup key, and `HandlerDecl::key`. Strings the core renders ahead of the report keep the
+  short form, as other pre-rendered text does: the path steps `UsersController::get (Http)`,
+  `ClosureScopeViolation::closure`, and the signal text ``transport `Http` failed: ..`` that ends
+  `serve` when a server's `serve` fails.
+- **Consequence, a generic marker:** `transport_name` kept a generic marker's full name
+  (DIVERGENCES.md, F5). `Bind`, `Configure`, `Close` and `InputNotSeeded` applied
+  `short_type_name` to it before printing and wrote `Q<X>`. `TimerMissing`, the
+  `InputOrigin::Transport` line, the pre-rendered strings and the signal wrote it whole,
+  `a::Q<b::X>`. All of them now write `TypeName`'s short form, `Q<X>`, and the full path on a
+  collision. A non-generic marker prints as before everywhere.
+- **Sign-off needed:** the four fields beyond the three named, the seeder counted as a transport
+  name, and F5's generic-marker exception dropped.
+
+### 54. The startup report enters each failing transport into its pass
+
+- **Written:** `ConfigureErrors::collect` runs `TypeName::colliding` over every failing transport
+  together with every `PrepareError`'s names. A transport whose short form another transport
+  shares, or a type a `PrepareError` names, prints in full; `PrepareError` texts are written
+  against the same set, so the transport `a::Http` beside a failure naming `b::Http` prints both
+  in full.
+- **The flag:** `ConfigureError` gains a private `transport_full: bool`, set when the report is
+  built, and `Display` follows it, so an entry displayed alone prints its transport as the report
+  does. This matches entry 50, where `source` carries the report's text.
+- **A plain error:** a server answering an error that is not a `PrepareError` contributes no names
+  from its text, but its transport enters the pass.
+- **Sign-off needed:** the private flag, or the written transport text stored in its place; and a
+  plain error's transport entering the pass.
+
+### 55. The shutdown report collides every name it prints
+
+- **Why it qualifies:** a shutdown report prints one transport per failed `close` and one key per
+  failed hook, so two names can print alike in it.
+- **Written:** `ShutdownError`'s `Display` runs `TypeName::colliding` over every failure's names,
+  each hook key's type and qualifier and each transport, and writes each failure against that set.
+  `ShutdownFailure` displayed alone collides its own names, as `WiringError` does.
+- **Why in `Display`:** `ShutdownError` holds no text written ahead of time. Its reasons are
+  redacted when recorded, and the names carry no secret, so the pass runs where the report is
+  printed, unlike entry 50's build-time pass.
+- **Consequence:** hook keys join the pass with the transports. Before, a key always printed short
+  in this report, so `a::Pool` and `b::Pool` failing their destroy hooks in one shutdown printed
+  alike. Now both print in full.
+- **Sign-off needed:** the keys included in the pass along with the transports.
+
+### 56. The bind error prints one name and runs no pass
+
+- **Written:** `StartupError::Bind` writes its transport's short form. The error names one
+  transport. A `TimerMissing` source names that same transport, and a type cannot collide with
+  itself. A transport's own error is opaque text. With one name, there is nothing to
+  collide.
+- **Sign-off needed:** no pass on `Bind`.
+
+### 57. The wiring report enters the transports it names into its pass
+
+- **Written:** `WiringError::type_names` replaces the `colliding` helper over keys: each key's type
+  and qualifier, `InputNotSeeded`'s transport and seeder, and the transports of `InputConflict`'s
+  two origins. `WiringErrors` and a `WiringError` displayed alone collide them with the keys'
+  types. `InputOrigin` displayed alone collides its own names; `{:#}` still governs only the
+  module name.
+- **The match:** `type_names` names the two variants that hold a transport and gives every other
+  variant no transports through a wildcard arm, where `key_names` and `module_names` list every
+  variant.
+- **Sign-off needed:** the wildcard arm, or an exhaustive list kept in step with `key_names`.
+
+## Not covered
+
+- An `InputNotSeeded` whose path opens at the handler prints the route line from the path, so
+  under a collision its headline writes the transport in full and the route line writes it short.
+  The path is rendered at wiring time, before the report's set exists.
+- The scratch crate checks the startup and shutdown reports. Its transports declare no inputs, so
+  `InputNotSeeded` and `InputConflict` under a transport collision are untested.
+- `DESIGN.md` §10.2 still shows `&'static str` for `Bind`, `TimerMissing`, `Close`,
+  `InputOrigin::Transport` and `InputOrigin::Module`'s seeders, and neither DESIGN document lists
+  `PrepareError`. `DIVERGENCES.md` F5 records the generic-marker exception entry 53 drops.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, matches the one at
+  HEAD (`b463566c`, extracted by `git archive` into the scratchpad) on both toolchains, the 17 in
+  `crates/ulo/src`, except one line: `module/def.rs`'s `location is never read` moves from line 537
+  to 538, below the added `use` of `TypeName`. `cargo test --workspace` exits 0, and runs the
+  `PrepareError` doctest. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-http --no-deps`
+  exits 0.
+- Scratch crate `embed`: the 53 checks of the sixth round, renamed to `PrepareError`, print the
+  same lines as in round six. Two new checks bring the total to 55, all passing under
+  `#![deny(warnings)]` on rustc 1.98.1 and 1.88 with identical verdicts and texts. The new
+  transports, `Faulty<T>` server and `EmptyModule` sit below `main`. The new checks sit in `main`
+  after round six's, so the source locations the refusal checks assert are unchanged.
+  `Faulty<T>` fails with a plain error, which names no type, so only the transports can make a
+  name print in full.
+
+| Check | Result |
+| --- | --- |
+| `SoloModule` bound with `Embedded::<NoExt>`, `Faulty<embed::Queue>` and `Faulty<embed::alt::Queue>`, each failing `prepare` | one report, 3 errors: ``transport `embed::Queue` ``, ``transport `embed::alt::Queue` ``, ``transport `Http` `` with `Host<User>`; no `ulo_http::Http` |
+| `EmptyModule` bound with `Faulty<embed::Queue>`, `Faulty<embed::alt::Queue>` and `Faulty<embed::Topic>`, each failing `close` | 3 failures: ``transport `embed::Queue` failed to close``, ``transport `embed::alt::Queue` failed to close``, ``transport `Topic` failed to close``; no `embed::Topic` |
+
+- Against a known violation, two runs, each a mutation of a source restored afterwards. Run 1, the
+  startup report's transports left out of the pass (`ConfigureErrors::collect` filtering them out
+  before `TypeName::colliding`): the startup check fails, both queues printing ``transport `Queue` ``,
+  and the other 54 pass. Run 2, `ShutdownFailure::Close` contributing no names: the shutdown check
+  fails, both queues printing ``transport `Queue` failed to close``, and the other 54 pass. Each
+  source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
+  and a rerun passes 55.
