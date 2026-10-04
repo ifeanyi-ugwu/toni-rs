@@ -859,3 +859,34 @@ Every field on your list passes that rule as built now. It's the rule that `Inpu
 I wouldn't move the descriptive fields to `TypeName` now. The remaining case it would fix, two same-named services inside one dependency path, is real but narrow. It's already recorded as a known limit (W9), and the move touches every consumer string in the wiring pass. If a real report ever shows that confusion, the precise convention above tells you exactly which field to change.
 
 **The checklist: leave it.** Creating a contributing guide to hold a single line would be backwards. The rule in `TypeName`'s doc is where someone adding a report type will look. If a `CONTRIBUTING.md` appears later for its own reasons, the line belongs there.
+
+## Sixteenth response: the follow-ups build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-followups.md` and the three findings its build
+reported. Sign-off pending.
+
+Five of the six decisions are accepted. Decision 6 needs one change, and `Count` should move crates. Two of the build's findings deserve action now.
+
+### The six decisions
+
+**1. `Count` belongs in `ulo-transport`, not `ulo-http`.** "Only HTTP uses it today" holds for about one race. Race 2b brings WebSocket connection limits, per-connection message limits, and RPC in-flight bounds, all the same three-state count. If `Count` lives in `ulo-http`, the WebSocket and RPC crates would either depend on the HTTP crate for it or redefine it. `ulo-transport` is where transport-neutral pieces live. It doesn't belong in the core: the core has no count limits, and `Bound` is there because the core times things. `u32` alone is right: no in-flight or stream limit needs more, and it keeps `Count` non-generic.
+
+**2. Accepted.** It's consistent with how `Bound` takes no conversions. One explicit spelling per state.
+
+**3. Accepted.** Owning the default in one place means no backend can disagree about what "30 s at `Default`" means.
+
+**4. Accepted, with one sentence in the docs.** The purpose of SSE keep-alive is to stop proxies closing a connection they think is idle. Since the clock starts when the stream is found waiting, the guarantee is "a comment after at least `period` of idleness", sometimes a little later. The docs on `keep_alive` should say so, and advise choosing a period comfortably below the shortest proxy idle timeout in the deployment.
+
+**5. Accepted.** An API whose only caller was generated code can change freely.
+
+**6. Names as written: accepted. The fallback number: change it.** `param #n` counting dependency entries means the number doesn't match anything the user can see. They'll count parameters in the signature, land on the wrong one, and lose trust in the report. The macro knows each parameter's position, so number by **signature position**: 1-based, excluding the receiver. Then `param #3` is the third parameter, whatever kind the others are. Better still, the macro has the name of these parameters too. If threading it through to the `ViaCall` path is cheap, print the name everywhere and keep the number only for destructuring patterns that have no name.
+
+### The findings
+
+**`max_inflight` should become a `Count` now.** It's the same kind of setting as the stream limit, and DESIGN §3.6 says no setting is an `Option`. Doing it with `Count` already in place costs one field. Doing it after release costs a breaking change. Admission takes a `usize`, so convert at the boundary.
+
+**`header_timeout` being HTTP/1.1-only must be documented on the setting itself.** The `ulo-http-hyper` crate doc is the wrong place, because users set the option on `HttpConfig` in `ulo-http` and read its docs there. One sentence: "HTTP/1.1 only; HTTP/2 connections are bounded by the backend's own HTTP/2 limits."
+
+**`Bound::After(Duration::ZERO)` should be refused in `prepare`.** A zero timeout is almost certainly a mistake, since it would close every connection before its first byte. Testing what hyper does with one would only confirm a behavior nobody wants. Refuse it as a `Configure` error with the hint "write `Bound::Unbounded` to turn the timeout off". It's visible before anything binds, so it falls under the refuse-what-`prepare`-can-see rule.
+
+The same reasoning applies in the core: `After(Duration::ZERO)` on a hook, a construction, or a readiness check is the same mistake. A matching check in the wiring pass's environment step (§10.1, step 6) would keep the rule uniform. That's worth filing, even though it's outside this race.
