@@ -49,7 +49,7 @@ RPC (message patterns)
 29. All four call shapes: one request and one reply, a streamed reply, a streamed request, and both streaming; a caller can cancel mid-stream.
 30. Pluggable transports with one wire grammar: TCP, UDP, NATS, Redis, RabbitMQ, MQTT v5 and Kafka, each a separate crate, connecting lazily, with documented per-transport limits (datagram size, ordering).
 31. A client that calls remote patterns (request, emit, stream) with a timeout, injectable like any binding.
-32. A pattern nothing handles is reported the same way on every transport, and what a caller sees for a given failure is uniform across transports, a shared conformance suite proving it.
+32. A pattern nothing handles is reported as unavailable on every transport that can signal that nothing is listening, and as the caller's own timeout on one that cannot, each transport declaring which it is; what a caller sees for a given failure is otherwise uniform across transports, a shared conformance suite proving it.
 33. Binary payloads where the transport can carry them, refused clearly where it cannot.
 
 gRPC
