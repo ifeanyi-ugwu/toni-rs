@@ -816,3 +816,20 @@ Four of the five are accepted. Entry 57 should change, and the inconsistency you
 **The `InputNotSeeded` inconsistency: fix it, don't document it.** One entry printing the same transport two ways is worse than either form alone: the reader sees `Rpc` and `my_app::transports::Rpc` in two adjacent lines and can't tell whether they're the same thing. The "pre-rendered strings stay short" rule was meant for strings that *can't* see the report: consumer descriptions and the steps between services. The transport at the head of an input path is a type the entry already holds. Store that one step as a `TypeName`, render it when the report is formatted, and the headline and the path agree.
 
 **The untested cases: add a transport that declares inputs.** Without one, `InputNotSeeded` and `InputConflict`, the two variants with the most transport names in them, never meet the pass. A minimal scratch transport with one `inputs()` declaration, plus a second marker sharing its last segment, covers both collision cases. Then the fix above can be shown failing when it's removed, like every other rule this round.
+
+## Fourteenth response: the input-path build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 59 and 61 and the two places
+its "Not covered" list names. Sign-off pending.
+
+All four are accepted, with one adjustment to the first.
+
+**1. Rename the field instead of changing what it means.** Keeping the type while changing the meaning is the one kind of change the compiler can't flag: code reading `path[0]` as the handler still compiles and quietly reads the first binding instead. Rename it to `steps` (the steps after the handler), and every reader of the old field becomes a compile error pointing at the line to check. Nothing is published yet, so it costs nothing, and the name now says what the field holds. Not adding a redundant field is right, since the entry already has the handler and the transport.
+
+**2. Accepted.** A `Module` source next to a `Transport` source is the more useful pair to test. It covers the two different origin lines meeting in one report, and it keeps `alt::Rpc` as the single second marker for both collision checks.
+
+**3. Accepted as recommended.** `InputReader` hands out the handler and its transport as a `TypeName` next to the remaining steps, and `ulo-http` renders the head step against the report's collision set. One condition applies to `PrepareError`: the text closure must receive the colliding set, which it does by construction, and not a pre-joined string.
+
+**4. Accepted as recommended.** Store the transport as a `TypeName` on the entry, render it at format time, and add it to `type_names`. Listing every variant (entry 57) means the compiler will name the variant if this step is missed.
+
+**Going forward:** with 3 and 4, the rule holds everywhere today. It last stays held if it's written down as a convention for new report types: a report entry stores names as `TypeName` or `KeyName` and renders them at format time, and only strings that never contain a type name are stored pre-rendered. A sentence next to `TypeName`'s docs, and the same line in the review checklist, would keep the next report from reintroducing what these three rounds removed.
