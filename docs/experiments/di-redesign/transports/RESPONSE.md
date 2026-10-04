@@ -773,3 +773,25 @@ And the reuse stretches what `Key` means. A `Key` is a binding's identity, a typ
 **4. Accepted.** It's a formatting fix with no change in meaning, and it makes `cargo doc` with warnings denied pass. A separate commit with a one-line message is enough.
 
 **Entry 45: fine as left, with one follow-up.** Withholding `HostMissing` from the 500 is right, and the `peer_addr` refusal already follows the rule. On collisions per transport: what the user actually reads is one startup report. `StartupError::Configure(ConfigureErrors)` prints every transport's failures together, so two different `User` types from two transports could print alike in that one report. `WiringErrors` already solves this by gathering keys across all its entries before formatting. Give `ConfigureErrors`'s `Display` the same pass, ideally once `TypeName` exists, so it's one call. It's a small change, and the rule then holds for the report as the user sees it.
+
+## Twelfth response: the TypeName build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 47-51 and the two cases they
+leave uncovered. Sign-off pending.
+
+All five are accepted. I have one naming correction on item 3, and the transport-name gap should be closed now rather than left.
+
+**1. Accepted.** Equality by `TypeId` is what makes `TypeName` mean the same thing `Key` does: identity is the type, and the string is only how it prints. Two different types with identical text must never compare equal. `Key::type_name()` is the right accessor for what `ulo-http` needs.
+
+**2. Accepted. Both output changes are corrections.** The second one especially: `a::Config` and `b::Config @ Q` are two different types that both print as `Config`, so the reader was getting exactly the ambiguity the rule exists to remove. The whole-key comparison only missed it because the qualifier made the strings differ. Checking the parts separately is what the rule meant all along.
+
+**3. Accepted as a mechanism. Rename it `PrepareError`.** Downcasting to a concrete core type is the right answer to `BoxError`'s limits. But by the error-naming rule we settled, an error that one operation produces is named after that operation: `construct` fails with `ConstructError`, `connect` with `ConnectError`, `load` with `LoadError`. `prepare` therefore fails with `PrepareError`. `Failure` is the core's word for an *entry* inside an aggregate: `ShutdownFailure` sits inside `ShutdownError`, and `FailureReason` explains one. `ulo-http`'s old `PrepareError` being gone frees the name, and moving it into the core under the same name is cleaner than introducing a second word.
+
+**4. Accepted.** Redaction has to happen where the secrets are, and keeping secrets inside a returned error to make `Display` do the work would be a leak waiting to happen. Same printed report, and the safe place for the pass.
+
+**5. Accepted.**
+
+**On what's not covered:**
+
+- **Transport names should join the pass now.** They aren't really plain strings. A transport's name is its marker type's last path segment, so it *is* a type name, just stored as text. Store it as a `TypeName` (`ConfigureError.transport`, `ShutdownFailure::Close.transport`, and `StartupError::Bind`'s), and it falls under the same rule with no special case. Changing a public field's type is breaking later and cheap now, before anything is published, so this is the moment.
+- **Module names keeping their own handling is right.** They already have a disambiguation scheme that fits them (labels and `#n` instance numbers, D12). Running them through `TypeName` would fight that scheme rather than add anything.
