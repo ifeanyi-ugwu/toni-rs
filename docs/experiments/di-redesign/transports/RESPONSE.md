@@ -961,7 +961,10 @@ Put that table, or its four lines, in `Timeout`'s docs. Someone writing `Bound::
 
 ## Twentieth response: the race 2b review
 
-Received 2026-10-05, answering `REVIEW_2B.md` (R1–R49, Q1–Q20 and its build plan). Sign-off pending.
+Received 2026-10-05, answering `REVIEW_2B.md` (R1–R49, Q1–Q20 and its build plan). The user signed
+it off the same day. Deferrals filed in the workspace gaps ledger: protox (Q11), gRPC on the HTTP port
+or an embedding host (Q12), UDP under `--listen` (Q18, with the socket-activation entry); mTLS was
+already filed.
 
 The review is thorough, and I accept nearly all of it. Three refinements need correcting, including one name clash. Below I answer the twenty questions, then note what the build plan needs.
 
