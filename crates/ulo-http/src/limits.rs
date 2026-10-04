@@ -18,10 +18,18 @@ pub struct BodyLimit(pub u64);
 /// the error handlers receive `Timeout` under the server's `timeout_grace`: unclaimed, or not
 /// answered within the grace, it renders 504.
 ///
-/// The most specific declaration wins, as for all metadata: a handler's `Timeout` replaces the one
-/// its `#[routes]` impl declares, and `#[meta(Timeout::OFF)]` on the handler lifts it.
-/// `Timeout(Bound::Default)` is the server's route-timeout default, which is no timeout, as for a
-/// route that declares none.
+/// The most specific declaration wins, as for all metadata, so under a `#[routes]` impl that
+/// declares a timeout, a handler's own declaration decides:
+///
+/// | Handler declares | Effect |
+/// |---|---|
+/// | nothing | the impl's timeout |
+/// | `Timeout::after(d)` | `d` |
+/// | `Timeout::OFF` | no timeout |
+/// | `Timeout(Bound::Default)` | the server's route-timeout default, which is none |
+///
+/// `Bound::Default` means the server's default here as everywhere else, not the impl's timeout; a
+/// handler inherits the impl's timeout by declaring nothing.
 ///
 /// `Timeout::after(Duration::ZERO)` is refused in `prepare`, once per declaration, naming every
 /// route that runs with it. A zero that every handler under it replaces is not refused.

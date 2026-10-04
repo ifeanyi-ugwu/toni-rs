@@ -938,7 +938,7 @@ Add two short constructors so the common case stays short: `#[meta(Timeout::afte
 ## Nineteenth response: the route-timeout build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-followups.md` "Fourth round" decisions 1-4.
-Sign-off pending.
+The user signed it off the same day.
 
 All four are accepted.
 
