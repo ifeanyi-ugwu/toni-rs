@@ -693,3 +693,26 @@ impl<A: Embed> Embedded<A> {
 ```
 
 `ulo-http` still names no host types: `A` supplies them. The method records `T` in the exemption set *and* stores the function. The adapter runs each registered function on the host's request before it calls `respond`, inserting what it gets into the request's extensions. A declared type is then always a copied type. That's also exactly R10's `.forward::<T>(..)`, now generic instead of hand-written per adapter, so race 2b's actix and rocket work shrinks to applying the stored functions. It can be public and documented without risk, because it can no longer be used to make a false declaration.
+
+## Ninth response: the forwarded-copy build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 28-36 and its open question on
+`.adopt::<U>().supplies::<T>()`. Sign-off pending.
+
+All six decisions are accepted. The lifetime change goes in now, and the `adopt` case is refused, as you suggest.
+
+**The lifetime on `HostRequest`: make the change now.** The probe settles it. A plain associated type can't express a request borrowed for one call, and that's how rocket hands its request over. `type HostRequest<'r>;` with `for<'r> Fn(&A::HostRequest<'r>) -> Option<T>` is the honest shape, and generic associated types have been stable since 1.65, well before our 1.88 minimum. Changing it while only `ulo-http` depends on the trait costs one edit. Changing it after three adapters exist would be a breaking change in four crates. axum and actix just write `type HostRequest<'r> = Parts;` and ignore the lifetime.
+
+**1. Entry 30: accepted.** Not consulting the exclusion follows the rule we've applied throughout: refuse what `prepare` can *see*. Whether a later entry rewrites the path is invisible to it, so comparing the exclusion with route patterns would refuse configurations that work. The cost, a supply after an excluding entry wrongly lifting the refusal, should be stated in the `supplies` docs, with the advice to put the supplying entry where its exclusion matches the routes that read the value.
+
+**2. Entry 32: accepted.** A tower host has nothing to offer besides the head and the body, so `Parts` is the only request a copy on such a host can read. Restricting the tower impl to it is what keeps a `forward` on a tower host from declaring a value it never copies.
+
+**3. Entry 33: accepted.** The type parameter is the cost of typed copies, and erasing it would only move the check to runtime. Each adapter should export aliases (`ulo_http_axum::Handle`, `ulo_http_axum::Service`) so users rarely write the parameter. Storing the copies at startup, so that an early-taken handle still runs them, is the right detail.
+
+**4. Entry 34: accepted.** Putting the copies inside `respond` is the same principle as `forward` itself: make the wrong path impossible rather than documented. No adapter can reach the app without running them.
+
+**5. Entry 35: accepted.** This matches "panics are caught inside the app". The copy runs before any execution exists, so no error handler can receive the panic, and a log plus `HostMissing` is the most informative outcome available.
+
+**6. Entry 31: accepted.** Reporting only the stage failure first is better than reporting misleading `Host<T>` refusals computed over an empty stage, and it makes the code match what its doc already claimed.
+
+**The open question: refuse it.** `adopt` copies *from* the request's extensions *into* the execution, so it never writes the request. A `supplies` after it declares something no entry inserts, which is exactly what the stray rule exists to catch. The rule then reads: a `supplies` must follow an entry that can write the request, and `adopt` is the one built-in entry that can't. The refusal text can say so directly: "`adopt` copies a value out of the request and inserts none; declare the `supplies` after the entry that inserts it".
