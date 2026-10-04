@@ -1,4 +1,4 @@
-use std::any::{TypeId, type_name};
+use std::any::type_name;
 use std::future::Future;
 use std::ops::Deref;
 
@@ -35,19 +35,5 @@ impl<T: Clone + Send + Sync + 'static> FromCall<Http> for Host<T> {
     fn from_call(cx: &HttpCx) -> impl Future<Output = Result<Self, ExtractError>> + Send {
         let value = cx.head().parts().extensions.get::<T>().cloned();
         async move { value.map(Host).ok_or(ExtractError::HostMissing { param: HOST, type_name: type_name::<T>() }) }
-    }
-}
-
-/// A type a host value is read or supplied under, for the check an embedding declaring
-/// `host_extensions: false` runs in `prepare`: compared by `id`, named by `name`.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct HostType {
-    pub(crate) id: TypeId,
-    pub(crate) name: &'static str,
-}
-
-impl HostType {
-    pub(crate) fn of<T: 'static>() -> Self {
-        HostType { id: TypeId::of::<T>(), name: type_name::<T>() }
     }
 }

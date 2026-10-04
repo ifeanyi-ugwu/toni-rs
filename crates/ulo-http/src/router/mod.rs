@@ -9,18 +9,18 @@
 
 pub(crate) mod pattern;
 
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use http::{HeaderValue, Method};
-use ulo::MountedHandler;
+use ulo::{Key, MountedHandler};
 
 use crate::__private::{HandlerFn, HttpHandler};
 use crate::cx::PathParams;
 use crate::limits::{BodyLimit, Timeout};
 use crate::pre_dispatch::{ScopedStage, Stage};
 use crate::router::pattern::Pattern;
+use crate::server::{Failure, Names};
 use crate::transport::Http;
 
 /// Every route, by pattern, each with its methods.
@@ -71,18 +71,6 @@ pub(crate) enum Routed<'r> {
     Options { allow: HeaderValue, route: Arc<str> },
 }
 
-/// A route-table failure, naming every handler involved.
-#[derive(Debug)]
-pub(crate) struct RouteError {
-    pub(crate) message: String,
-}
-
-impl fmt::Display for RouteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
 impl Router {
     /// The table for `handlers`, each `HttpHandler`'s pattern joined to its controller's prefix,
     /// with each `Path<T>` check run against its route and each route's scoped pre-dispatch stage
@@ -97,13 +85,15 @@ impl Router {
         default_body_limit: u64,
         stage: &Stage,
         mount: &str,
-    ) -> Result<Router, Vec<RouteError>> {
+    ) -> Result<Router, Vec<Failure>> {
         let mut errors = Vec::new();
         let mut groups: Vec<Group> = Vec::new();
         for handler in handlers {
-            let who = describe(handler);
+            let who = Who::of(handler);
             let Some(http) = handler.handler::<HttpHandler>() else {
-                errors.push(RouteError { message: format!("{who} is mounted for HTTP without an HTTP handler value") });
+                errors.push(Failure::naming(vec![who.controller], move |names| {
+                    format!("{} is mounted for HTTP without an HTTP handler value", who.text(names))
+                }));
                 continue;
             };
             let info = handler.info();
@@ -114,16 +104,17 @@ impl Router {
             let pattern = match Pattern::parse(&text) {
                 Ok(pattern) => pattern,
                 Err(error) => {
-                    errors.push(RouteError { message: format!("{who}: {error}") });
+                    errors.push(Failure::naming(vec![who.controller], move |names| format!("{}: {error}", who.text(names))));
                     continue;
                 }
             };
             let names: Vec<&str> = pattern.param_names().collect();
             for check in &http.path_checks {
                 if let Err(reason) = (check.check)(&names) {
-                    errors.push(RouteError {
-                        message: format!("{who}: `Path<{}>` does not fit the route `{pattern}`: {reason}", check.type_name),
-                    });
+                    let (ty, pattern) = (check.ty, pattern.to_string());
+                    errors.push(Failure::naming(vec![who.controller, ty], move |names| {
+                        format!("{}: `Path<{}>` does not fit the route `{pattern}`: {reason}", who.text(names), names.of(ty))
+                    }));
                 }
             }
             let route = if mount.is_empty() { Arc::clone(&pattern.raw) } else { Arc::from(Pattern::join(mount, &pattern.raw)) };
@@ -139,16 +130,23 @@ impl Router {
             let method = http.method().clone();
             match groups.iter_mut().find(|group| group.pattern.conflicts(&pattern)) {
                 Some(group) if group.pattern.raw != pattern.raw => {
-                    let (_, _, other) = &group.targets[0];
-                    errors.push(RouteError {
-                        message: format!(
-                            "the routes `{}` of {other} and `{pattern}` of {who} differ only in parameter names; one position takes one name",
-                            group.pattern
-                        ),
-                    });
+                    let other = group.targets[0].2;
+                    let (taken, pattern) = (group.pattern.to_string(), pattern.to_string());
+                    errors.push(Failure::naming(vec![other.controller, who.controller], move |names| {
+                        format!(
+                            "the routes `{taken}` of {} and `{pattern}` of {} differ only in parameter names; one position takes one name",
+                            other.text(names),
+                            who.text(names)
+                        )
+                    }));
                 }
                 Some(group) => match group.targets.iter().find(|(existing, _, _)| *existing == method) {
-                    Some((_, _, other)) => errors.push(RouteError { message: format!("{other} and {who} both answer `{method} {pattern}`") }),
+                    Some((_, _, other)) => {
+                        let (other, pattern) = (*other, pattern.to_string());
+                        errors.push(Failure::naming(vec![other.controller, who.controller], move |names| {
+                            format!("{} and {} both answer `{method} {pattern}`", other.text(names), who.text(names))
+                        }));
+                    }
                     None => group.targets.push((method, target, who)),
                 },
                 None => groups.push(Group { pattern, targets: vec![(method, target, who)] }),
@@ -209,11 +207,24 @@ impl RouteEntry {
 /// errors.
 struct Group {
     pattern: Pattern,
-    targets: Vec<(Method, Arc<RouteTarget>, String)>,
+    targets: Vec<(Method, Arc<RouteTarget>, Who)>,
 }
 
-fn describe(handler: &MountedHandler<Http>) -> String {
-    format!("`{}::{}`", handler.controller(), handler.name())
+/// A handler as a route-table failure names it, `` `Users::list` ``.
+#[derive(Clone, Copy)]
+struct Who {
+    controller: Key,
+    name: &'static str,
+}
+
+impl Who {
+    fn of(handler: &MountedHandler<Http>) -> Who {
+        Who { controller: handler.controller().key(), name: handler.name() }
+    }
+
+    fn text(&self, names: &Names) -> String {
+        format!("`{}::{}`", names.of(self.controller), self.name)
+    }
 }
 
 /// The methods a pattern answers, in declaration order: `HEAD` beside `GET` when only `GET` is

@@ -797,3 +797,131 @@ where A: for<'r> Embed<HostRequest<'r> = http::request::Parts>, ..;
   500, on rustc 1.98.1 and 1.88. The copy written without a parameter annotation,
   `.forward(|req| req.headers().get_one("x-user") ..)`, compiles on both (`main_unannotated.rs`).
   The round-three files (`main_plain.rs`, `main_gat.rs`, `Cargo.toml.round3`) are kept beside it.
+
+# Fifth round: the tenth response
+
+The change the tenth response (signed off 2026-10-04, section "The refusal text") asks of this
+build: the embedding refusals print type names through the formatter the core's wiring reports
+use, cut to the last path segment, with full paths only where two different types in one report
+would print alike. Entries continue the numbering above.
+
+Files changed: `crates/ulo/src/{key.rs, error/wiring.rs}`, `crates/ulo-http/src/{embed.rs,
+server.rs, router/mod.rs, pre_dispatch.rs, __private.rs, extract/host.rs, extract/mod.rs,
+extract/path.rs}`, and one doc comment in `crates/ulo/src/transport/mod.rs` (entry 46).
+
+## The signature, added
+
+```rust
+// ulo
+impl Key {
+    /// The keys among `keys` whose display another, different key among them shares.
+    pub fn colliding(keys: impl IntoIterator<Item = Key>) -> HashSet<Key>;   // new
+}
+
+// ulo_http::__private (doc-hidden)
+impl PathCheck {
+    pub fn of<T: DeserializeOwned + 'static>() -> PathCheck;                  // was `T: DeserializeOwned`
+}
+```
+
+## Decisions
+
+### 41. The formatter is `Key`'s `Display`; the one new core item is `Key::colliding`
+
+- **Found:** the core's formatter is `key::short_type_name`, `pub(crate)`. It reaches a caller
+  outside the crate through `Key`'s public `Display` (short) and `{:#}` (full paths), which apply
+  it after `role_spelling`. The collision rule is `error::wiring::colliding`, private, over
+  `KeyName`s.
+- **Written:** `ulo-http` names every type in a report as `Key::of::<T, ()>()` and writes it with
+  `{}` or `{:#}`. The rule moved into a public, documented `Key::colliding(keys) -> HashSet<Key>`,
+  and the wiring report's private `colliding` now delegates to it, so the two reports share one
+  implementation. `Key`'s type doc states that a transport's startup report names a type through
+  a `Key`, bound or not.
+- **Not chosen:** `ulo::__private`, whose module doc limits it to code `ulo-macros` generates; a
+  public free `short_type_name(&str)`, which would add a second public spelling of what `Key`'s
+  `Display` already does and leave the collision rule duplicated in each transport.
+- **Sign-off needed:** `Key` naming a type that is never bound (`Host<T>`'s `T`, `Path<T>`'s
+  `T`), or a dedicated public type, such as a `TypeName`, carrying the same `Display`/`{:#}` pair.
+
+### 42. A failure naming types is written when the report is
+
+- **Written:** `server.rs` holds `Failures` (the list both servers' `prepare` fill), `Failure`
+  (`Plain(String)`, or `Naming { keys, text }` with `text: Box<dyn Fn(&Names) -> String>`) and
+  `Names`, whose `of(key)` writes `{key:#}` for a key in the report's collision set and `{key}`
+  otherwise. `PrepareError`'s `Display` runs `Key::colliding` over every failure's keys, then
+  writes each failure. `Failures::push` takes `impl Into<Failure>`, so a plain `format!(..)` push
+  is unchanged.
+- **Scope of a report:** one `prepare` error, which `listen()` prints as one
+  `StartupError::Configure` entry. Two transports' entries are separate reports, as each core
+  wiring report is.
+- **`HostType` removed:** a host value's type is a `Key` in `HostRead`, `Supply`, `Step::Adopt`
+  and the `forward` copies. `Key` compares on `TypeId`, as `HostType::id` did.
+
+### 43. Controller keys count among a report's types, and the route table's failures use them
+
+- **Written:** a `Host<T>` refusal puts its controller's key beside `T`, and the route-table
+  failures (`Router::build`, which both servers run) name each handler through a `Who { controller,
+  name }` written with `Names`. Two controllers whose names print alike then print in full:
+  "`embed::Api::user` and `embed::other::Api::user` both answer `GET /users/{id}`".
+  `RouteError` is gone; `Router::build` returns `Vec<Failure>`.
+- **Why:** the collision rule is stated over every type a report names, and a controller is one.
+  Counting only the `Host<T>` types would print `a::Users` and `b::Users` alike in one report.
+- **Sign-off needed:** the route-table failures sit outside the embedding refusals the response
+  names; kept, or reverted to their earlier always-short controller names.
+
+### 44. `Path<T>`'s refusal goes through the same formatter
+
+- **Written:** `PathCheck` holds a `Key` in place of a `type_name`, and "`Path<T>` does not fit
+  the route" writes it with `Names`. `PathCheck::of` and the `ViaPath` probe impl gain
+  `T: 'static`, which `Path<T>: FromCall<Http>` already requires, so no handler that compiled
+  before is refused.
+
+### 45. What prints a type and is left as it was
+
+- The `peer_addr` refusal prints `InputReader::path()`, strings the core renders short before the
+  report exists, which core DESIGN §10.1 keeps short as steps of a dependency path, and the literal
+  `ClientAddr`. No change.
+- The `error` log of a `forward` copy that panics writes `type=embed::User`, the full path, now
+  through `{:#}`: a log line stands alone, with no report to collide within.
+- `ExtractError::HostMissing` carries `type_name::<T>()` at request time; its message is withheld
+  from the 500 and is not a startup report.
+- `Stage::build`'s failures name no type.
+
+### 46. A rustdoc failure in `ulo` fixed
+
+- **Found:** `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo --no-deps` fails at HEAD (`293d7d34`):
+  `Transport::KEY`'s doc splits the code span `` `const __ULO_KEY_<name>: &'static str = <Tr as
+  Transport>::KEY;` `` across two lines, and rustdoc reports `<name>` and `<Tr` as unclosed HTML
+  tags. The fourth round documented `ulo-http` alone and did not reach it.
+- **Written:** the span on one line, the paragraph reflowed; no word changed.
+
+## Not covered
+
+- The aliases and adapter crates, with race 2b, as before.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, is identical to the
+  one at HEAD (`293d7d34`, extracted by `git archive` into the scratchpad) on both toolchains: the
+  17 in `crates/ulo/src`. The comparison reports a planted `fn probe_unused` in `server.rs` as one
+  added line; the file was restored by `cp` and compared byte for byte. `cargo test --workspace`
+  exits 0. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo-http -p ulo --no-deps` exits 0 after
+  entry 46, and exits 101 at HEAD.
+- Scratch crate `embed` (crate name `embed`, so a full path reads `embed::User`): the 49 checks of
+  the fourth round, with the refusal-text ones now matching `Host<User>`, `adopt::<User>()`,
+  `Embedded::forward::<User>(..)` and `.supplies::<User>()`, the first also asserting no `embed::`
+  in its report, plus 2 new ones, 51 in all. They pass under `#![deny(warnings)]` on rustc 1.98.1
+  and 1.88 with identical verdicts and identical refusal texts.
+
+| Check | Result |
+| --- | --- |
+| `Twins` reading `Host<User>`, `Host<other::User>` and `Host<Name>` on `NoExt`, nothing supplied | refused: `Host<embed::User>`, `Host<embed::other::User>`, `Embedded::forward::<embed::other::User>(..)`; `Host<Name>` and `Twins::mine` stay short |
+| `Api` and `other::Api` both answering `GET /users/{id}` on `TestHost` | refused: "`embed::Api::user` and `embed::other::Api::user` both answer `GET /users/{id}`" |
+
+- Against a known violation, two runs, each a mutation of `Names::of` in the restored
+  `server.rs`. Run 1, the formatter bypassed (always `{key:#}`): the 4 short-name refusal checks
+  and the collision check's `Host<Name>` assertion fail, 5 in all, the other 46 pass. Run 2, the
+  collision set ignored (always `{key}`): the 2 collision checks fail, the other 49 pass. The
+  source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
+  and a rerun passes 51.

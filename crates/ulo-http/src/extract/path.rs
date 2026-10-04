@@ -4,6 +4,7 @@ use std::future::Future;
 use std::ops::Deref;
 
 use serde::de::{self, DeserializeOwned, Deserializer, Visitor};
+use ulo::Key;
 use ulo_transport::{ExtractError, FieldViolation, FromCall, Validate};
 
 use crate::cx::HttpCx;
@@ -55,14 +56,14 @@ impl<T: Validate> Validate for Path<T> {
 #[derive(Clone, Copy)]
 pub struct PathCheck {
     pub(crate) check: fn(&[&str]) -> Result<(), String>,
-    pub(crate) type_name: &'static str,
+    pub(crate) ty: Key,
 }
 
 impl PathCheck {
     /// The check of `T`: its `Deserialize` impl against a recording deserializer, the route's
     /// parameter names given.
-    pub fn of<T: DeserializeOwned>() -> PathCheck {
-        PathCheck { check: check_path::<T>, type_name: std::any::type_name::<T>() }
+    pub fn of<T: DeserializeOwned + 'static>() -> PathCheck {
+        PathCheck { check: check_path::<T>, ty: Key::of::<T, ()>() }
     }
 }
 

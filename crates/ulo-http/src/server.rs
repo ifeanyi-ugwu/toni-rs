@@ -1,11 +1,12 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport};
+use ulo::{Bound, BoundAddr, BoxError, DrainToken, Key, Mounted, Transport};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Admission;
 
@@ -116,7 +117,7 @@ impl<B: Backend> Server<B> {
     /// Every endpoint resolved and checked against the backend's limits, an inherited one against
     /// the sockets this process inherited. Failures go to `failures`; the endpoints that resolved
     /// are returned.
-    fn resolve_endpoints(&self, limits: BackendLimits, failures: &mut Vec<String>) -> Vec<Endpoint> {
+    fn resolve_endpoints(&self, limits: BackendLimits, failures: &mut Failures) -> Vec<Endpoint> {
         let mut endpoints: Vec<Endpoint> = Vec::new();
         for spec in &self.endpoints {
             let endpoint = match spec.resolve() {
@@ -154,7 +155,7 @@ impl<B: Backend> Server<B> {
 /// listing takes the next descriptor answering to its name at `bind`, so a name listed more often
 /// than descriptors answer to it is refused here, once per name. An index answers for one
 /// descriptor at most, so an index listed twice is refused the same way.
-fn check_inherited(endpoints: &[Endpoint], failures: &mut Vec<String>) {
+fn check_inherited(endpoints: &[Endpoint], failures: &mut Failures) {
     let mut names: Vec<(&ListenerName, usize)> = Vec::new();
     for endpoint in endpoints {
         if let Endpoint::Inherited(name) = endpoint {
@@ -194,7 +195,7 @@ fn check_inherited(endpoints: &[Endpoint], failures: &mut Vec<String>) {
 
 /// The paths every registered `UpgradeHandler` takes, parsed; two that would match the same
 /// requests are refused, as two gateways on one path are.
-fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Vec<String>) -> Vec<(Pattern, Arc<dyn UpgradeHandler>)> {
+fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Failures) -> Vec<(Pattern, Arc<dyn UpgradeHandler>)> {
     let mut paths: Vec<(Pattern, Arc<dyn UpgradeHandler>)> = Vec::new();
     for (_, upgrades) in mounted.module_meta::<Upgrades>() {
         for handler in &upgrades.handlers {
@@ -233,7 +234,7 @@ pub(crate) fn prepare_app(
     config: &HttpConfig,
     mount: &str,
     forward: bool,
-    failures: &mut Vec<String>,
+    failures: &mut Failures,
 ) -> (Option<AppService>, bool) {
     let (stage, staged) = match Stage::build(mounted.module_meta::<PreDispatch>()) {
         Ok(stage) => (stage, true),
@@ -245,7 +246,7 @@ pub(crate) fn prepare_app(
     let router = match Router::build(mounted.handlers(), config.body_limit, &stage, mount) {
         Ok(router) => Some(router).filter(|_| staged),
         Err(errors) => {
-            failures.extend(errors.into_iter().map(|error| error.message));
+            failures.extend(errors);
             None
         }
     };
@@ -272,22 +273,98 @@ pub(crate) fn prepare_app(
 /// entry for the HTTP transport.
 #[derive(Debug)]
 pub(crate) struct PrepareError {
-    pub(crate) failures: Vec<String>,
+    pub(crate) failures: Failures,
 }
 
+/// Each failure is written against the keys of the whole report, so a type prints by its last
+/// path segment unless another type in the report prints alike, as in the core's wiring report.
 impl fmt::Display for PrepareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.failures.as_slice() {
+        let names = Names { full: Key::colliding(self.failures.0.iter().flat_map(Failure::keys).copied()) };
+        match self.failures.0.as_slice() {
             [] => f.write_str("the route table could not be built"),
-            [failure] => f.write_str(failure),
+            [failure] => f.write_str(&failure.text(&names)),
             failures => {
                 write!(f, "{} problems:", failures.len())?;
                 for failure in failures {
-                    write!(f, "\n  - {failure}")?;
+                    write!(f, "\n  - {}", failure.text(&names))?;
                 }
                 Ok(())
             }
         }
+    }
+}
+
+/// The failures of one `prepare`, in the order found.
+#[derive(Debug, Default)]
+pub(crate) struct Failures(Vec<Failure>);
+
+impl Failures {
+    pub(crate) fn push(&mut self, failure: impl Into<Failure>) {
+        self.0.push(failure.into());
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<F: Into<Failure>> Extend<F> for Failures {
+    fn extend<I: IntoIterator<Item = F>>(&mut self, failures: I) {
+        self.0.extend(failures.into_iter().map(Into::into));
+    }
+}
+
+/// One failure of a `prepare`. One naming types is written only when the report is, since
+/// whether a type prints by its full path depends on every other type the report names.
+pub(crate) enum Failure {
+    Plain(String),
+    Naming { keys: Vec<Key>, text: Box<dyn Fn(&Names) -> String + Send + Sync> },
+}
+
+impl Failure {
+    /// A failure naming the types of `keys`, each written in `text` through [`Names::of`].
+    pub(crate) fn naming(keys: Vec<Key>, text: impl Fn(&Names) -> String + Send + Sync + 'static) -> Failure {
+        Failure::Naming { keys, text: Box::new(text) }
+    }
+
+    fn keys(&self) -> &[Key] {
+        match self {
+            Failure::Plain(_) => &[],
+            Failure::Naming { keys, .. } => keys,
+        }
+    }
+
+    fn text(&self, names: &Names) -> String {
+        match self {
+            Failure::Plain(text) => text.clone(),
+            Failure::Naming { text, .. } => text(names),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(text: String) -> Failure {
+        Failure::Plain(text)
+    }
+}
+
+impl fmt::Debug for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = Names { full: Key::colliding(self.keys().iter().copied()) };
+        f.write_str(&self.text(&names))
+    }
+}
+
+/// How one report writes a type: the keys whose display another key in the report shares.
+pub(crate) struct Names {
+    full: HashSet<Key>,
+}
+
+impl Names {
+    /// `User`, or `my_app::User` where another type in the report also prints as `User`.
+    pub(crate) fn of(&self, key: Key) -> String {
+        if self.full.contains(&key) { format!("{key:#}") } else { key.to_string() }
     }
 }
 
@@ -297,7 +374,7 @@ impl<B: Backend> ulo::Server for Server<B> {
     type Transport = Http;
 
     async fn prepare(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let mut failures = Vec::new();
+        let mut failures = Failures::default();
         let limits = B::limits();
         let (service, upgrading) = prepare_app(&mounted, &self.config, "", false, &mut failures);
         if upgrading && !limits.upgrades {

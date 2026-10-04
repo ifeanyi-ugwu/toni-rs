@@ -34,7 +34,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::future::{Future, poll_fn};
 use std::marker::PhantomData;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{AssertUnwindSafe, Location, catch_unwind};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -43,18 +43,17 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use hyper_util::rt::TokioIo;
-use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase};
+use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Key, Mounted, Phase};
 
 use crate::__private::HttpHandler;
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
-use crate::extract::HostType;
 use crate::pre_dispatch::{Entry, PreDispatch, Step, Supply};
 use crate::render;
 use crate::request::{ConnInfo, OnUpgrade, Request, Upgraded};
 use crate::response::Response;
 use crate::router::pattern::Pattern;
-use crate::server::{PrepareError, prepare_app};
+use crate::server::{Failure, Failures, PrepareError, prepare_app};
 use crate::service::AppService;
 use crate::transport::{ClientAddr, Http};
 
@@ -324,7 +323,7 @@ impl<A: Embed> Embedded<A> {
         copy: impl for<'r> Fn(&A::HostRequest<'r>) -> Option<T> + Send + Sync + 'static,
     ) -> Self {
         self.forwarded.push(HostCopy {
-            ty: HostType::of::<T>(),
+            ty: Key::of::<T, ()>(),
             run: Box::new(move |host, extensions| {
                 if let Some(value) = copy(host) {
                     extensions.insert(value);
@@ -348,7 +347,7 @@ impl<A: Embed> Embedded<A> {
 
     /// The prefix with a leading `/` and no trailing one, empty for `/` or none; a prefix that is
     /// not a plain path is a failure.
-    fn mount(&self, failures: &mut Vec<String>) -> String {
+    fn mount(&self, failures: &mut Failures) -> String {
         let Some(prefix) = self.nested_at.as_deref() else { return String::new() };
         let joined = Pattern::join(prefix, "");
         if joined == "/" {
@@ -368,7 +367,7 @@ impl<A: Embed> Embedded<A> {
     }
 
     /// The limits the app needs against what host `A` declares.
-    fn check_limits(&self, mounted: &Mounted<'_, Http>, service: Option<&AppService>, upgrading: bool, failures: &mut Vec<String>) {
+    fn check_limits(&self, mounted: &Mounted<'_, Http>, service: Option<&AppService>, upgrading: bool, failures: &mut Failures) {
         let limits = A::limits();
         let host = A::NAME;
         if upgrading && !limits.upgrades {
@@ -404,14 +403,14 @@ impl<A: Embed> Embedded<A> {
     /// entry, the handlers of the routes that entry's stage covers. `service` is
     /// `None` when the stage or the route table failed, and the handlers are then not checked,
     /// since which routes a scoped entry covers is unknown.
-    fn check_host_values(&self, mounted: &Mounted<'_, Http>, service: Option<&AppService>, failures: &mut Vec<String>) {
+    fn check_host_values(&self, mounted: &Mounted<'_, Http>, service: Option<&AppService>, failures: &mut Failures) {
         let host = A::NAME;
         let metas = mounted.module_meta::<PreDispatch>();
-        let forwarded = |ty: &HostType| self.forwarded.iter().any(|copy| copy.ty.id == ty.id);
+        let forwarded = |ty: Key| self.forwarded.iter().any(|copy| copy.ty == ty);
         // The unscoped entries in the order the unscoped sub-step runs them, modules in collection
         // order: each supply and each `adopt` with its entry's position in that order.
         let mut unscoped: Vec<(usize, &Supply)> = Vec::new();
-        let mut adopts: Vec<(usize, &Entry, HostType)> = Vec::new();
+        let mut adopts: Vec<(usize, &Entry, Key)> = Vec::new();
         let mut scoped: Vec<(&Arc<PreDispatch>, usize, &Supply)> = Vec::new();
         let mut position = 0;
         for (_, meta) in &metas {
@@ -427,83 +426,91 @@ impl<A: Embed> Embedded<A> {
                 position += 1;
             }
         }
-        let unsupplied = |name: &str| {
-            format!(
-                "nothing supplies it. A value the host keeps is copied in with `Embedded::forward::<{name}>(..)`, and a \
-                 pre-dispatch entry inserting it is declared with `.supplies::<{name}>()` after it"
-            )
-        };
         let routes = service.map_or(&[][..], |service| &service.inner.router.routes[..]);
         for (method, target) in routes.iter().flat_map(|route| &route.methods) {
             let Some(http) = target.handler.handler::<HttpHandler>() else { continue };
             for read in &http.host_reads {
                 let ty = read.ty;
-                if forwarded(&ty) || unscoped.iter().any(|(_, supply)| supply.ty.id == ty.id) {
+                if forwarded(ty) || unscoped.iter().any(|(_, supply)| supply.ty == ty) {
                     continue;
                 }
-                let of_type = scoped.iter().filter(|(_, _, supply)| supply.ty.id == ty.id);
+                let of_type = scoped.iter().filter(|(_, _, supply)| supply.ty == ty);
                 let covers = |meta: &Arc<PreDispatch>, index: usize| {
                     target.stage.steps.iter().any(|(_, held, at)| Arc::ptr_eq(held, meta) && *at == index)
                 };
                 if of_type.clone().any(|(meta, index, _)| covers(meta, *index)) {
                     continue;
                 }
-                let elsewhere: Vec<&Supply> = of_type.map(|(_, _, supply)| *supply).collect();
-                let why = if elsewhere.is_empty() {
-                    unsupplied(ty.name)
-                } else {
-                    let entries = if elsewhere.len() == 1 { "a scoped entry whose scope does" } else { "scoped entries whose scopes do" };
+                let elsewhere: Vec<Site> = of_type.map(|(_, _, supply)| supply.location).collect();
+                let controller = target.handler.controller().key();
+                let handler = target.handler.name();
+                let (method, pattern) = (method.clone(), Arc::clone(&target.pattern));
+                failures.push(Failure::naming(vec![controller, ty], move |names| {
+                    let name = names.of(ty);
+                    let why = if elsewhere.is_empty() {
+                        unsupplied(&name)
+                    } else {
+                        let entries = if elsewhere.len() == 1 { "a scoped entry whose scope does" } else { "scoped entries whose scopes do" };
+                        format!("{} {entries} not cover `{pattern}`, so it does not reach this route", declared(&name, &elsewhere))
+                    };
                     format!(
-                        "{} {entries} not cover `{}`, so it does not reach this route",
-                        declared(ty.name, &elsewhere),
-                        target.pattern
+                        "`{}::{handler}` on `{method} {pattern}` reads `Host<{name}>`, and the {host} embedding declares \
+                         `host_extensions: false`: {why}",
+                        names.of(controller),
                     )
-                };
-                failures.push(format!(
-                    "`{}::{}` on `{method} {}` reads `Host<{}>`, and the {host} embedding declares `host_extensions: false`: {why}",
-                    target.handler.controller(),
-                    target.handler.name(),
-                    target.pattern,
-                    ty.name,
-                ));
+                }));
             }
         }
         for (at, entry, ty) in adopts {
-            if forwarded(&ty) || unscoped.iter().any(|(position, supply)| *position < at && supply.ty.id == ty.id) {
+            if forwarded(ty) || unscoped.iter().any(|(position, supply)| *position < at && supply.ty == ty) {
                 continue;
             }
-            let later: Vec<&Supply> = unscoped.iter().filter(|(_, supply)| supply.ty.id == ty.id).map(|(_, supply)| *supply).collect();
-            let routed: Vec<&Supply> = scoped.iter().filter(|(_, _, supply)| supply.ty.id == ty.id).map(|(_, _, supply)| *supply).collect();
-            let mut why = Vec::new();
-            if !later.is_empty() {
-                why.push(format!(
-                    "{} an entry that runs after this `adopt`, which then finds nothing; write the `adopt` after it",
-                    declared(ty.name, &later)
-                ));
-            }
-            if !routed.is_empty() {
-                why.push(format!(
-                    "{} a scoped entry, which runs after routing and so after every `adopt`",
-                    declared(ty.name, &routed)
-                ));
-            }
-            if why.is_empty() {
-                why.push(unsupplied(ty.name));
-            }
-            failures.push(format!(
-                "`adopt::<{}>()` at {} copies a host value, and the {host} embedding declares `host_extensions: false`: {}",
-                ty.name,
-                entry.location,
-                why.join("; ")
-            ));
+            let later: Vec<Site> = unscoped.iter().filter(|(_, supply)| supply.ty == ty).map(|(_, supply)| supply.location).collect();
+            let routed: Vec<Site> = scoped.iter().filter(|(_, _, supply)| supply.ty == ty).map(|(_, _, supply)| supply.location).collect();
+            let location = entry.location;
+            failures.push(Failure::naming(vec![ty], move |names| {
+                let name = names.of(ty);
+                let mut why = Vec::new();
+                if !later.is_empty() {
+                    why.push(format!(
+                        "{} an entry that runs after this `adopt`, which then finds nothing; write the `adopt` after it",
+                        declared(&name, &later)
+                    ));
+                }
+                if !routed.is_empty() {
+                    why.push(format!(
+                        "{} a scoped entry, which runs after routing and so after every `adopt`",
+                        declared(&name, &routed)
+                    ));
+                }
+                if why.is_empty() {
+                    why.push(unsupplied(&name));
+                }
+                format!(
+                    "`adopt::<{name}>()` at {location} copies a host value, and the {host} embedding declares \
+                     `host_extensions: false`: {}",
+                    why.join("; ")
+                )
+            }));
         }
     }
 }
 
-/// "the `.supplies::<T>()` at {locations} follows", agreeing with how many there are.
-fn declared(name: &str, supplies: &[&Supply]) -> String {
-    let at: Vec<String> = supplies.iter().map(|supply| supply.location.to_string()).collect();
-    let verb = if supplies.len() == 1 { "follows" } else { "follow" };
+/// Where a `supplies::<T>()` was written.
+type Site = &'static Location<'static>;
+
+/// Why nothing reaches a read of the host value `name`, when no `supplies` of it exists.
+fn unsupplied(name: &str) -> String {
+    format!(
+        "nothing supplies it. A value the host keeps is copied in with `Embedded::forward::<{name}>(..)`, and a \
+         pre-dispatch entry inserting it is declared with `.supplies::<{name}>()` after it"
+    )
+}
+
+/// "the `.supplies::<T>()` at {sites} follows", agreeing with how many there are.
+fn declared(name: &str, sites: &[Site]) -> String {
+    let at: Vec<String> = sites.iter().map(|site| site.to_string()).collect();
+    let verb = if sites.len() == 1 { "follows" } else { "follow" };
     format!("the `.supplies::<{name}>()` at {} {verb}", at.join(", "))
 }
 
@@ -512,7 +519,7 @@ impl<A: Embed> ulo::Server for Embedded<A> {
 
     /// The route table and stage as a backend's server builds them, then the host's limits.
     async fn prepare(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let mut failures = Vec::new();
+        let mut failures = Failures::default();
         let mount = self.mount(&mut failures);
         let (service, upgrading) = prepare_app(&mounted, &self.config, &mount, self.on_miss == Miss::Forward, &mut failures);
         self.check_limits(&mounted, service.as_ref(), upgrading, &mut failures);
@@ -663,7 +670,7 @@ impl Shared {
 /// One `Embedded::forward` registration: the type it supplies, and the copy into a request's
 /// extensions.
 struct HostCopy<A: Embed> {
-    ty: HostType,
+    ty: Key,
     run: Box<dyn for<'r> Fn(&A::HostRequest<'r>, &mut http::Extensions) + Send + Sync>,
 }
 
@@ -783,7 +790,7 @@ impl<A: Embed> Service<A> {
     fn copy(&self, host: &A::HostRequest<'_>, extensions: &mut http::Extensions) {
         for copy in self.copies.get().into_iter().flatten() {
             if catch_unwind(AssertUnwindSafe(|| (copy.run)(host, extensions))).is_err() {
-                tracing::error!(host = A::NAME, r#type = copy.ty.name, "an `Embedded::forward` copy panicked; it inserts nothing");
+                tracing::error!(host = A::NAME, r#type = %format_args!("{:#}", copy.ty), "an `Embedded::forward` copy panicked; it inserts nothing");
             }
         }
     }

@@ -18,6 +18,5 @@ mod query;
 pub use body::{BodyStream, Form, Json, Multipart};
 pub use head::{Header, LastEventId};
 pub use host::Host;
-pub(crate) use host::HostType;
 pub use path::{Path, PathCheck};
 pub use query::Query;

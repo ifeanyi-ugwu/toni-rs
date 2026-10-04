@@ -23,12 +23,11 @@ use std::panic::Location;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::Bytes;
-use ulo::{BoxError, BoxFuture, Dep, Dependencies, DispatchStage, ExecutionRef, LookupError, Meta, ModuleRef};
+use ulo::{BoxError, BoxFuture, Dep, Dependencies, DispatchStage, ExecutionRef, Key, LookupError, Meta, ModuleRef};
 
 use crate::body::HttpBody;
 use crate::cors::Cors;
 use crate::cx::{MatchedRoute, PathParams};
-use crate::extract::HostType;
 use crate::middleware::{ErasedMiddleware, Middleware, Next};
 use crate::render;
 use crate::request::{ConnInfo, Request};
@@ -96,7 +95,7 @@ pub(crate) type Check = Arc<dyn Fn() -> Result<(), BoxError> + Send + Sync>;
 
 /// One `supplies::<T>()`: the type, and where it was written, for a refusal to name.
 pub(crate) struct Supply {
-    pub(crate) ty: HostType,
+    pub(crate) ty: Key,
     pub(crate) location: &'static Location<'static>,
 }
 
@@ -107,7 +106,7 @@ pub(crate) enum Step {
     Value(Arc<dyn ErasedMiddleware>),
     Layer(Arc<dyn ErasedLayer>),
     /// Copies one type from the request's `http::Extensions` into the execution's.
-    Adopt(Adopt, HostType),
+    Adopt(Adopt, Key),
 }
 
 /// What an `adopt::<T>()` entry runs.
@@ -194,7 +193,7 @@ impl PreDispatch {
     /// entry written before it and declared with `.supplies::<T>()`.
     #[track_caller]
     pub fn adopt<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        self.push(Step::Adopt(adopt::<T>, HostType::of::<T>()), None, declare_nothing, None)
+        self.push(Step::Adopt(adopt::<T>, Key::of::<T, ()>()), None, declare_nothing, None)
     }
 
     /// Declares that the entry written before it puts `T` in the request's `http::Extensions`,
@@ -218,7 +217,7 @@ impl PreDispatch {
     /// entry before it is an `adopt`, which inserts nothing into the request.
     #[track_caller]
     pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        let supply = Supply { ty: HostType::of::<T>(), location: Location::caller() };
+        let supply = Supply { ty: Key::of::<T, ()>(), location: Location::caller() };
         match self.entries.last_mut() {
             Some(Entry { step: Step::Adopt(..), .. }) => self.adopt_supplies.push(supply.location),
             Some(entry) => entry.supplies.push(supply),

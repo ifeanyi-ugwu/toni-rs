@@ -32,10 +32,10 @@ use crate::transport::next::Next;
 pub trait Transport: 'static {
     /// The key a transport-scoped enhancer entry names: `http`, `ws`, `ws_connect`, `rpc`, `grpc`.
     ///
-    /// A transport's handler attribute emits `const __ULO_KEY_<name>: &'static str =
-    /// <Tr as Transport>::KEY;` beside each handler's mount function, and `#[routes]` asserts every
-    /// controller-level scoped key against those constants, so `#[guards(htpp = AuthGuard)]` is a
-    /// compile error spanned on `htpp`.
+    /// A transport's handler attribute emits
+    /// `const __ULO_KEY_<name>: &'static str = <Tr as Transport>::KEY;` beside each handler's mount
+    /// function, and `#[routes]` asserts every controller-level scoped key against those
+    /// constants, so `#[guards(htpp = AuthGuard)]` is a compile error spanned on `htpp`.
     const KEY: &'static str;
 
     /// Per-call context: a cheap-clone handle to the execution.

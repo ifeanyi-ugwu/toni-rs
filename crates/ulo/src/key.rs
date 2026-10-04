@@ -1,4 +1,5 @@
 use std::any::{TypeId, type_name};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -8,6 +9,9 @@ use std::hash::{Hash, Hasher};
 /// binding. A qualifier is any `'static` type, usually a unit struct; `()` means unqualified.
 /// An integration crate holding a `Key` at runtime looks it up erased through
 /// [`Resolver::by_key`](crate::Resolver::by_key).
+///
+/// A transport's own startup report names a type through a `Key` too, bound or not, so its names
+/// follow the wiring report's rule: short, and with full paths where [`Key::colliding`] says.
 #[derive(Clone, Copy)]
 pub struct Key {
     ty: TypeId,
@@ -24,6 +28,21 @@ impl Key {
             ty_name: type_name::<T>(),
             q_name: type_name::<Q>(),
         }
+    }
+
+    /// The keys among `keys` whose display another, different key among them shares,
+    /// `a::Config` beside `b::Config`: the ones a report prints with `{:#}`. Run over every key
+    /// one report names, it decides which of them that report writes with full paths, as the
+    /// wiring report does.
+    pub fn colliding(keys: impl IntoIterator<Item = Key>) -> HashSet<Key> {
+        let mut by_text: HashMap<String, Vec<Key>> = HashMap::new();
+        for key in keys {
+            let alike = by_text.entry(key.to_string()).or_default();
+            if !alike.contains(&key) {
+                alike.push(key);
+            }
+        }
+        by_text.into_values().filter(|alike| alike.len() > 1).flatten().collect()
     }
 
     /// The same type under another qualifier: `qualified::<Q>()` on a handle, and the

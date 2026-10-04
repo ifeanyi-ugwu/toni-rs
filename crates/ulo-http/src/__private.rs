@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
-use ulo::{BoxError, BoxFuture};
+use ulo::{BoxError, BoxFuture, Key};
 
 pub use http::Method;
 pub use ulo_transport as transport;
@@ -13,7 +13,7 @@ pub use ulo_transport as transport;
 pub use crate::extract::PathCheck;
 
 use crate::cx::HttpCx;
-use crate::extract::{Host, HostType, Path};
+use crate::extract::{Host, Path};
 use crate::response::Response;
 
 /// A route's call: extraction, the controller, the handler and the reply probe, run by `dispatch`
@@ -78,7 +78,7 @@ pub trait ViaPath {
     fn check(&self) -> Option<PathCheck>;
 }
 
-impl<T: DeserializeOwned> ViaPath for &PathProbe<Path<T>> {
+impl<T: DeserializeOwned + 'static> ViaPath for &PathProbe<Path<T>> {
     fn check(&self) -> Option<PathCheck> {
         Some(PathCheck::of::<T>())
     }
@@ -97,12 +97,12 @@ impl<P> NotPath for PathProbe<P> {
 /// The value type a `Host<T>` parameter reads, for the embedding's `host_extensions` check.
 #[derive(Clone, Copy, Debug)]
 pub struct HostRead {
-    pub(crate) ty: HostType,
+    pub(crate) ty: Key,
 }
 
 impl HostRead {
     fn of<T: 'static>() -> Self {
-        HostRead { ty: HostType::of::<T>() }
+        HostRead { ty: Key::of::<T, ()>() }
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::panic::Location;
@@ -699,14 +699,7 @@ impl fmt::Display for Rendered<'_> {
 /// `b::Config`. A key's kind is left out of the comparison: `Config` and `Config (collection)`
 /// read alike too.
 fn colliding<'a>(names: impl IntoIterator<Item = &'a KeyName>) -> HashSet<Key> {
-    let mut by_text: HashMap<String, Vec<Key>> = HashMap::new();
-    for name in names {
-        let keys = by_text.entry(name.key().to_string()).or_default();
-        if !keys.contains(&name.key()) {
-            keys.push(name.key());
-        }
-    }
-    by_text.into_values().filter(|keys| keys.len() > 1).flatten().collect()
+    Key::colliding(names.into_iter().map(KeyName::key))
 }
 
 /// Writes `head`, then each item on its own line under `├─`, the last under `└─`. A line break
