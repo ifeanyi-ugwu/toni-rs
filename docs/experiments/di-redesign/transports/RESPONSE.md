@@ -834,3 +834,27 @@ All four are accepted, with one adjustment to the first.
 **4. Accepted as recommended.** Store the transport as a `TypeName` on the entry, render it at format time, and add it to `type_names`. Listing every variant (entry 57) means the compiler will name the variant if this step is missed.
 
 **Going forward:** with 3 and 4, the rule holds everywhere today. It last stays held if it's written down as a convention for new report types: a report entry stores names as `TypeName` or `KeyName` and renders them at format time, and only strings that never contain a type name are stored pre-rendered. A sentence next to `TypeName`'s docs, and the same line in the review checklist, would keep the next report from reintroducing what these three rounds removed.
+
+## Fifteenth response: the convention for report names
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 62-66. Sign-off pending.
+
+The first three are accepted. On the fourth, narrow the convention. My wording overreached, and the precise version is the rule these three rounds have actually been enforcing.
+
+**1. Accepted.** Keeping `path()` next to `steps()` would have kept the short-written handler step available, which is exactly what was removed.
+
+**2. Accepted.** The controller and `ClientAddr` appear as values in that refusal too, so leaving them out of the pass would have left them as the only names in the entry that could print alike.
+
+**3. Accepted.** It's the same fix as `InputNotSeeded`'s head step: the description holds no type name, and the name is added at format time.
+
+**4. Narrow the convention, and state the exception precisely.** The thirteenth response kept consumer descriptions and the steps between services pre-rendered on purpose. They're built while the graph is available, and they carry module names, field names and positions that no `TypeName` could hold. When I wrote the convention, I stated it more broadly than that decision, so the contradiction is in my wording, not in the code.
+
+What the last three rounds actually fixed was narrower and sharper: places where **one entry printed the same name two ways**, once as a stored value rendered at format time and once inside a pre-rendered string. So the precise convention is:
+
+> A report entry stores the names it reports as values: `TypeName`, `Key` or `KeyName`, rendered at format time under the collision rule. Descriptive text (a consumer, a path between services, an item description) may be pre-rendered, with the names inside it written short. One exception to that exception: a name that is also stored as a value in the same entry is never written into its text. It's rendered from the value, so the entry prints it one way.
+
+Every field on your list passes that rule as built now. It's the rule that `InputNotSeeded`, the `ClientAddr` refusal and `ClosureScopeViolation` were each brought into line with. Put it in `TypeName`'s doc in place of the current sentence, and make the `WiringErrors` doc point to it rather than describe the exception separately, so it's stated in one place.
+
+I wouldn't move the descriptive fields to `TypeName` now. The remaining case it would fix, two same-named services inside one dependency path, is real but narrow. It's already recorded as a known limit (W9), and the move touches every consumer string in the wiring pass. If a real report ever shows that confusion, the precise convention above tells you exactly which field to change.
+
+**The checklist: leave it.** Creating a contributing guide to hold a single line would be backwards. The rule in `TypeName`'s doc is where someone adding a report type will look. If a `CONTRIBUTING.md` appears later for its own reasons, the line belongs there.
