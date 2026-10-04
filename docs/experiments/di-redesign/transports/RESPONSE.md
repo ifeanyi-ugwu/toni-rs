@@ -753,3 +753,21 @@ This one is more than an illustration, and worth fixing. The core's diagnostics 
 ### The rest
 
 The aliases and each adapter's `HostRequest` choice arriving with race 2b is fine. Since rocket's is already probed, record the probe's result in the design next to its row, so race 2b doesn't have to repeat it.
+
+## Eleventh response: the short-name build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 41-46. Sign-off pending.
+
+**1. Add `TypeName` now, not later.** The "breaks nothing later" argument runs the wrong way. Adding `TypeName` later breaks nothing, true, but by then `Key::colliding` is public API, and taking it back *would* be a breaking change. So the permanent part of option one is the new public method on `Key`, not the reuse.
+
+And the reuse stretches what `Key` means. A `Key` is a binding's identity, a type plus a qualifier. Using it to display `Host<T>`'s `T`, which is never bound, makes "key" mean "any type we print". The next reader of `Key`'s docs then has to learn that some keys aren't keys.
+
+`TypeName` is small: it holds the type's name, has short and full display forms, and offers `colliding`. Put the shortening and collision logic there, have `Key`'s `{}` and `{:#}` delegate to it, and make `TypeName::colliding` the one public entry point that both the wiring reports and `ulo-http` call. That still gives one implementation, `Key` keeps its meaning, and no public item would ever need to be removed.
+
+**2. Keep it.** It's the same rule applied where the same problem occurs. Two controllers named `Api` printing alike is exactly the confusion the rule exists to prevent, and route-table conflicts are where people will meet it.
+
+**3. Accepted.** It makes explicit a bound the extractor already had.
+
+**4. Accepted.** It's a formatting fix with no change in meaning, and it makes `cargo doc` with warnings denied pass. A separate commit with a one-line message is enough.
+
+**Entry 45: fine as left, with one follow-up.** Withholding `HostMissing` from the 500 is right, and the `peer_addr` refusal already follows the rule. On collisions per transport: what the user actually reads is one startup report. `StartupError::Configure(ConfigureErrors)` prints every transport's failures together, so two different `User` types from two transports could print alike in that one report. `WiringErrors` already solves this by gathering keys across all its entries before formatting. Give `ConfigureErrors`'s `Display` the same pass, ideally once `TypeName` exists, so it's one call. It's a small change, and the rule then holds for the report as the user sees it.
