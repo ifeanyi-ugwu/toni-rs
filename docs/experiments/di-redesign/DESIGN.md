@@ -600,7 +600,7 @@ Wiring walks each handler's reachable execution-scoped bindings and checks every
 
 Standalone executions are the one runtime case, since nothing static says what they seed: one that doesn't seed an input which an injection point reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
 
-The same walk answers a transport's `prepare`: `Mounted::handlers_reading::<T>()` lists the mounted handlers whose reachable execution-scoped bindings read the input `T`, so a transport whose deployment cannot seed an input it declares, an embedded HTTP app whose host supplies no peer address for `ClientAddr` (transports §3.8), refuses those handlers at startup rather than failing their first call.
+The same walk answers a transport's `prepare`: `Mounted::handlers_reading::<T>()` lists the mounted handlers whose reachable execution-scoped bindings read the input `T`, each entry carrying the dependency path from the handler to the binding that reads it, so a transport whose deployment cannot seed an input it declares, an embedded HTTP app whose host supplies no peer address for `ClientAddr` (transports §3.8), refuses those handlers at startup naming the service that reads the input, rather than failing their first call.
 
 ---
 
@@ -763,7 +763,7 @@ let handle: AppHandle = app.handle();                 // Clone + Send + Sync; ta
 let reports: ModuleRef = handle.load(ReportsModule).await?;   // Result<ModuleRef, LoadError> (§10.2)
 ```
 
-`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load`, `close`, `draining`, `is_draining` and `drain_timeout` live on it, `draining()` returning the same `Draining<'_>` an execution's does (§3.8) and resolving at the same moment, and `drain_timeout()` the window the drain runs under (§9.5), which a transport hands to a host that stops on a clock of its own (transports §3.8); `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. `close` on a handle is one of shutdown's two triggers and ends `serve` (§9.5). The graph sits behind a lock that only `load` writes.
+`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load`, `close`, `draining`, `is_draining` and `drain_timeout` live on it, `draining()` returning the same `Draining<'_>` an execution's does (§3.8) and resolving at the same moment, and `drain_timeout()` the window the drain runs under (§9.5), zero on an app without a `Timer`, which a transport hands to a host that stops on a clock of its own (transports §3.8); `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. `close` on a handle is one of shutdown's two triggers and ends `serve` (§9.5). The graph sits behind a lock that only `load` writes.
 
 A lazily loaded module is wired against the frozen graph, with all of its errors reported in one pass, and then connected through its own readiness checks and init hooks. Loading the same identity twice returns the existing handle.
 
