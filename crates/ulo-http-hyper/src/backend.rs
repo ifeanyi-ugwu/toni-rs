@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -10,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use ulo::BoxError;
-use ulo_http::{AppService, Backend, BackendLimits, HttpConfig};
+use ulo_http::{AppService, Backend, BackendLimits, Count, HttpConfig};
 use ulo_net::{BoundListener, TlsAcceptor};
 
 use crate::convert::{self, Conn};
@@ -51,20 +52,34 @@ pub(crate) struct Protocols {
     /// HTTP/2 preface on any connection it serves with upgrades.
     http1: http1::Builder,
     h2c: bool,
+    /// The TLS handshake's bound; `None` waits until the drain.
+    handshake_timeout: Option<Duration>,
 }
 
 impl Protocols {
-    /// The timer turns on hyper's default HTTP/1.1 header-read timeout, 30 seconds, which hyper
-    /// skips without one. `max_concurrent_streams` unset keeps hyper's default.
+    /// `header_timeout` is hyper's HTTP/1.1 header-read timeout, set on both builders in every
+    /// case, so the 30 seconds at `Bound::Default` is the server's value rather than hyper's and
+    /// `Bound::Unbounded` clears it. The timer is what hyper reads that clock from; hyper panics
+    /// on a header-read timeout configured without one. HTTP/2 has no head-read clock in hyper.
+    ///
+    /// `max_concurrent_streams` at `Count::Default` leaves hyper's own value; `Count::Unlimited`
+    /// clears it, which sends no `SETTINGS_MAX_CONCURRENT_STREAMS`.
     fn new(cfg: &HttpConfig) -> Self {
+        let header_timeout = cfg.header_timeout_after();
         let mut auto = auto::Builder::new(TokioExecutor::new());
-        auto.http1().timer(TokioTimer::new());
-        if let Some(streams) = cfg.max_concurrent_streams {
-            auto.http2().max_concurrent_streams(streams);
+        auto.http1().timer(TokioTimer::new()).header_read_timeout(header_timeout);
+        match cfg.max_concurrent_streams {
+            Count::Default => {}
+            Count::Max(streams) => {
+                auto.http2().max_concurrent_streams(streams);
+            }
+            Count::Unlimited => {
+                auto.http2().max_concurrent_streams(None);
+            }
         }
         let mut http1 = http1::Builder::new();
-        http1.timer(TokioTimer::new());
-        Protocols { auto, http1, h2c: cfg.h2c }
+        http1.timer(TokioTimer::new()).header_read_timeout(header_timeout);
+        Protocols { auto, http1, h2c: cfg.h2c, handshake_timeout: cfg.handshake_timeout_after() }
     }
 }
 
@@ -255,7 +270,7 @@ async fn connection(
         None => (Io::Plain(stream), None),
         Some(acceptor) => {
             let outcome = tokio::select! {
-                outcome = listener::handshake(&acceptor, stream, peer) => outcome,
+                outcome = listener::handshake(&acceptor, stream, peer, protocols.handshake_timeout) => outcome,
                 () = raised(&mut draining) => return,
             };
             match outcome {

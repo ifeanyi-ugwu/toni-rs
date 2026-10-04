@@ -11,6 +11,10 @@
 //! `ulo_net::Tls`, inherited sockets, port 0, and per-request upgrades through hyper's upgrade
 //! future.
 //!
+//! `header_timeout` is hyper's HTTP/1.1 header-read timeout; an HTTP/2 connection has no
+//! head-read clock. `max_concurrent_streams` at `Count::Default` sends hyper's own value, which
+//! hyper places outside its stability guarantee.
+//!
 //! An application running inside another framework's server binds `ulo_http::embed::Embedded`
 //! through that framework's adapter crate instead.
 

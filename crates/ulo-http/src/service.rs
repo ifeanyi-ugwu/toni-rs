@@ -395,6 +395,7 @@ impl ServiceInner {
                 response_headers: Mutex::new(HeaderMap::new()),
                 config: Arc::clone(&self.config),
                 mount: Arc::clone(&self.mount),
+                timer: Arc::clone(&self.timer),
             }),
         }
     }

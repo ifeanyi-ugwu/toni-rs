@@ -221,7 +221,9 @@ pub fn call_body(sig: &HandlerSig, cx: &Ident, paths: &Paths) -> TokenStream {
 }
 
 /// `let mut dependencies = ::ulo::Dependencies::default();` followed by each parameter's
-/// `<Ty as Param<Marker, _>>::dependencies(&mut dependencies);`, evaluating to `dependencies`.
+/// `<Ty as Param<Marker, _>>::dependencies_named(&mut dependencies, "name");`, evaluating to
+/// `dependencies`. The name is [`Param::name`](crate::params::Param::name), so a wiring report
+/// names a container-read parameter as ``param `svc` `` rather than by its position.
 pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
     let core = &paths.core;
     let transport = &paths.transport;
@@ -229,8 +231,9 @@ pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
     let dependencies = Ident::new("__ulo_dependencies", Span::mixed_site());
     let reads = sig.params.iter().map(|param| {
         let ty = &param.ty;
+        let name = &param.name;
         quote_spanned! {param.span=>
-            <#ty as #transport::__private::Param<#marker, _>>::dependencies(&mut #dependencies);
+            <#ty as #transport::__private::Param<#marker, _>>::dependencies_named(&mut #dependencies, #name);
         }
     });
     quote! {

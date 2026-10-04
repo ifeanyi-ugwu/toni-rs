@@ -13,7 +13,7 @@
 //! CORS and paths are checked, and the adapter's [`EmbedLimits`] with them. Routing, extraction,
 //! pre-dispatch, dispatch and error rendering run inside the app, so its responses are the ones a
 //! backend gives. The host's server settings stay the host's: `Embedded` has no `tls`,
-//! `endpoint`, `h2c` or `max_concurrent_streams`.
+//! `endpoint`, `h2c`, `max_concurrent_streams`, `header_timeout` or `handshake_timeout`.
 //!
 //! Information crosses into the app through the request's `http::Extensions`, read by
 //! [`Host<T>`](crate::Host) or copied into the execution by `PreDispatch::adopt`, and back out

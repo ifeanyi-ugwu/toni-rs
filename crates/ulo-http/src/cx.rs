@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use http::{HeaderMap, Method, Uri};
-use ulo::{AppHandle, ExecutionRef, Ext, Extensions, LookupError, MountedHandler};
+use ulo::{AppHandle, ExecutionRef, Ext, Extensions, LookupError, MountedHandler, Timer};
 
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
@@ -35,6 +35,7 @@ pub(crate) struct CxInner {
     pub(crate) config: Arc<HttpConfig>,
     /// The embedding's normalized `.nested_at` prefix; empty otherwise.
     pub(crate) mount: Arc<str>,
+    pub(crate) timer: Arc<dyn Timer>,
 }
 
 /// The route a request matched.
@@ -154,6 +155,12 @@ impl HttpCx {
     /// The app, for `AppHandle::redact` and lookups outside the execution.
     pub fn app(&self) -> &AppHandle {
         &self.inner.app
+    }
+
+    /// The app's `Timer`. A reply that waits on a clock of its own reads this one, as
+    /// `Sse::keep_alive` does, so the app's runtime drives it, and a paused test clock with it.
+    pub fn timer(&self) -> &Arc<dyn Timer> {
+        &self.inner.timer
     }
 
     pub(crate) fn matched(&self) -> Option<&MatchedRoute> {

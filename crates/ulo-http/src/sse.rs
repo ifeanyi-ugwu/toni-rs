@@ -2,8 +2,8 @@
 
 use std::error::Error;
 use std::fmt;
-use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use serde::Serialize;
-use ulo::{BoxError, BoxFuture, CancelReason, LateOutcome, MountedHandler, StreamOutcome};
+use ulo::{BoxError, BoxFuture, CancelReason, LateOutcome, MountedHandler, StreamOutcome, Timer};
 use ulo_transport::{CallError, IntoReply, IntoReplyError, Tracked};
 
 use crate::body::HttpBody;
@@ -45,7 +45,8 @@ impl<S> Sse<S> {
     }
 
     /// A `: keepalive` comment whenever `every` passes without an event, so an idle stream is not
-    /// closed by an intermediary.
+    /// closed by an intermediary. The period is timed by the app's `Timer`, which `HttpCx::timer`
+    /// reads.
     pub fn keep_alive(self, every: Duration) -> Self {
         Sse { keep_alive: Some(every), ..self }
     }
@@ -216,11 +217,11 @@ impl<E: Into<CallError> + Send + 'static> SseItem for Result<Event, E> {
 /// Status 200, `text/event-stream; charset=utf-8`, `Cache-Control: no-cache`, the events written as
 /// the stream yields them.
 ///
-/// A keep-alive comment is written whenever the keep-alive period passes with nothing written,
-/// the clock starting again at every event; while the stream yields events back to back none is
-/// written. An `Err` item runs the matched handler's error handlers through `ulo::dispatch_late`;
-/// unless they end the stream with `EndStream`, the error is written as an `error` event, the
-/// stream reports `StreamOutcome::CutOff(None)` and then ends.
+/// A keep-alive comment is written whenever the keep-alive period, timed by the app's `Timer`,
+/// passes with nothing written, the clock starting again at every event; while the stream yields
+/// events back to back none is written. An `Err` item runs the matched handler's error handlers
+/// through `ulo::dispatch_late`; unless they end the stream with `EndStream`, the error is written
+/// as an `error` event, the stream reports `StreamOutcome::CutOff(None)` and then ends.
 impl<S> IntoReply<Http> for Sse<S>
 where
     S: Stream + Send + 'static,
@@ -230,7 +231,7 @@ where
         let end_event = self.end_event.map(|name| EventName::new(name)).transpose().map_err(IntoReplyError::new)?;
         let body = SseBody {
             stream: Box::pin(self.stream),
-            keep_alive: self.keep_alive.map(|every| KeepAlive { every, timer: None }),
+            keep_alive: self.keep_alive.map(|every| KeepAlive { every, timer: Arc::clone(cx.timer()), sleep: None }),
             end_event,
             handler: cx.matched().map(|route| route.handler.clone()),
             cx: cx.clone(),
@@ -297,10 +298,13 @@ struct SseBody<S> {
     state: State,
 }
 
+/// The keep-alive clock, read from the app's `Timer`.
 struct KeepAlive {
     every: Duration,
-    /// Created on the first poll, which runs on the backend's runtime.
-    timer: Option<Pin<Box<tokio::time::Sleep>>>,
+    timer: Arc<dyn Timer>,
+    /// The period running: started by the first poll that finds the stream pending after
+    /// something was written, and dropped when something is written.
+    sleep: Option<BoxFuture<'static, ()>>,
 }
 
 enum State {
@@ -314,22 +318,22 @@ enum State {
 }
 
 impl KeepAlive {
-    /// Whether the period passed with nothing written; the clock starts again when it did.
+    /// Whether the period passed with nothing written. A sleep is requested from the `Timer` only
+    /// once the stream is found pending, so events written back to back request none.
     fn poll_due(&mut self, cx: &mut Context<'_>) -> bool {
-        let deadline = tokio::time::Instant::now() + self.every;
-        let timer = self.timer.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
-        if timer.as_mut().poll(cx).is_pending() {
+        let timer = &self.timer;
+        let every = self.every;
+        let sleep = self.sleep.get_or_insert_with(|| timer.sleep(every));
+        if sleep.as_mut().poll(cx).is_pending() {
             return false;
         }
-        timer.as_mut().reset(deadline);
+        self.sleep = None;
         true
     }
 
-    /// Something was written: the period starts again.
+    /// Something was written: the period starts again at the next pending poll.
     fn restart(&mut self) {
-        if let Some(timer) = &mut self.timer {
-            timer.as_mut().reset(tokio::time::Instant::now() + self.every);
-        }
+        self.sleep = None;
     }
 }
 

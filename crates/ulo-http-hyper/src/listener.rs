@@ -12,11 +12,6 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use ulo_http::TlsInfo;
 
-/// How long a TLS handshake may take before the connection is dropped: hyper's default HTTP/1.1
-/// header-read timeout, so a peer that connects and sends nothing is dropped after the same wait
-/// with TLS as without.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// One bound endpoint, its TLS acceptor when the server has TLS.
 pub(crate) struct Listener {
     pub(crate) tcp: TcpListener,
@@ -50,11 +45,20 @@ async fn backoff(error: io::Error) {
     tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
-/// The TLS handshake on `stream`, with what it settled. A failed or timed-out handshake is routine
-/// (scanners, clients that refuse the certificate), so it is logged at `debug` with the peer and
-/// the connection dropped.
-pub(crate) async fn handshake(acceptor: &TlsAcceptor, stream: TcpStream, peer: SocketAddr) -> Option<(Io, TlsInfo)> {
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+/// The TLS handshake on `stream`, with what it settled, bounded by `timeout` when there is one. A
+/// failed or timed-out handshake is routine (scanners, clients that refuse the certificate), so it
+/// is logged at `debug` with the peer and the connection dropped.
+pub(crate) async fn handshake(
+    acceptor: &TlsAcceptor,
+    stream: TcpStream,
+    peer: SocketAddr,
+    timeout: Option<Duration>,
+) -> Option<(Io, TlsInfo)> {
+    let accepted = match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, acceptor.accept(stream)).await,
+        None => Ok(acceptor.accept(stream).await),
+    };
+    match accepted {
         Ok(Ok(stream)) => {
             let (_, conn) = stream.get_ref();
             let mut info = TlsInfo::new();
@@ -71,7 +75,7 @@ pub(crate) async fn handshake(acceptor: &TlsAcceptor, stream: TcpStream, peer: S
             None
         }
         Err(_) => {
-            tracing::debug!(%peer, timeout = ?HANDSHAKE_TIMEOUT, "TLS handshake timed out");
+            tracing::debug!(%peer, ?timeout, "TLS handshake timed out");
             None
         }
     }

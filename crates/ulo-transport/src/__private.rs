@@ -32,7 +32,10 @@ pub enum ViaContainer {}
 pub trait Param<T: Transport, M>: Sized + Send + 'static {
     const CONSUMES_BODY: bool;
 
-    fn dependencies(d: &mut Dependencies);
+    /// What the parameter reads from the container, for the wiring pass. `name` is the parameter
+    /// as the handler's signature writes it, which a wiring report prints as ``param `name` ``
+    /// for a container-read parameter; a `FromCall` type declares its own reads, unnamed.
+    fn dependencies_named(d: &mut Dependencies, name: &'static str);
 
     /// The parameter, or the failure for the error handlers: a `CallError` of the
     /// `ExtractError`'s kind, holding it as its source (transports DESIGN §2.2).
@@ -42,7 +45,7 @@ pub trait Param<T: Transport, M>: Sized + Send + 'static {
 impl<T: Transport, P: FromCall<T>> Param<T, ViaCall> for P {
     const CONSUMES_BODY: bool = P::CONSUMES_BODY;
 
-    fn dependencies(d: &mut Dependencies) {
+    fn dependencies_named(d: &mut Dependencies, _name: &'static str) {
         P::dependencies(d);
     }
 
@@ -59,8 +62,8 @@ where
 {
     const CONSUMES_BODY: bool = false;
 
-    fn dependencies(d: &mut Dependencies) {
-        <Injected<S> as FromCall<T>>::dependencies(d);
+    fn dependencies_named(d: &mut Dependencies, name: &'static str) {
+        d.param::<S>(name);
     }
 
     async fn extract(cx: &T::Cx) -> Result<Self, BoxError> {

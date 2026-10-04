@@ -31,7 +31,7 @@ percent-encoding.workspace = true
 pin-project-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-# SSE keep-alive ticks and route timeouts, and the I/O traits an upgraded connection implements.
-tokio = { workspace = true, features = ["time", "io-util"] }
+# The I/O traits an upgraded connection implements. Every clock is the app's `Timer`.
+tokio = { workspace = true, features = ["io-util"] }
 tower.workspace = true
 tracing.workspace = true

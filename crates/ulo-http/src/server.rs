@@ -9,7 +9,7 @@ use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareError, Transpo
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Admission;
 
-use crate::backend::{Backend, BackendLimits, HttpConfig};
+use crate::backend::{Backend, BackendLimits, Count, HttpConfig};
 use crate::pre_dispatch::{PreDispatch, Stage};
 use crate::router::Router;
 use crate::router::pattern::Pattern;
@@ -80,9 +80,10 @@ impl<B: Backend> Server<B> {
         self
     }
 
-    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per connection.
-    pub fn max_concurrent_streams(mut self, streams: u32) -> Self {
-        self.config.max_concurrent_streams = Some(streams);
+    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per connection. `Count::Default`, the value
+    /// unset, leaves the backend's own; `Count::Unlimited` sends no limit.
+    pub fn max_concurrent_streams(mut self, streams: Count) -> Self {
+        self.config.max_concurrent_streams = streams;
         self
     }
 
@@ -108,6 +109,23 @@ impl<B: Backend> Server<B> {
     /// for them.
     pub fn timeout_grace(mut self, grace: Bound) -> Self {
         self.config.timeout_grace = grace;
+        self
+    }
+
+    /// How long a request head may take to arrive, from the moment the backend starts reading it;
+    /// the clock also runs while a keep-alive connection waits for its next request.
+    /// `Bound::Default` is 30 seconds. `Bound::Unbounded` turns the clock off, under which a peer
+    /// can hold a connection open until the drain's deadline.
+    pub fn header_timeout(mut self, timeout: Bound) -> Self {
+        self.config.header_timeout = timeout;
+        self
+    }
+
+    /// How long a TLS handshake may take before the connection is dropped. `Bound::Default` is 30
+    /// seconds. `Bound::Unbounded` turns the clock off, under which a peer can hold a connection
+    /// open until the drain's deadline.
+    pub fn handshake_timeout(mut self, timeout: Bound) -> Self {
+        self.config.handshake_timeout = timeout;
         self
     }
 }
