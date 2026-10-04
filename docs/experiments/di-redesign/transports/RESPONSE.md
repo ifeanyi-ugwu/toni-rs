@@ -958,3 +958,50 @@ Put that table, or its four lines, in `Timeout`'s docs. Someone writing `Bound::
 **3. Accepted.** Grouping requires the whole walk first, and ordering the groups by first appearance keeps the output deterministic.
 
 **4. Accepted.** My example's bare routes were only illustrative. Matching the other route-table failures is right, and so is writing `Timeout(..)` however the zero was spelled: the failure names the declaration, not its syntax.
+
+## Twentieth response: the race 2b review
+
+Received 2026-10-05, answering `REVIEW_2B.md` (R1–R49, Q1–Q20 and its build plan). Sign-off pending.
+
+The review is thorough, and I accept nearly all of it. Three refinements need correcting, including one name clash. Below I answer the twenty questions, then note what the build plan needs.
+
+### Corrections to the refinements
+
+**R5 and R47 number the extensions differently.** R5 calls `AppHandle::mounted` X19, while R47 makes X19 `also_seeded_by` and X20 `mounted`. Use R47's numbering throughout, R5 included, so the build logs cite one scheme.
+
+**R18 has a name clash.** `Delivery` is the struct for an incoming message, and `Capabilities::delivery: Delivery` makes it the delivery-mode enum too. Rename the enum `DeliveryMode { Competing, FanOut, Addressed }`, and leave `Delivery` as the message.
+
+**R22: the shared default group name is dangerous.** If every NATS and MQTT link defaults to `"ulo"`, two *different* applications on the same broker whose patterns overlap would silently compete for each other's requests. That's wrong delivery with no error anywhere. The default should identify the application: the root module's full type path. Two instances of one app then share a group, as intended, and different apps never do. Keep it overridable with `.group(..)`. That answers Q10.
+
+Everything else in R1–R49 is accepted as written. R24 needs one detail settled: tie the AMQP prefetch default to `max_inflight` (`Max(n)` gives a prefetch of n, and otherwise a fixed default such as 64), so the two limits can't contradict each other.
+
+### The questions
+
+| Q | Answer |
+|---|---|
+| 1 | Both. `host_extensions: true` (request extensions are copied automatically), plus `type HostRequest<'r> = SalvoRequest<'r>`, a small struct holding `&Request` and `&Depot`, so a `forward` copy can read the `Depot`. A struct is better than a tuple: it names its fields and can grow. |
+| 2 | Assert it through a test fairing. The rule is that every declared capability is asserted. Rocket shouldn't be exempt just because its slot is different. |
+| 3 | No separate cap. Buffer under the embedding's own `body_limit`. Then a body over the limit gets the same 413 on rocket as everywhere else, and the byte-identical rule holds for the 413 scenarios too. `RequestBody::Buffered` reports that value. |
+| 4 | `WsModule`, imported once. It's also where the broadcast adapter is configured (R10), so it has a reason to exist beyond registration. |
+| 5 | The mapping is confirmed: a received Close frame gives `ClientClose`, a close the server sent gives `ServerClose`, protocol, UTF-8 and capacity errors give `ProtocolError`, the drain's 1001 gives `Drain`, and an I/O error or a close without a frame gives `Lost`. A connection refused by a connect guard **does not** reach `on_disconnect`. Connection hooks come in pairs, and that connection never connected. |
+| 6 | Yes: `ping_interval: Bound` and `pong_timeout: Bound`. For keep-alive, `Default` should mean *on* (30 s each), since a half-open connection that's never noticed wastes a slot until the next write, and proxies close idle WebSockets anyway. `Unbounded` turns it off. A late Pong ends the connection as `Lost`. |
+| 7 | The payload, with native correlation, on brokers. TCP and UDP keep the full envelope, because they have no native correlation. |
+| 8, 19 | `ciborium` for CBOR and `rmp-serde` for MessagePack. Both work with serde and are maintained. JSON stays the default until they're fetched. |
+| 9 | Accepted: `Timeout` where the link can't signal a miss, declared through `miss_signal`. The Kafka link should also create its handler topics at `bind`, as the old one did, so a stopped server's topic still exists, and the documentation can state exactly when a miss is `Timeout`. |
+| 10 | The root module's full type path, as above. |
+| 11 | The vendored `protoc` now. It meets "no system protoc", which is what [34] asks. Moving to protox is a later swap with no API change. |
+| 12 | Out of scope for 2b, written as a limit in §6, with the extension point named. |
+| 13 | Defer mTLS (F307) and change the example to a token guard. 2b is already large, and client-certificate verification belongs in `ulo-net`, where it benefits every transport at once, as its own item. |
+| 14 | Reuse: `PreDispatch<T: Transport = Http>`. One stage, one set of scope rules. |
+| 15 | Build on `resolve_into_stream` directly. Deferring subscriptions would leave one engine half-supported. |
+| 16 | The qualifier spelling. It's the DI's ordinary mechanism, so it isn't a new GraphQL rule, just the existing one applied. |
+| 17 | The first option, with `ULO_DEV`. `main` must be the same in development and production, which is the point of the feature. The `LISTEN_PID` check already keeps stale variables harmless. |
+| 18 | Exclude UDP from `--listen` in 2b and say so. F306 follows with the UDP link. |
+| 20 | Refuse it, at compile time where possible. Let a metadata type optionally name its transport (an associated `type Transport` through a marker trait). The handler attribute, which knows its transport, probes each `#[meta]` value at the concrete site and fails to compile on a mismatch. User metadata that names no transport stays valid everywhere, so custom types need no impl. A `Timeout` on an RPC handler then fails where it's written, even in an app that binds no HTTP server, which a check in HTTP's `prepare` would miss. |
+
+### The build plan
+
+The plan is sound and follows 2a's form. Two notes:
+
+- **The spine is what makes the parallel areas safe.** W, R and G each own a contract others call: `Gateway` for GraphQL, `Link` for the brokers, `Method` for the build step. Because the spine writes every new crate's public signatures with `todo!()` bodies, those contracts are frozen before any area starts. That's what lets Q and B begin alongside W and R. Keep it that way.
+- **Two items need an owner:** the shared accept loop of R28 (`ulo-hyper-serve`, consumed by the hyper backend, gRPC and the standalone WebSocket server), and the `#[meta]` transport probe (Q20). Assign both to the spine, since three areas depend on the first and every transport's attribute uses the second.
