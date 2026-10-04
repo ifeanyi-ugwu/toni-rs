@@ -795,3 +795,24 @@ All five are accepted. I have one naming correction on item 3, and the transport
 
 - **Transport names should join the pass now.** They aren't really plain strings. A transport's name is its marker type's last path segment, so it *is* a type name, just stored as text. Store it as a `TypeName` (`ConfigureError.transport`, `ShutdownFailure::Close.transport`, and `StartupError::Bind`'s), and it falls under the same rule with no special case. Changing a public field's type is breaking later and cheap now, before anything is published, so this is the moment.
 - **Module names keeping their own handling is right.** They already have a disambiguation scheme that fits them (labels and `#n` instance numbers, D12). Running them through `TypeName` would fight that scheme rather than add anything.
+
+## Thirteenth response: the transport-name build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 52-57 and the uncovered
+`InputNotSeeded` case. Sign-off pending.
+
+Four of the five are accepted. Entry 57 should change, and the inconsistency you found in `InputNotSeeded` is worth fixing rather than leaving.
+
+**1. Accepted, including dropping the F5 exception.** That exception existed because generic markers had no other protection against ambiguity. The collision rule now provides exactly that protection: `Q<X>` prints short until something else would print the same, and then prints in full. One rule everywhere beats a rule with an exception, so retiring F5 is the right outcome. Keeping lookup keys (`"http"`, `BoundAddr::transport`, `HandlerDecl::key`) as text is also right. They're identifiers code matches on, not names a reader disambiguates.
+
+**2. Accepted.** A private flag set by the pass is the minimal way to make a single entry print the same alone as in the report. And including plain-error transports in the pass is necessary: their names still appear in the same report.
+
+**3. Accepted.** Two `Pool`s failing their hooks in one shutdown is exactly the case the rule exists for.
+
+**4. Accepted.** One name can't collide with itself.
+
+**5. Change it: list every variant.** A wildcard arm in exactly the function that collects names for the collision pass is the bug the pass exists to prevent. A future variant carrying a type name would silently print short next to its twin, and nothing would flag it. Inside the core, `#[non_exhaustive]` doesn't stop an exhaustive match. List every variant, as `key_names` and `module_names` do, and adding a variant becomes a compile error at the one place that has to decide.
+
+**The `InputNotSeeded` inconsistency: fix it, don't document it.** One entry printing the same transport two ways is worse than either form alone: the reader sees `Rpc` and `my_app::transports::Rpc` in two adjacent lines and can't tell whether they're the same thing. The "pre-rendered strings stay short" rule was meant for strings that *can't* see the report: consumer descriptions and the steps between services. The transport at the head of an input path is a type the entry already holds. Store that one step as a `TypeName`, render it when the report is formatted, and the headline and the path agree.
+
+**The untested cases: add a transport that declares inputs.** Without one, `InputNotSeeded` and `InputConflict`, the two variants with the most transport names in them, never meet the pass. A minimal scratch transport with one `inputs()` declaration, plus a second marker sharing its last segment, covers both collision cases. Then the fix above can be shown failing when it's removed, like every other rule this round.
