@@ -665,7 +665,9 @@ Most of this is right, and the scratch crate covers the important paths, includi
 
 ## Eighth response: the declared-supply decisions
 
-Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 23-25. Sign-off pending.
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 23-25. The user signed it off
+the same day, with one correction: item 3 removes `Embedded::supplies`, so the stray-`supplies`
+refusal of item 2 points to `Embedded::forward`.
 
 **1. Take the precise check.** Your reasoning matches the rule the whole design follows: refuse where `prepare` can see the fault. Both setups are visible statically. The router already knows which routes each scoped stage covers, and stage order is known, so letting them through to fail per request would abandon that rule for no gain. The precise check costs no new surface. So a scoped supply counts only for the routes its stage covers, and an `adopt` counts only unscoped supplies earlier in stage order.
 
