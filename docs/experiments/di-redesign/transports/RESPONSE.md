@@ -717,3 +717,39 @@ All six decisions are accepted. The lifetime change goes in now, and the `adopt`
 **6. Entry 31: accepted.** Reporting only the stage failure first is better than reporting misleading `Host<T>` refusals computed over an empty stage, and it makes the code match what its doc already claimed.
 
 **The open question: refuse it.** `adopt` copies *from* the request's extensions *into* the execution, so it never writes the request. A `supplies` after it declares something no entry inserts, which is exactly what the stray rule exists to catch. The rule then reads: a `supplies` must follow an entry that can write the request, and `adopt` is the one built-in entry that can't. The refusal text can say so directly: "`adopt` copies a value out of the request and inserts none; declare the `supplies` after the entry that inserts it".
+
+## Tenth response: adapter-inserted values, entries 39 and 40, and the refusal text
+
+Received 2026-10-04, answering the gaps the fold of `divergences/batch2a-embed.md` rounds three and
+four left: a value an adapter inserts read through `Host<T>` under `host_extensions: false`,
+entries 39 and 40, and the refusal text's type names. Sign-off pending.
+
+### The adapter-inserted value
+
+Your suggestion is right, and it can go one step further. The adapter shouldn't insert `OriginalPath` *and* pre-register a `forward`: two mechanisms that have to agree can drift apart. Make the `forward` **be** the insertion:
+
+```rust
+// inside ulo_http_rocket::Embedded::new()
+Embedded::<Rocket>::new()
+    .forward(|req: &rocket::Request<'_>| Some(OriginalPath::new(req.uri().path().as_str())))
+```
+
+`respond` already runs every copy before answering, so the adapter writes no separate insertion code. A type the check counts as supplied is then supplied by exactly the code that counts it. That's the eighth response's invariant held by construction, not by convention.
+
+It also generalizes. Any value an adapter offers its app, whether `OriginalPath` today or a host's TLS details tomorrow, goes in the same way. Each adapter's documentation lists its built-in forwards, and nothing needs new API.
+
+### Entries 39 and 40
+
+Keep both as built.
+
+**Entry 39 (off the entry)** reports the true state. The declaration supplies nothing, so counting it would let the check pretend an `adopt` is reached when it isn't. The extra "nothing supplies it" line next to the refusal is accurate, not noise.
+
+**Entry 40 (the scoped placement)** is correct advice. A scoped entry's exclusions really are applied per route, so it's the placement that makes the check precise. It's worth the extra clause.
+
+### The refusal text
+
+This one is more than an illustration, and worth fixing. The core's diagnostics rule (DESIGN §10.1) prints type names cut to their last segment, with full paths only where two different types would print alike. The embedding refusals print the qualified name (`Host<embed::User>`), which is inconsistent with every other report in the framework. Run these through the same formatter the wiring reports use, so the code prints `Host<User>`, matching the design's quotes, and switches to full paths only on a collision.
+
+### The rest
+
+The aliases and each adapter's `HostRequest` choice arriving with race 2b is fine. Since rocket's is already probed, record the probe's result in the design next to its row, so race 2b doesn't have to repeat it.
