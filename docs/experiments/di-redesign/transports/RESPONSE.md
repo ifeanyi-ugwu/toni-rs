@@ -895,7 +895,7 @@ The same reasoning applies in the core: `After(Duration::ZERO)` on a hook, a con
 ## Seventeenth response: re-exports and zero limits
 
 Received 2026-10-04, answering `divergences/batch2a-followups.md` "Second round" decisions 1-5.
-Sign-off pending.
+The user signed it off the same day.
 
 Three are accepted as built. On the other two I'd go a different way, and item 2 hides a real hazard.
 
