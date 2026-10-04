@@ -934,3 +934,27 @@ Add two short constructors so the common case stays short: `#[meta(Timeout::afte
 **4. Keep the check precise, but group the output by declaration.** Checking the timeout each route actually runs with is right: a zero that every handler overrides harms nothing, and refusing it would be a false refusal. But five failures for one mistake makes the report look five times worse than it is, and buries other failures. Report once per zero *declaration*, listing the routes it reaches: "`#[meta(Timeout(..))]` on the `#[routes]` impl of `Api` would cancel every request on GET /a, GET /b, GET /c, GET /d, GET /e". The precision stays the same, and there's one line per thing to fix.
 
 **5. Accepted.** Naming where the zero was declared is what makes the failure actionable, especially once item 4 groups by declaration.
+
+## Nineteenth response: the route-timeout build's decisions
+
+Received 2026-10-04, answering `divergences/batch2a-followups.md` "Fourth round" decisions 1-4.
+Sign-off pending.
+
+All four are accepted.
+
+**1. Accepted.** Declaration order is the order the reader can check against the source, which is what a failure is read for. Router precedence only matters for which route answers a request, and that isn't this failure's question.
+
+**2. Accepted, and it's the coherent reading.** `Default` meaning "the default" everywhere except here would make `Bound` mean different things depending on where it appears, and that's the inconsistency we've avoided throughout. "Inherit" already has a spelling: declare nothing on the handler. So every case has exactly one way to write it:
+
+| Handler declares | Effect |
+|---|---|
+| nothing | the impl's timeout |
+| `Timeout::after(d)` | `d` |
+| `Timeout::OFF` | no timeout |
+| `Timeout(Bound::Default)` | the server's route-timeout default (none today) |
+
+Put that table, or its four lines, in `Timeout`'s docs. Someone writing `Bound::Default` on a handler expecting inheritance should find the answer where they look.
+
+**3. Accepted.** Grouping requires the whole walk first, and ordering the groups by first appearance keeps the output deterministic.
+
+**4. Accepted.** My example's bare routes were only illustrative. Matching the other route-table failures is right, and so is writing `Timeout(..)` however the zero was spelled: the failure names the declaration, not its syntax.
