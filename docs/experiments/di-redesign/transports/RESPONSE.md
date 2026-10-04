@@ -662,3 +662,32 @@ Most of this is right, and the scratch crate covers the important paths, includi
 | 11 | `.supplies::<T>()` on pre-dispatch, sharing R10's exemption set |
 | 13 | accept both rules |
 | everything else | accepted |
+
+## Eighth response: the declared-supply decisions
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 23-25. Sign-off pending.
+
+**1. Take the precise check.** Your reasoning matches the rule the whole design follows: refuse where `prepare` can see the fault. Both setups are visible statically. The router already knows which routes each scoped stage covers, and stage order is known, so letting them through to fail per request would abandon that rule for no gain. The precise check costs no new surface. So a scoped supply counts only for the routes its stage covers, and an `adopt` counts only unscoped supplies earlier in stage order.
+
+**2. Keep the stray-`supplies` refusal.** It wasn't asked for, but it's the same rule as a stray `exclude`. A `supplies` with nothing before it declares something no entry does, and accepting that silently would make the declaration a lie that only shows up as a 500 later. The refusal's text also points to the right remedy (`Embedded::supplies` for host values), so it teaches the distinction rather than just blocking.
+
+**3. Neither option. Tie the declaration to the copy.** On a host with `host_extensions: false`, the app can't read the host's store at all. The only thing that actually supplies a value is the adapter's copy. So a public `supplies::<T>()` lets an app author declare a value that nothing copies: the refusal lifts, and every request answers 500. `#[doc(hidden)]` hides that trap but doesn't remove it.
+
+The structural fix is to make the declaration impossible without the copy. Give `Embed` an associated type for the host's request, and replace `Embedded::supplies` with a registration that takes the copying function:
+
+```rust
+pub trait Embed: Send + Sync + 'static {
+    const NAME: &'static str;
+    type HostRequest;                  // actix's HttpRequest, rocket's Request, ..
+    fn limits() -> EmbedLimits;
+}
+
+impl<A: Embed> Embedded<A> {
+    pub fn forward<T: Clone + Send + Sync + 'static>(
+        self,
+        copy: impl Fn(&A::HostRequest) -> Option<T> + Send + Sync + 'static,
+    ) -> Self;
+}
+```
+
+`ulo-http` still names no host types: `A` supplies them. The method records `T` in the exemption set *and* stores the function. The adapter runs each registered function on the host's request before it calls `respond`, inserting what it gets into the request's extensions. A declared type is then always a copied type. That's also exactly R10's `.forward::<T>(..)`, now generic instead of hand-written per adapter, so race 2b's actix and rocket work shrinks to applying the stored functions. It can be public and documented without risk, because it can no longer be used to make a false declaration.
