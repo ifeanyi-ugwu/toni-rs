@@ -13,9 +13,12 @@ use std::hash::{Hash, Hasher};
 /// [`PrepareError`](crate::PrepareError), and the shutdown report over its keys and transports.
 /// A transport is named by its marker type, `TypeName::of::<Http>()`.
 ///
-/// A report entry stores each name it prints as a `TypeName` or a [`Key`](crate::Key), the one a
-/// [`KeyName`](crate::KeyName) carries, and renders it when the report is formatted. Only text that
-/// never contains a type name is stored already rendered.
+/// A report entry stores the names it reports as values, a `TypeName`, a [`Key`](crate::Key) or a
+/// [`KeyName`](crate::KeyName), rendered when the report is formatted under the collision rule.
+/// Descriptive text, such as what reads a missing key or the steps of a path between services, may
+/// be stored already rendered, with the names inside it written short. A name an entry also stores
+/// as a value is never written into its text: it is rendered from the value, so the entry prints
+/// it one way.
 #[derive(Clone, Copy)]
 pub struct TypeName {
     id: TypeId,

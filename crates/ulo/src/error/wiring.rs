@@ -27,10 +27,9 @@ use crate::type_name::{TypeName, short_type_name};
 /// Type names are cut to their last path segment. Where the report would print two different
 /// types alike, `a::Config` and `b::Config`, whether as a key's type, as its qualifier or as a
 /// transport, it prints those types with their full paths, and the rest of each key short; two different
-/// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Text an entry carries
-/// already rendered, such as what reads a missing key or the steps of a path between services,
-/// stays short; a transport an entry writes, at the head of an input's path or after a closure's
-/// name, is a type, and follows the rule. A [`WiringError`] displayed on its own applies the same
+/// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Which
+/// names an entry stores as values and which it carries in rendered text follows
+/// [`TypeName`](crate::TypeName)'s rule. A [`WiringError`] displayed on its own applies the same
 /// rule to the keys, transports and modules it names.
 ///
 /// `Debug` writes the same report, so `main` returning `Box<dyn Error>` prints it.

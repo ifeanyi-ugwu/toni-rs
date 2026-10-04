@@ -837,7 +837,8 @@ All four are accepted, with one adjustment to the first.
 
 ## Fifteenth response: the convention for report names
 
-Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 62-66. Sign-off pending.
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 62-66. The user signed it off the same day. The
+"known limit (W9)" it cites is recorded nowhere; the deferral is filed in the workspace gaps ledger.
 
 The first three are accepted. On the fourth, narrow the convention. My wording overreached, and the precise version is the rule these three rounds have actually been enforcing.
 
