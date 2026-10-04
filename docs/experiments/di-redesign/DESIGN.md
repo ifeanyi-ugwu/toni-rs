@@ -600,6 +600,8 @@ Wiring walks each handler's reachable execution-scoped bindings and checks every
 
 Standalone executions are the one runtime case, since nothing static says what they seed: one that doesn't seed an input which an injection point reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
 
+The same walk answers a transport's `prepare`: `Mounted::handlers_reading::<T>()` lists the mounted handlers whose reachable execution-scoped bindings read the input `T`, so a transport whose deployment cannot seed an input it declares, an embedded HTTP app whose host supplies no peer address for `ClientAddr` (transports §3.8), refuses those handlers at startup rather than failing their first call.
+
 ---
 
 ## 7. Enhancers and roles [24–28]
@@ -761,7 +763,7 @@ let handle: AppHandle = app.handle();                 // Clone + Send + Sync; ta
 let reports: ModuleRef = handle.load(ReportsModule).await?;   // Result<ModuleRef, LoadError> (§10.2)
 ```
 
-`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load`, `close`, `draining` and `is_draining` live on it, `draining()` returning the same `Draining<'_>` an execution's does (§3.8) and resolving at the same moment; `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. `close` on a handle is one of shutdown's two triggers and ends `serve` (§9.5). The graph sits behind a lock that only `load` writes.
+`AppHandle` is a `Clone + Send + Sync` view of the shared inner state, available from `Connected` on. `get`, `module`, `execute`, `load`, `close`, `draining`, `is_draining` and `drain_timeout` live on it, `draining()` returning the same `Draining<'_>` an execution's does (§3.8) and resolving at the same moment, and `drain_timeout()` the window the drain runs under (§9.5), which a transport hands to a host that stops on a clock of its own (transports §3.8); `serve(self)` consumes only the `Bound` typestate, so a handle taken before `serve` keeps working while the app serves. `close` on a handle is one of shutdown's two triggers and ends `serve` (§9.5). The graph sits behind a lock that only `load` writes.
 
 A lazily loaded module is wired against the frozen graph, with all of its errors reported in one pass, and then connected through its own readiness checks and init hooks. Loading the same identity twice returns the existing handle.
 
@@ -861,7 +863,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .listen()
         .await?;                                    // sockets
 
-    let handle = app.handle();                      // AppHandle: get, module, execute, load, close, draining
+    let handle = app.handle();                      // AppHandle: get, module, execute, load, close, draining, drain_timeout
     app.serve(fw_tokio::shutdown_signal()).await?;  // until the signal or `handle.close(..)`; returns the `Shutdown` report
     Ok(())
 }
@@ -1299,7 +1301,7 @@ The value API an integration writes against:
 | Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind`, the drain, which hands over the `DrainToken`, and `close`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
 | Errors | `StartupError`, `TimerMissing`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `PanicRecovered`, `DispatchStage`, `InputOrigin`, `is_panic`, `Redacted`, `Secret` |
 
-The transport layer extends this surface, and `transports/DESIGN.md` §11 states each extension where a requirement forces it: `Transport::KEY` and `Transport::inputs`, whose declarations an `InputConflict` reports through `InputOrigin` (§10.2); a `HandlerSpec` builder for `Mount::handler` carrying metadata, route, shape and the handler's own dependencies, with `Execution::handler()`, `AppHandle::handlers()` and `ModuleDef::controller::<C>().at(prefix)`; `Mount::once`; impl-level shared values through `EnhancerSpec::{guard,interceptor,error_handler}_arc`; `CancelReason`, `cancel_with` on `Execution` and `ExecutionRef`, `cancel_reason` and `on_stream_end`; `Server::prepare` before any bind, `Server::bound` and `StartupError::Configure(ConfigureErrors)`, a fourth variant shaped as `Wiring(WiringErrors)` is; `dispatch_late` and `is_late` for errors after a stream has started; `Execution::route_to`; `Mounted::module_meta` and `ModuleRef::with_execution`; `AppHandle::phase` and `AppHandle::redact`. Nothing above changes for them: each is an addition at the point the transport design names.
+The transport layer extends this surface, and `transports/DESIGN.md` §11 states each extension where a requirement forces it: `Transport::KEY` and `Transport::inputs`, whose declarations an `InputConflict` reports through `InputOrigin` (§10.2); a `HandlerSpec` builder for `Mount::handler` carrying metadata, route, shape and the handler's own dependencies, with `Execution::handler()`, `AppHandle::handlers()` and `ModuleDef::controller::<C>().at(prefix)`; `Mount::once`; impl-level shared values through `EnhancerSpec::{guard,interceptor,error_handler}_arc`; `CancelReason`, `cancel_with` on `Execution` and `ExecutionRef`, `cancel_reason` and `on_stream_end`; `Server::prepare` before any bind, `Server::bound` and `StartupError::Configure(ConfigureErrors)`, a fourth variant shaped as `Wiring(WiringErrors)` is; `dispatch_late` and `is_late` for errors after a stream has started; `Execution::route_to`; `Mounted::module_meta` and `ModuleRef::with_execution`; `Mounted::handlers_reading`, built on the input walk (§6.4); `AppHandle::phase`, `AppHandle::redact` and `AppHandle::drain_timeout`. Nothing above changes for them: each is an addition at the point the transport design names.
 
 ---
 

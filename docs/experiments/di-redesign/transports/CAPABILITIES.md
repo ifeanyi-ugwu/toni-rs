@@ -29,7 +29,7 @@ Common to every transport
 
 HTTP
 15. Routing by method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS) and path, with `{name}` parameters, trailing slashes insignificant, and a duplicate route refused at startup. A miss is 404 and a wrong method 405 with `Allow`.
-16. Pluggable server backends: one application runs unchanged on axum, actix-web, salvo, poem or rocket, each backend a separate crate, with documented limits where a backend cannot do something.
+16. Backends and embedding: `fw-http-hyper` is the reference backend and the default, owning the listener and serving connections. One application runs unchanged inside an existing axum, salvo, poem, actix-web or rocket application, each adapter a separate crate, nested under a path or as the host's fallback, with the host's own middleware around it and the host keeping its own server setup; routing, extraction, pre-dispatch, dispatch and error rendering run inside the app either way. One conformance suite runs every adapter against the hyper reference, with documented limits where a host cannot do something.
 17. Extractors for path, query, JSON, form, raw bytes, a streaming body and multipart, with a configurable body size limit.
 18. Responses with any status, headers and body: JSON, bytes, a streaming body, and Server-Sent Events (events with data, id, event and retry, comment-only keepalives, and the Last-Event-ID a reconnecting client sends).
 19. A global middleware chain that runs before routing (it sees misses, can rewrite the path, and can answer without reaching a route, for CORS preflight or authentication), and per-module middleware after routing, selected by route pattern with exclusions.

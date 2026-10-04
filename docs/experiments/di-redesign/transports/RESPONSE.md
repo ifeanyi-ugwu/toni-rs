@@ -369,9 +369,12 @@ This lowers to `.with(f).also_as::<dyn Cache>(|a| a)`, the closure's handle plus
 
 Received 2026-10-04, answering `transports/DIVERGENCES.md` (T1–T26). Its T2 answer is narrower than the
 earlier ulo HTTP audit's conclusion (keep the framework adapters for interop and as a conformance asset,
-with `ulo-http-hyper` as the reference); the user sent a separate T2 question on that, whose answer is
-pending. The user signed off everything here except T2 the same day; the pre-compile batch is T1 with
-`NoRoute`, T5, T8, T13, T14, `Middleware::handle -> Result<Response, BoxError>`, and T21.
+with `ulo-http-hyper` as the reference); the user sent a separate T2 question on that, and the fifth
+response answers it, superseding the T2 answer below: axum is not dropped but becomes an embedding
+adapter, `ulo-http-axum` the backend becomes `ulo-http-hyper`, and the type a host mounts is
+`fw_http::embed::Service`, not `fw_http::Service`, which is the inner service a pre-dispatch layer wraps
+(`EMBEDDING_REVIEW.md` R1). The user signed off everything here except T2 the same day; the pre-compile
+batch is T1 with `NoRoute`, T5, T8, T13, T14, `Middleware::handle -> Result<Response, BoxError>`, and T21.
 
 Most of these I'd take as recommended. Five need a different answer or an addition, and one item in the reading sections contradicts a decision we already made.
 
