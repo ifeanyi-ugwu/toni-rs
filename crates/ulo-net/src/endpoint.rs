@@ -4,6 +4,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use crate::activation::{Activation, ActivationError};
+
 /// Where a server listens.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Endpoint {
@@ -91,12 +93,75 @@ enum Spec {
 }
 
 impl EndpointSpec {
+    /// The endpoint a server listens on, for its `prepare`.
+    ///
+    /// Under `ULO_DEV=1`, which `ulo dev` sets in every child it starts, an [`Endpoint::Addr`]
+    /// resolves to the inherited socket named after that address when this process holds one, so
+    /// an application written `Server::new("0.0.0.0:8080")` adopts the socket `ulo dev --listen
+    /// 0.0.0.0:8080` holds across restarts and binds the address itself in production. The
+    /// address is compared as parsed, so `"0.0.0.0:8080"`, the `SocketAddr` and
+    /// `Endpoint::Addr(..)` match alike. Without the variable, with no socket named after the
+    /// address, or with inherited sockets this process cannot adopt (a `LISTEN_PID` naming another
+    /// process among them), the address resolves as written. An [`Endpoint::Inherited`] resolves
+    /// as written in either case.
     pub fn resolve(&self) -> Result<Endpoint, EndpointError> {
+        let endpoint = self.resolve_as_written()?;
+        Ok(match endpoint {
+            Endpoint::Addr(addr) if dev_mode() => held_by_dev(addr).unwrap_or(endpoint),
+            endpoint => endpoint,
+        })
+    }
+
+    /// The endpoint as written, without the `ULO_DEV` lookup [`resolve`](Self::resolve) makes:
+    /// for a client, which connects to the address, and for a socket the activation cannot carry,
+    /// such as a UDP link's.
+    pub fn resolve_as_written(&self) -> Result<Endpoint, EndpointError> {
         match &self.0 {
             Spec::Parsed(endpoint) => Ok(endpoint.clone()),
             Spec::Text(text) => Endpoint::parse(text),
         }
     }
+}
+
+const DEV_VAR: &str = "ULO_DEV";
+
+fn dev_mode() -> bool {
+    std::env::var_os(DEV_VAR).is_some_and(|value| value == "1")
+}
+
+/// The inherited socket `ulo dev --listen` named after `addr`, when this process holds it.
+fn held_by_dev(addr: SocketAddr) -> Option<Endpoint> {
+    let activation = match Activation::get() {
+        Ok(activation) => activation,
+        // A process the application spawns inherits `ULO_DEV` beside a `LISTEN_PID` that is not
+        // its own; off Unix nothing is ever inherited.
+        Err(error @ (ActivationError::PidMismatch { .. } | ActivationError::Unsupported)) => {
+            tracing::debug!("{DEV_VAR}=1, and no inherited socket is this process's ({error}); {addr} binds as written");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!("{DEV_VAR}=1, and the inherited sockets cannot be adopted ({error}); {addr} binds as written");
+            return None;
+        }
+    };
+    let name = ListenerName::Named(Cow::Owned(dev_socket_name(addr)));
+    activation.contains(&name).then_some(Endpoint::Inherited(name))
+}
+
+/// The `LISTEN_FDNAMES` name `ulo dev --listen` gives the socket it holds on `addr`: the address's
+/// text with `%` written `%25` and `:` written `%3A`. `LISTEN_FDNAMES` separates names with `:`,
+/// which every socket address contains. `ulo-cli`'s `commands/dev.rs` writes the same encoding.
+fn dev_socket_name(addr: SocketAddr) -> String {
+    let text = addr.to_string();
+    let mut name = String::with_capacity(text.len() + 2);
+    for c in text.chars() {
+        match c {
+            '%' => name.push_str("%25"),
+            ':' => name.push_str("%3A"),
+            c => name.push(c),
+        }
+    }
+    name
 }
 
 impl From<Endpoint> for EndpointSpec {

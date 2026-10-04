@@ -18,26 +18,25 @@ default = ["dev"]
 # dependency tree; disable for a lean scaffolding-only install.
 dev = [
     "dep:watchexec",
-    "dep:watchexec-events",
     "dep:watchexec-filterer-globset",
     "dep:watchexec-signals",
     "dep:ignore-files",
     "dep:libc",
 ]
 
+# Placing the held socket at descriptor 3 between fork and exec.
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2", optional = true }
+libc = { workspace = true, optional = true }
 
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.5.27", features = ["derive"] }
 colored = "3.0.0"
-ignore-files = { version = "3.0.5", optional = true }
+ignore-files = { workspace = true, optional = true }
 regex = "1.11.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }
-watchexec = { version = "8.2.0", optional = true }
-watchexec-events = { version = "6.1.0", optional = true }
-watchexec-filterer-globset = { version = "8.0.0", optional = true }
-watchexec-signals = { version = "5.0.1", optional = true }
+watchexec = { workspace = true, optional = true }
+watchexec-filterer-globset = { workspace = true, optional = true }
+watchexec-signals = { workspace = true, optional = true }
