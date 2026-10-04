@@ -626,7 +626,8 @@ Both are additive.
 ## Seventh response: the embedding build's divergences
 
 Received 2026-10-04, answering `divergences/batch2a-embed.md` (entries 1-19). Entry 17's housekeeping
-point was already met: `b70d564d` carries the rename's content changes. Sign-off pending.
+point was already met: `b70d564d` carries the rename's content changes. The user signed it off the
+same day.
 
 Most of this is right, and the scratch crate covers the important paths, including the known-violation check on the body catch. Here's my answer on the five sign-off items, plus brief notes on the rest.
 
