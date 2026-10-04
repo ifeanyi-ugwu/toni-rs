@@ -3,28 +3,16 @@ name = "ulo-http-poem"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Poem adapter for the Ulo framework"
+description = "Runs a Ulo application inside a poem server, nested under a path or as the fallback"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "poem", "web", "framework", "adapter"]
+keywords = ["ulo", "poem", "embedding", "web"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-poem = { version = "3.1", features = ["websocket"] }
-tokio = { workspace = true, features = ["full"] }
-tracing.workspace = true
-serde_json.workspace = true
-futures-util.workspace = true
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
 http.workspace = true
-http-body-util.workspace = true
-bytes.workspace = true
-
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-tokio-tungstenite.workspace = true
-ulo-macros = { path = "../ulo-macros" }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-futures-util.workspace = true
+poem = { workspace = true, features = ["server"] }
+tracing.workspace = true

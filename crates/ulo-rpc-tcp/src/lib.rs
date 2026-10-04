@@ -1,14 +1,13 @@
-// Tests: `tests/conformance.rs` stamps the shared RPC conformance suite
-// against this adapter, through a proxy the test owns so a disruption can be
-// made; it needs no broker and runs under a plain `cargo test -p ulo-rpc-tcp`.
-// A case belongs in `ulo-rpc-conformance` when every transport owes it. What
-// is this transport's alone — a panicking handler on the wire, drain,
-// backpressure, the stream grammar frame by frame, the binary refusal — is
-// proved in `integration-tests`.
+//! The TCP link for `ulo-rpc` (transports DESIGN §5.3): calls multiplexed by `id` over one
+//! connection, each frame a 4-byte big-endian length then the frame, bounded by `max_frame`, so an
+//! oversized prefix closes the connection before the body is read. Ordered per connection; every
+//! call shape; `Addressed`; TLS through `ulo_net::Tls` with no ALPN; `goaway` on every connection
+//! at the drain.
+//!
+//! ```ignore
+//! app.bind(ulo_rpc::Server::new(ulo_rpc_tcp::Tcp::new("0.0.0.0:7000")))
+//! ```
 
-mod tcp_adapter;
-mod tcp_client_transport;
+mod link;
 
-pub use tcp_adapter::TcpAdapter;
-pub use tcp_client_transport::TcpClientTransport;
-pub use ulo::rpc::{RpcAdapter, RpcClient, RpcClientTransport};
+pub use link::{Tcp};

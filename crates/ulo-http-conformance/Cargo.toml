@@ -1,0 +1,30 @@
+[package]
+name = "ulo-http-conformance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The embedding conformance suite every Ulo HTTP host runs, the hyper backend as the reference"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# A dev-dependency of the adapter crates and of nothing else.
+publish = false
+
+[features]
+# The test fairing through which the suite reads `Routing` from rocket's request-local cache.
+rocket = ["dep:rocket"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }
+ulo-tokio = { path = "../ulo-tokio" }
+ulo-transport = { path = "../ulo-transport" }
+bytes.workspace = true
+http.workspace = true
+reqwest = { workspace = true, features = ["stream", "http2"] }
+rocket = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "net"] }
+tokio-tungstenite = { workspace = true, features = ["connect"] }

@@ -16,14 +16,22 @@
 //! There is no per-module middleware: auth for a group of routes is a scoped entry, which runs
 //! before guards and can set `CurrentUser`; logging or transforming a module's responses is an
 //! interceptor; rejecting a request is a guard.
+//!
+//! One stage type serves HTTP and gRPC (X23): `PreDispatch` is HTTP's and `PreDispatch<Grpc>`
+//! gRPC's, each a distinct metadata key its own server reads. A transport other than `ulo-http`
+//! runs its stage through [`Stage`], handing each run a [`StageHost`] that renders a failure on
+//! its wire.
 
 use std::any::Any;
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::Bytes;
-use ulo::{BoxError, BoxFuture, Dep, Dependencies, DispatchStage, ExecutionRef, LookupError, Meta, ModuleRef, TypeName};
+use ulo::{
+    AppHandle, BoxError, BoxFuture, Dep, Dependencies, DispatchStage, ExecutionRef, LookupError, Meta, ModuleRef, TypeName,
+};
 
 use crate::body::HttpBody;
 use crate::cors::Cors;
@@ -36,7 +44,7 @@ use crate::router::RouteTarget;
 use crate::router::pattern::{Pattern, ScopePattern};
 use crate::service::{ServiceInner, merge_headers};
 use crate::tower_bridge::{Continuation, ErasedLayer, LayerOf, LayeredService, Service};
-use crate::transport::RequestHead;
+use crate::transport::{Http, HttpCarried, RequestHead};
 
 /// The pre-dispatch stage's entries one module declares:
 ///
@@ -60,8 +68,11 @@ use crate::transport::RequestHead;
 /// `prepare` refuses a scope or an exclusion that does not parse, a scoped entry naming no pattern,
 /// an `exclude` or a `supplies` written before any entry, a `supplies` written after an `adopt`,
 /// and a `Cors` value the Fetch specification forbids.
-#[derive(Default)]
-pub struct PreDispatch {
+///
+/// `T` is the transport whose server runs the entries: `Http` unwritten, and `ulo_grpc::Grpc` for
+/// gRPC's stage, `ulo_grpc::PreDispatch`, scoped by method path (`/users.v1.UserService/*`). An
+/// entry declared for one never runs on the other.
+pub struct PreDispatch<T: HttpCarried = Http> {
     pub(crate) entries: Vec<Entry>,
     /// Where `exclude` was called with no entry before it, for `prepare` to report.
     pub(crate) stray_excludes: Vec<&'static Location<'static>>,
@@ -70,6 +81,19 @@ pub struct PreDispatch {
     /// Where `supplies` was called after an `adopt` entry, for `prepare` to report. The
     /// declaration is kept off the entry, so the embedding's check never counts it.
     pub(crate) adopt_supplies: Vec<&'static Location<'static>>,
+    _transport: PhantomData<fn() -> T>,
+}
+
+impl<T: HttpCarried> Default for PreDispatch<T> {
+    fn default() -> Self {
+        PreDispatch {
+            entries: Vec::new(),
+            stray_excludes: Vec::new(),
+            stray_supplies: Vec::new(),
+            adopt_supplies: Vec::new(),
+            _transport: PhantomData,
+        }
+    }
 }
 
 /// One entry as declared.
@@ -112,7 +136,7 @@ pub(crate) enum Step {
 /// What an `adopt::<T>()` entry runs.
 pub(crate) type Adopt = fn(&http::request::Parts, &ExecutionRef);
 
-impl Meta for PreDispatch {
+impl<T: HttpCarried> Meta for PreDispatch<T> {
     fn dependencies(&self, d: &mut Dependencies) {
         for entry in &self.entries {
             (entry.dependencies)(d);
@@ -120,7 +144,7 @@ impl Meta for PreDispatch {
     }
 }
 
-impl PreDispatch {
+impl<T: HttpCarried> PreDispatch<T> {
     /// A middleware by type, unscoped: every request, misses included.
     #[track_caller]
     pub fn apply<M: Middleware>(&mut self) -> &mut Self {
@@ -181,43 +205,43 @@ impl PreDispatch {
         self.push(Step::Layer(Arc::new(LayerOf(layer))), Some(scope), declare_nothing, None)
     }
 
-    /// Copies the value `T` from the request's `http::Extensions`, where a host's middleware or a
+    /// Copies the value `V` from the request's `http::Extensions`, where a host's middleware or a
     /// tower layer before this entry put it, into the execution's extensions, so guards,
-    /// interceptors and execution-scoped services read it as `Ext<T>`. Unscoped: it runs for
+    /// interceptors and execution-scoped services read it as `Ext<V>`. Unscoped: it runs for
     /// every request, misses included, at its place in declaration order. A request carrying no
-    /// `T` passes unchanged, and `Ext<T>` then fails with `LookupError::NotFound`.
+    /// `V` passes unchanged, and `Ext<V>` then fails with `LookupError::NotFound`.
     ///
     /// That is how a host's auth layer hands its user to the app's guards; a handler reads a host
-    /// value directly with `Host<T>`. An embedding declaring `host_extensions: false` refuses it
-    /// unless `T` is supplied before it runs: by `Embedded::forward::<T>(..)`, or by an unscoped
-    /// entry written before it and declared with `.supplies::<T>()`.
+    /// value directly with `Host<V>`. An embedding declaring `host_extensions: false` refuses it
+    /// unless `V` is supplied before it runs: by `Embedded::forward::<V>(..)`, or by an unscoped
+    /// entry written before it and declared with `.supplies::<V>()`.
     #[track_caller]
-    pub fn adopt<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        self.push(Step::Adopt(adopt::<T>, TypeName::of::<T>()), None, declare_nothing, None)
+    pub fn adopt<V: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        self.push(Step::Adopt(adopt::<V>, TypeName::of::<V>()), None, declare_nothing, None)
     }
 
-    /// Declares that the entry written before it puts `T` in the request's `http::Extensions`,
+    /// Declares that the entry written before it puts `V` in the request's `http::Extensions`,
     /// as a tower layer authenticating the request does. Runs nothing, on a backend or embedded.
     ///
     /// An embedding whose adapter declares `host_extensions: false` refuses a handler reading
-    /// `Host<T>` and an `adopt::<T>()` entry unless `T` reaches them, and reads the declaration
+    /// `Host<V>` and an `adopt::<V>()` entry unless `V` reaches them, and reads the declaration
     /// where the entry runs. After a scoped entry it reaches the handlers of the routes that
     /// entry covers; after an unscoped one, every handler, and the `adopt` entries written after
     /// it. A scoped entry runs after routing, so its declaration reaches no `adopt`. A value the
-    /// host keeps is copied in by `Embedded::forward::<T>(..)`, which reaches everything.
+    /// host keeps is copied in by `Embedded::forward::<V>(..)`, which reaches everything.
     ///
     /// An unscoped entry's `exclude` is not consulted: it matches the path as that entry receives
     /// it, which an entry after it may rewrite before routing. A supply after an excluding entry
     /// therefore lifts the refusal for the routes it excludes too, and a handler there reading
-    /// `Host<T>` answers 500 (`HostMissing`) per request. Put the supplying entry where its
+    /// `Host<V>` answers 500 (`HostMissing`) per request. Put the supplying entry where its
     /// exclusion matches the routes that read the value: an `exclude` covering none of them, or
     /// a scoped entry, whose exclusions are applied to routes when the server prepares.
     ///
     /// `prepare` reports the call, on a backend as well, when no entry is before it, and when the
     /// entry before it is an `adopt`, which inserts nothing into the request.
     #[track_caller]
-    pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        let supply = Supply { ty: TypeName::of::<T>(), location: Location::caller() };
+    pub fn supplies<V: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        let supply = Supply { ty: TypeName::of::<V>(), location: Location::caller() };
         match self.entries.last_mut() {
             Some(Entry { step: Step::Adopt(..), .. }) => self.adopt_supplies.push(supply.location),
             Some(entry) => entry.supplies.push(supply),
@@ -279,12 +303,18 @@ fn adopt<T: Clone + Send + Sync + 'static>(head: &http::request::Parts, exec: &E
     }
 }
 
-/// Every module's entries, in collection order, as one stage, each scoped entry with the module
-/// that declared it and its index in that module's `PreDispatch::entries`.
-pub(crate) struct Stage {
-    pub(crate) scoped: Vec<(ModuleRef, Arc<PreDispatch>, usize)>,
+/// Every module's entries for transport `T`, in collection order, as one stage, built once in
+/// `prepare`: each scoped entry with the module that declared it and its index in that module's
+/// `PreDispatch::entries`.
+///
+/// A server runs it in two sub-steps around its routing: [`run`](Self::run) runs the unscoped
+/// entries before the route is known, and the matched route's [`ScopedStage`], from
+/// [`scoped`](Self::scoped) in `prepare`, runs the entries whose scope covers it after
+/// `Execution::route_to`. `ulo-http` runs HTTP's this way, and `ulo-grpc` gRPC's.
+pub struct Stage<T: HttpCarried = Http> {
+    pub(crate) scoped: Vec<(ModuleRef, Arc<PreDispatch<T>>, usize)>,
     /// The scoped stages handed out so far, by the entries they hold, so equal sets share one.
-    pub(crate) shared: Mutex<Vec<Arc<ScopedStage>>>,
+    pub(crate) shared: Mutex<Vec<Arc<ScopedStage<T>>>>,
     /// The unscoped entries as they run, in order.
     run: Arc<[Runnable]>,
     /// `scoped` as it runs, each with the scopes it covers and excludes, index for index.
@@ -293,15 +323,15 @@ pub(crate) struct Stage {
 
 /// The entries one route runs after it matched: those whose scope covers it, minus exclusions,
 /// in declaration order, each with its declaring module. Built once per distinct set in `prepare`.
-pub(crate) struct ScopedStage {
-    pub(crate) steps: Vec<(ModuleRef, Arc<PreDispatch>, usize)>,
+pub struct ScopedStage<T: HttpCarried = Http> {
+    pub(crate) steps: Vec<(ModuleRef, Arc<PreDispatch<T>>, usize)>,
     /// `steps` as they run.
     run: Arc<[Runnable]>,
 }
 
-impl ScopedStage {
+impl<T: HttpCarried> ScopedStage<T> {
     /// Whether this stage holds exactly `steps`: the same declarations, by identity.
-    fn holds(&self, steps: &[(ModuleRef, Arc<PreDispatch>, usize)]) -> bool {
+    fn holds(&self, steps: &[(ModuleRef, Arc<PreDispatch<T>>, usize)]) -> bool {
         self.steps.len() == steps.len()
             && self.steps.iter().zip(steps).all(|((_, held, at), (_, wanted, index))| Arc::ptr_eq(held, wanted) && at == index)
     }
@@ -331,10 +361,10 @@ enum Action {
     Adopt(Adopt),
 }
 
-impl Stage {
-    /// The stage from `module_meta::<PreDispatch>()`, every scope and exclusion parsed and every
-    /// value check run; every failure returned, for `StartupError::Configure`.
-    pub(crate) fn build(metas: Vec<(ModuleRef, Arc<PreDispatch>)>) -> Result<Stage, Vec<String>> {
+impl<T: HttpCarried> Stage<T> {
+    /// The stage from `mounted.module_meta::<PreDispatch<T>>()`, every scope and exclusion parsed
+    /// and every value check run; every failure returned, for the server's `prepare` failure.
+    pub fn build(metas: Vec<(ModuleRef, Arc<PreDispatch<T>>)>) -> Result<Stage<T>, Vec<String>> {
         let mut failures = Vec::new();
         let mut stage = Stage::empty();
         let mut run = Vec::new();
@@ -392,7 +422,7 @@ impl Stage {
 
     /// A stage with no entries, for a `prepare` whose own stage failed, so the route table is
     /// still built and its failures reported beside the stage's.
-    pub(crate) fn empty() -> Stage {
+    pub(crate) fn empty() -> Stage<T> {
         Stage {
             scoped: Vec::new(),
             shared: Mutex::new(Vec::new()),
@@ -401,8 +431,28 @@ impl Stage {
         }
     }
 
+    /// The scoped stage of `route`, a route pattern such as `/users/{id}` or a gRPC method path,
+    /// the same `Arc` for routes covered by the same set; `Err` with the reason when `route` does
+    /// not parse as a pattern.
+    pub fn scoped(&self, route: &str) -> Result<Arc<ScopedStage<T>>, String> {
+        let pattern = Pattern::parse(route).map_err(|err| err.to_string())?;
+        Ok(self.scoped_for(&pattern))
+    }
+
+    /// Runs the unscoped entries, in order, then `end` with the request as they leave it. Each
+    /// entry runs inside `AppHandle::catch_panic`; its `Err` or panic is answered by
+    /// [`StageHost::fail`] in its place.
+    pub fn run(&self, host: Arc<dyn StageHost>, req: Request, end: Rest) -> BoxFuture<'static, Response> {
+        run(host, self.runnable(), 0, req, end)
+    }
+
+    /// Whether the stage has no unscoped entry, so a server can skip [`run`](Self::run).
+    pub fn is_empty(&self) -> bool {
+        self.run.is_empty()
+    }
+
     /// The scoped stage of the route `pattern`, the same `Arc` for routes covered by the same set.
-    pub(crate) fn scoped_for(&self, pattern: &Pattern) -> Arc<ScopedStage> {
+    pub(crate) fn scoped_for(&self, pattern: &Pattern) -> Arc<ScopedStage<T>> {
         let covered: Vec<usize> = self
             .covering
             .iter()
@@ -412,7 +462,7 @@ impl Stage {
             })
             .map(|(index, _)| index)
             .collect();
-        let steps: Vec<(ModuleRef, Arc<PreDispatch>, usize)> = covered.iter().map(|&index| self.scoped[index].clone()).collect();
+        let steps: Vec<(ModuleRef, Arc<PreDispatch<T>>, usize)> = covered.iter().map(|&index| self.scoped[index].clone()).collect();
         let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(stage) = shared.iter().find(|stage| stage.holds(&steps)) {
             return Arc::clone(stage);
@@ -429,10 +479,21 @@ impl Stage {
     }
 }
 
-impl ScopedStage {
+impl<T: HttpCarried> ScopedStage<T> {
     /// The entries as a request runs them.
     pub(crate) fn runnable(&self) -> Arc<[Runnable]> {
         Arc::clone(&self.run)
+    }
+
+    /// Runs the route's scoped entries, in order, then `end`, as [`Stage::run`] runs the unscoped
+    /// ones.
+    pub fn run(&self, host: Arc<dyn StageHost>, req: Request, end: Rest) -> BoxFuture<'static, Response> {
+        run(host, self.runnable(), 0, req, end)
+    }
+
+    /// Whether no scoped entry covers the route.
+    pub fn is_empty(&self) -> bool {
+        self.run.is_empty()
     }
 }
 
@@ -450,7 +511,21 @@ fn scopes(patterns: &[Cow<'static, str>], at: &Location<'_>, failures: &mut Vec<
 }
 
 /// What runs after an entry: the entries after it, then routing or dispatch.
-pub(crate) type Rest = Box<dyn FnOnce(Request) -> BoxFuture<'static, Response> + Send>;
+pub type Rest = Box<dyn FnOnce(Request) -> BoxFuture<'static, Response> + Send>;
+
+/// The transport hosting one run of a sub-step: the app whose panic catch every entry runs inside,
+/// the request's execution, through which a by-type entry is resolved, and the rendering of an
+/// entry's failure on the transport's wire.
+///
+/// `fail` receives an entry's `Err` or its panic as `PanicRecovered` and answers the response in
+/// the entry's place, after offering the error to the error handlers the sub-step's position
+/// allows: the global ones before routing, the matched handler's tiers then the global ones
+/// after. gRPC answers a status in the response's headers; HTTP a problem document.
+pub trait StageHost: Send + Sync + 'static {
+    fn app(&self) -> &AppHandle;
+    fn exec(&self) -> &ExecutionRef;
+    fn fail(&self, err: BoxError) -> BoxFuture<'_, Response>;
+}
 
 /// One request's sub-step, as an entry's failure is offered to the error handlers.
 pub(crate) struct StageCx {
@@ -465,8 +540,22 @@ pub(crate) struct StageCx {
     pub(crate) route: Option<(Arc<RouteTarget>, PathParams)>,
 }
 
+impl StageHost for StageCx {
+    fn app(&self) -> &AppHandle {
+        &self.service.app
+    }
+
+    fn exec(&self) -> &ExecutionRef {
+        &self.exec
+    }
+
+    fn fail(&self, err: BoxError) -> BoxFuture<'_, Response> {
+        Box::pin(self.render(err))
+    }
+}
+
 impl StageCx {
-    async fn fail(&self, err: BoxError) -> Response {
+    async fn render(&self, err: BoxError) -> Response {
         let route = self.route.as_ref().map(|(target, params)| MatchedRoute {
             handler: target.handler.clone(),
             pattern: Arc::clone(&target.pattern),
@@ -487,7 +576,7 @@ impl StageCx {
 /// its `Err`, a middleware's or a layer's, or its panic is offered to the error handlers in its
 /// place; the entries after it run inside it and have each been caught already, so what reaches
 /// its catch is its own.
-pub(crate) fn run(at: Arc<StageCx>, steps: Arc<[Runnable]>, from: usize, req: Request, end: Rest) -> BoxFuture<'static, Response> {
+pub(crate) fn run(at: Arc<dyn StageHost>, steps: Arc<[Runnable]>, from: usize, req: Request, end: Rest) -> BoxFuture<'static, Response> {
     let Some(index) = (from..steps.len()).find(|&index| !steps[index].skips(req.path())) else {
         return end(req);
     };
@@ -495,10 +584,10 @@ pub(crate) fn run(at: Arc<StageCx>, steps: Arc<[Runnable]>, from: usize, req: Re
         let rest_at = Arc::clone(&at);
         let rest_steps = Arc::clone(&steps);
         let rest: Rest = Box::new(move |req| run(rest_at, rest_steps, index + 1, req, end));
-        steps[index].start(&at.exec, req, rest)
+        steps[index].start(at.exec(), req, rest)
     };
     Box::pin(async move {
-        match at.service.app.catch_panic(DispatchStage::PreDispatch, attempt).await {
+        match at.app().catch_panic(DispatchStage::PreDispatch, attempt).await {
             Ok(response) => response,
             Err(err) => at.fail(err).await,
         }

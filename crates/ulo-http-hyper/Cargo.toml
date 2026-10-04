@@ -13,6 +13,8 @@ categories = ["web-programming::http-server"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
+# The accept loop, the TLS handshake and the drain, shared with the gRPC and WebSocket servers.
+ulo-hyper-serve = { path = "../ulo-hyper-serve" }
 ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }
 http.workspace = true
@@ -20,7 +22,5 @@ http.workspace = true
 # and its I/O adapter come from the same two crates.
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
-# `time`: the accept loop's back-off and the TLS handshake timeout.
-tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
-tokio-rustls.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true

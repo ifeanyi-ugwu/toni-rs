@@ -1,111 +1,51 @@
-// Tests: conformance with the HTTP adapter SPI is proved once for all five
-// adapters in `integration-tests` — the `*_conformance` suites, each
-// instantiated per adapter. This crate's `tests/` covers only what is
-// rocket's: the liftoff fairing that recovers an OS-assigned port, request
-// buffering, and WebSocket over `rocket_ws`. Rocket serves no separate-port
-// gateway and refuses a pre-bound listener — both proved in the suite.
-
-//! # ulo-http-rocket
-//!
-//! [Rocket](https://crates.io/crates/rocket) adapter for the ulo framework.
-//! Implements `HttpAdapter` with same-port WebSocket upgrade via
-//! [`rocket_ws`](https://crates.io/crates/rocket_ws). Separate-port
-//! WebSocket is intentionally not implemented — pair ulo-http-rocket with a
-//! dedicated WebSocket adapter (e.g. `ulo-ws-tungstenite`) when you need it.
-//!
-//! ## Usage
+//! Runs a `ulo` application inside a rocket server (transports DESIGN §3.8): a native embedding,
+//! one catch-all `rocket::route::Handler` per method, mounted at a path.
 //!
 //! ```ignore
-//! use ulo_http_rocket::RocketAdapter;
+//! let server = ulo_http_rocket::Embedded::new().nested_at("/api");
+//! let embedded = server.handle();
+//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?.connect().await?.bind(server).listen().await?;
 //!
-//! #[tokio::main]
-//! async fn main() {
-//!     let mut app = UloFactory::new()
-//!         .create_with(AppModule)
-//!         .await
-//!         .unwrap();
-//!     app.use_http_adapter(RocketAdapter::new(), ("127.0.0.1", 3000)).unwrap();
-//!     app.start().await.unwrap();
-//! }
+//! let rocket = rocket::build().mount("/api", ulo_http_rocket::routes(&embedded));
+//! ulo_http_rocket::run(app, &embedded, rocket, ulo_tokio::shutdown_signal()).await?;
 //! ```
 //!
-//! ## Routing
-//!
-//! Routing is internal: the adapter mounts one catch-all rocket route per
-//! method and dispatches through its own `match_route` over the registered
-//! route table, matching ulo's `{param}` / `:param` / `*tail` syntaxes.
-//! Captured path parameters are stashed in ulo's `PathParams` extension so
-//! the `Path<T>` extractor reads them downstream.
-//!
-//! ## HTTP methods
-//!
-//! Every standard method has a direct mapping: `GET`, `POST`, `PUT`,
-//! `DELETE`, `PATCH`, `HEAD`, `OPTIONS`, `TRACE`, `CONNECT`. Rocket's
-//! `Method` enum exposes a variant for each, so dispatch is exact-match.
-//!
-//! ## Request bodies
-//!
-//! Rocket's `Data<'r>` is lifetime-bound to the request — it can't outlive
-//! the handler. The adapter reads the entire body into `Bytes` inside the
-//! handler future and hands ulo a buffered `RequestBody`, capped at 32 MiB
-//! by default. This is a meaningful difference from ulo-http-axum/poem/salvo,
-//! which stream request bodies frame-by-frame; ulo's `BodyStream`
-//! extractor still works, it just sees the full payload as a single chunk.
-//!
-//! ## Response bodies
-//!
-//! Ulo's [`Body::stream`](ulo::http::Body::stream) is bridged
-//! into rocket's `streamed_body` via `tokio_util::io::StreamReader`, so
-//! chunks reach the client incrementally. Buffered bodies use
-//! `sized_body` for an accurate Content-Length without forcing chunked
-//! transfer.
-//!
-//! ## WebSockets
-//!
-//! Same-port upgrades go through `rocket_ws::WebSocket`. Routes registered
-//! via `register_ws_route` are mounted as `GET` (matching RFC 6455) and the upgrade
-//! is performed inside the handler. The adapter does not implement
-//! `WsAdapter`, so `#[websocket_gateway(port = N)]` gateways will
-//! fail registration — pair ulo-http-rocket with `ulo-ws-tungstenite` (or
-//! another `WsAdapter`) for separate-port WS.
-//!
-//! ## Graceful shutdown
-//!
-//! Rocket exposes a `Shutdown` handle natively. The adapter ignites the
-//! rocket explicitly to obtain the handle, then forwards ulo's
-//! `tokio::sync::watch` shutdown signal to `Shutdown::notify()`. The
-//! `launch()` future resolves once rocket has drained in-flight
-//! connections.
-//!
-//! ## Pre-bound listeners
-//!
-//! Only address targets are supported: `BindTarget::Listener` is refused with
-//! an error at `app.bind()`. Rocket binds inside `launch()` from figment
-//! configuration and accepts no externally constructed listener, so socket
-//! activation and socket-preserving restarts need one of the other HTTP
-//! adapters.
-//!
-//! ## Bound-address discovery
-//!
-//! Rocket fuses bind and serve into `Rocket::launch()`, with no public hook
-//! that returns the OS-assigned address before the serve loop starts. The
-//! adapter installs an `AdHoc::on_liftoff` fairing that captures the bound
-//! `SocketAddr` once rocket has reached the `Orbit` phase and forwards it
-//! through a `oneshot` channel back to `listen()`. Tests using `port = 0`
-//! recover the assigned port through this path.
-//!
-//! ## Panics
-//!
-//! Bind failures (port in use, permission denied, etc.) propagate as
-//! `Result::Err` from the `listen` future. The adapter never panics at
-//! runtime; transport-level errors flow through `tracing::debug` and
-//! `tracing::warn` events.
+//! rocket 0.5 is on `http` 0.2, so the adapter converts at its edge. `mount` leaves the URI whole,
+//! so the adapter strips `.nested_at` itself. rocket's `Data` must be read inside the handler, so
+//! the body is buffered under the embedding's own `body_limit`, a larger one answered with the same
+//! 413 as everywhere else. `Routing` lives in the request's local cache, where a fairing's
+//! `on_response` reads it. What it declares: the peer address from `remote` and `client_ip`;
+//! upgrades through rocket's `IoHandler`; miss forwarding, `Outcome::Forward` with the request's
+//! unread `Data`; no host extensions, a value in rocket's local cache crossing through a `forward`
+//! copy, the adapter's own `OriginalPath` among them; no TLS info; the body buffered; a dropped
+//! body observed at the next failed write.
 
-mod rocket_adapter;
-mod rocket_websocket_adapter;
-pub(crate) mod tokio_sender;
+mod convert;
+mod handler;
+mod run;
+mod upgrade;
 
-pub use rocket_adapter::RocketAdapter;
-pub use tokio_sender::TokioSender;
+use ulo_http::embed::{Embed, EmbedLimits};
 
-pub use ulo::http::HttpAdapter;
+pub use handler::{RocketHandler, routes};
+pub use run::run;
+
+/// The rocket host.
+pub struct Rocket;
+
+impl Embed for Rocket {
+    const NAME: &'static str = "rocket";
+
+    type HostRequest<'r> = rocket::Request<'r>;
+
+    fn limits() -> EmbedLimits {
+        todo!()
+    }
+}
+
+/// The embedding server for rocket, `ulo_http::embed::Embedded<Rocket>`, whose constructor
+/// registers the adapter's built-in `forward` of `OriginalPath` from `req.uri().path()`.
+pub type Embedded = ulo_http::embed::Embedded<Rocket>;
+
+/// Its handle, `ulo_http::embed::Handle<Rocket>`.
+pub type Handle = ulo_http::embed::Handle<Rocket>;

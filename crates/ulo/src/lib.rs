@@ -81,7 +81,7 @@ pub use transport::controller::{Controller, ControllerHandle, Mount, MountedHand
 pub use transport::enhancer::EnhancerSpec;
 pub use transport::handler::{HandlerInfo, HandlerSpec, Shape};
 pub use transport::inputs::Inputs;
-pub use transport::metadata::{MetaTier, Metadata};
+pub use transport::metadata::{MetaTier, Metadata, TransportMetadata};
 pub use transport::next::Next;
 pub use transport::pipeline::{LateOutcome, dispatch, dispatch_late, recover};
 pub use transport::server::{BoundAddr, DrainToken, InputReader, Mounted, Server};

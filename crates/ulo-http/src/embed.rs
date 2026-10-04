@@ -45,6 +45,7 @@ use bytes::Bytes;
 use hyper_util::rt::TokioIo;
 use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase, TypeName};
 use ulo_transport::Count;
+use ulo_transport::prepare::{Failure, Failures};
 
 use crate::__private::HttpHandler;
 use crate::backend::HttpConfig;
@@ -54,9 +55,10 @@ use crate::render;
 use crate::request::{ConnInfo, OnUpgrade, Request, Upgraded};
 use crate::response::Response;
 use crate::router::pattern::Pattern;
-use crate::server::{Failure, Failures, prepare_app};
+use crate::server::{PreparedApp, prepare_app, upgrades_bound, upgrades_close, upgrades_drain};
 use crate::service::AppService;
 use crate::transport::{ClientAddr, Http};
+use crate::upgrade::UpgradeHandler;
 
 /// One host framework the app can run inside: what an adapter crate implements, as a backend
 /// crate implements [`Backend`](crate::Backend).
@@ -229,6 +231,10 @@ pub struct Embedded<A: Embed> {
     shared: Arc<Shared>,
     /// Set by `prepare`, installed by `bind`.
     prepared: Option<AppService>,
+    /// Every registered upgrade handler, once each, set by `prepare`: a host declaring `upgrades`
+    /// hands connections to them, and `drain` and `close` reach those connections through them as
+    /// `Server<B>`'s do (X21).
+    upgrades: Vec<Arc<dyn UpgradeHandler>>,
     _host: PhantomData<fn() -> A>,
 }
 
@@ -258,6 +264,7 @@ impl<A: Embed> Embedded<A> {
             on_miss: Miss::Final,
             shared,
             prepared: None,
+            upgrades: Vec::new(),
             _host: PhantomData,
         }
     }
@@ -531,9 +538,10 @@ impl<A: Embed> ulo::Server for Embedded<A> {
 
     /// The route table and stage as a backend's server builds them, then the host's limits.
     async fn prepare(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let mut failures = Failures::default();
+        let mut failures = Failures::new();
         let mount = self.mount(&mut failures);
-        let (service, upgrading) = prepare_app(&mounted, &self.config, &mount, self.on_miss == Miss::Forward, &mut failures);
+        let PreparedApp { service, upgrading, handlers } =
+            prepare_app(&mounted, &self.config, &mount, self.on_miss == Miss::Forward, &mut failures);
         self.check_limits(&mounted, service.as_ref(), upgrading, &mut failures);
         let Some(service) = service.filter(|_| failures.is_empty()) else {
             return Err(Box::new(failures.into_error()));
@@ -541,16 +549,18 @@ impl<A: Embed> ulo::Server for Embedded<A> {
         let _ = self.copies.set(std::mem::take(&mut self.forwarded).into_boxed_slice());
         let _ = self.shared.app.set(mounted.app().clone());
         self.prepared = Some(service);
+        self.upgrades = handlers;
         Ok(())
     }
 
-    /// Installs the service the handle's [`Service`] calls; no socket is acquired.
+    /// Installs the service the handle's [`Service`] calls; no socket is acquired. The upgrade
+    /// handlers' `bound` runs here, as it does after a backend binds.
     async fn bind(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let _ = mounted;
         let Some(service) = self.prepared.take() else {
             return Err(BoxError::from("the embedded HTTP server was bound before it was prepared"));
         };
         *self.shared.state() = State::Bound(service);
+        upgrades_bound(&self.upgrades, mounted.app());
         Ok(())
     }
 
@@ -580,12 +590,13 @@ impl<A: Embed> ulo::Server for Embedded<A> {
         }
     }
 
-    /// Resolves [`Handle::stopping`], to which the host's graceful shutdown is wired, and returns.
-    /// The core has already fired `draining()`, and from then on the app answers a new request 503
+    /// Resolves [`Handle::stopping`], to which the host's graceful shutdown is wired, and runs every
+    /// upgrade handler's drain, which closes the upgraded connections the host no longer sees. The
+    /// core has already fired `draining()`, and from then on the app answers a new request 503
     /// with `Connection: close`.
     async fn drain(&self, token: DrainToken) {
-        let _ = token;
         self.shared.stopping.fire();
+        upgrades_drain(&self.upgrades, &token).await;
     }
 
     /// Waits for the host's server future to end when `serve` is polling it, bounded by what the
@@ -604,9 +615,12 @@ impl<A: Embed> ulo::Server for Embedded<A> {
                 HostSlot::Empty(_) | HostSlot::Installed(_) | HostSlot::Released => false,
             }
         };
-        if polled {
-            poll_fn(|cx| shared.finished.poll_fired(cx)).await;
-        }
+        let host_ended = async {
+            if polled {
+                poll_fn(|cx| shared.finished.poll_fired(cx)).await;
+            }
+        };
+        futures_util::future::join(host_ended, upgrades_close(&self.upgrades)).await;
         let config = shared.state().config();
         *shared.state() = State::Closed(config);
         Ok(())

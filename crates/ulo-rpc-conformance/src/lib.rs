@@ -1,629 +1,110 @@
-//! The contract every RPC transport satisfies, written once.
-//!
-//! Seven transports speak ulo's wire grammar, and the behaviour a caller
-//! depends on is the same across all of them: a request comes back, an emit
-//! reaches its handler without one, headers survive the trip, a stream arrives
-//! in order, abandoning a stream cancels the producer, traffic resumes after
-//! the connection breaks, a miss is never answered with success, a JSON
-//! payload reaches the handler as JSON, and an emitted event reaches at least
-//! one of two instances. Written per transport, that contract was seven copies
-//! which drifted — `ulo-rpc-nats` was missing three cases outright and nothing
-//! failed, because there was no suite for them to be missing from.
-//!
-//! Here the cases are generic functions over [`Broker`], and
-//! [`conformance_suite!`] stamps one `#[tokio::test]` per case in the
-//! transport's own `tests/`. A transport that cannot satisfy a case says so by
-//! failing it, and a new case reaches every transport at once.
-//!
-//! # Implementing it for a transport
+//! The conformance suite every `ulo-rpc` link runs (transports DESIGN §5.2): one scenario list,
+//! stamped per link by [`conformance_suite!`] from a [`Broker`] the link crate implements in its
+//! `tests/`.
 //!
 //! ```ignore
-//! struct RedisBroker {
-//!     _container: ContainerAsync<Redis>,
-//!     endpoint: String,
+//! // crates/ulo-rpc-nats/tests/conformance.rs
+//! struct NatsBroker { url: String }
+//!
+//! impl ulo_rpc_conformance::Broker for NatsBroker {
+//!     type Link = ulo_rpc_nats::Nats;
+//!     async fn start() -> Self { /* a fresh broker or subject space */ }
+//!     fn link(&self) -> ulo_rpc_nats::Nats { ulo_rpc_nats::Nats::url(&self.url) }
+//!     async fn disrupt(&self) { /* sever the connection */ }
 //! }
 //!
-//! impl Broker for RedisBroker {
-//!     type Adapter = RedisAdapter;
-//!     type Transport = RedisClientTransport;
-//!
-//!     async fn start() -> Self { /* testcontainer, then the endpoint */ }
-//!     fn adapter(&self) -> Self::Adapter { RedisAdapter::new(&self.endpoint) }
-//!     fn transport(&self) -> Self::Transport { RedisClientTransport::new(&self.endpoint) }
-//!     async fn disrupt(&self) { /* whatever severs the connection */ }
-//! }
-//!
-//! ulo_rpc_conformance::conformance_suite!(RedisBroker);
+//! ulo_rpc_conformance::conformance_suite!(NatsBroker);
 //! ```
 //!
-//! Each transport's stamp stays in its own crate rather than moving into
-//! `integration-tests`: five of the seven need Docker, and that suite is hermetic.
+//! A scenario asserts kinds and reason strings, never message text. A scenario a link's
+//! capabilities exclude asserts the refusal the capability declares instead: a streamed shape on
+//! UDP is refused at startup, a binary payload on a JSON link before any I/O, a miss on a link
+//! without `miss_signal` is the client's `Timeout`.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::future::Future;
 use std::time::Duration;
-use ulo::dispatch::Items;
 
-use futures::StreamExt;
-use ulo::UloFactory;
-use ulo::context::ExecutionContext;
-use ulo::rpc::RpcClient;
-use ulo::rpc::RpcContext;
-use ulo::rpc::{RpcData, RpcError, RpcHandlerOutput, RpcHandlerResult};
-use ulo_macros::{controller, module, new, patterns};
+use ulo_rpc::Link;
 
-/// How long each phase may take. A Kafka broker boots slowly and assigns
-/// consumer groups before the first request is consumed, so the budgets are a
-/// transport's to raise.
-#[derive(Debug, Clone, Copy)]
-pub struct Budget {
-    /// Waiting for the server's subscriptions to come up before the first
-    /// request. Every broker subscribes asynchronously after `bind`.
-    pub boot: Duration,
-    /// Waiting for a one-way effect (an emit reaching its handler, a producer
-    /// noticing cancellation) that no reply announces.
-    pub settle: Duration,
-    /// Waiting for traffic to resume after [`Broker::disrupt`].
-    pub recovery: Duration,
-}
+pub mod cases;
 
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            boot: Duration::from_secs(6),
-            settle: Duration::from_secs(4),
-            recovery: Duration::from_secs(20),
-        }
-    }
-}
+/// One link's environment for the suite: a broker, or nothing for TCP and UDP.
+pub trait Broker: Sized + Send + Sync + 'static {
+    type Link: Link;
 
-/// A live broker, and the two halves of ulo that talk to it.
-///
-/// One implementation per transport crate, in that crate's `tests/`. The
-/// implementor owns whatever the cases talk to — a container, or a socket and
-/// the proxy in front of it: holding `Self` keeps it alive.
-pub trait Broker: Sized + 'static {
-    /// The server-side adapter under test.
-    type Adapter: ulo::rpc::RpcAdapter;
-    /// The client-side transport under test.
-    type Transport: ulo::rpc::RpcClientTransport + 'static;
+    /// Starts the environment for one scenario, so no state leaks between scenarios.
+    fn start() -> impl Future<Output = Self> + Send;
 
-    /// Start a broker nothing else is using. Called once per case, so state
-    /// never leaks between them.
-    fn start() -> impl Future<Output = Self>;
+    /// A link for the half under test, server or client, configured for this environment; called
+    /// once per half.
+    fn link(&self) -> Self::Link;
 
-    /// A server adapter pointed at this broker. Called once per application
-    /// instance a case starts; a case that starts two instances calls it twice.
-    fn adapter(&self) -> Self::Adapter;
+    /// Severs the link's connection however the broker allows, for the recovery scenario.
+    fn disrupt(&self) -> impl Future<Output = ()> + Send;
 
-    /// A client transport pointed at this broker, with its call timeout
-    /// already set.
-    fn transport(&self) -> Self::Transport;
-
-    /// Sever the connection in whatever way this broker allows — killing
-    /// client connections, pausing the container. The case that follows
-    /// asserts traffic resumes, which is the claim; how the connection broke
-    /// is the transport's business.
-    fn disrupt(&self) -> impl Future<Output = ()>;
-
-    /// Override for a broker that needs longer than [`Budget::default`].
-    fn budget() -> Budget {
+    /// How long this environment takes, which a slow broker raises.
+    fn budget(&self) -> Budget {
         Budget::default()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Handlers the cases dispatch to.
-//
-// Each case starts its own application, or two, so these counters are read only
-// by the case that just reset them.
-// ---------------------------------------------------------------------------
+/// How long a scenario waits on its environment.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budget {
+    /// From `start` until the server answers its first call.
+    pub boot: Duration,
+    /// For a one-way effect to show: an event handled, a subscription in place.
+    pub settle: Duration,
+    /// From `disrupt` until calls succeed again.
+    pub recovery: Duration,
+}
 
-static EMITS: AtomicUsize = AtomicUsize::new(0);
-static PRODUCER_SAW_CANCEL: AtomicBool = AtomicBool::new(false);
-/// Every delivery of `probe.fanout`, across every application instance in this process.
-static FANOUT: AtomicUsize = AtomicUsize::new(0);
-
-#[controller]
-pub struct ConformanceController {}
-
-#[patterns]
-impl ConformanceController {
-    #[new]
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    #[message_pattern("math.add")]
-    async fn add(&self, data: RpcData) -> Result<RpcData, RpcError> {
-        let v = data.as_json().cloned().unwrap_or_default();
-        let a = v["a"].as_i64().unwrap_or(0);
-        let b = v["b"].as_i64().unwrap_or(0);
-        Ok(RpcData::json(serde_json::json!({ "sum": a + b })))
-    }
-
-    #[message_pattern("echo")]
-    async fn echo(&self, data: RpcData) -> Result<RpcData, RpcError> {
-        Ok(data)
-    }
-
-    #[message_pattern("meta.echo")]
-    async fn meta_echo(&self, _d: RpcData, c: &RpcContext) -> Result<RpcData, RpcError> {
-        let trace = c.header("trace").unwrap_or("none").to_string();
-        Ok(RpcData::json(serde_json::json!({ "trace": trace })))
-    }
-
-    #[event_pattern("event.fire")]
-    async fn fire(&self, _d: RpcData) -> Result<(), RpcError> {
-        EMITS.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    #[message_pattern("count.stream")]
-    async fn count(&self, _d: RpcData) -> RpcHandlerResult {
-        Ok(Items::Many(
-            futures::stream::iter((1..=3).map(|n| Ok(RpcData::json(serde_json::json!(n))))).boxed(),
-        ))
-    }
-
-    /// Names the `RpcData` variant it was handed, so a caller can see what its payload became in
-    /// transit.
-    #[message_pattern("probe.variant")]
-    async fn variant(&self, data: RpcData) -> Result<RpcData, RpcError> {
-        let name = match &data {
-            RpcData::Json(v) => format!("Json({v})"),
-            RpcData::Text(s) => format!("Text({s})"),
-            RpcData::Binary(b) => format!("Binary({})", String::from_utf8_lossy(b)),
-        };
-        Ok(RpcData::json(serde_json::json!({ "saw": name })))
-    }
-
-    #[event_pattern("probe.fanout")]
-    async fn fanout(&self, _d: RpcData) -> Result<(), RpcError> {
-        FANOUT.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    /// Emits until the execution is cancelled, then records that it noticed.
-    /// A bounded channel of one means the producer cannot run ahead of the
-    /// consumer, so the drop is observed promptly.
-    #[message_pattern("probe.cancel")]
-    async fn probe_cancel(&self, _d: RpcData, ctx: &RpcContext) -> RpcHandlerResult {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<RpcData, RpcError>>(1);
-        let token = ctx.cancellation().clone();
-        tokio::spawn(async move {
-            let mut n = 0u32;
-            loop {
-                tokio::select! {
-                    _ = token.cancelled() => {
-                        PRODUCER_SAW_CANCEL.store(true, Ordering::SeqCst);
-                        break;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
-                        n += 1;
-                        if tx.send(Ok(RpcData::json(serde_json::json!(n)))).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        Ok(Items::Many(
-            tokio_stream::wrappers::ReceiverStream::new(rx).boxed(),
-        ))
+impl Budget {
+    pub const fn new(boot: Duration, settle: Duration, recovery: Duration) -> Self {
+        Budget { boot, settle, recovery }
     }
 }
 
-#[module(controllers: [ConformanceController])]
-impl ConformanceModule {}
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-/// Boot an application on `broker`, run `body` against a client, tear down.
-async fn with_server<B, F, Fut>(broker: &B, body: F)
-where
-    B: Broker,
-    F: FnOnce(RpcClient) -> Fut,
-    Fut: Future<Output = ()>,
-{
-    let adapter = broker.adapter();
-    let client = RpcClient::new(broker.transport());
-
-    tokio::spawn(async move {
-        let mut app = UloFactory::new()
-            .create_with(ConformanceModule)
-            .await
-            .expect("the conformance module builds");
-        app.use_rpc_adapter(adapter)
-            .expect("the adapter is accepted while configuring");
-        app.bind().await.expect("the transport binds");
-        app.run().await;
-    });
-
-    body(client).await;
-}
-
-/// Poll `f` until it yields a value or `budget` runs out.
-///
-/// Every broker here subscribes asynchronously after `bind` returns, so the
-/// first request can arrive before anything is listening. Retrying is the
-/// difference between a suite that passes and one that passes on a fast
-/// machine.
-async fn within<T, F, Fut>(budget: Duration, mut f: F) -> Option<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
-{
-    let deadline = tokio::time::Instant::now() + budget;
-    loop {
-        if let Some(v) = f().await {
-            return Some(v);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+impl Default for Budget {
+    fn default() -> Self {
+        Budget::new(Duration::from_secs(5), Duration::from_millis(500), Duration::from_secs(10))
     }
 }
 
-// ---------------------------------------------------------------------------
-// The cases
-// ---------------------------------------------------------------------------
-
-/// A request reaches the handler and its reply reaches the caller.
-pub async fn send_round_trips<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        let sum = within(budget.boot, || async {
-            client
-                .send(
-                    "math.add",
-                    RpcData::json(serde_json::json!({"a": 2, "b": 3})),
-                )
-                .await
-                .ok()
-                .and_then(|r| r.as_json().and_then(|v| v["sum"].as_i64()))
-        })
-        .await;
-
-        assert_eq!(sum, Some(5), "a request must come back with its reply");
-    })
-    .await;
-}
-
-/// An emit reaches its handler, and the caller does not wait for a reply the
-/// handler never produces.
-pub async fn emit_reaches_a_handler_with_no_reply<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        // Wait for the subscriptions before counting: an emit dropped because
-        // nothing was listening yet is indistinguishable from one the handler
-        // ignored.
-        within(budget.boot, || async {
-            client
-                .send("echo", RpcData::json(serde_json::json!(1)))
-                .await
-                .ok()
-        })
-        .await
-        .expect("the server must be reachable before the emit is meaningful");
-
-        EMITS.store(0, Ordering::SeqCst);
-        client
-            .emit("event.fire", RpcData::json(serde_json::json!({})))
-            .await
-            .expect("emit must be accepted");
-
-        let seen = within(budget.settle, || async {
-            (EMITS.load(Ordering::SeqCst) == 1).then_some(())
-        })
-        .await;
-
-        assert!(
-            seen.is_some(),
-            "emit must reach the fire-and-forget handler exactly once, saw {}",
-            EMITS.load(Ordering::SeqCst)
-        );
-    })
-    .await;
-}
-
-/// A header set on the request is readable from the handler's context.
-pub async fn client_headers_reach_the_handler<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        let trace = within(budget.boot, || async {
-            client
-                .request("meta.echo")
-                .header("trace", "abc123")
-                .send(RpcData::json(serde_json::json!({})))
-                .await
-                .ok()
-                .and_then(|r| {
-                    r.as_json()
-                        .and_then(|v| v["trace"].as_str().map(String::from))
-                })
-        })
-        .await;
-
-        assert_eq!(
-            trace.as_deref(),
-            Some("abc123"),
-            "a header set on the request must reach the handler"
-        );
-    })
-    .await;
-}
-
-/// A streaming reply arrives in order and terminates.
-pub async fn a_stream_arrives_in_order_and_ends<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        let items = within(budget.boot, || async {
-            let stream = client
-                .stream("count.stream", RpcData::json(serde_json::json!(null)))
-                .await
-                .ok()?;
-            let items: Vec<i64> = stream
-                .filter_map(|item| async move {
-                    item.ok().and_then(|d| d.as_json().and_then(|v| v.as_i64()))
-                })
-                .collect()
-                .await;
-            (!items.is_empty()).then_some(items)
-        })
-        .await;
-
-        assert_eq!(
-            items,
-            Some(vec![1, 2, 3]),
-            "a stream must deliver every item in order and then end"
-        );
-    })
-    .await;
-}
-
-/// Dropping the reply stream cancels the execution producing it.
-///
-/// The producer is a detached task; without the cancel notice reaching it, it
-/// runs until the process ends. That is the leak this case exists to catch.
-pub async fn dropping_the_reply_stream_cancels_the_producer<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        PRODUCER_SAW_CANCEL.store(false, Ordering::SeqCst);
-
-        // Warm up first. Cancellation travels its own carrier — a channel, a
-        // subject, an in-band frame — which several transports establish
-        // lazily on first use. Opening the probe before the transport is
-        // demonstrably carrying calls tests the warm-up, not the cancel.
-        within(budget.boot, || async {
-            client
-                .send("echo", RpcData::json(serde_json::json!(1)))
-                .await
-                .ok()
-        })
-        .await
-        .expect("the transport must be carrying calls before cancellation means anything");
-
-        let mut stream = client
-            .stream("probe.cancel", RpcData::json(serde_json::json!(null)))
-            .await
-            .expect("the probe stream opens");
-        assert!(
-            stream.next().await.is_some(),
-            "the producer must deliver a first item before being abandoned"
-        );
-        drop(stream);
-
-        let cancelled = within(budget.settle, || async {
-            PRODUCER_SAW_CANCEL.load(Ordering::SeqCst).then_some(())
-        })
-        .await;
-
-        assert!(
-            cancelled.is_some(),
-            "abandoning the reply stream must cancel the execution behind it"
-        );
-    })
-    .await;
-}
-
-/// Traffic resumes after the connection breaks.
-///
-/// Both sides have to recover: the server resubscribes to its patterns and the
-/// client re-establishes whatever carries replies. A transport that recovers
-/// only one of the two passes its first request and then goes quiet.
-pub async fn traffic_recovers_after_a_disruption<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    let echoes = |client: RpcClient, budget: Duration| async move {
-        within(budget, || async {
-            client
-                .send("echo", RpcData::json(serde_json::json!({"v": 1})))
-                .await
-                .ok()
-                .and_then(|r| r.as_json().and_then(|v| v["v"].as_i64()))
-                .filter(|v| *v == 1)
-        })
-        .await
-        .is_some()
-    };
-
-    let adapter = broker.adapter();
-    let client = RpcClient::new(broker.transport());
-
-    tokio::spawn(async move {
-        let mut app = UloFactory::new()
-            .create_with(ConformanceModule)
-            .await
-            .expect("the conformance module builds");
-        app.use_rpc_adapter(adapter)
-            .expect("the adapter is accepted while configuring");
-        app.bind().await.expect("the transport binds");
-        app.run().await;
-    });
-
-    assert!(
-        echoes(client.clone(), budget.boot).await,
-        "echo must round-trip before the disruption, or the case proves nothing"
-    );
-
-    broker.disrupt().await;
-
-    assert!(
-        echoes(client.clone(), budget.recovery).await,
-        "echo must round-trip again after the connection is severed"
-    );
-}
-
-/// A pattern no controller declares is not answered with success.
-///
-/// What the failure is — a `NotFound` status, the broker's own refusal, a timeout — is the
-/// transport's, and this pins only that none of them answers a miss as if a handler had run.
-pub async fn a_miss_is_not_answered_with_success<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        within(budget.boot, || async {
-            client
-                .send("echo", RpcData::json(serde_json::json!(1)))
-                .await
-                .ok()
-        })
-        .await
-        .expect("the transport must be carrying calls before a miss means anything");
-
-        let outcome = client
-            .send(
-                "nothing.declares.this",
-                RpcData::json(serde_json::json!({})),
-            )
-            .await;
-        assert!(
-            outcome.is_err(),
-            "a pattern nothing declares was answered with success: {outcome:?}"
-        );
-    })
-    .await;
-}
-
-/// A `Json` payload reaches the handler as `Json`.
-///
-/// The one variant that means the same thing on every transport. What `Text` and `Binary` become
-/// in transit is decided per transport and is not pinned here.
-pub async fn a_json_payload_reaches_the_handler_as_json<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    with_server(&broker, |client| async move {
-        let saw = within(budget.boot, || async {
-            client
-                .send("probe.variant", RpcData::json(serde_json::json!("hello")))
-                .await
-                .ok()
-                .and_then(|d| {
-                    d.as_json()
-                        .and_then(|v| v["saw"].as_str().map(String::from))
-                })
-        })
-        .await;
-
-        assert_eq!(
-            saw.as_deref(),
-            Some("Json(\"hello\")"),
-            "a JSON payload must reach the handler as the JSON it was"
-        );
-    })
-    .await;
-}
-
-/// One emit with two application instances on one broker reaches at least one of them and at
-/// most both.
-///
-/// How many times the handler runs is the transport's delivery mode, which nothing declares —
-/// every instance, one of a competing set, or on a socket transport the one the client
-/// addresses. This pins the bounds.
-pub async fn an_emit_reaches_at_least_one_of_two_instances<B: Broker>() {
-    let broker = B::start().await;
-    let budget = B::budget();
-
-    let client = RpcClient::new(broker.transport());
-    for _ in 0..2 {
-        let adapter = broker.adapter();
-        tokio::spawn(async move {
-            let mut app = UloFactory::new()
-                .create_with(ConformanceModule)
-                .await
-                .expect("the conformance module builds");
-            app.use_rpc_adapter(adapter)
-                .expect("the adapter is accepted while configuring");
-            app.bind().await.expect("the transport binds");
-            app.run().await;
-        });
-    }
-
-    within(budget.boot, || async {
-        client
-            .send("echo", RpcData::json(serde_json::json!(1)))
-            .await
-            .ok()
-    })
-    .await
-    .expect("at least one instance must be reachable");
-    // Both instances subscribe asynchronously and the first reply proves only one of them.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    FANOUT.store(0, Ordering::SeqCst);
-    client
-        .emit("probe.fanout", RpcData::json(serde_json::json!({})))
-        .await
-        .expect("emit must be accepted");
-    tokio::time::sleep(budget.settle).await;
-
-    let runs = FANOUT.load(Ordering::SeqCst);
-    assert!(
-        (1..=2).contains(&runs),
-        "one emit across two instances ran the handler {runs} times"
-    );
-}
-
-/// Stamp one `#[tokio::test]` per case for a [`Broker`] implementation.
-///
-/// A case added to this crate reaches every transport through this macro,
-/// which is the property seven hand-maintained copies did not have.
+/// Stamps every scenario as a `#[tokio::test]` for the broker type `$broker`. The invoking crate
+/// depends on `tokio` with `macros` and `rt-multi-thread`, which `#[tokio::test]` names.
 #[macro_export]
 macro_rules! conformance_suite {
     ($broker:ty) => {
-        $crate::conformance_suite!($broker, cases: [
-            send_round_trips,
-            emit_reaches_a_handler_with_no_reply,
-            client_headers_reach_the_handler,
-            a_stream_arrives_in_order_and_ends,
-            dropping_the_reply_stream_cancels_the_producer,
-            traffic_recovers_after_a_disruption,
-            a_miss_is_not_answered_with_success,
-            a_json_payload_reaches_the_handler_as_json,
-            an_emit_reaches_at_least_one_of_two_instances,
-        ]);
+        $crate::conformance_suite!(@cases $broker;
+            unary_round_trip => unary::round_trip,
+            domain_error_envelope => errors::domain_error,
+            guard_refusal_is_forbidden => errors::guard_refusal,
+            panic_is_internal => errors::panic,
+            undecodable_payload_is_bad_request => errors::undecodable_payload,
+            headers_reach_call_headers => headers::reach_call_headers,
+            event_reaches_its_handler => events::reaches_handler,
+            unhandled_pattern => misses::unhandled_pattern,
+            unhandled_event_is_acknowledged => misses::unhandled_event,
+            server_stream_in_order => streams::server_stream,
+            client_stream => streams::client_stream,
+            bidi_stream => streams::bidi_stream,
+            cancel_mid_stream => cancel::mid_stream,
+            deadline_ms_fires_deadline => deadlines::deadline_ms,
+            client_timeout_is_timeout => deadlines::client_timeout,
+            binary_payload => payloads::binary,
+            oversized_payload => payloads::oversized,
+            drain => drain::drain,
+            recovery_after_disrupt => recovery::after_disrupt,
+            two_instances => delivery::two_instances,
+        );
     };
-    ($broker:ty, cases: [$($case:ident),* $(,)?]) => {
+    (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
         $(
-            #[tokio::test]
-            async fn $case() {
-                $crate::$case::<$broker>().await;
+            #[::tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                $crate::cases::$module::$case::<$broker>().await;
             }
         )*
     };

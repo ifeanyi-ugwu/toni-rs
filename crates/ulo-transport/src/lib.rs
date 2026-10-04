@@ -3,7 +3,8 @@
 //! ([`IntoReply`]), the one error model ([`CallError`], [`ErrorKind`], [`Classify`], [`Details`]),
 //! extraction failures ([`ExtractError`]), declarative validation ([`Valid`], [`Validate`]),
 //! declared metadata ([`Metadata`]), load shedding ([`Admission`]), the count a server setting
-//! bounds ([`Count`]), call spans ([`span`]) and stream-end tracking ([`Tracked`]).
+//! bounds ([`Count`]), call spans ([`span`]), stream-end tracking ([`Tracked`]) and the one way a
+//! server builds its `prepare` failure ([`prepare`]).
 //!
 //! Each transport says only how these look on its wire. A transport's `Cx` implements
 //! `AsRef<ExecutionRef>`, which is how the impls here reach the call's execution.
@@ -17,6 +18,7 @@ mod reply;
 mod tracked;
 mod validate;
 
+pub mod prepare;
 pub mod span;
 
 #[doc(hidden)]

@@ -16,6 +16,10 @@ use crate::cx::HttpCx;
 use crate::extract::{Host, Path};
 use crate::response::Response;
 
+/// The seal of [`HttpCarried`](crate::HttpCarried): implemented for `Http` here and for
+/// `ulo_grpc::Grpc` in `ulo-grpc`, and by no other transport.
+pub trait Carried {}
+
 /// A route's call: extraction, the controller, the handler and the reply probe, run by `dispatch`
 /// after every guard admits.
 pub type HandlerFn = Arc<dyn Fn(HttpCx) -> BoxFuture<'static, Result<Response, BoxError>> + Send + Sync>;

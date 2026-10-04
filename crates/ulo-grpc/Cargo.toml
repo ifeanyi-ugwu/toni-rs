@@ -3,34 +3,35 @@ name = "ulo-grpc"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "gRPC transport adapter for the Ulo framework"
+description = "The gRPC transport for Ulo: handlers bound to generated method markers, an HTTP/2 server, status details, health, reflection and clients"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "grpc", "tonic", "framework", "adapter"]
-categories = ["network-programming"]
-
-[features]
-# TLS mirrors tonic's own backend choice rather than picking one: `tls_config`
-# needs a crypto provider, and which one is the deployment's call.
-tls-ring = ["tonic/tls-ring"]
-tls-aws-lc = ["tonic/tls-aws-lc"]
+keywords = ["ulo", "grpc", "tonic", "framework"]
+categories = ["network-programming", "web-programming"]
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-tonic = "0.14"
-# `grpc-status-details-bin` carries a `google.rpc.Status`, whose `details` ulo packs as
-# `google.protobuf` well-known types.
-tonic-types = "0.14"
-prost = "0.14"
-prost-types = "0.14"
-serde_json.workspace = true
+ulo = { path = "../ulo" }
+ulo-grpc-macros = { path = "../ulo-grpc-macros" }
+ulo-http = { path = "../ulo-http" }
+ulo-hyper-serve = { path = "../ulo-hyper-serve" }
+ulo-net = { path = "../ulo-net" }
+ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
-tower = { workspace = true, features = ["util", "limit"] }
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
-tokio-stream = { workspace = true, features = ["net"] }
-http.workspace = true
+futures-core.workspace = true
 futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+hyper = { workspace = true, features = ["server", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+prost.workspace = true
+prost-types.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+tonic = { workspace = true, features = ["server", "channel", "codegen"] }
+tonic-health.workspace = true
+tonic-prost.workspace = true
+tonic-reflection.workspace = true
+tonic-types.workspace = true
+tower.workspace = true
 tracing.workspace = true
-http-body = "1"
-async-trait.workspace = true

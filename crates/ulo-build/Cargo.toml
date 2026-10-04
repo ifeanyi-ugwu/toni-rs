@@ -3,7 +3,7 @@ name = "ulo-build"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Build-script companion for ulo-grpc: writes what each proto method carries beside the trait tonic generated"
+description = "Build-script code generation for ulo-grpc: messages, clients and the method markers handlers bind to, over a vendored protoc"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,15 +11,11 @@ keywords = ["ulo", "grpc", "tonic", "build", "codegen"]
 categories = ["development-tools::build-utils"]
 
 [features]
-# `compile_protos` finds protoc on its own. Opt out to use the one on PATH, or
-# the one `PROTOC` names.
+# A vendored `protoc`, so no system protoc is needed; a `PROTOC` environment variable wins over it.
 default = ["vendored-protoc"]
 vendored-protoc = ["dep:protoc-bin-vendored"]
 
 [dependencies]
-syn = { version = "2", features = ["full", "parsing", "printing"] }
-quote = "1"
-proc-macro2 = "1"
-prettyplease = "0.2"
-tonic-prost-build = "0.14"
-protoc-bin-vendored = { version = "3", optional = true }
+prost-build.workspace = true
+protoc-bin-vendored = { workspace = true, optional = true }
+tonic-prost-build.workspace = true

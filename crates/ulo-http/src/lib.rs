@@ -43,6 +43,14 @@ pub mod config;
 pub mod embed;
 pub mod middleware;
 
+/// The pre-dispatch stage as another transport runs it (X23): `ulo-grpc` builds
+/// [`Stage<Grpc>`](Stage) from `mounted.module_meta::<PreDispatch<Grpc>>()` in `prepare`, takes each
+/// method path's [`ScopedStage`], and runs both around its dispatcher with a [`StageHost`] that
+/// renders a failure as a gRPC status.
+pub mod stage {
+    pub use crate::pre_dispatch::{Rest, ScopedStage, Stage, StageHost};
+}
+
 #[doc(hidden)]
 pub mod __private;
 
@@ -62,7 +70,7 @@ pub use server::Server;
 pub use service::AppService;
 pub use sse::{Event, EventFieldError, EventId, EventName, Sse, SseItem};
 pub use tower_bridge::Service;
-pub use transport::{ClientAddr, Http, RequestHead};
+pub use transport::{ClientAddr, Http, HttpCarried, RequestHead};
 pub use upgrade::{UpgradeHandler, Upgrades};
 pub use ulo_http_macros::{delete, get, head, options, patch, post, put};
 

@@ -1,177 +1,78 @@
-/*!
-# ulo-graphql-juniper
+//! The juniper engine for `ulo-graphql` (transports DESIGN §7): [`Juniper<Q, M, Sub>`], bound under
+//! the SPI key, `Juniper<Query, Mutation, Subscription> as dyn Engine`.
+//!
+//! juniper's `Context` is a type the schema's root types name, so the adapter resolves
+//! `exec.get::<Q::Context>()` per call and hands it over as the context. The application's context
+//! holds an `ExecutionRef` field, through which [`dep`] reads. `Engine::subscribe` is built on
+//! `resolve_into_stream`.
 
-Juniper GraphQL integration for the [Ulo](https://github.com/ulo-rs/ulo) framework.
+use std::marker::PhantomData;
 
-Build type-safe GraphQL APIs with dependency injection, middleware, guards, and all Ulo features.
+use juniper::{DefaultScalarValue, GraphQLSubscriptionType, GraphQLTypeAsync, RootNode};
+use ulo::scope::Auto;
+use ulo::{BoxFuture, Construct, ConstructError, Dep, Dependencies, ExecutionRef, LookupError, Resolver};
+use ulo_graphql::{BoxStream, Engine, GqlRequest, GqlResponse};
 
-## Features
+/// The engine over the root node `RootNode<'static, Q, M, Sub>`, read as a `Dep`.
+pub struct Juniper<Q, M, Sub> {
+    pub(crate) _schema: PhantomData<fn() -> (Q, M, Sub)>,
+}
 
-- ✅ **Full Juniper support** - Use all Juniper features natively
-- ✅ **Dependency Injection** - Inject Ulo services into your context builders
-- ✅ **User-controlled context** - Build GraphQL context however you want
-- ✅ **Guards & Interceptors** - Use Ulo's guards and interceptors with GraphQL
-- ✅ **GraphQL Playground** - Built-in playground for development
-- ✅ **Zero overhead** - Compiles to native Juniper code
-- ✅ **Works with Axum & Actix** - HTTP server agnostic
+impl<Q, M, Sub> Construct for Juniper<Q, M, Sub>
+where
+    Q: GraphQLTypeAsync<DefaultScalarValue> + Send + Sync + 'static,
+    Q::TypeInfo: Send + Sync,
+    Q::Context: Send + Sync + 'static,
+    M: GraphQLTypeAsync<DefaultScalarValue, Context = Q::Context> + Send + Sync + 'static,
+    M::TypeInfo: Send + Sync,
+    Sub: GraphQLSubscriptionType<DefaultScalarValue, Context = Q::Context> + Send + Sync + 'static,
+    Sub::TypeInfo: Send + Sync,
+{
+    type Scope = Auto;
 
-## Quick Start
+    fn dependencies(d: &mut Dependencies) {
+        d.add::<Dep<RootNode<'static, Q, M, Sub>>>();
+    }
 
-```ignore
-use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_object};
-use ulo::{UloFactory, module};
-use ulo::http::HttpAdapter;
-use ulo_http_hyper::AxumAdapter;
-use ulo_graphql_juniper::{GraphQLModule, DefaultContextBuilder, DefaultContext};
-
-struct Query;
-
-#[graphql_object(context = DefaultContext)]
-impl Query {
-    fn hello() -> &'static str {
-        "Hello, world!"
+    async fn construct(r: &Resolver<'_>) -> Result<Self, ConstructError> {
+        let _ = r;
+        todo!()
     }
 }
 
-fn build_graphql_module() -> GraphQLModule<Query, EmptyMutation<DefaultContext>, EmptySubscription<DefaultContext>, DefaultContextBuilder> {
-    let schema = RootNode::new(
-        Query,
-        EmptyMutation::new(),
-        EmptySubscription::new(),
-    );
-    GraphQLModule::for_root(schema, DefaultContextBuilder)
-}
+impl<Q, M, Sub> Engine for Juniper<Q, M, Sub>
+where
+    Q: GraphQLTypeAsync<DefaultScalarValue> + Send + Sync + 'static,
+    Q::TypeInfo: Send + Sync,
+    Q::Context: Send + Sync + 'static,
+    M: GraphQLTypeAsync<DefaultScalarValue, Context = Q::Context> + Send + Sync + 'static,
+    M::TypeInfo: Send + Sync,
+    Sub: GraphQLSubscriptionType<DefaultScalarValue, Context = Q::Context> + Send + Sync + 'static,
+    Sub::TypeInfo: Send + Sync,
+{
+    fn execute(&self, req: GqlRequest, exec: ExecutionRef) -> BoxFuture<'static, GqlResponse> {
+        let _ = (req, exec);
+        todo!()
+    }
 
-#[module(
-    imports: [build_graphql_module()],
-    controllers: [],
-    providers: [],
-    exports: []
-)]
-impl AppModule {}
+    fn subscribe(&self, req: GqlRequest, exec: ExecutionRef) -> BoxStream<'static, GqlResponse> {
+        let _ = (req, exec);
+        todo!()
+    }
 
-#[tokio::main]
-async fn main() {
-    let mut app = UloFactory::new()
-        .create_with(AppModule)
-        .await.unwrap();
-    app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000)).unwrap();
-    app.start().await.unwrap();
-}
-```
+    fn sdl(&self) -> String {
+        todo!()
+    }
 
-Visit `http://localhost:3000/graphql` to use GraphQL Playground!
-
-## Custom Context with DI
-
-Build GraphQL context with access to Ulo's dependency injection:
-
-```ignore
-use ulo_graphql_juniper::{ContextBuilder, juniper};
-use ulo::injectable;
-use ulo::http::HttpRequest;
-use async_trait::async_trait;
-
-// Define your context type
-#[derive(Clone)]
-struct MyContext {
-    user_id: Option<i32>,
-    db: DatabaseService,
-}
-
-impl juniper::Context for MyContext {}
-
-// Define your context builder as a Ulo provider
-#[injectable]
-pub struct _MyContextBuilder {
-    #[inject]
-    auth_service: _AuthService,      // Injected by Ulo!
-    #[inject]
-    db_service: _DatabaseService,    // Injected by Ulo!
-}
-
-#[async_trait]
-impl ContextBuilder for _MyContextBuilder {
-    type Context = MyContext;
-
-    async fn build(&self, req: &HttpRequest) -> Self::Context {
-        MyContext {
-            user_id: self.auth_service.verify_token(req),
-            db: self.db_service.clone(),
-        }
+    /// juniper's `graphiql_source`.
+    fn playground_html(&self, endpoint: &str, subscriptions: Option<&str>) -> Option<String> {
+        let _ = (endpoint, subscriptions);
+        todo!()
     }
 }
 
-// Register in your module
-#[module(
-    imports: [],
-    controllers: [],
-    providers: [_AuthService, _DatabaseService, _MyContextBuilder],
-    exports: []
-)]
-pub struct AppModule;
-```
-
-## Accessing Context in Resolvers
-
-```ignore
-use juniper::{graphql_object, FieldResult};
-
-struct Query;
-
-#[graphql_object(context = MyContext)]
-impl Query {
-    fn me(context: &MyContext) -> FieldResult<User> {
-        // Get user from context (added by auth)
-        let user_id = context.user_id.ok_or("Not authenticated")?;
-        Ok(User { id: user_id })
-    }
-
-    fn user(context: &MyContext, id: i32) -> FieldResult<User> {
-        // Use DI service from context
-        context.db.find_user(id).ok_or("User not found")
-    }
-}
-```
-
-## Configuration
-
-### Change GraphQL Endpoint Path
-
-```ignore
-let graphql_module = GraphQLModule::for_root(schema, context_builder)
-    .with_path("/api/graphql");
-```
-
-### Enable/Disable Playground
-
-```ignore
-let graphql_module = GraphQLModule::for_root(schema, context_builder)
-    .with_playground(false);  // Disable in production
-```
-
-By default, playground is enabled in debug builds and disabled in release builds.
-*/
-
-mod context_builder;
-mod graphql_controller;
-mod graphql_module;
-mod graphql_service;
-mod graphql_service_factory;
-
-pub use context_builder::{ContextBuilder, DefaultContext, DefaultContextBuilder};
-pub use graphql_module::GraphQLModule;
-pub use graphql_service::GraphQLService;
-
-// Re-export juniper for convenience
-pub use juniper;
-
-/// Prelude module for convenient imports
-pub mod prelude {
-    pub use crate::context_builder::{ContextBuilder, DefaultContext, DefaultContextBuilder};
-    pub use crate::graphql_module::GraphQLModule;
-    pub use crate::graphql_service::GraphQLService;
-    pub use juniper::{
-        EmptyMutation, EmptySubscription, FieldResult, RootNode, graphql_object, graphql_value,
-    };
+/// `T` from the call's execution, through the context's `ExecutionRef`.
+pub async fn dep<T: ?Sized + Send + Sync + 'static>(ctx: &impl AsRef<ExecutionRef>) -> Result<Dep<T>, LookupError> {
+    let _ = ctx;
+    todo!()
 }

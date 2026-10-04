@@ -1,146 +1,69 @@
-//! # ulo-graphql-async-graphql
+//! The async-graphql engine for `ulo-graphql` (transports DESIGN §7): [`AsyncGraphql<S, C>`], bound
+//! under the SPI key, `AsyncGraphql<ApiSchema, GqlContext> as dyn Engine`.
 //!
-//! async-graphql integration for the Ulo framework.
-//!
-//! This crate provides seamless integration between [async-graphql](https://github.com/async-graphql/async-graphql)
-//! and the [Ulo](https://github.com/ulo-rs/ulo) web framework, enabling you to build
-//! type-safe GraphQL APIs with dependency injection, middleware, guards, and all Ulo features.
-//!
-//! ## Features
-//!
-//! - **Full async-graphql support** - Use all async-graphql features natively
-//! - **Dependency Injection** - Inject Ulo services into your context builders
-//! - **User-controlled context** - Build GraphQL context however you want
-//! - **Guards & Interceptors** - Use Ulo's guards and interceptors with GraphQL
-//! - **GraphQL Playground** - Built-in playground for development
-//! - **Zero overhead** - Compiles to native async-graphql code
-//!
-//! ## Quick Start
-//!
-//! ```ignore
-//! use ulo::{module, UloFactory};
-//! use ulo_http_hyper::AxumAdapter;
-//! use ulo_graphql_async_graphql::{GraphQLModule, DefaultContextBuilder, async_graphql::*};
-//!
-//! struct Query;
-//!
-//! #[Object]
-//! impl Query {
-//!     async fn hello(&self) -> &str {
-//!         "Hello, world!"
-//!     }
-//! }
-//!
-//! fn build_graphql_module()
-//! -> GraphQLModule<Query, EmptyMutation, EmptySubscription, DefaultContextBuilder> {
-//!     let schema = Schema::build(Query, EmptyMutation, EmptySubscription).finish();
-//!     GraphQLModule::for_root(schema, DefaultContextBuilder)
-//! }
-//!
-//! #[module(imports: [build_graphql_module()], controllers: [], providers: [], exports: [])]
-//! impl AppModule {}
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let mut app = UloFactory::new()
-//!         .create_with(AppModule)
-//!         .await
-//!         .unwrap();
-//!     app.use_http_adapter(AxumAdapter::new(), ("127.0.0.1", 3000)).unwrap();
-//!     app.start().await.unwrap();
-//! }
-//! ```
-//!
-//! ## Custom Context
-//!
-//! Build GraphQL context with access to Ulo's DI system:
-//!
-//! ```ignore
-//! use ulo_graphql_async_graphql::{ContextBuilder, async_graphql::Data};
-//! use ulo::http::HttpRequest;
-//! use ulo::injectable;
-//! use async_trait::async_trait;
-//!
-//! #[injectable]
-//! pub struct MyContextBuilder {
-//!     #[inject]
-//!     auth_service: AuthService,
-//!     #[inject]
-//!     db_pool: DatabasePool,
-//! }
-//!
-//! #[async_trait]
-//! impl ContextBuilder for MyContextBuilder {
-//!     async fn build(&self, req: &HttpRequest) -> Data {
-//!         let mut data = Data::default();
-//!
-//!         // Add HTTP request
-//!         data.insert(req.clone());
-//!
-//!         // Add user from auth service (DI!)
-//!         if let Some(user) = self.auth_service.verify_token(req) {
-//!             data.insert(user);
-//!         }
-//!
-//!         // Add database pool
-//!         data.insert(self.db_pool.clone());
-//!
-//!         data
-//!     }
-//! }
-//! ```
-//!
-//! ## Accessing Context in Resolvers
-//!
-//! ```ignore
-//! use async_graphql::{Object, Context, Result};
-//!
-//! struct Query;
-//!
-//! #[Object]
-//! impl Query {
-//!     async fn me(&self, ctx: &Context<'_>) -> Result<User> {
-//!         // Get user from context (added by auth middleware/guard)
-//!         let user = ctx.data::<User>()?;
-//!         Ok(user.clone())
-//!     }
-//!
-//!     async fn user(&self, ctx: &Context<'_>, id: i32) -> Result<User> {
-//!         // Get DI service from context
-//!         let db_pool = ctx.data::<DatabasePool>()?;
-//!         db_pool.find_user(id).await
-//!     }
-//! }
-//! ```
+//! The context type is a parameter of the adapter, since async-graphql takes context as
+//! `Request::data(D)` for any `D` and no adapter can know the application's by convention. Per
+//! call the adapter resolves `exec.get::<C>()` and inserts it with `Request::data`, and inserts the
+//! `ExecutionRef` itself as a second `data`, which [`dep`] reads.
 
-mod context_builder;
-mod graphql_controller;
-mod graphql_module;
-mod graphql_service;
-mod graphql_service_factory;
-mod subscription_context_builder;
-mod subscription_gateway;
-mod subscription_gateway_factory;
+use std::marker::PhantomData;
 
-// Re-export key types
-pub use context_builder::{ContextBuilder, DefaultContextBuilder};
-pub use graphql_module::GraphQLModule;
-pub use graphql_service::GraphQLService;
-pub use subscription_context_builder::{
-    DefaultSubscriptionContextBuilder, SubscriptionContextBuilder,
-};
+use async_graphql::{ObjectType, Schema, SubscriptionType};
+use ulo::scope::Auto;
+use ulo::{BoxFuture, Construct, ConstructError, Dep, Dependencies, ExecutionRef, Resolver};
+use ulo_graphql::{BoxStream, Engine, GqlRequest, GqlResponse};
 
-// Re-export async-graphql for convenience
-pub use async_graphql;
+/// The engine over schema `S`, read as `Dep<S>`, with context type `C`, resolved per call from the
+/// execution: `C` is an execution-scoped `#[injectable]` reading `Option<Ext<CurrentUser>>`,
+/// `Dep<Loaders>` and `Option<Dep<RequestHead>>`, the last `Some` over HTTP alone.
+pub struct AsyncGraphql<S, C> {
+    pub(crate) schema: Dep<S>,
+    pub(crate) _context: PhantomData<fn() -> C>,
+}
 
-/// Prelude module with common imports
-pub mod prelude {
-    pub use crate::{
-        ContextBuilder, DefaultContextBuilder, DefaultSubscriptionContextBuilder, GraphQLModule,
-        GraphQLService, SubscriptionContextBuilder,
-    };
-    pub use async_graphql::{
-        Context, EmptyMutation, EmptySubscription, Enum, InputObject, Interface, Object, Schema,
-        SimpleObject, Subscription, Union,
-    };
+impl<S: Send + Sync + 'static, C: Send + Sync + 'static> Construct for AsyncGraphql<S, C> {
+    type Scope = Auto;
+
+    fn dependencies(d: &mut Dependencies) {
+        d.add::<Dep<S>>();
+    }
+
+    async fn construct(r: &Resolver<'_>) -> Result<Self, ConstructError> {
+        let _ = r;
+        todo!()
+    }
+}
+
+impl<Q, M, Sub, C> Engine for AsyncGraphql<Schema<Q, M, Sub>, C>
+where
+    Q: ObjectType + 'static,
+    M: ObjectType + 'static,
+    Sub: SubscriptionType + 'static,
+    C: Send + Sync + 'static,
+{
+    fn execute(&self, req: GqlRequest, exec: ExecutionRef) -> BoxFuture<'static, GqlResponse> {
+        let _ = (req, exec, &self.schema);
+        todo!()
+    }
+
+    fn subscribe(&self, req: GqlRequest, exec: ExecutionRef) -> BoxStream<'static, GqlResponse> {
+        let _ = (req, exec);
+        todo!()
+    }
+
+    fn sdl(&self) -> String {
+        todo!()
+    }
+
+    /// async-graphql's `GraphiQLSource`.
+    fn playground_html(&self, endpoint: &str, subscriptions: Option<&str>) -> Option<String> {
+        let _ = (endpoint, subscriptions);
+        todo!()
+    }
+}
+
+/// `T` from the call's execution, inside a resolver: `ctx.data::<ExecutionRef>()?.get::<T>()`.
+pub async fn dep<T: ?Sized + Send + Sync + 'static>(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Dep<T>> {
+    let _ = ctx;
+    todo!()
 }

@@ -1,0 +1,22 @@
+[package]
+name = "ulo-hyper-serve"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The accept loop Ulo's socket-owning servers share: listeners, TLS handshakes, one task per connection, the drain"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "hyper", "server", "tls"]
+categories = ["network-programming", "web-programming::http-server"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+# `ConnInfo` and `TlsInfo`, what each accepted connection reports.
+ulo-http = { path = "../ulo-http" }
+ulo-net = { path = "../ulo-net" }
+http.workspace = true
+# `time`: the accept back-off and the TLS handshake timeout.
+tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
+tokio-rustls.workspace = true
+tracing.workspace = true

@@ -3,21 +3,16 @@ name = "ulo-graphql-juniper"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+description = "The juniper engine for Ulo's GraphQL bindings"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Juniper GraphQL integration for the Ulo framework"
-keywords = ["graphql", "juniper", "ulo", "web", "framework"]
-categories = ["web-programming", "asynchronous"]
+keywords = ["ulo", "graphql", "juniper"]
+categories = ["web-programming"]
 
 [dependencies]
-ulo = { path = "../ulo", version = "0.2.0", default-features = false }
-ulo-macros = { path = "../ulo-macros", version = "0.2.0" }
-juniper = "0.16"
-async-trait.workspace = true
-serde = { workspace = true, features = ["derive"] }
+ulo = { path = "../ulo" }
+ulo-graphql = { path = "../ulo-graphql" }
+futures-util.workspace = true
+juniper.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-ulo-http-hyper = { path = "../ulo-http-hyper", version = "0.1.0" }
-tokio = { workspace = true, features = ["full"] }

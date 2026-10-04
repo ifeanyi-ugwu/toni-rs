@@ -1,31 +1,16 @@
-// Tests: `tests/conformance.rs` implements `ulo_rpc_conformance::Broker`
-// and stamps out the shared RPC case set. It needs a live RabbitMQ from
-// testcontainers, so it is gated behind the `integration` feature; without
-// it the file compiles to nothing and cargo reports a clean run of none:
-//
-//     cargo test -p ulo-rpc-rabbitmq --features integration
-//
-// A case belongs in `ulo-rpc-conformance` when every transport owes it,
-// and here only when it is specific to this one.
-
-//! RabbitMQ (AMQP 0-9-1) transport for the Ulo RPC gateway.
+//! The RabbitMQ link for `ulo-rpc`, AMQP 0-9-1 (transports DESIGN §5.3): a queue per pattern
+//! through the default exchange, the payload as the body with AMQP headers, replies through
+//! `reply_to` and `correlation_id`. At-least-once with the ack after the handler completes, so
+//! handlers must be idempotent; ordered per queue with a single consumer; `Competing`; a
+//! per-consumer prefetch from the server's `max_inflight`, 64 under `Default` or `Unlimited`; the
+//! client channel in confirm mode with `mandatory` publishes, so `basic.return` maps to
+//! `Unavailable`; an unhandled event is `basic.reject`ed without requeue; the drain cancels the
+//! consumers (`basic.cancel`); `amqps://` selects TLS.
 //!
-//! Unlike Redis Pub/Sub, AMQP carries request-response natively: a message
-//! has a `reply_to` and `correlation_id`, and per-call metadata rides in the
-//! AMQP headers table. So there is no envelope to invent — the payload is raw
-//! `RpcData` bytes (as in NATS) and the addressing lives in the message
-//! properties.
-//!
-//! - [`RabbitMqAdapter`] — server side; declares one queue per registered
-//!   pattern (routed by the default exchange), consumes, and publishes replies
-//!   to the delivery's `reply_to` with the matching `correlation_id`.
-//! - [`RabbitMqClientTransport`] — client side; uses RabbitMQ direct reply-to
-//!   (`amq.rabbitmq.reply-to`), so request-response needs no real reply queue.
+//! ```ignore
+//! app.bind(ulo_rpc::Server::new(ulo_rpc_rabbitmq::RabbitMq::url("amqp://guest:guest@mq:5672/%2f")))
+//! ```
 
-mod rabbitmq_adapter;
-mod rabbitmq_client_transport;
-mod wire;
+mod link;
 
-pub use rabbitmq_adapter::RabbitMqAdapter;
-pub use rabbitmq_client_transport::RabbitMqClientTransport;
-pub use ulo::rpc::{RpcAdapter, RpcClient, RpcClientTransport};
+pub use link::{RabbitMq};

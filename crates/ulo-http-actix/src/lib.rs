@@ -1,34 +1,53 @@
-// Tests: conformance with the HTTP adapter SPI is proved once for all five
-// adapters in `integration-tests` — the `*_conformance` suites, each
-// instantiated per adapter, the WebSocket one aside. This crate's `tests/` covers only what is
-// actix's: the collected request body and the 256 KiB ceiling that comes
-// with it. actix serves no WebSocket at all.
-
-//! # ulo-http-actix
-//!
-//! Actix-web adapter for the Ulo framework.
-//!
-//! This crate provides an implementation of Ulo's `HttpAdapter` trait for the Actix-web framework,
-//! allowing you to use Actix-web as the HTTP server for your Ulo applications.
-//!
-//! ## Usage
+//! Runs a `ulo` application inside an actix-web server (transports DESIGN §3.8): a native
+//! embedding, the adapter implementing `HttpServiceFactory`, as a scope or the default service.
+//! The app's pipeline runs inside actix's single-threaded workers, so actix's per-core runtime
+//! model is kept.
 //!
 //! ```ignore
-//! use ulo_http_actix::ActixAdapter;
+//! let server = ulo_http_actix::Embedded::new().nested_at("/api");
+//! let embedded = server.handle();
+//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?.connect().await?.bind(server).listen().await?;
 //!
-//! #[actix_web::main]
-//! async fn main() {
-//!     let mut app = UloFactory::new()
-//!         .create_with(AppModule)
-//!         .await
-//!         .unwrap();
-//!     app.use_http_adapter(ActixAdapter::new(), ("127.0.0.1", 3000)).unwrap();
-//!     app.start().await.unwrap();
-//! }
+//! let host = {
+//!     let embedded = embedded.clone();
+//!     actix_web::HttpServer::new(move || actix_web::App::new().service(ulo_http_actix::scope("/api", &embedded)))
+//!         .bind(("0.0.0.0", 8080))?
+//! };
+//! ulo_http_actix::run(app, &embedded, host, ulo_tokio::shutdown_signal()).await?;
 //! ```
+//!
+//! actix's request payload is `!Send` while the app's body is `Send`, so the payload is pumped
+//! through a bounded channel from the worker-local task. `web::scope` leaves the path whole, so the
+//! adapter strips `.nested_at` itself. A `Connection: close` header is mapped onto the response
+//! head's connection-type flag. What it declares: the peer address from `peer_addr`; no upgrades;
+//! no miss forwarding; no host extensions, a value in actix's request store crossing through a
+//! `forward` copy over `HttpRequest`; no TLS info; streamed bodies through the pump; a dropped body
+//! observed at the pump's next failed write.
 
-mod actix_adapter;
+mod pump;
+mod run;
+mod service;
 
-pub use actix_adapter::ActixAdapter;
+use ulo_http::embed::{Embed, EmbedLimits};
 
-pub use ulo::http::HttpAdapter;
+pub use run::run;
+pub use service::{ActixScope, scope};
+
+/// The actix-web host.
+pub struct Actix;
+
+impl Embed for Actix {
+    const NAME: &'static str = "actix";
+
+    type HostRequest<'r> = actix_web::HttpRequest;
+
+    fn limits() -> EmbedLimits {
+        todo!()
+    }
+}
+
+/// The embedding server for actix-web, `ulo_http::embed::Embedded<Actix>`.
+pub type Embedded = ulo_http::embed::Embedded<Actix>;
+
+/// Its handle, `ulo_http::embed::Handle<Actix>`.
+pub type Handle = ulo_http::embed::Handle<Actix>;

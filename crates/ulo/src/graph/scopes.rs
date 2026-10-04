@@ -384,14 +384,15 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
     for handler in &graph.handlers {
         for read in input_reads(graph, handler) {
             let Some(decl) = graph.inputs.get(&read.input) else { continue };
-            if decl.seeder == handler.decl.transport {
+            if decl.seeders.contains(&handler.decl.transport) {
                 continue;
             }
+            let Some(&seeder) = decl.seeders.first() else { continue };
             errors.push(WiringError::InputNotSeeded {
                 handler: graph.handler_name(handler),
                 transport: handler.decl.transport,
                 input: read.input.name(BindingKind::Single),
-                seeder: decl.seeder,
+                seeder,
                 steps: read.steps,
             });
         }

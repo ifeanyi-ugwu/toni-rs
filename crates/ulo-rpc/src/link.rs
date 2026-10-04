@@ -1,0 +1,317 @@
+//! The link SPI, written without macros (transports DESIGN §5.3): what each RPC transport crate
+//! implements once, TCP, UDP, NATS, Redis, RabbitMQ, MQTT and Kafka.
+//!
+//! A link moves frames. `ulo_rpc::Server<L>` drives its server side, [`Link::listen`], and
+//! [`RpcClient`](crate::RpcClient) its client side, [`Link::connect`]; routing, execution, the
+//! four shapes, deadlines and cancellation are `ulo-rpc`'s. What differs per link is declared in
+//! [`Capabilities`] and asserted by `ulo-rpc-conformance`.
+
+use std::error::Error;
+use std::fmt;
+use std::future::Future;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use futures_core::stream::BoxStream;
+use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture, Shape};
+
+use crate::frame::Frame;
+
+/// One RPC transport's frame carriage.
+pub trait Link: Send + Sync + 'static {
+    /// The link's name, `LinkInfo::name` and a `Configure` error's: `tcp`, `nats`, ...
+    const NAME: &'static str;
+
+    fn capabilities(&self) -> Capabilities;
+
+    /// What can fail before any I/O: endpoint text, `Tls`, a broker URL. Called from
+    /// `Server::prepare`, with the app, whose root module's full type path
+    /// (`format!("{:#}", app.root().name())`) is the default competing-consumer group on NATS and
+    /// MQTT. A client's link reports the same failures from its first `connect`.
+    fn prepare(&mut self, app: &AppHandle) -> impl Future<Output = Result<(), BoxError>> + Send {
+        let _ = app;
+        async { Ok(()) }
+    }
+
+    /// Server side: subscribe to `patterns`, the mounted handlers' patterns. Called from
+    /// `Server::bind`, all-or-nothing: a failure leaves nothing subscribed.
+    fn listen(&self, patterns: &[Pattern]) -> impl Future<Output = Result<Inbound, BoxError>> + Send;
+
+    /// Client side: connect. `RpcClient` calls it lazily, on its first call.
+    fn connect(&self) -> impl Future<Output = Result<Outbound, BoxError>> + Send;
+
+    /// The link's own close signal, from `Server::drain`: TCP sends `goaway` on every connection,
+    /// NATS drains, AMQP cancels its consumers, MQTT unsubscribes, Kafka pauses and commits. The
+    /// inbound stream ends once nothing more will arrive.
+    fn drain(&self) -> impl Future<Output = ()> + Send;
+
+    /// Closes the link's connections, under the core's `close` bound.
+    fn close(&self) -> impl Future<Output = Result<(), BoxError>> + Send;
+
+    /// The addresses bound, for `App<Bound>::addresses()`, so port 0 reports the port chosen; a
+    /// broker link answers none.
+    fn bound(&self) -> Vec<BoundAddr> {
+        Vec::new()
+    }
+}
+
+/// What a link's server side delivers.
+pub type Inbound = BoxStream<'static, Delivery>;
+
+/// One frame arriving at the server, with where its replies go and how it is acknowledged.
+pub struct Delivery {
+    pub frame: Frame,
+    /// `None` for an event.
+    pub reply: Option<ReplyPath>,
+    pub ack: Ack,
+}
+
+/// Where the replies to one delivery go: the connection on TCP, the sender's address on UDP, the
+/// reply subject, queue, topic or channel on a broker. Cheap to clone, every clone the same path;
+/// a stream's items and its end go through it one by one.
+#[derive(Clone)]
+pub struct ReplyPath {
+    send: Arc<dyn Fn(Frame) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>,
+}
+
+impl ReplyPath {
+    pub fn new<F>(send: F) -> Self
+    where
+        F: Fn(Frame) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync + 'static,
+    {
+        ReplyPath { send: Arc::new(send) }
+    }
+
+    pub fn send(&self, frame: Frame) -> BoxFuture<'static, Result<(), BoxError>> {
+        (self.send)(frame)
+    }
+}
+
+impl fmt::Debug for ReplyPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReplyPath")
+    }
+}
+
+/// How one delivery is settled with the broker, once its handler completes: acknowledged, or
+/// rejected without requeue (an unhandled event, so it cannot loop on redelivery). A no-op off
+/// AMQP and Kafka. Dropped unsettled it sends nothing, and the broker redelivers the message once
+/// the consumer's channel closes.
+pub struct Ack {
+    settle: Mutex<Option<Box<dyn FnOnce(bool) + Send>>>,
+}
+
+impl Ack {
+    /// An acknowledgment that `settle` performs, `true` for `ack` and `false` for `reject`.
+    pub fn new(settle: impl FnOnce(bool) + Send + 'static) -> Self {
+        Ack { settle: Mutex::new(Some(Box::new(settle))) }
+    }
+
+    /// An acknowledgment with nothing to do, for a link whose broker acknowledges nothing.
+    pub fn none() -> Self {
+        Ack { settle: Mutex::new(None) }
+    }
+
+    pub fn ack(self) {
+        self.settle(true);
+    }
+
+    /// AMQP `basic.reject` with `requeue = false`, which routes to a dead-letter exchange when one
+    /// is configured; Kafka commits the offset.
+    pub fn reject(self) {
+        self.settle(false);
+    }
+
+    fn settle(&self, accepted: bool) {
+        let settle = self.settle.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(settle) = settle {
+            settle(accepted);
+        }
+    }
+}
+
+impl fmt::Debug for Ack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Ack")
+    }
+}
+
+/// A link's client side, from [`Link::connect`]: `send` publishes a frame on `pattern`, with the
+/// reply's correlation when one is expected, and `replies` yields every reply-lane frame for this
+/// client. A link with a miss signal fails `send` with [`NoDestination`]; one refusing a frame over
+/// its size with [`FrameTooLarge`].
+pub struct Outbound {
+    pub send: Box<dyn Fn(Pattern, Frame, Option<ReplyTo>) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>,
+    pub replies: BoxStream<'static, Frame>,
+}
+
+/// A request's reply correlation, which the link maps onto its own mechanism: the frame's `id` on
+/// TCP and UDP, an `_INBOX` subject, `correlation_id`, Correlation Data, a reply header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ReplyTo {
+    pub id: u64,
+}
+
+/// A pattern, as a handler declares it and a call names it: the subject, channel, queue or topic
+/// on a broker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Pattern(Arc<str>);
+
+impl Pattern {
+    pub fn new(pattern: impl Into<Arc<str>>) -> Self {
+        Pattern(pattern.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for Pattern {
+    fn from(pattern: &str) -> Self {
+        Pattern(Arc::from(pattern))
+    }
+}
+
+impl From<String> for Pattern {
+    fn from(pattern: String) -> Self {
+        Pattern(Arc::from(pattern))
+    }
+}
+
+/// What a link can do, read by `Server::prepare` and by the client, and asserted by the
+/// conformance suite in both directions. Built from [`Capabilities::new`] and its setters, since
+/// the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capabilities {
+    /// The codec carries raw bytes.
+    pub binary: bool,
+    /// The largest frame the link carries, `None` for no limit of its own.
+    pub max_frame: Option<u64>,
+    pub ordering: Ordering,
+    /// The call shapes the link carries; a handler of another shape is refused in `prepare`.
+    pub shapes: &'static [Shape],
+    /// The broker paces deliveries itself: AMQP prefetch, Kafka pause.
+    pub native_backpressure: bool,
+    pub delivery: DeliveryMode,
+    /// A request to a pattern nothing subscribes to is reported to the caller, which then answers
+    /// `Unavailable` with `reason: "no_destination"`; without it the caller's own `Timeout`.
+    pub miss_signal: bool,
+}
+
+/// Every call shape, for a link that carries them all.
+pub const ALL_SHAPES: &[Shape] = &[Shape::Unary, Shape::ServerStreaming, Shape::ClientStreaming, Shape::Bidi];
+
+/// Unary calls and events alone, UDP's.
+pub const UNARY_ONLY: &[Shape] = &[Shape::Unary];
+
+impl Capabilities {
+    /// A link delivering as `delivery`, carrying every shape, JSON, unordered, with no frame limit,
+    /// no native backpressure and no miss signal.
+    pub const fn new(delivery: DeliveryMode) -> Self {
+        Capabilities {
+            binary: false,
+            max_frame: None,
+            ordering: Ordering::Unordered,
+            shapes: ALL_SHAPES,
+            native_backpressure: false,
+            delivery,
+            miss_signal: false,
+        }
+    }
+
+    pub const fn binary(self, binary: bool) -> Self {
+        Capabilities { binary, ..self }
+    }
+
+    pub const fn max_frame(self, max_frame: Option<u64>) -> Self {
+        Capabilities { max_frame, ..self }
+    }
+
+    pub const fn ordering(self, ordering: Ordering) -> Self {
+        Capabilities { ordering, ..self }
+    }
+
+    pub const fn shapes(self, shapes: &'static [Shape]) -> Self {
+        Capabilities { shapes, ..self }
+    }
+
+    pub const fn native_backpressure(self, native_backpressure: bool) -> Self {
+        Capabilities { native_backpressure, ..self }
+    }
+
+    pub const fn miss_signal(self, miss_signal: bool) -> Self {
+        Capabilities { miss_signal, ..self }
+    }
+}
+
+/// How a request reaches two server instances listening on one pattern.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeliveryMode {
+    /// One instance takes each request: AMQP queues, Kafka consumer groups, a NATS queue group, an
+    /// MQTT shared subscription.
+    Competing,
+    /// Every instance receives each request: Redis Pub/Sub; the client drops a second reply.
+    FanOut,
+    /// The caller names the server: TCP and UDP.
+    Addressed,
+}
+
+/// The order a link keeps.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ordering {
+    /// No order: UDP.
+    Unordered,
+    /// Per connection: TCP.
+    PerConnection,
+    /// Per publisher and subject: NATS.
+    PerPublisher,
+    /// Per channel: Redis.
+    PerChannel,
+    /// Per queue with a single consumer: AMQP.
+    PerQueue,
+    /// Per topic and QoS: MQTT.
+    PerTopic,
+    /// Per partition: Kafka.
+    PerPartition,
+}
+
+/// A link's report that nothing listens on the pattern a request named: NATS no-responders, a
+/// Redis receiver count of zero, an AMQP `basic.return`, an MQTT PUBACK or PUBREC with reason
+/// 0x10. `RpcClient` answers it `Unavailable` with `reason: "no_destination"`.
+#[derive(Debug)]
+pub struct NoDestination {
+    pub pattern: String,
+}
+
+impl fmt::Display for NoDestination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "nothing listens on pattern `{}`", self.pattern)
+    }
+}
+
+impl Error for NoDestination {}
+
+/// A frame over the link's limit, refused before it is sent. `RpcClient` answers it `BadRequest`
+/// with `reason: "payload_too_large"`.
+#[derive(Debug)]
+pub struct FrameTooLarge {
+    pub size: u64,
+    pub limit: u64,
+}
+
+impl fmt::Display for FrameTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "a frame of {} bytes is over the link's limit of {} bytes", self.size, self.limit)
+    }
+}
+
+impl Error for FrameTooLarge {}

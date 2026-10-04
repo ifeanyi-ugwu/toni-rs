@@ -1,0 +1,19 @@
+[package]
+name = "ulo-grpc-macros"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The gRPC method attribute for Ulo, re-exported by ulo-grpc"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+ulo-handler-codegen = { path = "../ulo-handler-codegen" }
+proc-macro2.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["full"] }

@@ -1,0 +1,20 @@
+[package]
+name = "ulo-graphql-ws"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "GraphQL subscriptions for Ulo over graphql-transport-ws, a WebSocket gateway over any engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "graphql", "websocket", "subscriptions"]
+categories = ["web-programming::websocket"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-graphql = { path = "../ulo-graphql" }
+ulo-transport = { path = "../ulo-transport" }
+ulo-ws = { path = "../ulo-ws" }
+futures-util.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

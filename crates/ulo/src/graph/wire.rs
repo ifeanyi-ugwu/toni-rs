@@ -364,7 +364,7 @@ fn freeze(
         for input in inputs {
             graph.inputs.entry(input.key).or_insert_with(|| InputDecl {
                 key: input.key,
-                seeder: input.seeder,
+                seeders: vec![input.seeder],
                 origin: InputOrigin::Module {
                     module: names[index].clone(),
                     seeders: vec![input.seeder],
@@ -667,10 +667,15 @@ fn qualifier_of(key: Key) -> Qualifier {
 }
 
 /// `Transport::inputs` of `decl`'s transport, the first time a handler of that transport mounts
-/// (transports DESIGN §2.10, X4). Each key is recorded with the transport as its seeder and its
-/// origin, in `graph` and in `declared` for step 2. A module's own declaration of the same key
-/// with the same seeder is the same declaration; one with another seeder, another transport's
-/// declaration of the key, or a single binding under it is reported by step 2.
+/// (transports DESIGN §2.10, X4). Each key is recorded with the transport and every transport its
+/// `also_seeded_by` names as its seeders, and the transport as its origin, in `graph` and in
+/// `declared` for step 2 (X19).
+///
+/// A second transport's declaration of a key with an equal seeder set is the same declaration:
+/// `graph` keeps the first, whose origin a report names. A module's own declaration of the key
+/// naming one of the seeders is the same declaration too; one naming another seeder, another
+/// transport's declaration with a different seeder set, or a single binding under the key is
+/// reported by step 2.
 fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut HashSet<TypeName>, declared: &mut Vec<InputDecl>) {
     if !seen.insert(decl.transport) {
         return;
@@ -678,12 +683,20 @@ fn declare_transport_inputs(graph: &mut Graph, decl: &HandlerDecl, seen: &mut Ha
     let mut inputs = Inputs::new();
     (decl.inputs)(&mut inputs);
     for input in inputs.keys {
+        let mut seeders = vec![decl.transport];
+        seeders.extend(input.also.iter().copied().filter(|&seeder| seeder != decl.transport));
         let declaration = InputDecl {
             key: input.key,
-            seeder: decl.transport,
+            seeders,
             origin: InputOrigin::Transport { name: decl.transport, at: input.location },
         };
-        graph.inputs.entry(input.key).or_insert_with(|| declaration.clone());
+        let entry = graph.inputs.entry(input.key).or_insert_with(|| declaration.clone());
+        // An earlier module's declaration naming one of these seeders is this declaration, and
+        // carries every seeder, so the input check passes a handler of each.
+        let named = entry.seeders.iter().all(|seeder| declaration.seeders.contains(seeder));
+        if named && matches!(entry.origin, InputOrigin::Module { .. }) {
+            entry.seeders.clone_from(&declaration.seeders);
+        }
         declared.push(declaration);
     }
 }
@@ -855,12 +868,15 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
         }
     }
 
-    // A transport's declaration and a module's of the same key and seeder are one declaration;
-    // with another seeder, or beside another transport's or a single binding, the input has two
-    // sources and a handler of one of the transports would read it unseeded.
+    // A transport's declaration and a module's naming one of its seeders are one declaration, as
+    // are two transports' declarations with equal seeder sets (X19); with another seeder or set,
+    // or beside a single binding, the input has two sources and a handler of one of the
+    // transports would read it unseeded.
     for (index, input) in declared.transport_inputs.iter().enumerate() {
         let key = || input.key.name(BindingKind::Single);
-        for (module, other) in declared.inputs.iter().filter(|(_, other)| other.key == input.key && other.seeder != input.seeder) {
+        for (module, other) in
+            declared.inputs.iter().filter(|(_, other)| other.key == input.key && !input.seeders.contains(&other.seeder))
+        {
             let second = InputOrigin::Module {
                 module: graph.module_name(*module),
                 seeders: vec![other.seeder],
@@ -868,7 +884,9 @@ fn check_bindings(graph: &Graph, declared: &Declared, errors: &mut Vec<WiringErr
             };
             errors.push(WiringError::InputConflict { key: key(), first: input.origin.clone(), second });
         }
-        for other in declared.transport_inputs[..index].iter().filter(|other| other.key == input.key && other.seeder != input.seeder) {
+        for other in
+            declared.transport_inputs[..index].iter().filter(|other| other.key == input.key && !other.same_seeders(&input.seeders))
+        {
             errors.push(WiringError::InputConflict { key: key(), first: other.origin.clone(), second: input.origin.clone() });
         }
         // A binding under the key is reported once: by the module loop above when a module

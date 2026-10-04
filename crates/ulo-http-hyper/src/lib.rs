@@ -1,6 +1,7 @@
 //! The hyper backend for `ulo-http` (transports DESIGN §3.7), the reference server and the
-//! default: one `ulo_http::Backend` that owns the listeners. Each connection is served by hyper's
-//! connection builders, configured from the server's settings; each request is converted into a
+//! default: one `ulo_http::Backend` that owns the listeners. `ulo-hyper-serve`'s accept loop
+//! accepts and performs the TLS handshake; each connection is served by hyper's connection
+//! builders, configured from the server's settings, and each request is converted into a
 //! `ulo_http::Request` and answered by the `AppService`. `ulo-http` owns routing.
 //!
 //! ```ignore
@@ -20,7 +21,6 @@
 
 mod backend;
 mod convert;
-mod listener;
 
 pub use backend::Hyper;
 

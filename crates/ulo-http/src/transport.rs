@@ -23,6 +23,24 @@ impl Transport for Http {
     }
 }
 
+/// A transport whose requests are `http::Request`s, which the pre-dispatch stage runs for:
+/// [`PreDispatch<T>`](crate::PreDispatch) is bounded by it, so `m.meta::<PreDispatch<Ws>>()` is
+/// E0277 (X23). [`Http`] implements it here and `ulo_grpc::Grpc` in `ulo-grpc`; the two are the
+/// transports whose calls are HTTP requests.
+///
+/// Sealed through a doc-hidden supertrait in `ulo_http::__private`, which only those two
+/// implement.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no pre-dispatch stage",
+    label = "`PreDispatch<{Self}>` needs a transport whose calls are HTTP requests",
+    note = "the stage runs for `Http` and for `Grpc`; on WebSocket and RPC, guards and interceptors cover what middleware would"
+)]
+pub trait HttpCarried: Transport + crate::__private::Carried {}
+
+impl crate::__private::Carried for Http {}
+
+impl HttpCarried for Http {}
+
 /// The request line and headers, as an execution input: `Dep<RequestHead>` in an execution-scoped
 /// service. Read as `Option<Dep<RequestHead>>` in a service shared with another transport, where
 /// it is `None`.

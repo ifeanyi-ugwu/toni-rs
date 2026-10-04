@@ -3,33 +3,19 @@ name = "ulo-rpc-redis"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Redis Pub/Sub transport adapter for the Ulo RPC gateway"
+description = "The Redis link for Ulo RPC: Pub/Sub per pattern carrying the whole frame"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "redis", "rpc", "framework", "adapter"]
+keywords = ["ulo", "rpc", "redis"]
 categories = ["network-programming"]
 
-[features]
-# Gates tests that need a live Redis (via testcontainers + Docker).
-integration = []
-
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
-tokio = { workspace = true, features = ["full"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+ulo = { path = "../ulo" }
+ulo-rpc = { path = "../ulo-rpc" }
+bytes.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+redis = { workspace = true, features = ["connection-manager"] }
+tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
-futures = { workspace = true, features = ["async-await", "executor"] }
-
-[dev-dependencies]
-ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
-testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["redis"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-stream.workspace = true
-anyhow.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-ulo-macros = { path = "../ulo-macros" }

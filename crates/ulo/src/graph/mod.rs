@@ -165,8 +165,16 @@ pub(crate) enum Visible {
 #[derive(Clone)]
 pub(crate) struct InputDecl {
     pub(crate) key: Key,
-    pub(crate) seeder: TypeName,
+    /// Every transport that seeds the key, the declaring one first, each once (X19).
+    pub(crate) seeders: Vec<TypeName>,
     pub(crate) origin: InputOrigin,
+}
+
+impl InputDecl {
+    /// Whether `other` names the same transports, in any order.
+    pub(crate) fn same_seeders(&self, other: &[TypeName]) -> bool {
+        self.seeders.len() == other.len() && self.seeders.iter().all(|seeder| other.contains(seeder))
+    }
 }
 
 impl Graph {

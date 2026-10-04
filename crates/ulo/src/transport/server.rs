@@ -82,6 +82,14 @@ impl<T: Transport> Mounted<'_, T> {
         self.handlers
     }
 
+    /// The mounted handlers of another marker `U` (X20), for a server whose transport mounts
+    /// handlers under two markers: `ulo_ws::Server` reads its message handlers through
+    /// [`handlers`](Self::handlers) and the connect handlers `ulo-ws` mounts under `WsConnect`
+    /// here, pairing them by controller. Empty when no handler of `U` mounted.
+    pub fn handlers_of<U: Transport>(&self) -> Vec<MountedHandler<U>> {
+        mounted_handlers::<U>(&self.app)
+    }
+
     pub fn app(&self) -> &AppHandle {
         &self.app
     }
@@ -211,12 +219,19 @@ pub(crate) trait ErasedServer: Send + Sync + 'static {
 /// The graph's handlers for `T`, typed again, and the app's `Timer`. `listen()` refuses a
 /// transport on an app with no `Timer` before preparing it; this answers the same refusal rather
 /// than handing a server a clock it does not have.
-fn mounted_parts<T: Transport>(app: &AppHandle) -> Result<(Vec<MountedHandler<T>>, Arc<dyn Timer>), BoxError> {
+pub(crate) fn mounted_parts<T: Transport>(
+    app: &AppHandle,
+) -> Result<(Vec<MountedHandler<T>>, Arc<dyn Timer>), TimerMissing> {
     let Some(timer) = app.shared.config.timer.clone() else {
-        return Err(BoxError::from(TimerMissing { transport: TypeName::of::<T>() }));
+        return Err(TimerMissing { transport: TypeName::of::<T>() });
     };
+    Ok((mounted_handlers::<T>(app), timer))
+}
+
+/// The graph's handlers for `T`, typed again, in mount order.
+fn mounted_handlers<T: Transport>(app: &AppHandle) -> Vec<MountedHandler<T>> {
     let graph = app.shared.graph();
-    let handlers = graph
+    graph
         .handlers
         .iter()
         .filter(|h| h.decl.transport == TypeName::of::<T>())
@@ -224,8 +239,7 @@ fn mounted_parts<T: Transport>(app: &AppHandle) -> Result<(Vec<MountedHandler<T>
             let controller = graph.binding(h.controller).record.keys().next()?.name(BindingKind::Single);
             h.mounted(app.shared.module_ref(h.module), controller)
         })
-        .collect();
-    Ok((handlers, timer))
+        .collect()
 }
 
 impl<S: Server> ErasedServer for S {
@@ -235,14 +249,14 @@ impl<S: Server> ErasedServer for S {
 
     fn prepare<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {
         Box::pin(async move {
-            let (handlers, timer) = mounted_parts::<S::Transport>(app)?;
+            let (handlers, timer) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
             <S as Server>::prepare(self, Mounted { handlers: &handlers, app: app.clone(), timer }).await
         })
     }
 
     fn bind<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {
         Box::pin(async move {
-            let (handlers, timer) = mounted_parts::<S::Transport>(app)?;
+            let (handlers, timer) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
             <S as Server>::bind(self, Mounted { handlers: &handlers, app: app.clone(), timer }).await
         })
     }

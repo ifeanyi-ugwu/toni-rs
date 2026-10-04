@@ -1,6 +1,20 @@
 use std::any::{Any, TypeId, type_name};
 use std::sync::Arc;
 
+use crate::transport::Transport;
+
+/// A metadata type that means something on one transport alone, naming it (transports DESIGN
+/// §2.5, X24): `ulo_http::Timeout` and `ulo_http::BodyLimit` name `Http`.
+///
+/// Every transport's handler attribute probes each `#[meta(..)]` value at the concrete site, so a
+/// value naming another transport fails to compile where it is written, E0308 at the value with
+/// both transports in the message: `#[meta(Timeout::after(..))]` on an RPC handler is refused in
+/// an application that binds no HTTP server too. A type implementing no `TransportMetadata` is
+/// valid on every transport, so a user's own metadata needs no impl.
+pub trait TransportMetadata: Send + Sync + 'static {
+    type Transport: Transport;
+}
+
 /// The metadata declared on one handler with `#[meta(..)]`, on the method and on its controller
 /// impl (transports DESIGN §2.5).
 ///

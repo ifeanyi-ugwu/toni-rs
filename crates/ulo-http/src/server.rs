@@ -1,12 +1,12 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
-use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareError, Transport, TypeName};
+use futures_util::future::join_all;
+use ulo::{AppHandle, Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
+use ulo_transport::prepare::{Failures, zero_bound, zero_count};
 use ulo_transport::{Admission, Count};
 
 use crate::backend::{Backend, BackendLimits, HttpConfig};
@@ -36,6 +36,9 @@ pub struct Server<B: Backend> {
     /// Set by `prepare`, read by `bind`.
     pub(crate) prepared: Option<Prepared>,
     pub(crate) bound: Vec<BoundAddr>,
+    /// Every registered upgrade handler, once each, set by `prepare`: an upgraded connection has
+    /// left the backend, so `drain` and `close` reach it through its handler (X21).
+    pub(crate) upgrades: Vec<Arc<dyn UpgradeHandler>>,
 }
 
 /// What `prepare` built for `bind`.
@@ -54,7 +57,15 @@ impl<B: Backend + Default> Server<B> {
 
 impl<B: Backend> Server<B> {
     pub fn with_backend(endpoint: impl Into<EndpointSpec>, backend: B) -> Self {
-        Server { endpoints: vec![endpoint.into()], tls: None, config: HttpConfig::default(), backend, prepared: None, bound: Vec::new() }
+        Server {
+            endpoints: vec![endpoint.into()],
+            tls: None,
+            config: HttpConfig::default(),
+            backend,
+            prepared: None,
+            bound: Vec::new(),
+            upgrades: Vec::new(),
+        }
     }
 
     /// One more endpoint the same server listens on.
@@ -217,25 +228,40 @@ fn check_inherited(endpoints: &[Endpoint], failures: &mut Failures) {
     }
 }
 
-/// The paths every registered `UpgradeHandler` takes, parsed; two that would match the same
-/// requests are refused, as two gateways on one path are.
-fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Failures) -> Vec<(Pattern, Arc<dyn UpgradeHandler>)> {
-    let mut paths: Vec<(Pattern, Arc<dyn UpgradeHandler>)> = Vec::new();
+/// Every registered `UpgradeHandler`, once each, in collection order.
+fn upgrade_handlers(mounted: &Mounted<'_, Http>) -> Vec<Arc<dyn UpgradeHandler>> {
+    let mut handlers: Vec<Arc<dyn UpgradeHandler>> = Vec::new();
     for (_, upgrades) in mounted.module_meta::<Upgrades>() {
         for handler in &upgrades.handlers {
-            for path in handler.paths(mounted.app()) {
-                let pattern = match Pattern::parse(&path) {
-                    Ok(pattern) => pattern,
-                    Err(error) => {
-                        failures.push(format!("upgrade path: {error}"));
-                        continue;
-                    }
-                };
-                let clash = paths.iter().find(|(taken, _)| taken.conflicts(&pattern)).map(|(taken, _)| taken.to_string());
-                match clash {
-                    Some(taken) => failures.push(format!("two upgrade paths take the same requests: `{taken}` and `{pattern}`")),
-                    None => paths.push((pattern, Arc::clone(handler))),
+            if !handlers.iter().any(|seen| Arc::ptr_eq(seen, handler)) {
+                handlers.push(Arc::clone(handler));
+            }
+        }
+    }
+    handlers
+}
+
+/// The paths every registered `UpgradeHandler` takes, parsed; two that would match the same
+/// requests are refused, as two gateways on one path are.
+fn upgrade_paths(
+    mounted: &Mounted<'_, Http>,
+    handlers: &[Arc<dyn UpgradeHandler>],
+    failures: &mut Failures,
+) -> Vec<(Pattern, Arc<dyn UpgradeHandler>)> {
+    let mut paths: Vec<(Pattern, Arc<dyn UpgradeHandler>)> = Vec::new();
+    for handler in handlers {
+        for path in handler.paths(mounted.app()) {
+            let pattern = match Pattern::parse(&path) {
+                Ok(pattern) => pattern,
+                Err(error) => {
+                    failures.push(format!("upgrade path: {error}"));
+                    continue;
                 }
+            };
+            let clash = paths.iter().find(|(taken, _)| taken.conflicts(&pattern)).map(|(taken, _)| taken.to_string());
+            match clash {
+                Some(taken) => failures.push(format!("two upgrade paths take the same requests: `{taken}` and `{pattern}`")),
+                None => paths.push((pattern, Arc::clone(handler))),
             }
         }
     }
@@ -245,33 +271,21 @@ fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Failures) -> Vec<(P
 /// Each timeout set to `Bound::After(Duration::ZERO)`, which would end what it times before it
 /// could begin. `Bound::Unbounded` is the spelling of no timeout.
 fn check_zero_timeouts(config: &HttpConfig, failures: &mut Failures) {
-    let timeouts = [
-        ("header_timeout", config.header_timeout, "close every connection before its first request head"),
-        ("handshake_timeout", config.handshake_timeout, "drop every TLS connection before its handshake"),
-        ("timeout_grace", config.timeout_grace, "send the 504 before any error handler could answer a route timeout"),
-    ];
-    for (setting, bound, effect) in timeouts {
-        if bound == Bound::After(Duration::ZERO) {
-            failures.push(format!(
-                "`.{setting}(Bound::After(Duration::ZERO))` would {effect}; write `Bound::Unbounded` to turn the timeout off"
-            ));
-        }
-    }
+    failures.extend(zero_bound("header_timeout", config.header_timeout, "close every connection before its first request head"));
+    failures.extend(zero_bound("handshake_timeout", config.handshake_timeout, "drop every TLS connection before its handshake"));
+    failures.extend(zero_bound(
+        "timeout_grace",
+        config.timeout_grace,
+        "send the 504 before any error handler could answer a route timeout",
+    ));
 }
 
 /// Each count set to `Count::Max(0)`, which would refuse everything it counts. A server that must
 /// refuse traffic for a while does it with a pre-dispatch entry it can switch.
 /// `Count::Unlimited` is the spelling of no limit.
 fn check_zero_counts(config: &HttpConfig, failures: &mut Failures) {
-    let counts = [
-        ("max_inflight", config.max_inflight, "shed every request"),
-        ("max_concurrent_streams", config.max_concurrent_streams, "let no HTTP/2 stream open"),
-    ];
-    for (setting, count, effect) in counts {
-        if count == Count::Max(0) {
-            failures.push(format!("`.{setting}(Count::Max(0))` would {effect}; write `Count::Unlimited` to remove the limit"));
-        }
-    }
+    failures.extend(zero_count("max_inflight", config.max_inflight, "shed every request"));
+    failures.extend(zero_count("max_concurrent_streams", config.max_concurrent_streams, "let no HTTP/2 stream open"));
 }
 
 /// What both HTTP servers build in `prepare` from the app, [`Server`] over a backend and
@@ -280,8 +294,8 @@ fn check_zero_counts(config: &HttpConfig, failures: &mut Failures) {
 /// when the stage or the route table failed.
 ///
 /// `mount` is the embedding's normalized prefix and `forward` its `Miss::Forward`; a backend
-/// passes `""` and `false`. Answers whether any upgrade path is registered, for the caller's own
-/// `upgrades` limit.
+/// passes `""` and `false`. Every registered upgrade handler's `prepare` runs here, its failure
+/// joining the others (X21).
 ///
 /// After a failed stage the route table is still built against an empty one, for its own
 /// failures. The service is then `None`, since every route's scoped stage in it reads as empty.
@@ -291,7 +305,7 @@ pub(crate) fn prepare_app(
     mount: &str,
     forward: bool,
     failures: &mut Failures,
-) -> (Option<AppService>, bool) {
+) -> PreparedApp {
     let (stage, staged) = match Stage::build(mounted.module_meta::<PreDispatch>()) {
         Ok(stage) => (stage, true),
         Err(errors) => {
@@ -308,7 +322,13 @@ pub(crate) fn prepare_app(
     };
     check_zero_timeouts(config, failures);
     check_zero_counts(config, failures);
-    let upgrades = upgrade_paths(mounted, failures);
+    let handlers = upgrade_handlers(mounted);
+    for handler in &handlers {
+        if let Err(error) = handler.prepare(mounted.app()) {
+            failures.push_error(error);
+        }
+    }
+    let upgrades = upgrade_paths(mounted, &handlers, failures);
     let upgrading = !upgrades.is_empty();
     let service = router.map(|router| {
         let config = Arc::new(config.clone());
@@ -324,113 +344,43 @@ pub(crate) fn prepare_app(
             forward,
         })
     });
-    (service, upgrading)
+    PreparedApp { service, upgrading, handlers }
 }
 
-/// The failures of one `prepare`, in the order found.
-#[derive(Default)]
-pub(crate) struct Failures(Vec<Failure>);
+/// What [`prepare_app`] built.
+pub(crate) struct PreparedApp {
+    /// `None` when the stage or the route table failed.
+    pub(crate) service: Option<AppService>,
+    /// Whether any upgrade path is registered, for the caller's own `upgrades` limit.
+    pub(crate) upgrading: bool,
+    /// Every registered upgrade handler, once each, whose lifecycle the caller drives.
+    pub(crate) handlers: Vec<Arc<dyn UpgradeHandler>>,
+}
 
-impl Failures {
-    pub(crate) fn push(&mut self, failure: impl Into<Failure>) {
-        self.0.push(failure.into());
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// The error `prepare` answers, which `listen()` reports as one `StartupError::Configure`
-    /// entry for the HTTP transport. It names every type the failures name, so the report writes
-    /// each failure against the types of every transport's failures: a type prints by its last
-    /// path segment unless another type in the report prints alike, as in the core's wiring
-    /// report.
-    pub(crate) fn into_error(self) -> PrepareError {
-        let names: Vec<TypeName> = self.0.iter().flat_map(Failure::names).copied().collect();
-        PrepareError::new(names, move |full| {
-            let names = Names { full };
-            match self.0.as_slice() {
-                [] => "the route table could not be built".to_owned(),
-                [failure] => failure.text(&names),
-                failures => {
-                    let mut text = format!("{} problems:", failures.len());
-                    for failure in failures {
-                        text.push_str("\n  - ");
-                        text.push_str(&failure.text(&names));
-                    }
-                    text
-                }
-            }
-        })
+/// Each upgrade handler's `bound`, once the server has bound.
+pub(crate) fn upgrades_bound(handlers: &[Arc<dyn UpgradeHandler>], app: &AppHandle) {
+    for handler in handlers {
+        handler.bound(app);
     }
 }
 
-impl<F: Into<Failure>> Extend<F> for Failures {
-    fn extend<I: IntoIterator<Item = F>>(&mut self, failures: I) {
-        self.0.extend(failures.into_iter().map(Into::into));
-    }
+/// Each upgrade handler's `drain`, concurrently.
+pub(crate) async fn upgrades_drain(handlers: &[Arc<dyn UpgradeHandler>], token: &DrainToken) {
+    join_all(handlers.iter().map(|handler| handler.drain(token.clone()))).await;
 }
 
-/// One failure of a `prepare`. One naming types is written only when the report is, since
-/// whether a type prints by its full path depends on every other type the report names.
-pub(crate) enum Failure {
-    Plain(String),
-    Naming { names: Vec<TypeName>, text: Box<dyn Fn(&Names<'_>) -> String + Send + Sync> },
-}
-
-impl Failure {
-    /// A failure naming the types in `names`, each written in `text` through [`Names::of`].
-    pub(crate) fn naming(names: Vec<TypeName>, text: impl Fn(&Names<'_>) -> String + Send + Sync + 'static) -> Failure {
-        Failure::Naming { names, text: Box::new(text) }
-    }
-
-    fn names(&self) -> &[TypeName] {
-        match self {
-            Failure::Plain(_) => &[],
-            Failure::Naming { names, .. } => names,
-        }
-    }
-
-    fn text(&self, names: &Names<'_>) -> String {
-        match self {
-            Failure::Plain(text) => text.clone(),
-            Failure::Naming { text, .. } => text(names),
-        }
-    }
-}
-
-impl From<String> for Failure {
-    fn from(text: String) -> Failure {
-        Failure::Plain(text)
-    }
-}
-
-impl fmt::Debug for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let full = TypeName::colliding(self.names().iter().copied());
-        f.write_str(&self.text(&Names { full: &full }))
-    }
-}
-
-/// How one report writes a type: the names whose short form another type in the report shares.
-pub(crate) struct Names<'a> {
-    full: &'a HashSet<TypeName>,
-}
-
-impl Names<'_> {
-    /// `User`, or `my_app::User` where another type in the report also prints as `User`.
-    pub(crate) fn of(&self, name: TypeName) -> String {
-        if self.full.contains(&name) { format!("{name:#}") } else { name.to_string() }
-    }
+/// Each upgrade handler's `close`, concurrently.
+pub(crate) async fn upgrades_close(handlers: &[Arc<dyn UpgradeHandler>]) {
+    join_all(handlers.iter().map(|handler| handler.close())).await;
 }
 
 impl<B: Backend> ulo::Server for Server<B> {
     type Transport = Http;
 
     async fn prepare(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let mut failures = Failures::default();
+        let mut failures = Failures::new();
         let limits = B::limits();
-        let (service, upgrading) = prepare_app(&mounted, &self.config, "", false, &mut failures);
+        let PreparedApp { service, upgrading, handlers } = prepare_app(&mounted, &self.config, "", false, &mut failures);
         if upgrading && !limits.upgrades {
             failures.push(format!(
                 "the {} backend declares `upgrades: false`, so it cannot hand a WebSocket upgrade to a gateway on its port; \
@@ -460,11 +410,11 @@ impl<B: Backend> ulo::Server for Server<B> {
             return Err(Box::new(failures.into_error()));
         };
         self.prepared = Some(Prepared { endpoints, tls, service });
+        self.upgrades = handlers;
         Ok(())
     }
 
     async fn bind(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
-        let _ = mounted;
         let Some(Prepared { endpoints, tls, service }) = self.prepared.take() else {
             return Err(BoxError::from("the HTTP server was bound before it was prepared"));
         };
@@ -473,6 +423,7 @@ impl<B: Backend> ulo::Server for Server<B> {
         let secure = tls.is_some();
         self.backend.bind(listeners, tls, service, &self.config).await?;
         self.bound = addrs.into_iter().map(|addr| BoundAddr::new(<Http as Transport>::KEY, addr).tls(secure)).collect();
+        upgrades_bound(&self.upgrades, mounted.app());
         Ok(())
     }
 
@@ -480,13 +431,15 @@ impl<B: Backend> ulo::Server for Server<B> {
         self.backend.serve().await
     }
 
+    /// The backend's drain and every upgrade handler's, concurrently: the handlers hold the
+    /// connections that have left the backend.
     async fn drain(&self, token: DrainToken) {
-        let _ = token;
-        self.backend.drain().await
+        futures_util::future::join(self.backend.drain(), upgrades_drain(&self.upgrades, &token)).await;
     }
 
     async fn close(&self) -> Result<(), BoxError> {
-        self.backend.close().await
+        let (closed, ()) = futures_util::future::join(self.backend.close(), upgrades_close(&self.upgrades)).await;
+        closed
     }
 
     fn bound(&self) -> Vec<BoundAddr> {

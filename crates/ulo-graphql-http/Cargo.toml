@@ -1,0 +1,20 @@
+[package]
+name = "ulo-graphql-http"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "GraphQL over HTTP for Ulo: the endpoint controller, its status rules and the playground"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "graphql", "http", "framework"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-graphql = { path = "../ulo-graphql" }
+ulo-http = { path = "../ulo-http" }
+ulo-transport = { path = "../ulo-transport" }
+http.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

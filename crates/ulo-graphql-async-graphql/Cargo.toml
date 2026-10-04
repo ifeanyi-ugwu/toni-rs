@@ -3,24 +3,16 @@ name = "ulo-graphql-async-graphql"
 version = "0.1.0"
 edition.workspace = true
 rust-version = "1.89"
-description = "async-graphql integration for Ulo framework"
+description = "The async-graphql engine for Ulo's GraphQL bindings"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["graphql", "async-graphql", "ulo", "web", "framework"]
-categories = ["web-programming", "asynchronous"]
+keywords = ["ulo", "graphql", "async-graphql"]
+categories = ["web-programming"]
 
 [dependencies]
-ulo = { path = "../ulo", version = "0.2.0", default-features = false }
-ulo-macros = { path = "../ulo-macros", version = "0.2.0" }
-async-graphql = "7.0"
-futures.workspace = true
-tokio = { workspace = true, features = ["rt"] }
-async-trait.workspace = true
-serde = { workspace = true, features = ["derive"] }
+ulo = { path = "../ulo" }
+ulo-graphql = { path = "../ulo-graphql" }
+async-graphql = { workspace = true, features = ["graphiql"] }
+futures-util.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-ulo-http-hyper = { path = "../ulo-http-hyper" }
-reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["full"] }

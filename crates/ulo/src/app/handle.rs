@@ -6,7 +6,7 @@ use crate::app::load;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, DispatchStage, LoadError, LookupError, Shutdown, ShutdownError};
+use crate::error::{Closed, DispatchStage, LoadError, LookupError, Shutdown, ShutdownError, TimerMissing};
 use crate::execution::notify::Draining;
 use crate::execution::{ExecOptions, Execution};
 use crate::lifecycle::phase::Phase as Stage;
@@ -16,8 +16,11 @@ use crate::module::handle::ModuleRef;
 use crate::redact::{Redacted, redact};
 use crate::signal::Signal;
 use crate::timer::BoxError;
+use crate::transport::Transport;
+use crate::transport::controller::MountedHandler;
 use crate::transport::handler::HandlerInfo;
 use crate::transport::pipeline::caught;
+use crate::transport::server::mounted_parts;
 
 /// A `Clone + Send + Sync` view of the app's shared state, available from `Connected` on.
 ///
@@ -108,6 +111,17 @@ impl AppHandle {
     /// metadata, in the order the controllers mounted them (transports DESIGN §2.5, X3).
     pub fn handlers(&self) -> Vec<Arc<HandlerInfo>> {
         self.shared.graph().handlers.iter().map(|handler| Arc::clone(&handler.info)).collect()
+    }
+
+    /// The mounted handlers of transport `T`, with their modules, enhancer tiers and handler
+    /// values, as a `Server<Transport = T>` receives them through `Mounted` (X20). For code holding
+    /// an `AppHandle` alone: the upgrade handler on the HTTP server's port finds a same-port
+    /// gateway's handlers through it.
+    ///
+    /// Refused as `listen()` refuses a transport on an app with no `Timer`, since a handler's call
+    /// needs the clock its deadlines run on.
+    pub fn mounted<T: Transport>(&self) -> Result<Vec<MountedHandler<T>>, TimerMissing> {
+        mounted_parts::<T>(self).map(|(handlers, _)| handlers)
     }
 
     /// The root module, whose visibility a lookup naming no module uses. A transport opens an

@@ -3,24 +3,21 @@ name = "ulo-http-actix"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Actix-web adapter for the Ulo framework"
+description = "Runs a Ulo application inside an actix-web server, as a scope or the default service"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "actix", "actix-web", "web", "framework", "adapter"]
+keywords = ["ulo", "actix", "embedding", "web"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-actix-web = "4"
-tracing.workspace = true
-http.workspace = true
-http-body-util.workspace = true
-serde_json.workspace = true
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
+actix-http.workspace = true
+actix-service.workspace = true
+actix-web.workspace = true
+bytes.workspace = true
 futures-util.workspace = true
+http.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
-ulo-macros = { path = "../ulo-macros" }
+tracing.workspace = true

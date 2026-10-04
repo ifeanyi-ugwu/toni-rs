@@ -1,0 +1,19 @@
+[package]
+name = "ulo-http-axum"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Runs a Ulo application inside an axum server, nested under a path or as the fallback"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "axum", "embedding", "web"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
+axum = { workspace = true, features = ["tokio", "http1", "http2", "original-uri"] }
+http.workspace = true
+tower.workspace = true
+tracing.workspace = true

@@ -119,7 +119,7 @@ impl MountFn<'_> {
         let call = call_ident();
         let call_closure = call_closure(self.sig, self.paths);
         let handler_value = &self.handler_value;
-        let meta = metadata(&self.tokens.meta);
+        let meta = metadata(&self.tokens.meta, self.paths);
         let dependencies = dependencies(self.sig, self.paths);
         let route = self.route.as_ref().map(|route| quote!(.route(#route)));
         let shape = self.shape.as_ref().map(|shape| quote!(.shape(#shape)));
@@ -258,22 +258,43 @@ pub fn dependencies(sig: &HandlerSig, paths: &Paths) -> TokenStream {
 /// A block evaluating to the handler's `::ulo::Metadata`: `controller(expr)` per impl-level
 /// declaration and `method(expr)` per method-level one, each spanned at its expression and
 /// compiled under its gates, built once when the handler mounts.
-pub fn metadata(meta: &MetaTokens) -> TokenStream {
+///
+/// Each value first passes the transport probe (X24), spanned at the value and under the same
+/// gates, so a metadata type naming another transport fails E0308 where it is written:
+///
+/// ```text
+/// let __ulo_value = <expr>;
+/// let (): () = (&&&::ulo::__private::MetaProbe::<Marker, _>::new(&__ulo_value)).check();
+/// __ulo_meta.method(__ulo_value);
+/// ```
+pub fn metadata(meta: &MetaTokens, paths: &Paths) -> TokenStream {
+    let core = &paths.core;
+    let marker = &paths.marker;
     let metadata = Ident::new("__ulo_meta", Span::mixed_site());
+    let value = Ident::new("__ulo_value", Span::mixed_site());
     let declare = |tier: &str, declared: &MetaExpr| {
         let MetaExpr { gates, expr } = declared;
         let tier = Ident::new(tier, expr.span());
+        let probe = quote_spanned! {expr.span()=>
+            let (): () = (&&&#core::__private::MetaProbe::<#marker, _>::new(&#value)).check();
+        };
         quote_spanned! {expr.span()=>
             #(#gates)*
-            #metadata.#tier(#expr);
+            {
+                let #value = #expr;
+                #probe
+                #metadata.#tier(#value);
+            }
         }
     };
     let controller = meta.controller.iter().map(|declared| declare("controller", declared));
     let method = meta.method.iter().map(|declared| declare("method", declared));
     quote! {
         {
+            #[allow(unused_imports)]
+            use #core::__private::{MetaAny as _, MetaOther as _, MetaSame as _};
             #[allow(unused_mut)]
-            let mut #metadata = ::ulo::Metadata::new();
+            let mut #metadata = #core::Metadata::new();
             #(#controller)*
             #(#method)*
             #metadata

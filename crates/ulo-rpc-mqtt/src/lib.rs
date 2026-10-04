@@ -1,33 +1,15 @@
-// Tests: `tests/conformance.rs` implements `ulo_rpc_conformance::Broker`
-// and stamps out the shared RPC case set. It needs a live MQTT broker from
-// testcontainers, so it is gated behind the `integration` feature; without
-// it the file compiles to nothing and cargo reports a clean run of none:
-//
-//     cargo test -p ulo-rpc-mqtt --features integration
-//
-// A case belongs in `ulo-rpc-conformance` when every transport owes it,
-// and here only when it is specific to this one.
-
-//! MQTT v5 transport for the Ulo RPC gateway.
+//! The MQTT v5 link for `ulo-rpc` (transports DESIGN §5.3): a topic per pattern, the payload as
+//! the body with headers as user properties, replies through the Response Topic and Correlation
+//! Data properties. QoS configurable; ordered per topic and QoS; the maximum packet size from
+//! CONNACK; `Competing` through `$share/<group>/`, the group the application's root module's full
+//! type path unless `.group(..)` names one, and a CONNACK announcing no shared subscriptions fails
+//! `bind`; PUBACK or PUBREC 0x10 maps to `Unavailable` at QoS 1 and 2, and a miss at QoS 0 is the
+//! client's `Timeout`; the drain unsubscribes; `mqtts://` selects TLS.
 //!
-//! MQTT v5 carries request-response natively: a PUBLISH can name a
-//! `response_topic` and `correlation_data`, and per-call metadata rides in the
-//! v5 `user_properties`. So there is no envelope — the body is raw `RpcData`
-//! bytes and the addressing lives in the PUBLISH properties.
-//!
-//! Both halves drive a rumqttc event loop: the loop must be polled
-//! continuously for queued publishes to transmit and for incoming messages
-//! (requests on the server, replies on the client) to arrive.
-//!
-//! - [`MqttAdapter`] — server side; subscribes one topic per registered
-//!   pattern and publishes replies to the request's `response_topic`.
-//! - [`MqttClientTransport`] — client side; subscribes a private reply topic
-//!   and routes replies back by `correlation_data`.
+//! ```ignore
+//! app.bind(ulo_rpc::Server::new(ulo_rpc_mqtt::Mqtt::url("mqtt://broker:1883")))
+//! ```
 
-mod mqtt_adapter;
-mod mqtt_client_transport;
-mod wire;
+mod link;
 
-pub use mqtt_adapter::MqttAdapter;
-pub use mqtt_client_transport::MqttClientTransport;
-pub use ulo::rpc::{RpcAdapter, RpcClient, RpcClientTransport};
+pub use link::{Mqtt, QoS};

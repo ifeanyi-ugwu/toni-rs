@@ -2,29 +2,17 @@
 name = "ulo-http-salvo"
 version = "0.1.0"
 edition.workspace = true
-rust-version = "1.92"
-description = "Salvo adapter for the Ulo framework"
+description = "Runs a Ulo application inside a salvo server, nested under a path or as the catch-all"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "salvo", "web", "framework", "adapter"]
+keywords = ["ulo", "salvo", "embedding", "web"]
 categories = ["web-programming::http-server"]
+rust-version = "1.92"
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-salvo = { version = "0.92", features = ["websocket"] }
-tokio = { workspace = true, features = ["full"] }
-tracing.workspace = true
-serde_json.workspace = true
-futures-util.workspace = true
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
 http.workspace = true
-http-body-util.workspace = true
-bytes.workspace = true
-
-[dev-dependencies]
-reqwest = { workspace = true, features = ["json"] }
-tokio-tungstenite.workspace = true
-ulo-macros = { path = "../ulo-macros" }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-futures-util.workspace = true
+salvo = { workspace = true, features = ["server", "http1", "http2"] }
+tracing.workspace = true

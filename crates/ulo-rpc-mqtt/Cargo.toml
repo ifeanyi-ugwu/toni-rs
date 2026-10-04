@@ -3,32 +3,19 @@ name = "ulo-rpc-mqtt"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "MQTT v5 transport adapter for the Ulo RPC gateway"
+description = "The MQTT v5 link for Ulo RPC: shared subscriptions, Response Topic and Correlation Data"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "mqtt", "rpc", "framework", "adapter"]
+keywords = ["ulo", "rpc", "mqtt"]
 categories = ["network-programming"]
 
-[features]
-# Gates tests that need a live MQTT broker (via testcontainers + Docker).
-integration = []
-
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-rumqttc = "0.25"
-tokio = { workspace = true, features = ["full"] }
-serde_json.workspace = true
+ulo = { path = "../ulo" }
+ulo-rpc = { path = "../ulo-rpc" }
+bytes.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+rumqttc.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
 tracing.workspace = true
-futures = { workspace = true, features = ["async-await", "executor"] }
-
-[dev-dependencies]
-ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
-testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["mosquitto"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-stream.workspace = true
-anyhow.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-ulo-macros = { path = "../ulo-macros" }

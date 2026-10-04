@@ -5,8 +5,10 @@
 //! transport records, empty, and each transport records its own: HTTP `http.request.method`,
 //! `http.route`, `url.path`, `url.scheme`, `http.response.status_code`; RPC `rpc.system` (`"ulo"`),
 //! `rpc.method` and, on a broker, `messaging.system`; gRPC `rpc.system = "grpc"`, `rpc.service`,
-//! `rpc.method`, `rpc.grpc.status_code`. The span's display name, `GET /users/{id}` or
-//! `users.v1.UserService/GetUser`, is the `otel.name` field. Every span carries `ulo.transport`
+//! `rpc.method`, `rpc.grpc.status_code`; WebSocket, which has no convention of its own, `ws.event`
+//! on a message's span and `url.path` on the connect phase's. The span's display name,
+//! `GET /users/{id}`, `users.v1.UserService/GetUser` or the event `chat.send`, is the `otel.name`
+//! field. Every span carries `ulo.transport`
 //! (the transport's key) and `ulo.handler`.
 
 use tracing::Span;
@@ -25,6 +27,7 @@ pub const RPC_SERVICE: &str = "rpc.service";
 pub const RPC_METHOD: &str = "rpc.method";
 pub const RPC_GRPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const MESSAGING_SYSTEM: &str = "messaging.system";
+pub const WS_EVENT: &str = "ws.event";
 
 /// The span for one call: `name` as `otel.name`, `transport` as `ulo.transport`, `handler` as
 /// `ulo.handler` when a handler matched, every other field above declared empty for the transport
@@ -47,5 +50,6 @@ pub fn call(transport: &'static str, name: &str, handler: Option<&str>) -> Span 
         rpc.method = Empty,
         rpc.grpc.status_code = Empty,
         messaging.system = Empty,
+        ws.event = Empty,
     )
 }

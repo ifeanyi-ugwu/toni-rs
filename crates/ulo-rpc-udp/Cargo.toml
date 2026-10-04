@@ -3,19 +3,19 @@ name = "ulo-rpc-udp"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "UDP transport adapter for the Ulo RPC gateway"
+description = "The UDP link for Ulo RPC: one frame per datagram, unary calls and events"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "udp", "rpc", "framework", "adapter"]
+keywords = ["ulo", "rpc", "udp"]
 categories = ["network-programming"]
 
 [dependencies]
-ulo = { path = "../ulo", default-features = false }
-tokio = { workspace = true, features = ["full"] }
-serde_json.workspace = true
-tracing.workspace = true
+ulo = { path = "../ulo" }
+ulo-rpc = { path = "../ulo-rpc" }
+bytes.workspace = true
+futures-core.workspace = true
 futures-util.workspace = true
-
-[dev-dependencies]
-ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
+ulo-net = { path = "../ulo-net" }
+tokio = { workspace = true, features = ["net", "sync", "rt", "macros", "time"] }
+tracing.workspace = true

@@ -5,10 +5,14 @@ pub use std::sync::Arc;
 
 pub use ulo_macros::{__enhancer_specs, __handler};
 
+use std::marker::PhantomData;
+
 use crate::construct::ConstructError;
 use crate::dependency::{Dependencies, DependencyLabel, FromContainer};
 use crate::scope::{AllowedIn, Scope};
 use crate::timer::BoxError;
+use crate::transport::Transport;
+use crate::transport::metadata::TransportMetadata;
 
 /// A struct field, declared under its name. The bounds are the per-field assertion:
 /// `#[injectable]` emits one call per field with `quote_spanned!`, so a field that is not
@@ -87,6 +91,72 @@ const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
 /// bounding by its transport's role only the entries that apply to it, and registers each with
 /// `EnhancerSpec::{guard,interceptor,error_handler}_arc(Arc::clone(&shared.0.N))`.
 pub struct Shared<T>(pub T);
+
+/// The `#[meta]` transport probe every transport's handler attribute emits once per metadata
+/// value, at either tier, spanned at the value and under its gates (transports DESIGN §2.5, X24):
+///
+/// ```text
+/// let (): () = (&&&::ulo::__private::MetaProbe::<::ulo_http::Http, _>::new(&value)).check();
+/// ```
+///
+/// with `MetaSame`, `MetaOther` and `MetaAny` imported anonymously. Three arms, each one reference
+/// deeper than the priority reads, since method lookup tries the impl on `&&MetaProbe` first,
+/// then `&MetaProbe`, then the bare type, and the first whose impl where-clauses hold wins:
+///
+/// - a value whose [`TransportMetadata::Transport`](crate::TransportMetadata) is `T`, on
+///   `&&MetaProbe`, answers `()`;
+/// - a value naming another transport `U`, on `&MetaProbe`, answers [`MetaMismatch<T, U>`], which
+///   the `let (): ()` refuses with E0308 at the value, both transports in the message;
+/// - a value implementing no `TransportMetadata`, on `MetaProbe`, answers `()`.
+///
+/// The handler's transport is a parameter of the probe type rather than of the method, since
+/// lookup checks an impl's where-clauses and never a method's.
+pub struct MetaProbe<T, V: ?Sized> {
+    _t: PhantomData<fn() -> T>,
+    _v: PhantomData<fn() -> *const V>,
+}
+
+impl<T, V: ?Sized> MetaProbe<T, V> {
+    pub fn new(_value: &V) -> Self {
+        MetaProbe { _t: PhantomData, _v: PhantomData }
+    }
+}
+
+/// What the probe answers for a metadata value of transport `U` written on a handler of
+/// transport `T`. It is never built: the `let (): ()` the probe sits in refuses the type, and the
+/// type's name is the diagnostic, `expected (), found MetaMismatch<Http, Rpc>`.
+pub struct MetaMismatch<T, U> {
+    _t: PhantomData<fn() -> (T, U)>,
+}
+
+/// The first arm: the value's transport is the handler's.
+pub trait MetaSame {
+    fn check(&self);
+}
+
+impl<T: Transport, V: TransportMetadata<Transport = T>> MetaSame for &&MetaProbe<T, V> {
+    fn check(&self) {}
+}
+
+/// The second arm: the value names another transport.
+pub trait MetaOther<T, U> {
+    fn check(&self) -> MetaMismatch<T, U>;
+}
+
+impl<T: Transport, V: TransportMetadata> MetaOther<T, V::Transport> for &MetaProbe<T, V> {
+    fn check(&self) -> MetaMismatch<T, V::Transport> {
+        MetaMismatch { _t: PhantomData }
+    }
+}
+
+/// The third arm: the value names no transport and is valid on every one.
+pub trait MetaAny {
+    fn check(&self);
+}
+
+impl<T, V: ?Sized> MetaAny for MetaProbe<T, V> {
+    fn check(&self) {}
+}
 
 /// What a constructor returns, `Self` or `Result<Self, E>`, decided by type rather than by the
 /// spelling of the return type, so an alias for a `Result` is read as one.

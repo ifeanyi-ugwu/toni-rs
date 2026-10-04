@@ -1,36 +1,15 @@
-// Tests: `tests/conformance.rs` implements `ulo_rpc_conformance::Broker`
-// and stamps out the shared RPC case set. It needs a live Kafka from
-// testcontainers, so it is gated behind the `integration` feature; without
-// it the file compiles to nothing and cargo reports a clean run of none. CI
-// does not run it: minutes for one transport where the other brokers take
-// seconds. It runs by hand:
-//
-//     make conformance-kafka
-//
-// A case belongs in `ulo-rpc-conformance` when every transport owes it,
-// and here only when it is specific to this one.
-
-//! Apache Kafka transport for the Ulo RPC gateway.
+//! The Kafka link for `ulo-rpc` (transports DESIGN §5.3): a topic per pattern, the payload as the
+//! body with Kafka headers, replies on a reply topic with a correlation header. Ordered per
+//! partition, the partition key a caller-supplied ordering key or the client instance's id;
+//! high latency for request-reply; the size limit from broker configuration; `Competing` through
+//! the consumer group; the handler topics created at `bind`, so a stopped server's topic exists
+//! and a miss is the client's `Timeout` under auto-create; the drain pauses and commits;
+//! `security.protocol=SSL` selects TLS.
 //!
-//! Kafka is an event log, not a request-response bus, but it carries message
-//! headers — so per-call metadata and the reply addressing ride headers (no
-//! envelope), and request-response is emulated: a request names a reply topic
-//! and a correlation id in its headers, the server publishes the reply there,
-//! and the client routes replies back by correlation id.
-//!
-//! A pattern maps to a Kafka topic. Topics are expected to auto-create on the
-//! broker (`auto.create.topics.enable`, the default); otherwise create the
-//! request and reply topics out of band.
-//!
-//! - [`KafkaAdapter`] — server side; a `StreamConsumer` subscribed to the
-//!   pattern topics, replying via a `FutureProducer`.
-//! - [`KafkaClientTransport`] — client side; a producer plus one consumer on a
-//!   private reply topic, correlation-routed.
+//! ```ignore
+//! app.bind(ulo_rpc::Server::new(ulo_rpc_kafka::Kafka::brokers("kafka:9092")))
+//! ```
 
-mod kafka_adapter;
-mod kafka_client_transport;
-mod wire;
+mod link;
 
-pub use kafka_adapter::KafkaAdapter;
-pub use kafka_client_transport::KafkaClientTransport;
-pub use ulo::rpc::{RpcAdapter, RpcClient, RpcClientTransport};
+pub use link::{Kafka};

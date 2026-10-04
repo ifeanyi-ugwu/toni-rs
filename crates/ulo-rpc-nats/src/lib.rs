@@ -1,23 +1,14 @@
-// Tests: `tests/conformance.rs` implements `ulo_rpc_conformance::Broker`
-// and stamps out the shared RPC case set. It needs a live NATS from
-// testcontainers, so it is gated behind the `integration` feature; without
-// it the file compiles to nothing and cargo reports a clean run of none:
-//
-//     cargo test -p ulo-rpc-nats --features integration
-//
-// A case belongs in `ulo-rpc-conformance` when every transport owes it,
-// and here only when it is specific to this one.
+//! The NATS link for `ulo-rpc` (transports DESIGN §5.3): the payload as the message body with
+//! NATS headers, replies on the `_INBOX` subject, stream items on the inbox. At-most-once;
+//! ordered per publisher and subject; the maximum payload read from the server's `INFO`;
+//! `Competing` through a queue group, the application's root module's full type path unless
+//! `.group(..)` names one; no-responders maps to `Unavailable`; the drain is NATS's drain
+//! protocol; `tls://` selects TLS.
+//!
+//! ```ignore
+//! app.bind(ulo_rpc::Server::new(ulo_rpc_nats::Nats::url("nats://bus:4222")))
+//! ```
 
-mod nats_adapter;
-mod nats_client_transport;
-mod servers;
+mod link;
 
-/// The subject carrying stream-cancel notices (ADR-0032). Every server
-/// instance subscribes without a queue group, so each sees every notice and
-/// only the instance holding the call acts on it.
-pub(crate) const CANCEL_SUBJECT: &str = "ulo.rpc.cancel";
-
-pub use nats_adapter::NatsAdapter;
-pub use nats_client_transport::NatsClientTransport;
-pub use servers::IntoNatsServers;
-pub use ulo::rpc::{RpcAdapter, RpcClient, RpcClientTransport};
+pub use link::{Nats};

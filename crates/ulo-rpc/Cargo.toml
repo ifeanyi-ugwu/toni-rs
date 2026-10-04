@@ -1,0 +1,23 @@
+[package]
+name = "ulo-rpc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The RPC transport for Ulo: one frame grammar over TCP, UDP and message brokers, the four call shapes, and the client"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ulo", "rpc", "microservices", "framework"]
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-rpc-macros = { path = "../ulo-rpc-macros" }
+ulo-transport = { path = "../ulo-transport" }
+bytes.workspace = true
+ciborium.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+tracing.workspace = true

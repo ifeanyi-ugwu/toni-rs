@@ -1,0 +1,101 @@
+//! `WsModule`: what a WebSocket application imports once (transports DESIGN §4.1).
+
+use std::sync::Arc;
+
+use ulo::{Bound, Module, ModuleDef, ModuleIdentity};
+use ulo_transport::Count;
+
+use crate::broadcast::{BroadcastAdapter, InMemory};
+
+/// Imported once per application: registers the gateway hand-off in the HTTP `Upgrades`
+/// metadata, binds [`Rooms`](crate::Rooms) and the broadcast adapter, and carries the defaults
+/// for the gateways on the HTTP server's port that [`Server`](crate::Server) carries for those on
+/// its own port.
+///
+/// ```ignore
+/// #[module(imports = [ulo_ws::WsModule::for_root().broadcast(ulo_ws_redis::Redis::url("redis://cache:6379"))])]
+/// pub struct AppModule;
+/// ```
+///
+/// A gateway's mount records handlers and cannot bind, which is why the module exists: without it
+/// a gateway on the HTTP server's port is reachable by nothing and `Dep<Rooms>` is a missing
+/// dependency at `wire()`.
+#[derive(Clone)]
+pub struct WsModule {
+    pub(crate) adapter: Arc<dyn BroadcastAdapter>,
+    pub(crate) defaults: Defaults,
+}
+
+/// The settings a gateway on the HTTP server's port reads where its attribute leaves one unset.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Defaults {
+    pub(crate) message_limit: Option<u64>,
+    pub(crate) max_connections: Count,
+    pub(crate) max_inflight: Count,
+    pub(crate) max_outbound: Count,
+    pub(crate) ping_interval: Bound,
+    pub(crate) pong_timeout: Bound,
+}
+
+impl WsModule {
+    /// The in-memory broadcast adapter and every default unset.
+    pub fn for_root() -> Self {
+        WsModule { adapter: Arc::new(InMemory::new()), defaults: Defaults::default() }
+    }
+
+    /// The broadcast adapter in place of the in-memory one, as configuration: a second module
+    /// binding `dyn BroadcastAdapter` would be `DuplicateBinding` at `wire()`.
+    pub fn broadcast(mut self, adapter: impl BroadcastAdapter) -> Self {
+        self.adapter = Arc::new(adapter);
+        self
+    }
+
+    /// Bytes per message after reassembly: 64 MiB at the default. Zero is refused in `prepare`.
+    pub fn message_limit(mut self, bytes: u64) -> Self {
+        self.defaults.message_limit = Some(bytes);
+        self
+    }
+
+    /// Connections per gateway: unbounded at `Count::Default`. Over it a connection is accepted
+    /// and closed with 1013. `Count::Max(0)` is refused in `prepare`.
+    pub fn max_connections(mut self, connections: Count) -> Self {
+        self.defaults.max_connections = connections;
+        self
+    }
+
+    /// Messages in flight per connection, over which the connection stops reading.
+    pub fn max_inflight(mut self, messages: Count) -> Self {
+        self.defaults.max_inflight = messages;
+        self
+    }
+
+    /// Queued outbound messages per connection, over which the gateway's `overflow` applies.
+    pub fn max_outbound(mut self, messages: Count) -> Self {
+        self.defaults.max_outbound = messages;
+        self
+    }
+
+    /// The keep-alive Ping's period: 30 seconds at `Bound::Default`; `Bound::Unbounded` sends none.
+    pub fn ping_interval(mut self, interval: Bound) -> Self {
+        self.defaults.ping_interval = interval;
+        self
+    }
+
+    /// How long a Pong may take before the connection ends as `Lost`: 30 seconds at
+    /// `Bound::Default`.
+    pub fn pong_timeout(mut self, timeout: Bound) -> Self {
+        self.defaults.pong_timeout = timeout;
+        self
+    }
+}
+
+impl Module for WsModule {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<WsModule>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        let _ = m;
+        todo!()
+    }
+}

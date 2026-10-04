@@ -15,13 +15,13 @@ use std::time::Duration;
 
 use http::{HeaderValue, Method};
 use ulo::{MetaTier, Metadata, MountedHandler, TypeName};
+use ulo_transport::prepare::{Failure, Names};
 
 use crate::__private::{HandlerFn, HttpHandler};
 use crate::cx::PathParams;
 use crate::limits::{BodyLimit, Timeout};
 use crate::pre_dispatch::{ScopedStage, Stage};
 use crate::router::pattern::Pattern;
-use crate::server::{Failure, Names};
 use crate::transport::Http;
 
 /// Every route, by pattern, each with its methods.
