@@ -28,7 +28,8 @@ use crate::type_name::{TypeName, short_type_name};
 /// types alike, `a::Config` and `b::Config`, whether as a key's type, as its qualifier or as a
 /// transport, it prints those types with their full paths, and the rest of each key short; two different
 /// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Text an entry carries
-/// already rendered, such as what reads a missing key or the steps of a path, stays short. A
+/// already rendered, such as what reads a missing key or the steps of a path between services,
+/// stays short; the transport an input's path opens with is a type, and follows the rule. A
 /// [`WiringError`] displayed on its own applies the same rule to the keys and modules it names.
 ///
 /// `Debug` writes the same report, so `main` returning `Box<dyn Error>` prints it.
@@ -191,7 +192,8 @@ pub enum WiringError {
     /// injection point to the read of execution data. A metadata value has no `at`.
     ClosureNeedsExecution { closure: String, path: Vec<String>, at: Option<&'static Location<'static>> },
     /// Step 5: a non-optional input read on a path from a handler whose transport does not seed
-    /// it, with the path from the handler to the service that reads it.
+    /// it. `path` holds the steps after the handler, each binding between it and the read and
+    /// then the injection point; the report writes the handler and its `transport` ahead of them.
     InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, path: Vec<String> },
 
     /// Step 6: an explicit bound with no `Timer`. `item` names the bounded item, as in
@@ -252,7 +254,36 @@ impl WiringError {
         let transports = match self {
             WiringError::InputNotSeeded { transport, seeder, .. } => vec![*transport, *seeder],
             WiringError::InputConflict { first, second, .. } => first.type_names().into_iter().chain(second.type_names()).collect(),
-            _ => Vec::new(),
+            WiringError::ImportCycle { .. }
+            | WiringError::ReexportNotVisible { .. }
+            | WiringError::ReexportAmbiguous { .. }
+            | WiringError::KeyedInput { .. }
+            | WiringError::ExportNotBound { .. }
+            | WiringError::DuplicateBinding { .. }
+            | WiringError::KindMix { .. }
+            | WiringError::DanglingAlias { .. }
+            | WiringError::ValueFailed { .. }
+            | WiringError::QualifiedRoleContribution { .. }
+            | WiringError::SingleRoleBinding { .. }
+            | WiringError::DuplicateReadiness { .. }
+            | WiringError::OverrideUnmatched { .. }
+            | WiringError::OverrideAmbiguous { .. }
+            | WiringError::OverrideModuleAmbiguous { .. }
+            | WiringError::OverrideKind { .. }
+            | WiringError::TimerOverride { .. }
+            | WiringError::ReplacementMissingExports { .. }
+            | WiringError::ReplacementUnmatched { .. }
+            | WiringError::DuplicateReplacement { .. }
+            | WiringError::Missing { .. }
+            | WiringError::Ambiguous { .. }
+            | WiringError::Cycle { .. }
+            | WiringError::ScopeViolation { .. }
+            | WiringError::HooksOnPerExecution { .. }
+            | WiringError::ClosureScopeViolation { .. }
+            | WiringError::ClosureNeedsExecution { .. }
+            | WiringError::BoundWithoutTimer { .. }
+            | WiringError::BackoffWithoutTimer { .. }
+            | WiringError::KnobWithoutTimer { .. } => Vec::new(),
         };
         keys.chain(transports).collect()
     }
@@ -599,12 +630,8 @@ impl WiringError {
                 let input = show(input);
                 let transport = show_type(*transport);
                 let seeder = show_type(*seeder);
-                let start = format!("{handler} ({transport})");
-                let route = match path.first() {
-                    None => start,
-                    Some(first) if first.starts_with(handler.as_str()) => path.join(" → "),
-                    Some(_) => format!("{start} → {}", path.join(" → ")),
-                };
+                let route: Vec<String> = std::iter::once(format!("{handler} ({transport})")).chain(path.iter().cloned()).collect();
+                let route = route.join(" → ");
                 tree(
                     f,
                     format!("input `{input}` is seeded by {seeder}, read on a path from the {transport} handler {handler}"),

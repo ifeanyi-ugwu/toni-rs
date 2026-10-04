@@ -392,7 +392,7 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
                 transport: handler.decl.transport,
                 input: read.input.name(BindingKind::Single),
                 seeder: decl.seeder,
-                path: read.path,
+                path: read.steps,
             });
         }
     }
@@ -402,9 +402,14 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
 /// it.
 pub(crate) struct InputRead {
     pub(crate) input: Key,
-    /// The path from the handler to the injection point, the handler first:
-    /// `UsersController::get (Http) → Audit (execution) → Dep<ClientAddr> (field `addr`)`.
-    pub(crate) path: Vec<String>,
+    /// The steps from the handler to the injection point, the handler left out:
+    /// `Audit (execution) → Dep<ClientAddr> (field `addr`)`. [`handler_step`] writes the handler.
+    pub(crate) steps: Vec<String>,
+}
+
+/// A handler as the first step of a path, its transport short: `UsersController::get (Http)`.
+pub(crate) fn handler_step(graph: &Graph, handler: &HandlerRecord) -> String {
+    format!("{} ({})", graph.handler_name(handler), handler.decl.transport)
 }
 
 /// Every non-optional read of an execution input that `handler` reaches, once per input and
@@ -425,16 +430,13 @@ pub(crate) fn input_reads(graph: &Graph, handler: &HandlerRecord) -> Vec<InputRe
 struct InputWalk<'g> {
     graph: &'g Graph,
     handler: &'g HandlerRecord,
-    /// The handler as the first step of a path: `UsersController::get_rpc (Rpc)`.
-    head: String,
     seen: HashSet<(Key, Option<BindingId>)>,
     reads: Vec<InputRead>,
 }
 
 impl<'g> InputWalk<'g> {
     fn new(graph: &'g Graph, handler: &'g HandlerRecord) -> Self {
-        let head = format!("{} ({})", graph.handler_name(handler), handler.decl.transport);
-        InputWalk { graph, handler, head, seen: HashSet::new(), reads: Vec::new() }
+        InputWalk { graph, handler, seen: HashSet::new(), reads: Vec::new() }
     }
 
     fn run(&mut self) {
@@ -472,10 +474,10 @@ impl<'g> InputWalk<'g> {
             for edge in &graph.binding(node).edges {
                 if let EdgeTarget::Input(input) = &edge.target {
                     if !edge.optional {
-                        let mut path = vec![self.head.clone()];
-                        path.extend(chain(&parent, node).into_iter().map(|step| graph.scoped_label(step)));
-                        path.push(graph.dependency_step(node, edge.dependency));
-                        self.record(*input, Some(node), path);
+                        let mut steps: Vec<String> =
+                            chain(&parent, node).into_iter().map(|step| graph.scoped_label(step)).collect();
+                        steps.push(graph.dependency_step(node, edge.dependency));
+                        self.record(*input, Some(node), steps);
                     }
                 }
             }
@@ -500,10 +502,9 @@ impl<'g> InputWalk<'g> {
                 match &read.kind {
                     ReadKind::Single(key) => match graph.lookup(module, *key) {
                         Some(Visible::Input(input)) if !read.optional => {
-                            let mut path = vec![self.head.clone()];
-                            path.extend(via.map(str::to_owned));
-                            path.push(dependency_text(dependency));
-                            self.record(*input, None, path);
+                            let mut steps: Vec<String> = via.map(str::to_owned).into_iter().collect();
+                            steps.push(dependency_text(dependency));
+                            self.record(*input, None, steps);
                         }
                         Some(Visible::Binding(id)) => roots.push(*id),
                         _ => {}
@@ -515,9 +516,9 @@ impl<'g> InputWalk<'g> {
         }
     }
 
-    fn record(&mut self, input: Key, reader: Option<BindingId>, path: Vec<String>) {
+    fn record(&mut self, input: Key, reader: Option<BindingId>, steps: Vec<String>) {
         if self.seen.insert((input, reader)) {
-            self.reads.push(InputRead { input, path });
+            self.reads.push(InputRead { input, steps });
         }
     }
 }

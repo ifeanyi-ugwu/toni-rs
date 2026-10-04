@@ -1262,3 +1262,108 @@ pub enum InputOrigin {
   fails, both queues printing ``transport `Queue` failed to close``, and the other 54 pass. Each
   source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
   and a rerun passes 55.
+
+# Eighth round: the thirteenth response
+
+The change the thirteenth response (signed off 2026-10-04) asks of this build:
+`WiringError::type_names` lists every variant, and `InputNotSeeded` writes the transport at the
+head of its path from the `TypeName` it holds, when the report is formatted. Entries continue the
+numbering above.
+
+Files changed: `crates/ulo/src/{error/wiring.rs, graph/scopes.rs, transport/server.rs}`.
+
+## The signature, changed
+
+```rust
+// ulo
+pub enum WiringError {
+    ..,
+    /// `path`: the steps after the handler; the handler step is written from `handler` and `transport`
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, path: Vec<String> },
+    ..
+}
+```
+
+The field types are unchanged. `path` no longer opens with the handler step `AltApi::call (Rpc)`.
+
+## Decisions
+
+### 58. `type_names` lists every variant
+
+- **Written:** the two variants that hold a transport, then the other thirty in one arm answering
+  no transports, in declaration order. `key_names` and `module_names` keep their own lists.
+- **Consequence:** a variant added to `WiringError` fails to compile at `type_names` until it is
+  placed. With `KnobWithoutTimer` removed from the arm, `cargo check -p ulo` fails with E0004
+  naming it.
+
+### 59. `InputNotSeeded` writes its handler step when the report is formatted
+
+- **Written:** `path` holds the steps after the handler: each binding between it and the read,
+  then the injection point. The render writes `{handler} ({transport})` ahead of them, the
+  transport through `TypeName::written` against the report's set, the call the headline makes.
+  The match on `path.first()` that recognised a handler step written ahead is gone.
+- **No new field:** the entry already holds the handler's name and the transport's `TypeName`,
+  and the two make the step.
+- **Inside the core:** `InputRead::path` is `InputRead::steps`, without the handler, and
+  `InputWalk` drops its `head` field. `scopes::handler_step` writes the step short for the one
+  caller that wants it written ahead, `Mounted::handlers_reading`, so `InputReader::path()` still
+  opens with it.
+- **Sign-off needed:** the public `path` field changes meaning with its type unchanged. A caller
+  reading `path[0]` as the handler gets the first binding.
+
+### 60. `InputConflict` needed no change
+
+- **Why:** `InputOrigin::line` writes both of its lines from the `TypeName`s each origin holds,
+  against the report's set. No transport in the entry is written ahead. Check (b) below shows it
+  printing both in full.
+
+### 61. The scratch transport
+
+- **Written:** `Rpc` declares `CallerId` in `inputs()`, and `alt::Rpc` declares none. Each
+  controller is an `#[injectable]` with a hand-written `impl Controller` mounting one
+  `HandlerSpec`. `RpcApi` reads nothing; its handler mounts `Rpc`, which declares `Rpc`'s
+  inputs. `AltApi` and `TopicApi` read `Dep<CallerId>` as a field, so each is an
+  execution-scoped controller whose handler, of `alt::Rpc` or `Topic`, reaches the input.
+- **Check (b)'s second source:** a module's `m.input::<CallerId>().seeded_by::<alt::Rpc>()`,
+  which keeps `alt::Rpc` the one second marker for both collision checks. A third marker
+  declaring `CallerId` in its own `inputs()` would test two `Transport` lines in place of a
+  `Transport` and a `Module` line.
+- **Sign-off needed:** the module as check (b)'s second source.
+
+## Not covered
+
+- `InputReader::path()` opens with the handler step written short, and `ulo-http`'s `ClientAddr`
+  refusal joins it into a plain failure text, which names no type. In a startup report whose pass
+  prints the HTTP transport in full, the entry's heading writes ``transport `a::Http` `` and the
+  path in its text writes `(Http)`, the inconsistency entry 59 removes from the wiring report.
+- `ClosureScopeViolation::closure` writes its handler's transport short inside the description,
+  `method-level guard #2 of UsersController::get (Http)`, and that transport enters no pass.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, matches the one at
+  HEAD (`fcabd78a`, taken from the clean tree before the edits) on both toolchains: the 17 in
+  `crates/ulo/src`, no line moved. `cargo test --workspace` exits 0, the `PrepareError` doctest
+  among its tests. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-http --no-deps` exits 0.
+- Scratch crate `embed`: the 55 checks of the seventh round print the same lines as in round
+  seven. Three new checks bring the total to 58, all passing under `#![deny(warnings)]` on rustc
+  1.98.1 and 1.88 with identical verdicts and texts. The checks sit in `main` after round seven's,
+  and the new types below the existing ones, so the source locations the refusal checks assert are
+  unchanged. Each new check reads the report `wire()` returns.
+
+| Check | Result |
+| --- | --- |
+| (a) `UnseededModule`: `RpcApi` and `AltApi` | ``input `CallerId` is seeded by embed::Rpc, read on a path from the embed::alt::Rpc handler AltApi::call``, the path ``AltApi::call (embed::alt::Rpc) → AltApi (execution) → Dep<CallerId> (field `id`)``; no `(Rpc)`, no `embed::AltApi`, no `embed::CallerId` |
+| (b) `ConflictModule`: `RpcApi`, and `CallerId` seeded by `alt::Rpc` | ``declared by transport `embed::Rpc` at ..`` and ``declared in ConflictModule with seeder `embed::alt::Rpc` at ..``; no `` `Rpc` `` |
+| (c) `ShortModule`: `RpcApi` and `TopicApi` | ``input `CallerId` is seeded by Rpc, read on a path from the Topic handler TopicApi::call``, the path ``TopicApi::call (Topic) → TopicApi (execution) → Dep<CallerId> (field `id`)``; no `embed::` |
+
+- Against a known violation, three runs on both toolchains, each a mutation of the core restored
+  afterwards. Run 1, the handler step written ahead again (`check_inputs` putting
+  `handler_step` at the head of `path`, the render joining `path` alone): (a) fails with the
+  headline writing `embed::alt::Rpc` and the path `AltApi::call (Rpc)`, and the other 57 pass.
+  Run 2, `InputNotSeeded` moved into the arm answering no transports: (a) fails, both transports
+  printing `Rpc`, and the other 57 pass. Run 3, `InputConflict` moved there: (b) fails, both
+  lines printing `` `Rpc` ``, and the other 57 pass. Each source was restored by `cp` from a copy
+  taken before the mutations and compared byte for byte, and a rerun passes 58 on both
+  toolchains.

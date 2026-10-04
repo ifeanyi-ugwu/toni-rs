@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::app::AppHandle;
 use crate::error::TimerMissing;
-use crate::graph::scopes::input_reads;
+use crate::graph::scopes::{handler_step, input_reads};
 use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
 use crate::module::meta::Meta;
@@ -130,7 +130,9 @@ impl<'a, T: Transport> Mounted<'a, T> {
                 continue;
             };
             for read in input_reads(&graph, record).into_iter().filter(|read| read.input == key) {
-                readers.push(InputReader { handler, path: read.path });
+                let mut path = vec![handler_step(&graph, record)];
+                path.extend(read.steps);
+                readers.push(InputReader { handler, path });
             }
         }
         readers
