@@ -16,13 +16,14 @@ use std::time::Duration;
 
 use crate::construct::ConstructError;
 use crate::hooks::HookKind;
-use crate::key::{BindingKind, KeyName, short_type_name};
+use crate::key::{BindingKind, KeyName};
 use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::signal::Signal;
 use crate::timer::BoxError;
+use crate::type_name::short_type_name;
 
-pub use configure::{ConfigureError, ConfigureErrors};
+pub use configure::{ConfigureError, ConfigureErrors, PrepareFailure};
 pub use wiring::WiringErrors;
 
 #[non_exhaustive]

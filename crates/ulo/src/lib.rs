@@ -21,6 +21,7 @@ mod resolver;
 mod signal;
 mod timer;
 mod transport;
+mod type_name;
 
 pub mod app;
 pub mod scope;
@@ -52,7 +53,7 @@ pub use construct::{Construct, ConstructError};
 pub use dependency::{Dep, Dependencies, Ext, FromContainer, Many, Requirement};
 pub use error::{
     Closed, ConfigureError, ConfigureErrors, ConnectError, DispatchStage, EndStream, FailureReason, GuardRejected,
-    Limit, LoadError, LoadRefusal, LookupError, LookupKind, PanicRecovered, Shutdown, ShutdownError,
+    Limit, LoadError, LoadRefusal, LookupError, LookupKind, PanicRecovered, PrepareFailure, Shutdown, ShutdownError,
     ShutdownFailure, StartupError, TimerMissing, is_panic,
 };
 pub use error::wiring::{InputOrigin, WiringError, WiringErrors};
@@ -64,6 +65,7 @@ pub use hooks::{
     OnModuleDestroy, OnModuleInit,
 };
 pub use key::{BindingKind, Key, KeyName};
+pub use type_name::TypeName;
 pub use module::dynamic::DynamicModule;
 pub use module::handle::ModuleRef;
 pub use module::keyed::Keyed;

@@ -9,8 +9,9 @@ use crate::graph::wire::Declared;
 use crate::graph::{
     BindingId, Edge, EdgeTarget, Graph, ModuleId, Visible, VisibilityTable, boundary_key, dependency_label, record_key,
 };
-use crate::key::{BindingKind, Key, short_type_name};
+use crate::key::{BindingKind, Key};
 use crate::transport::controller::EnhancerDep;
+use crate::type_name::short_type_name;
 
 /// Fills `graph.visibility`: each module's own bindings, its direct imports' exports and the
 /// globals' exports, a key with two sources recorded as `Visible::Ambiguous`. Execution inputs
@@ -187,7 +188,7 @@ pub(crate) fn resolve_dependencies(graph: &mut Graph, declared: &Declared, error
         for dep in &handler.decl.enhancer_deps {
             match dep {
                 EnhancerDep::Type(key) => {
-                    let consumer = || format!("{name} (enhancer `{}`)", short_type_name(key.type_name()));
+                    let consumer = || format!("{name} (enhancer `{}`)", key.type_name());
                     check_key(graph, handler.module, *key, false, consumer, errors, &mut reported);
                 }
                 EnhancerDep::Closure(closure) => {
@@ -208,7 +209,7 @@ pub(crate) fn resolve_dependencies(graph: &mut Graph, declared: &Declared, error
                 _ => None,
             })
             .collect();
-        unread.sort_by_key(|(key, _)| (key.type_name(), key.qualifier_name()));
+        unread.sort_by_key(|(key, _)| (key.type_name().full(), key.qualifier_name()));
         for (key, list) in unread {
             errors.push(WiringError::Ambiguous {
                 key: key.name(BindingKind::Single),
@@ -328,7 +329,7 @@ pub(crate) fn near_spelling(graph: &Graph, module: ModuleId, missing: Key) -> Op
             Visible::Input(_) => None,
         })
         .collect();
-    visible.sort_by_key(|(key, _)| key.type_name());
+    visible.sort_by_key(|(key, _)| key.type_name().full());
     if let Some(found) = visible.into_iter().next() {
         return Some(found);
     }
@@ -355,8 +356,8 @@ pub(crate) fn own_near_spelling(graph: &Graph, module: ModuleId, exported: Key) 
 /// segments, `a::Config` beside `b::Config`.
 fn spelled_alike(key: Key, other: Key) -> bool {
     key.qualifier_id() == other.qualifier_id()
-        && key.type_name() != other.type_name()
-        && short_type_name(strip_auto_traits(key.type_name())) == short_type_name(strip_auto_traits(other.type_name()))
+        && key.type_name().full() != other.type_name().full()
+        && short_type_name(strip_auto_traits(key.type_name().full())) == short_type_name(strip_auto_traits(other.type_name().full()))
 }
 
 /// `name` without trailing auto-trait bounds, in either order and either spelling.

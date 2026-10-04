@@ -14,9 +14,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use crate::binding::Qualifier;
-use crate::key::short_type_name;
 use crate::module::def::ModuleDef;
 use crate::module::keyed::Keyed;
+use crate::type_name::short_type_name;
 
 /// A module: an identity and a synchronous, I/O-free registration.
 ///

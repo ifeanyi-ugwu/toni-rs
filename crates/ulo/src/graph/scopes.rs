@@ -33,9 +33,10 @@ use crate::graph::wire::Declared;
 use crate::graph::{
     BindingId, EdgeTarget, Effective, FrozenBinding, Graph, ModuleId, Role, Visible, dependency_text, record_key,
 };
-use crate::key::{BindingKind, Key, short_type_name};
+use crate::key::{BindingKind, Key};
 use crate::scope::ScopeKind;
 use crate::transport::controller::{EnhancerDep, HandlerRecord};
+use crate::type_name::short_type_name;
 
 /// Gives the enhancer role to every contribution under a role key, whichever builder registered
 /// it, and reports what a transport cannot read under one (step 2): a qualified contribution, as

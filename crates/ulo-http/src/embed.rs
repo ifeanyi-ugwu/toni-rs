@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use hyper_util::rt::TokioIo;
-use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Key, Mounted, Phase};
+use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase, TypeName};
 
 use crate::__private::HttpHandler;
 use crate::backend::HttpConfig;
@@ -53,7 +53,7 @@ use crate::render;
 use crate::request::{ConnInfo, OnUpgrade, Request, Upgraded};
 use crate::response::Response;
 use crate::router::pattern::Pattern;
-use crate::server::{Failure, Failures, PrepareError, prepare_app};
+use crate::server::{Failure, Failures, prepare_app};
 use crate::service::AppService;
 use crate::transport::{ClientAddr, Http};
 
@@ -323,7 +323,7 @@ impl<A: Embed> Embedded<A> {
         copy: impl for<'r> Fn(&A::HostRequest<'r>) -> Option<T> + Send + Sync + 'static,
     ) -> Self {
         self.forwarded.push(HostCopy {
-            ty: Key::of::<T, ()>(),
+            ty: TypeName::of::<T>(),
             run: Box::new(move |host, extensions| {
                 if let Some(value) = copy(host) {
                     extensions.insert(value);
@@ -406,11 +406,11 @@ impl<A: Embed> Embedded<A> {
     fn check_host_values(&self, mounted: &Mounted<'_, Http>, service: Option<&AppService>, failures: &mut Failures) {
         let host = A::NAME;
         let metas = mounted.module_meta::<PreDispatch>();
-        let forwarded = |ty: Key| self.forwarded.iter().any(|copy| copy.ty == ty);
+        let forwarded = |ty: TypeName| self.forwarded.iter().any(|copy| copy.ty == ty);
         // The unscoped entries in the order the unscoped sub-step runs them, modules in collection
         // order: each supply and each `adopt` with its entry's position in that order.
         let mut unscoped: Vec<(usize, &Supply)> = Vec::new();
-        let mut adopts: Vec<(usize, &Entry, Key)> = Vec::new();
+        let mut adopts: Vec<(usize, &Entry, TypeName)> = Vec::new();
         let mut scoped: Vec<(&Arc<PreDispatch>, usize, &Supply)> = Vec::new();
         let mut position = 0;
         for (_, meta) in &metas {
@@ -442,7 +442,7 @@ impl<A: Embed> Embedded<A> {
                     continue;
                 }
                 let elsewhere: Vec<Site> = of_type.map(|(_, _, supply)| supply.location).collect();
-                let controller = target.handler.controller().key();
+                let controller = target.handler.controller().key().type_name();
                 let handler = target.handler.name();
                 let (method, pattern) = (method.clone(), Arc::clone(&target.pattern));
                 failures.push(Failure::naming(vec![controller, ty], move |names| {
@@ -524,7 +524,7 @@ impl<A: Embed> ulo::Server for Embedded<A> {
         let (service, upgrading) = prepare_app(&mounted, &self.config, &mount, self.on_miss == Miss::Forward, &mut failures);
         self.check_limits(&mounted, service.as_ref(), upgrading, &mut failures);
         let Some(service) = service.filter(|_| failures.is_empty()) else {
-            return Err(Box::new(PrepareError { failures }));
+            return Err(Box::new(failures.into_error()));
         };
         let _ = self.copies.set(std::mem::take(&mut self.forwarded).into_boxed_slice());
         let _ = self.shared.app.set(mounted.app().clone());
@@ -670,7 +670,7 @@ impl Shared {
 /// One `Embedded::forward` registration: the type it supplies, and the copy into a request's
 /// extensions.
 struct HostCopy<A: Embed> {
-    ty: Key,
+    ty: TypeName,
     run: Box<dyn for<'r> Fn(&A::HostRequest<'r>, &mut http::Extensions) + Send + Sync>,
 }
 

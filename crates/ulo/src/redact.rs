@@ -183,6 +183,14 @@ pub(crate) fn redact(secrets: &SecretRegistry, error: BoxError) -> Redacted {
     Redacted::from_parts(error, text)
 }
 
+/// An outside error under a text the core wrote for it, such as a [`PrepareFailure`] written
+/// against the whole startup report's names, scrubbed the same way.
+///
+/// [`PrepareFailure`]: crate::PrepareFailure
+pub(crate) fn redact_as(secrets: &SecretRegistry, error: BoxError, text: String) -> Redacted {
+    Redacted::from_parts(error, scrub(secrets, &text))
+}
+
 /// A caught panic payload, converted to a message and redacted the same way.
 pub(crate) fn redact_panic(secrets: &SecretRegistry, payload: Box<dyn Any + Send>) -> Redacted {
     let message = if let Some(s) = payload.downcast_ref::<&'static str>() {

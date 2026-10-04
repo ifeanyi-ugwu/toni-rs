@@ -925,3 +925,181 @@ impl PathCheck {
   collision set ignored (always `{key}`): the 2 collision checks fail, the other 49 pass. The
   source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
   and a rerun passes 51.
+
+# Sixth round: the eleventh response
+
+The change the eleventh response (signed off 2026-10-04) asks of this build: a public
+`ulo::TypeName` carrying the shortening and the collision rule, `Key::colliding` removed, the
+wiring reports and `ulo-http` calling `TypeName::colliding`, `ulo-http` holding a `TypeName` where
+it held a `Key` only to print a type, and the startup report of `StartupError::Configure`
+colliding names across every transport's failures. Entries continue the numbering above.
+
+Files changed: `crates/ulo/src/{type_name.rs (new), key.rs, lib.rs, redact.rs, app/mod.rs,
+error/configure.rs, error/mod.rs, error/wiring.rs, graph/mod.rs, graph/scopes.rs,
+graph/visibility.rs, graph/wire.rs, hooks.rs, module/mod.rs}`, `crates/ulo-http/src/{server.rs,
+embed.rs, pre_dispatch.rs, __private.rs, router/mod.rs, extract/path.rs}`. `extract/host.rs` and
+`extract/mod.rs` are unchanged: neither holds a `Key`.
+
+## The signature, changed
+
+```rust
+// ulo
+pub struct TypeName { .. }                       // new; Clone, Copy, Eq and Hash on the TypeId
+impl TypeName {
+    pub fn of<T: ?Sized + 'static>() -> TypeName;
+    pub fn colliding(names: impl IntoIterator<Item = TypeName>) -> HashSet<TypeName>;
+}
+impl fmt::Display for TypeName { .. }            // `User`; `{:#}` writes `my_app::User`
+impl fmt::Debug for TypeName { .. }              // as `Display`
+
+impl Key {
+    pub fn type_name(&self) -> TypeName;         // new
+    // `pub fn colliding(..)` removed
+}
+
+pub struct PrepareFailure { .. }                 // new; Display, Debug, Error
+impl PrepareFailure {
+    pub fn new(
+        names: impl IntoIterator<Item = TypeName>,
+        text: impl Fn(&HashSet<TypeName>) -> String + Send + Sync + 'static,
+    ) -> Self;
+    pub fn names(&self) -> &[TypeName];
+    pub fn text(&self, full: &HashSet<TypeName>) -> String;
+}
+```
+
+## Decisions
+
+### 47. `TypeName` compares on its `TypeId`, and `Key` is two of them
+
+- **Written:** `TypeName` holds the `TypeId` and the `type_name` string, and compares and hashes on
+  the `TypeId`, as `Key` did and as `ulo-http`'s `HostType` did before entry 42. `Display` is the
+  core's shortener; `{:#}` writes the string whole. `Key`'s fields are now a `TypeName` for the
+  type and one for the qualifier, and its `{}` and `{:#}` write each through them, role spelling
+  (`AnyGuard<Http>`) applied on top as before.
+- **The shortener's home:** `type_name.rs`, beside `key.rs`, holding `short_type_name` and its two
+  helpers, `pub(crate)`. The reports that hold a bare `type_name` string with no `TypeId`
+  (transport names, metadata names, hook refusals, module names) still call it directly.
+- **`Key::type_name()` made public:** `ulo-http` names a handler's controller from the `KeyName`
+  a `MountedHandler` carries, and needs that key's type as a `TypeName` to enter it into the
+  report's collision pass. It replaces a `pub(crate)` accessor of the same name that answered the
+  string; the core's own callers now write `.type_name().full()`.
+- **A stray line removed:** `key.rs` carried a doc fragment, "The diagnostic spelling of a
+  `type_name`: module paths stripped from every segment, so", attached to the top of
+  `role_spelling`'s doc. It is gone with the move; `short_type_name`'s doc in `type_name.rs` says
+  what it does.
+- **Sign-off needed:** `TypeName` carrying the `TypeId` (equality by type, not by string), and the
+  public `Key::type_name()`.
+
+### 48. The wiring report collides a key's type and its qualifier separately
+
+- **Written:** the report runs `TypeName::colliding` over every key's type and, when qualified,
+  its qualifier, across all its entries, and writes each part of a key full or short on its own
+  (`Key::text_in`, `KeyName::text_in`, `pub(crate)`). Before, it collided whole-key texts.
+- **Consequence:** two outputs change. `Store @ a::Replica` beside `Store @ b::Replica` prints
+  `Store @ embed::cfg_a::Replica` and `Store @ embed::cfg_b::Replica`, where it printed
+  `embed::Store @ embed::cfg_a::Replica`: `Store` names one type. `a::Config` beside
+  `b::Config @ Q` now prints both `Config`s full, where both printed short, since the whole-key
+  texts `Config` and `Config @ Q` differed. A key's collection kind still plays no part.
+- **Why:** `TypeName::colliding` is the one entry point the response names, and it takes types,
+  so the rule the report applies becomes the one stated for every report: two different types
+  printing alike print in full.
+- **Sign-off needed:** the per-type granularity, or a `Key`-level pass kept inside the core that
+  reads `TypeName::colliding`'s answer back onto whole keys.
+
+### 49. The seam is a core error type, `PrepareFailure`
+
+- **Written:** a server whose `prepare` failure names types answers a boxed `PrepareFailure`: the
+  names, and a closure writing the text given the set of names to write in full.
+  `ConfigureErrors::collect` (`pub(crate)`, called by `listen()`) downcasts each server's error,
+  runs `TypeName::colliding` over the names of every `PrepareFailure` among them, and writes each
+  against that one set. Any other error keeps its own text and contributes no names. A
+  `PrepareFailure` displayed alone collides its own names.
+- **`ulo-http`:** `PrepareError` is gone. Both servers' `prepare` answer
+  `Failures::into_error()`, a `PrepareFailure` naming every type its failures name, whose text is
+  the format `PrepareError` wrote: one failure alone, or "N problems:" and a bullet each.
+  `ulo-http`'s `Names` stays, borrowing the set the closure receives, and `Names::of` takes a
+  `TypeName`.
+- **Not chosen:** a method on an error trait. `prepare` answers a `BoxError`, and a
+  `Box<dyn Error>` downcasts only to a concrete type, so the core would need a concrete wrapper
+  around such a trait object anyway, or a change to `Server::prepare`'s return type. A core
+  `Names` type handed to the closure: the closure receives the `HashSet` that
+  `TypeName::colliding` answers, and the one-line `contains` test each name needs is left to it
+  rather than given a third public item.
+- **Sign-off needed:** the name `PrepareFailure` and its closure signature, and leaving a
+  plain-error failure out of the pass.
+
+### 50. The cross-report pass runs when the report is built, not in `Display`
+
+- **Written:** `ConfigureErrors::collect` writes every entry's text against the whole report's
+  set, then redacts it (`redact::redact_as`, new, `pub(crate)`: the scrub applied to a text the
+  core wrote, the original error kept for `downcast_ref`). `ConfigureErrors`'s `Display` writes
+  the stored entries.
+- **Why not in `Display`:** an entry's text is redacted against the graph's secrets when it is
+  stored, and `Display` has no registry. Writing it there would mean keeping the secrets inside
+  the returned error, or redacting a template with placeholders for the names. The report the
+  user reads is the same either way, since `listen()` holds every server's failure before it
+  builds `ConfigureErrors`.
+- **Consequence:** each `ConfigureError::source` prints the cross-report text, the same as its
+  entry in the report. `source.downcast_ref::<PrepareFailure>()` reaches the original, whose own
+  `Display` collides its names alone, as a `WiringError` displayed alone does. The
+  `pub(crate)` constructors `ConfigureErrors::new` and `ConfigureError::new` are gone.
+- **Sign-off needed:** build time, or `Display` with the secrets held in the error.
+
+### 51. `ulo-http` holds a `TypeName` wherever it held a `Key`
+
+- **Written:** `Supply::ty`, `Step::Adopt`'s type, the `forward` copies' type, `HostRead::ty`,
+  `PathCheck::ty` and the route table's `Who::controller`. `ulo-http` no longer imports `Key`.
+  Each host value type was printed and compared by `TypeId`, never looked up as a binding.
+- **The controller:** a controller is bound, but the route-table failures print only its type, in
+  `` `Type::method` ``, so `Who` and the `Host<T>` refusal hold the controller key's
+  `type_name()`. A controller key's qualifier would no longer print; `ModuleDef::controller::<C>()`
+  registers every controller unqualified, so no output changes.
+- **The `forward` panic log:** `type=` writes the `TypeName` with `{:#}`, the same full path.
+- **Sign-off needed:** the controller held as a `TypeName`, or as the `Key` with its type entered
+  into the pass.
+
+## Not covered
+
+- Transport names. ``transport `Http` `` is `transport_name`'s string, cut by its own rule (the last
+  segment, or the whole name when generic), and is not entered into the pass: two transports whose
+  markers share a last segment print alike. `ConfigureError::transport` is a public
+  `&'static str`, and `StartupError::Bind` and the shutdown reports name transports the same way.
+- Module names. `module::colliding_names` stays: a `ModuleName` carries a label and an instance
+  number beside its type.
+- The aliases and adapter crates, with race 2b, as before.
+- The DESIGN documents: neither names `TypeName` or `PrepareFailure` in its surface list.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, matches the one at
+  HEAD (`1174cdc7`, extracted by `git archive` into the scratchpad) on both toolchains, the 17 in
+  `crates/ulo/src`, but for one line: `graph/mod.rs`'s `exports is never read` moves from line 71
+  to 72, its `use` of `short_type_name` now on a line of its own. That moved line is the
+  comparison reporting a one-line difference. `cargo test --workspace` exits 0, and runs the new
+  `PrepareFailure` doctest. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-http --no-deps`
+  exits 0.
+- Scratch crate `embed`: the 51 checks of the fifth round, unchanged, plus 2 new ones, 53 in all,
+  pass under `#![deny(warnings)]` on rustc 1.98.1 and 1.88 with identical verdicts and texts. The
+  new imports sit at the bottom of `main.rs`, so the source locations the refusal checks assert
+  stay those of round five.
+- The second report source: `ulo-http`'s `Http` is the workspace's only transport, and a wiring
+  failure cannot share a report with a `prepare` failure, since `wire()` returns
+  `StartupError::Wiring` before `listen()` prepares anything. The scratch crate declares a second
+  transport, `Queue` (`Cx = ()`, `Reply = ()`), and a `QueueServer` whose `prepare` answers a
+  `PrepareFailure` naming `other::User` and `Ticket`; the app binds it beside an
+  `Embedded::<NoExt>`.
+
+| Check | Result |
+| --- | --- |
+| `Solo` reading `Host<User>` on `NoExt`, nothing supplied, bound with `QueueServer` | one report, 2 errors: `Host<embed::User>`, `Embedded::forward::<embed::User>(..)` in the `Http` entry, `embed::other::User` in the `Queue` entry; `Solo` and `Ticket` stay short |
+| `NeedsConfigs` reading `Config` from `cfg_a` and `cfg_b`, `Store` under `cfg_a::Replica` and `cfg_b::Replica`, and `Ticket`, none bound | wiring refused: `embed::cfg_a::Config`, `embed::cfg_b::Config`, `Store @ embed::cfg_a::Replica`, `Store @ embed::cfg_b::Replica`, `Ticket` |
+
+- Against a known violation, two runs, each a mutation of a restored source. Run 1, the
+  cross-report pass skipped (`ConfigureErrors::collect` writing each `PrepareFailure` against its
+  own names): the cross-report check fails, `Host<User>` in the `Http` entry, and the other 52
+  pass, the single-transport collision checks among them. Run 2, the wiring pass counting a key's
+  type and not its qualifier: the wiring check fails, `Replica` short, and the other 52 pass. Each
+  source was restored by `cp` from a copy taken before the mutations and compared byte for byte,
+  and a rerun passes 53.

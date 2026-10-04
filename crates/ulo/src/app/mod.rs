@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, ConfigureError, ConfigureErrors, LookupError, Shutdown, ShutdownError, StartupError, TimerMissing};
+use crate::error::{Closed, ConfigureErrors, LookupError, Shutdown, ShutdownError, StartupError, TimerMissing};
 use crate::execution::{ExecOptions, Execution};
 use crate::graph::{ModuleId, wire};
 use crate::lifecycle::phase::Phase as Stage;
@@ -208,15 +208,14 @@ impl App<Connected> {
         }
         let handle = self.handle();
 
-        let mut failures = Vec::new();
+        let mut refused = Vec::new();
         for server in &mut queued {
             if let Err(error) = server.prepare(&handle).await {
-                let source = redact(&self.shared.graph().secrets, error);
-                failures.push(ConfigureError::new(server.transport_name(), source));
+                refused.push((server.transport_name(), error));
             }
         }
-        if !failures.is_empty() {
-            return Err(StartupError::Configure(ConfigureErrors::new(failures)));
+        if !refused.is_empty() {
+            return Err(StartupError::Configure(ConfigureErrors::collect(refused, &self.shared.graph().secrets)));
         }
 
         let mut bound: Vec<Arc<dyn ErasedServer>> = Vec::with_capacity(queued.len());

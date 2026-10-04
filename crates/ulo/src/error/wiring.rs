@@ -3,10 +3,11 @@ use std::error::Error;
 use std::fmt;
 use std::panic::Location;
 
-use crate::key::{BindingKind, Key, KeyName, role_spelling, short_type_name};
+use crate::key::{BindingKind, KeyName, role_spelling};
 use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
 use crate::scope::ScopeKind;
+use crate::type_name::{TypeName, short_type_name};
 
 /// Every failure `wire()` found, one entry each, in the order the six steps of §10.1 found
 /// them. `Display` writes the full report:
@@ -24,8 +25,9 @@ use crate::scope::ScopeKind;
 /// ```
 ///
 /// Type names are cut to their last path segment. Where the report would print two different
-/// keys alike, `a::Config` and `b::Config`, or two different modules alike, `billing::Module` and
-/// `users::Module`, it prints those keys or modules with their full paths. Text an entry carries
+/// types alike, `a::Config` and `b::Config`, whether as a key's type or as its qualifier, it
+/// prints those types with their full paths, and the rest of each key short; two different
+/// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Text an entry carries
 /// already rendered, such as what reads a missing key or the steps of a path, stays short. A
 /// [`WiringError`] displayed on its own applies the same rule to the keys and modules it names.
 ///
@@ -67,7 +69,7 @@ impl fmt::Display for WiringErrors {
         let noun = if count == 1 { "error" } else { "errors" };
         write!(f, "error: wiring failed with {count} {noun}")?;
         let full = Collisions {
-            keys: colliding(self.errors.iter().flat_map(|error| error.key_names())),
+            types: colliding(self.errors.iter().flat_map(|error| error.key_names())),
             modules: colliding_names(self.errors.iter().flat_map(|error| error.module_names())),
         };
         for error in &self.errors {
@@ -287,13 +289,10 @@ impl WiringError {
 
     /// The entry, each key and module in `full` printed with its full paths.
     fn render(&self, f: &mut fmt::Formatter<'_>, full: &Collisions) -> fmt::Result {
-        let show = |name: &KeyName| if full.keys.contains(&name.key()) { format!("{name:#}") } else { name.to_string() };
+        let show = |name: &KeyName| name.text_in(&full.types);
         let show_module =
             |name: &ModuleName| if full.modules.contains(name) { format!("{name:#}") } else { name.to_string() };
-        let type_text = |name: &KeyName| {
-            let ty = name.key().type_name();
-            if full.keys.contains(&name.key()) { ty.to_owned() } else { short_type_name(ty) }
-        };
+        let type_text = |name: &KeyName| name.key().type_name().written(&full.types);
         match self {
             WiringError::ImportCycle { path } => tree(
                 f,
@@ -624,7 +623,7 @@ impl WiringError {
 /// help. `WiringErrors` indents it under its `×`.
 impl fmt::Display for WiringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let full = Collisions { keys: colliding(self.key_names()), modules: colliding_names(self.module_names()) };
+        let full = Collisions { types: colliding(self.key_names()), modules: colliding_names(self.module_names()) };
         self.render(f, &full)
     }
 }
@@ -676,10 +675,10 @@ impl fmt::Display for InputOrigin {
     }
 }
 
-/// What one report prints with full paths: the keys and the modules whose short form a different
-/// key, or a different module, in the same report shares.
+/// What one report prints with full paths: the types and the modules whose short form a different
+/// type, or a different module, in the same report shares.
 struct Collisions {
-    keys: HashSet<Key>,
+    types: HashSet<TypeName>,
     modules: HashSet<ModuleName>,
 }
 
@@ -695,11 +694,11 @@ impl fmt::Display for Rendered<'_> {
     }
 }
 
-/// The keys among `names` whose short form another, different key shares, `a::Config` beside
-/// `b::Config`. A key's kind is left out of the comparison: `Config` and `Config (collection)`
-/// read alike too.
-fn colliding<'a>(names: impl IntoIterator<Item = &'a KeyName>) -> HashSet<Key> {
-    Key::colliding(names.into_iter().map(KeyName::key))
+/// The types among the keys of `names` whose short form another, different type shares,
+/// `a::Config` beside `b::Config`, each key counting its type and its qualifier. A key's kind
+/// plays no part: `a::Config` and `b::Config (collection)` collide too.
+fn colliding<'a>(names: impl IntoIterator<Item = &'a KeyName>) -> HashSet<TypeName> {
+    TypeName::colliding(names.into_iter().flat_map(|name| name.key().type_names()))
 }
 
 /// Writes `head`, then each item on its own line under `├─`, the last under `└─`. A line break

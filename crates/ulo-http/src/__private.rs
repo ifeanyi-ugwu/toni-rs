@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
-use ulo::{BoxError, BoxFuture, Key};
+use ulo::{BoxError, BoxFuture, TypeName};
 
 pub use http::Method;
 pub use ulo_transport as transport;
@@ -97,12 +97,12 @@ impl<P> NotPath for PathProbe<P> {
 /// The value type a `Host<T>` parameter reads, for the embedding's `host_extensions` check.
 #[derive(Clone, Copy, Debug)]
 pub struct HostRead {
-    pub(crate) ty: Key,
+    pub(crate) ty: TypeName,
 }
 
 impl HostRead {
     fn of<T: 'static>() -> Self {
-        HostRead { ty: Key::of::<T, ()>() }
+        HostRead { ty: TypeName::of::<T>() }
     }
 }
 

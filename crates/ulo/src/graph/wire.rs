@@ -570,7 +570,7 @@ fn replace_recipe(node: &mut ModuleNode, position: usize, ov: &Override) {
     record.also.retain(|also| also.key.with_qualifier(qualifier.id, qualifier.name) != ov.key);
     let mut split = BindingRecord::new(
         unqualified(ov.key),
-        ov.key.type_name(),
+        ov.key.type_name().full(),
         BindingKind::Single,
         scope,
         ov.recipe.clone(),
@@ -609,7 +609,7 @@ fn apply_collections(registry: &mut Registry, collections: Vec<CollectionOverrid
             // `into_primary`.
             let mut record = BindingRecord::new(
                 unqualified(co.key),
-                co.key.type_name(),
+                co.key.type_name().full(),
                 BindingKind::Collection,
                 ScopeKind::Singleton,
                 Recipe::Value(item),

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use http::{HeaderValue, Method};
-use ulo::{Key, MountedHandler};
+use ulo::{MountedHandler, TypeName};
 
 use crate::__private::{HandlerFn, HttpHandler};
 use crate::cx::PathParams;
@@ -213,13 +213,13 @@ struct Group {
 /// A handler as a route-table failure names it, `` `Users::list` ``.
 #[derive(Clone, Copy)]
 struct Who {
-    controller: Key,
+    controller: TypeName,
     name: &'static str,
 }
 
 impl Who {
     fn of(handler: &MountedHandler<Http>) -> Who {
-        Who { controller: handler.controller().key(), name: handler.name() }
+        Who { controller: handler.controller().key().type_name(), name: handler.name() }
     }
 
     fn text(&self, names: &Names) -> String {

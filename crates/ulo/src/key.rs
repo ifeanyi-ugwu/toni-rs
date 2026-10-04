@@ -1,7 +1,9 @@
-use std::any::{TypeId, type_name};
-use std::collections::{HashMap, HashSet};
+use std::any::TypeId;
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+
+use crate::type_name::TypeName;
 
 /// The pair of a type and a qualifier that a binding is stored under: `Key::of::<PgPool, Replica>()`.
 ///
@@ -10,51 +12,35 @@ use std::hash::{Hash, Hasher};
 /// An integration crate holding a `Key` at runtime looks it up erased through
 /// [`Resolver::by_key`](crate::Resolver::by_key).
 ///
-/// A transport's own startup report names a type through a `Key` too, bound or not, so its names
-/// follow the wiring report's rule: short, and with full paths where [`Key::colliding`] says.
+/// `Display` writes a key through the [`TypeName`]s of its type and its qualifier, and a report
+/// decides full paths per `TypeName`, not per key: `Store @ a::Replica` beside
+/// `Store @ b::Replica`. [`Key::type_name`] is the key's type.
 #[derive(Clone, Copy)]
 pub struct Key {
-    ty: TypeId,
-    qualifier: TypeId,
-    ty_name: &'static str,
-    q_name: &'static str,
+    ty: TypeName,
+    qualifier: TypeName,
 }
 
 impl Key {
     pub fn of<T: ?Sized + 'static, Q: 'static>() -> Key {
-        Key {
-            ty: TypeId::of::<T>(),
-            qualifier: TypeId::of::<Q>(),
-            ty_name: type_name::<T>(),
-            q_name: type_name::<Q>(),
-        }
+        Key { ty: TypeName::of::<T>(), qualifier: TypeName::of::<Q>() }
     }
 
-    /// The keys among `keys` whose display another, different key among them shares,
-    /// `a::Config` beside `b::Config`: the ones a report prints with `{:#}`. Run over every key
-    /// one report names, it decides which of them that report writes with full paths, as the
-    /// wiring report does.
-    pub fn colliding(keys: impl IntoIterator<Item = Key>) -> HashSet<Key> {
-        let mut by_text: HashMap<String, Vec<Key>> = HashMap::new();
-        for key in keys {
-            let alike = by_text.entry(key.to_string()).or_default();
-            if !alike.contains(&key) {
-                alike.push(key);
-            }
-        }
-        by_text.into_values().filter(|alike| alike.len() > 1).flatten().collect()
+    /// The type the key binds, without its qualifier.
+    pub fn type_name(&self) -> TypeName {
+        self.ty
     }
 
     /// The same type under another qualifier: `qualified::<Q>()` on a handle, and the
     /// requalification of a keyed module's exports (§8.3).
     pub(crate) fn requalified<Q: 'static>(self) -> Key {
-        Key { qualifier: TypeId::of::<Q>(), q_name: type_name::<Q>(), ..self }
+        Key { qualifier: TypeName::of::<Q>(), ..self }
     }
 
     /// Requalification by a qualifier known only as a runtime value, which is how a `Keyed`
     /// module's qualifier reaches its export boundary.
     pub(crate) fn with_qualifier(self, qualifier: TypeId, q_name: &'static str) -> Key {
-        Key { qualifier, q_name, ..self }
+        Key { qualifier: TypeName::from_parts(qualifier, q_name), ..self }
     }
 
     /// A key rebuilt from ids held as runtime values, as a module's identity holds its type and
@@ -65,40 +51,54 @@ impl Key {
         qualifier: TypeId,
         q_name: &'static str,
     ) -> Key {
-        Key { ty, qualifier, ty_name, q_name }
+        Key { ty: TypeName::from_parts(ty, ty_name), qualifier: TypeName::from_parts(qualifier, q_name) }
     }
 
     pub(crate) fn type_id(&self) -> TypeId {
-        self.ty
+        self.ty.id()
     }
 
     pub(crate) fn qualifier_id(&self) -> TypeId {
-        self.qualifier
+        self.qualifier.id()
     }
 
-    pub(crate) fn type_name(&self) -> &'static str {
-        self.ty_name
+    /// `None` for the unqualified `()`.
+    pub(crate) fn qualifier(&self) -> Option<TypeName> {
+        (!self.is_unqualified()).then_some(self.qualifier)
     }
 
     /// `None` for the unqualified `()`.
     pub(crate) fn qualifier_name(&self) -> Option<&'static str> {
-        (self.qualifier != TypeId::of::<()>()).then_some(self.q_name)
+        self.qualifier().map(|q| q.full())
     }
 
     pub(crate) fn is_unqualified(&self) -> bool {
-        self.qualifier == TypeId::of::<()>()
+        self.qualifier.id() == TypeId::of::<()>()
+    }
+
+    /// The type and, when there is one, the qualifier: every name the key prints.
+    pub(crate) fn type_names(self) -> impl Iterator<Item = TypeName> {
+        std::iter::once(self.ty).chain(self.qualifier())
     }
 
     pub(crate) fn name(&self, kind: BindingKind) -> KeyName {
         KeyName { key: *self, kind }
     }
 
-    /// Built whole so `Display` can pad it as one string. `full` keeps every path, for a report
-    /// where two keys would otherwise print alike.
+    /// Built whole so `Display` can pad it as one string. `full` keeps every path.
     fn text(&self, full: bool) -> String {
-        let name = |n: &'static str| if full { n.to_owned() } else { short_type_name(n) };
-        let mut text = role_spelling(&name(self.ty_name));
-        if let Some(q) = self.qualifier_name() {
+        self.text_with(|name| if full { format!("{name:#}") } else { name.to_string() })
+    }
+
+    /// The key as a report writes it: each of its names in `full` with its full path, the others
+    /// short, so `a::Config @ Replica` beside `b::Config`.
+    pub(crate) fn text_in(&self, full: &HashSet<TypeName>) -> String {
+        self.text_with(|name| name.written(full))
+    }
+
+    fn text_with(&self, name: impl Fn(TypeName) -> String) -> String {
+        let mut text = role_spelling(&name(self.ty));
+        if let Some(q) = self.qualifier() {
             text.push_str(" @ ");
             text.push_str(&name(q));
         }
@@ -164,13 +164,23 @@ impl KeyName {
     }
 }
 
-impl fmt::Display for KeyName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut text = self.key.text(f.alternate());
+impl KeyName {
+    /// The name as a report writes it, each type in `full` with its full path.
+    pub(crate) fn text_in(&self, full: &HashSet<TypeName>) -> String {
+        self.with_kind(self.key.text_in(full))
+    }
+
+    fn with_kind(&self, mut text: String) -> String {
         if self.kind == BindingKind::Collection {
             text.push_str(" (collection)");
         }
-        f.pad(&text)
+        text
+    }
+}
+
+impl fmt::Display for KeyName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(&self.with_kind(self.key.text(f.alternate())))
     }
 }
 
@@ -180,7 +190,6 @@ impl fmt::Debug for KeyName {
     }
 }
 
-/// The diagnostic spelling of a `type_name`: module paths stripped from every segment, so
 /// A role key as a user writes it: the key's type, `dyn ErasedGuard<Http>`, reads `AnyGuard<Http>`,
 /// and `dyn ulo::transport::ErasedGuard<..>` reads `ulo::transport::AnyGuard<..>`. Text not opening
 /// with one of the three erased traits is returned as given. Display only: roles themselves are
@@ -199,53 +208,4 @@ pub(crate) fn role_spelling(text: &str) -> String {
         _ => return text.to_owned(),
     };
     format!("{prefix}{alias}{tail}")
-}
-
-/// `alloc::sync::Arc<my_app::db::PgPool>` reads `Arc<PgPool>`. Shared by `Key`, `KeyName`,
-/// `ModuleName` and every wiring report.
-///
-/// Only the paths change: `dyn my_app::Repo + core::marker::Send` reads `dyn Repo + Send`, and the
-/// punctuation of references, slices, tuples, function pointers and qualified paths is copied as
-/// written. Two types whose last segments match print alike.
-pub(crate) fn short_type_name(full: &'static str) -> String {
-    let mut out = String::with_capacity(full.len());
-    let mut rest = full;
-    while let Some(c) = rest.chars().next() {
-        if is_path_char(c) {
-            let end = rest.find(|c: char| !is_path_char(c)).unwrap_or(rest.len());
-            push_last_segment(&mut out, &rest[..end]);
-            rest = &rest[end..];
-        } else {
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
-        }
-    }
-    out
-}
-
-/// The characters of one `a::b::{{closure}}` run. `type_name` writes `:` only inside `::`.
-fn is_path_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | ':' | '{' | '}')
-}
-
-/// Writes the last segment of `path`. A closure segment such as `{{closure}}` keeps the item
-/// that encloses it, which is the part that names it. A leading `::`, as after the `>` of
-/// `<A as Tr>::Out`, is kept.
-fn push_last_segment(out: &mut String, path: &str) {
-    let path = match path.strip_prefix("::") {
-        Some(tail) => {
-            out.push_str("::");
-            tail
-        }
-        None => path,
-    };
-    let mut segments = path.rsplit("::");
-    let last = segments.next().unwrap_or("");
-    if last.starts_with('{') {
-        if let Some(enclosing) = segments.next() {
-            out.push_str(enclosing);
-            out.push_str("::");
-        }
-    }
-    out.push_str(last);
 }

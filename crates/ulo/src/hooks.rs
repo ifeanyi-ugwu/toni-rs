@@ -17,11 +17,11 @@ use std::sync::Arc;
 use crate::binding::{Instance, downcast_instance};
 use crate::construct::Construct;
 use crate::dependency::Dependencies;
-use crate::key::short_type_name;
 use crate::resolver::Resolver;
 use crate::scope::HookCapable;
 use crate::signal::Signal;
 use crate::timer::{BoxError, BoxFuture, Bound};
+use crate::type_name::short_type_name;
 
 pub trait OnModuleInit: Construct<Scope: HookCapable> {
     const TIMEOUT: Bound = Bound::Default;

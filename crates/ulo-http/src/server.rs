@@ -1,12 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ulo::{Bound, BoundAddr, BoxError, DrainToken, Key, Mounted, Transport};
+use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, PrepareFailure, Transport, TypeName};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Admission;
 
@@ -269,34 +268,8 @@ pub(crate) fn prepare_app(
     (service, upgrading)
 }
 
-/// Every failure one `prepare` found, which `listen()` reports as one `StartupError::Configure`
-/// entry for the HTTP transport.
-#[derive(Debug)]
-pub(crate) struct PrepareError {
-    pub(crate) failures: Failures,
-}
-
-/// Each failure is written against the keys of the whole report, so a type prints by its last
-/// path segment unless another type in the report prints alike, as in the core's wiring report.
-impl fmt::Display for PrepareError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names = Names { full: Key::colliding(self.failures.0.iter().flat_map(Failure::keys).copied()) };
-        match self.failures.0.as_slice() {
-            [] => f.write_str("the route table could not be built"),
-            [failure] => f.write_str(&failure.text(&names)),
-            failures => {
-                write!(f, "{} problems:", failures.len())?;
-                for failure in failures {
-                    write!(f, "\n  - {}", failure.text(&names))?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
 /// The failures of one `prepare`, in the order found.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct Failures(Vec<Failure>);
 
 impl Failures {
@@ -306,6 +279,30 @@ impl Failures {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The error `prepare` answers, which `listen()` reports as one `StartupError::Configure`
+    /// entry for the HTTP transport. It names every type the failures name, so the report writes
+    /// each failure against the types of every transport's failures: a type prints by its last
+    /// path segment unless another type in the report prints alike, as in the core's wiring
+    /// report.
+    pub(crate) fn into_error(self) -> PrepareFailure {
+        let names: Vec<TypeName> = self.0.iter().flat_map(Failure::names).copied().collect();
+        PrepareFailure::new(names, move |full| {
+            let names = Names { full };
+            match self.0.as_slice() {
+                [] => "the route table could not be built".to_owned(),
+                [failure] => failure.text(&names),
+                failures => {
+                    let mut text = format!("{} problems:", failures.len());
+                    for failure in failures {
+                        text.push_str("\n  - ");
+                        text.push_str(&failure.text(&names));
+                    }
+                    text
+                }
+            }
+        })
     }
 }
 
@@ -319,23 +316,23 @@ impl<F: Into<Failure>> Extend<F> for Failures {
 /// whether a type prints by its full path depends on every other type the report names.
 pub(crate) enum Failure {
     Plain(String),
-    Naming { keys: Vec<Key>, text: Box<dyn Fn(&Names) -> String + Send + Sync> },
+    Naming { names: Vec<TypeName>, text: Box<dyn Fn(&Names<'_>) -> String + Send + Sync> },
 }
 
 impl Failure {
-    /// A failure naming the types of `keys`, each written in `text` through [`Names::of`].
-    pub(crate) fn naming(keys: Vec<Key>, text: impl Fn(&Names) -> String + Send + Sync + 'static) -> Failure {
-        Failure::Naming { keys, text: Box::new(text) }
+    /// A failure naming the types in `names`, each written in `text` through [`Names::of`].
+    pub(crate) fn naming(names: Vec<TypeName>, text: impl Fn(&Names<'_>) -> String + Send + Sync + 'static) -> Failure {
+        Failure::Naming { names, text: Box::new(text) }
     }
 
-    fn keys(&self) -> &[Key] {
+    fn names(&self) -> &[TypeName] {
         match self {
             Failure::Plain(_) => &[],
-            Failure::Naming { keys, .. } => keys,
+            Failure::Naming { names, .. } => names,
         }
     }
 
-    fn text(&self, names: &Names) -> String {
+    fn text(&self, names: &Names<'_>) -> String {
         match self {
             Failure::Plain(text) => text.clone(),
             Failure::Naming { text, .. } => text(names),
@@ -351,24 +348,22 @@ impl From<String> for Failure {
 
 impl fmt::Debug for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names = Names { full: Key::colliding(self.keys().iter().copied()) };
-        f.write_str(&self.text(&names))
+        let full = TypeName::colliding(self.names().iter().copied());
+        f.write_str(&self.text(&Names { full: &full }))
     }
 }
 
-/// How one report writes a type: the keys whose display another key in the report shares.
-pub(crate) struct Names {
-    full: HashSet<Key>,
+/// How one report writes a type: the names whose short form another type in the report shares.
+pub(crate) struct Names<'a> {
+    full: &'a HashSet<TypeName>,
 }
 
-impl Names {
+impl Names<'_> {
     /// `User`, or `my_app::User` where another type in the report also prints as `User`.
-    pub(crate) fn of(&self, key: Key) -> String {
-        if self.full.contains(&key) { format!("{key:#}") } else { key.to_string() }
+    pub(crate) fn of(&self, name: TypeName) -> String {
+        if self.full.contains(&name) { format!("{name:#}") } else { name.to_string() }
     }
 }
-
-impl Error for PrepareError {}
 
 impl<B: Backend> ulo::Server for Server<B> {
     type Transport = Http;
@@ -403,7 +398,7 @@ impl<B: Backend> ulo::Server for Server<B> {
             },
         };
         let Some(service) = service.filter(|_| failures.is_empty()) else {
-            return Err(Box::new(PrepareError { failures }));
+            return Err(Box::new(failures.into_error()));
         };
         self.prepared = Some(Prepared { endpoints, tls, service });
         Ok(())

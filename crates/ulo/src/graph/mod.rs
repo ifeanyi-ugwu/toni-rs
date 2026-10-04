@@ -20,12 +20,13 @@ use crate::dependency::{Dependencies, DependencyLabel, DependencyRecord, ReadKin
 use crate::error::wiring::InputOrigin;
 use crate::error::{LookupError, LookupKind};
 use crate::hooks::HookRecord;
-use crate::key::{BindingKind, Key, KeyName, short_type_name};
+use crate::key::{BindingKind, Key, KeyName};
 use crate::module::meta::FrozenMeta;
 use crate::module::{ModuleIdentity, ModuleName};
 use crate::redact::SecretRegistry;
 use crate::transport::controller::HandlerRecord;
 use crate::transport::enhancer::ClosureId;
+use crate::type_name::short_type_name;
 
 /// A module's position in collection order: depth-first post-order over imports from the root,
 /// imports in the order written. Lazily loaded modules follow, in load order.
