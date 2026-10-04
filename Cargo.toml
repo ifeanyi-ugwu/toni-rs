@@ -10,7 +10,7 @@ members = [
     "crates/ulo-tokio",
     "crates/ulo-http",
     "crates/ulo-http-macros",
-    "crates/ulo-http-axum",
+    "crates/ulo-http-hyper",
 ]
 # Crates not yet ported to the DI redesign; each moves to `members` once it is.
 exclude = [

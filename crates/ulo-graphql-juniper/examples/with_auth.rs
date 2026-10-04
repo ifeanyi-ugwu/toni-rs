@@ -12,7 +12,7 @@ use juniper::{EmptySubscription, FieldResult, RootNode, graphql_object};
 use std::sync::Arc;
 use ulo::{UloFactory, injectable, module};
 use ulo_graphql_juniper::{ContextBuilder, GraphQLModule};
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 // ============================================================================
 // Domain Models

@@ -14,7 +14,7 @@ use sqlx::{Pool, Postgres};
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_sqlx::SqlxModule;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 #[injectable]
 pub struct Reports {

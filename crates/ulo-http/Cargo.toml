@@ -3,7 +3,7 @@ name = "ulo-http"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The HTTP transport for Ulo: routing, extractors, responses, SSE, pre-dispatch middleware and the backend SPI"
+description = "The HTTP transport for Ulo: routing, extractors, responses, SSE, pre-dispatch middleware, the backend SPI and the embedding surface"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -22,6 +22,10 @@ headers.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
+# The upgrade future a hyper-based host stores on a request, taken by `embed::Service`, and its
+# I/O as tokio's traits.
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
 multer.workspace = true
 percent-encoding.workspace = true
 pin-project-lite.workspace = true

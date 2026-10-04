@@ -10,7 +10,7 @@
 use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_object};
 use ulo::{UloFactory, module};
 use ulo_graphql_juniper::{DefaultContext, DefaultContextBuilder, GraphQLModule};
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 // Define Query type
 struct Query;

@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::app::load;
 use crate::app::shared::AppShared;
@@ -74,6 +75,13 @@ impl AppHandle {
 
     pub fn is_draining(&self) -> bool {
         self.shared.draining.is_fired()
+    }
+
+    /// The drain window `AppBuilder::drain_timeout` set, ten seconds unset; zero on an app without
+    /// a `Timer`, which abandons live executions at once. A transport whose host server drains on
+    /// its own clock passes this to it, so the window is set in one place.
+    pub fn drain_timeout(&self) -> Duration {
+        self.shared.config.drain()
     }
 
     /// Where the app is in its life (transports DESIGN §11, X13). gRPC health reads it to report

@@ -19,5 +19,5 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]
-ulo-http-axum = { path = "../ulo-http-axum", version = "0.1.0" }
+ulo-http-hyper = { path = "../ulo-http-hyper", version = "0.1.0" }
 tokio = { workspace = true, features = ["full"] }

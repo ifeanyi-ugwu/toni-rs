@@ -46,7 +46,8 @@ use crate::transport::RequestHead;
 ///     .apply::<RequestId>()                                           // unscoped: every request, misses included
 ///     .layer(TraceLayer::new_for_http())                              // tower, unscoped
 ///     .layer_for(["/files/*"], RequestBodyLimitLayer::new(50 * MB))   // tower, scoped by route pattern
-///     .apply_for::<ApiKeyAuth>(["/admin/*"]).exclude(["/admin/health"]);
+///     .apply_for::<ApiKeyAuth>(["/admin/*"]).exclude(["/admin/health"])
+///     .adopt::<CurrentUser>();                                        // a host's value, as `Ext<CurrentUser>`
 /// ```
 ///
 /// A scope is a route pattern whose last segment may be `*`, matched against route patterns when
@@ -87,7 +88,12 @@ pub(crate) enum Step {
     ByType(fn(ModuleRef) -> BoxFuture<'static, Result<Arc<dyn ErasedMiddleware>, LookupError>>),
     Value(Arc<dyn ErasedMiddleware>),
     Layer(Arc<dyn ErasedLayer>),
+    /// Copies one type from the request's `http::Extensions` into the execution's.
+    Adopt(Adopt),
 }
+
+/// What an `adopt::<T>()` entry runs.
+pub(crate) type Adopt = fn(&http::request::Parts, &ExecutionRef);
 
 impl Meta for PreDispatch {
     fn dependencies(&self, d: &mut Dependencies) {
@@ -158,6 +164,19 @@ impl PreDispatch {
         self.push(Step::Layer(Arc::new(LayerOf(layer))), Some(scope), declare_nothing, None)
     }
 
+    /// Copies the value `T` from the request's `http::Extensions`, where a host's middleware or a
+    /// tower layer before this entry put it, into the execution's extensions, so guards,
+    /// interceptors and execution-scoped services read it as `Ext<T>`. Unscoped: it runs for
+    /// every request, misses included, at its place in declaration order. A request carrying no
+    /// `T` passes unchanged, and `Ext<T>` then fails with `LookupError::NotFound`.
+    ///
+    /// That is how a host's auth layer hands its user to the app's guards; a handler reads a host
+    /// value directly with `Host<T>`.
+    #[track_caller]
+    pub fn adopt<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        self.push(Step::Adopt(adopt::<T>), None, declare_nothing, None)
+    }
+
     /// Removes the routes `patterns` cover from the entry written before it. With no entry
     /// before it, `prepare` reports the call.
     #[track_caller]
@@ -203,6 +222,12 @@ fn declare<M: Middleware>(d: &mut Dependencies) {
 }
 
 fn declare_nothing(_: &mut Dependencies) {}
+
+fn adopt<T: Clone + Send + Sync + 'static>(head: &http::request::Parts, exec: &ExecutionRef) {
+    if let Some(value) = head.extensions.get::<T>() {
+        exec.extensions().insert(value.clone());
+    }
+}
 
 /// Every module's entries, in collection order, as one stage, each scoped entry with the module
 /// that declared it and its index in that module's `PreDispatch::entries`.
@@ -253,6 +278,7 @@ enum Action {
     ByType(fn(ModuleRef) -> BoxFuture<'static, Result<Arc<dyn ErasedMiddleware>, LookupError>>),
     Value(Arc<dyn ErasedMiddleware>),
     Layer(LayeredService),
+    Adopt(Adopt),
 }
 
 impl Stage {
@@ -277,6 +303,7 @@ impl Stage {
                     Step::ByType(resolve) => Action::ByType(*resolve),
                     Step::Value(middleware) => Action::Value(Arc::clone(middleware)),
                     Step::Layer(layer) => Action::Layer(layer.layer(Service::default())),
+                    Step::Adopt(copy) => Action::Adopt(*copy),
                 };
                 if !entry.scoped {
                     run.push(Runnable { module: module.clone(), action, exclude });
@@ -430,6 +457,11 @@ impl Runnable {
                     let middleware = resolving.await?;
                     handle(middleware, req, rest).await
                 })
+            }
+            Action::Adopt(copy) => {
+                copy(&req.head, exec);
+                let answer = rest(req);
+                Box::pin(async move { Ok::<_, BoxError>(answer.await) })
             }
             Action::Layer(service) => {
                 let service = Arc::clone(service);

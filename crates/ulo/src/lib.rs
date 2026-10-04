@@ -82,7 +82,7 @@ pub use transport::inputs::Inputs;
 pub use transport::metadata::{MetaTier, Metadata};
 pub use transport::next::Next;
 pub use transport::pipeline::{LateOutcome, dispatch, dispatch_late, recover};
-pub use transport::server::{BoundAddr, DrainToken, Mounted, Server};
+pub use transport::server::{BoundAddr, DrainToken, InputReader, Mounted, Server};
 pub use transport::{
     AnyErrorHandler, AnyGuard, AnyInterceptor, ErasedErrorHandler, ErasedGuard,
     ErasedInterceptor, ErrorHandler, Guard, Interceptor, Role, Transport,

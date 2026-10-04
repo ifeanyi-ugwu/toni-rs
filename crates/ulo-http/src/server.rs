@@ -22,7 +22,7 @@ use crate::upgrade::{UpgradeHandler, Upgrades};
 /// handlers and module metadata.
 ///
 /// ```ignore
-/// app.bind(ulo_http_axum::Server::new("0.0.0.0:8080").tls(Tls::from_pem_files("cert.pem", "key.pem")))
+/// app.bind(ulo_http_hyper::Server::new("0.0.0.0:8080").tls(Tls::from_pem_files("cert.pem", "key.pem")))
 /// ```
 ///
 /// `prepare` builds the route table and the pre-dispatch stage, parses every endpoint, loads TLS,
@@ -217,11 +217,59 @@ fn upgrade_paths(mounted: &Mounted<'_, Http>, failures: &mut Vec<String>) -> Vec
     paths
 }
 
+/// What both HTTP servers build in `prepare` from the app, [`Server`] over a backend and
+/// `embed::Embedded` over a host (R20): the pre-dispatch stage, the route table, the upgrade paths
+/// and the admission, as one [`AppService`]. Its failures go to `failures`; the service is `None`
+/// when the stage or the route table failed.
+///
+/// `mount` is the embedding's normalized prefix and `forward` its `Miss::Forward`; a backend
+/// passes `""` and `false`. Answers whether any upgrade path is registered, for the caller's own
+/// `upgrades` limit.
+pub(crate) fn prepare_app(
+    mounted: &Mounted<'_, Http>,
+    config: &HttpConfig,
+    mount: &str,
+    forward: bool,
+    failures: &mut Vec<String>,
+) -> (Option<AppService>, bool) {
+    let stage = match Stage::build(mounted.module_meta::<PreDispatch>()) {
+        Ok(stage) => stage,
+        Err(errors) => {
+            failures.extend(errors);
+            Stage::empty()
+        }
+    };
+    let router = match Router::build(mounted.handlers(), config.body_limit, &stage, mount) {
+        Ok(router) => Some(router),
+        Err(errors) => {
+            failures.extend(errors.into_iter().map(|error| error.message));
+            None
+        }
+    };
+    let upgrades = upgrade_paths(mounted, failures);
+    let upgrading = !upgrades.is_empty();
+    let service = router.map(|router| {
+        let config = Arc::new(config.clone());
+        AppService::new(ServiceInner {
+            app: mounted.app().clone(),
+            router,
+            stage,
+            upgrades,
+            admission: Admission::new(config.max_inflight).retry_after(config.shed_retry_after),
+            config,
+            timer: Arc::clone(mounted.timer()),
+            mount: Arc::from(mount),
+            forward,
+        })
+    });
+    (service, upgrading)
+}
+
 /// Every failure one `prepare` found, which `listen()` reports as one `StartupError::Configure`
 /// entry for the HTTP transport.
 #[derive(Debug)]
-struct PrepareError {
-    failures: Vec<String>,
+pub(crate) struct PrepareError {
+    pub(crate) failures: Vec<String>,
 }
 
 impl fmt::Display for PrepareError {
@@ -248,22 +296,8 @@ impl<B: Backend> ulo::Server for Server<B> {
     async fn prepare(&mut self, mounted: Mounted<'_, Http>) -> Result<(), BoxError> {
         let mut failures = Vec::new();
         let limits = B::limits();
-        let stage = match Stage::build(mounted.module_meta::<PreDispatch>()) {
-            Ok(stage) => stage,
-            Err(errors) => {
-                failures.extend(errors);
-                Stage::empty()
-            }
-        };
-        let router = match Router::build(mounted.handlers(), self.config.body_limit, &stage) {
-            Ok(router) => Some(router),
-            Err(errors) => {
-                failures.extend(errors.into_iter().map(|error| error.message));
-                None
-            }
-        };
-        let upgrades = upgrade_paths(&mounted, &mut failures);
-        if !upgrades.is_empty() && !limits.upgrades {
+        let (service, upgrading) = prepare_app(&mounted, &self.config, "", false, &mut failures);
+        if upgrading && !limits.upgrades {
             failures.push(format!(
                 "the {} backend declares `upgrades: false`, so it cannot hand a WebSocket upgrade to a gateway on its port; \
                  serve the gateways on a separate port",
@@ -288,19 +322,9 @@ impl<B: Backend> ulo::Server for Server<B> {
                 }
             },
         };
-        let Some(router) = router.filter(|_| failures.is_empty()) else {
+        let Some(service) = service.filter(|_| failures.is_empty()) else {
             return Err(Box::new(PrepareError { failures }));
         };
-        let config = Arc::new(self.config.clone());
-        let service = AppService::new(ServiceInner {
-            app: mounted.app().clone(),
-            router,
-            stage,
-            upgrades,
-            admission: Admission::new(config.max_inflight).retry_after(config.shed_retry_after),
-            config,
-            timer: Arc::clone(mounted.timer()),
-        });
         self.prepared = Some(Prepared { endpoints, tls, service });
         Ok(())
     }

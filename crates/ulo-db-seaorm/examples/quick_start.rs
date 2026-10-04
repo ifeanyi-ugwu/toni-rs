@@ -14,7 +14,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_seaorm::SeaOrmModule;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 #[injectable]
 pub struct DbProbe {

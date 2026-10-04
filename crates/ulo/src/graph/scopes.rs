@@ -377,19 +377,48 @@ fn execution_steps(graph: &Graph, id: BindingId) -> Vec<String> {
 
 /// For each handler, every non-optional input on its reachable execution-scoped bindings that
 /// the handler's transport does not seed, with the path from the handler to the service that
-/// reads it, the handler's transport and the input's seeder.
+/// reads it, the handler's transport and the input's seeder. Each input is reported once per
+/// handler and reading binding.
+pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
+    for handler in &graph.handlers {
+        for read in input_reads(graph, handler) {
+            let Some(decl) = graph.inputs.get(&read.input) else { continue };
+            if decl.seeder == handler.decl.transport {
+                continue;
+            }
+            errors.push(WiringError::InputNotSeeded {
+                handler: graph.handler_name(handler),
+                transport: handler.decl.transport_name,
+                input: read.input.name(BindingKind::Single),
+                seeder: decl.seeder_name,
+                path: read.path,
+            });
+        }
+    }
+}
+
+/// One non-optional read of an execution input that a handler reaches, as [`input_reads`] finds
+/// it.
+pub(crate) struct InputRead {
+    pub(crate) input: Key,
+    /// The path from the handler to the injection point, the handler first:
+    /// `UsersController::get (Http) → Audit (execution) → Dep<ClientAddr> (field `addr`)`.
+    pub(crate) path: Vec<String>,
+}
+
+/// Every non-optional read of an execution input that `handler` reaches, once per input and
+/// reading binding, whoever seeds it.
 ///
 /// What a handler reaches: its controller, the global enhancers under its transport's role
 /// keys, what its own parameters read (`HandlerSpec::dependencies`), the bindings its by-type
 /// enhancers name, and what its enhancer closures built in an execution read. An input a
-/// parameter or a closure reads directly is checked there. The walk enters execution-scoped and
+/// parameter or a closure reads directly is found there. The walk enters execution-scoped and
 /// transient bindings only, since a singleton is built at `connect` with no execution, and one
-/// reading an input has already failed the scope check. Each input is reported once per handler
-/// and reading binding.
-pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
-    for handler in &graph.handlers {
-        InputWalk::new(graph, handler).run(errors);
-    }
+/// reading an input has already failed the scope check.
+pub(crate) fn input_reads(graph: &Graph, handler: &HandlerRecord) -> Vec<InputRead> {
+    let mut walk = InputWalk::new(graph, handler);
+    walk.run();
+    walk.reads
 }
 
 struct InputWalk<'g> {
@@ -397,23 +426,24 @@ struct InputWalk<'g> {
     handler: &'g HandlerRecord,
     /// The handler as the first step of a path: `UsersController::get_rpc (Rpc)`.
     head: String,
-    reported: HashSet<(Key, Option<BindingId>)>,
+    seen: HashSet<(Key, Option<BindingId>)>,
+    reads: Vec<InputRead>,
 }
 
 impl<'g> InputWalk<'g> {
     fn new(graph: &'g Graph, handler: &'g HandlerRecord) -> Self {
         let head = format!("{} ({})", graph.handler_name(handler), handler.decl.transport_name);
-        InputWalk { graph, handler, head, reported: HashSet::new() }
+        InputWalk { graph, handler, head, seen: HashSet::new(), reads: Vec::new() }
     }
 
-    fn run(mut self, errors: &mut Vec<WiringError>) {
+    fn run(&mut self) {
         let graph = self.graph;
         let handler = self.handler;
         let mut roots = vec![handler.controller];
         for key in handler.decl.role_keys {
             roots.extend(graph.collection(key).iter().copied());
         }
-        self.read_roots(&handler.decl.dependencies, None, &mut roots, errors);
+        self.read_roots(&handler.decl.dependencies, None, &mut roots);
         for dep in &handler.decl.enhancer_deps {
             match dep {
                 EnhancerDep::Type(key) => {
@@ -424,7 +454,7 @@ impl<'g> InputWalk<'g> {
                 // A closure built once reads no execution data, or `closure_scopes` refused it.
                 EnhancerDep::Closure(closure) if graph.closures.get(&closure.id) == Some(&Effective::Singleton) => {}
                 EnhancerDep::Closure(closure) => {
-                    self.read_roots(&closure.dependencies, Some("enhancer closure"), &mut roots, errors);
+                    self.read_roots(&closure.dependencies, Some("enhancer closure"), &mut roots);
                 }
             }
         }
@@ -444,7 +474,7 @@ impl<'g> InputWalk<'g> {
                         let mut path = vec![self.head.clone()];
                         path.extend(chain(&parent, node).into_iter().map(|step| graph.scoped_label(step)));
                         path.push(graph.dependency_step(node, edge.dependency));
-                        self.report(*input, Some(node), path, errors);
+                        self.record(*input, Some(node), path);
                     }
                 }
             }
@@ -459,15 +489,9 @@ impl<'g> InputWalk<'g> {
 
     /// What `dependencies`, read inside the handler's execution, reach: each binding a single read
     /// resolves to and every contribution of a collection read, pushed onto `roots`, and each
-    /// non-optional input read directly, reported here. `via` names what reads them between the
+    /// non-optional input read directly, recorded here. `via` names what reads them between the
     /// handler and the injection point, `None` for the handler's own parameters.
-    fn read_roots(
-        &mut self,
-        dependencies: &Dependencies,
-        via: Option<&str>,
-        roots: &mut Vec<BindingId>,
-        errors: &mut Vec<WiringError>,
-    ) {
+    fn read_roots(&mut self, dependencies: &Dependencies, via: Option<&str>, roots: &mut Vec<BindingId>) {
         let graph = self.graph;
         let module = self.handler.module;
         for dependency in &dependencies.list {
@@ -478,7 +502,7 @@ impl<'g> InputWalk<'g> {
                             let mut path = vec![self.head.clone()];
                             path.extend(via.map(str::to_owned));
                             path.push(dependency_text(dependency));
-                            self.report(*input, None, path, errors);
+                            self.record(*input, None, path);
                         }
                         Some(Visible::Binding(id)) => roots.push(*id),
                         _ => {}
@@ -490,18 +514,10 @@ impl<'g> InputWalk<'g> {
         }
     }
 
-    fn report(&mut self, input: Key, reader: Option<BindingId>, path: Vec<String>, errors: &mut Vec<WiringError>) {
-        let Some(decl) = self.graph.inputs.get(&input) else { return };
-        if decl.seeder == self.handler.decl.transport || !self.reported.insert((input, reader)) {
-            return;
+    fn record(&mut self, input: Key, reader: Option<BindingId>, path: Vec<String>) {
+        if self.seen.insert((input, reader)) {
+            self.reads.push(InputRead { input, path });
         }
-        errors.push(WiringError::InputNotSeeded {
-            handler: self.graph.handler_name(self.handler),
-            transport: self.handler.decl.transport_name,
-            input: input.name(BindingKind::Single),
-            seeder: decl.seeder_name,
-            path,
-        });
     }
 }
 

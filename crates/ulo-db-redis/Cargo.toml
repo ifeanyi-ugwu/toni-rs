@@ -29,6 +29,6 @@ redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["redis"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-ulo-http-axum = { path = "../ulo-http-axum" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }
 reqwest = { workspace = true, features = ["json"] }
 anyhow.workspace = true

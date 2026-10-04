@@ -6,11 +6,12 @@
 //! ```text
 //! ::ulo_http::__private::HttpHandler::new(::ulo_http::__private::Method::GET, "/users/{id}", __ulo_call)
 //!     .path_check((&&::ulo_http::__private::PathProbe::<P0>::new()).check())
-//!     /* one per parameter */
+//!     .host_read((&&::ulo_http::__private::HostProbe::<P0>::new()).read())
+//!     /* one pair per parameter */
 //! ```
 //!
-//! with `ViaPath` and `NotPath` imported anonymously, and the route `"/users/{id}"` as
-//! `HandlerSpec::route`.
+//! with `ViaPath`, `NotPath`, `ViaHost` and `NotHost` imported anonymously, and the route
+//! `"/users/{id}"` as `HandlerSpec::route`.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -62,8 +63,8 @@ pub(crate) fn expand(method: &'static str, attr: TokenStream, item: TokenStream)
 }
 
 /// The `HttpHandler` the mount function hands `HandlerSpec::new`: the method, the pattern as
-/// written, the call closure, and one `Path<T>` probe per parameter, spanned at its type. A
-/// generic handler never reaches this value: `MountFn::emit` refuses it.
+/// written, the call closure, and one `Path<T>` probe and one `Host<T>` probe per parameter,
+/// spanned at its type. A generic handler never reaches this value: `MountFn::emit` refuses it.
 fn handler_value(method: &str, pattern: &LitStr, sig: &HandlerSig, paths: &Paths) -> TokenStream {
     let this = &paths.this;
     let method = Ident::new(method, Span::call_site());
@@ -72,12 +73,13 @@ fn handler_value(method: &str, pattern: &LitStr, sig: &HandlerSig, paths: &Paths
         let ty = &param.ty;
         quote_spanned! {param.span=>
             .path_check((&&#this::__private::PathProbe::<#ty>::new()).check())
+            .host_read((&&#this::__private::HostProbe::<#ty>::new()).read())
         }
     });
     quote! {
         {
             #[allow(unused_imports)]
-            use #this::__private::{NotPath as _, ViaPath as _};
+            use #this::__private::{NotHost as _, NotPath as _, ViaHost as _, ViaPath as _};
             #this::__private::HttpHandler::new(#this::__private::Method::#method, #pattern, #call)
                 #(#checks)*
         }

@@ -1,7 +1,10 @@
+use std::any::Any;
 use std::fmt;
 use std::future::{Future, poll_fn};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::{Pin, pin};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -10,12 +13,16 @@ use http::header::{ALLOW, CONTENT_LENGTH, HeaderName, HeaderValue, UPGRADE};
 use http::{HeaderMap, Method, StatusCode};
 use http_body::{Body as _, Frame, SizeHint};
 use tracing::{Instrument, Span, field};
-use ulo::{AppHandle, BoxError, BoxFuture, CancelReason, ExecOptions, Execution, ExecutionRef, MountedHandler, Timer, Transport};
+use ulo::{
+    AppHandle, BoxError, BoxFuture, CancelReason, DispatchStage, ExecOptions, Execution, ExecutionRef, MountedHandler,
+    StreamOutcome, Timer, Transport,
+};
 use ulo_transport::{Admission, Permit, span};
 
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::cx::{CxInner, HttpCx, MatchedRoute, PathParams};
+use crate::embed::Forwardable;
 use crate::miss::{MethodNotAllowed, NoRoute};
 use crate::pre_dispatch::{self, Rest, Stage, StageCx};
 use crate::render;
@@ -23,6 +30,7 @@ use crate::request::{ConnInfo, OnUpgrade, Request};
 use crate::response::Response;
 use crate::router::pattern::Pattern;
 use crate::router::{RouteTarget, Routed, Router};
+use crate::routing::Routing;
 use crate::transport::{ClientAddr, Http, RequestHead};
 use crate::upgrade::UpgradeHandler;
 
@@ -50,9 +58,14 @@ use crate::upgrade::UpgradeHandler;
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
 /// 8. The response's headers merged with `HttpCx::response_headers`, a `HEAD` answered by a `GET`
-///    handler stripped of its body, and the body wrapped so that a drop before its end fires
-///    `CancelReason::Disconnected`. The request counts against the in-flight bound, and its
-///    execution stays open, until the backend drops that body.
+///    handler stripped of its body, [`Routing`] in its extensions once routing has run, and the
+///    body wrapped so that a drop before its end fires `CancelReason::Disconnected`. The request
+///    counts against the in-flight bound, and its execution stays open, until the backend drops
+///    that body.
+///
+/// A panic while the backend polls the response body ends the body with an error frame, reports
+/// the stream `CutOff` and is logged as `PanicRecovered` with stage `Handler`, so it never
+/// reaches the server's connection task.
 #[derive(Clone)]
 pub struct AppService {
     pub(crate) inner: Arc<ServiceInner>,
@@ -67,6 +80,11 @@ pub(crate) struct ServiceInner {
     pub(crate) admission: Admission,
     pub(crate) config: Arc<HttpConfig>,
     pub(crate) timer: Arc<dyn Timer>,
+    /// The embedding's normalized `.nested_at` prefix; empty for a backend.
+    pub(crate) mount: Arc<str>,
+    /// The embedding's `Miss::Forward`: a miss on a request nothing has changed is answered
+    /// forwardable rather than through the error handlers.
+    pub(crate) forward: bool,
 }
 
 impl AppService {
@@ -81,6 +99,32 @@ impl AppService {
     }
 }
 
+/// What one request carries from its entry to routing and back.
+struct Tracking {
+    /// Set once routing has decided; the response gains it on the way out.
+    routing: OnceLock<Routing>,
+    /// Kept under `Miss::Forward` only.
+    forward: Option<Untouched>,
+}
+
+/// What a request must still be for its miss to be forwarded: its body never polled and its path
+/// as the client sent it.
+struct Untouched {
+    polled: Arc<AtomicBool>,
+    path: String,
+}
+
+impl Tracking {
+    fn route(&self, routing: Routing) {
+        let _ = self.routing.set(routing);
+    }
+
+    /// Whether `req` still has its original body unread and its original path.
+    fn forwardable(&self, req: &Request) -> bool {
+        self.forward.as_ref().is_some_and(|untouched| !untouched.polled.load(Ordering::Acquire) && req.path() == untouched.path)
+    }
+}
+
 /// A routing miss, as routing decided it.
 enum Miss {
     NotFound,
@@ -89,7 +133,7 @@ enum Miss {
 }
 
 impl ServiceInner {
-    async fn respond(self: Arc<Self>, req: Request) -> Response {
+    async fn respond(self: Arc<Self>, mut req: Request) -> Response {
         let Some(permit) = self.admission.try_admit() else {
             return render::shed(&self.config);
         };
@@ -101,12 +145,26 @@ impl ServiceInner {
             exec.seed(ClientAddr(peer));
         }
         let handle = exec.handle();
+        let forward = self.forward.then(|| {
+            let polled = Arc::new(AtomicBool::new(false));
+            let body = std::mem::take(&mut req.body);
+            req.body = HttpBody::new(Watched { inner: body, polled: Arc::clone(&polled) });
+            Untouched { polled, path: req.path().to_owned() }
+        });
+        let tracking = Arc::new(Tracking { routing: OnceLock::new(), forward });
         let method = req.head.method.clone();
         let call_span = span::call(<Http as Transport>::KEY, method.as_str(), None);
         call_span.record(span::HTTP_REQUEST_METHOD, method.as_str());
         call_span.record(span::URL_PATH, req.head.uri.path());
         call_span.record(span::URL_SCHEME, if req.conn.tls.is_some() { "https" } else { "http" });
-        let response = self.unscoped(Arc::new(exec), req, call_span.clone()).instrument(call_span.clone()).await;
+        let mut response = self.unscoped(Arc::new(exec), req, call_span.clone(), Arc::clone(&tracking)).instrument(call_span.clone()).await;
+        // Set here as well as where routing decides, so a pre-dispatch entry that rebuilt the
+        // response does not drop it.
+        if let Some(routing) = tracking.routing.get() {
+            if response.extensions().get::<Routing>().is_none() {
+                response.extensions_mut().insert(routing.clone());
+            }
+        }
         let status = response.status();
         call_span.record(span::HTTP_RESPONSE_STATUS_CODE, status.as_u16());
         // A body the backend never writes is dropped unread, which is not the peer leaving.
@@ -114,11 +172,12 @@ impl ServiceInner {
             || status.is_informational()
             || status == StatusCode::NO_CONTENT
             || status == StatusCode::NOT_MODIFIED;
-        response.map(|body| HttpBody::new(ExecBody::new(body, handle, permit, unwritten)))
+        let app = self.app.clone();
+        response.map(|body| HttpBody::new(ExecBody::new(body, handle, app, permit, unwritten)))
     }
 
     /// The unscoped sub-step, routing after it.
-    fn unscoped(self: &Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span) -> BoxFuture<'static, Response> {
+    fn unscoped(self: &Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span, tracking: Arc<Tracking>) -> BoxFuture<'static, Response> {
         let steps = self.stage.runnable();
         let at = (!steps.is_empty()).then(|| StageCx {
             service: Arc::clone(self),
@@ -128,14 +187,14 @@ impl ServiceInner {
             route: None,
         });
         let this = Arc::clone(self);
-        let end: Rest = Box::new(move |req| this.route(exec, req, call_span));
+        let end: Rest = Box::new(move |req| this.route(exec, req, call_span, tracking));
         match at {
             Some(at) => pre_dispatch::run(Arc::new(at), steps, 0, req, end),
             None => end(req),
         }
     }
 
-    fn route(self: Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span) -> BoxFuture<'static, Response> {
+    fn route(self: Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span, tracking: Arc<Tracking>) -> BoxFuture<'static, Response> {
         Box::pin(async move {
             if req.headers().contains_key(UPGRADE) {
                 let taker = self.upgrades.iter().find(|(path, _)| path.matches(req.path()).is_some()).map(|(_, taker)| Arc::clone(taker));
@@ -150,8 +209,28 @@ impl ServiceInner {
                 Routed::Options { allow } => Err(Miss::Options(allow)),
             };
             match routed {
-                Ok((target, params, head_from_get)) => self.found(&exec, req, target, params, head_from_get, &call_span).await,
-                Err(miss) => self.miss(&exec.handle(), req, miss).await,
+                Ok((target, params, head_from_get)) => {
+                    tracking.route(Routing::Matched { route: Arc::clone(&target.route), handler: Arc::clone(target.handler.info()) });
+                    self.found(&exec, req, target, params, head_from_get, &call_span).await
+                }
+                Err(Miss::NotFound) => {
+                    tracking.route(Routing::NotFound);
+                    if self.forward {
+                        if tracking.forwardable(&req) {
+                            return self.forwardable();
+                        }
+                        tracing::warn!(
+                            path = req.path(),
+                            "a miss under `Miss::Forward` is answered 404 by the app: a pre-dispatch entry read the body or rewrote the path, \
+                             so the host cannot route the request again"
+                        );
+                    }
+                    self.miss(&exec.handle(), req, Miss::NotFound).await
+                }
+                Err(miss) => {
+                    tracking.route(Routing::MethodNotAllowed);
+                    self.miss(&exec.handle(), req, miss).await
+                }
             }
         })
     }
@@ -167,8 +246,8 @@ impl ServiceInner {
     ) -> Response {
         exec.route_to(target.handler.module());
         let handle = exec.handle();
-        call_span.record(span::HTTP_ROUTE, &*target.pattern);
-        call_span.record(span::OTEL_NAME, field::display(RouteName { method: req.method(), pattern: &target.pattern }));
+        call_span.record(span::HTTP_ROUTE, &*target.route);
+        call_span.record(span::OTEL_NAME, field::display(RouteName { method: req.method(), pattern: &target.route }));
         call_span.record(span::HANDLER, field::display(HandlerName(&target.handler)));
         let timeout = target.timeout;
         let response = match timeout {
@@ -265,6 +344,15 @@ impl ServiceInner {
         })
     }
 
+    /// The 404 a forwardable miss answers, with [`Forwardable`] in its extensions for the
+    /// adapter. It skips the error handlers: the host routes the request again, and a host that
+    /// does not still sends a 404.
+    fn forwardable(&self) -> Response {
+        let mut response = render::problem(&NoRoute::error(), &self.config);
+        response.extensions_mut().insert(Forwardable { _private: () });
+        response
+    }
+
     async fn miss(&self, exec: &ExecutionRef, req: Request, miss: Miss) -> Response {
         let err: BoxError = match miss {
             Miss::Options(allow) => return options(allow),
@@ -301,6 +389,7 @@ impl ServiceInner {
                 upgrade: Mutex::new(upgrade),
                 response_headers: Mutex::new(HeaderMap::new()),
                 config: Arc::clone(&self.config),
+                mount: Arc::clone(&self.mount),
             }),
         }
     }
@@ -430,15 +519,47 @@ impl http_body::Body for TimedBody {
 struct ExecBody {
     inner: HttpBody,
     exec: ExecutionRef,
+    /// The app, whose redaction a panic's message goes through.
+    app: AppHandle,
     _permit: Permit,
     ended: bool,
 }
 
 impl ExecBody {
-    fn new(inner: HttpBody, exec: ExecutionRef, permit: Permit, unwritten: bool) -> Self {
+    fn new(inner: HttpBody, exec: ExecutionRef, app: AppHandle, permit: Permit, unwritten: bool) -> Self {
         let ended = unwritten || inner.is_end_stream();
-        ExecBody { inner, exec, _permit: permit, ended }
+        ExecBody { inner, exec, app, _permit: permit, ended }
     }
+
+    /// A panic in the body's `poll_frame`: the body is ended, its stream reported `CutOff`, the
+    /// panicked body dropped without another poll, and the panic logged as `PanicRecovered` with
+    /// stage `Handler`. Answers the error frame that ends the body, which the server observes as
+    /// a body cut off by the server.
+    fn recover(&mut self, payload: Box<dyn Any + Send>, cx: &mut Context<'_>) -> BoxError {
+        self.ended = true;
+        self.exec.report_stream_end(StreamOutcome::CutOff(self.exec.cancel_reason()));
+        let panicked = std::mem::take(&mut self.inner);
+        // A stream that panicked may panic again in its drop.
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(panicked)));
+        let error = panic_recovered(&self.app, payload, cx);
+        tracing::error!(error = %error, "a response body panicked while it was written; it ends with an error frame");
+        error
+    }
+}
+
+/// `payload` as `PanicRecovered` with stage `Handler`, its message redacted: resumed inside
+/// `AppHandle::catch_panic`, which builds it. Resuming runs no panic hook, so the panic is
+/// reported once, where it happened. The caught future completes on its first poll.
+fn panic_recovered(app: &AppHandle, payload: Box<dyn Any + Send>, cx: &mut Context<'_>) -> BoxError {
+    let mut caught = pin!(app.catch_panic(DispatchStage::Handler, async move { rethrow(payload) }));
+    match caught.as_mut().poll(cx) {
+        Poll::Ready(Err(error)) => error,
+        _ => BoxError::from("a response body panicked"),
+    }
+}
+
+fn rethrow(payload: Box<dyn Any + Send>) -> Result<(), BoxError> {
+    resume_unwind(payload)
 }
 
 impl http_body::Body for ExecBody {
@@ -447,7 +568,11 @@ impl http_body::Body for ExecBody {
 
     fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
         let this = self.get_mut();
-        let frame = Pin::new(&mut this.inner).poll_frame(cx);
+        // The body is never polled again after a panic: `recover` replaces it.
+        let frame = match catch_unwind(AssertUnwindSafe(|| Pin::new(&mut this.inner).poll_frame(cx))) {
+            Ok(frame) => frame,
+            Err(payload) => return Poll::Ready(Some(Err(this.recover(payload, cx)))),
+        };
         match &frame {
             Poll::Ready(None | Some(Err(_))) => this.ended = true,
             Poll::Ready(Some(Ok(_))) if this.inner.is_end_stream() => this.ended = true,
@@ -492,5 +617,30 @@ struct HandlerName<'a>(&'a MountedHandler<Http>);
 impl fmt::Display for HandlerName<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}::{}", self.0.controller(), self.0.name())
+    }
+}
+
+/// A request body under `Miss::Forward`, recording whether anything polled it: a body read in
+/// part cannot be handed back to the host.
+struct Watched {
+    inner: HttpBody,
+    polled: Arc<AtomicBool>,
+}
+
+impl http_body::Body for Watched {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        self.polled.store(true, Ordering::Release);
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
     }
 }

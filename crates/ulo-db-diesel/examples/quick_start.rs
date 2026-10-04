@@ -16,7 +16,7 @@ use diesel_async::pooled_connection::deadpool::Pool;
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, routes};
 use ulo_db_diesel::DieselModule;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 #[injectable]
 pub struct DbProbe {

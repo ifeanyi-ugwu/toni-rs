@@ -11,7 +11,7 @@
 use futures::stream::{self, Stream};
 use ulo::{UloFactory, module};
 use ulo_graphql_async_graphql::prelude::*;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 // ---- Schema types --------------------------------------------------------
 

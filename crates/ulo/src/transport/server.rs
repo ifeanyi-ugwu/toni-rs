@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use crate::app::AppHandle;
 use crate::error::TimerMissing;
-use crate::key::BindingKind;
+use crate::graph::scopes::input_reads;
+use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
 use crate::module::meta::Meta;
 use crate::timer::{BoxError, BoxFuture, Timer};
@@ -108,6 +109,48 @@ impl<T: Transport> Mounted<'_, T> {
                 Some((shared.module_ref(module.id), value))
             })
             .collect()
+    }
+}
+
+impl<'a, T: Transport> Mounted<'a, T> {
+    /// The handlers that read the execution input `I` without `Option`, each with the path to the
+    /// read: directly through a parameter, or through an execution-scoped service the handler
+    /// reaches, as the wiring pass walks them for its input check (§6.4). A transport refuses in
+    /// `prepare` an input its host cannot seed: the HTTP embedding refuses `ClientAddr` on a host
+    /// that supplies no peer address.
+    ///
+    /// Empty for a type no transport declares as an input.
+    pub fn handlers_reading<I: Send + Sync + 'static>(&self) -> Vec<InputReader<'a, T>> {
+        let key = Key::of::<I, ()>();
+        let graph = self.app.shared.graph();
+        let mut readers = Vec::new();
+        for record in &graph.handlers {
+            let Some(handler) = self.handlers.iter().find(|handler| Arc::ptr_eq(&handler.info, &record.info)) else {
+                continue;
+            };
+            for read in input_reads(&graph, record).into_iter().filter(|read| read.input == key) {
+                readers.push(InputReader { handler, path: read.path });
+            }
+        }
+        readers
+    }
+}
+
+/// One handler's read of an execution input, as [`Mounted::handlers_reading`] reports it.
+pub struct InputReader<'a, T: Transport> {
+    handler: &'a MountedHandler<T>,
+    path: Vec<String>,
+}
+
+impl<'a, T: Transport> InputReader<'a, T> {
+    pub fn handler(&self) -> &'a MountedHandler<T> {
+        self.handler
+    }
+
+    /// The handler, each binding between it and the read, and the injection point:
+    /// `UsersController::get (Http)`, `Audit (execution)`, ``Dep<ClientAddr> (field `addr`)``.
+    pub fn path(&self) -> &[String] {
+        &self.path
     }
 }
 

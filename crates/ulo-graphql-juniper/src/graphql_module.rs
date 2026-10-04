@@ -22,7 +22,7 @@ use ulo::spi::ProviderFactory;
 /// use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_object};
 /// use ulo::http::HttpAdapter;
 /// use ulo::{UloFactory, module};
-/// use ulo_http_axum::AxumAdapter;
+/// use ulo_http_hyper::AxumAdapter;
 /// use ulo_graphql_juniper::{GraphQLModule, DefaultContextBuilder, DefaultContext};
 ///
 /// struct Query;

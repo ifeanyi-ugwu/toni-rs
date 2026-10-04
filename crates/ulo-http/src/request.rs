@@ -21,8 +21,8 @@ pub struct Request {
     pub body: HttpBody,
     pub conn: ConnInfo,
     /// Resolves to the connection's I/O once the response with status 101 has been written.
-    /// `None` when the request asks for no upgrade, and on every request to a backend whose limits
-    /// declare `upgrades: false`.
+    /// `None` when the request asks for no upgrade, and on every request to a backend or an
+    /// embedding whose limits declare `upgrades: false`.
     pub upgrade: Option<OnUpgrade>,
 }
 

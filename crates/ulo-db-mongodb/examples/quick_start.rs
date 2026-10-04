@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use ulo::http::Body;
 use ulo::{UloFactory, controller, get, injectable, module, post, routes};
 use ulo_db_mongodb::MongoModule;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct User {

@@ -16,4 +16,4 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 anyhow.workspace = true
 serde_json.workspace = true
-ulo-http-axum = { path = "../ulo-http-axum" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }

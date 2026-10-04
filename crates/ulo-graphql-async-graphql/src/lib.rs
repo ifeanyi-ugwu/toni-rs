@@ -19,7 +19,7 @@
 //!
 //! ```ignore
 //! use ulo::{module, UloFactory};
-//! use ulo_http_axum::AxumAdapter;
+//! use ulo_http_hyper::AxumAdapter;
 //! use ulo_graphql_async_graphql::{GraphQLModule, DefaultContextBuilder, async_graphql::*};
 //!
 //! struct Query;

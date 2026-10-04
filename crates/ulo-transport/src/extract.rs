@@ -8,7 +8,7 @@ use std::future::Future;
 use ulo::{Dependencies, ExecutionRef, FromContainer, LookupError, Redacted, Transport};
 
 use crate::details::{Detail, Details, FieldViolation};
-use crate::error::{Classify, ErrorKind, from_lookup};
+use crate::error::{Classify, ErrorKind, INTERNAL_MESSAGE, from_lookup};
 
 /// A handler parameter built from the call.
 ///
@@ -32,8 +32,9 @@ pub trait FromCall<T: Transport>: Sized + Send + 'static {
     fn from_call(cx: &T::Cx) -> impl Future<Output = Result<Self, ExtractError>> + Send;
 }
 
-/// `None` exactly where `P` fails with [`ExtractError::Missing`]: a header, query field or body
-/// the call does not carry. Every other failure propagates. Forwards `CONSUMES_BODY` and the
+/// `None` exactly where `P` fails with [`ExtractError::Missing`] or
+/// [`ExtractError::HostMissing`]: a header, query field or body the call does not carry, or a
+/// value its host did not supply. Every other failure propagates. Forwards `CONSUMES_BODY` and the
 /// dependencies.
 impl<T: Transport, P: FromCall<T>> FromCall<T> for Option<P> {
     const CONSUMES_BODY: bool = P::CONSUMES_BODY;
@@ -45,7 +46,7 @@ impl<T: Transport, P: FromCall<T>> FromCall<T> for Option<P> {
     async fn from_call(cx: &T::Cx) -> Result<Self, ExtractError> {
         match P::from_call(cx).await {
             Ok(value) => Ok(Some(value)),
-            Err(ExtractError::Missing { .. }) => Ok(None),
+            Err(ExtractError::Missing { .. } | ExtractError::HostMissing { .. }) => Ok(None),
             Err(other) => Err(other),
         }
     }
@@ -100,6 +101,10 @@ pub enum ExtractError {
     /// lookup error, which classifies as `CallError::from_boxed` maps it, so an execution-scoped
     /// constructor's "tenant not found" is a 404 here too.
     Dependency { param: &'static str, source: LookupError },
+    /// A value the server hosting the application was to supply, absent: a deployment fault
+    /// rather than a bad request, so it classifies as `Internal` with its message withheld.
+    /// `type_name` is the value's type.
+    HostMissing { param: &'static str, type_name: &'static str },
 }
 
 impl ExtractError {
@@ -110,7 +115,8 @@ impl ExtractError {
             | ExtractError::UnsupportedMediaType { param, .. }
             | ExtractError::TooLarge { param, .. }
             | ExtractError::Invalid { param, .. }
-            | ExtractError::Dependency { param, .. } => param,
+            | ExtractError::Dependency { param, .. }
+            | ExtractError::HostMissing { param, .. } => param,
         }
     }
 }
@@ -128,6 +134,9 @@ impl fmt::Display for ExtractError {
                 write!(f, "`{param}` failed {count} validation {noun}")
             }
             ExtractError::Dependency { source, .. } => fmt::Display::fmt(source, f),
+            ExtractError::HostMissing { param, type_name } => {
+                write!(f, "`{param}`: the host supplied no `{type_name}` with the request")
+            }
         }
     }
 }
@@ -144,11 +153,14 @@ impl Error for ExtractError {
 /// `BadRequest`, or `Unprocessable` for `Invalid` with its violations as a `FieldViolations`
 /// detail; a `Dependency` takes the kind, message and details its lookup error maps to, so a
 /// lookup failure's text, which names keys, is withheld as `CallError::from_boxed` withholds it.
+/// `HostMissing` is `Internal` with the message withheld: the fault is the deployment's, and its
+/// text names a type.
 impl Classify for ExtractError {
     fn classify(&self) -> ErrorKind {
         match self {
             ExtractError::Invalid { .. } => ErrorKind::Unprocessable,
             ExtractError::Dependency { source, .. } => from_lookup(source, 0).kind(),
+            ExtractError::HostMissing { .. } => ErrorKind::Internal,
             _ => ErrorKind::BadRequest,
         }
     }
@@ -156,6 +168,7 @@ impl Classify for ExtractError {
     fn public_message(&self) -> Cow<'_, str> {
         match self {
             ExtractError::Dependency { source, .. } => Cow::Owned(from_lookup(source, 0).message().to_owned()),
+            ExtractError::HostMissing { .. } => Cow::Borrowed(INTERNAL_MESSAGE),
             _ => Cow::Owned(self.to_string()),
         }
     }

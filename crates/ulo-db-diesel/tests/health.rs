@@ -12,7 +12,7 @@ use ulo::http::extract::Bytes;
 use ulo::prelude::*;
 use ulo_db_diesel::{AsyncPgConnection, DieselModule, PgHealthIndicator, PgPool};
 use ulo_health::{HealthCheckService, HealthIndicator, TerminusModule};
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 

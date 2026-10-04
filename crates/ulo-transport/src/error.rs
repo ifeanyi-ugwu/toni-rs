@@ -204,7 +204,7 @@ impl<E: Classify> From<E> for CallError {
     }
 }
 
-const INTERNAL_MESSAGE: &str = "internal error";
+pub(crate) const INTERNAL_MESSAGE: &str = "internal error";
 const FORBIDDEN_MESSAGE: &str = "forbidden";
 const CLOSED_MESSAGE: &str = "the application is shutting down";
 

@@ -8,7 +8,7 @@ use ulo::{
     UloFactory,
     ws::{WsMessage, WsSink},
 };
-use ulo_http_axum::TokioSender;
+use ulo_http_hyper::TokioSender;
 use ulo_ws_redis::{RedisBroadcastModule, RedisBroadcastService};
 
 fn make_client() -> (Arc<dyn WsSink>, mpsc::Receiver<WsMessage>) {

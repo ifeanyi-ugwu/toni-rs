@@ -33,6 +33,8 @@ pub(crate) struct CxInner {
     /// Merged into the response's headers when it is written, the reply's own winning.
     pub(crate) response_headers: Mutex<HeaderMap>,
     pub(crate) config: Arc<HttpConfig>,
+    /// The embedding's normalized `.nested_at` prefix; empty otherwise.
+    pub(crate) mount: Arc<str>,
 }
 
 /// The route a request matched.
@@ -88,9 +90,20 @@ impl HttpCx {
         self.inner.head.headers()
     }
 
-    /// The matched route's pattern, prefix applied: `/users/{id}`. `None` on a miss.
+    /// The matched route's pattern, the controller's prefix applied: `/users/{id}`. `None` on a
+    /// miss. An embedded app nested under a prefix routes on the path without it, so this is the
+    /// pattern without the [`mount_prefix`](Self::mount_prefix).
     pub fn route(&self) -> Option<&str> {
         self.inner.route.as_ref().map(|route| &*route.pattern)
+    }
+
+    /// Where the host mounted the app: the embedding's `.nested_at` prefix with a leading `/` and
+    /// no trailing one, `/api`, and empty for an app that is not nested, on a backend included.
+    /// The host strips it before the app sees the request, so a `Location` the client follows is
+    /// `format!("{}{path}", cx.mount_prefix())` for an app path starting with `/`, which never
+    /// doubles a slash.
+    pub fn mount_prefix(&self) -> &str {
+        &self.inner.mount
     }
 
     /// One path parameter of the matched route, percent-decoded.

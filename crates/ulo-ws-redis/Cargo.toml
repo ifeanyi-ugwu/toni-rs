@@ -22,7 +22,7 @@ tracing.workspace = true
 futures-util.workspace = true
 
 [dev-dependencies]
-ulo-http-axum = { path = "../ulo-http-axum" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["redis"] }
 ulo-macros = { path = "../ulo-macros" }

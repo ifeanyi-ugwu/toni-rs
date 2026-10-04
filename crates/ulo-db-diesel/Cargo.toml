@@ -34,6 +34,6 @@ diesel = { version = "2", features = ["postgres_backend"], default-features = fa
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-ulo-http-axum = { path = "../ulo-http-axum" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }
 reqwest = { workspace = true, features = ["json"] }
 anyhow.workspace = true

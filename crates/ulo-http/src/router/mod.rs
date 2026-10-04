@@ -40,8 +40,11 @@ pub(crate) struct RouteEntry {
 pub(crate) struct RouteTarget {
     pub(crate) handler: MountedHandler<Http>,
     pub(crate) call: HandlerFn,
-    /// The pattern as written, prefix applied, for `HttpCx::route` and the span's `http.route`.
+    /// The pattern as written, the controller's prefix applied, for `HttpCx::route`.
     pub(crate) pattern: Arc<str>,
+    /// `pattern` under the embedding's mount prefix, as the host sees it: the span's `http.route`
+    /// and `Routing::Matched`. The same `Arc` when the app is not nested.
+    pub(crate) route: Arc<str>,
     pub(crate) body_limit: u64,
     /// The route's `#[meta(Timeout(..))]`.
     pub(crate) timeout: Option<Duration>,
@@ -80,12 +83,18 @@ impl fmt::Display for RouteError {
 impl Router {
     /// The table for `handlers`, each `HttpHandler`'s pattern joined to its controller's prefix,
     /// with each `Path<T>` check run against its route and each route's scoped pre-dispatch stage
-    /// taken from `stage`. Every failure is returned, not the first.
+    /// taken from `stage`. `mount` is the embedding's normalized prefix, empty when the app is not
+    /// nested, which only the recorded route carries. Every failure is returned, not the first.
     ///
     /// The routes are ordered by precedence, so among patterns matching one path the first is the
     /// most specific: compared left to right, a static segment before a parameter, a parameter
     /// before a rest.
-    pub(crate) fn build(handlers: &[MountedHandler<Http>], default_body_limit: u64, stage: &Stage) -> Result<Router, Vec<RouteError>> {
+    pub(crate) fn build(
+        handlers: &[MountedHandler<Http>],
+        default_body_limit: u64,
+        stage: &Stage,
+        mount: &str,
+    ) -> Result<Router, Vec<RouteError>> {
         let mut errors = Vec::new();
         let mut groups: Vec<Group> = Vec::new();
         for handler in handlers {
@@ -114,10 +123,12 @@ impl Router {
                     });
                 }
             }
+            let route = if mount.is_empty() { Arc::clone(&pattern.raw) } else { Arc::from(Pattern::join(mount, &pattern.raw)) };
             let target = Arc::new(RouteTarget {
                 handler: handler.clone(),
                 call: Arc::clone(&http.call),
                 pattern: Arc::clone(&pattern.raw),
+                route,
                 body_limit: info.meta::<BodyLimit>().map_or(default_body_limit, |limit| limit.0),
                 timeout: info.meta::<Timeout>().map(|timeout| timeout.0),
                 stage: stage.scoped_for(&pattern),

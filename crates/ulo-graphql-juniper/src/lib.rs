@@ -21,7 +21,7 @@ Build type-safe GraphQL APIs with dependency injection, middleware, guards, and 
 use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_object};
 use ulo::{UloFactory, module};
 use ulo::http::HttpAdapter;
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 use ulo_graphql_juniper::{GraphQLModule, DefaultContextBuilder, DefaultContext};
 
 struct Query;

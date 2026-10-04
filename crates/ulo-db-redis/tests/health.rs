@@ -11,7 +11,7 @@ use ulo::http::extract::{Bytes, Path};
 use ulo::prelude::*;
 use ulo_db_redis::{AsyncCommands, ConnectionManager, RedisHealthIndicator, RedisModule};
 use ulo_health::{HealthCheckService, HealthIndicator, TerminusModule};
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 static DB_URL: OnceLock<String> = OnceLock::new();
 

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use ulo::{UloFactory, injectable, module};
 use ulo_graphql_async_graphql::{ContextBuilder, async_graphql::*, prelude::*};
-use ulo_http_axum::AxumAdapter;
+use ulo_http_hyper::AxumAdapter;
 
 // ============================================================================
 // Domain Models

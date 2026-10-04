@@ -29,7 +29,7 @@ mongodb = { version = "3" }
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["mongo"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-ulo-http-axum = { path = "../ulo-http-axum" }
+ulo-http-hyper = { path = "../ulo-http-hyper" }
 reqwest = { workspace = true, features = ["json"] }
 futures = { workspace = true, features = ["async-await", "executor"] }
 anyhow.workspace = true

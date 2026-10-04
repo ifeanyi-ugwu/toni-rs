@@ -1,23 +1,22 @@
 [package]
-name = "ulo-http-axum"
+name = "ulo-http-hyper"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The axum backend for Ulo's HTTP transport"
+description = "The hyper backend for Ulo's HTTP transport, the reference server"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords = ["ulo", "axum", "web", "framework", "backend"]
+keywords = ["ulo", "hyper", "web", "framework", "backend"]
 categories = ["web-programming::http-server"]
 
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
 ulo-net = { path = "../ulo-net" }
-axum = { workspace = true, features = ["http1", "http2", "tokio"] }
 http.workspace = true
-# The connection builders `axum::serve` uses, configured here: it takes no settings. The
-# per-request upgrade future and its I/O adapter come from the same two crates.
+# The connection builders, configured from the server's settings; the per-request upgrade future
+# and its I/O adapter come from the same two crates.
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
 # `time`: the accept loop's back-off and the TLS handshake timeout.

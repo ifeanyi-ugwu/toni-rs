@@ -16,13 +16,12 @@ use ulo_net::{BoundListener, TlsAcceptor};
 use crate::convert::{self, Conn};
 use crate::listener::{self, Io, Listener};
 
-/// The axum backend. `Default`, so `ulo_http_axum::Server::new(endpoint)` builds it.
+/// The hyper backend. `Default`, so `ulo_http_hyper::Server::new(endpoint)` builds it.
 ///
 /// Each listener has its own accept loop, a spawned task, and each connection its own task under
-/// that loop: hyper's connection builders serve it as `axum::serve` does, with the server's
-/// settings applied, which `axum::serve` takes none of.
+/// that loop, served by hyper's connection builders with the server's settings applied.
 #[derive(Default)]
-pub struct Axum {
+pub struct Hyper {
     /// Set by `bind`, taken by `serve`.
     pub(crate) bound: Mutex<Option<Bound>>,
     /// `drain` sends `true`: every accept loop closes its listener and every connection starts its
@@ -69,8 +68,8 @@ impl Protocols {
     }
 }
 
-impl Backend for Axum {
-    const NAME: &'static str = "axum";
+impl Backend for Hyper {
+    const NAME: &'static str = "hyper";
 
     fn limits() -> BackendLimits {
         BackendLimits::NONE
@@ -100,7 +99,7 @@ impl Backend for Axum {
 
     async fn serve(&self) -> Result<(), BoxError> {
         let (Some(draining), Some(closing), Some(finished)) = (&self.draining, &self.closing, &self.finished) else {
-            return Err("the axum backend was asked to serve before it was bound".into());
+            return Err("the hyper backend was asked to serve before it was bound".into());
         };
         let taken = self.bound.lock().unwrap_or_else(PoisonError::into_inner).take();
         // Taken already: a `drain` or `close` that arrived first closed the listeners.
@@ -142,7 +141,7 @@ impl Backend for Axum {
     }
 }
 
-impl Axum {
+impl Hyper {
     /// Closes the listeners of a `serve` that never started, which no accept loop will close: an
     /// app shut down before it served, or a `listen()` closing the servers it bound before a later
     /// one failed.
@@ -268,8 +267,8 @@ async fn connection(
     let detect_h2 = tls.is_some() || protocols.h2c;
     let conn = Conn { peer, local, tls };
     let service = hyper::service::service_fn(move |req: http::Request<Incoming>| {
-        let reply = service.call(convert::request(req.map(axum::body::Body::new), &conn));
-        async move { Ok::<_, Infallible>(convert::response(reply.await)) }
+        let reply = service.call(convert::request(req, &conn));
+        async move { Ok::<_, Infallible>(reply.await) }
     });
     let io = TokioIo::new(io);
     if detect_h2 {
