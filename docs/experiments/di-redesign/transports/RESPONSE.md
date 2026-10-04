@@ -799,7 +799,7 @@ All five are accepted. I have one naming correction on item 3, and the transport
 ## Thirteenth response: the transport-name build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 52-57 and the uncovered
-`InputNotSeeded` case. Sign-off pending.
+`InputNotSeeded` case. The user signed it off the same day.
 
 Four of the five are accepted. Entry 57 should change, and the inconsistency you found in `InputNotSeeded` is worth fixing rather than leaving.
 
