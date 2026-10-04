@@ -622,3 +622,42 @@ A few of those reshape the design, and should be stated plainly when they're fol
 - `AppHandle::drain_timeout()` (Q1).
 
 Both are additive.
+
+## Seventh response: the embedding build's divergences
+
+Received 2026-10-04, answering `divergences/batch2a-embed.md` (entries 1-19). Entry 17's housekeeping
+point was already met: `b70d564d` carries the rename's content changes. Sign-off pending.
+
+Most of this is right, and the scratch crate covers the important paths, including the known-violation check on the body catch. Here's my answer on the five sign-off items, plus brief notes on the rest.
+
+### The five sign-offs
+
+**Decision 6: add a variant rather than leave `Routing` absent.** Absence is ambiguous in exactly the setting this type exists for. In nested and fallback mode, a request the host routed somewhere else *also* has no `Routing`. So a host metric can't tell "the app answered without routing it" (shed, draining, an early answer from pre-dispatch) from "the app never saw this request". Add `Routing::Unrouted`. Then presence means the app answered, and the variant says how.
+
+**Decision 7: don't call the automatic `OPTIONS` a 405.** As the document notes, a metric keyed on the variant would count these 204s as errors. Add `Routing::Options { route }`: the path matched a route, and the router answered with `Allow` on its behalf. With decision 6, the enum is `Matched`, `Options`, `NotFound`, `MethodNotAllowed`, `Unrouted`, still `#[non_exhaustive]`.
+
+**Decision 9: accept both parts, with one improvement.** `mount_prefix()` returning the prefix is the honest API, since a no-argument method can't join an arbitrary path. Leaving `url.path` stripped is a correct fallback, because the original path can't be recovered from the stripped one. But where the host supplies the original path (axum's `OriginalUri`), the adapter should pass it through, and the span should record it. So: stripped as the fallback, original when the host provides it.
+
+**Decision 11: the refusal is wrong when a pre-dispatch layer supplies the value, so make the supply declarable.** `prepare` can't see what a tower layer inserts, so the refusal can't stand unconditionally. And dropping it would give up the check where it's genuinely useful. Add `.supplies::<T>()` to the pre-dispatch builder, written after the layer that inserts `T`. Feed it into the same exemption set that R10's adapter-side `.forward::<T>()` will use in race 2b. One set, two writers, and the refusal applies only to types nothing declares. `adopt::<T>()` should count as reading from that set too, so it's checked the same way.
+
+**Decision 13: accept both rules.** A 405 means a route of the app matches the path, so it's the app's to answer, and forwarding it would be wrong. Skipping the error handlers for a forwardable miss is also right: the host answers that request, so shaping a response nobody sends is wasted work. The only exposure is an adapter that declares `forward_miss` and then ignores the marker, which is a conformance-suite failure, not a design gap.
+
+### The rest: accepted
+
+- **1:** accepted. My `(server, embedded)` snippet couldn't be written as shown, and the fix matches `App::handle()`.
+- **2, 18, 19:** accepted. A `ConnInfo` extension keeps `ulo-http` free of host types, and `respond` is the correct escape for non-`Clone` upgrades.
+- **3, 4, 5:** accepted. Decision 5's `Unbound → Bound → Closed` states fill a gap I left: a failed or closed app must not keep serving through the handle. On decision 3, `stopping()` and the core's `draining()` resolve at the same moment. Document `stopping()` as the one adapters use, since it's available before `listen()` returns, so there's one recommended path.
+- **8, 10, 12, 15, 16:** accepted. Returning the path from `handlers_reading` (15) is better than what R3 asked for, because the refusal can name the service that reads the input.
+- **14:** accepted. Resuming the payload inside `catch_panic` and polling once is a neat way to avoid a third core addition. Leave a comment at that spot explaining why it completes in one poll, since a later edit that adds an await there would silently break it.
+- **17:** accepted. One housekeeping point: commit `70d3ac49` contains the rename with the old file contents, so make sure the content changes go into the next commit rather than staying in the working tree.
+
+### Summary
+
+| Item | Answer |
+|---|---|
+| 6 | add `Routing::Unrouted` |
+| 7 | add `Routing::Options { route }` |
+| 9 | accept, and record the original path when the host provides it |
+| 11 | `.supplies::<T>()` on pre-dispatch, sharing R10's exemption set |
+| 13 | accept both rules |
+| everything else | accepted |
