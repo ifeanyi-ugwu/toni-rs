@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use ulo::Bound;
+
 /// 1024 bytes, for `.body_limit(64 * KB)`.
 pub const KB: u64 = 1024;
 
@@ -11,12 +13,36 @@ pub const MB: u64 = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BodyLimit(pub u64);
 
-/// A route's timeout: `#[meta(Timeout(Duration::from_secs(5)))]`. When it passes, the execution is
-/// cancelled with `CancelReason::Deadline`. An answer not yet started is dropped, and the error
-/// handlers receive `Timeout` under the server's `timeout_grace`: unclaimed, or not answered within
-/// the grace, it renders 504.
+/// A route's timeout: `#[meta(Timeout::after(Duration::from_secs(5)))]`. When it passes, the
+/// execution is cancelled with `CancelReason::Deadline`. An answer not yet started is dropped, and
+/// the error handlers receive `Timeout` under the server's `timeout_grace`: unclaimed, or not
+/// answered within the grace, it renders 504.
 ///
-/// `Timeout(Duration::ZERO)` is refused in `prepare`, naming the route. A route without the
-/// declaration runs with no timeout; a handler cannot lift a timeout its `#[routes]` impl declares.
+/// The most specific declaration wins, as for all metadata: a handler's `Timeout` replaces the one
+/// its `#[routes]` impl declares, and `#[meta(Timeout::OFF)]` on the handler lifts it.
+/// `Timeout(Bound::Default)` is the server's route-timeout default, which is no timeout, as for a
+/// route that declares none.
+///
+/// `Timeout::after(Duration::ZERO)` is refused in `prepare`, once per declaration, naming every
+/// route that runs with it. A zero that every handler under it replaces is not refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Timeout(pub Duration);
+pub struct Timeout(pub Bound);
+
+impl Timeout {
+    /// No timeout, lifting one the `#[routes]` impl declares: `#[meta(Timeout::OFF)]`.
+    pub const OFF: Timeout = Timeout(Bound::Unbounded);
+
+    /// A timeout of `d`: `Timeout(Bound::After(d))`.
+    pub const fn after(d: Duration) -> Timeout {
+        Timeout(Bound::After(d))
+    }
+
+    /// How long the route may run, `None` for no timeout.
+    pub(crate) fn duration(self) -> Option<Duration> {
+        match self.0 {
+            Bound::After(d) => Some(d),
+            // The server has no route-timeout default, so `Default` is no timeout.
+            Bound::Default | Bound::Unbounded => None,
+        }
+    }
+}

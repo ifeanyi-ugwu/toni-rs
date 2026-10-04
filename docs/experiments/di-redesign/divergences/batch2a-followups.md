@@ -538,3 +538,139 @@ The last plant replaces the `#[doc(no_inline)]` line with the enum as well, sinc
 rejects that attribute on anything but a `use`. No check outside its item failed under any plant.
 Each file was restored by `cp` from a saved copy and touched, and `cmp` confirmed it
 byte-identical before the final runs.
+
+## Fourth round: the eighteenth response
+
+`transports/RESPONSE.md` "Eighteenth response" accepted third-round decisions 1, 2 and 5. On 3,
+`Timeout` wraps a `Bound`, so a handler can lift the timeout its `#[routes]` impl declares, and the
+zero refusal takes the same hint as the other settings. On 4, the refusal still reads the timeout
+each route runs with, and reports once per zero declaration.
+
+Files changed: `crates/ulo-http/src/{limits.rs, router/mod.rs}`.
+
+### The signatures
+
+```rust
+// ulo_http
+pub struct Timeout(pub Bound);                                   // was Timeout(pub Duration); Clone, Copy, Debug, PartialEq, Eq
+
+impl Timeout {
+    pub const OFF: Timeout;                                      // Timeout(Bound::Unbounded)
+    pub const fn after(d: Duration) -> Timeout;                  // Timeout(Bound::After(d))
+}
+```
+
+### What each item does
+
+1. **`Timeout(Bound)`.** `Bound::After(d)` is a timeout of `d`. `Bound::Unbounded` and
+   `Bound::Default` are no timeout: the server has no route-timeout default, and `Default` names
+   that default. The conversion happens in one place, the crate-private `Timeout::duration`, which
+   `Router::build` applies to the most specific declaration, `info.meta::<Timeout>()`. The service
+   reads the route's `Option<Duration>` as before, so a handler's `#[meta(Timeout::OFF)]` replaces
+   its impl's `Timeout::after(..)` and the route runs untimed. The `Timeout` doc states the rule,
+   both constructors and what `Bound::Default` means.
+2. **The hint.** The zero refusal ends "write `Timeout::OFF` to turn the timeout off".
+3. **One failure per declaration.** `Router::build` collects each zero it finds under its
+   declaration, keyed by the controller and, for a handler's own declaration, the handler. After
+   the table is walked, each declaration becomes one `Configure` failure listing every route that
+   runs with it: `` `#[meta(Timeout(..))]` on the `#[routes]` impl of `ZeroFive` would cancel every
+   request on `GET /a`, `POST /b`, `GET /c/{id}`, `GET /d`, `GET /e`; write `Timeout::OFF` to turn
+   the timeout off ``, and for a handler `` `#[meta(Timeout(..))]` on the handler `Api::slow` would
+   cancel every request on `GET /slow`; write `Timeout::OFF` to turn the timeout off ``. The text
+   writes `Timeout(..)` for either spelling of the zero, `Timeout::after(Duration::ZERO)` or
+   `Timeout(Bound::After(Duration::ZERO))`, and drops the third round's "before the handler could
+   answer", as the response's example does. A zero that every handler overrides reaches no route
+   and is not refused. The controller is named through `Failure::naming`, so it prints by its last
+   path segment unless another type in the report prints alike.
+
+### Decisions for sign-off
+
+#### 1. The routes are listed in declaration order
+
+- **Written:** the order the controllers mounted the handlers, which within one `#[routes]` impl is
+  the order of the methods in the source.
+- **Why:** the failure asks for an edit to that impl, and a reader checks the list against it top
+  to bottom. Precedence order is the router's matching order, which a reader of one impl has no
+  reason to know, and `Router::build` sorts by it only after every failure is collected.
+- **Alternative:** precedence order, most specific pattern first.
+
+#### 2. A handler's `Timeout(Bound::Default)` is the server's default, not its impl's timeout
+
+- **Written:** under an impl declaring `Timeout::after(Duration::from_millis(50))`, a handler
+  declaring `Timeout(Bound::Default)` runs with no timeout.
+- **Why:** the handler's declaration is the most specific, so it wins, and `Bound::Default` names
+  the server's route-timeout default, as it names the app's default for a hook or a construction.
+  That default is none today.
+- **Alternative:** read `Bound::Default` as no declaration, so the handler inherits the impl's
+  timeout. That would make `Default` mean "inherit" here and "the app's default" everywhere else.
+
+#### 3. The grouped failures follow the route table's other failures
+
+- **Written:** a duplicate route, a parameter-name clash or a `Path<T>` mismatch is reported in the
+  order found. The zero-timeout failures come after all of them, in the order each declaration's
+  first route was found.
+- **Why:** a declaration's failure lists routes found later in the walk, so it is complete only
+  once the walk ends.
+- **Alternative:** hold a place for each declaration at its first route and fill it after the walk.
+
+#### 4. The routes are written in backticks
+
+- **Written:** `` `GET /a`, `POST /b` ``.
+- **Why:** the route table's other failures write a route that way (``both answer `GET /a` ``).
+  The response's example writes them bare.
+- **Alternative:** bare, `GET /a, POST /b`.
+
+### Divergences
+
+1. **DESIGN §3.6 writes `#[meta(Timeout(..))]` and does not say that it wraps a `Bound`, that a
+   handler can lift an inherited timeout, or that the zero refusal is grouped by declaration.**
+   Each is in the rustdoc of `Timeout`. DESIGN.md is not edited here.
+2. **Third-round divergence 1 and second-round divergences 1 to 3 stand.**
+
+### Not covered
+
+- The core's zero-timeout check (F313).
+
+### Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning lists (cargo JSON, deduplicated by file, line and message) are identical to HEAD's,
+  17 entries on each toolchain, all in `crates/ulo/src`. HEAD's lists came from a `git archive`
+  export of `fa4cd490`. The comparison reported a planted unused import in
+  `crates/ulo-http/src/limits.rs` as one new entry, and matched HEAD again once it was removed.
+- `cargo test --workspace` passes: 20 test binaries, 3 passed, 18 ignored, none failed, as at HEAD.
+- `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo-http -p ulo-http-hyper --no-deps` passes.
+- The scratch crate `embed` (`#![deny(warnings)]`) keeps its 98 checks and adds 8. All 106 pass on
+  rustc stable and on 1.88, with identical labels. Round 12's route timeouts are now written
+  `Timeout::after(..)` on the handlers and `Timeout(Bound::After(Duration::ZERO))` on the impl, and
+  its two zero checks expect the grouped text and the new hint. The new checks, all on `Embedded`
+  with `ulo_tokio::Timer` and each handler sleeping 200 ms where a timeout is tested:
+
+| Check | Declarations | Result |
+| --- | --- | --- |
+| `Timeout::after(d)` evaluates in a `const` and equals `Timeout(Bound::After(d))`; `Timeout::OFF` equals `Timeout(Bound::Unbounded)` | — | as stated |
+| A handler's `Timeout::OFF` lifts its impl's timeout | impl `Timeout::after(50 ms)`, handler `Timeout::OFF` | `200` |
+| Its sibling without the override | impl `Timeout::after(50 ms)` | `504` |
+| A handler's `Timeout(Bound::Default)` under the impl's timeout | impl `Timeout::after(50 ms)`, handler `Timeout(Bound::Default)` | `200` |
+| `Timeout(Bound::Default)` on an impl | impl `Timeout(Bound::Default)` | `200` |
+| One failure listing `` `GET /a`, `POST /b`, `GET /c/{id}`, `GET /d`, `GET /e` `` in declaration order, the hint once, no `problems:`, the overriding route not named | impl `Timeout::after(ZERO)`, five inheriting routes, a sixth with `Timeout::OFF` between `/d` and `/e` | refused |
+| Not refused | impl `Timeout::after(ZERO)`, one handler `Timeout::after(5 s)`, one `Timeout::OFF` | listens |
+| `2 problems:`, naming `embed::r13a::ZeroApi` (impl) and `embed::r13b::ZeroApi::one` (handler) | two controllers named `ZeroApi`, one zero on each | refused |
+
+Against known violations, each one planted alone into `crates/` and the scratch crate rerun on
+stable and on 1.88, with identical results on both:
+
+| Plant | Fails |
+| --- | --- |
+| `Router::build` takes the first declaration carrying a duration, through `meta_all`, so a handler can tighten but not lift | the `Timeout::OFF` check and the handler's `Bound::Default` check (both `504`) |
+| `Timeout::duration` reads `Bound::Default` as 50 ms | both `Bound::Default` checks (`504`) |
+| `Timeout::duration` reads `Bound::After(_)` as no timeout | the sibling check (`200`) |
+| Each zero route opens its own declaration | the five-route check (`5 problems:`) |
+| The failure keeps the third-round hint | both round-12 zero checks and the five-route check |
+| The impl tier prints the controller with `Display` instead of `Names::of` | the short-name check (`ZeroApi` printed short) |
+| `Router::build` refuses any declared zero, through `meta_all` | round 12's impl check, the five-route check (each naming the overriding route) and the all-overridden check (refused) |
+| `declared_on_method` always answers `false` | round 12's handler check and the short-name check (a handler's zero reported "on the `#[routes]` impl") |
+| `Timeout::after` is not `const` | the crate does not compile: `E0015`, "cannot call non-const associated function `ulo_http::Timeout::after` in constants" |
+
+No check outside its item failed under any plant. Each file was restored by `cp` from a saved copy
+and touched, and `cmp` confirmed it byte-identical before the final runs.

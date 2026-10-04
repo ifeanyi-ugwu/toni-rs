@@ -49,7 +49,7 @@ pub(crate) struct RouteTarget {
     /// and `Routing::Matched`. The same `Arc` when the app is not nested.
     pub(crate) route: Arc<str>,
     pub(crate) body_limit: u64,
-    /// The route's `#[meta(Timeout(..))]`.
+    /// The route's `#[meta(Timeout(..))]` as a duration, `None` for no timeout.
     pub(crate) timeout: Option<Duration>,
     /// The pre-dispatch entries whose scope covers this route, middleware and tower layers in
     /// declaration order, composed once here; routes with the same set share one stack.
@@ -89,6 +89,7 @@ impl Router {
     ) -> Result<Router, Vec<Failure>> {
         let mut errors = Vec::new();
         let mut groups: Vec<Group> = Vec::new();
+        let mut zeros: Vec<ZeroTimeout> = Vec::new();
         for handler in handlers {
             let who = Who::of(handler);
             let Some(http) = handler.handler::<HttpHandler>() else {
@@ -118,17 +119,14 @@ impl Router {
                     }));
                 }
             }
-            let timeout = info.meta::<Timeout>().map(|timeout| timeout.0);
-            if timeout == Some(Duration::ZERO) {
-                let declared = zero_timeout_tier(info.metadata());
-                let (method, pattern) = (http.method().clone(), pattern.to_string());
-                errors.push(Failure::naming(vec![who.controller], move |names| {
-                    format!(
-                        "{} on `{method} {pattern}`: `#[meta(Timeout(Duration::ZERO))]` {declared} would cancel every request \
-                         before the handler could answer; remove the `#[meta(Timeout(..))]` to turn the timeout off",
-                        who.text(names)
-                    )
-                }));
+            let timeout = info.meta::<Timeout>().copied();
+            if timeout == Some(Timeout::after(Duration::ZERO)) {
+                let handler = declared_on_method(info.metadata()).then_some(who.name);
+                let route = format!("`{} {pattern}`", http.method());
+                match zeros.iter_mut().find(|zero| zero.controller == who.controller && zero.handler == handler) {
+                    Some(zero) => zero.routes.push(route),
+                    None => zeros.push(ZeroTimeout { controller: who.controller, handler, routes: vec![route] }),
+                }
             }
             let route = if mount.is_empty() { Arc::clone(&pattern.raw) } else { Arc::from(Pattern::join(mount, &pattern.raw)) };
             let target = Arc::new(RouteTarget {
@@ -137,7 +135,7 @@ impl Router {
                 pattern: Arc::clone(&pattern.raw),
                 route,
                 body_limit: info.meta::<BodyLimit>().map_or(default_body_limit, |limit| limit.0),
-                timeout,
+                timeout: timeout.and_then(Timeout::duration),
                 stage: stage.scoped_for(&pattern),
             });
             let method = http.method().clone();
@@ -165,6 +163,7 @@ impl Router {
                 None => groups.push(Group { pattern, targets: vec![(method, target, who)] }),
             }
         }
+        errors.extend(zeros.into_iter().map(ZeroTimeout::failure));
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -240,11 +239,36 @@ impl Who {
     }
 }
 
-/// Where the `Timeout` a handler takes was declared, for the refusal of a zero one. The method's
-/// declaration wins over the controller's, so it is the method's whenever the method has one.
-fn zero_timeout_tier(metadata: &Metadata) -> &'static str {
-    let on_method = metadata.entries().any(|(name, tier)| tier == MetaTier::Method && name == type_name::<Timeout>());
-    if on_method { "on the handler" } else { "on the `#[routes]` impl" }
+/// One zero `#[meta(Timeout(..))]` declaration and the routes that run with it, in declaration
+/// order: one failure per declaration, however many routes it reaches.
+struct ZeroTimeout {
+    controller: TypeName,
+    /// The handler declaring it, `None` for the `#[routes]` impl.
+    handler: Option<&'static str>,
+    routes: Vec<String>,
+}
+
+impl ZeroTimeout {
+    fn failure(self) -> Failure {
+        let ZeroTimeout { controller, handler, routes } = self;
+        let routes = routes.join(", ");
+        Failure::naming(vec![controller], move |names| {
+            let declared = match handler {
+                Some(name) => format!("on the handler {}", Who { controller, name }.text(names)),
+                None => format!("on the `#[routes]` impl of `{}`", names.of(controller)),
+            };
+            format!(
+                "`#[meta(Timeout(..))]` {declared} would cancel every request on {routes}; write `Timeout::OFF` to turn the \
+                 timeout off"
+            )
+        })
+    }
+}
+
+/// Whether the `Timeout` a handler takes is the method's own. The method's declaration wins over
+/// the controller's, so it is the method's whenever the method has one.
+fn declared_on_method(metadata: &Metadata) -> bool {
+    metadata.entries().any(|(name, tier)| tier == MetaTier::Method && name == type_name::<Timeout>())
 }
 
 /// The methods a pattern answers, in declaration order: `HEAD` beside `GET` when only `GET` is
