@@ -14,6 +14,7 @@ use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::miss::MethodNotAllowed;
 use crate::response::Response;
+use crate::routing::Routing;
 use crate::sse::{Event, EventName};
 
 /// The canonical status of a kind. `Timeout` is 504: the server ran out of time, usually waiting
@@ -128,10 +129,12 @@ fn method_not_allowed(error: &CallError, refused: &MethodNotAllowed, config: &Ht
     response
 }
 
-/// A 503 that always carries `Retry-After`, the server's `shed_retry_after`.
+/// A 503 that always carries `Retry-After`, the server's `shed_retry_after`, and
+/// `Routing::Unrouted`: each refusal is given before routing.
 fn refusal(error: &CallError, config: &HttpConfig) -> Response {
     let mut response = document(error, StatusCode::SERVICE_UNAVAILABLE, config);
     response.headers_mut().insert(RETRY_AFTER, retry_after(config.shed_retry_after));
+    response.extensions_mut().insert(Routing::Unrouted);
     response
 }
 

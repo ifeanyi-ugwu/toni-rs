@@ -22,7 +22,7 @@ use ulo_transport::{Admission, Permit, span};
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::cx::{CxInner, HttpCx, MatchedRoute, PathParams};
-use crate::embed::Forwardable;
+use crate::embed::{Forwardable, OriginalPath};
 use crate::miss::{MethodNotAllowed, NoRoute};
 use crate::pre_dispatch::{self, Rest, Stage, StageCx};
 use crate::render;
@@ -43,7 +43,9 @@ use crate::upgrade::UpgradeHandler;
 /// 2. `Execution::open` at the root module. Refused during the drain: 503 with `Retry-After` and
 ///    `Connection: close`, answered directly, no pre-dispatch stage.
 /// 3. The inputs `RequestHead` and `ClientAddr` seeded, as the client sent them; the
-///    `ulo_transport::span::call` span entered.
+///    `ulo_transport::span::call` span entered, its `url.path` the request's
+///    [`OriginalPath`](crate::embed::OriginalPath) when an embedding's adapter supplied one, and
+///    the path received otherwise.
 /// 4. The unscoped pre-dispatch entries, in order, inside `AppHandle::catch_panic`.
 /// 5. An `Upgrade` request on an upgrade path goes to its `UpgradeHandler`. Otherwise routing: a
 ///    miss is offered to the global error handlers through `ulo::recover(None, ..)` as a
@@ -58,10 +60,10 @@ use crate::upgrade::UpgradeHandler;
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
 /// 8. The response's headers merged with `HttpCx::response_headers`, a `HEAD` answered by a `GET`
-///    handler stripped of its body, [`Routing`] in its extensions once routing has run, and the
-///    body wrapped so that a drop before its end fires `CancelReason::Disconnected`. The request
-///    counts against the in-flight bound, and its execution stays open, until the backend drops
-///    that body.
+///    handler stripped of its body, [`Routing`] in its extensions (`Routing::Unrouted` when the
+///    request was answered before routing decided), and the body wrapped so that a drop before
+///    its end fires `CancelReason::Disconnected`. The request counts against the in-flight bound,
+///    and its execution stays open, until the backend drops that body.
 ///
 /// A panic while the backend polls the response body ends the body with an error frame, reports
 /// the stream `CutOff` and is logged as `PanicRecovered` with stage `Handler`, so it never
@@ -101,7 +103,8 @@ impl AppService {
 
 /// What one request carries from its entry to routing and back.
 struct Tracking {
-    /// Set once routing has decided; the response gains it on the way out.
+    /// Set once routing has decided; the response gains it on the way out, `Routing::Unrouted`
+    /// when it is unset.
     routing: OnceLock<Routing>,
     /// Kept under `Miss::Forward` only.
     forward: Option<Untouched>,
@@ -129,7 +132,7 @@ impl Tracking {
 enum Miss {
     NotFound,
     MethodNotAllowed(HeaderValue),
-    Options(HeaderValue),
+    Options(HeaderValue, Arc<str>),
 }
 
 impl ServiceInner {
@@ -155,15 +158,14 @@ impl ServiceInner {
         let method = req.head.method.clone();
         let call_span = span::call(<Http as Transport>::KEY, method.as_str(), None);
         call_span.record(span::HTTP_REQUEST_METHOD, method.as_str());
-        call_span.record(span::URL_PATH, req.head.uri.path());
+        let path = req.head.extensions.get::<OriginalPath>().map_or_else(|| req.head.uri.path(), OriginalPath::as_str);
+        call_span.record(span::URL_PATH, path);
         call_span.record(span::URL_SCHEME, if req.conn.tls.is_some() { "https" } else { "http" });
         let mut response = self.unscoped(Arc::new(exec), req, call_span.clone(), Arc::clone(&tracking)).instrument(call_span.clone()).await;
-        // Set here as well as where routing decides, so a pre-dispatch entry that rebuilt the
+        // Set here rather than where routing decides, so a pre-dispatch entry that rebuilt the
         // response does not drop it.
-        if let Some(routing) = tracking.routing.get() {
-            if response.extensions().get::<Routing>().is_none() {
-                response.extensions_mut().insert(routing.clone());
-            }
+        if response.extensions().get::<Routing>().is_none() {
+            response.extensions_mut().insert(tracking.routing.get().cloned().unwrap_or(Routing::Unrouted));
         }
         let status = response.status();
         call_span.record(span::HTTP_RESPONSE_STATUS_CODE, status.as_u16());
@@ -206,7 +208,7 @@ impl ServiceInner {
                 Routed::Found { target, params, head_from_get } => Ok((Arc::clone(target), params, head_from_get)),
                 Routed::NotFound => Err(Miss::NotFound),
                 Routed::MethodNotAllowed { allow } => Err(Miss::MethodNotAllowed(allow)),
-                Routed::Options { allow } => Err(Miss::Options(allow)),
+                Routed::Options { allow, route } => Err(Miss::Options(allow, route)),
             };
             match routed {
                 Ok((target, params, head_from_get)) => {
@@ -228,7 +230,10 @@ impl ServiceInner {
                     self.miss(&exec.handle(), req, Miss::NotFound).await
                 }
                 Err(miss) => {
-                    tracking.route(Routing::MethodNotAllowed);
+                    tracking.route(match &miss {
+                        Miss::Options(_, route) => Routing::Options { route: Arc::clone(route) },
+                        _ => Routing::MethodNotAllowed,
+                    });
                     self.miss(&exec.handle(), req, miss).await
                 }
             }
@@ -355,7 +360,7 @@ impl ServiceInner {
 
     async fn miss(&self, exec: &ExecutionRef, req: Request, miss: Miss) -> Response {
         let err: BoxError = match miss {
-            Miss::Options(allow) => return options(allow),
+            Miss::Options(allow, _) => return options(allow),
             Miss::NotFound => Box::new(NoRoute::error()),
             Miss::MethodNotAllowed(allow) => Box::new(MethodNotAllowed::new(req.head.method.clone(), allow).into_error()),
         };
@@ -549,9 +554,14 @@ impl ExecBody {
 
 /// `payload` as `PanicRecovered` with stage `Handler`, its message redacted: resumed inside
 /// `AppHandle::catch_panic`, which builds it. Resuming runs no panic hook, so the panic is
-/// reported once, where it happened. The caught future completes on its first poll.
+/// reported once, where it happened.
 fn panic_recovered(app: &AppHandle, payload: Box<dyn Any + Send>, cx: &mut Context<'_>) -> BoxError {
     let mut caught = pin!(app.catch_panic(DispatchStage::Handler, async move { rethrow(payload) }));
+    // One poll completes this: `catch_panic` polls the inner future under `catch_unwind` with no
+    // await before it, and the inner future resumes the panic on its first poll. `poll_frame` is
+    // synchronous and cannot wait for a second poll, so an await added in the block above, or in
+    // `catch_panic` ahead of the inner poll, returns `Pending` here, and the panic is then
+    // reported by the fallback below with its stage and redaction lost.
     match caught.as_mut().poll(cx) {
         Poll::Ready(Err(error)) => error,
         _ => BoxError::from("a response body panicked"),

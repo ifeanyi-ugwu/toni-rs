@@ -17,14 +17,16 @@
 //!
 //! Information crosses into the app through the request's `http::Extensions`, read by
 //! [`Host<T>`](crate::Host) or copied into the execution by `PreDispatch::adopt`, and back out
-//! through [`Routing`](crate::Routing) in the response's extensions.
+//! through [`Routing`](crate::Routing) in the response's extensions. An adapter puts the host's
+//! connection there as a `ConnInfo`, and the path the client sent, before the host stripped the
+//! mount prefix, as an [`OriginalPath`].
 //!
 //! Shutdown has one owner, the app's `serve(signal)`. The host's server future goes into the
 //! handle's slot ([`Handle::host`]) and `Embedded::serve` polls it, so no task is spawned. When the
-//! app stops accepting, `Embedded::drain` resolves [`Handle::stopping`], which the host's graceful
-//! shutdown awaits, and returns at once: the host's lingering connections are `close`'s business,
-//! since an embedding cannot cut them. `Embedded::close` waits for the host's future to end,
-//! bounded by the core's close bound. A host future that ends before the shutdown began is an
+//! app stops accepting, `Embedded::drain` resolves [`Handle::stopping`], to which an adapter's
+//! `run` wires the host's graceful shutdown, and returns at once: the host's lingering connections
+//! are `close`'s business, since an embedding cannot cut them. `Embedded::close` waits for the
+//! host's future to end, bounded by the core's close bound. A host future that ends before the shutdown began is an
 //! error, and the app shuts down naming the transport.
 
 use std::borrow::Cow;
@@ -44,6 +46,8 @@ use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase};
 use crate::__private::HttpHandler;
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
+use crate::extract::HostType;
+use crate::pre_dispatch::{PreDispatch, Step};
 use crate::render;
 use crate::request::{ConnInfo, OnUpgrade, Request, Upgraded};
 use crate::response::Response;
@@ -78,7 +82,9 @@ pub struct EmbedLimits {
     pub upgrades: bool,
     /// The host can route a request the app missed again; `false` refuses `Miss::Forward`.
     pub forward_miss: bool,
-    /// The host's request extensions reach the app; `false` refuses a handler reading `Host<T>`.
+    /// The host's request extensions reach the app; `false` refuses a handler reading `Host<T>`
+    /// and a pre-dispatch `adopt::<T>()` for a `T` nothing declares it supplies
+    /// (`PreDispatch::supplies`, `Embedded::supplies`).
     pub host_extensions: bool,
     /// The host reports the TLS it terminated. Nothing is refused: `ConnInfo::tls` is `None`.
     pub tls_info: bool,
@@ -170,16 +176,43 @@ pub struct Forwardable {
     pub(crate) _private: (),
 }
 
+/// The path the client sent, before the host stripped the mount prefix, which an adapter puts in
+/// the request's extensions where its host keeps it (axum's `OriginalUri`). The request span's
+/// `url.path` records it; without one, the path the app received.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalPath {
+    path: String,
+}
+
+impl OriginalPath {
+    pub fn new(path: impl Into<String>) -> Self {
+        OriginalPath { path: path.into() }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+}
+
+impl From<&http::Uri> for OriginalPath {
+    /// The URI's path, its query left out.
+    fn from(uri: &http::Uri) -> Self {
+        OriginalPath::new(uri.path())
+    }
+}
+
 /// The HTTP transport's `Server` for an app running inside host `A`: it binds nothing, and the
 /// host reaches the app through [`handle`](Self::handle)'s [`Service`].
 ///
 /// Its settings are the app's: the five below, where the app is mounted, whether the host
-/// supplies the peer address, and what a miss does. Each adapter crate exports an alias,
-/// `ulo_http_axum::Embedded`.
+/// supplies the peer address and which host values it inserts, and what a miss does. Each adapter
+/// crate exports an alias, `ulo_http_axum::Embedded`.
 pub struct Embedded<A: Embed> {
     config: HttpConfig,
     nested_at: Option<Cow<'static, str>>,
     peer_addr: bool,
+    /// What `supplies` declared: the host values the adapter inserts.
+    supplied: Vec<HostType>,
     on_miss: Miss,
     shared: Arc<Shared>,
     /// Set by `prepare`, installed by `bind`.
@@ -204,7 +237,16 @@ impl<A: Embed> Embedded<A> {
             app: OnceLock::new(),
             upgrades: A::limits().upgrades,
         });
-        Embedded { config, nested_at: None, peer_addr: false, on_miss: Miss::Final, shared, prepared: None, _host: PhantomData }
+        Embedded {
+            config,
+            nested_at: None,
+            peer_addr: false,
+            supplied: Vec::new(),
+            on_miss: Miss::Final,
+            shared,
+            prepared: None,
+            _host: PhantomData,
+        }
     }
 
     /// The cheap-clone handle the host mounts, usable before `listen()`: a request it receives
@@ -255,6 +297,16 @@ impl<A: Embed> Embedded<A> {
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
     pub fn peer_addr(mut self, provided: bool) -> Self {
         self.peer_addr = provided;
+        self
+    }
+
+    /// Declares that the adapter puts `T` in every request's `http::Extensions` on a host whose
+    /// adapter declares `host_extensions: false`: what an adapter's `.forward::<T>(..)`
+    /// registration calls, for a value it copies from the host's own request store. A handler
+    /// reading `Host<T>` and a pre-dispatch `adopt::<T>()` are then accepted. Writes the set
+    /// `PreDispatch::supplies` writes.
+    pub fn supplies<T: Clone + Send + Sync + 'static>(mut self) -> Self {
+        self.supplied.push(HostType::of::<T>());
         self
     }
 
@@ -311,23 +363,55 @@ impl<A: Embed> Embedded<A> {
             }
         }
         if !limits.host_extensions {
-            for handler in mounted.handlers() {
-                let Some(http) = handler.handler::<HttpHandler>() else { continue };
-                for read in &http.host_reads {
-                    failures.push(format!(
-                        "`{}::{}` reads `Host<{}>`, and the {host} embedding declares `host_extensions: false`: \
-                         the host's request extensions do not reach the app",
-                        handler.controller(),
-                        handler.name(),
-                        read.type_name
-                    ));
-                }
-            }
+            self.check_host_values(mounted, failures);
         }
         if self.on_miss == Miss::Forward && !limits.forward_miss {
             failures.push(format!(
                 "`.on_miss(Miss::Forward)`: the {host} embedding declares `forward_miss: false`, so the host cannot route a miss again"
             ));
+        }
+    }
+
+    /// Under `host_extensions: false`: every `Host<T>` a handler reads and every pre-dispatch
+    /// `adopt::<T>()`, against the one set of supplied types that `Embedded::supplies` and
+    /// `PreDispatch::supplies` write.
+    fn check_host_values(&self, mounted: &Mounted<'_, Http>, failures: &mut Vec<String>) {
+        let host = A::NAME;
+        let metas = mounted.module_meta::<PreDispatch>();
+        let supplied: Vec<HostType> =
+            self.supplied.iter().chain(metas.iter().flat_map(|(_, meta)| meta.supplied.iter())).copied().collect();
+        let unsupplied = |ty: &HostType| !supplied.iter().any(|known| known.id == ty.id);
+        let remedy = |name: &str| {
+            format!(
+                "the host's request extensions do not reach the app; a pre-dispatch entry inserting it is declared with \
+                 `.supplies::<{name}>()` after it"
+            )
+        };
+        for handler in mounted.handlers() {
+            let Some(http) = handler.handler::<HttpHandler>() else { continue };
+            for read in http.host_reads.iter().filter(|read| unsupplied(&read.ty)) {
+                failures.push(format!(
+                    "`{}::{}` reads `Host<{}>`, and the {host} embedding declares `host_extensions: false`: {}",
+                    handler.controller(),
+                    handler.name(),
+                    read.ty.name,
+                    remedy(read.ty.name)
+                ));
+            }
+        }
+        for (_, meta) in &metas {
+            for entry in &meta.entries {
+                let Step::Adopt(_, ty) = &entry.step else { continue };
+                if unsupplied(ty) {
+                    failures.push(format!(
+                        "`adopt::<{}>()` at {} copies a host value, and the {host} embedding declares \
+                         `host_extensions: false`: {}",
+                        ty.name,
+                        entry.location,
+                        remedy(ty.name)
+                    ));
+                }
+            }
         }
     }
 }
@@ -526,6 +610,10 @@ impl Handle {
     /// Resolves when the app stops accepting, the moment `Embedded::drain` runs, or at `close` for
     /// an app closed without a drain: the host's graceful-shutdown signal, as in axum's
     /// `with_graceful_shutdown(embedded.stopping())`.
+    ///
+    /// This is the signal an adapter's `run` wires. It resolves at the same moment as the core's
+    /// `AppHandle::draining()`, and is available before `listen()` returns, while the app has no
+    /// `AppHandle` yet: the host's server and its shutdown are built from the handle alone.
     pub fn stopping(&self) -> Stopping {
         Stopping { shared: Arc::clone(&self.shared) }
     }

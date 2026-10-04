@@ -312,3 +312,165 @@ impl Service { pub fn respond(&self, req: Request) -> impl Future<Output = Respo
   before the first check after it.
 - The prose scan over the added lines for the banned register and em-dashes returns nothing, and
   returns its line for a planted "just" and em-dash.
+
+# Second round: the seventh response
+
+The changes the seventh response (signed off 2026-10-04) asks of this build: `Routing::Unrouted`
+and `Routing::Options { route }` (decisions 6, 7), the original path in the span (9),
+`.supplies::<T>()` and the one exemption set (11), the `stopping()` doc (3) and the comment at the
+one-poll resume (14). Entries continue the numbering above.
+
+Files changed: `crates/ulo-http/src/{routing.rs, service.rs, render.rs, embed.rs,
+pre_dispatch.rs, router/mod.rs, extract/host.rs, extract/mod.rs, __private.rs}`. The macro crate
+and the core are unchanged: `HostProbe` already carried the type parameter the set compares.
+
+## The signature, added
+
+```rust
+// ulo_http
+pub enum Routing {                                // #[non_exhaustive]
+    Matched { route: Arc<str>, handler: Arc<HandlerInfo> },
+    Options { route: Arc<str> },
+    NotFound,
+    MethodNotAllowed,
+    Unrouted,
+}
+impl PreDispatch { pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self; }
+
+// ulo_http::embed
+pub struct OriginalPath { .. }                    // Clone, Debug, PartialEq, Eq
+impl OriginalPath { pub fn new(impl Into<String>) -> Self; pub fn as_str(&self) -> &str; }
+impl From<&http::Uri> for OriginalPath;           // the URI's path, its query left out
+impl<A: Embed> Embedded<A> { pub fn supplies<T: Clone + Send + Sync + 'static>(self) -> Self; }
+```
+
+## Decisions
+
+### 20. Where `Routing::Unrouted` is set
+
+- **Written:** two places. `render::refusal`, which builds the load-shedding refusal, the drain's
+  503, the embedding's 503 before `listen()` and the one after `close`, inserts it. Every other
+  response gains `Unrouted` on the way out of `ServiceInner::respond` when routing never recorded a
+  decision: an unscoped pre-dispatch entry answering without `next`, one failing or panicking (its
+  error rendered through the global error handlers), and an upgrade request an `UpgradeHandler`
+  took. A response already carrying a `Routing` keeps it, as before.
+- **Why:** the response names "an unscoped pre-dispatch entry answering early"; a failing entry is
+  answered by the app before routing in the same way, and no other variant is true of it.
+
+### 21. `Routing::Options { route }` carries the route as the host sees it
+
+- **Written:** `route` is the matched pattern with the `.nested_at` prefix applied, the same value
+  `Matched` carries, kept on the router's `RouteEntry` so the `OPTIONS` path builds no string.
+  `MethodNotAllowed` now covers only the 405. A `HEAD` answered by a `GET` handler stays `Matched`.
+
+### 22. The original path is an `embed::OriginalPath` extension
+
+- **Written:** an adapter inserts `OriginalPath` into the request's `http::Extensions`; the axum
+  adapter will build it with `OriginalPath::from(&original_uri.0)` in race 2b. The span's `url.path`
+  records it when present and the path the app received otherwise. It holds the path only:
+  `url.path` carries no query, and `From<&http::Uri>` drops it. It is read on a backend as well,
+  where nothing outside the app can put it in the request. Only the span reads it:
+  `Routing::Matched::route`, `HttpCx::route()` and `HttpCx::mount_prefix()` are as decision 9 left
+  them, and the value stays in the request's extensions, where `Host<OriginalPath>` reads it.
+- **Why:** a type `ulo_http` defines keeps axum's `OriginalUri` out of the crate, as `ConnInfo`
+  does for the connection. It lives in `embed` because only an embedding strips a prefix.
+
+### 23. The exemption set is checked as a set
+
+- **Written:** under `host_extensions: false`, `prepare` collects one set of `TypeId`s from
+  `Embedded::supplies::<T>()` and every module's `PreDispatch::supplies::<T>()`, and refuses each
+  `Host<T>` a handler reads and each `adopt::<T>()` entry whose `T` is not in it. Neither the scope
+  of the entry a `supplies` follows nor its position relative to an `adopt` is checked. The
+  refusals name the remedy: "a pre-dispatch entry inserting it is declared with
+  `.supplies::<T>()` after it". An `adopt` refusal names the entry's source location.
+- **Why:** the response specifies one set with two writers, and the refusal applying "only to types
+  nothing declares".
+- **Consequence:** two configurations pass that fail per request, as every configuration did before
+  the refusal existed. A `.supplies::<T>()` after a `layer_for(["/admin/*"], ..)` lifts `Host<T>`
+  on routes outside `/admin`, which then answer `HostMissing` (500). A `.supplies::<T>()` after an
+  entry written after `adopt::<T>()` lifts the `adopt`, which runs first and finds nothing, so
+  `Ext<T>` fails with `LookupError::NotFound`. A precise check is buildable without new surface: a
+  scoped supply counts for the routes its entry's `ScopedStage` covers (the router already holds
+  each route's stage), and an `adopt` counts only unscoped supplies earlier in stage order.
+- **Sign-off needed:** the set as written, or the precise check.
+
+### 24. A `supplies` written before any entry is refused
+
+- **Written:** `PreDispatch::supplies` records its call site when the module's `PreDispatch` has no
+  entry yet, and `prepare` reports it as it reports a stray `exclude`: "`supplies` at {location}
+  follows no pre-dispatch entry; it declares what the entry before it inserts, and a value the host
+  inserts is declared on the embedding with `Embedded::supplies`". The check runs in
+  `Stage::build`, on a backend as well as embedded.
+- **Why:** "written after the layer that inserts `T`" names a position; a `supplies` with no entry
+  before it declares a value no entry of its module inserts, which on an actix or rocket host is a
+  value the adapter's `.forward::<T>()` owes.
+- **Sign-off needed:** this refusal is not in the response.
+
+### 25. The adapter's writer is a public `Embedded::supplies::<T>()`
+
+- **Written:** `Embedded<A>` keeps its own list, which `check_host_values` joins with the
+  pre-dispatch declarations. An adapter's `.forward::<T>(..)` (race 2b) calls it when it registers
+  the copy from the host's store; the method needs no host type. It is public and documented, so
+  an app author can call it too; on a host declaring `host_extensions: true` the set is never read.
+- **Why:** the adapter crates write `.forward` on `ulo_http::embed::Embedded<A>`, a foreign type to
+  them, through an extension trait or a wrapper; either needs a public method on `Embedded` to
+  record the type. A `#[doc(hidden)]` method was the alternative.
+- **Sign-off needed:** public, or `#[doc(hidden)]` for adapters only.
+
+### 26. `adopt::<T>()` is refused under `host_extensions: false`
+
+- **Written:** entry 11's "refused nowhere" no longer holds. `Step::Adopt` carries its type, and
+  the check in entry 23 refuses an `adopt::<T>()` nothing supplies. On a backend and on a host
+  declaring `host_extensions: true`, nothing changes.
+
+### 27. `stopping()` and the one-poll resume
+
+- **Written:** `Handle::stopping()` documents itself as the signal an adapter's `run` wires,
+  resolving with the core's `AppHandle::draining()` and available before `listen()` returns; the
+  module doc says the same. `panic_recovered` carries a comment: one poll completes the caught
+  future because `catch_panic` polls the inner future under `catch_unwind` with no await before
+  it, and the inner future resumes the panic on its first poll; an await added in either place
+  returns `Pending` there, and the fallback then reports the panic without its stage or redaction.
+
+## Not covered
+
+- The axum adapter inserting `OriginalPath` from `OriginalUri`, and `.forward::<T>()` on actix and
+  rocket (race 2b).
+- The transports DESIGN's `Routing` enum, `.supplies` and `OriginalPath`: the design document is
+  not this build's to edit.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass;
+  the only warnings are the 17 in `crates/ulo/src` present before this change. `cargo test
+  --workspace` passes. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo-http --no-deps` passes.
+- Scratch crate `embed`: the 25 checks of the first round, the one before `listen()` amended to
+  expect `Unrouted`, plus 12 new ones, 37 in all, pass with identical output on rustc 1.98.1 and
+  1.88 under `#![deny(warnings)]`. `check` now records a failure and the run exits 1 at the end,
+  so one run reports every failing check. A `tracing_subscriber` layer captures each `url.path` a
+  span records.
+
+| Check | Result |
+| --- | --- |
+| request before `listen()` | 503, `Routing::Unrouted` |
+| `OPTIONS /users/7`, nested at `/api/` | 204, `Routing::Options { route: "/api/users/{id}" }` |
+| an unscoped entry answering without `next` / returning `Err` | 200 / 500, `Routing::Unrouted` |
+| `OriginalPath::from(&uri)`, `uri` `/api/users/7?x=1`, on a request for `/users/7` / none | `url.path` "/api/users/7" / "/users/7" |
+| request after `close` | 503, `Routing::Unrouted` |
+| `adopt::<User>()` on `NoExt` | refused: "`adopt::<embed::User>()` at src/main.rs:216:33 copies a host value, and the noext embedding declares `host_extensions: false`: .. `.supplies::<embed::User>()` after it", beside the two `Host<User>` refusals |
+| `NoExt`, `.apply_value(InsertUser).supplies::<User>().adopt::<User>()` | listens; `Host<User>` answers "bob", the guard reading the adopted `Ext<User>` admits |
+| `NoExt` with `Embedded::supplies::<User>()`, no pre-dispatch declaration | listens |
+| `.supplies::<User>()` with no entry before it | refused: "`supplies` at src/main.rs:196:33 follows no pre-dispatch entry; .." |
+| `max_inflight(1)`, one response held, a second request | 503, `Routing::Unrouted` |
+
+- Against a known violation: one run with each change mutated out of the source, the crate still
+  compiling: `render::refusal` not inserting `Unrouted`, `respond` inserting only a recorded
+  decision, the `OPTIONS` miss recorded as `MethodNotAllowed`, `url.path` recording the received
+  path, the supplied set empty, the `adopt` refusal disabled, and the stray-`supplies` call site
+  not recorded. 11 checks fail, each a check of a changed behaviour: the 10 new ones and the
+  amended check before `listen()`. Of the other two new checks, the fallback path passes, being
+  the old behaviour, and the one reading `Host<User>` through the supplying entry does not run,
+  since its app is refused. The remaining 25 pass. The sources were restored by `cp` from copies
+  taken before the mutation, compared byte for byte, and the clean run repeated.
+- The prose scan over the added source lines for the banned register and em-dashes returns
+  nothing, and returns its line for a planted "just" and em-dash.

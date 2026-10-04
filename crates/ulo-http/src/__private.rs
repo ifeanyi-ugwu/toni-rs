@@ -1,7 +1,6 @@
 //! Support for the code `ulo-http-macros` generates. Not part of the public API: names and shapes
 //! here change with the macros.
 
-use std::any::type_name;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -14,7 +13,7 @@ pub use ulo_transport as transport;
 pub use crate::extract::PathCheck;
 
 use crate::cx::HttpCx;
-use crate::extract::{Host, Path};
+use crate::extract::{Host, HostType, Path};
 use crate::response::Response;
 
 /// A route's call: extraction, the controller, the handler and the reply probe, run by `dispatch`
@@ -98,12 +97,12 @@ impl<P> NotPath for PathProbe<P> {
 /// The value type a `Host<T>` parameter reads, for the embedding's `host_extensions` check.
 #[derive(Clone, Copy, Debug)]
 pub struct HostRead {
-    pub(crate) type_name: &'static str,
+    pub(crate) ty: HostType,
 }
 
 impl HostRead {
     fn of<T: 'static>() -> Self {
-        HostRead { type_name: type_name::<T>() }
+        HostRead { ty: HostType::of::<T>() }
     }
 }
 

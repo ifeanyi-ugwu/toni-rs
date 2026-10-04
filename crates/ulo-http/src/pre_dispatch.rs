@@ -28,6 +28,7 @@ use ulo::{BoxError, BoxFuture, Dep, Dependencies, DispatchStage, ExecutionRef, L
 use crate::body::HttpBody;
 use crate::cors::Cors;
 use crate::cx::{MatchedRoute, PathParams};
+use crate::extract::HostType;
 use crate::middleware::{ErasedMiddleware, Middleware, Next};
 use crate::render;
 use crate::request::{ConnInfo, Request};
@@ -45,9 +46,10 @@ use crate::transport::RequestHead;
 ///     .apply_value(Cors::new().allow_origin("https://app.example").allow_credentials(true))
 ///     .apply::<RequestId>()                                           // unscoped: every request, misses included
 ///     .layer(TraceLayer::new_for_http())                              // tower, unscoped
+///     .layer(HostAuthLayer::new()).supplies::<CurrentUser>()          // inserts `CurrentUser`
 ///     .layer_for(["/files/*"], RequestBodyLimitLayer::new(50 * MB))   // tower, scoped by route pattern
 ///     .apply_for::<ApiKeyAuth>(["/admin/*"]).exclude(["/admin/health"])
-///     .adopt::<CurrentUser>();                                        // a host's value, as `Ext<CurrentUser>`
+///     .adopt::<CurrentUser>();                                        // into the execution, as `Ext<CurrentUser>`
 /// ```
 ///
 /// A scope is a route pattern whose last segment may be `*`, matched against route patterns when
@@ -57,12 +59,18 @@ use crate::transport::RequestHead;
 /// checks that the declaring module sees them.
 ///
 /// `prepare` refuses a scope or an exclusion that does not parse, a scoped entry naming no pattern,
-/// an `exclude` written before any entry, and a `Cors` value the Fetch specification forbids.
+/// an `exclude` or a `supplies` written before any entry, and a `Cors` value the Fetch
+/// specification forbids.
 #[derive(Default)]
 pub struct PreDispatch {
     pub(crate) entries: Vec<Entry>,
     /// Where `exclude` was called with no entry before it, for `prepare` to report.
     pub(crate) stray_excludes: Vec<&'static Location<'static>>,
+    /// The types `supplies` declared, which an embedding declaring `host_extensions: false`
+    /// exempts from its refusal of `Host<T>` and `adopt::<T>()`.
+    pub(crate) supplied: Vec<HostType>,
+    /// Where `supplies` was called with no entry before it, for `prepare` to report.
+    pub(crate) stray_supplies: Vec<&'static Location<'static>>,
 }
 
 /// One entry as declared.
@@ -89,7 +97,7 @@ pub(crate) enum Step {
     Value(Arc<dyn ErasedMiddleware>),
     Layer(Arc<dyn ErasedLayer>),
     /// Copies one type from the request's `http::Extensions` into the execution's.
-    Adopt(Adopt),
+    Adopt(Adopt, HostType),
 }
 
 /// What an `adopt::<T>()` entry runs.
@@ -171,10 +179,29 @@ impl PreDispatch {
     /// `T` passes unchanged, and `Ext<T>` then fails with `LookupError::NotFound`.
     ///
     /// That is how a host's auth layer hands its user to the app's guards; a handler reads a host
-    /// value directly with `Host<T>`.
+    /// value directly with `Host<T>`. An embedding declaring `host_extensions: false` refuses it,
+    /// as it refuses `Host<T>`, unless something declares it supplies `T`.
     #[track_caller]
     pub fn adopt<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
-        self.push(Step::Adopt(adopt::<T>), None, declare_nothing, None)
+        self.push(Step::Adopt(adopt::<T>, HostType::of::<T>()), None, declare_nothing, None)
+    }
+
+    /// Declares that the entry written before it puts `T` in the request's `http::Extensions`,
+    /// as a tower layer authenticating the request does. An embedding whose adapter declares
+    /// `host_extensions: false` then accepts a handler reading `Host<T>` and an `adopt::<T>()`
+    /// entry, which it refuses for a type nothing supplies. Runs nothing, on a backend or
+    /// embedded.
+    ///
+    /// The declaration joins one set with `Embedded::supplies::<T>()`, written by an adapter for a
+    /// value it inserts itself; it is checked as a set, whatever the scope of the entry before it
+    /// and wherever an `adopt::<T>()` stands. With no entry before it, `prepare` reports the call.
+    #[track_caller]
+    pub fn supplies<T: Clone + Send + Sync + 'static>(&mut self) -> &mut Self {
+        if self.entries.is_empty() {
+            self.stray_supplies.push(Location::caller());
+        }
+        self.supplied.push(HostType::of::<T>());
+        self
     }
 
     /// Removes the routes `patterns` cover from the entry written before it. With no entry
@@ -292,6 +319,12 @@ impl Stage {
             for location in &meta.stray_excludes {
                 failures.push(format!("`exclude` at {location} follows no pre-dispatch entry, so it excludes nothing"));
             }
+            for location in &meta.stray_supplies {
+                failures.push(format!(
+                    "`supplies` at {location} follows no pre-dispatch entry; it declares what the entry before it inserts, \
+                     and a value the host inserts is declared on the embedding with `Embedded::supplies`"
+                ));
+            }
             for (index, entry) in meta.entries.iter().enumerate() {
                 if let Some(check) = &entry.check {
                     if let Err(err) = (**check)() {
@@ -303,7 +336,7 @@ impl Stage {
                     Step::ByType(resolve) => Action::ByType(*resolve),
                     Step::Value(middleware) => Action::Value(Arc::clone(middleware)),
                     Step::Layer(layer) => Action::Layer(layer.layer(Service::default())),
-                    Step::Adopt(copy) => Action::Adopt(*copy),
+                    Step::Adopt(copy, _) => Action::Adopt(*copy),
                 };
                 if !entry.scoped {
                     run.push(Runnable { module: module.clone(), action, exclude });

@@ -34,6 +34,8 @@ pub(crate) struct RouteEntry {
     pub(crate) methods: Vec<(Method, Arc<RouteTarget>)>,
     /// The `Allow` of a 405, and of an `OPTIONS` answered without a handler.
     allow: HeaderValue,
+    /// The pattern as the host sees it, every target's `route`: `Routing::Options`.
+    route: Arc<str>,
 }
 
 /// One matched handler, as `prepare` built it.
@@ -64,8 +66,9 @@ pub(crate) enum Routed<'r> {
     NotFound,
     /// A path that matches with no handler for the method: 405 with this `Allow`.
     MethodNotAllowed { allow: HeaderValue },
-    /// `OPTIONS` on a matching path with no `OPTIONS` handler: 204 with this `Allow`.
-    Options { allow: HeaderValue },
+    /// `OPTIONS` on a matching path with no `OPTIONS` handler: 204 with this `Allow`, `route` the
+    /// pattern as the host sees it.
+    Options { allow: HeaderValue, route: Arc<str> },
 }
 
 /// A route-table failure, naming every handler involved.
@@ -159,7 +162,9 @@ impl Router {
             .map(|group| {
                 let methods: Vec<(Method, Arc<RouteTarget>)> = group.targets.into_iter().map(|(method, target, _)| (method, target)).collect();
                 let allow = allow_of(&methods);
-                RouteEntry { pattern: group.pattern, methods, allow }
+                // A group holds one target at least, and its targets share one pattern.
+                let route = Arc::clone(&methods[0].1.route);
+                RouteEntry { pattern: group.pattern, methods, allow, route }
             })
             .collect();
         routes.sort_by_cached_key(|entry| entry.pattern.precedence());
@@ -186,7 +191,7 @@ impl Router {
                 }
             }
             if *method == Method::OPTIONS {
-                return Routed::Options { allow: entry.allow.clone() };
+                return Routed::Options { allow: entry.allow.clone(), route: Arc::clone(&entry.route) };
             }
             return Routed::MethodNotAllowed { allow: entry.allow.clone() };
         }
