@@ -820,7 +820,8 @@ Four of the five are accepted. Entry 57 should change, and the inconsistency you
 ## Fourteenth response: the input-path build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 59 and 61 and the two places
-its "Not covered" list names. Sign-off pending.
+its "Not covered" list names. The user signed it off the same day. `KeyName` is read as `Key`, the
+core's name for a binding's identity.
 
 All four are accepted, with one adjustment to the first.
 
