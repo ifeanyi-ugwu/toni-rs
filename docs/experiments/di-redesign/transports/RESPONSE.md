@@ -863,7 +863,8 @@ I wouldn't move the descriptive fields to `TypeName` now. The remaining case it 
 ## Sixteenth response: the follow-ups build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-followups.md` and the three findings its build
-reported. Sign-off pending.
+reported. The user signed it off the same day; the core's zero-timeout check is filed in the
+workspace gaps ledger.
 
 Five of the six decisions are accepted. Decision 6 needs one change, and `Count` should move crates. Two of the build's findings deserve action now.
 
