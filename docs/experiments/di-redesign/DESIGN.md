@@ -57,24 +57,35 @@ register modules (sync)
 ### 3.1 Keys and qualifiers
 
 ```rust
+/// A type as a report names it: `TypeName::of::<my_app::User>()` prints `User`, and with `{:#}`
+/// prints `my_app::User`. Two names compare and hash on their `TypeId`s, so a type alias or a
+/// renamed import names the same type; the `type_name` string is how the name prints and nothing else.
 #[derive(Clone, Copy)]
-pub struct Key {
-    ty: TypeId,
-    qualifier: TypeId,
-    ty_name: &'static str,   // type_name::<T>(), for diagnostics only
-    q_name: &'static str,    // type_name::<Q>(), for diagnostics only
+pub struct TypeName { id: TypeId, name: &'static str }
+
+impl TypeName {
+    pub fn of<T: ?Sized + 'static>() -> TypeName;
+    /// The names among `names` whose short form another, different type among them shares,
+    /// `a::Config` beside `b::Config`: the ones a report writes with `{:#}` (§10.1).
+    pub fn colliding(names: impl IntoIterator<Item = TypeName>) -> HashSet<TypeName>;
 }
-// PartialEq, Eq and Hash are written by hand over `ty` and `qualifier`: two keys
-// compare on the TypeIds alone. `type_name` is not a const fn, so the names are
-// read at `of` and carried as plain `&'static str` fields.
+// Display: "User", "Arc<PgPool>"; `{:#}`: "my_app::User", "alloc::sync::Arc<my_app::db::PgPool>"
+
+#[derive(Clone, Copy)]
+pub struct Key { ty: TypeName, qualifier: TypeName }
+// PartialEq, Eq and Hash are written by hand over the two names, which compare on their
+// TypeIds. `type_name` is not a const fn, so each name is read at `of`.
 
 impl Key {
     pub fn of<T: ?Sized + 'static, Q: 'static>() -> Key;
+    pub fn type_name(&self) -> TypeName;   // the type the key binds, without its qualifier
 }
-// Display: "PgPool", "PgPool @ Replica", "dyn Plugin (collection)"
+// Display: "PgPool", "PgPool @ Replica"; `{:#}`: "my_app::db::PgPool @ my_app::Replica". A report
+// decides full paths per `TypeName`, not per key: `Store @ a::Replica` beside `Store @ b::Replica`.
+// `KeyName` is a `Key` with its `BindingKind`, "dyn Plugin (collection)", the form the errors carry.
 ```
 
-A qualifier is any `'static` type, usually a unit struct: `pub struct Replica;`. Because keys are types, there are no strings to misspell [9]. A `Key` is also a runtime value: an integration crate that holds one can look it up erased through `Resolver::by_key::<T>(key)`, which is the one lookup that can ask for a `T` the key does not hold (§10.2).
+A qualifier is any `'static` type, usually a unit struct: `pub struct Replica;`. Because keys are types, there are no strings to misspell [9]. A `Key` is also a runtime value: an integration crate that holds one can look it up erased through `Resolver::by_key::<T>(key)`, which is the one lookup that can ask for a `T` the key does not hold (§10.2). A `TypeName` is what a report holds for a type that is never bound, a transport's marker type or the `T` an extractor reads; a `Key` is a binding's identity.
 
 ### 3.2 Injection points
 
@@ -600,7 +611,7 @@ Wiring walks each handler's reachable execution-scoped bindings and checks every
 
 Standalone executions are the one runtime case, since nothing static says what they seed: one that doesn't seed an input which an injection point reads gets `LookupError::NotFound { kind: Input }` at runtime, and the error names the key.
 
-The same walk answers a transport's `prepare`: `Mounted::handlers_reading::<T>()` lists the mounted handlers whose reachable execution-scoped bindings read the input `T`, each entry carrying the dependency path from the handler to the binding that reads it, so a transport whose deployment cannot seed an input it declares, an embedded HTTP app whose host supplies no peer address for `ClientAddr` (transports §3.8), refuses those handlers at startup naming the service that reads the input, rather than failing their first call.
+The same walk answers a transport's `prepare`: `Mounted::handlers_reading::<T>()` lists the mounted handlers whose reachable execution-scoped bindings read the input `T`, one `InputReader` per handler and read. An entry carries the handler (`handler()`), its transport as a `TypeName` (`transport()`) and the steps after the handler (`steps()`): each binding between the handler and the read, then the injection point, as in `Audit (execution)`, ``Dep<ClientAddr> (field `addr`)``. No entry carries the handler step rendered. A refusal writes `{controller}::{handler} ({transport})` from the handler and the `TypeName` against its own report's names (§10.1), and the transport prints one way throughout that report. A transport whose deployment cannot seed an input it declares, an embedded HTTP app whose host supplies no peer address for `ClientAddr` (transports §3.8), refuses those handlers at startup naming the path to the service that reads the input, rather than failing their first call.
 
 ---
 
@@ -927,7 +938,11 @@ Without `serve`, a job or CLI on `Connected`, `close` runs the same sequence. Th
 
 Steps that depend on a missing piece skip only the affected edges, so one missing binding doesn't hide unrelated errors.
 
-Every type name in a report is cut to its last path segment, inside generic arguments too: `Arc<PgPool>`, not `alloc::sync::Arc<my_app::db::PgPool>`. Where one report would print two different keys alike, `a::Config` and `b::Config`, it prints those keys with their full paths, and module names follow the same rule: `billing::Module` and `users::Module` print in full where one report would print both. The check runs at formatting time over the report's key and module fields and costs nothing elsewhere; a string rendered before the report exists, a consumer's name or a step of a dependency path, stays short.
+Every type name in a report is a `TypeName` (§3.1), cut to its last path segment, inside generic arguments too: `Arc<PgPool>`, not `alloc::sync::Arc<my_app::db::PgPool>`. A generic transport marker prints the same way, `Q<X>`. Where one report would print two different types alike, `a::Config` and `b::Config`, it prints those types with their full paths, and only those: the report runs `TypeName::colliding` over every name it holds and writes each name in the answer with `{:#}`. A key enters the pass as its type and, when qualified, its qualifier, each on its own. `Store @ a::Replica` beside `Store @ b::Replica` prints `Store` short and the two `Replica`s in full, and `a::Config` beside `b::Config @ Q` prints both `Config`s in full; a key's binding kind plays no part. A transport enters the pass as the `TypeName` of its marker type wherever an entry stores one (§10.2): `InputNotSeeded`'s handler transport and seeder, `ClosureScopeViolation`'s transport, and the transports of `InputConflict`'s two origins. Module names follow the same rule under their own check: `billing::Module` and `users::Module` print in full where one report would print both. A `ModuleName` carries a label and an instance number a `TypeName` does not, which is why the two passes stay separate.
+
+The pass is the report's, not the entry's. `WiringErrors` gathers the names of every entry before formatting, and a type colliding with one in another entry prints in full in both; a `WiringError` or an `InputOrigin` displayed on its own collides its own names. The startup report, `StartupError::Configure`, runs one pass over every failing transport and every type a `PrepareError` names, when the report is built (§10.2). The shutdown report runs one over its hook keys and its transports in `Display`. `StartupError::Bind` names one transport and runs none: a type cannot collide with itself.
+
+What an entry stores decides what the pass reaches. A report entry stores the names it reports as values, a `TypeName`, a `Key` or a `KeyName`, rendered when the report is formatted under the rule above. Descriptive text, a consumer's name such as ``UserService (param `mailer`)``, the steps of a path between services or an item description, may be stored already rendered, with the names inside it written short: it is built while the graph is available and carries module names, field names and positions no `TypeName` holds. A name an entry also stores as a value is never written into its text: it is rendered from the value, and the entry prints it one way. `InputNotSeeded` holds its handler's transport as a value and its `steps` open after the handler, and the headline and the path both write the transport from that value; `ClosureScopeViolation`'s `closure` names the enhancer without its transport, which the report writes after it from the value. Two same-named services inside one dependency path still print alike, a step's type being inside pre-rendered text: that is the rule's scope as it stands.
 
 A sample of the output:
 
@@ -950,7 +965,7 @@ error: wiring failed with 5 errors
     └─ ReportService → AuditContext (execution) → Ext<CurrentUser>
        help: declare ReportService #[injectable(execution)], or inject a factory
 
-  × input `fw_http::RequestHead` is seeded by Http, read on a path from an Rpc handler
+  × input `RequestHead` is seeded by Http, read on a path from the Rpc handler UsersController::get_rpc
     ├─ UsersController::get_rpc (Rpc) → AuditContext (execution) → Dep<RequestHead> (field `head`)
     └─ help: read it as `Option<Dep<RequestHead>>` where the path is shared across transports
 ```
@@ -962,13 +977,41 @@ error: wiring failed with 5 errors
 pub enum StartupError {
     Wiring(WiringErrors),                                  // everything from wire()
     Connect(ConnectError),
-    Bind { transport: &'static str, source: Redacted },    // a transport's own error, or the core's `TimerMissing`
+    Configure(ConfigureErrors),                            // every failure the servers' `prepare` calls reported, before any binds (transports §2.7)
+    Bind { transport: TypeName, source: Redacted },        // a transport's own error, or the core's `TimerMissing`; one name, printed short
+}
+
+/// Every `prepare` failure, one entry per server, collected before any server binds. `Display` writes every entry, and `Debug`
+/// the same text. The entries' transports and the names of every `PrepareError` among them enter one `TypeName::colliding` pass
+/// when the report is built, before each entry's text is redacted (§10.1).
+pub struct ConfigureErrors { errors: Vec<ConfigureError> }
+
+impl ConfigureErrors {
+    pub fn iter(&self) -> slice::Iter<'_, ConfigureError>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+}
+
+/// One server's configuration failure. `Display` writes the entry as its report does, the transport in full where the report's
+/// pass decided so.
+#[non_exhaustive]
+pub struct ConfigureError { pub transport: TypeName, pub source: Redacted }
+
+/// A `prepare` error whose text names types: what a server answers, boxed, so the startup report decides how each name prints.
+/// `text` writes each name with `{:#}` when the set it receives holds it, and with `{}` otherwise; `Display` on a `PrepareError`
+/// alone collides its own names.
+pub struct PrepareError { names: Vec<TypeName>, text: Box<dyn Fn(&HashSet<TypeName>) -> String + Send + Sync> }
+
+impl PrepareError {
+    pub fn new(names: impl IntoIterator<Item = TypeName>, text: impl Fn(&HashSet<TypeName>) -> String + Send + Sync + 'static) -> Self;
+    pub fn names(&self) -> &[TypeName];
+    pub fn text(&self, full: &HashSet<TypeName>) -> String;   // each name in `full` written with its full path
 }
 
 /// `listen()`'s refusal of an app that binds a transport with no `Timer` (§9.5), stored in `StartupError::Bind`'s
 /// `source` like a transport's error; `source.downcast_ref::<TimerMissing>()` tells it from a port already taken.
 #[non_exhaustive]
-pub struct TimerMissing { pub transport: &'static str }
+pub struct TimerMissing { pub transport: TypeName }
 
 /// A failure in the connect phase, on `StartupError::Connect` from `connect` and on `LoadError::Connect` from `load`.
 #[non_exhaustive]
@@ -1023,11 +1066,13 @@ pub struct Shutdown {
 #[derive(Clone)]                                                  // one outcome, several receivers; the failures sit behind the Arc
 #[non_exhaustive]
 pub struct ShutdownError { pub report: Shutdown, pub failures: Arc<[ShutdownFailure]> }
+// `Display` runs one `TypeName::colliding` pass over every failure's names, each hook key's type and qualifier and each
+// `Close`'s transport, and writes each failure against it; a `ShutdownFailure` displayed alone collides its own names (§10.1).
 
 #[non_exhaustive]
 pub enum ShutdownFailure {
     Hook { hook: HookKind, key: KeyName, reason: FailureReason },   // `Errored` only for a closure hook whose parameter read failed: the hook traits return `()`
-    Close { transport: &'static str, reason: FailureReason },      // `Errored` holding the transport's own error, `Panicked` for a `close` that panics, `TimedOut` for one exceeding its bound; never `Skipped` (§9.5)
+    Close { transport: TypeName, reason: FailureReason },          // `Errored` holding the transport's own error, `Panicked` for a `close` that panics, `TimedOut` for one exceeding its bound; never `Skipped` (§9.5)
 }
 
 /// `execute` and `Execution::open` from Draining on; `load` carries it in `LoadError::Closed` from Stopping on (§9.5).
@@ -1053,13 +1098,31 @@ pub enum LoadRefusal {
     Input { module: ModuleName, key: KeyName },          // inputs belong to transports; the per-handler check ran at wiring time (§6.4)
 }
 
+/// One wiring failure, a variant per failure of §10.1, held by `WiringErrors`. The two variants that name a transport hold it
+/// as a `TypeName` and write it when the report is formatted; the entry's descriptive text carries no transport.
+#[non_exhaustive]
+pub enum WiringError {
+    ..,
+    /// Step 5: an enhancer a handler declares by closure in an explicit singleton scope, which reads per-execution data.
+    /// `closure` names it without its transport, as in ``method-level guard #2 of UsersController::get``, and the report
+    /// writes `transport` after it, as in `(Http)`; `role` is `guard`, `interceptor` or `error handler`; `path` runs from
+    /// the injection point to the read of execution data.
+    ClosureScopeViolation { closure: String, transport: TypeName, role: &'static str, path: Vec<String>, at: &'static Location<'static> },
+    /// Step 5: a non-optional input read on a path from a handler whose transport does not seed it. `steps` holds the steps
+    /// after the handler, each binding between it and the read and then the injection point; the report writes
+    /// `{handler} ({transport})` ahead of them, the transport from the value, and names `seeder` in the headline.
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, steps: Vec<String> },
+    ..
+}
+
 /// One side of the `WiringErrors` entry `InputConflict { key, first, second }` (§10.1 step 2): where an input declaration,
 /// or the binding it collides with, was written. `at` is the call's `#[track_caller]` location, as on every binding (§2).
+/// `Display` writes the line the report prints, the transports short unless two different ones on the line print alike.
 #[non_exhaustive]
 pub enum InputOrigin {
-    Transport { name: &'static str, at: &'static Location<'static> },                             // `Transport::inputs`
-    Module { module: ModuleName, seeders: Vec<&'static str>, at: &'static Location<'static> },    // `m.input::<T>().seeded_by::<Tr>()`
-    Binding { module: ModuleName, at: &'static Location<'static> },                               // a single binding under the key
+    Transport { name: TypeName, at: &'static Location<'static> },                             // `Transport::inputs`; `name` is the marker type
+    Module { module: ModuleName, seeders: Vec<TypeName>, at: &'static Location<'static> },    // `m.input::<T>().seeded_by::<Tr>()`, each `Tr`
+    Binding { module: ModuleName, at: &'static Location<'static> },                           // a single binding under the key
 }
 
 #[non_exhaustive]
@@ -1113,9 +1176,11 @@ pub fn is_panic(error: &BoxError) -> bool;
 
 `is_panic` takes `&BoxError` because that is what a caller holds: an error handler receives `err: BoxError`, an interceptor gets one from `next.run()`, and `is_panic(&err)` compiles against both. Against a `dyn` parameter, `&(dyn Error + 'static)` or `&(dyn Error + Send + Sync + 'static)` alike, `is_panic(&err)` is E0277: the coercion commits to unsizing the `Box` itself, and `Box<dyn Error>` does not implement `Error`; the caller would have to write `&*err`. The cost is that a caller holding a bare `&dyn Error`, a `source()` link, cannot pass it; `is_panic` walks `source()` itself. Nesting is rare: a dependency's `LookupError` passes up unchanged through `ConstructError::Dependency`, so a panic any depth down a dependency chain arrives as the top-level `LookupError::Construct { reason: Panicked(..) }` naming the deepest key. The nesting that does occur is a constructor or a `try_` factory returning a dependency's `LookupError` as its own `Err`, which arrives as `Construct { reason: Errored(Redacted(LookupError::Construct { reason: Panicked(..) })) }`, and `is_panic` reaches it. Its limit follows from `Redacted` handing out its original by type alone: inside one, only `PanicRecovered`, `LookupError`, `ConstructError`, `ConnectError`, `LoadError`, `StartupError` and `Redacted` are recognised, and a user's error type wrapping a panicked `LookupError`, returned as a constructor's `Err` and redacted, is not looked through. Reaching it would need a `&dyn Error` accessor on `Redacted`, a third path to the original, which this section rules out.
 
+`StartupError::Configure` is the startup report, one `ConfigureError` per server whose `prepare` failed (transports §2.7). A server whose failure names types answers a `PrepareError`, boxed, as its `prepare` error: the names, and a closure writing the text given the set of names to write in full. `listen()` holds every server's error before it builds the report. It downcasts each to `PrepareError`, runs `TypeName::colliding` once over every failing transport together with the names of every `PrepareError`, and writes each `PrepareError`'s text against that set. The text is then redacted against the graph's secrets and stored as the entry's `source`, which is why the pass runs when the report is built and not in `Display`, where no registry exists. A server answering any other error keeps its text, which contributes no names, and its transport still enters the pass. Each `ConfigureError` records whether the pass wrote its transport in full, and an entry displayed alone prints as the report does; `source.downcast_ref::<PrepareError>()` reaches the original, whose own `Display` collides its own names. `ShutdownError` holds no text written ahead of time, and its reasons are redacted when recorded, so its pass runs in `Display`.
+
 `WiringErrors` carries one entry per failure from §10.1, the `Err` a `try_value` recorded among them, held as a `Redacted` (§9.3). `WrongType` is the one failure a caller reaches deliberately, through `Resolver::by_key::<T>(key)` (§3.1), where an erased key does not fix `T`. A typed read answers it too, `dep`, `many`, an entry's `resolve` or an input read, when the stored instance does not hold the key's type after the recorded coercion; with consistent records that cannot happen, and the alternative to the variant is a panic.
 
-Every public error type is `#[non_exhaustive]`, the six structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError`, `GuardRejected`, `PanicRecovered` or `TimerMissing` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted` carries no attribute: its fields are private, which closes it the same way. Code outside the core reads these types and builds none of them but `ConstructError`, which a constructor returns. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
+Every public error type is `#[non_exhaustive]`, the seven structs included: a variant added to an enum breaks no caller that matches on it, a field added to `Shutdown`, `ShutdownError`, `ConfigureError`, `GuardRejected`, `PanicRecovered` or `TimerMissing` breaks no caller that destructures one, and `Closed` is constructed by the core alone. `Redacted`, `ConfigureErrors` and `PrepareError` carry no attribute: their fields are private, which closes them the same way. Code outside the core reads these types and builds none of them but `ConstructError`, which a constructor returns, and `PrepareError`, which a server's `prepare` returns. `ConnectError` is its own type because `StartupError` and `LoadError` share only the connect phase. `load` reports wiring errors through its own `Wiring` and binds no transport; a `LoadError` wrapping a whole `StartupError` would carry two cases that can be constructed and never occur. Composed from exact parts, every variant of both is reachable, and code handling a construction failure handles it once for startup and load alike.
 
 Neither the core nor the macros panic or exit [45]. Panics inside user constructors, factories, readiness checks and hooks are caught at the poll boundary and reported as `FailureReason::Panicked` on `ConnectError::Construct`, `ConnectError::Readiness`, `ConnectError::Hook` or `ShutdownFailure::Hook`; a transport's `close` is caught the same way and reported on `ShutdownFailure::Close` (§9.5). A panic inside a call's pipeline, in a guard, an interceptor, the handler or an error handler, is caught at that stage and travels as `PanicRecovered`, through the interceptors around a handler and then to the error handlers (§7); one while the container builds an enhancer or the controller inside a call is `LookupError::Construct { reason: Panicked(..) }`, and `is_panic` recognises both, and a `ConnectError` carrying one. That holds unless the binary is built with `panic = "abort"`, where nothing can be caught. `FailureReason` is one enum for every place a hook, a construction, a readiness check or a transport's `close` can fail, so a timeout reads the same on an init hook, a destroy hook, a constructor, a check and a `close`; `Skipped` is reachable at shutdown alone, on `Hook` alone, nothing capping startup as a whole and every `close` starting. It is a field everywhere it appears and implements no `Error`: nothing boxes a reason, and `BoxError::from(reason)` does not compile. `TimedOut` names the limit that fired and carries that limit's configured duration: an item's own bound and the cap are often the same round number, and the duration alone would not tell them apart. A hook or a `close` still running when the cap expires reports `ShutdownCap`, whatever its own bound was.
 
@@ -1123,7 +1188,7 @@ Neither the core nor the macros panic or exit [45]. Panics inside user construct
 
 The core consumes a `ConstructError` by variant. Inside a call, a `Dependency` is reported as the `LookupError` it carries, on the path that error was already taking. During `connect`, where `ConnectError` carries no `LookupError`, a `Dependency` holding a nested build's `Construct { key, reason }` becomes `ConnectError::Construct` naming that deeper key, and one holding any other lookup error, the `NotReady` a constructor's `ModuleRef::get` meets, becomes `ConnectError::Construct` naming the binding itself with `reason: Errored(..)`, the `LookupError` by `downcast_ref`. A `Failed` is reported as `Construct { reason: Errored(..) }`, on `ConnectError` during `connect` and on `LookupError` inside a call. `Failed` holds the error as the constructor returned it, and the redaction function (§9.3) runs when the core stores it as `Errored`. It runs on `Failed` alone: a `LookupError` is the core's own, and any outside error inside it was redacted where it was stored.
 
-Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, a transport's `close` error among the former, the `source` of `StartupError::Bind`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. `Bind` also carries the one error the core writes itself on that path, `listen()`'s refusal of an app with a transport and no `Timer` (§9.5): a `TimerMissing { transport }`, wrapped in the same `Redacted` to keep the field one type, and a struct rather than a message, which lets `downcast_ref::<TimerMissing>()` tell a misconfigured app from a port already taken. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
+Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type (§9.3), and the field that stores it is a `Redacted`: `FailureReason::{Errored, Panicked}`, a transport's `close` error among the former, the `source` of `StartupError::Bind`, the `source` of each `ConfigureError`, and the `try_value` entry in `WiringErrors`. A bind error rarely carries a credential, but a TLS key path or a proxy URL with a password in it can, and the cost is one call on a path that fails once. `Bind` also carries the one error the core writes itself on that path, `listen()`'s refusal of an app with a transport and no `Timer` (§9.5): a `TimerMissing { transport }`, wrapped in the same `Redacted` to keep the field one type, and a struct rather than a message, which lets `downcast_ref::<TimerMissing>()` tell a misconfigured app from a port already taken. The type is kept because the original has to stay reachable on the runtime path: `LookupError::Construct` fires inside a call, and an execution-scoped constructor failing with a domain error, a tenant not found, is mapped to a 404 by an error handler that downcasts the `LookupError`, then the `reason`'s `Redacted` to the domain type. With the original replaced by its text that mapping would be impossible. What the type enforces is that no formatting prints the original: `Display` and `Debug` write the text, and `source()` is `None`, which is what keeps an error-chain reporter, one that walks `source()` and prints every link, from printing the original and bypassing the redaction. The original is reached through `downcast_ref` and `into_inner` and nowhere else, two methods a reviewer can find.
 
 `Closed` is a refusal by phase (§9.5): `execute` and `Execution::open` answer it from Draining on, `load` from Stopping on inside `LoadError`, which holds `load`'s other failures beside it; `StartupError` never carries `Closed`. The lookup form is `LookupError::Closed`, from the first destroy hook on, so an abandoned execution is never handed an instance whose destroy hook has run; one it already holds stays a valid object.
 
@@ -1192,11 +1257,11 @@ Override rules:
 | A single binding under a role key the freeze recorded: `also_as`, an alias, `provide` or `value` | startup (`wire`) | freeze pass (§7); hint "contribute it" |
 | Dependency cycle, module import cycle | startup (`wire`) | DFS with path |
 | An `export::<T>()` of a key the module does not bind | startup (`wire`) | module graph pass; `ExportNotBound`, with the `reexport` hint when an import provides it |
-| Singleton → execution dependency, including through transients: an explicit singleton, `#[injectable(singleton)]`, `with(singleton) = ..` or `.singleton(..)`, reading execution data (§3.3) | startup (`wire`) | needs-execution pass |
+| Singleton → execution dependency, including through transients: an explicit singleton, `#[injectable(singleton)]`, `with(singleton) = ..` or `.singleton(..)`, reading execution data (§3.3) | startup (`wire`) | needs-execution pass; `ScopeViolation`, or `ClosureScopeViolation` for an enhancer a handler declares by closure, its transport held as a `TypeName` (§10.2) |
 | An `Auto` provider reading execution data, a type or a `with` closure under a provider key alike; the hint names `#[injectable(execution)]` for a type and `with(execution)` or `.execution(..)` for a closure (§6.2) | startup (`wire`) | needs-execution pass |
 | A hook on an `Auto` type inferred per-execution, a closure hook or `.ready(..)` included | startup (`wire`) | scope pass |
 | A hook, readiness, module-hook or metadata closure reading `Ext`, `ExecutionRef`, an input or a per-execution key | startup (`wire`) | scope pass (§6.2) |
-| A non-optional input read on a path from a transport that doesn't seed it | startup (`wire`) | per-handler input check |
+| A non-optional input read on a path from a transport that doesn't seed it | startup (`wire`) | per-handler input check; `InputNotSeeded`, the handler's transport and the seeder held as `TypeName`s, the steps after the handler as text (§10.2) |
 | An input declared by a keyed module | startup (`wire`) | module graph pass |
 | One input declared by two transports, or a transport's declaration beside a module's with another seeder or beside a binding under the key | startup (`wire`) | binding pass; `InputConflict`, each side an `InputOrigin` |
 | An override that matches nothing, or more than one binding, `in_module::<M>()` over several instances of `M` included | startup (`wire`) | test builder |
@@ -1295,13 +1360,13 @@ The value API an integration writes against:
 | Modules | `Module`, `ModuleIdentity`, `ModuleDef::{import, global, export, reexport, secret, on_init, on_destroy, meta, enhancer}`, `DynamicModule`, `Keyed` |
 | Bindings | `provide::<T: Construct>`, `provide_with::<T>(factory)`/`try_provide_with`, `value`/`try_value`, `with`/`try_with` (`Auto`, §3.3), `singleton`/`try_singleton`, `execution`/`try_execution`, `transient`/`try_transient`, `contribute::<T>()`, `enhancer::<R: Role>()` (the same builder marked `Enhancer`, for a role key of a transport with no mounted handler), `Contribute<'m, U, Q, Mark = Plain>` (`provide`, `value`, `try_value(Result<Arc<U>, E>)`, `singleton`/`try_singleton`, `execution`/`try_execution`, `with`/`try_with` (`Auto`, §3.3), each with the coercion closure; `qualified` on `Plain` alone), `handle::{Plain, Enhancer}` (empty enums, the marks), `alias::<T, Q>().of::<Existing>()`, `input::<T>().seeded_by::<Tr>()` |
 | Binding handles | `also_as`, `qualified::<Q>`, `timeout(..)`/`unbounded()` on the binding itself, `ready(..).retries(..).backoff(..).attempt_timeout(..).timeout(..)`/`.unbounded()`, `on_init`/`on_destroy`/`before_shutdown`/`on_shutdown` each with `.timeout(..)`/`.unbounded()` (singleton and `Auto` handles); every bound written once per item (§9.1) |
-| Injection points | `FromContainer`, `Requirement`, `Dependencies::{field, param, add}`, `Key`, `Resolver::{dep, dep_qualified, many, many_qualified, entries, ext, input, module, execution, by_key}` |
+| Injection points | `FromContainer`, `Requirement`, `Dependencies::{field, param, add}`, `Key`, `KeyName`, `TypeName`, `Resolver::{dep, dep_qualified, many, many_qualified, entries, ext, input, module, execution, by_key}` |
 | Construction | `Construct` (with `CONSTRUCT_TIMEOUT`), `Hooks<T>::{on_module_init, on_application_bootstrap, on_module_destroy, before_application_shutdown, on_application_shutdown}`, `hooks!`, `ConstructError` |
 | Transports | `Transport`, `Role`, `Controller::mount`, `Mount` (whose `handler` records the transport's role keys for the freeze), `dispatch`, `Execution::{open, open_terminal, seed, handle}`, `DrainToken`, `ExecutionRef`, `EnhancerSpec` (`guard_with`/`interceptor_with`/`error_handler_with`, `Auto`; `guard_with_in::<S>` and kin take the scope, §3.3), the `Erased*` role twins |
-| Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `bind`, the drain, which hands over the `DrainToken`, and `close`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
-| Errors | `StartupError`, `TimerMissing`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `PanicRecovered`, `DispatchStage`, `InputOrigin`, `is_panic`, `Redacted`, `Secret` |
+| Runtime | `Timer`, `Bound`, `Signal`, `Server` (implemented by transports for `prepare`, `bind`, `bound`, the drain, which hands over the `DrainToken`, and `close`), `AppHandle`, `Cancelled`, `Draining`, `Shutdown`, `Closed` |
+| Errors | `StartupError`, `TimerMissing`, `ConnectError`, `FailureReason`, `Limit`, `WiringErrors`, `WiringError`, `ConfigureErrors`, `ConfigureError`, `PrepareError`, `LoadError`, `LoadRefusal`, `ShutdownError`, `ShutdownFailure`, `LookupError`, `GuardRejected`, `PanicRecovered`, `DispatchStage`, `InputOrigin`, `is_panic`, `Redacted`, `Secret` |
 
-The transport layer extends this surface, and `transports/DESIGN.md` §11 states each extension where a requirement forces it: `Transport::KEY` and `Transport::inputs`, whose declarations an `InputConflict` reports through `InputOrigin` (§10.2); a `HandlerSpec` builder for `Mount::handler` carrying metadata, route, shape and the handler's own dependencies, with `Execution::handler()`, `AppHandle::handlers()` and `ModuleDef::controller::<C>().at(prefix)`; `Mount::once`; impl-level shared values through `EnhancerSpec::{guard,interceptor,error_handler}_arc`; `CancelReason`, `cancel_with` on `Execution` and `ExecutionRef`, `cancel_reason` and `on_stream_end`; `Server::prepare` before any bind, `Server::bound` and `StartupError::Configure(ConfigureErrors)`, a fourth variant shaped as `Wiring(WiringErrors)` is; `dispatch_late` and `is_late` for errors after a stream has started; `Execution::route_to`; `Mounted::module_meta` and `ModuleRef::with_execution`; `Mounted::handlers_reading`, built on the input walk (§6.4); `AppHandle::phase`, `AppHandle::redact` and `AppHandle::drain_timeout`. Nothing above changes for them: each is an addition at the point the transport design names.
+The transport layer extends this surface, and `transports/DESIGN.md` §11 states each extension where a requirement forces it: `Transport::KEY` and `Transport::inputs`, whose declarations an `InputConflict` reports through `InputOrigin` (§10.2); a `HandlerSpec` builder for `Mount::handler` carrying metadata, route, shape and the handler's own dependencies, with `Execution::handler()`, `AppHandle::handlers()` and `ModuleDef::controller::<C>().at(prefix)`; `Mount::once`; impl-level shared values through `EnhancerSpec::{guard,interceptor,error_handler}_arc`; `CancelReason`, `cancel_with` on `Execution` and `ExecutionRef`, `cancel_reason` and `on_stream_end`; `Server::prepare` before any bind, `Server::bound` and `StartupError::Configure(ConfigureErrors)`, a fourth variant shaped as `Wiring(WiringErrors)` is, with `PrepareError` as what a `prepare` answers when its text names types (§10.2); `dispatch_late` and `is_late` for errors after a stream has started; `Execution::route_to`; `Mounted::module_meta` and `ModuleRef::with_execution`; `Mounted::handlers_reading` and its `InputReader` (`handler()`, `transport()`, `steps()`), built on the input walk (§6.4); `AppHandle::phase`, `AppHandle::redact` and `AppHandle::drain_timeout`. Nothing above changes for them: each is an addition at the point the transport design names.
 
 ---
 
@@ -1325,7 +1390,7 @@ The transport layer extends this surface, and `transports/DESIGN.md` §11 states
 16. **Disconnect handlers at shutdown are best effort.** Terminal executions run inside the drain window and no grace window follows it; `Shutdown::terminal_skipped` counts the losses, and state that must survive a crash lives in TTL or heartbeat storage.
 17. **Redaction is scoped by origin and stored as a type.** Every error the core did not create itself, from user code, integrations or transports, passes through the redaction function before it is stored in any core error type; the scope is the origin, with no list of variants to maintain. What is stored is a `Redacted`: `Display` and `Debug` write the text, `source()` is `None`, and the original is reached through `downcast_ref` and `into_inner` alone, which is what lets an error handler map a constructor's domain error to a status.
 18. **A role is decided by `TypeId` at freeze.** Mounting a handler records its transport's three role keys, and every contribution under one of them is an enhancer however it was registered, so an alias or a `macro_rules` wrapper changes nothing and no type name is read. `m.enhancer::<R: Role>()` marks a contribution explicitly for a role key of a transport with no mounted handler, bounded by the sealed `Role` trait the three role keys implement, and returns the `contribute` builder marked `Enhancer`, on which `qualified` does not exist; one marked contribution marks the whole key. The freeze refuses two forms under a recorded role key, each of which nothing reads: a qualified contribution, with the hint "contribute it unqualified", and a single binding, through `also_as`, an alias, `provide` or `value`, with the hint "contribute it". A role key no mounted handler reads and no `enhancer` marks is not checked. Every `into` list in `#[module]` lowers to `contribute` and takes a type, `value = expr`, `value = expr?` or `with = closure`, the closure `Auto` unless it writes `with(scope)` (item 22). No `#[module]` spelling marks a role key of a transport with no mounted handler; that is a hand-written `m.enhancer::<K>()`, anywhere in the graph.
-19. **Diagnostics print short type names, and full paths on collision.** Every type name in a report is cut to its last path segment, inside generic arguments too. Where one report would print two different keys, or two module types, alike, those print with their full paths; a string rendered before the report exists stays short.
+19. **Diagnostics print short type names, and full paths on collision.** Every type name in a report is a `TypeName`, cut to its last path segment, inside generic arguments too. Where one report would print two different types alike, a key's type or qualifier or a transport's marker, those print with their full paths; module types follow the same rule under their own check. An entry stores the names it reports as values and renders them when the report is formatted. Descriptive text may be stored rendered, its names short, and never carries a name the entry also stores as a value (§10.1).
 20. **A transport's `close` is bounded.** Each runs under what is left of `shutdown_timeout`, or under `hook_timeout` when no cap is set, and one that exceeds its bound is dropped and recorded as `ShutdownFailure::Close { transport, reason }`, the shape `Hook` has, `reason` a `TimedOut` naming `ShutdownCap` or `Default`, an `Errored` for the transport's error and a `Panicked` for a panic, caught as a hook's is; a `close` can wait on a TLS close-notify or a broker's acknowledgment, which is what the cap exists to contain.
 21. **A written wait is refused where `wire()` can see it.** `.backoff(..)` on an app with no `Timer` is a wiring error like any written bound. A standalone deadline on such an app is stored and never fires: it is a runtime value passed to `execute`, whose only error is `Closed`, and refusing it would widen that error for one rare case on an app `listen()` already confines to standalone use.
 22. **Scope is its own axis.** `with = closure` says how a binding is built and nothing about how long it lives; its scope is `Auto`, with the meaning item 7 gives, and the same closure means the same thing on a method, on a controller impl, in an `into` list, in a `providers` list, where a bare closure is shorthand for it, and through the value API. One override serves every position: `with(singleton | execution | transient) = closure`, the three words `#[injectable(..)]` takes; `ModuleDef::singleton`/`execution`/`transient` and `Contribute::singleton`/`execution`/`transient` beside each one's `with`/`try_with`; `EnhancerSpec::guard_with_in::<S>` and kin beside `guard_with`. An explicit `singleton` that needs an execution is refused at `wire()` as a type's is. Inference reads what a closure reads, not what it does: a closure that creates per-call state and reads nothing writes `with(execution)`. `value = expr` is built once and shared wherever it is declared.
