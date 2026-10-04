@@ -29,8 +29,9 @@ use crate::type_name::{TypeName, short_type_name};
 /// transport, it prints those types with their full paths, and the rest of each key short; two different
 /// modules printing alike, `billing::Module` and `users::Module`, print with their full paths. Text an entry carries
 /// already rendered, such as what reads a missing key or the steps of a path between services,
-/// stays short; the transport an input's path opens with is a type, and follows the rule. A
-/// [`WiringError`] displayed on its own applies the same rule to the keys and modules it names.
+/// stays short; a transport an entry writes, at the head of an input's path or after a closure's
+/// name, is a type, and follows the rule. A [`WiringError`] displayed on its own applies the same
+/// rule to the keys, transports and modules it names.
 ///
 /// `Debug` writes the same report, so `main` returning `Box<dyn Error>` prints it.
 pub struct WiringErrors {
@@ -183,18 +184,25 @@ pub enum WiringError {
     HooksOnPerExecution { binding: KeyName, module: ModuleName },
     /// Step 5: an enhancer a handler declares by closure in an explicit singleton scope, which
     /// reads per-execution data. `closure` names it, as in ``method-level guard #2 of
-    /// UsersController::get (Http)``, `role` as `guard`, `interceptor` or `error handler`;
-    /// `path` runs from the injection point to the read of execution data.
-    ClosureScopeViolation { closure: String, role: &'static str, path: Vec<String>, at: &'static Location<'static> },
+    /// UsersController::get``, and the report writes the handler's `transport` after it, as in
+    /// `(Http)`; `role` is `guard`, `interceptor` or `error handler`; `path` runs from the
+    /// injection point to the read of execution data.
+    ClosureScopeViolation {
+        closure: String,
+        transport: TypeName,
+        role: &'static str,
+        path: Vec<String>,
+        at: &'static Location<'static>,
+    },
     /// Step 5: a hook, readiness, module-hook or metadata closure that reads `Ext`,
     /// `ExecutionRef`, an execution input or a per-execution key, where no execution exists.
     /// `closure` names it, as in ``readiness check of `PgPool` in DbModule``; `path` runs from the
     /// injection point to the read of execution data. A metadata value has no `at`.
     ClosureNeedsExecution { closure: String, path: Vec<String>, at: Option<&'static Location<'static>> },
     /// Step 5: a non-optional input read on a path from a handler whose transport does not seed
-    /// it. `path` holds the steps after the handler, each binding between it and the read and
+    /// it. `steps` holds the steps after the handler, each binding between it and the read and
     /// then the injection point; the report writes the handler and its `transport` ahead of them.
-    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, path: Vec<String> },
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, steps: Vec<String> },
 
     /// Step 6: an explicit bound with no `Timer`. `item` names the bounded item, as in
     /// ``readiness `.attempt_timeout` of `PgPool` ``.
@@ -247,12 +255,13 @@ impl WiringError {
     }
 
     /// Every type name this entry prints, for the check that decides which print with their full
-    /// paths: each key's type and qualifier, and the transports an input entry names. A key's
-    /// kind plays no part: `a::Config` and `b::Config (collection)` collide too.
+    /// paths: each key's type and qualifier, and the transports an input or closure entry names.
+    /// A key's kind plays no part: `a::Config` and `b::Config (collection)` collide too.
     fn type_names(&self) -> Vec<TypeName> {
         let keys = self.key_names().into_iter().flat_map(|name| name.key().type_names());
         let transports = match self {
             WiringError::InputNotSeeded { transport, seeder, .. } => vec![*transport, *seeder],
+            WiringError::ClosureScopeViolation { transport, .. } => vec![*transport],
             WiringError::InputConflict { first, second, .. } => first.type_names().into_iter().chain(second.type_names()).collect(),
             WiringError::ImportCycle { .. }
             | WiringError::ReexportNotVisible { .. }
@@ -279,7 +288,6 @@ impl WiringError {
             | WiringError::Cycle { .. }
             | WiringError::ScopeViolation { .. }
             | WiringError::HooksOnPerExecution { .. }
-            | WiringError::ClosureScopeViolation { .. }
             | WiringError::ClosureNeedsExecution { .. }
             | WiringError::BoundWithoutTimer { .. }
             | WiringError::BackoffWithoutTimer { .. }
@@ -614,7 +622,7 @@ impl WiringError {
                 );
                 tree(f, format!("{closure} reads per-execution data"), items)
             }
-            WiringError::ClosureScopeViolation { closure, role, path, at } => {
+            WiringError::ClosureScopeViolation { closure, transport, role, path, at } => {
                 let method = role.replace(' ', "_");
                 let mut items = Vec::new();
                 if !path.is_empty() {
@@ -624,13 +632,20 @@ impl WiringError {
                 items.push(format!(
                     "help: build it per call: drop the scope (`with = ..`, `{method}_with`), or declare it `with(execution) = ..` (`{method}_with_in::<PerExecution>`)"
                 ));
-                tree(f, format!("scope violation: {closure}, declared by closure as a singleton, depends on per-execution data"), items)
+                tree(
+                    f,
+                    format!(
+                        "scope violation: {closure} ({}), declared by closure as a singleton, depends on per-execution data",
+                        show_type(*transport)
+                    ),
+                    items,
+                )
             }
-            WiringError::InputNotSeeded { handler, transport, input, seeder, path } => {
+            WiringError::InputNotSeeded { handler, transport, input, seeder, steps } => {
                 let input = show(input);
                 let transport = show_type(*transport);
                 let seeder = show_type(*seeder);
-                let route: Vec<String> = std::iter::once(format!("{handler} ({transport})")).chain(path.iter().cloned()).collect();
+                let route: Vec<String> = std::iter::once(format!("{handler} ({transport})")).chain(steps.iter().cloned()).collect();
                 let route = route.join(" → ");
                 tree(
                     f,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::app::AppHandle;
 use crate::error::TimerMissing;
-use crate::graph::scopes::{handler_step, input_reads};
+use crate::graph::scopes::input_reads;
 use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
 use crate::module::meta::Meta;
@@ -114,8 +114,8 @@ impl<T: Transport> Mounted<'_, T> {
 }
 
 impl<'a, T: Transport> Mounted<'a, T> {
-    /// The handlers that read the execution input `I` without `Option`, each with the path to the
-    /// read: directly through a parameter, or through an execution-scoped service the handler
+    /// The handlers that read the execution input `I` without `Option`, each with the steps to
+    /// the read: directly through a parameter, or through an execution-scoped service the handler
     /// reaches, as the wiring pass walks them for its input check (§6.4). A transport refuses in
     /// `prepare` an input its host cannot seed: the HTTP embedding refuses `ClientAddr` on a host
     /// that supplies no peer address.
@@ -130,19 +130,19 @@ impl<'a, T: Transport> Mounted<'a, T> {
                 continue;
             };
             for read in input_reads(&graph, record).into_iter().filter(|read| read.input == key) {
-                let mut path = vec![handler_step(&graph, record)];
-                path.extend(read.steps);
-                readers.push(InputReader { handler, path });
+                readers.push(InputReader { handler, steps: read.steps });
             }
         }
         readers
     }
 }
 
-/// One handler's read of an execution input, as [`Mounted::handlers_reading`] reports it.
+/// One handler's read of an execution input, as [`Mounted::handlers_reading`] reports it: the
+/// handler and its transport, which a refusal writes as the path's first step against its
+/// report's names, as in `UsersController::get (Http)`, then the steps after it.
 pub struct InputReader<'a, T: Transport> {
     handler: &'a MountedHandler<T>,
-    path: Vec<String>,
+    steps: Vec<String>,
 }
 
 impl<'a, T: Transport> InputReader<'a, T> {
@@ -150,10 +150,15 @@ impl<'a, T: Transport> InputReader<'a, T> {
         self.handler
     }
 
-    /// The handler, each binding between it and the read, and the injection point:
-    /// `UsersController::get (Http)`, `Audit (execution)`, ``Dep<ClientAddr> (field `addr`)``.
-    pub fn path(&self) -> &[String] {
-        &self.path
+    /// The handler's transport, `T`'s marker type.
+    pub fn transport(&self) -> TypeName {
+        TypeName::of::<T>()
+    }
+
+    /// The steps after the handler: each binding between it and the read, then the injection
+    /// point, as in `Audit (execution)`, ``Dep<ClientAddr> (field `addr`)``.
+    pub fn steps(&self) -> &[String] {
+        &self.steps
     }
 }
 

@@ -377,12 +377,22 @@ impl<A: Embed> Embedded<A> {
             ));
         }
         if !limits.peer_addr && !self.peer_addr {
+            let input = TypeName::of::<ClientAddr>();
             for reader in mounted.handlers_reading::<ClientAddr>() {
-                failures.push(format!(
-                    "{} reads `ClientAddr`, and the {host} embedding supplies no peer address: read `Option<Dep<ClientAddr>>`, \
-                     or call `.peer_addr(true)` when the host provides it",
-                    reader.path().join(" → ")
-                ));
+                let controller = reader.handler().controller().key().type_name();
+                let handler = reader.handler().name();
+                let transport = reader.transport();
+                let steps = reader.steps().to_vec();
+                failures.push(Failure::naming(vec![controller, transport, input], move |names| {
+                    let head = format!("{}::{handler} ({})", names.of(controller), names.of(transport));
+                    let path: Vec<String> = std::iter::once(head).chain(steps.iter().cloned()).collect();
+                    let input = names.of(input);
+                    format!(
+                        "{} reads `{input}`, and the {host} embedding supplies no peer address: read `Option<Dep<{input}>>`, \
+                         or call `.peer_addr(true)` when the host provides it",
+                        path.join(" → ")
+                    )
+                }));
             }
         }
         if !limits.host_extensions {

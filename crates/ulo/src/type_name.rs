@@ -12,6 +12,10 @@ use std::hash::{Hash, Hasher};
 /// the transports it names, the startup report over each failing transport and the names of each
 /// [`PrepareError`](crate::PrepareError), and the shutdown report over its keys and transports.
 /// A transport is named by its marker type, `TypeName::of::<Http>()`.
+///
+/// A report entry stores each name it prints as a `TypeName` or a [`Key`](crate::Key), the one a
+/// [`KeyName`](crate::KeyName) carries, and renders it when the report is formatted. Only text that
+/// never contains a type name is stored already rendered.
 #[derive(Clone, Copy)]
 pub struct TypeName {
     id: TypeId,

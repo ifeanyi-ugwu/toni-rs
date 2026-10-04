@@ -1367,3 +1367,137 @@ The field types are unchanged. `path` no longer opens with the handler step `Alt
   lines printing `` `Rpc` ``, and the other 57 pass. Each source was restored by `cp` from a copy
   taken before the mutations and compared byte for byte, and a rerun passes 58 on both
   toolchains.
+
+# Ninth round: the fourteenth response
+
+The change the fourteenth response (signed off 2026-10-04) asks of this build:
+`InputNotSeeded`'s `path` renamed `steps`; `InputReader` handing out the handler's transport as a
+`TypeName` beside the steps after the handler, and `ulo-http`'s `ClientAddr` refusal writing the
+head step against the startup report's names; `ClosureScopeViolation` holding its transport as a
+`TypeName`; and the naming convention written beside `TypeName`. Entries continue the numbering
+above.
+
+Files changed: `crates/ulo/src/{type_name.rs, error/wiring.rs, graph/scopes.rs,
+transport/server.rs}`, `crates/ulo-http/src/embed.rs`.
+
+## The signature, changed
+
+```rust
+// ulo
+pub enum WiringError {
+    ..,
+    ClosureScopeViolation { closure: String, transport: TypeName, role: &'static str, path: Vec<String>, at: &'static Location<'static> },
+    InputNotSeeded { handler: String, transport: TypeName, input: KeyName, seeder: TypeName, steps: Vec<String> },  // was `path`
+    ..
+}
+
+impl<'a, T: Transport> InputReader<'a, T> {
+    pub fn handler(&self) -> &'a MountedHandler<T>;  // unchanged
+    pub fn transport(&self) -> TypeName;             // new: `TypeName::of::<T>()`
+    pub fn steps(&self) -> &[String];                // replaces `path()`, without the handler step
+}
+```
+
+## Decisions
+
+### 62. `InputNotSeeded::path` is `steps`
+
+- **Written:** the field, its doc, the render's binding and `check_inputs`, the one writer.
+- **Readers:** no other reader exists in the workspace or in the scratch crate, which matches the
+  report's text and never the field. The rename in the scratch crate had nothing to change.
+
+### 63. `InputReader::path()` is dropped for `steps()`
+
+- **Why dropped:** `path()` opened with the handler step written short at wiring time, the text
+  the response removes from the refusal. Kept beside `steps()`, it would hand a transport a
+  string with the transport pre-rendered, which the convention in entry 66 rules out.
+- **Inside the core:** `scopes::handler_step` had one caller, `Mounted::handlers_reading`, and is
+  gone. `InputRead::steps` is handed to the reader unchanged.
+- **`transport()`:** answers `TypeName::of::<T>()`. `InputReader` is generic over its transport,
+  so the value comes from the type parameter and not from the handler's record.
+- **Sign-off needed:** `path()` dropped rather than kept.
+
+### 64. The `ClientAddr` refusal writes its head step against the report's names
+
+- **Written:** the refusal is a `Failure::naming`, the form the `Host<T>` refusals use. Its names
+  are the controller's type, the transport and `ClientAddr`. The text closure receives the
+  report's colliding set through `Names`, and writes the head step
+  `{controller}::{handler} ({transport})` and both mentions of `ClientAddr` through
+  `Names::of`. `Failures::into_error` gathers each failure's names into the `PrepareError`, so the
+  transport is among them and a `PrepareError` displayed alone collides it with the rest.
+- **Beyond the response:** the controller and `ClientAddr` also enter the pass, as the `Host<T>`
+  refusal enters its controller. Without them, both are type names written short regardless of the
+  report: a scratch type named `ClientAddr` or `Peer` failing in another transport would print
+  alike with them.
+- **The steps:** `Audit (execution)` and ``Dep<ClientAddr> (field `addr`)`` stay as the core
+  wrote them. See Not covered.
+- **Sign-off needed:** the controller and `ClientAddr` entered into the pass along with the
+  transport.
+
+### 65. `ClosureScopeViolation` holds its transport as a `TypeName`
+
+- **Written:** `closure` is now ``method-level guard #2 of UsersController::get``, without the
+  transport. The render writes `{closure} ({transport})`, the transport through
+  `TypeName::written` against the report's set. `type_names` lists the variant in its own arm,
+  out of the arm that answers no transports. A report with no collision prints the line as
+  before.
+- **Sign-off needed:** the transport split off `closure` rather than `closure` rendered with a
+  placeholder.
+
+### 66. The convention, beside `TypeName`
+
+- **Written:** two sentences closing `TypeName`'s doc comment: a report entry stores each name it
+  prints as a `TypeName` or a `Key`, the one a `KeyName` carries, and renders it when the report
+  is formatted; only text that never contains a type name is stored already rendered.
+- **`KeyName`:** the response's `KeyName` is read as `Key`, as the sign-off states. The entries
+  store `KeyName`, a `Key` with its binding kind, so the sentence names both.
+- **The review checklist:** none exists. The repository has no `CONTRIBUTING.md`, no PR or issue
+  template, and `.github/` holds only `workflows/ci.yml`. The files under `docs/` named
+  `*REVIEW.md` are reviews of design responses, not checklists. None was created.
+- **Sign-off needed:** where the checklist line goes, once a checklist exists.
+
+## Not covered
+
+- The convention as written is broader than what these rounds made hold. The wiring report still
+  stores text that names types, written short at wiring time: `InputNotSeeded::handler` and
+  `steps`, `ClosureScopeViolation::closure` (its handler's controller) and `path`,
+  `ClosureNeedsExecution::closure` and `path`, `ScopeViolation::path`, `Missing::consumer`,
+  `Ambiguous::consumer`, `BoundWithoutTimer::item` and `BackoffWithoutTimer::binding`.
+  `InputReader::steps` carries the same text into `ulo-http`'s refusal. `WiringErrors`'s doc names
+  the exception ("Text an entry carries already rendered ... stays short"), which the sentence
+  beside `TypeName` now contradicts. Either the sentence narrows to names a report holds whole,
+  or those fields move to `TypeName` and `Key`.
+- Neither DESIGN document is edited. `transports/DESIGN.md` X16 still gives `InputReader` a
+  `path()` from the handler, and §3.8 the refusal text `Peer::peer (Http) → ..`; the core
+  `DESIGN.md` §6.4 describes each entry as carrying the path from the handler. Neither names
+  `InputNotSeeded` or `ClosureScopeViolation`.
+
+## Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning list, taken as file, line and message from cargo's JSON output, matches the one at
+  HEAD (`70a22b6d`, taken from the clean tree before the edits) on both toolchains: the 17 in
+  `crates/ulo/src`, no line moved. `cargo test --workspace` exits 0, the `PrepareError` doctest
+  among its tests. `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-http --no-deps` exits 0.
+- Scratch crate `embed`: the 58 checks of the eighth round pass and print the same lines as in
+  round eight, except two source locations in check (b) of round eight: `ConflictModule`'s
+  lines move from 1185 and 1249 to 1235 and 1299, below the 50 lines the new checks add to
+  `main`. That check asserts no line number. Two new checks bring the total to 60, all passing
+  under `#![deny(warnings)]` on rustc 1.98.1 and 1.88 with identical verdicts and texts. The new
+  marker `alt::Http` sits in the `alt` module after `main`, and the new types at the end of the
+  file.
+
+| Check | Result |
+| --- | --- |
+| (a) `PeerModule` bound with `Embedded::<TestHost>` and `Faulty::<alt::Http>::at_prepare()` | 2 errors: ``transport `ulo_http::transport::Http`: Peer::peer (ulo_http::transport::Http) → Audit (execution) → Dep<ClientAddr> (field `addr`) reads `ClientAddr` ..``, and ``transport `embed::alt::Http`: the queue broker URL is empty``; no `(Http)`, no `` `Http` ``, no `embed::Peer` |
+| (b) `GuardedModule`: one handler each of `Rpc`, `alt::Rpc` and `Topic`, each with a method-level guard declared `guard_with_in::<Singleton>` over `Ext<Caller>` | 3 errors: ``method-level guard #1 of RpcGuarded::call (embed::Rpc)``, ``.. AltGuarded::call (embed::alt::Rpc)``, ``.. TopicGuarded::call (Topic)``; no `(Rpc)`, no `embed::Topic` |
+
+- Against a known violation, two runs on both toolchains, each a mutation restored afterwards.
+  Run 1, the head step written short again (`names.of(transport)` replaced by `transport` in the
+  `ClientAddr` refusal): (a) fails, the heading writing ``transport `ulo_http::transport::Http` ``
+  and the path `Peer::peer (Http)`, and the other 59 pass. Run 2, the closure's transport
+  pre-rendered (`closure_scopes` writing `({})` into `closure` from the transport's short form,
+  the render writing `closure` alone): (b) fails, `RpcGuarded::call (Rpc)` with the transport
+  still in `type_names`, and the other 59 pass. Each source was restored by `cp` from a copy
+  taken before the mutations and compared byte for byte, and a rerun passes 60 on both
+  toolchains.

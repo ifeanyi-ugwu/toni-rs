@@ -257,13 +257,13 @@ pub(crate) fn closure_scopes(graph: &mut Graph, declared: &Declared, errors: &mu
                     if let Some(path) = read {
                         errors.push(WiringError::ClosureScopeViolation {
                             closure: format!(
-                                "{}-level {} #{} of {} ({})",
+                                "{}-level {} #{} of {}",
                                 closure.tier,
                                 closure.role,
                                 closure.position,
-                                graph.handler_name(handler),
-                                handler.decl.transport
+                                graph.handler_name(handler)
                             ),
+                            transport: handler.decl.transport,
                             role: closure.role,
                             path,
                             at: closure.location,
@@ -392,7 +392,7 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
                 transport: handler.decl.transport,
                 input: read.input.name(BindingKind::Single),
                 seeder: decl.seeder,
-                path: read.steps,
+                steps: read.steps,
             });
         }
     }
@@ -403,13 +403,8 @@ pub(crate) fn check_inputs(graph: &Graph, errors: &mut Vec<WiringError>) {
 pub(crate) struct InputRead {
     pub(crate) input: Key,
     /// The steps from the handler to the injection point, the handler left out:
-    /// `Audit (execution) → Dep<ClientAddr> (field `addr`)`. [`handler_step`] writes the handler.
+    /// `Audit (execution) → Dep<ClientAddr> (field `addr`)`.
     pub(crate) steps: Vec<String>,
-}
-
-/// A handler as the first step of a path, its transport short: `UsersController::get (Http)`.
-pub(crate) fn handler_step(graph: &Graph, handler: &HandlerRecord) -> String {
-    format!("{} ({})", graph.handler_name(handler), handler.decl.transport)
 }
 
 /// Every non-optional read of an execution input that `handler` reaches, once per input and
