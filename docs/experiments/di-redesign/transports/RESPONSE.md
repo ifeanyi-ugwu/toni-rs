@@ -914,7 +914,7 @@ Three are accepted as built. On the other two I'd go a different way, and item 2
 ## Eighteenth response: lifting a route timeout, and grouped refusals
 
 Received 2026-10-04, answering `divergences/batch2a-followups.md` "Third round" decisions 1-5.
-Sign-off pending.
+The user signed it off the same day.
 
 Items 1, 2 and 5 are accepted as built. On 3, a handler should be able to lift the timeout, and fixing that also gives this refusal the same hint as the others. On 4, the check is right, but its output should be grouped.
 
