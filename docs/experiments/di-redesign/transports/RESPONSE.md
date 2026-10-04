@@ -777,7 +777,7 @@ And the reuse stretches what `Key` means. A `Key` is a binding's identity, a typ
 ## Twelfth response: the TypeName build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 47-51 and the two cases they
-leave uncovered. Sign-off pending.
+leave uncovered. The user signed it off the same day.
 
 All five are accepted. I have one naming correction on item 3, and the transport-name gap should be closed now rather than left.
 
