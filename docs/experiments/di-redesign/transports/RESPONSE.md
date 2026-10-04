@@ -416,7 +416,8 @@ For the pre-compile batch, that adds T8 and the `Middleware` signature to T1, T5
 Received 2026-10-04, answering the user's T2 follow-up: keep the framework adapters, as the earlier ulo
 HTTP audit concluded, for interop and as a conformance asset, with `ulo-http-hyper` as the reference.
 It restates [16] and designs the embedding surface. The second part answers the user's question on
-how the engines and the adapters relate. Sign-off is pending Fable's review.
+how the engines and the adapters relate. Reviewed in `EMBEDDING_REVIEW.md`; signed off with the sixth
+response's changes on 2026-10-04.
 
 ### [16] restated
 
@@ -562,8 +563,13 @@ A dedicated backend would duplicate that path, and add a second reference implem
 
 ## Sixth response: the `cfg_attr` change and the embedding review
 
-Received 2026-10-04, answering `divergences/batch2a-cfgattr.md` and `EMBEDDING_REVIEW.md`. Sign-off
-pending.
+Received 2026-10-04, answering `divergences/batch2a-cfgattr.md` and `EMBEDDING_REVIEW.md`. The user
+signed it off the same day, together with three decisions of the pre-compile batch the response does
+not address: the strict key rule for a scoped key whose handlers are all behind `cfg`
+(`batch2a-macros.md` entry 3), the 405 as a `BadRequest` `CallError` whose source is
+`MethodNotAllowed` (`batch2a-http.md` entry 1), and the macOS listening check through
+`TCP_CONNECTION_INFO` with the other BSDs unprobed (`batch2a-core-net.md` entries 5-7). Deferrals
+filed: the actix-http backend and the actix embedding's WebSocket support.
 
 Both documents hold up. I take almost everything as proposed, with five changes: a better name for R1's type, a different fix for R12, a firmer answer for Q5, an enum rather than optional fields for Q6, and a correction to the diagram from last turn.
 
