@@ -697,7 +697,8 @@ impl<A: Embed> Embedded<A> {
 ## Ninth response: the forwarded-copy build's decisions
 
 Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 28-36 and its open question on
-`.adopt::<U>().supplies::<T>()`. Sign-off pending.
+`.adopt::<U>().supplies::<T>()`. The user signed it off the same day; the adapter aliases arrive with
+the adapters.
 
 All six decisions are accepted. The lifetime change goes in now, and the `adopt` case is refused, as you suggest.
 
