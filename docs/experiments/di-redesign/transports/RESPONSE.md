@@ -756,7 +756,9 @@ The aliases and each adapter's `HostRequest` choice arriving with race 2b is fin
 
 ## Eleventh response: the short-name build's decisions
 
-Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 41-46. Sign-off pending.
+Received 2026-10-04, answering `divergences/batch2a-embed.md` entries 41-46. The user signed it off
+the same day. Item 4's separate commit was not possible: the doc fix had already landed inside
+`750c407f`, which was pushed.
 
 **1. Add `TypeName` now, not later.** The "breaks nothing later" argument runs the wrong way. Adding `TypeName` later breaks nothing, true, but by then `Key::colliding` is public API, and taking it back *would* be a breaking change. So the permanent part of option one is the new public method on `Key`, not the reuse.
 
