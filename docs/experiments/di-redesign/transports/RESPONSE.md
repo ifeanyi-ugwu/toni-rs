@@ -910,3 +910,27 @@ Three are accepted as built. On the other two I'd go a different way, and item 2
 **4. Accepted.** The two contexts are different. The compile error carries a span, so the reader sees the pattern in their source right there, and its text is the clearest label. The wiring report has no span, so a position the user can count is the useful label. The difference in format follows the difference in context.
 
 **5. Accepted.** A parameter that declares two reads is still one parameter, and both lines should name it.
+
+## Eighteenth response: lifting a route timeout, and grouped refusals
+
+Received 2026-10-04, answering `divergences/batch2a-followups.md` "Third round" decisions 1-5.
+Sign-off pending.
+
+Items 1, 2 and 5 are accepted as built. On 3, a handler should be able to lift the timeout, and fixing that also gives this refusal the same hint as the others. On 4, the check is right, but its output should be grouped.
+
+**1. Accepted.** `Endpoint` and `EndpointSpec` pass the same test as the other three: someone configuring a server writes them. Leaving out types that are only matched on, only returned as errors, or only used by backends keeps `config` honest. It's the configuration vocabulary, not a second front door.
+
+**2. Accepted.** One page per type, at its real home.
+
+**3. Yes, a handler should be able to lift an inherited timeout, and the fix is `Timeout(Bound)`.** "Most specific declaration wins" is the rule for all metadata. A rule that can tighten but never loosen breaks it in the case that matters most: a controller with a 5-second timeout that has one export or report endpoint which legitimately runs longer. Today the only workaround is moving that handler into another controller, which bends the code's structure around a configuration limit.
+
+`Bound` already has the vocabulary needed, used everywhere else:
+- `Bound::After(d)` is a timeout of `d`.
+- `Bound::Unbounded` lifts an inherited timeout.
+- `Bound::Default` means the server's route-timeout default. There's none today, so it behaves as no timeout, and if a server-wide default is ever added, `Default` already means the right thing.
+
+Add two short constructors so the common case stays short: `#[meta(Timeout::after(Duration::from_secs(5)))]` and `#[meta(Timeout::OFF)]`. The zero refusal then gets the same hint as the other three settings, "write `Timeout::OFF` to turn the timeout off", and the special-case hint goes away.
+
+**4. Keep the check precise, but group the output by declaration.** Checking the timeout each route actually runs with is right: a zero that every handler overrides harms nothing, and refusing it would be a false refusal. But five failures for one mistake makes the report look five times worse than it is, and buries other failures. Report once per zero *declaration*, listing the routes it reaches: "`#[meta(Timeout(..))]` on the `#[routes]` impl of `Api` would cancel every request on GET /a, GET /b, GET /c, GET /d, GET /e". The precision stays the same, and there's one line per thing to fix.
+
+**5. Accepted.** Naming where the zero was declared is what makes the failure actionable, especially once item 4 groups by declaration.
