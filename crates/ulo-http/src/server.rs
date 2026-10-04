@@ -77,13 +77,15 @@ impl<B: Backend> Server<B> {
 
     /// The server's in-flight bound: over it a request is answered 503 with `Retry-After`.
     /// `Count::Default`, the value unset, bounds nothing, as `Count::Unlimited` does.
+    /// `Count::Max(0)` is refused in `prepare`.
     pub fn max_inflight(mut self, requests: Count) -> Self {
         self.config.max_inflight = requests;
         self
     }
 
     /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per connection. `Count::Default`, the value
-    /// unset, leaves the backend's own; `Count::Unlimited` sends no limit.
+    /// unset, leaves the backend's own; `Count::Unlimited` sends no limit. `Count::Max(0)` is
+    /// refused in `prepare`.
     pub fn max_concurrent_streams(mut self, streams: Count) -> Self {
         self.config.max_concurrent_streams = streams;
         self
@@ -257,6 +259,21 @@ fn check_zero_timeouts(config: &HttpConfig, failures: &mut Failures) {
     }
 }
 
+/// Each count set to `Count::Max(0)`, which would refuse everything it counts. A server that must
+/// refuse traffic for a while does it with a pre-dispatch entry it can switch.
+/// `Count::Unlimited` is the spelling of no limit.
+fn check_zero_counts(config: &HttpConfig, failures: &mut Failures) {
+    let counts = [
+        ("max_inflight", config.max_inflight, "shed every request"),
+        ("max_concurrent_streams", config.max_concurrent_streams, "let no HTTP/2 stream open"),
+    ];
+    for (setting, count, effect) in counts {
+        if count == Count::Max(0) {
+            failures.push(format!("`.{setting}(Count::Max(0))` would {effect}; write `Count::Unlimited` to remove the limit"));
+        }
+    }
+}
+
 /// What both HTTP servers build in `prepare` from the app, [`Server`] over a backend and
 /// `embed::Embedded` over a host (R20): the pre-dispatch stage, the route table, the upgrade paths
 /// and the admission, as one [`AppService`]. Its failures go to `failures`; the service is `None`
@@ -290,6 +307,7 @@ pub(crate) fn prepare_app(
         }
     };
     check_zero_timeouts(config, failures);
+    check_zero_counts(config, failures);
     let upgrades = upgrade_paths(mounted, failures);
     let upgrading = !upgrades.is_empty();
     let service = router.map(|router| {

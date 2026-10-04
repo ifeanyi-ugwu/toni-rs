@@ -15,5 +15,8 @@ pub struct BodyLimit(pub u64);
 /// cancelled with `CancelReason::Deadline`. An answer not yet started is dropped, and the error
 /// handlers receive `Timeout` under the server's `timeout_grace`: unclaimed, or not answered within
 /// the grace, it renders 504.
+///
+/// `Timeout(Duration::ZERO)` is refused in `prepare`, naming the route. A route without the
+/// declaration runs with no timeout; a handler cannot lift a timeout its `#[routes]` impl declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timeout(pub Duration);

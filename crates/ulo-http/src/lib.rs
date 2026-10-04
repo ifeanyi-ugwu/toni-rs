@@ -1,8 +1,9 @@
 //! The HTTP transport (transports DESIGN §3): the [`Http`] marker and its context [`HttpCx`], the
 //! router every backend shares, extractors, responses and Server-Sent Events, the pre-dispatch
 //! stage ([`PreDispatch`], [`Middleware`], tower layers, [`Cors`]), the WebSocket upgrade hand-off
-//! point, the [`Backend`] SPI with [`Server`], and [`embed`], which runs the app inside another
-//! framework's server.
+//! point, the [`Backend`] SPI with [`Server`], [`embed`], which runs the app inside another
+//! framework's server, and [`config`], the other `ulo` crates' types the two servers' builders
+//! take.
 //!
 //! ```ignore
 //! #[routes]
@@ -38,6 +39,7 @@ mod tower_bridge;
 mod transport;
 mod upgrade;
 
+pub mod config;
 pub mod embed;
 pub mod middleware;
 

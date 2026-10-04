@@ -376,3 +376,165 @@ stable and on 1.88, with identical results on both:
 
 No check outside its item failed under any plant. Each file was restored by `cp` from a saved
 copy and touched, and `cmp` confirmed it byte-identical before the final runs.
+
+## Third round: the seventeenth response
+
+`transports/RESPONSE.md` "Seventeenth response" accepted second-round decisions 4 and 5 and
+reversed 1 to 3: `ulo-http` re-exports the types its builders take under a `config` module, a
+route's `Timeout(Duration::ZERO)` is refused in `prepare`, a zero `Sse::keep_alive` means off, and
+`Count::Max(0)` is refused on `max_inflight` and `max_concurrent_streams`.
+
+Files changed: `crates/ulo-http/src/{config.rs (new), lib.rs, limits.rs, router/mod.rs, server.rs,
+sse.rs}`.
+
+### The signatures
+
+```rust
+// ulo_http::config (new), each item #[doc(no_inline)]
+pub use ulo::Bound;
+pub use ulo_net::{Endpoint, EndpointSpec, Tls};
+pub use ulo_transport::Count;
+```
+
+No other signature changes.
+
+### What each item does
+
+1. **`ulo_http::config`.** The module re-exports the five types above. Its doc says each name is
+   the defining crate's type, that either path fits wherever the other is expected, and that the
+   defining crates stay the canonical homes. The crate doc lists the module beside `embed`.
+2. **A zero route timeout refused.** `Router::build`, which `prepare_app` runs for the server and
+   the embedding alike, pushes one `Configure` failure per route whose timeout is
+   `Duration::ZERO`: `` `Users::slow` on `GET /slow`: `#[meta(Timeout(Duration::ZERO))]` on the
+   handler would cancel every request before the handler could answer; remove the
+   `#[meta(Timeout(..))]` to turn the timeout off``. When the zero comes from the `#[routes]` impl,
+   "on the handler" reads "on the `#[routes]` impl". The `Timeout` doc states the refusal.
+3. **A zero keep-alive is off.** `Sse::keep_alive(Duration::ZERO)` stores no keep-alive, so the
+   body requests no sleep and writes no comment. A later zero call also turns off an earlier
+   non-zero one. The method's doc says so and why: a zero period would write a comment every time
+   the stream is found waiting.
+4. **`Count::Max(0)` refused.** `prepare_app` pushes `` `.max_inflight(Count::Max(0))` would shed
+   every request; write `Count::Unlimited` to remove the limit`` and the same form for
+   `max_concurrent_streams` ("let no HTTP/2 stream open"). The embedding refuses `max_inflight`.
+   It has no `max_concurrent_streams` builder, so its `Count::Default` never trips the check. The
+   two server builders document the refusal; `Embedded::max_inflight` points at
+   `Server::max_inflight`, as its `timeout_grace` does.
+
+### Decisions for sign-off
+
+#### 1. `config` also carries `Endpoint` and `EndpointSpec`
+
+- **Written:** `Bound`, `Count`, `Tls`, `Endpoint` and `EndpointSpec`.
+- **Why:** `Server::new`, `Server::with_backend` and `Server::endpoint` take
+  `impl Into<EndpointSpec>`. Text parses as a socket address only, so an inherited socket needs
+  `Endpoint::inherited(..)` or `Endpoint::inherited_index(..)`, which need `ulo-net` without the
+  re-export. That is the same cost the response gives for `Tls`.
+- **Left out:** `ListenerName`, which an app writes only to match on `Endpoint::Inherited`, since
+  the two constructors build it. `TlsError` and `EndpointError`, which no builder returns:
+  `prepare` writes them into its report. `AppHandle` and `BoxError` on `embed::Handle`, which are
+  not configuration, and every app depends on `ulo` for `App::builder`. The backend SPI's
+  `BoundListener` and `TlsAcceptor`, which a backend crate names, not an app.
+- **Alternative:** the three types the response names, leaving inherited sockets on `ulo-net`.
+
+#### 2. The re-exports are `#[doc(no_inline)]`
+
+- **Written:** `ulo_http::config` renders as a list of re-exports, each linking to the type's page
+  in its defining crate.
+- **Why:** the response names the defining crates as the canonical homes. Without the attribute,
+  rustdoc inlines a cross-crate re-export: a doc build of the module without it generated
+  `enum.Bound.html`, `enum.Count.html`, `enum.Endpoint.html`, `struct.EndpointSpec.html` and
+  `struct.Tls.html` under `ulo_http/config/`, a second copy of each type's docs. With it the
+  directory holds only `index.html`.
+- **Alternative:** inline, so a reader of `ulo-http`'s docs sees each type without leaving the
+  crate.
+
+#### 3. The route refusal's hint is to remove the declaration
+
+- **Written:** "remove the `#[meta(Timeout(..))]` to turn the timeout off".
+- **Why:** a route timeout has no off value. `Timeout` wraps a `Duration`, and the router reads
+  `info.meta::<Timeout>()` as `Option<Duration>`, `None` being no timeout. The only spelling of
+  off is no declaration. `Metadata::get` answers the method's declaration over the controller's,
+  so a handler can replace a timeout its `#[routes]` impl declares but cannot lift it. The
+  `Timeout` doc states this.
+- **Open:** whether a handler needs a way to lift an inherited timeout, such as a long-running
+  stream under a controller-wide `Timeout`. Nothing in this round adds one.
+
+#### 4. The refusal reads the timeout the route runs with, once per route
+
+- **Written:** the check reads `info.meta::<Timeout>()`, the most specific declaration. A zero on
+  the `#[routes]` impl is refused for each route that inherits it, and not for a handler that
+  declares its own non-zero `Timeout`. A zero on an impl whose every handler overrides it is
+  accepted, since no route runs with it. An impl with five inheriting routes gives five failures.
+- **Why:** the response's reason for the refusal is that the zero "would cancel every request on
+  that route". The route is the unit that fails, and naming each route matches the other
+  route-table failures.
+- **Alternatives:** refuse any declared zero, whether or not a route runs with it; give one
+  failure per impl, naming its routes.
+
+#### 5. The failure names the tier that declared the zero
+
+- **Written:** "on the handler" or "on the `#[routes]` impl", read from `Metadata::entries`, which
+  carries each declaration's type name and tier.
+- **Why:** the fix is to remove the declaration, and a reader looking at the handler would not
+  find a zero inherited from the impl.
+
+### Divergences
+
+1. **DESIGN §3.6 does not mention `ulo_http::config`, the zero route-timeout refusal, the
+   `Count::Max(0)` refusal or the zero keep-alive.** Each is in the rustdoc of the item. DESIGN.md
+   is not edited here.
+2. **Second-round divergences 1 to 3 stand.**
+
+### Not covered
+
+- A zero keep-alive under a real clock. The fake `Timer` resolves a sleep only when a check fires
+  it, so the planted violation below shows a sleep of zero requested, not the loop a real clock
+  would run.
+- The core's zero-timeout check (F313).
+
+### Verification
+
+- `cargo check --workspace --all-targets` and `cargo +1.88 check --workspace --all-targets` pass.
+  The warning lists (cargo JSON, deduplicated by crate, file and message) are identical to HEAD's,
+  17 entries on each toolchain, all in `crates/ulo/src`. HEAD's lists came from a `git archive`
+  export of `1e1f01ad`. The comparison reported a planted unused import in
+  `crates/ulo-http/src/config.rs` as two new entries, and matched HEAD again once it was removed.
+- `cargo test --workspace` passes: 20 test binaries, 3 passed, 18 ignored, none failed. Against
+  HEAD's run, the one difference is the `ignore` example in `config.rs`.
+- `RUSTDOCFLAGS="-D warnings" cargo doc -p ulo -p ulo-transport -p ulo-http -p ulo-http-hyper
+  --no-deps` passes.
+- The scratch crate `embed` (`#![deny(warnings)]`) keeps its 90 checks and adds 8. All 98 pass on
+  rustc stable and on 1.88, with identical labels. Round 10 imports `Count` and `Tls` from
+  `ulo_http::config` and round 11 its zero `Bound`. Those values reach `Embedded::max_inflight`
+  and `Server::max_concurrent_streams`, which take `ulo_transport::Count`, `Server::tls`, which
+  takes `ulo_net::Tls`, and the three timeout builders, which take `ulo::Bound`. The crate
+  compiling shows the re-exports are those types. The new checks:
+
+| Check | Server or app | Result |
+| --- | --- | --- |
+| The five `config` names have the defining crates' `TypeId`s | — | as stated |
+| `listen()` refuses `` `ZeroTimeoutOnHandler::zero` on `GET /zero`: `#[meta(Timeout(Duration::ZERO))]` on the handler would cancel every request`` with the hint; the sibling route with `Timeout(5 s)` is not named | hyper, server built from `EndpointSpec::from("127.0.0.1:0")` | refused |
+| `listen()` refuses the route inheriting a zero from the `#[routes]` impl, "on the `#[routes]` impl", with the hint; the route declaring `Timeout(5 s)` is not named | `Embedded` | refused |
+| `keep_alive(Duration::ZERO)`: nothing written in 300 ms while the stream waits; no sleep requested from the fake `Timer` | `Embedded`, `App::timer(FakeTimer)` | `200`, none written, 0 sleeps |
+| The same stream: an event is written, then nothing in 300 ms and still no sleep | same | `data: hello`, 0 sleeps |
+| `listen()` refuses `` `.max_inflight(Count::Max(0))` would shed every request`` with the hint | hyper, server built from `Endpoint::parse("127.0.0.1:0")?` | refused |
+| `listen()` refuses `` `.max_concurrent_streams(Count::Max(0))` would let no HTTP/2 stream open`` with the hint | hyper, `h2c(true)` | refused |
+| `listen()` refuses `max_inflight(Count::Max(0))` with the hint | `Embedded` | refused |
+
+Against known violations, each one planted alone into `crates/` and the scratch crate rerun on
+stable and on 1.88, with identical results on both:
+
+| Plant | Fails |
+| --- | --- |
+| `Router::build` refuses `Duration::MAX` instead of `Duration::ZERO` | both route checks (`listen()` succeeds) |
+| `zero_timeout_tier` always answers "on the handler" | the `#[routes]` impl check |
+| `Router::build` refuses any declared zero, through `meta_all` | the `#[routes]` impl check, whose report also names `ZeroTimeoutOnImpl::overrides` |
+| `keep_alive` stores `Some(Duration::ZERO)` | both keep-alive checks: 1 sleep requested while waiting, 2 after the event |
+| `prepare_app` does not call `check_zero_counts` | all three `Count::Max(0)` checks (`listen()` succeeds) |
+| `check_zero_counts` checks `max_inflight` only | the `max_concurrent_streams` check |
+| `config.rs` defines its own `enum Count { Default, Max(u32), Unlimited }` | the crate does not compile: 8 `E0308`, each "expected `ulo_transport::Count`, found `ulo_http::config::Count`" |
+
+The last plant replaces the `#[doc(no_inline)]` line with the enum as well, since rustc 1.88
+rejects that attribute on anything but a `use`. No check outside its item failed under any plant.
+Each file was restored by `cp` from a saved copy and touched, and `cmp` confirmed it
+byte-identical before the final runs.

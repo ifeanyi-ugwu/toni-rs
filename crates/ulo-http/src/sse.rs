@@ -50,8 +50,11 @@ impl<S> Sse<S> {
     /// Choose a period comfortably below the shortest proxy idle timeout in the deployment.
     ///
     /// The period is timed by the app's `Timer`, which `HttpCx::timer` reads.
+    ///
+    /// `Duration::ZERO` turns the keep-alive off, as leaving `keep_alive` uncalled does: a zero
+    /// period would write a comment every time the stream is found waiting.
     pub fn keep_alive(self, every: Duration) -> Self {
-        Sse { keep_alive: Some(every), ..self }
+        Sse { keep_alive: Some(every).filter(|every| !every.is_zero()), ..self }
     }
 
     /// A final event named `name`, with empty data, written when the stream returns `None`. SSE has

@@ -9,11 +9,12 @@
 
 pub(crate) mod pattern;
 
+use std::any::type_name;
 use std::sync::Arc;
 use std::time::Duration;
 
 use http::{HeaderValue, Method};
-use ulo::{MountedHandler, TypeName};
+use ulo::{MetaTier, Metadata, MountedHandler, TypeName};
 
 use crate::__private::{HandlerFn, HttpHandler};
 use crate::cx::PathParams;
@@ -117,6 +118,18 @@ impl Router {
                     }));
                 }
             }
+            let timeout = info.meta::<Timeout>().map(|timeout| timeout.0);
+            if timeout == Some(Duration::ZERO) {
+                let declared = zero_timeout_tier(info.metadata());
+                let (method, pattern) = (http.method().clone(), pattern.to_string());
+                errors.push(Failure::naming(vec![who.controller], move |names| {
+                    format!(
+                        "{} on `{method} {pattern}`: `#[meta(Timeout(Duration::ZERO))]` {declared} would cancel every request \
+                         before the handler could answer; remove the `#[meta(Timeout(..))]` to turn the timeout off",
+                        who.text(names)
+                    )
+                }));
+            }
             let route = if mount.is_empty() { Arc::clone(&pattern.raw) } else { Arc::from(Pattern::join(mount, &pattern.raw)) };
             let target = Arc::new(RouteTarget {
                 handler: handler.clone(),
@@ -124,7 +137,7 @@ impl Router {
                 pattern: Arc::clone(&pattern.raw),
                 route,
                 body_limit: info.meta::<BodyLimit>().map_or(default_body_limit, |limit| limit.0),
-                timeout: info.meta::<Timeout>().map(|timeout| timeout.0),
+                timeout,
                 stage: stage.scoped_for(&pattern),
             });
             let method = http.method().clone();
@@ -225,6 +238,13 @@ impl Who {
     fn text(&self, names: &Names) -> String {
         format!("`{}::{}`", names.of(self.controller), self.name)
     }
+}
+
+/// Where the `Timeout` a handler takes was declared, for the refusal of a zero one. The method's
+/// declaration wins over the controller's, so it is the method's whenever the method has one.
+fn zero_timeout_tier(metadata: &Metadata) -> &'static str {
+    let on_method = metadata.entries().any(|(name, tier)| tier == MetaTier::Method && name == type_name::<Timeout>());
+    if on_method { "on the handler" } else { "on the `#[routes]` impl" }
 }
 
 /// The methods a pattern answers, in declaration order: `HEAD` beside `GET` when only `GET` is
