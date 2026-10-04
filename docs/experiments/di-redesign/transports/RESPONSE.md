@@ -722,7 +722,7 @@ All six decisions are accepted. The lifetime change goes in now, and the `adopt`
 
 Received 2026-10-04, answering the gaps the fold of `divergences/batch2a-embed.md` rounds three and
 four left: a value an adapter inserts read through `Host<T>` under `host_extensions: false`,
-entries 39 and 40, and the refusal text's type names. Sign-off pending.
+entries 39 and 40, and the refusal text's type names. The user signed it off the same day.
 
 ### The adapter-inserted value
 
