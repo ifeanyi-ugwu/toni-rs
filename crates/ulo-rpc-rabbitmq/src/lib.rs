@@ -2,7 +2,7 @@
 //! through the default exchange, the payload as the body with AMQP headers, replies through
 //! `reply_to` and `correlation_id`. At-least-once with the ack after the handler completes, so
 //! handlers must be idempotent; ordered per queue with a single consumer; `Competing`; a
-//! per-consumer prefetch from the server's `max_inflight`, 64 under `Default` or `Unlimited`; the
+//! per-consumer prefetch, 64 unless `.prefetch(..)` sets one to match the server's `max_inflight`; the
 //! client channel in confirm mode with `mandatory` publishes, so `basic.return` maps to
 //! `Unavailable`; an unhandled event is `basic.reject`ed without requeue; the drain cancels the
 //! consumers (`basic.cancel`); `amqps://` selects TLS.
@@ -10,7 +10,17 @@
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_rabbitmq::RabbitMq::url("amqp://guest:guest@mq:5672/%2f")))
 //! ```
+//!
+//! On the wire a request is the payload published to the pattern's queue with `reply_to` and
+//! `correlation_id`, an event the same without them. The client receives replies through
+//! RabbitMQ's direct reply-to, each message one envelope frame, `res`, `err`, `item` or `end`. A
+//! streamed request opens with an empty body and the header `ulo-t: open`; the server answers it
+//! with `ulo-t: opened` before the caller sends anything more, and the request's items, its end and
+//! every `cancel` travel through the fanout exchange `ulo.rpc.control`, which binds one queue per
+//! server instance, carrying the call's `correlation_id`. A queue outlives the server that
+//! declared it, so a request sent while no instance consumes waits in the queue, and a caller sees
+//! its own `Timeout` rather than `Unavailable`.
 
 mod link;
 
-pub use link::{RabbitMq};
+pub use link::RabbitMq;

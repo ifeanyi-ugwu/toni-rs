@@ -18,8 +18,10 @@
 //!
 //! A scenario asserts kinds and reason strings, never message text. A scenario a link's
 //! capabilities exclude asserts the refusal the capability declares instead: a streamed shape on
-//! UDP is refused at startup, a binary payload on a JSON link before any I/O, a miss on a link
-//! without `miss_signal` is the client's `Timeout`.
+//! UDP is refused at startup, a binary payload on a JSON link before any I/O and its handler at
+//! startup, a miss on a link without `miss_signal` is the client's `Timeout`, and the
+//! two-instance scenario runs one instance on an `Addressed` link, where a second cannot share the
+//! address.
 
 use std::future::Future;
 use std::time::Duration;
@@ -32,11 +34,16 @@ pub mod cases;
 pub trait Broker: Sized + Send + Sync + 'static {
     type Link: Link;
 
-    /// Starts the environment for one scenario, so no state leaks between scenarios.
+    /// Starts the environment for one scenario, so no state leaks between scenarios. Every
+    /// scenario uses the same patterns, and on a broker the same default group and control lane,
+    /// and the stamped tests run in parallel, so each start answers a broker or a namespace no
+    /// other scenario shares: a fresh container, or a fresh port on TCP and UDP.
     fn start() -> impl Future<Output = Self> + Send;
 
     /// A link for the half under test, server or client, configured for this environment; called
-    /// once per half.
+    /// once per server instance and once per client, and for the link's `capabilities`, which the
+    /// scenarios read to choose what they assert. Every link it answers declares the same
+    /// capabilities.
     fn link(&self) -> Self::Link;
 
     /// Severs the link's connection however the broker allows, for the recovery scenario.

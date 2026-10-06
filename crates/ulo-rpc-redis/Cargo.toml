@@ -10,12 +10,16 @@ homepage.workspace = true
 keywords = ["ulo", "rpc", "redis"]
 categories = ["network-programming"]
 
+[features]
+# `rediss://`, through rustls with the webpki roots.
+tls = ["redis/tokio-rustls-comp", "redis/tls-rustls-webpki-roots"]
+
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
-bytes.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 redis = { workspace = true, features = ["connection-manager"] }
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }

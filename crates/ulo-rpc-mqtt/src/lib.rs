@@ -9,6 +9,14 @@
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_mqtt::Mqtt::url("mqtt://broker:1883")))
 //! ```
+//!
+//! On the wire a request is the payload published on the pattern's topic with a Response Topic
+//! and Correlation Data, an event the same without them. Each reply message carries one envelope
+//! frame, `res`, `err`, `item` or `end`. A streamed request opens with an empty body and the user
+//! property `ulo-t: open`; the server answers it on the Response Topic with `ulo-t: opened` before
+//! the caller sends anything more, and the request's items, its end and every `cancel` travel on
+//! `ulo/rpc/control`, which every server instance subscribes to outside the shared subscription,
+//! carrying the call's Correlation Data.
 
 mod link;
 

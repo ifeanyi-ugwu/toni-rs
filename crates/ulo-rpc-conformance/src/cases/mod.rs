@@ -1,6 +1,8 @@
 //! The scenario list of transports DESIGN §5.2, one module per group, each scenario generic over
 //! the [`Broker`](crate::Broker) under test.
 
+pub(crate) mod app;
+
 pub mod cancel;
 pub mod deadlines;
 pub mod delivery;

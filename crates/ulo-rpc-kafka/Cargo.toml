@@ -10,6 +10,10 @@ homepage.workspace = true
 keywords = ["ulo", "rpc", "kafka"]
 categories = ["network-programming"]
 
+[features]
+# `security.protocol=SSL`, selected by an `ssl://` broker entry, through librdkafka's OpenSSL.
+tls = ["rdkafka/ssl"]
+
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
@@ -17,5 +21,6 @@ bytes.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 rdkafka.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }

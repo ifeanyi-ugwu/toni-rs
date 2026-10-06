@@ -16,7 +16,8 @@ ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
 ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }
+# `serde` lets the binary scenario send and receive `Bytes` as raw bytes.
+bytes = { workspace = true, features = ["serde"] }
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }

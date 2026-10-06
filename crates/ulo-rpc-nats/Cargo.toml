@@ -13,9 +13,12 @@ categories = ["network-programming"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
+ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
-async-nats.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+# `ring` is async-nats's TLS provider, which it refuses to compile without, so `tls://` works in
+# every build.
+async-nats = { workspace = true, features = ["ring"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tracing.workspace = true
