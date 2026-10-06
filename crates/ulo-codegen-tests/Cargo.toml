@@ -1,0 +1,32 @@
+[package]
+name = "ulo-codegen-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The generated code of ulo-build and #[ulo_grpc::method], compiled and served, and the compile-fail checks the attributes emit"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Tests only: nothing depends on it, and it is never released.
+publish = false
+
+[dependencies]
+ulo-grpc = { path = "../ulo-grpc" }
+# What the code `ulo-build` writes names: tonic's client over a channel, the prost messages and
+# their codec.
+prost.workspace = true
+tonic = { workspace = true, features = ["channel", "codegen"] }
+tonic-prost.workspace = true
+
+[dev-dependencies]
+ulo = { path = "../ulo" }
+ulo-http = { path = "../ulo-http" }
+ulo-rpc = { path = "../ulo-rpc" }
+ulo-tokio = { path = "../ulo-tokio" }
+ulo-transport = { path = "../ulo-transport" }
+futures-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+trybuild.workspace = true
+
+[build-dependencies]
+ulo-build = { path = "../ulo-build" }

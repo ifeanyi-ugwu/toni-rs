@@ -26,7 +26,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use syn::{Ident, ImplItemFn, Type};
+use syn::{Ident, ImplItemFn, ReturnType, Type};
 use ulo_handler_codegen::emit::{self, MountFn};
 use ulo_handler_codegen::params::{self, HandlerSig, Receiver};
 use ulo_handler_codegen::{Paths, protocol, reply};
@@ -101,7 +101,12 @@ fn hidden_method(item: &ImplItemFn, sig: &HandlerSig, marker: &Type, ident: &Ide
     let method = &sig.ident;
     let awaited = sig.is_async.then(|| quote!(.await));
     let out = Ident::new("__ulo_out", Span::mixed_site());
-    let reply = quote_spanned! {item.sig.output.span()=>
+    // At the return type rather than `output.span()`, which on stable is the `-` of `->`.
+    let reply_span = match &item.sig.output {
+        ReturnType::Type(_, ty) => ty.span(),
+        ReturnType::Default => item.sig.ident.span(),
+    };
+    let reply = quote_spanned! {reply_span=>
         (&&&&&&::ulo_grpc::__private::ReplyProbe::<#marker, _>::new(#out))
             .answer::<{ ::ulo_grpc::__private::streams_reply(<#marker as ::ulo_grpc::Method>::SHAPE) }>()
             .checked()

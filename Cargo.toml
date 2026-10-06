@@ -34,6 +34,7 @@ members = [
     "crates/ulo-grpc",
     "crates/ulo-grpc-macros",
     "crates/ulo-build",
+    "crates/ulo-codegen-tests",
     "crates/ulo-graphql",
     "crates/ulo-graphql-http",
     "crates/ulo-graphql-ws",
@@ -126,6 +127,7 @@ tonic-reflection = "0.14"
 tonic-types = "0.14"
 tower = { version = "0.5", default-features = false }
 tracing = "0.1"
+trybuild = "1.0.110"
 uuid = "1.11"
 validator = "0.20.0"
 watchexec = "8.2"

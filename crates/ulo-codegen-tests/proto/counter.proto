@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package codegen.v1;
+
+// One method per call shape.
+service Counter {
+  rpc Add(AddRequest) returns (Sum);
+  rpc Count(CountRequest) returns (stream Number);
+  rpc Total(stream Number) returns (Sum);
+  rpc Double(stream Number) returns (stream Number);
+}
+
+// A second service in the same package, served by a generic controller.
+service Scale {
+  rpc Apply(Number) returns (Number);
+}
+
+message AddRequest {
+  int64 a = 1;
+  int64 b = 2;
+}
+
+message Sum {
+  int64 sum = 1;
+}
+
+message CountRequest {
+  uint32 up_to = 1;
+}
+
+message Number {
+  int64 value = 1;
+}

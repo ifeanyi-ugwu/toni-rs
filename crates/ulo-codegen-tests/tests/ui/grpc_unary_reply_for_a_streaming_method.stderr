@@ -1,0 +1,7 @@
+error[E0599]: no method named `checked` found for struct `ulo_grpc::__private::Checked<(ulo_grpc::__private::Shaped<false>, Number), (ulo_grpc::__private::Shaped<true>, Number)>` in the current scope
+  --> tests/ui/grpc_unary_reply_for_a_streaming_method.rs:12:58
+   |
+12 |     async fn count(&self, req: Message<CountRequest>) -> Number {
+   |                                                          ^^^^^^ method not found in `ulo_grpc::__private::Checked<(ulo_grpc::__private::Shaped<false>, Number), (ulo_grpc::__private::Shaped<true>, Number)>`
+   |
+   = note: the method was found for `ulo_grpc::__private::Checked<T, T>`

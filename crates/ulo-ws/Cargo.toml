@@ -34,3 +34,9 @@ serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tracing.workspace = true
+
+[dev-dependencies]
+ulo-tokio = { path = "../ulo-tokio" }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+# `connect`: the tests drive each gateway through a real WebSocket client.
+tokio-tungstenite = { workspace = true, features = ["connect"] }
