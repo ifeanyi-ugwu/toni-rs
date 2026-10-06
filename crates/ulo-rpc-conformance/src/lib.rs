@@ -22,6 +22,11 @@
 //! startup, a miss on a link without `miss_signal` is the client's `Timeout`, and the
 //! two-instance scenario runs one instance on an `Addressed` link, where a second cannot share the
 //! address.
+//!
+//! No scenario passes on silence. The client's own `Timeout` passes only where it is the declared
+//! answer: a scenario about the client's timeout or `deadline-ms`, and a call nothing takes on a
+//! link without `miss_signal`. A scenario that cannot apply to a link is declared not applicable
+//! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 
 use std::future::Future;
 use std::time::Duration;
@@ -40,13 +45,20 @@ pub trait Broker: Sized + Send + Sync + 'static {
     /// other scenario shares: a fresh container, or a fresh port on TCP and UDP.
     fn start() -> impl Future<Output = Self> + Send;
 
-    /// A link for the half under test, server or client, configured for this environment; called
-    /// once per server instance and once per client, and for the link's `capabilities`, which the
-    /// scenarios read to choose what they assert. Every link it answers declares the same
-    /// capabilities.
+    /// A link for the server, configured for this environment; called once per server instance,
+    /// and for the link's `capabilities`, which the scenarios read to choose what they assert.
+    /// Every link it answers declares the same capabilities.
     fn link(&self) -> Self::Link;
 
-    /// Severs the link's connection however the broker allows, for the recovery scenario.
+    /// A link for the client, called once per client: the server's link unless the environment
+    /// puts something between the two, such as a proxy `disrupt` cuts. It declares the
+    /// capabilities `link` does.
+    fn client_link(&self) -> Self::Link {
+        self.link()
+    }
+
+    /// Severs the client's connection however the environment allows, for the recovery scenario:
+    /// the calls waiting on it fail `Unavailable`, and the client connects again for the next.
     fn disrupt(&self) -> impl Future<Output = ()> + Send;
 
     /// How long this environment takes, which a slow broker raises.
@@ -81,9 +93,44 @@ impl Default for Budget {
 
 /// Stamps every scenario as a `#[tokio::test]` for the broker type `$broker`. The invoking crate
 /// depends on `tokio` with `macros` and `rt-multi-thread`, which `#[tokio::test]` names.
+///
+/// A scenario that cannot apply to a link is declared with its reason, and stamped
+/// `#[ignore = "not applicable: <reason>"]`, so the test report counts it as ignored rather than
+/// passed:
+///
+/// ```ignore
+/// ulo_rpc_conformance::conformance_suite!(UdpLoopback; not_applicable {
+///     recovery_after_disrupt: "UDP holds no connection to lose",
+/// });
+/// ```
+///
+/// A declared name that is no scenario fails to compile. A scenario run on a link it does not
+/// apply to fails rather than passing, so a link leaving out a declaration it needs fails too;
+/// `cargo test -- --ignored` runs the declared ones, which then fail the same way.
 #[macro_export]
 macro_rules! conformance_suite {
-    ($broker:ty) => {
+    ($broker:ty $(,)?) => {
+        $crate::conformance_suite!($broker; not_applicable {});
+    };
+    ($broker:ty; not_applicable { $($skip:ident : $why:literal),* $(,)? } $(,)?) => {
+        $crate::conformance_suite!(@stamper [$] $broker; $($skip : $why),*);
+    };
+    (@stamper [$d:tt] $broker:ty; $($skip:ident : $why:literal),*) => {
+        macro_rules! __ulo_rpc_conformance_stamp {
+            $(
+                ($skip, $d($d test:tt)*) => {
+                    #[::tokio::test(flavor = "multi_thread")]
+                    #[ignore = concat!("not applicable: ", $why)]
+                    $d($d test)*
+                };
+            )*
+            ($d other:ident, $d($d test:tt)*) => {
+                #[::tokio::test(flavor = "multi_thread")]
+                $d($d test)*
+            };
+        }
+        // A declared name that is no scenario names no function here.
+        $(const _: fn() = $skip;)*
         $crate::conformance_suite!(@cases $broker;
             unary_round_trip => unary::round_trip,
             domain_error_envelope => errors::domain_error,
@@ -109,10 +156,9 @@ macro_rules! conformance_suite {
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
         $(
-            #[::tokio::test(flavor = "multi_thread")]
-            async fn $name() {
+            __ulo_rpc_conformance_stamp!($name, async fn $name() {
                 $crate::cases::$module::$case::<$broker>().await;
-            }
+            });
         )*
     };
 }

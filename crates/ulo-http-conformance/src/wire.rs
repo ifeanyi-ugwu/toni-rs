@@ -29,8 +29,20 @@ const COMPARED: &[&str] = &[
     "vary",
 ];
 
-/// The longest any one exchange may take before the scenario fails.
+/// The longest any one exchange may take before the scenario fails. A wait this long ends the
+/// scenario as a failure wherever it ends: a client timeout is neither an answer nor a refusal.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
+
+/// Fails the scenario when `error` is the client's own timeout, which shows only that nothing
+/// arrived within [`PATIENCE`]; any other failure is the host refusing or closing the request.
+pub(crate) fn not_a_timeout(error: &reqwest::Error, what: &str) {
+    assert!(!error.is_timeout(), "{what}: the client's timeout of {PATIENCE:?} ended it, which is neither an answer nor a refusal");
+}
+
+/// A client sending one request per connection, ending each at [`PATIENCE`].
+pub(crate) fn client() -> reqwest::Client {
+    reqwest::Client::builder().pool_max_idle_per_host(0).timeout(PATIENCE).build().expect("a client")
+}
 
 /// A host serving the suite's app, with the app's handle and probe.
 pub(crate) struct Running<H: Host> {
@@ -80,7 +92,14 @@ impl<H: Host> Running<H> {
     }
 
     pub(crate) async fn send(&self, request: Exchange) -> Reply {
-        request.send(&self.url(&request.path)).await.expect("the host answers")
+        let what = format!("{} {}", request.method, request.path);
+        match request.send(&self.url(&request.path)).await {
+            Ok(reply) => reply,
+            Err(error) => {
+                not_a_timeout(&error, &what);
+                panic!("{what}: the host did not answer: {error}");
+            }
+        }
     }
 
     pub(crate) async fn stop(self) {
@@ -117,8 +136,7 @@ impl Exchange {
     }
 
     async fn send(&self, url: &str) -> Result<Reply, reqwest::Error> {
-        let client = reqwest::Client::builder().pool_max_idle_per_host(0).timeout(PATIENCE).build()?;
-        let mut request = client.request(self.method.clone(), url);
+        let mut request = client().request(self.method.clone(), url);
         for (name, value) in &self.headers {
             request = request.header(*name, value);
         }
@@ -198,27 +216,30 @@ impl Raw {
     }
 
     /// Reads until `needle` has arrived, answering everything read; `None` at the end of the
-    /// stream or after [`PATIENCE`].
-    pub(crate) async fn read_until(&mut self, needle: &[u8]) -> Option<Vec<u8>> {
+    /// stream. Fails the scenario, naming `what`, when [`PATIENCE`] passes first.
+    pub(crate) async fn read_until(&mut self, needle: &[u8], what: &str) -> Option<Vec<u8>> {
         let mut seen = Vec::new();
         let mut buffer = [0u8; 1024];
         let deadline = tokio::time::Instant::now() + PATIENCE;
         while !seen.windows(needle.len()).any(|window| window == needle) {
-            let read = tokio::time::timeout_at(deadline, self.stream.read(&mut buffer)).await.ok()?.ok()?;
-            if read == 0 {
-                return None;
+            let Ok(read) = tokio::time::timeout_at(deadline, self.stream.read(&mut buffer)).await else {
+                panic!("{what}: nothing more arrived within {PATIENCE:?}, which is neither an answer nor a close");
+            };
+            match read {
+                Ok(0) | Err(_) => return None,
+                Ok(read) => seen.extend_from_slice(&buffer[..read]),
             }
-            seen.extend_from_slice(&buffer[..read]);
         }
         Some(seen)
     }
 
-    /// Reads until the host closes the connection; `None` if it has not after [`PATIENCE`].
-    pub(crate) async fn read_to_close(&mut self) -> Option<Vec<u8>> {
+    /// Reads until the host closes the connection, answering everything read. Fails the
+    /// scenario, naming `what`, when the host has not closed it after [`PATIENCE`].
+    pub(crate) async fn read_to_close(&mut self, what: &str) -> Vec<u8> {
         let mut seen = Vec::new();
         match tokio::time::timeout(PATIENCE, self.stream.read_to_end(&mut seen)).await {
-            Ok(_) => Some(seen),
-            Err(_) => None,
+            Ok(_) => seen,
+            Err(_) => panic!("{what}: the host had not closed the connection after {PATIENCE:?}"),
         }
     }
 }

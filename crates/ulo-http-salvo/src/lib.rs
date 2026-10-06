@@ -8,7 +8,7 @@
 //!
 //! let router = salvo::Router::new().push(salvo::Router::with_path("api/{**rest}").goal(ulo_http_salvo::handler(&embedded)));
 //! let service = salvo::Service::new(router);
-//! ulo_http_salvo::run(app, &embedded, salvo::Server::new(acceptor), service, ulo_tokio::shutdown_signal()).await?;
+//! ulo_http_salvo::run(app, &embedded, acceptor, service, ulo_tokio::shutdown_signal()).await?;
 //! ```
 //!
 //! salvo hands its handler the full path, so the adapter declares `STRIPS_PREFIX: false` and the

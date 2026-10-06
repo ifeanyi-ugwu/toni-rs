@@ -22,7 +22,15 @@
 //! What it declares: the peer address from `remote`; upgrades through rocket's `IoHandler`; miss
 //! forwarding, `Outcome::Forward` with the request's unread `Data`; no host extensions, a value in
 //! rocket's local cache crossing through a `forward` copy; no TLS info; the body buffered; a
-//! dropped body observed at the next failed write.
+//! dropped body observed at the next failed write; the whole drain window taken when a client
+//! abandons a response during the drain.
+//!
+//! That last one is `DrainAbandoned::Window`. Once hyper's server has finished, rocket's launch
+//! waits out its whole `shutdown.grace` if anything still holds the server, and a response the
+//! client abandoned during the drain leaves it waiting. `run` sets the grace to the app's drain
+//! window, so a client that leaves mid-response during shutdown makes the app's `close` take that
+//! whole window, and no longer. An idle keep-alive connection is closed when the drain begins, as
+//! on the other hosts.
 //!
 //! Built-in forwards: `OriginalPath`, from `req.uri().path()`.
 
@@ -32,7 +40,7 @@ mod run;
 mod upgrade;
 
 use ulo_http::HttpConfig;
-use ulo_http::embed::{Disconnect, Embed, EmbedLimits, OriginalPath, RequestBody};
+use ulo_http::embed::{Disconnect, DrainAbandoned, Embed, EmbedLimits, OriginalPath, RequestBody};
 
 pub use handler::{RocketHandler, routes};
 pub use run::run;
@@ -56,6 +64,7 @@ impl Embed for Rocket {
             .tls_info(false)
             .request_body(RequestBody::Buffered(HttpConfig::default().body_limit))
             .disconnect(Disconnect::AtNextWrite)
+            .drain_abandoned(DrainAbandoned::Window)
     }
 
     fn builtin_forwards(embedded: ulo_http::embed::Embedded<Self>) -> ulo_http::embed::Embedded<Self> {

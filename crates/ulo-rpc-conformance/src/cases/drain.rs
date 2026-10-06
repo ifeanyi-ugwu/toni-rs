@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ulo::Signal;
-use ulo_rpc::DeliveryMode;
 use ulo_transport::ErrorKind;
 
 use crate::Broker;
@@ -39,10 +38,10 @@ pub async fn drain<B: Broker>() {
     let refused = fixture.rpc().request::<_, Sum>(ADD, &Add { a: 1, b: 1 }).timeout(miss_wait(&fixture.broker)).await;
     match refused {
         Err(error) if error.kind() == ErrorKind::Unavailable => {}
-        // A broker that holds the request for a later consumer, or a link without a miss signal,
-        // leaves the caller its own timeout.
-        Err(error) if error.kind() == ErrorKind::Timeout && capabilities.delivery != DeliveryMode::Addressed => {}
-        other => panic!("a call arriving during the drain is refused, got: {other:?}"),
+        // A link without a miss signal declares the caller's own timeout as its answer to a call
+        // nothing takes, as in the unhandled-pattern scenario.
+        Err(error) if error.kind() == ErrorKind::Timeout && !capabilities.miss_signal => {}
+        other => panic!("a call arriving during the drain is refused `Unavailable`, got: {other:?}"),
     }
 
     let held = within(Duration::from_secs(30), "the in-flight call", held).await.expect("the held call's task completes");

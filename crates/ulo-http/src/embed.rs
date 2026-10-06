@@ -121,6 +121,15 @@ pub struct EmbedLimits {
     /// When the host drops an abandoned response body, which is when the execution observes
     /// `CancelReason::Disconnected`.
     pub disconnect: Disconnect,
+    /// Whether a request whose head is still arriving when the host's graceful stop begins reaches
+    /// the app. Nothing is refused: a client caught mid-request at the moment of shutdown gets the
+    /// app's 503 with `Connection: close` on a host declaring `Served`, and a closed connection
+    /// with no answer on one declaring `Closed`.
+    pub drain_pending: DrainPending,
+    /// How long the host's graceful stop lasts when a response in flight as it begins is abandoned
+    /// by the client. Nothing is refused: on a host declaring `Window`, a client that leaves
+    /// mid-response during shutdown makes the app's `close` take the whole drain window.
+    pub drain_abandoned: DrainAbandoned,
 }
 
 impl EmbedLimits {
@@ -133,6 +142,8 @@ impl EmbedLimits {
         tls_info: true,
         request_body: RequestBody::Streamed,
         disconnect: Disconnect::AtClose,
+        drain_pending: DrainPending::Served,
+        drain_abandoned: DrainAbandoned::Released,
     };
 
     pub const fn peer_addr(self, supported: bool) -> Self {
@@ -162,6 +173,14 @@ impl EmbedLimits {
     pub const fn disconnect(self, disconnect: Disconnect) -> Self {
         EmbedLimits { disconnect, ..self }
     }
+
+    pub const fn drain_pending(self, drain_pending: DrainPending) -> Self {
+        EmbedLimits { drain_pending, ..self }
+    }
+
+    pub const fn drain_abandoned(self, drain_abandoned: DrainAbandoned) -> Self {
+        EmbedLimits { drain_abandoned, ..self }
+    }
 }
 
 /// How a host hands over a request body.
@@ -181,6 +200,27 @@ pub enum Disconnect {
     /// At the next write that fails, so an idle stream is not cancelled until it has something
     /// to send.
     AtNextWrite,
+}
+
+/// What a host does with a request whose head is still arriving when its graceful stop begins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainPending {
+    /// The request reaches the app, which is draining and answers it 503 with
+    /// `Connection: close`.
+    Served,
+    /// The host closes the connection before the request reaches the app, so the client gets no
+    /// answer.
+    Closed,
+}
+
+/// How long a host's graceful stop lasts when a response in flight as it begins is abandoned by the
+/// client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainAbandoned {
+    /// Until the host drops the abandoned response, at the moment its `disconnect` declares.
+    Released,
+    /// The whole drain window, however soon the host drops the abandoned response.
+    Window,
 }
 
 /// What the app does with a request no route matches.

@@ -16,18 +16,22 @@ use ulo::{App, BoxError, Shutdown, Signal};
 use crate::Handle;
 
 /// Calls `server.disable_signals().shutdown_timeout(secs).run()`, the drain window from
-/// `AppHandle::drain_timeout()` rounded up to the second, installs a future that awaits
-/// `handle.stopping()`, calls `ServerHandle::stop(true)`, then awaits the server, and awaits
-/// `app.serve(signal)`.
+/// `AppHandle::drain_timeout()` rounded up to the second, and installs a future that awaits
+/// `handle.stopping()`, calls `ServerHandle::stop(true)`, then awaits the server; answers a future
+/// that awaits `app.serve(signal)`.
+///
+/// The builder work happens before `run` returns, since actix's `HttpServer` is `!Send` and the
+/// running server it yields is not, so the answered future is `Send` and can be spawned. Like
+/// actix itself, `run` must be called inside a tokio runtime.
 ///
 /// The bounds are the ones actix-web puts on `disable_signals` and `shutdown_timeout`, which
 /// `run` calls; they are `HttpServer::new`'s, so a server built by `HttpServer::new` meets them.
-pub async fn run<F, I, S, B>(
+pub fn run<F, I, S, B, Sig>(
     app: App<Bound>,
     handle: &Handle,
     server: HttpServer<F, I, S, B>,
-    signal: impl Future<Output = Signal> + Send,
-) -> Result<Shutdown, BoxError>
+    signal: Sig,
+) -> impl Future<Output = Result<Shutdown, BoxError>> + Send + use<F, I, S, B, Sig>
 where
     F: Fn() -> I + Send + Clone + 'static,
     I: IntoServiceFactory<S, Request>,
@@ -38,6 +42,7 @@ where
     <S::Service as Service<Request>>::Future: 'static,
     S::Service: 'static,
     B: MessageBody + 'static,
+    Sig: Future<Output = Signal> + Send,
 {
     let secs = whole_seconds(app.handle().drain_timeout());
     let server = server.disable_signals().shutdown_timeout(secs).run();
@@ -49,12 +54,15 @@ where
         stopping.await;
         control.stop(true).await;
     });
-    if let Err(error) = handle.host(host) {
-        // The app is bound and nothing will serve it: close it rather than leave it listening.
-        let _ = app.handle().close(Signal::new("the actix host server was refused")).await;
-        return Err(error);
+    let installed = handle.host(host);
+    async move {
+        if let Err(error) = installed {
+            // The app is bound and nothing will serve it: close it rather than leave it listening.
+            let _ = app.handle().close(Signal::new("the actix host server was refused")).await;
+            return Err(error);
+        }
+        Ok(app.serve(signal).await?)
     }
-    Ok(app.serve(signal).await?)
 }
 
 /// `window` in whole seconds, rounded up: actix's clock is the app's plus under a second.

@@ -22,8 +22,14 @@
 //! middleware writes. The limits are checked in both directions: a host that passes a scenario it
 //! declares unsupported fails, and one declaring `forward_miss` that answers a `Forwardable` 404
 //! itself fails the same way.
+//!
+//! No scenario passes on silence. A request the client's own timeout ends fails the scenario,
+//! since it is neither an answer nor a refusal, and so does a wait for a close or a frame that
+//! does not arrive in time. A scenario that cannot apply to a host is declared not applicable in
+//! [`http_conformance_suite!`] and reported as ignored; run on that host, it fails.
 
 use std::future::Future;
+use std::time::Duration;
 
 use ulo::App;
 use ulo::app::Connected;
@@ -49,6 +55,11 @@ pub enum Mode {
     /// As the host's fallback, answering whatever the host did not match.
     Fallback,
 }
+
+/// The suite app's drain window, which the hosts that take a stop bound are given by their `run`.
+/// Short, since a host declaring `DrainAbandoned::Window` takes all of it, and long enough that
+/// half of it covers a `Released` host dropping a response at its next write.
+const DRAIN: Duration = Duration::from_secs(4);
 
 /// The prefix a nested host mounts the app under.
 pub const PREFIX: &str = "/api";
@@ -97,6 +108,7 @@ pub async fn app() -> App<Connected> {
 pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
     App::builder(app::SuiteModule { limits })
         .timer(ulo_tokio::Timer)
+        .drain_timeout(DRAIN)
         .wire()
         .expect("the suite's app wires")
         .connect()
@@ -119,10 +131,43 @@ pub fn routing_label(routing: &Routing) -> String {
 
 /// Stamps every scenario in both modes as a `#[tokio::test]` for the host type `$host`. The
 /// invoking crate depends on `tokio` with `macros` and `rt-multi-thread`.
+///
+/// A scenario that cannot apply to a host is declared with its reason, and stamped
+/// `#[ignore = "not applicable: <reason>"]`, so the test report counts it as ignored rather than
+/// passed:
+///
+/// ```ignore
+/// ulo_http_conformance::http_conformance_suite!(HyperHost; not_applicable {
+///     routing_extension: "the reference has no host around the app to read `Routing`",
+/// });
+/// ```
+///
+/// A declared name that is no scenario fails to compile. A scenario run on a host it does not
+/// apply to fails rather than passing, so a host leaving out a declaration it needs fails too;
+/// `cargo test -- --ignored` runs the declared ones, which then fail the same way.
 #[macro_export]
 macro_rules! http_conformance_suite {
-    ($host:ty) => {
-        $crate::http_conformance_suite!(@cases $host;
+    ($host:ty $(,)?) => {
+        $crate::http_conformance_suite!($host; not_applicable {});
+    };
+    ($host:ty; not_applicable { $($skip:ident : $why:literal),* $(,)? } $(,)?) => {
+        $crate::http_conformance_suite!(@stamper [$] $host; $($skip : $why),*);
+    };
+    (@stamper [$d:tt] $host:ty; $($skip:ident : $why:literal),*) => {
+        macro_rules! __ulo_http_conformance_stamp {
+            $(
+                ($skip, $d($d test:tt)*) => {
+                    #[::tokio::test(flavor = "multi_thread")]
+                    #[ignore = concat!("not applicable: ", $why)]
+                    $d($d test)*
+                };
+            )*
+            ($d other:ident, $d($d test:tt)*) => {
+                #[::tokio::test(flavor = "multi_thread")]
+                $d($d test)*
+            };
+        }
+        $crate::http_conformance_suite!(@cases $host; [$($skip),*];
             routing_hit => routing::hit,
             not_found_with_no_route => routing::not_found,
             method_not_allowed_with_allow => routing::method_not_allowed,
@@ -135,29 +180,31 @@ macro_rules! http_conformance_suite {
             disconnect_mid_stream => disconnect::mid_stream,
             upgrade_echoes_a_frame => upgrade::echo,
             host_value_present_and_absent => host_values::present_and_absent,
-            forward_copy => host_values::forward_copy,
             routing_extension => routing_ext::routing,
             unavailable_before_listen_and_after_close => lifecycle::unavailable,
-            drain => drain::drain,
+            drain_http1 => drain::http1,
+            drain_http2 => drain::http2,
+            drain_goaway => drain::goaway,
+            drain_abandoned => drain::abandoned,
         );
     };
-    (@cases $host:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
+    (@cases $host:ty; [$($skip:ident),*]; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
         mod nested {
             use super::*;
+            // A declared name that is no scenario names no function here.
+            $(const _: fn() = $skip;)*
             $(
-                #[::tokio::test(flavor = "multi_thread")]
-                async fn $name() {
+                __ulo_http_conformance_stamp!($name, async fn $name() {
                     $crate::cases::$module::$case::<$host>($crate::Mode::Nested).await;
-                }
+                });
             )*
         }
         mod fallback {
             use super::*;
             $(
-                #[::tokio::test(flavor = "multi_thread")]
-                async fn $name() {
+                __ulo_http_conformance_stamp!($name, async fn $name() {
                     $crate::cases::$module::$case::<$host>($crate::Mode::Fallback).await;
-                }
+                });
             )*
         }
     };

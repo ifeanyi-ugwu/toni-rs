@@ -22,6 +22,8 @@ ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
 futures-util.workspace = true
+# An HTTP/2 client that sees the GOAWAY frame itself, which reqwest does not expose.
+h2.workspace = true
 http.workspace = true
 reqwest = { workspace = true, features = ["http2"] }
 rocket = { workspace = true, optional = true }

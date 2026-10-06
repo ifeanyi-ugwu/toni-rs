@@ -2,7 +2,7 @@
 
 use ulo::Signal;
 
-use crate::wire::{Exchange, PATIENCE, start};
+use crate::wire::{PATIENCE, client, not_a_timeout, start};
 use crate::{Host, Mode};
 
 /// After `close`, the app answers nothing as if it were serving: the host has stopped with it,
@@ -16,14 +16,16 @@ pub async fn unavailable<H: Host>(mode: Mode) {
     let url = host.url("/hit");
     let closed = tokio::time::timeout(PATIENCE, host.app.close(Signal::new("suite"))).await;
     assert!(closed.is_ok(), "the app did not close within {PATIENCE:?}");
-    let client = reqwest::Client::builder().pool_max_idle_per_host(0).timeout(PATIENCE).build().expect("a client");
-    if let Ok(response) = client.request(Exchange::get("/hit").method, &url).send().await {
-        assert_eq!(response.status().as_u16(), 503, "the closed app answered a request");
-        let connection = response.headers().get("connection").and_then(|value| value.to_str().ok());
-        assert!(connection.is_some_and(|value| value.eq_ignore_ascii_case("close")));
-        if let Some(routing) = response.headers().get(crate::ROUTING_HEADER) {
-            assert_eq!(routing.to_str().ok(), Some("unrouted"));
+    match client().get(&url).send().await {
+        Ok(response) => {
+            assert_eq!(response.status().as_u16(), 503, "the closed app answered a request");
+            let connection = response.headers().get("connection").and_then(|value| value.to_str().ok());
+            assert!(connection.is_some_and(|value| value.eq_ignore_ascii_case("close")));
+            if let Some(routing) = response.headers().get(crate::ROUTING_HEADER) {
+                assert_eq!(routing.to_str().ok(), Some("unrouted"));
+            }
         }
+        Err(error) => not_a_timeout(&error, "a request after `close`"),
     }
     host.stop().await;
 }

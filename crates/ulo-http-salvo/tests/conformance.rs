@@ -53,7 +53,6 @@ impl Host for SalvoHost {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the listener's address");
         let acceptor = TcpAcceptor::try_from(listener).expect("salvo adopts the listener");
-        let host = salvo::Server::new(acceptor);
         let service = salvo::Service::new(router);
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {
@@ -61,7 +60,7 @@ impl Host for SalvoHost {
                 let _ = stopped.await;
                 Signal::new("suite")
             };
-            let _ = ulo_http_salvo::run(app, &embedded, host, service, signal).await;
+            let _ = ulo_http_salvo::run(app, &embedded, acceptor, service, signal).await;
         });
         SalvoHost { base_url: format!("http://{addr}"), stop, serving }
     }

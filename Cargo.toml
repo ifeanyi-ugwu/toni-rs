@@ -79,6 +79,7 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-core = "0.3"
 futures-timer = "3"
 futures-util = "0.3"
+h2 = "0.4"
 headers = "0.4"
 http = "1"
 http-body = "1"

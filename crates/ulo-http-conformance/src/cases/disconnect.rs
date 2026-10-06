@@ -24,7 +24,7 @@ pub async fn mid_stream<H: Host>(mode: Mode) {
     let mut raw = Raw::connect(&host.authority()).await;
     let request = format!("GET {} HTTP/1.1\r\nHost: suite\r\nAccept: text/event-stream\r\n\r\n", host.target("/endless"));
     raw.write(request.as_bytes()).await;
-    raw.read_until(b"data: start").await.expect("the stream's first event arrives");
+    raw.read_until(b"data: start", "the stream's first event").await.expect("the stream's first event arrives");
     drop(raw);
 
     tokio::time::sleep(AT_CLOSE).await;

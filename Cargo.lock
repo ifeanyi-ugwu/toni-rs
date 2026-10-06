@@ -5820,6 +5820,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "futures-util",
+ "h2 0.4.19",
  "http 1.5.0",
  "reqwest",
  "rocket",

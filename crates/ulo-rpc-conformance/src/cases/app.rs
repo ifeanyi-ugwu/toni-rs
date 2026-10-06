@@ -410,7 +410,7 @@ pub(crate) struct Client {
 }
 
 pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
-    let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.link())) })
+    let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link())) })
         .timer(ulo_tokio::Timer)
         .wire()
         .unwrap_or_else(|error| panic!("the conformance client did not wire: {error}"))

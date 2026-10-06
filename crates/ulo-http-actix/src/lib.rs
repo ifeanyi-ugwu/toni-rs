@@ -23,7 +23,13 @@
 //! declares: the peer address from `peer_addr`; no upgrades; no miss forwarding; no host
 //! extensions, a value in actix's request store crossing through a `forward` copy over
 //! `HttpRequest`; no TLS info; streamed bodies through the pump; a dropped body observed at the
-//! next failed write.
+//! next failed write; a request still arriving at the drain closed by the host.
+//!
+//! That last one is `DrainPending::Closed`. From actix-web 4.15 actix's graceful stop reaches every
+//! HTTP/1 connection, and a connection with no complete request in progress closes at once. A
+//! client caught mid-request at the moment of shutdown, its head not yet fully sent, gets a closed
+//! connection rather than the app's 503, and a request pipelined behind one in flight is dropped
+//! the same way.
 //!
 //! Built-in forwards: `OriginalPath`, from `req.path()`. actix's response extensions are its own
 //! store, so of the app's response extensions only `Routing` is copied into them, where an actix
@@ -33,7 +39,7 @@ mod pump;
 mod run;
 mod service;
 
-use ulo_http::embed::{Disconnect, Embed, EmbedLimits, OriginalPath};
+use ulo_http::embed::{Disconnect, DrainPending, Embed, EmbedLimits, OriginalPath};
 
 pub use run::run;
 pub use service::{ActixScope, ActixService, scope};
@@ -55,6 +61,7 @@ impl Embed for Actix {
             .host_extensions(false)
             .tls_info(false)
             .disconnect(Disconnect::AtNextWrite)
+            .drain_pending(DrainPending::Closed)
     }
 
     fn builtin_forwards(embedded: ulo_http::embed::Embedded<Self>) -> ulo_http::embed::Embedded<Self> {
