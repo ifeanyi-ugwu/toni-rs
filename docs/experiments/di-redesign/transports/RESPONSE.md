@@ -1058,7 +1058,7 @@ Several of the uncertainties in §8 (the `Answer<M>` inference, the six-arm prob
 ## Twenty-second response: the conformance runs
 
 Received 2026-10-07, answering `divergences/race2b-tests2-http.md` (S1–S3) and the three items both
-conformance logs left unchanged. Sign-off pending.
+conformance logs left unchanged. The user signed it off the same day.
 
 All three proposals are right. S1 needs a precise name for its new field. Of the three items you noted, two should become tests, and one should be documented.
 
