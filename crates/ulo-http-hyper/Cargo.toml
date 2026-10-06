@@ -24,3 +24,7 @@ hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
 tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

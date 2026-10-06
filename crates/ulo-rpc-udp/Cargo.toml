@@ -19,3 +19,7 @@ futures-util.workspace = true
 ulo-net = { path = "../ulo-net" }
 tokio = { workspace = true, features = ["net", "sync", "rt", "macros", "time"] }
 tracing.workspace = true
+
+[dev-dependencies]
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

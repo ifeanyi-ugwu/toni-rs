@@ -15,10 +15,16 @@ pub async fn drain<H: Host>(mode: Mode) {
 
 /// The request's head is half written before the shutdown, which keeps the connection busy
 /// through the host's graceful stop, and finished once the drain has begun.
+///
+/// A host that closes its listener when the drain begins resets a connection still in the
+/// backlog. A request answered on a second connection opened after this one shows the host
+/// has accepted this one, since a listener hands connections over in the order they arrived.
 async fn http1<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
     let mut raw = Raw::connect(&host.authority()).await;
     raw.write(format!("GET {} HTTP/1.1\r\nHost: suite\r\n", host.target("/hit")).as_bytes()).await;
+    let accepted = host.send(Exchange::get("/hit")).await;
+    assert_eq!(accepted.status, 200, "the request proving the first connection was accepted");
     let app = host.app.clone();
     let closing = tokio::spawn(async move { app.close(Signal::new("suite")).await });
     tokio::time::timeout(PATIENCE, host.app.draining()).await.expect("the drain begins");

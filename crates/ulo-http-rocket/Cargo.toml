@@ -20,3 +20,7 @@ http-body-util.workspace = true
 rocket = { workspace = true, features = ["http2"] }
 tokio = { workspace = true, features = ["io-util", "sync"] }
 tracing.workspace = true
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance", features = ["rocket"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

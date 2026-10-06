@@ -5798,6 +5798,7 @@ dependencies = [
  "tokio",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
 ]
 
 [[package]]
@@ -5806,9 +5807,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http 1.5.0",
+ "tokio",
  "tower",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
 ]
 
 [[package]]
@@ -5840,6 +5843,7 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
  "ulo-hyper-serve",
  "ulo-net",
  "ulo-transport",
@@ -5864,8 +5868,10 @@ dependencies = [
  "http-body 1.1.0",
  "http-body-util",
  "poem",
+ "tokio",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
 ]
 
 [[package]]
@@ -5881,6 +5887,7 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
 ]
 
 [[package]]
@@ -5893,8 +5900,10 @@ dependencies = [
  "hyper 1.11.1",
  "hyper-util",
  "salvo",
+ "tokio",
  "ulo",
  "ulo-http",
+ "ulo-http-conformance",
 ]
 
 [[package]]
@@ -6063,6 +6072,7 @@ dependencies = [
  "ulo",
  "ulo-net",
  "ulo-rpc",
+ "ulo-rpc-conformance",
 ]
 
 [[package]]
@@ -6077,6 +6087,7 @@ dependencies = [
  "ulo",
  "ulo-net",
  "ulo-rpc",
+ "ulo-rpc-conformance",
 ]
 
 [[package]]

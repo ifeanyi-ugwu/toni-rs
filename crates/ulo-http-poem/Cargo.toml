@@ -18,3 +18,7 @@ http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
 poem = { workspace = true, features = ["server"] }
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

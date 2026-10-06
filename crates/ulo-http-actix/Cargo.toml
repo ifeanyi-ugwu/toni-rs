@@ -21,3 +21,7 @@ futures-util.workspace = true
 http.workspace = true
 http-body.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

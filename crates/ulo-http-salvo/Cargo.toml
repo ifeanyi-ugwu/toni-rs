@@ -20,3 +20,7 @@ http-body.workspace = true
 hyper.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
 salvo = { workspace = true, features = ["server", "server-handle", "http1", "http2"] }
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

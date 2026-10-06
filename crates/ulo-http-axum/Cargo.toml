@@ -16,3 +16,7 @@ ulo-http = { path = "../ulo-http" }
 axum = { workspace = true, features = ["tokio", "http1", "http2", "original-uri"] }
 http.workspace = true
 tower.workspace = true
+
+[dev-dependencies]
+ulo-http-conformance = { path = "../ulo-http-conformance" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }

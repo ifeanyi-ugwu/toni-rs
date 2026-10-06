@@ -75,7 +75,7 @@ impl Handler for RocketHandler {
         if let Some(routing) = response.extensions().get::<Routing>().cloned() {
             request.local_cache(move || Some(routing));
         }
-        Outcome::Success(convert::response(response, handoff).await)
+        Outcome::Success(convert::response(response, handoff, request.method() == Method::Head).await)
     }
 }
 
