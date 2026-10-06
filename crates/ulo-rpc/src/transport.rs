@@ -1,12 +1,15 @@
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_core::stream::BoxStream;
+use tokio::sync::mpsc::UnboundedReceiver;
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
-use ulo_transport::{ExtractError, FromCall, Tracked};
+use ulo_transport::{ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
 
+use crate::codec::Codec;
 use crate::frame::Data;
+use crate::link::Pattern;
 
 /// The RPC transport, key `"rpc"`: one execution per call or event. `#[guards(rpc = ..)]` scopes an
 /// entry to its handlers. Its inputs, [`CallHeaders`] and [`LinkInfo`], are seeded into every
@@ -33,6 +36,36 @@ pub struct RpcCx {
 
 pub(crate) struct CxInner {
     pub(crate) exec: ExecutionRef,
+    pub(crate) pattern: Pattern,
+    pub(crate) headers: CallHeaders,
+    pub(crate) link: LinkInfo,
+    pub(crate) app: AppHandle,
+    pub(crate) timer: Arc<dyn Timer>,
+    /// The link's codec, which decodes the payload and encodes the reply.
+    pub(crate) codec: Codec,
+    /// The payload, taken once by the one parameter that consumes it.
+    pub(crate) body: Mutex<Option<Body>>,
+}
+
+/// What a call carries as its payload: one `d`, or a streamed request's `in` items until
+/// `in_end`, which closes the channel.
+pub(crate) enum Body {
+    Data(Data),
+    Stream(UnboundedReceiver<Data>),
+}
+
+impl RpcCx {
+    pub(crate) fn new(inner: CxInner) -> Self {
+        RpcCx { inner: Arc::new(inner) }
+    }
+
+    pub(crate) fn codec(&self) -> Codec {
+        self.inner.codec
+    }
+
+    pub(crate) fn take_body(&self) -> Option<Body> {
+        self.inner.body.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
 }
 
 impl RpcCx {
@@ -51,24 +84,24 @@ impl RpcCx {
 
     /// The pattern the call named.
     pub fn pattern(&self) -> &str {
-        todo!()
+        self.inner.pattern.as_str()
     }
 
     pub fn headers(&self) -> &CallHeaders {
-        todo!()
+        &self.inner.headers
     }
 
     pub fn link(&self) -> &LinkInfo {
-        todo!()
+        &self.inner.link
     }
 
     pub fn app(&self) -> &AppHandle {
-        todo!()
+        &self.inner.app
     }
 
     /// The app's `Timer`, which anything timed inside a reply reads.
     pub fn timer(&self) -> &Arc<dyn Timer> {
-        todo!()
+        &self.inner.timer
     }
 }
 
@@ -86,6 +119,20 @@ pub enum Reply {
     None,
     One(Data),
     Many(Tracked<BoxStream<'static, Result<Data, BoxError>>>),
+}
+
+/// A reply already built, an interceptor's or a hand-written one, answered as it stands.
+impl IntoReply<Rpc> for Reply {
+    fn into_reply(self, _cx: &RpcCx) -> Result<Reply, IntoReplyError> {
+        Ok(self)
+    }
+}
+
+/// A payload already encoded by the link's codec, answered as one `res`.
+impl IntoReply<Rpc> for Data {
+    fn into_reply(self, _cx: &RpcCx) -> Result<Reply, IntoReplyError> {
+        Ok(Reply::One(self))
+    }
 }
 
 impl fmt::Debug for Reply {
@@ -135,13 +182,13 @@ impl CallHeaders {
 
 impl FromCall<Rpc> for CallHeaders {
     async fn from_call(cx: &RpcCx) -> Result<Self, ExtractError> {
-        let _ = cx;
-        todo!()
+        Ok(cx.inner.headers.clone())
     }
 }
 
 /// The link a call arrived on, as an execution input: its name, the registry's
-/// `messaging.system` value on a broker, and the peer on TCP and UDP.
+/// `messaging.system` value on a broker, and the peer on TCP and UDP, which those links attach to
+/// every delivery's reply path, an event's included.
 #[derive(Clone, Debug)]
 pub struct LinkInfo {
     pub(crate) name: &'static str,
@@ -170,6 +217,10 @@ pub struct NoHandler {
 }
 
 impl NoHandler {
+    pub(crate) fn new(pattern: &str) -> Self {
+        NoHandler { pattern: pattern.to_owned() }
+    }
+
     pub fn pattern(&self) -> &str {
         &self.pattern
     }

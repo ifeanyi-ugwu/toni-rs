@@ -9,6 +9,7 @@
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_core::stream::BoxStream;
@@ -55,12 +56,22 @@ pub trait Link: Send + Sync + 'static {
 }
 
 /// What a link's server side delivers.
+///
+/// The frames' `id`s are the server's correlation: unique among the calls in flight on one
+/// inbound stream, so an `in`, `in_end` or `cancel` reaches the call its `req` or `open` started.
+/// A link whose callers allocate ids per connection, TCP and UDP, maps each to an id of its own
+/// and back on the reply path; a broker link allocates one per native correlation.
 pub type Inbound = BoxStream<'static, Delivery>;
 
 /// One frame arriving at the server, with where its replies go and how it is acknowledged.
+///
+/// A link that loses the caller of calls in flight, a TCP connection closing, delivers `cancel`
+/// for each with `reply: None`, which the server reads as `CancelReason::Disconnected`; a
+/// `cancel` the caller sent carries its reply path and is `CancelReason::ClientCancelled`.
 pub struct Delivery {
     pub frame: Frame,
-    /// `None` for an event.
+    /// `None` for an event. A link may attach one to an event to carry the caller's address
+    /// ([`ReplyPath::peer`]), which the server reads for `LinkInfo::peer` and never replies on.
     pub reply: Option<ReplyPath>,
     pub ack: Ack,
 }
@@ -71,6 +82,7 @@ pub struct Delivery {
 #[derive(Clone)]
 pub struct ReplyPath {
     send: Arc<dyn Fn(Frame) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>,
+    peer: Option<SocketAddr>,
 }
 
 impl ReplyPath {
@@ -78,11 +90,23 @@ impl ReplyPath {
     where
         F: Fn(Frame) -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync + 'static,
     {
-        ReplyPath { send: Arc::new(send) }
+        ReplyPath { send: Arc::new(send), peer: None }
     }
 
+    /// The caller's address, which the server seeds as `LinkInfo::peer`: TCP and UDP set it.
+    pub fn peer(self, peer: SocketAddr) -> Self {
+        ReplyPath { peer: Some(peer), ..self }
+    }
+
+    /// Sends one reply frame. A send that fails with [`FrameTooLarge`] is answered by the server
+    /// with an `err` frame of kind `internal` in its place; any other failure means the caller is
+    /// gone, and the call is cancelled `Disconnected`.
     pub fn send(&self, frame: Frame) -> BoxFuture<'static, Result<(), BoxError>> {
         (self.send)(frame)
+    }
+
+    pub(crate) fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer
     }
 }
 

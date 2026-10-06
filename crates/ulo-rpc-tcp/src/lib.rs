@@ -10,4 +10,4 @@
 
 mod link;
 
-pub use link::{Tcp};
+pub use link::Tcp;

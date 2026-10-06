@@ -14,10 +14,14 @@ categories = ["network-programming", "asynchronous"]
 ulo = { path = "../ulo" }
 ulo-rpc-macros = { path = "../ulo-rpc-macros" }
 ulo-transport = { path = "../ulo-transport" }
-bytes.workspace = true
+# `serde` so `Bytes` and `Payload<Bytes>` travel as a CBOR byte string.
+bytes = { workspace = true, features = ["serde"] }
 ciborium.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
+# Spawning per-delivery tasks and the client's reply router; transports may depend on tokio, the
+# core may not (transports DESIGN §0.5).
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 tracing.workspace = true

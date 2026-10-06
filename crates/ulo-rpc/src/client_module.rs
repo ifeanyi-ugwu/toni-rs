@@ -1,7 +1,12 @@
 //! `RpcClientModule`: binds an `RpcClient` over one link (transports DESIGN §5.4).
 
-use ulo::{Bound, Module, ModuleDef, ModuleIdentity};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use ulo::{Bound, BoxError, Dep, Module, ModuleDef, ModuleIdentity, Timer};
+
+use crate::client::RpcClient;
 use crate::link::Link;
 
 /// Binds `RpcClient` over link `L`, exported, usually keyed so two clients coexist:
@@ -14,14 +19,26 @@ use crate::link::Link;
 /// ```
 ///
 /// The link connects lazily, on the client's first call, so `connect` does no network I/O for it.
+/// Every timeout runs on the app's `Timer`, which the client reads as `Dep<dyn Timer>`: an app
+/// without one fails `wire()` naming the missing binding.
+///
+/// Each `for_root` is its own module: two clients of one link type are two imports, never one
+/// deduplicated, and diagnostics name either `RpcClientModule`.
 pub struct RpcClientModule<L: Link> {
-    pub(crate) link: L,
+    pub(crate) link: Arc<L>,
     pub(crate) timeout: Bound,
+    pub(crate) instance: u64,
 }
+
+/// What tells two `for_root` calls apart.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Instance(u64);
+
+static INSTANCES: AtomicU64 = AtomicU64::new(0);
 
 impl<L: Link> RpcClientModule<L> {
     pub fn for_root(link: L) -> Self {
-        RpcClientModule { link, timeout: Bound::Default }
+        RpcClientModule { link: Arc::new(link), timeout: Bound::Default, instance: INSTANCES.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Every call's timeout unless the call sets its own: five seconds at `Bound::Default`,
@@ -34,11 +51,28 @@ impl<L: Link> RpcClientModule<L> {
 
 impl<L: Link> Module for RpcClientModule<L> {
     fn identity(&self) -> ModuleIdentity {
-        todo!()
+        ModuleIdentity::of_value(&Instance(self.instance)).label("RpcClientModule")
     }
 
     fn register(&self, m: &mut ModuleDef<'_>) {
-        let _ = m;
-        todo!()
+        if self.timeout == Bound::After(Duration::ZERO) {
+            // A module has no `prepare`; the refusal is recorded for `wire()` to report beside every
+            // other wiring error.
+            let refusal: Result<RpcClient, BoxError> = Err(format!(
+                "`RpcClientModule::timeout(Bound::After(Duration::ZERO))` on the {} link would time out every call; \
+                 write `Bound::Unbounded` to turn the timeout off",
+                L::NAME
+            )
+            .into());
+            m.try_value(refusal);
+        } else {
+            let link = Arc::clone(&self.link);
+            let timeout = self.timeout;
+            m.singleton(move |timer: Dep<dyn Timer>| {
+                let link = Arc::clone(&link);
+                async move { RpcClient::new(link, timeout, timer.into_arc()) }
+            });
+        }
+        m.export::<RpcClient>();
     }
 }
