@@ -204,7 +204,9 @@ impl ServiceInner {
                     return taker.upgrade(req).await;
                 }
             }
+            let outside = req.head.extensions.get::<crate::embed::OutsidePrefix>().is_some();
             let routed = match self.router.route(req.method(), req.path()) {
+                _ if outside => Err(Miss::NotFound),
                 Routed::Found { target, params, head_from_get } => Ok((Arc::clone(target), params, head_from_get)),
                 Routed::NotFound => Err(Miss::NotFound),
                 Routed::MethodNotAllowed { allow } => Err(Miss::MethodNotAllowed(allow)),

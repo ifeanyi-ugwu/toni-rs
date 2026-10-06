@@ -77,6 +77,22 @@ pub trait Embed: Send + Sync + 'static {
     /// What the host cannot do, checked in `prepare`: asking for it is a
     /// `StartupError::Configure` naming the limit.
     fn limits() -> EmbedLimits;
+
+    /// Whether the host removes the mount prefix before its handler sees the path, as axum's
+    /// `nest_service` and poem's `nest` do. A host that hands over the full path declares `false`,
+    /// and [`Service::respond`] strips the `.nested_at` prefix itself, answering a path outside it
+    /// as the app's `NoRoute` 404.
+    const STRIPS_PREFIX: bool = true;
+
+    /// The adapter's built-in values, as `forward` registrations every app gets: an
+    /// [`OriginalPath`] read from the host's request, for one. [`Embedded::new`] passes the fresh
+    /// server through it.
+    fn builtin_forwards(embedded: Embedded<Self>) -> Embedded<Self>
+    where
+        Self: Sized,
+    {
+        embedded
+    }
 }
 
 /// What a host cannot do, as its adapter declares it. Separate from
@@ -254,8 +270,10 @@ impl<A: Embed> Embedded<A> {
             finished: Notice::default(),
             app: OnceLock::new(),
             upgrades: A::limits().upgrades,
+            prefix: OnceLock::new(),
+            outside_warned: AtomicBool::new(false),
         });
-        Embedded {
+        A::builtin_forwards(Embedded {
             config,
             nested_at: None,
             peer_addr: false,
@@ -266,7 +284,7 @@ impl<A: Embed> Embedded<A> {
             prepared: None,
             upgrades: Vec::new(),
             _host: PhantomData,
-        }
+        })
     }
 
     /// The cheap-clone handle the host mounts, usable before `listen()`: a request it receives
@@ -548,6 +566,7 @@ impl<A: Embed> ulo::Server for Embedded<A> {
         };
         let _ = self.copies.set(std::mem::take(&mut self.forwarded).into_boxed_slice());
         let _ = self.shared.app.set(mounted.app().clone());
+        let _ = self.shared.prefix.set(mount);
         self.prepared = Some(service);
         self.upgrades = handlers;
         Ok(())
@@ -638,7 +657,16 @@ struct Shared {
     app: OnceLock<AppHandle>,
     /// `A::limits().upgrades`: whether a hyper upgrade future in the request is taken.
     upgrades: bool,
+    /// The normalized `.nested_at` prefix, set at `prepare`; read only when the host leaves the
+    /// prefix on the path (`Embed::STRIPS_PREFIX == false`).
+    prefix: OnceLock<String>,
+    /// A request outside the prefix is logged once, not per request.
+    outside_warned: AtomicBool,
 }
+
+/// Marks a request whose path lies outside the mount prefix, which routing answers as a miss.
+#[derive(Clone, Copy)]
+pub(crate) struct OutsidePrefix;
 
 enum State {
     /// Before `bind`: requests answer 503 "not yet listening" under these settings.
@@ -718,6 +746,12 @@ impl<A: Embed> Handle<A> {
     /// [`Service::respond`].
     pub fn service(&self) -> Service<A> {
         Service { shared: Arc::clone(&self.shared), copies: Arc::clone(&self.copies) }
+    }
+
+    /// The request body limit the embedding was configured with, under which an adapter that
+    /// buffers the body reads it.
+    pub fn body_limit(&self) -> u64 {
+        self.shared.state().config().body_limit
     }
 
     /// Hands the app the host's server future, which `Embedded::serve` polls: no task is spawned.
@@ -808,7 +842,43 @@ impl<A: Embed> Service<A> {
     /// after `close`, and the app's answer between.
     pub fn respond(&self, host: &A::HostRequest<'_>, mut req: Request) -> impl Future<Output = Response> + Send + use<A> {
         self.copy(host, &mut req.head.extensions);
+        if !A::STRIPS_PREFIX {
+            self.strip_prefix(&mut req);
+        }
         self.answer(req)
+    }
+
+    /// Removes the mount prefix from a path the host handed over whole, keeping the query. A
+    /// path outside the prefix is marked, so routing answers it as the app's `NoRoute` 404 rather
+    /// than matching an in-app route by accident.
+    fn strip_prefix(&self, req: &mut Request) {
+        let Some(prefix) = self.shared.prefix.get().filter(|prefix| !prefix.is_empty()) else { return };
+        let path = req.head.uri.path().to_owned();
+        let rest = match path.strip_prefix(prefix.as_str()) {
+            Some("") => "/",
+            Some(rest) if rest.starts_with('/') => rest,
+            _ => {
+                if !self.shared.outside_warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        host = A::NAME,
+                        path = %path,
+                        prefix = %prefix,
+                        "a request outside the embedding's `.nested_at` prefix is answered as the app's 404"
+                    );
+                }
+                req.head.extensions.insert(OutsidePrefix);
+                return;
+            }
+        };
+        let rewritten = match req.head.uri.query() {
+            Some(query) => format!("{rest}?{query}"),
+            None => rest.to_owned(),
+        };
+        let mut parts = req.head.uri.clone().into_parts();
+        parts.path_and_query = rewritten.parse().ok();
+        if let Ok(uri) = http::Uri::from_parts(parts) {
+            req.head.uri = uri;
+        }
     }
 
     /// Runs every `forward` copy on `host` into `extensions`. A copy that panics inserts nothing:
