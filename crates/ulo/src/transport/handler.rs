@@ -131,8 +131,9 @@ impl HandlerInfo {
         self.route.as_deref()
     }
 
-    /// The prefix `ModuleDef::controller::<C>().at(prefix)` set on the controller, which the
-    /// transport applies to every route and gateway path of it.
+    /// The prefix `ModuleDef::controller::<C>().at(prefix)` set on the controller, which a
+    /// transport whose `Transport::READS_PREFIX` is `true` joins to the handler's route or gateway
+    /// path.
     pub fn prefix(&self) -> Option<&str> {
         self.prefix.as_deref()
     }

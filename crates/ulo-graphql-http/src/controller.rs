@@ -4,7 +4,7 @@
 
 use std::marker::PhantomData;
 
-use http::header::{ACCEPT, ALLOW, CONTENT_TYPE, HeaderMap, HeaderValue};
+use http::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use http::{Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -12,8 +12,8 @@ use ulo::scope::Auto;
 use ulo::{BoxError, BoxFuture, Construct, ConstructError, Controller, Dep, Dependencies, HandlerSpec, Mount, Resolver};
 use ulo_graphql::{Engine, GqlError, GqlRequest, GqlResponse, Outcome};
 use ulo_http::__private::HttpHandler;
-use ulo_http::{Bytes, Http, HttpBody, HttpCx, Query, Response};
-use ulo_transport::{ExtractError, FromCall, IntoReplyError};
+use ulo_http::{Bytes, Http, HttpBody, HttpCx, MethodNotAllowed, Query, Response};
+use ulo_transport::{CallError, ErrorKind, ExtractError, FromCall, IntoReplyError};
 
 use crate::playground;
 
@@ -95,7 +95,7 @@ async fn get<Q: Send + Sync + 'static>(cx: HttpCx) -> Result<Response, BoxError>
     };
     let request = GqlRequest { query, operation_name: params.operation_name, variables, extensions };
     if operation_kind(&request.query, request.operation_name.as_deref()) == Some(OperationKind::Mutation) {
-        return mutation_over_get(media);
+        return Err(mutation_over_get());
     }
     let response = endpoint.engine.execute(request, cx.exec().clone()).await;
     render(&response, media)
@@ -149,9 +149,11 @@ impl Media {
 
     /// GraphQL-over-HTTP's status: under `application/graphql-response+json` 200 for a request
     /// that executed, errors included, and 400 for one that failed before execution; under the
-    /// legacy `application/json`, 200 for every response.
+    /// legacy `application/json`, 200 for every GraphQL response. A request the server failed is
+    /// 500 under both, the fault being the server's and no document's.
     fn status(self, outcome: Outcome) -> StatusCode {
         match (self, outcome) {
+            (_, Outcome::Failed) => StatusCode::INTERNAL_SERVER_ERROR,
             (Media::GraphqlResponse, Outcome::RequestError) => StatusCode::BAD_REQUEST,
             _ => StatusCode::OK,
         }
@@ -249,13 +251,13 @@ fn render(response: &GqlResponse, media: Media) -> Result<Response, BoxError> {
     Ok(reply)
 }
 
-/// 405 for a GET whose operation is a mutation, which the specification forbids executing: `Allow`
-/// as the router computes it for this path, and a request error saying to POST.
-fn mutation_over_get(media: Media) -> Result<Response, BoxError> {
-    let mut reply = render(&request_error("a mutation is not executed over GET; send it as a POST"), media)?;
-    *reply.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-    reply.headers_mut().insert(ALLOW, HeaderValue::from_static("GET, HEAD, POST, OPTIONS"));
-    Ok(reply)
+/// The 405 for a GET whose operation is a mutation, which the specification forbids executing:
+/// a `BadRequest` whose source is [`MethodNotAllowed`] with `Allow` as the router computes it for
+/// this path, offered to the error handlers as the router's 405 is and rendered 405 with `Allow`
+/// when none claims it.
+fn mutation_over_get() -> BoxError {
+    let refused = MethodNotAllowed::new(Method::GET, HeaderValue::from_static("GET, HEAD, POST, OPTIONS"));
+    BoxError::from(CallError::new(ErrorKind::BadRequest, "a mutation is not executed over GET; send it as a POST").with_source(refused))
 }
 
 /// An operation's type.

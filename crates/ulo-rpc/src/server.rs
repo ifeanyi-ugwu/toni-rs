@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
-use ulo::{BoundAddr, BoxError, DrainToken, MountedHandler, Mounted, Shape, TypeName};
-use ulo_transport::prepare::{Failure, Failures, Names, zero_count};
+use ulo::{Bound, BoundAddr, BoxError, DrainToken, MountedHandler, Mounted, Shape, TypeName};
+use ulo_transport::prepare::{Failure, Failures, Names, zero_bound, zero_count};
 use ulo_transport::{Admission, Count};
 
 use crate::__private::{Kind, RpcHandler};
@@ -19,13 +20,19 @@ use crate::frame::PayloadKind;
 use crate::link::{Inbound, Link, Pattern};
 use crate::transport::Rpc;
 
+/// `timeout_grace` at `Bound::Default`, the HTTP server's.
+const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
+
 /// The RPC server over link `L`: `app.bind(ulo_rpc::Server::new(ulo_rpc_tcp::Tcp::new("0.0.0.0:7000")))`.
 ///
-/// `prepare` calls `Link::prepare`, refuses two handlers for one pattern, a handler whose shape the
-/// link's capabilities do not carry (a streamed shape on UDP), an `#[event]` handler with a
-/// streamed shape, a `Binary` payload on a link declaring `binary: false`, and
-/// `max_inflight(Count::Max(0))`. `bind` calls `Link::listen` with every mounted pattern. Over the
-/// in-flight limit a call is answered `err` of kind `unavailable`.
+/// `prepare` calls `Link::prepare` and `Link::max_inflight`, refuses two handlers for one pattern,
+/// a handler whose shape the link's capabilities do not carry (a streamed shape on UDP), an
+/// `#[event]` handler with a streamed shape, a `Binary` payload on a link declaring
+/// `binary: false`, `max_inflight(Count::Max(0))` and `timeout_grace(Bound::After(Duration::ZERO))`.
+/// `bind` calls `Link::listen` with every mounted pattern. Over the in-flight limit a call is
+/// answered `err` of kind `unavailable`. A pattern is its own, so a controller's `.at(prefix)`
+/// does not apply to it, and `wire()` refuses a prefix on a controller whose handlers are all RPC
+/// handlers.
 ///
 /// `serve` runs each call in its own task and keeps serving the calls in flight once the link's
 /// inbound stream ends; `drain` is `Link::drain`, after which a new call is answered `err` of kind
@@ -33,6 +40,7 @@ use crate::transport::Rpc;
 pub struct Server<L: Link> {
     pub(crate) link: L,
     pub(crate) max_inflight: Count,
+    pub(crate) timeout_grace: Bound,
     /// Set by `prepare`.
     pub(crate) shared: Option<Arc<Shared>>,
     /// Set by `bind`, taken by `serve`.
@@ -43,14 +51,31 @@ pub struct Server<L: Link> {
 
 impl<L: Link> Server<L> {
     pub fn new(link: L) -> Self {
-        Server { link, max_inflight: Count::Default, shared: None, inbound: Mutex::new(None), closing: watch::Sender::new(false) }
+        Server {
+            link,
+            max_inflight: Count::Default,
+            timeout_grace: Bound::Default,
+            shared: None,
+            inbound: Mutex::new(None),
+            closing: watch::Sender::new(false),
+        }
     }
 
     /// Calls in flight at once: unbounded at `Count::Default`; over it a call is refused
-    /// `unavailable`. `Count::Max(0)` is refused in `prepare`. On AMQP the per-consumer prefetch
-    /// follows it, 64 under `Default` or `Unlimited`.
+    /// `unavailable`. `Count::Max(0)` is refused in `prepare`. `prepare` hands it to the link
+    /// through `Link::max_inflight`, so on AMQP the per-consumer prefetch follows it, 64 under
+    /// `Default` or `Unlimited`.
     pub fn max_inflight(mut self, calls: Count) -> Self {
         self.max_inflight = calls;
+        self
+    }
+
+    /// How long the error handlers may take with the `Timeout` a passed `deadline-ms` offers them
+    /// before the `err` of kind `timeout` is sent instead: one second at `Bound::Default`, timed
+    /// by the app's `Timer`; `Bound::Unbounded` waits for them. `Bound::After(Duration::ZERO)` is
+    /// refused in `prepare`.
+    pub fn timeout_grace(mut self, grace: Bound) -> Self {
+        self.timeout_grace = grace;
         self
     }
 }
@@ -63,7 +88,13 @@ impl<L: Link> ulo::Server for Server<L> {
         if let Err(error) = self.link.prepare(mounted.app()).await {
             failures.push_error(error);
         }
+        self.link.max_inflight(self.max_inflight);
         failures.extend(zero_count("max_inflight", self.max_inflight, "shed every call"));
+        failures.extend(zero_bound(
+            "timeout_grace",
+            self.timeout_grace,
+            "send the `timeout` before any error handler could answer a passed deadline",
+        ));
         let capabilities = self.link.capabilities();
         let mut routes: HashMap<String, Route> = HashMap::new();
         for handler in mounted.handlers() {
@@ -130,6 +161,7 @@ impl<L: Link> ulo::Server for Server<L> {
             capabilities,
             link: L::NAME,
             admission: Admission::new(limit),
+            grace: grace_of(self.timeout_grace),
             calls: Mutex::new(HashMap::new()),
             serial: AtomicU64::new(0),
             unhandled_events: AtomicU64::new(0),
@@ -207,6 +239,15 @@ impl<L: Link> ulo::Server for Server<L> {
     /// What the link reports, so a TCP or UDP server on port 0 shows its port.
     fn bound(&self) -> Vec<BoundAddr> {
         self.link.bound()
+    }
+}
+
+/// `timeout_grace` as a duration, one second at `Bound::Default`; `None` for `Bound::Unbounded`.
+fn grace_of(bound: Bound) -> Option<Duration> {
+    match bound {
+        Bound::Default => Some(DEFAULT_TIMEOUT_GRACE),
+        Bound::After(grace) => Some(grace),
+        Bound::Unbounded => None,
     }
 }
 

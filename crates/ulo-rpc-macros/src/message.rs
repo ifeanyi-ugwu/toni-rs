@@ -10,16 +10,19 @@
 //!     /* one per parameter */
 //! ```
 //!
-//! and the shape `::ulo_rpc::__private::shape(false || (&&InboundProbe::<P0>::new()).streams() || .., <reply>)`,
-//! the request side probed at each parameter's type and the reply side read from the return type
-//! as written. The generated call names `::ulo_rpc::__private` for `Param`, `controller` and the
-//! reply probe, `ulo-rpc`'s own (see that module).
+//! and the shape `::ulo_rpc::__private::shape(false || (&&InboundProbe::<P0>::new()).streams() || .., (&&&__ulo_reply).streams())`,
+//! the request side probed at each parameter's type and the reply side at the type the handler
+//! returns, through `ReplyShapeProbe` over a closure that names the handler's call and is never
+//! run, so an alias or an opaque type reads as the type it stands for. The generated call names
+//! `::ulo_rpc::__private` for `Param`, `controller` and the reply probe, `ulo-rpc`'s own (see that
+//! module).
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
-use syn::{ImplItemFn, LitStr, ReturnType, Type, TypeParamBound};
+use syn::spanned::Spanned;
+use syn::{Ident, ImplItemFn, LitStr};
 use ulo_handler_codegen::emit::{self, MountFn};
-use ulo_handler_codegen::params::{self, HandlerSig};
+use ulo_handler_codegen::params::{self, HandlerSig, Receiver};
 use ulo_handler_codegen::{Paths, protocol, reply};
 
 /// The transport's key, which equals `<ulo_rpc::Rpc as ulo::Transport>::KEY`.
@@ -62,13 +65,10 @@ pub(crate) fn expand_kind(kind: Kind, attr: TokenStream, item: TokenStream) -> s
         return Err(protocol::outside_routes(attr_name));
     };
     let sig = params::analyze(&item.sig)?;
-    let streams_reply = returns_stream(&item.sig.output);
-    if kind == Kind::Event && streams_reply {
-        return Err(syn::Error::new_spanned(
-            &item.sig.output,
-            "an `#[event]` handler answers nothing; a stream return makes it a streamed reply, which `#[message]` declares",
-        ));
-    }
+    let output_span = match &item.sig.output {
+        syn::ReturnType::Default => item.sig.ident.span(),
+        syn::ReturnType::Type(_, ty) => ty.span(),
+    };
     reply::rewrite_opaque_returns(&mut item.sig);
 
     let paths = rpc_paths();
@@ -79,7 +79,7 @@ pub(crate) fn expand_kind(kind: Kind, attr: TokenStream, item: TokenStream) -> s
         paths: &paths,
         handler_value: handler_value(kind, &pattern, &sig, &paths),
         route: Some(quote!(#pattern)),
-        shape: Some(shape(&sig, streams_reply, &paths)),
+        shape: Some(shape(kind, &sig, output_span, &paths)),
     }
     .emit();
 
@@ -134,8 +134,10 @@ fn handler_value(kind: Kind, pattern: &LitStr, sig: &HandlerSig, paths: &Paths) 
 }
 
 /// `.shape(..)`'s argument: the request side from one `Inbound<T>` probe per parameter, the reply
-/// side as the return type reads.
-fn shape(sig: &HandlerSig, streams_reply: bool, paths: &Paths) -> TokenStream {
+/// side from `ReplyShapeProbe` over the handler's output type. For `#[event]` the block first
+/// asserts the output is no stream, spanned at the return type: the stream arms of `event_reply`
+/// answer `StreamedReplyOnEvent`, which `let (): ()` refuses.
+fn shape(kind: Kind, sig: &HandlerSig, output_span: Span, paths: &Paths) -> TokenStream {
     let this = &paths.this;
     let probes = sig.params.iter().map(|param| {
         let ty = &param.ty;
@@ -143,56 +145,49 @@ fn shape(sig: &HandlerSig, streams_reply: bool, paths: &Paths) -> TokenStream {
             || (&&#this::__private::InboundProbe::<#ty>::new()).streams()
         }
     });
+    let reply = Ident::new("__ulo_reply", Span::mixed_site());
+    let probe = reply_probe(sig, &reply, paths);
+    let event_check = (kind == Kind::Event).then(|| {
+        quote_spanned! {output_span=>
+            let (): () = (&&&#reply).event_reply();
+        }
+    });
+    let streams = quote_spanned! {output_span=> (&&&#reply).streams() };
     quote! {
         {
             #[allow(unused_imports)]
-            use #this::__private::{NotInbound as _, ViaInbound as _};
-            #this::__private::shape(false #(#probes)*, #streams_reply)
+            use #this::__private::{NotInbound as _, StreamsBare as _, StreamsInResult as _, StreamsNot as _, ViaInbound as _};
+            #probe
+            #event_check
+            #this::__private::shape(false #(#probes)*, #streams)
         }
     }
 }
 
-/// Whether the return type, as written, is a stream: an `impl` or `dyn` bound naming `Stream` or
-/// `TryStream`, or a path ending in `BoxStream` or `LocalBoxStream`, anywhere in it, a `Result`'s
-/// `Ok` side included. Read from the spelling, since an opaque return type cannot be named where
-/// the shape is recorded; a stream behind an alias is declared unary, refused at runtime on a link
-/// carrying no streamed reply, and answered as a stream on every other.
-fn returns_stream(output: &ReturnType) -> bool {
-    match output {
-        ReturnType::Default => false,
-        ReturnType::Type(_, ty) => names_stream(ty),
+/// `let <reply> = ReplyShapeProbe::of(&|| async move { .. });`, the closure calling the handler
+/// with the receiver and every parameter bound to `unreachable!()`, so its future's output is the
+/// handler's output type. The closure is never called; it exists for its type.
+fn reply_probe(sig: &HandlerSig, reply: &Ident, paths: &Paths) -> TokenStream {
+    let this = &paths.this;
+    let receiver = Ident::new("__ulo_this", Span::mixed_site());
+    let receiver_ty = match sig.receiver {
+        Receiver::Ref => quote!(&Self),
+        Receiver::Arc => quote!(::std::sync::Arc<Self>),
+    };
+    let args: Vec<Ident> =
+        sig.params.iter().map(|param| Ident::new(&format!("__ulo_arg{}", param.index), Span::mixed_site())).collect();
+    let bindings = sig.params.iter().zip(&args).map(|(param, arg)| {
+        let ty = &param.ty;
+        quote_spanned! {param.span=> let #arg: #ty = ::core::unreachable!(); }
+    });
+    let method = &sig.ident;
+    let awaited = sig.is_async.then(|| quote!(.await));
+    quote! {
+        #[allow(unreachable_code)]
+        let #reply = #this::__private::ReplyShapeProbe::of(&|| async move {
+            let #receiver: #receiver_ty = ::core::unreachable!();
+            #(#bindings)*
+            Self::#method(#receiver, #(#args),*) #awaited
+        });
     }
-}
-
-fn names_stream(ty: &Type) -> bool {
-    match ty {
-        Type::ImplTrait(opaque) => bounds_name_stream(opaque.bounds.iter()),
-        Type::TraitObject(object) => bounds_name_stream(object.bounds.iter()),
-        Type::Paren(inner) => names_stream(&inner.elem),
-        Type::Group(inner) => names_stream(&inner.elem),
-        Type::Reference(reference) => names_stream(&reference.elem),
-        Type::Tuple(tuple) => tuple.elems.iter().any(names_stream),
-        Type::Path(path) => path.path.segments.iter().any(|segment| {
-            segment.ident == "BoxStream" || segment.ident == "LocalBoxStream" || arguments_name_stream(&segment.arguments)
-        }),
-        _ => false,
-    }
-}
-
-fn bounds_name_stream<'a>(mut bounds: impl Iterator<Item = &'a TypeParamBound>) -> bool {
-    bounds.any(|bound| match bound {
-        TypeParamBound::Trait(bound) => bound.path.segments.iter().any(|segment| {
-            segment.ident == "Stream" || segment.ident == "TryStream" || arguments_name_stream(&segment.arguments)
-        }),
-        _ => false,
-    })
-}
-
-fn arguments_name_stream(arguments: &syn::PathArguments) -> bool {
-    let syn::PathArguments::AngleBracketed(arguments) = arguments else { return false };
-    arguments.args.iter().any(|argument| match argument {
-        syn::GenericArgument::Type(ty) => names_stream(ty),
-        syn::GenericArgument::AssocType(assoc) => names_stream(&assoc.ty),
-        _ => false,
-    })
 }

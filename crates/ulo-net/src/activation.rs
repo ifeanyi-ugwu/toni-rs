@@ -52,9 +52,13 @@ impl Activation {
     /// another process, when the variables are malformed, or on a platform without socket
     /// activation; a process started without them has none, which is not an error.
     ///
-    /// Call it only for an [`Endpoint::Inherited`](crate::Endpoint::Inherited): a process spawned
-    /// by a socket-activated one inherits the variables with a `LISTEN_PID` that is not its own,
-    /// and answers `PidMismatch` here whether or not it wants a socket.
+    /// A process spawned by a socket-activated one inherits the variables with a `LISTEN_PID` that
+    /// is not its own, and answers `PidMismatch` here whether or not it wants a socket, so a
+    /// caller reads it only where a socket is wanted: a server's `prepare` for an
+    /// [`Endpoint::Inherited`](crate::Endpoint::Inherited), and
+    /// [`EndpointSpec::resolve`](crate::EndpointSpec::resolve) for an
+    /// [`Endpoint::Addr`](crate::Endpoint::Addr) under `ULO_DEV=1`, which reads `PidMismatch` as
+    /// no socket held and binds the address as written.
     pub fn get() -> Result<&'static Activation, ActivationError> {
         ACTIVATION.get_or_init(Activation::from_env).as_ref().map_err(Clone::clone)
     }

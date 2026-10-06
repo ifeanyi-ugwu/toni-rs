@@ -50,6 +50,7 @@ impl<'a> Mount<'a> {
         self.handlers.push(HandlerDecl {
             transport: TypeName::of::<T>(),
             key: T::KEY,
+            reads_prefix: T::READS_PREFIX,
             inputs: T::inputs,
             name,
             role_keys: [Key::of::<AnyGuard<T>, ()>(), Key::of::<AnyInterceptor<T>, ()>(), Key::of::<AnyErrorHandler<T>, ()>()],
@@ -142,19 +143,24 @@ impl ControllerHandle<'_> {
     /// configuration at registration: a GraphQL or health endpoint mounted where the application
     /// says (transports DESIGN §2.5, X3). The core stores it on each handler's [`HandlerInfo`];
     /// the transport joins it to the route by its own path rules.
+    ///
+    /// Only a transport whose [`Transport::READS_PREFIX`] is `true` joins it, HTTP and WebSocket
+    /// among the shipped ones, so `wire()` refuses a prefix on a controller none of whose
+    /// handlers belongs to one: an RPC or gRPC controller, or one with no handler.
+    #[track_caller]
     pub fn at(self, prefix: impl Into<Cow<'static, str>>) {
-        self.record.prefix = Some(prefix.into());
+        self.record.prefix = Some((prefix.into(), Location::caller()));
     }
 }
 
 /// A controller as its module registered it: the binding, the mount function the wiring pass
-/// calls, and the prefix `.at(..)` set.
+/// calls, and the prefix `.at(..)` set with where it was set.
 #[derive(Clone)]
 pub(crate) struct ControllerRecord {
     /// Index into the module node's `bindings`.
     pub(crate) binding: usize,
     pub(crate) mount: fn(&mut Mount<'_>),
-    pub(crate) prefix: Option<Cow<'static, str>>,
+    pub(crate) prefix: Option<(Cow<'static, str>, &'static Location<'static>)>,
 }
 
 /// One handler as `Mount::handler` recorded it, erased over the transport. A clone shares the
@@ -164,6 +170,8 @@ pub(crate) struct HandlerDecl {
     pub(crate) transport: TypeName,
     /// `Transport::KEY`.
     pub(crate) key: &'static str,
+    /// `Transport::READS_PREFIX`.
+    pub(crate) reads_prefix: bool,
     /// `Transport::inputs`, which the freeze calls the first time a handler of this transport
     /// mounts.
     pub(crate) inputs: fn(&mut Inputs),

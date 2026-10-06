@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use ulo::{Bound, Module, ModuleDef, ModuleIdentity};
 use ulo_graphql_ws::GraphqlWs;
@@ -17,21 +18,25 @@ use crate::controller::{EndpointSettings, GraphqlEndpoint};
 ///
 /// The module registers the endpoint, and with [`GraphqlConfig::subscriptions`] the
 /// graphql-transport-ws gateway, as its own controllers, so the engine binding has to be visible
-/// from it. A module sees its own bindings, its imports' exports and the global modules' exports,
-/// and the module that imports this one is none of those, so the engine is bound in a global
-/// module that exports it. The gateway also needs `WsModule` imported once by the application.
+/// from it. [`GraphqlConfig::engine_from`] names the module that binds and exports the engine, and
+/// this module imports it; the module that imports this one is not visible from it. The gateway
+/// also needs `WsModule` imported once by the application.
 ///
 /// ```ignore
 /// #[module(
-///     global,
-///     imports   = [GraphqlModule::for_root(GraphqlConfig::at("/graphql").subscriptions("/graphql/ws"))],
 ///     providers = [
 ///         with = |q: Dep<QueryRoot>, s: Dep<SubscriptionRoot>| Schema::new(q, EmptyMutation, s),
 ///         AsyncGraphql<ApiSchema, GqlContext> as dyn Engine,
 ///     ],
 ///     exports   = [dyn Engine],
 /// )]
-/// pub struct ApiModule;
+/// pub struct ApiSchemaModule;
+///
+/// #[module(imports = [
+///     WsModule::for_root(),
+///     GraphqlModule::for_root(GraphqlConfig::at("/graphql").subscriptions("/graphql/ws").engine_from(ApiSchemaModule)),
+/// ])]
+/// pub struct AppModule;
 /// ```
 pub struct GraphqlModule<Q = ()> {
     pub(crate) config: GraphqlConfig<Q>,
@@ -60,6 +65,9 @@ impl<Q: Send + Sync + 'static> Module for GraphqlModule<Q> {
             playground: config.playground,
             _engine: PhantomData,
         });
+        if let Some(engine) = &config.engine_module {
+            m.import(engine.clone());
+        }
         m.controller::<GraphqlEndpoint<Q>>().at(path);
         if let Some(subscriptions) = subscriptions {
             let mut failures = Failures::new();
@@ -100,7 +108,26 @@ pub struct GraphqlConfig<Q = ()> {
     pub(crate) subscriptions: Option<Cow<'static, str>>,
     pub(crate) playground: bool,
     pub(crate) connection_init_timeout: Bound,
+    pub(crate) engine_module: Option<EngineModule>,
     pub(crate) _engine: PhantomData<fn() -> Q>,
+}
+
+/// The module [`GraphqlConfig::engine_from`] named, imported by `GraphqlModule` under the
+/// module's own identity, so an application importing the same module elsewhere has one instance.
+#[derive(Clone)]
+pub(crate) struct EngineModule {
+    identity: ModuleIdentity,
+    module: Arc<dyn Module>,
+}
+
+impl Module for EngineModule {
+    fn identity(&self) -> ModuleIdentity {
+        self.identity.clone()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        self.module.register(m);
+    }
 }
 
 impl GraphqlConfig {
@@ -111,6 +138,7 @@ impl GraphqlConfig {
             subscriptions: None,
             playground: cfg!(debug_assertions),
             connection_init_timeout: Bound::Default,
+            engine_module: None,
             _engine: PhantomData,
         }
     }
@@ -147,8 +175,20 @@ impl<Q> GraphqlConfig<Q> {
             subscriptions: self.subscriptions,
             playground: self.playground,
             connection_init_timeout: self.connection_init_timeout,
+            engine_module: self.engine_module,
             _engine: PhantomData,
         }
+    }
+
+    /// Reads the engine from `module`, which binds it and exports `dyn Engine` (or
+    /// `dyn Engine @ Q`): `GraphqlModule` imports `module`, so neither needs to be global. The
+    /// module's identity is its own, so importing an equal module elsewhere in the application
+    /// is the same instance. The engine's context resolves in `module`, where the engine is
+    /// bound. Unset, the engine has to be visible from `GraphqlModule` some other way, through a
+    /// global module's exports.
+    pub fn engine_from<M: Module>(mut self, module: M) -> Self {
+        self.engine_module = Some(EngineModule { identity: module.identity(), module: Arc::new(module) });
+        self
     }
 }
 
@@ -159,6 +199,7 @@ impl<Q> Clone for GraphqlConfig<Q> {
             subscriptions: self.subscriptions.clone(),
             playground: self.playground,
             connection_init_timeout: self.connection_init_timeout,
+            engine_module: self.engine_module.clone(),
             _engine: PhantomData,
         }
     }
@@ -170,6 +211,7 @@ impl<Q> PartialEq for GraphqlConfig<Q> {
             && self.subscriptions == other.subscriptions
             && self.playground == other.playground
             && self.connection_init_timeout == other.connection_init_timeout
+            && self.engine_identity() == other.engine_identity()
     }
 }
 
@@ -181,6 +223,13 @@ impl<Q> Hash for GraphqlConfig<Q> {
         self.subscriptions.hash(state);
         self.playground.hash(state);
         self.connection_init_timeout.hash(state);
+        self.engine_identity().hash(state);
+    }
+}
+
+impl<Q> GraphqlConfig<Q> {
+    fn engine_identity(&self) -> Option<&ModuleIdentity> {
+        self.engine_module.as_ref().map(|engine| &engine.identity)
     }
 }
 

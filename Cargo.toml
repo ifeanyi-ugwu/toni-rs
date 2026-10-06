@@ -51,7 +51,6 @@ exclude = [
     "crates/ulo-db-seaorm",
     "crates/ulo-db-sqlx",
     "crates/ulo-health",
-    "crates/ulo-ws-tungstenite",
     "integration-tests",
     "examples",
 ]
@@ -130,7 +129,6 @@ tracing = "0.1"
 uuid = "1.11"
 validator = "0.20.0"
 watchexec = "8.2"
-watchexec-events = "6.1"
 watchexec-filterer-globset = "8.0"
 watchexec-filterer-ignore = "7.0"
 watchexec-signals = "5.0"

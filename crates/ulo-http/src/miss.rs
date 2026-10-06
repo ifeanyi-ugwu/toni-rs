@@ -43,6 +43,10 @@ impl Error for NoRoute {}
 /// No `ErrorKind` is 405, the status being HTTP's alone. The kind is `BadRequest`, as for an
 /// extractor's 413 and 415, so an error handler that renders every error by its kind answers a
 /// client error.
+///
+/// A handler that refuses a method on a path it answers returns one as its error, bare or as the
+/// source of a `CallError` carrying its own message, and the error handlers receive it as they
+/// receive the router's.
 #[derive(Clone, Debug)]
 pub struct MethodNotAllowed {
     method: Method,
@@ -50,7 +54,8 @@ pub struct MethodNotAllowed {
 }
 
 impl MethodNotAllowed {
-    pub(crate) fn new(method: Method, allow: HeaderValue) -> Self {
+    /// `method` refused on a path that answers the methods in `allow`, comma-separated.
+    pub fn new(method: Method, allow: HeaderValue) -> Self {
         MethodNotAllowed { method, allow }
     }
 

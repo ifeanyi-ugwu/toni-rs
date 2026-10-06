@@ -23,6 +23,7 @@ pub struct Ws;
 
 impl Transport for Ws {
     const KEY: &'static str = "ws";
+    const READS_PREFIX: bool = true;
 
     type Cx = WsCx;
     type Reply = Reply;
@@ -46,6 +47,7 @@ pub struct WsConnect;
 
 impl Transport for WsConnect {
     const KEY: &'static str = "ws_connect";
+    const READS_PREFIX: bool = true;
 
     type Cx = ConnectCx;
     type Reply = ConnectReply;

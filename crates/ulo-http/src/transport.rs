@@ -14,6 +14,7 @@ pub struct Http;
 
 impl Transport for Http {
     const KEY: &'static str = "http";
+    const READS_PREFIX: bool = true;
 
     type Cx = HttpCx;
     type Reply = Response;

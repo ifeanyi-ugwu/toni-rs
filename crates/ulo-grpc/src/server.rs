@@ -28,16 +28,21 @@ use crate::transport::Grpc;
 /// A TLS handshake's bound at `Bound::Default`, the HTTP server's.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `timeout_grace` at `Bound::Default`, the HTTP server's.
+const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
+
 /// The core's `Server` for [`Grpc`]: `app.bind(ulo_grpc::Server::new("0.0.0.0:50051"))`.
 ///
 /// `prepare` builds the path table from the mounted handlers, refusing two handlers for one path,
 /// builds the pre-dispatch stage from `PreDispatch<Grpc>`, refuses `Count::Max(0)` on each count
-/// and `Bound::After(Duration::ZERO)` on `handshake_timeout`, resolves the endpoints and loads TLS
+/// and `Bound::After(Duration::ZERO)` on `handshake_timeout` and `timeout_grace`, resolves the
+/// endpoints and loads TLS
 /// with ALPN `h2`. Health reports SERVING for every known service after `bind` and NOT_SERVING
 /// from the drain on. Reflection, `grpc.reflection.v1` and `v1alpha`, is served in debug builds
 /// and behind `reflection(true)` in release builds.
 ///
-/// A gRPC method's path is its proto's, so a controller's `.at(prefix)` does not apply to it.
+/// A gRPC method's path is its proto's, so a controller's `.at(prefix)` does not apply to it, and
+/// `wire()` refuses a prefix on a controller whose handlers are all gRPC methods.
 pub struct Server {
     pub(crate) endpoints: Vec<EndpointSpec>,
     pub(crate) tls: Option<Tls>,
@@ -45,6 +50,7 @@ pub struct Server {
     pub(crate) max_per_connection: Count,
     pub(crate) max_concurrent_streams: Count,
     pub(crate) handshake_timeout: Bound,
+    pub(crate) timeout_grace: Bound,
     pub(crate) reflection: bool,
     pub(crate) descriptor_sets: Vec<&'static [u8]>,
     /// Set by `prepare`, taken by `bind`.
@@ -83,6 +89,7 @@ impl Server {
             max_per_connection: Count::Default,
             max_concurrent_streams: Count::Default,
             handshake_timeout: Bound::Default,
+            timeout_grace: Bound::Default,
             reflection: cfg!(debug_assertions),
             descriptor_sets: Vec::new(),
             prepared: None,
@@ -130,6 +137,15 @@ impl Server {
         self
     }
 
+    /// How long the error handlers may take with the `Timeout` a passed `grpc-timeout` offers them
+    /// before DEADLINE_EXCEEDED is sent instead: one second at `Bound::Default`, timed by the
+    /// app's `Timer`; `Bound::Unbounded` waits for them. `Bound::After(Duration::ZERO)` is refused
+    /// in `prepare`.
+    pub fn timeout_grace(mut self, grace: Bound) -> Self {
+        self.timeout_grace = grace;
+        self
+    }
+
     /// Serves reflection in a release build; on in debug builds unset.
     pub fn reflection(mut self, enabled: bool) -> Self {
         self.reflection = enabled;
@@ -150,6 +166,11 @@ impl Server {
         failures.extend(zero_count("max_per_connection", self.max_per_connection, "shed every call on every connection"));
         failures.extend(zero_count("max_concurrent_streams", self.max_concurrent_streams, "let no HTTP/2 stream open"));
         failures.extend(zero_bound("handshake_timeout", self.handshake_timeout, "drop every TLS connection before its handshake"));
+        failures.extend(zero_bound(
+            "timeout_grace",
+            self.timeout_grace,
+            "send DEADLINE_EXCEEDED before any error handler could answer a passed deadline",
+        ));
     }
 
     /// Every endpoint resolved, an inherited one checked against the sockets this process
@@ -321,6 +342,11 @@ impl ulo::Server for Server {
             stage,
             admission: Admission::new(limit(self.max_inflight)),
             per_connection: limit(self.max_per_connection),
+            grace: match self.timeout_grace {
+                Bound::Default => Some(DEFAULT_TIMEOUT_GRACE),
+                Bound::After(grace) => Some(grace),
+                Bound::Unbounded => None,
+            },
         };
         self.prepared = Some(Prepared { endpoints, tls, dispatcher: Arc::new(dispatcher), health, services });
         Ok(())

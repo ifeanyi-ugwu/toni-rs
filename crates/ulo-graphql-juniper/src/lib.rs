@@ -212,11 +212,11 @@ async fn drive<Q, M, Sub>(
 }
 
 /// The context, resolved in `exec` with the engine module's visibility. A context that cannot be
-/// built is answered as a request error: nothing executed.
+/// built is answered `Failed`: nothing executed, and the fault is the server's.
 async fn context<C: Send + Sync + 'static>(module: &ModuleRef, exec: &ExecutionRef) -> Result<Dep<C>, GqlResponse> {
     module.with_execution(exec).get::<C>().await.map_err(|error| {
         tracing::error!(%error, "the GraphQL context could not be built");
-        GqlResponse::request_error(vec![GqlError::new("the request's context could not be built")])
+        GqlResponse::failed(vec![GqlError::new("the request's context could not be built")])
     })
 }
 
@@ -279,5 +279,5 @@ fn error_of(error: &ExecutionError<DefaultScalarValue>) -> GqlError {
 
 /// The answer for a root node `construct` did not store, which cannot happen.
 fn unbuilt() -> GqlResponse {
-    GqlResponse::request_error(vec![GqlError::new("the GraphQL engine is not built")])
+    GqlResponse::failed(vec![GqlError::new("the GraphQL engine is not built")])
 }

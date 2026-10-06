@@ -16,6 +16,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_rpc::link::Inbound;
+use ulo_transport::Count;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, Frame, Link, NoDestination, Ordering as Order,
     Outbound, Pattern, ReplyPath, ReplyTo,
@@ -42,7 +43,8 @@ const CONTROL: &str = "ulo.rpc.control";
 /// the channel it publishes requests on.
 const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 
-/// The per-consumer prefetch unless `RabbitMq::prefetch` sets one.
+/// The per-consumer prefetch when the server's `max_inflight` is `Count::Default` or
+/// `Count::Unlimited`.
 const DEFAULT_PREFETCH: u16 = 64;
 
 /// The RabbitMQ link.
@@ -71,13 +73,6 @@ impl RabbitMq {
         self
     }
 
-    /// The unacknowledged deliveries each pattern's consumer takes at once (`basic.qos` with
-    /// `global = false`); 64 unset, and 0 no limit, as AMQP reads it. Set it to the server's `max_inflight` so the broker stops
-    /// delivering where the server would refuse: the link does not read the server's setting.
-    pub fn prefetch(mut self, prefetch: u16) -> Self {
-        self.prefetch = prefetch;
-        self
-    }
 }
 
 impl Link for RabbitMq {
@@ -95,6 +90,16 @@ impl Link for RabbitMq {
         let _ = app;
         uri(&self.url)?;
         Ok(())
+    }
+
+    /// The unacknowledged deliveries each pattern's consumer takes at once (`basic.qos` with
+    /// `global = false`): `Count::Max(n)` gives n, capped at AMQP's 65 535, and `Default` or
+    /// `Unlimited` 64, since AMQP's own unlimited, 0, would hand an instance its whole queue.
+    fn max_inflight(&mut self, calls: Count) {
+        self.prefetch = match calls {
+            Count::Max(calls) => u16::try_from(calls).unwrap_or(u16::MAX),
+            _ => DEFAULT_PREFETCH,
+        };
     }
 
     async fn listen(&self, patterns: &[Pattern]) -> Result<Inbound, BoxError> {

@@ -11,6 +11,7 @@
 
 use std::any::TypeId;
 use std::cell::Cell;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -53,7 +54,7 @@ pub struct RpcHandler {
 }
 
 /// The shape a handler's signature declares: `streams_request` from the `Inbound<T>` probe over
-/// its parameters, `streams_reply` from its return type as written.
+/// its parameters, `streams_reply` from the [`ReplyShapeProbe`] over its output.
 pub fn shape(streams_request: bool, streams_reply: bool) -> Shape {
     match (streams_request, streams_reply) {
         (false, false) => Shape::Unary,
@@ -97,6 +98,87 @@ impl<P> NotInbound for InboundProbe<P> {
     fn streams(&self) -> bool {
         false
     }
+}
+
+/// `(&&&ReplyShapeProbe::of(&|| async { .. })).streams()`: whether a handler's output streams its
+/// reply, read off the type the handler returns rather than its spelling, so a stream behind a
+/// type alias and an opaque `impl Stream` count alike.
+///
+/// The attribute writes, in the mount function, a closure that is never called, whose future
+/// calls the handler with the receiver and each parameter bound to `unreachable!()`:
+///
+/// ```text
+/// let __ulo_reply = ReplyShapeProbe::of(&|| async move {
+///     let __ulo_this: &Self = unreachable!();
+///     let __ulo_arg0: Payload<Order> = unreachable!();
+///     Self::create(__ulo_this, __ulo_arg0).await
+/// });
+/// ```
+///
+/// [`of`](Self::of) names the future's output `R`, and three arms ranked by autoref read it: a
+/// `Result` whose `Ok` side is a stream on `&&ReplyShapeProbe`, a stream on `&ReplyShapeProbe`,
+/// any other output on `ReplyShapeProbe`. `#[event]` reads the same probe through `event_reply`,
+/// whose two stream arms answer [`StreamedReplyOnEvent`], refused by `let (): ()` with E0308 at
+/// the return type.
+pub struct ReplyShapeProbe<R>(PhantomData<fn() -> R>);
+
+impl<R> ReplyShapeProbe<R> {
+    pub fn of<F, Fut>(_call: &F) -> Self
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = R>,
+    {
+        ReplyShapeProbe(PhantomData)
+    }
+}
+
+/// What `#[event]`'s probe answers for a handler whose output is a stream: an event is answered by
+/// nothing, and a streamed reply is `#[message]`'s.
+pub struct StreamedReplyOnEvent {
+    _private: (),
+}
+
+pub trait StreamsInResult {
+    fn streams(&self) -> bool;
+    fn event_reply(&self) -> StreamedReplyOnEvent;
+}
+
+impl<S: Stream, E> StreamsInResult for &&ReplyShapeProbe<Result<S, E>> {
+    fn streams(&self) -> bool {
+        true
+    }
+
+    fn event_reply(&self) -> StreamedReplyOnEvent {
+        StreamedReplyOnEvent { _private: () }
+    }
+}
+
+pub trait StreamsBare {
+    fn streams(&self) -> bool;
+    fn event_reply(&self) -> StreamedReplyOnEvent;
+}
+
+impl<S: Stream> StreamsBare for &ReplyShapeProbe<S> {
+    fn streams(&self) -> bool {
+        true
+    }
+
+    fn event_reply(&self) -> StreamedReplyOnEvent {
+        StreamedReplyOnEvent { _private: () }
+    }
+}
+
+pub trait StreamsNot {
+    fn streams(&self) -> bool;
+    fn event_reply(&self);
+}
+
+impl<R> StreamsNot for ReplyShapeProbe<R> {
+    fn streams(&self) -> bool {
+        false
+    }
+
+    fn event_reply(&self) {}
 }
 
 /// The reply probe the generated call names:

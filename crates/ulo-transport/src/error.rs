@@ -184,6 +184,10 @@ impl CallError {
     /// guidance pairs HTTP 409 with `ALREADY_EXISTS` too: an error naming a resource that exists
     /// writes `.with_grpc_code(6)`. The kind still decides every other transport's rendering. The
     /// gRPC transport ignores a code outside 1 to 16, `OK` included.
+    ///
+    /// A gRPC handler can also return a `tonic::Status` as its error. The error handlers see it as
+    /// it was returned, and one none of them claims or replaces is sent unchanged, its code,
+    /// message and details as built, with no kind consulted.
     pub fn with_grpc_code(mut self, code: i32) -> Self {
         self.grpc_code = Some(code);
         self

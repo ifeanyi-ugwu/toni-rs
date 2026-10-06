@@ -2,7 +2,7 @@
 //! through the default exchange, the payload as the body with AMQP headers, replies through
 //! `reply_to` and `correlation_id`. At-least-once with the ack after the handler completes, so
 //! handlers must be idempotent; ordered per queue with a single consumer; `Competing`; a
-//! per-consumer prefetch, 64 unless `.prefetch(..)` sets one to match the server's `max_inflight`; the
+//! per-consumer prefetch following the server's `max_inflight`, 64 when it sets no bound; the
 //! client channel in confirm mode with `mandatory` publishes, so `basic.return` maps to
 //! `Unavailable`; an unhandled event is `basic.reject`ed without requeue; the drain cancels the
 //! consumers (`basic.cancel`); `amqps://` selects TLS.

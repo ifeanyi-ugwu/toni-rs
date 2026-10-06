@@ -25,7 +25,7 @@ pub trait Engine: Send + Sync + 'static {
     fn execute(&self, req: GqlRequest, exec: ExecutionRef) -> BoxFuture<'static, GqlResponse>;
 
     /// A subscription's responses, one per event; a request that fails before execution yields one
-    /// `RequestError` response and ends.
+    /// `RequestError` or `Failed` response and ends.
     fn subscribe(&self, req: GqlRequest, exec: ExecutionRef) -> BoxStream<'static, GqlResponse>;
 
     /// The schema in SDL.
@@ -82,6 +82,12 @@ impl GqlResponse {
         GqlResponse { outcome: Outcome::RequestError, data: None, errors, extensions: None }
     }
 
+    /// A request the server could not run for a fault of its own, before execution began: a
+    /// context that cannot be built. It carries no `data`, and nothing in the document caused it.
+    pub fn failed(errors: Vec<GqlError>) -> Self {
+        GqlResponse { outcome: Outcome::Failed, data: None, errors, extensions: None }
+    }
+
     pub fn with_extensions(mut self, extensions: Value) -> Self {
         self.extensions = Some(extensions);
         self
@@ -104,13 +110,17 @@ impl GqlResponse {
     }
 }
 
-/// Whether execution began, which decides the HTTP status under
-/// `application/graphql-response+json`: 200 for `Executed`, errors included, 400 for
-/// `RequestError`.
+/// Whether execution began, and if not whose fault stopped it, which decides the HTTP status:
+/// under `application/graphql-response+json` 200 for `Executed`, errors included, 400 for
+/// `RequestError`, and 500 for `Failed` under either media type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Outcome {
     Executed,
+    /// The request failed before execution for a fault in it: a document that does not parse or
+    /// validate, a missing `query`.
     RequestError,
+    /// The request failed before execution for a fault in the server.
+    Failed,
 }
 
 /// One GraphQL error, as the specification's response format writes it.

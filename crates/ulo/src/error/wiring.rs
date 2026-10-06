@@ -162,6 +162,11 @@ pub enum WiringError {
     /// Step 2, tests: a second `replace_module` of an original already replaced, naming both
     /// calls. Wiring applies the first.
     DuplicateReplacement { original: ModuleName, first: &'static Location<'static>, second: &'static Location<'static> },
+    /// Step 2: a controller's `.at(prefix)` that none of its handlers reads, every one belonging
+    /// to a transport whose `Transport::READS_PREFIX` is `false`, an RPC pattern or a gRPC method
+    /// path. `transports` lists those transports, each once, empty for a controller that mounts
+    /// no handler; `at` is the `.at(..)` call.
+    UnreadPrefix { controller: KeyName, module: ModuleName, prefix: String, transports: Vec<TypeName>, at: &'static Location<'static> },
 
     /// Step 3: an injection point whose key the module cannot see. `consumer` names what reads
     /// it, as in ``UserService (param `mailer`)``. `near` is a visible key spelled the same up to
@@ -240,6 +245,7 @@ impl WiringError {
             WiringError::Cycle { path } => path.iter().map(|(key, _)| key).collect(),
             WiringError::ScopeViolation { binding, .. } | WiringError::HooksOnPerExecution { binding, .. } => vec![binding],
             WiringError::InputNotSeeded { input, .. } => vec![input],
+            WiringError::UnreadPrefix { controller, .. } => vec![controller],
             WiringError::ImportCycle { .. }
             | WiringError::OverrideModuleAmbiguous { .. }
             | WiringError::TimerOverride { .. }
@@ -261,6 +267,7 @@ impl WiringError {
         let transports = match self {
             WiringError::InputNotSeeded { transport, seeder, .. } => vec![*transport, *seeder],
             WiringError::ClosureScopeViolation { transport, .. } => vec![*transport],
+            WiringError::UnreadPrefix { transports, .. } => transports.clone(),
             WiringError::InputConflict { first, second, .. } => first.type_names().into_iter().chain(second.type_names()).collect(),
             WiringError::ImportCycle { .. }
             | WiringError::ReexportNotVisible { .. }
@@ -310,7 +317,8 @@ impl WiringError {
             | WiringError::SingleRoleBinding { module, .. }
             | WiringError::DuplicateReadiness { module, .. }
             | WiringError::ScopeViolation { module, .. }
-            | WiringError::HooksOnPerExecution { module, .. } => vec![module],
+            | WiringError::HooksOnPerExecution { module, .. }
+            | WiringError::UnreadPrefix { module, .. } => vec![module],
             WiringError::ReexportAmbiguous { module, sources, .. } => std::iter::once(module).chain(sources).collect(),
             WiringError::OverrideUnmatched { keyed, .. } => keyed.iter().collect(),
             WiringError::OverrideAmbiguous { matches, .. } => matches.iter().collect(),
@@ -539,6 +547,23 @@ impl WiringError {
                     "help: keep one; wiring applied only the first".to_owned(),
                 ],
             ),
+            WiringError::UnreadPrefix { controller, module, prefix, transports, at } => {
+                let readers = if transports.is_empty() {
+                    "it mounts no handler".to_owned()
+                } else {
+                    let names: Vec<String> = transports.iter().map(|transport| show_type(*transport)).collect();
+                    format!("its handlers belong to {}, which join no prefix to their routes", names.join(", "))
+                };
+                tree(
+                    f,
+                    format!("the prefix `{prefix}` on `{}` in {} is read by none of its handlers", show(controller), show_module(module)),
+                    vec![
+                        readers,
+                        format!("set by `.at(..)` at {}", place(at)),
+                        "help: remove the `.at(..)`; a prefix reaches HTTP routes and WebSocket gateway paths".to_owned(),
+                    ],
+                )
+            }
             WiringError::Missing { key, consumer, module, near } => {
                 let key = show(key);
                 let module = show_module(module);

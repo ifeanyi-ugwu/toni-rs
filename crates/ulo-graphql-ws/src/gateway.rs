@@ -37,13 +37,18 @@ const MAX_REASON: usize = 123;
 ///
 /// `GraphqlModule` mounts it at `GraphqlConfig::subscriptions(path)`, which is the usual way to
 /// serve it. The engine binding has to be visible from the module that mounts it: under
-/// `GraphqlModule`, bound in a global module that exports `dyn Engine`.
+/// `GraphqlModule`, the module `GraphqlConfig::engine_from` names, which `GraphqlModule` imports.
 ///
 /// A connection whose handshake echoed no `graphql-transport-ws` is refused with 4406, and one
 /// whose `connection_init` does not arrive within `connection_init_timeout` (3 seconds unset)
 /// closes with 4408. Each `subscribe` runs in its own execution, opened on the connection with its
 /// inputs seeded, in which the engine builds the schema's context; a query or mutation sent as a
-/// `subscribe` answers one `next`.
+/// `subscribe` answers one `next`, and one the engine answers before executing, a request error
+/// or a context that cannot be built, answers `error`.
+///
+/// The connect guards are graphql-transport-ws's only authorization point: they run once per
+/// connection, and no `Ws` guard, interceptor or error handler runs per `subscribe`, the gateway
+/// being hand-written with no message handler for them to wrap.
 pub struct GraphqlWs<Q = ()> {
     pub(crate) _engine: PhantomData<fn() -> Q>,
     engine: Dep<dyn Engine, Q>,
@@ -331,7 +336,8 @@ impl<Q: Send + Sync + 'static> GraphqlWs<Q> {
 }
 
 /// One operation: each response written as `next` until the stream ends with `complete`; a
-/// request error written as `error`, which ends the operation without `complete`. A `complete`
+/// response from before execution, `RequestError` or `Failed`, written as `error`, which ends the
+/// operation without `complete`. A `complete`
 /// from the client or a disconnect cancels the execution and ends it silently; the drain ends it
 /// with `complete`, so the client learns the server stopped it.
 async fn run(
@@ -348,7 +354,7 @@ async fn run(
             Either::Left((Some(response), _)) => {
                 let written = match response.outcome() {
                     Outcome::Executed => send(&conn, &ServerMessage::Next { id: &id, payload: &response }).await,
-                    Outcome::RequestError => {
+                    Outcome::RequestError | Outcome::Failed => {
                         send(&conn, &ServerMessage::Error { id: &id, payload: response.errors() }).await;
                         break false;
                     }

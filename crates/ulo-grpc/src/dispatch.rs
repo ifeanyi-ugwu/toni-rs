@@ -12,15 +12,19 @@
 //! 5. The path routed: a handler's path routes the execution to the controller's module and runs
 //!    the scoped entries, then `ulo::dispatch`; the health and reflection services answer their
 //!    own paths; any other path answers UNIMPLEMENTED.
-//! 6. An error no handler claims rendered as a status: DEADLINE_EXCEEDED when the deadline
-//!    cancelled the call, a `tonic::Status` as it stands, any other error by its kind.
+//! 6. An error no handler claims rendered as a status: a `tonic::Status` as it stands,
+//!    DEADLINE_EXCEEDED when the deadline cancelled the call, any other error by its kind.
 //! 7. A response a pre-dispatch entry answered with an HTTP status other than 200 translated by
 //!    the gRPC specification's HTTP-to-status table.
 //!
 //! The whole of it is raced against the deadline: when the deadline passes first, the pipeline is
-//! dropped at its await, the execution cancelled with `CancelReason::Deadline`, and the call
-//! answers DEADLINE_EXCEEDED. When the reply comes first, the deadline moves into its body, which
-//! ends with DEADLINE_EXCEEDED trailers if the deadline passes while it streams.
+//! dropped at its await, the execution cancelled with `CancelReason::Deadline`, and the error
+//! handlers receive `Timeout` under `Server::timeout_grace`, the matched handler's tiers then the
+//! global ones, or the global ones alone when the deadline passed before routing. What they
+//! answer, or the error they return rendered as it stands, is the reply; unclaimed, or with no
+//! answer by the end of the grace, the call answers DEADLINE_EXCEEDED. When the reply comes first,
+//! the deadline moves into its body, which ends with DEADLINE_EXCEEDED trailers, offered to no
+//! error handler, if the deadline passes while it streams.
 //!
 //! The dispatcher is built on tonic's codec layer, the pieces `tonic::server::Grpc` composes:
 //! `tonic::Streaming::new_request` decodes a request in the extractors, after the guards have
@@ -36,7 +40,7 @@ use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
@@ -99,6 +103,8 @@ pub(crate) struct Dispatcher {
     pub(crate) admission: Admission,
     /// The per-connection in-flight bound, `None` for none.
     pub(crate) per_connection: Option<usize>,
+    /// `Server::timeout_grace` as a duration; `None` waits for the error handlers.
+    pub(crate) grace: Option<Duration>,
 }
 
 /// One method path's handler, as `prepare` built it.
@@ -129,25 +135,31 @@ impl Dispatcher {
             return status_response(Status::unavailable("the server is shutting down"));
         };
         let (head, body) = req.into_parts();
-        exec.seed(GrpcMetadata::from_headers(&head.headers));
+        let metadata = GrpcMetadata::from_headers(&head.headers);
+        exec.seed(metadata.clone());
         if let Some(peer) = conn.peer {
             exec.seed(PeerAddr(peer));
         }
+        let path: Arc<str> = Arc::from(head.uri.path());
+        let peer = conn.peer;
         let call_span = call_span(head.uri.path());
         let handle = exec.handle();
         let mut conn = conn;
         conn.version = head.version;
         let request = Request { head, body: HttpBody::new(body), conn, upgrade: None };
-        let pipeline: BoxFuture<'static, Response> =
-            Box::pin(Arc::clone(&self).unscoped(Arc::new(exec), request, call_span.clone()).instrument(call_span.clone()));
+        let matched = Arc::new(OnceLock::new());
+        let pipeline: BoxFuture<'static, Response> = Box::pin(
+            Arc::clone(&self).unscoped(Arc::new(exec), request, call_span.clone(), Arc::clone(&matched)).instrument(call_span.clone()),
+        );
         let mut abandoned = CancelOnDrop(Some(handle.clone()));
         let (response, deadline) = match timeout {
             None => (pipeline.await, None),
-            Some(after) => match race(pipeline, self.timer.sleep(after)).await {
+            Some(after) => match race(pipeline, self.timer.sleep(after), &handle).await {
                 Raced::Done(response, deadline) => (response, deadline),
                 Raced::Expired => {
-                    handle.cancel_with(CancelReason::Deadline);
-                    (status_response(status::deadline_exceeded()), None)
+                    let handler = matched.get().cloned();
+                    let expired = self.expired(&handle, path, metadata, peer, handler).instrument(call_span.clone()).await;
+                    (expired, None)
                 }
             },
         };
@@ -159,20 +171,66 @@ impl Dispatcher {
         response.map(|body| HttpBody::new(CallBody::new(body, handle, deadline, call_span, permit)))
     }
 
-    /// The unscoped sub-step, routing after it.
-    fn unscoped(self: Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span) -> BoxFuture<'static, Response> {
+    /// A deadline that passed before the call answered: the error handlers receive `Timeout`
+    /// with a context built from the call's path, metadata and peer, no request. What they answer,
+    /// or the error they return rendered as it stands, is the reply; with none by the end of the
+    /// grace, DEADLINE_EXCEEDED is. `handler` is the handler routing matched, `None` when the
+    /// deadline passed before routing, which leaves the global error handlers alone.
+    async fn expired(
+        &self,
+        exec: &ExecutionRef,
+        path: Arc<str>,
+        metadata: GrpcMetadata,
+        peer: Option<SocketAddr>,
+        handler: Option<MountedHandler<Grpc>>,
+    ) -> Response {
+        let cx = self.context(exec, path, metadata, peer, handler.clone(), None);
+        let recovering = ulo::recover(handler.as_ref(), exec, &cx, BoxError::from(status::timed_out()));
+        let outcome = match self.grace {
+            Some(grace) => {
+                let sleep = self.timer.sleep(grace);
+                tokio::select! {
+                    biased;
+                    outcome = recovering => outcome,
+                    () = sleep => return status_response(status::deadline_exceeded()),
+                }
+            }
+            None => recovering.await,
+        };
+        match outcome {
+            Ok(reply) => reply.map(HttpBody::new),
+            Err(err) => status_response(status::render_as_is(err)),
+        }
+    }
+
+    /// The unscoped sub-step, routing after it. Routing records the handler it matched in
+    /// `matched`, for the error handlers of a deadline that passes after it.
+    fn unscoped(
+        self: Arc<Self>,
+        exec: Arc<Execution>,
+        req: Request,
+        call_span: Span,
+        matched: Arc<OnceLock<MountedHandler<Grpc>>>,
+    ) -> BoxFuture<'static, Response> {
         let host = (!self.stage.is_empty()).then(|| StageCx::new(&self, exec.handle(), &req, None));
         let this = Arc::clone(&self);
-        let end: Rest = Box::new(move |req| this.route(exec, req, call_span));
+        let end: Rest = Box::new(move |req| this.route(exec, req, call_span, matched));
         match host {
             Some(host) => self.stage.run(Arc::new(host), req, end),
             None => end(req),
         }
     }
 
-    fn route(self: Arc<Self>, exec: Arc<Execution>, req: Request, call_span: Span) -> BoxFuture<'static, Response> {
+    fn route(
+        self: Arc<Self>,
+        exec: Arc<Execution>,
+        req: Request,
+        call_span: Span,
+        matched: Arc<OnceLock<MountedHandler<Grpc>>>,
+    ) -> BoxFuture<'static, Response> {
         Box::pin(async move {
             if let Some(route) = self.routes.get(req.path()).map(Arc::clone) {
+                let _ = matched.set(route.handler.clone());
                 exec.route_to(route.handler.module());
                 call_span.record(span::HANDLER, field::display(HandlerName(&route.handler)));
                 return self.scoped(exec.handle(), req, route).await;
@@ -439,16 +497,20 @@ enum Raced {
 }
 
 /// `pipeline` raced against the call's deadline. The pipeline is polled first, so an answer ready
-/// in the poll the sleep fires in counts as answered; when the sleep wins, the pipeline is dropped
-/// at its current await.
-async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'static, ()>) -> Raced {
+/// in the poll the sleep fires in counts as answered; when the sleep wins, `exec` is cancelled
+/// with `CancelReason::Deadline` and the pipeline then dropped at its current await, so a handler's
+/// future dropped there reads the reason.
+async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'static, ()>, exec: &ExecutionRef) -> Raced {
     let mut sleep = Some(sleep);
     poll_fn(move |cx| {
         if let Poll::Ready(response) = pipeline.as_mut().poll(cx) {
             return Poll::Ready(Raced::Done(response, sleep.take()));
         }
         match sleep.as_mut().map(|sleep| sleep.as_mut().poll(cx)) {
-            Some(Poll::Ready(())) => Poll::Ready(Raced::Expired),
+            Some(Poll::Ready(())) => {
+                exec.cancel_with(CancelReason::Deadline);
+                Poll::Ready(Raced::Expired)
+            }
             _ => Poll::Pending,
         }
     })

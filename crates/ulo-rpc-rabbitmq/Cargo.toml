@@ -13,6 +13,7 @@ categories = ["network-programming"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
+ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true

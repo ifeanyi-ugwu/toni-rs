@@ -354,10 +354,26 @@ fn freeze(
             for decl in &decls {
                 declare_transport_inputs(graph, decl, &mut transports_seen, &mut declared.transport_inputs);
             }
+            if let Some((prefix, at)) = &controller.prefix {
+                if !decls.iter().any(|decl| decl.reads_prefix) {
+                    let mut transports: Vec<TypeName> = Vec::new();
+                    for decl in &decls {
+                        if !transports.contains(&decl.transport) {
+                            transports.push(decl.transport);
+                        }
+                    }
+                    steps.bindings.push(WiringError::UnreadPrefix {
+                        controller: controller_key,
+                        module: names[index].clone(),
+                        prefix: prefix.to_string(),
+                        transports,
+                        at,
+                    });
+                }
+            }
+            let prefix = controller.prefix.as_ref().map(|(prefix, _)| prefix.clone());
             graph.handlers.extend(
-                decls
-                    .into_iter()
-                    .map(|decl| HandlerRecord::new(binding, controller_key, id, controller.prefix.clone(), decl)),
+                decls.into_iter().map(|decl| HandlerRecord::new(binding, controller_key, id, prefix.clone(), decl)),
             );
         }
 

@@ -38,6 +38,13 @@ pub trait Transport: 'static {
     /// constants, so `#[guards(htpp = AuthGuard)]` is a compile error spanned on `htpp`.
     const KEY: &'static str;
 
+    /// Whether a controller's `.at(prefix)` reaches this transport's handlers: an HTTP route and a
+    /// WebSocket gateway path are joined to it, an RPC pattern and a gRPC method path are not.
+    /// `false` unless the transport says otherwise, so a transport that joins no prefix needs no
+    /// declaration to have one refused. The freeze refuses a controller with a prefix none of
+    /// whose handlers belongs to a transport answering `true`, since nothing would read it.
+    const READS_PREFIX: bool = false;
+
     /// Per-call context: a cheap-clone handle to the execution.
     type Cx: Clone + Send + Sync;
     type Reply: Send;

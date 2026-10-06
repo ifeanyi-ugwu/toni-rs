@@ -277,12 +277,9 @@ impl ServiceInner {
         let head = Arc::new(RequestHead { parts: req.head.clone() });
         let conn = req.conn.clone();
         let pipeline = self.scoped(exec.clone(), req, Arc::clone(&target), params.clone());
-        match race(pipeline, self.timer.sleep(after)).await {
+        match race(pipeline, self.timer.sleep(after), &exec).await {
             Raced::Done(response, deadline) => response.map(|body| HttpBody::new(TimedBody { inner: body, deadline, exec })),
-            Raced::Expired => {
-                exec.cancel_with(CancelReason::Deadline);
-                self.expired(&exec, head, conn, &target, params).await
-            }
+            Raced::Expired => self.expired(&exec, head, conn, &target, params).await,
         }
     }
 
@@ -454,16 +451,20 @@ enum Raced {
 }
 
 /// `pipeline` raced against the route's timeout. The pipeline is polled first, so an answer ready
-/// in the poll the sleep fires in counts as answered; when the sleep wins, the pipeline is dropped
-/// at its current await.
-async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'static, ()>) -> Raced {
+/// in the poll the sleep fires in counts as answered; when the sleep wins, `exec` is cancelled
+/// with `CancelReason::Deadline` and the pipeline then dropped at its current await, so a handler's
+/// future dropped there reads the reason.
+async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'static, ()>, exec: &ExecutionRef) -> Raced {
     let mut sleep = Some(sleep);
     poll_fn(move |cx| {
         if let Poll::Ready(response) = pipeline.as_mut().poll(cx) {
             return Poll::Ready(Raced::Done(response, sleep.take()));
         }
         match sleep.as_mut().map(|sleep| sleep.as_mut().poll(cx)) {
-            Some(Poll::Ready(())) => Poll::Ready(Raced::Expired),
+            Some(Poll::Ready(())) => {
+                exec.cancel_with(CancelReason::Deadline);
+                Poll::Ready(Raced::Expired)
+            }
             _ => Poll::Pending,
         }
     })

@@ -5953,6 +5953,7 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-rpc",
+ "ulo-transport",
  "uuid",
 ]
 

@@ -68,18 +68,30 @@ pub fn to_status(err: &CallError) -> Status {
 /// `tonic::Status` a handler or an error handler returned as it stands, DEADLINE_EXCEEDED when the
 /// call's deadline cancelled it, and otherwise the error as `CallError::from_boxed` recognises it.
 pub(crate) fn render(err: BoxError, exec: &ExecutionRef) -> Status {
-    let err = match err.downcast::<Status>() {
-        Ok(status) => return *status,
-        Err(err) => err,
-    };
-    if exec.cancel_reason() == Some(CancelReason::Deadline) {
+    if exec.cancel_reason() == Some(CancelReason::Deadline) && !err.is::<Status>() {
         return deadline_exceeded();
     }
-    to_status(&CallError::from_boxed(err))
+    render_as_is(err)
 }
 
+/// The status for `err` whatever the execution's cancel reason: what the error handlers of a
+/// passed deadline return, which is the `Timeout` it offered or their reshaping of it. A
+/// `tonic::Status` as it stands, any other error as `CallError::from_boxed` recognises it.
+pub(crate) fn render_as_is(err: BoxError) -> Status {
+    match err.downcast::<Status>() {
+        Ok(status) => *status,
+        Err(err) => to_status(&CallError::from_boxed(err)),
+    }
+}
+
+/// The `Timeout` a passed deadline offers the error handlers.
+pub(crate) fn timed_out() -> CallError {
+    CallError::new(ErrorKind::Timeout, "the call's deadline passed")
+}
+
+/// DEADLINE_EXCEEDED, for a passed deadline no error handler answered.
 pub(crate) fn deadline_exceeded() -> Status {
-    Status::deadline_exceeded("the call's deadline passed")
+    to_status(&timed_out())
 }
 
 fn with_details(code: Code, message: &str, details: &Details) -> Status {

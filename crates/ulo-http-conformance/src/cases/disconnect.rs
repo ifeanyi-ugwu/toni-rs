@@ -16,7 +16,7 @@ const AT_CLOSE: Duration = Duration::from_millis(300);
 const AT_NEXT_WRITE: Duration = Duration::from_secs(3);
 
 /// A disconnect mid-stream firing `Disconnected` at the declared `Disconnect` moment. The stream
-/// writes one event, idles for [`IDLE`], then writes every 100 ms. The client leaves after the
+/// writes one event, idles for `IDLE`, then writes every 100 ms. The client leaves after the
 /// first event: a host declaring `AtClose` must observe it during the idle period, and one
 /// declaring `AtNextWrite` must not, but must once the stream writes again.
 pub async fn mid_stream<H: Host>(mode: Mode) {

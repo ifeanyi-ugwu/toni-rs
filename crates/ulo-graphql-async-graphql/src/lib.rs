@@ -106,7 +106,7 @@ pub async fn dep<T: ?Sized + Send + Sync + 'static>(ctx: &async_graphql::Context
 }
 
 /// The async-graphql request for `req`, carrying the call's context and its execution. A context
-/// that cannot be built is answered as a request error: nothing executed.
+/// that cannot be built is answered `Failed`: nothing executed, and the fault is the server's.
 async fn request<C: Send + Sync + 'static>(
     module: &ModuleRef,
     req: GqlRequest,
@@ -116,7 +116,7 @@ async fn request<C: Send + Sync + 'static>(
         Ok(context) => context,
         Err(error) => {
             tracing::error!(%error, "the GraphQL context could not be built");
-            return Err(GqlResponse::request_error(vec![GqlError::new("the request's context could not be built")]));
+            return Err(GqlResponse::failed(vec![GqlError::new("the request's context could not be built")]));
         }
     };
     let variables = Variables::from_json(Value::Object(req.variables.unwrap_or_default()));

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_core::stream::BoxStream;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture, Shape};
+use ulo_transport::Count;
 
 use crate::frame::Frame;
 
@@ -31,6 +32,14 @@ pub trait Link: Send + Sync + 'static {
     fn prepare(&mut self, app: &AppHandle) -> impl Future<Output = Result<(), BoxError>> + Send {
         let _ = app;
         async { Ok(()) }
+    }
+
+    /// The server's in-flight bound, `Server::max_inflight` as set, called from `Server::prepare`
+    /// beside [`prepare`](Self::prepare). A link whose broker paces deliveries itself sets its own
+    /// window from it, so the broker stops delivering where the server would refuse: AMQP's
+    /// prefetch. Every other link ignores it.
+    fn max_inflight(&mut self, calls: Count) {
+        let _ = calls;
     }
 
     /// Server side: subscribe to `patterns`, the mounted handlers' patterns. Called from

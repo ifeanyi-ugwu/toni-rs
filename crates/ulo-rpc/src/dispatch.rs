@@ -3,6 +3,13 @@
 //! and the split per `Capabilities` between the whole frame and the payload with native
 //! correlation. `Server::serve` runs it for every delivery the link's inbound stream yields.
 //!
+//! A deadline that passes before the call answers drops the pipeline at its await, cancels the
+//! execution with `CancelReason::Deadline`, and offers the error handlers, the handler's tiers then
+//! the global ones, a `Timeout` under `Server::timeout_grace`: what they answer, or the error they
+//! return written as it stands, is the reply; unclaimed, or with no answer by the end of the
+//! grace, the call answers `err` of kind `timeout`. A deadline passing once a streamed reply began
+//! ends it with that `err`, offered to no error handler.
+//!
 //! The serve loop routes every frame in arrival order before anything awaits: a `req`, `evt` or
 //! `open` opens its execution and registers its id there, so an `in`, `in_end` or `cancel` the
 //! link delivers right after it always finds the call; the call itself then runs in its own task.
@@ -43,6 +50,8 @@ pub(crate) struct Shared {
     /// `Link::NAME`.
     pub(crate) link: &'static str,
     pub(crate) admission: Admission,
+    /// `Server::timeout_grace` as a duration; `None` waits for the error handlers.
+    pub(crate) grace: Option<Duration>,
     pub(crate) calls: Mutex<HashMap<u64, Live>>,
     pub(crate) serial: AtomicU64,
     /// Events no handler took, counted for the log line each one writes.
@@ -233,7 +242,7 @@ fn unhandled(shared: &Arc<Shared>, incoming: Incoming, link: LinkInfo, reply: Op
         async move {
             let handle = exec.handle();
             let outcome = ulo::recover::<Rpc>(None, &handle, &cx, BoxError::from(error)).await;
-            answer(&shared, None, &handle, &cx, &reply, id, Ended::Done(outcome), &mut None).await;
+            answer(&shared, None, &handle, &cx, &reply, id, Outcome::Done(outcome), &mut None).await;
             ack.ack();
             drop(exec);
         }
@@ -265,19 +274,26 @@ impl Call {
         let outcome = match mismatch(arrived, &route, cx.pattern()) {
             Some(text) => {
                 let error = BoxError::from(CallError::new(ErrorKind::BadRequest, text));
-                Ended::Done(ulo::recover(Some(&route.handler), &handle, &cx, error).await)
+                Outcome::Done(ulo::recover(Some(&route.handler), &handle, &cx, error).await)
             }
             None => {
                 let call = Arc::clone(&route.call);
                 let dispatching = ulo::dispatch(&route.handler, &handle, &cx, move |cx| (*call)(cx));
-                until_ended(&handle, &mut deadline, dispatching).await
+                match until_ended(&handle, &mut deadline, dispatching).await {
+                    Ended::Done(outcome) => Outcome::Done(outcome),
+                    Ended::Cancelled(Some(CancelReason::Deadline)) => {
+                        Outcome::Expired(expired(&shared, &route.handler, &handle, &cx).await)
+                    }
+                    Ended::Cancelled(reason) => Outcome::Cancelled(reason),
+                }
             }
         };
         match answered {
             Some((id, reply)) => {
                 // A request to an event handler is answered with an empty `res` once it ran.
                 let outcome = match outcome {
-                    Ended::Done(Ok(_)) if route.kind == Kind::Event => Ended::Done(Ok(Reply::None)),
+                    Outcome::Done(Ok(_)) if route.kind == Kind::Event => Outcome::Done(Ok(Reply::None)),
+                    Outcome::Expired(Some(Ok(_))) if route.kind == Kind::Event => Outcome::Expired(Some(Ok(Reply::None))),
                     outcome => outcome,
                 };
                 answer(&shared, Some(&route.handler), &handle, &cx, &reply, id, outcome, &mut deadline).await;
@@ -286,6 +302,34 @@ impl Call {
             None => settle_event(&shared, cx.pattern(), &handle, outcome, ack),
         }
         drop(exec);
+    }
+}
+
+/// How a call's pipeline ended, as `answer` and `settle_event` write it.
+enum Outcome {
+    /// The pipeline's own result, an error rendered by [`render`].
+    Done(Result<Reply, BoxError>),
+    /// Cancelled before it answered, for any reason but the deadline.
+    Cancelled(Option<CancelReason>),
+    /// The deadline passed before it answered: what the error handlers answered to the `Timeout`
+    /// offered them, an error written as it stands; `None` when the grace ran out first.
+    Expired(Option<Result<Reply, BoxError>>),
+}
+
+/// The error handlers of `handler` over the `Timeout` a passed deadline offers them, under the
+/// server's grace; `None` when the grace runs out first, the recovery dropped at its await.
+async fn expired(shared: &Shared, handler: &MountedHandler<Rpc>, exec: &ExecutionRef, cx: &RpcCx) -> Option<Result<Reply, BoxError>> {
+    let recovering = ulo::recover(Some(handler), exec, cx, BoxError::from(timeout_error()));
+    match shared.grace {
+        Some(grace) => {
+            let sleep = shared.timer.sleep(grace);
+            tokio::select! {
+                biased;
+                outcome = recovering => Some(outcome),
+                () = sleep => None,
+            }
+        }
+        None => Some(recovering.await),
     }
 }
 
@@ -302,19 +346,25 @@ fn mismatch(arrived: Arrived, route: &Route, pattern: &str) -> Option<String> {
     }
 }
 
-/// An event's acknowledgment once its handler completed: acknowledged when it succeeded, rejected
-/// without requeue when it failed or its deadline passed, and left unsettled when the call was
-/// cancelled otherwise, so a broker redelivers it.
-fn settle_event(shared: &Shared, pattern: &str, exec: &ExecutionRef, outcome: Ended<Result<Reply, BoxError>>, ack: Ack) {
+/// An event's acknowledgment once its handler completed: acknowledged when it succeeded, or when
+/// an error handler answered its passed deadline; rejected without requeue when it failed or its
+/// deadline passed otherwise; and left unsettled when the call was cancelled for another reason,
+/// so a broker redelivers it.
+fn settle_event(shared: &Shared, pattern: &str, exec: &ExecutionRef, outcome: Outcome, ack: Ack) {
     match outcome {
-        Ended::Done(Ok(_)) => ack.ack(),
-        Ended::Done(Err(err)) => {
+        Outcome::Done(Ok(_)) | Outcome::Expired(Some(Ok(_))) => ack.ack(),
+        Outcome::Done(Err(err)) => {
             let error = render(err, exec);
             tracing::warn!(pattern, link = shared.link, kind = %error.kind, message = %error.message, "an event's handler failed; the event was rejected");
             ack.reject();
         }
-        Ended::Cancelled(Some(CancelReason::Deadline)) => ack.reject(),
-        Ended::Cancelled(_) => {}
+        Outcome::Expired(Some(Err(err))) => {
+            let error = body_of(&CallError::from_boxed(err));
+            tracing::warn!(pattern, link = shared.link, kind = %error.kind, message = %error.message, "an event's deadline passed; the event was rejected");
+            ack.reject();
+        }
+        Outcome::Expired(None) => ack.reject(),
+        Outcome::Cancelled(_) => {}
     }
 }
 
@@ -327,21 +377,31 @@ async fn answer(
     cx: &RpcCx,
     reply: &ReplyPath,
     id: u64,
-    outcome: Ended<Result<Reply, BoxError>>,
+    outcome: Outcome,
     deadline: &mut Option<BoxFuture<'static, ()>>,
 ) {
     match outcome {
-        Ended::Done(Ok(Reply::None)) => {
+        Outcome::Done(Ok(Reply::None)) | Outcome::Expired(Some(Ok(Reply::None))) => {
             send(reply, exec, id, Frame::Res { id, data: Data::default() }).await;
         }
-        Ended::Done(Ok(Reply::One(data))) => {
+        Outcome::Done(Ok(Reply::One(data))) | Outcome::Expired(Some(Ok(Reply::One(data)))) => {
             send(reply, exec, id, Frame::Res { id, data }).await;
         }
-        Ended::Done(Ok(Reply::Many(stream))) => stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await,
-        Ended::Done(Err(err)) => {
+        // On the expired path the execution is already cancelled, so the stream ends at its first
+        // poll with `timeout`.
+        Outcome::Done(Ok(Reply::Many(stream))) | Outcome::Expired(Some(Ok(Reply::Many(stream)))) => {
+            stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await
+        }
+        Outcome::Done(Err(err)) => {
             send(reply, exec, id, Frame::Err { id, error: render(err, exec) }).await;
         }
-        Ended::Cancelled(reason) => cancelled(reply, exec, id, reason).await,
+        Outcome::Expired(Some(Err(err))) => {
+            send(reply, exec, id, Frame::Err { id, error: body_of(&CallError::from_boxed(err)) }).await;
+        }
+        Outcome::Expired(None) => {
+            send(reply, exec, id, Frame::Err { id, error: timed_out() }).await;
+        }
+        Outcome::Cancelled(reason) => cancelled(reply, exec, id, reason).await,
     }
 }
 
@@ -478,7 +538,12 @@ fn body_of(error: &CallError) -> ErrorBody {
 }
 
 fn timed_out() -> ErrorBody {
-    ErrorBody::new(ErrorKind::Timeout, "the call's deadline passed", Details::new())
+    body_of(&timeout_error())
+}
+
+/// The `Timeout` a passed deadline offers the error handlers, and what an unclaimed one writes.
+fn timeout_error() -> CallError {
+    CallError::new(ErrorKind::Timeout, "the call's deadline passed")
 }
 
 /// The `ErrorInfo` detail carrying `reason`, under this transport's domain.
@@ -528,15 +593,19 @@ enum Ended<T> {
 /// `fut` raced against the execution's cancellation and its deadline. A deadline that passes
 /// cancels the execution `Deadline`, so every later race ends on the cancellation, which is
 /// polled first, and the expired sleep is never polled again.
+///
+/// The cancellation is written inside the expiry branch's own future, before `select!` drops
+/// `fut`: a handler's future dropped at the deadline reads `Deadline` from its execution.
 async fn until_ended<F: Future>(exec: &ExecutionRef, deadline: &mut Option<BoxFuture<'static, ()>>, fut: F) -> Ended<F::Output> {
+    let expired = async {
+        expiry(deadline).await;
+        exec.cancel_with(CancelReason::Deadline);
+    };
     tokio::select! {
         biased;
         () = exec.cancelled() => Ended::Cancelled(exec.cancel_reason()),
         out = fut => Ended::Done(out),
-        () = expiry(deadline) => {
-            exec.cancel_with(CancelReason::Deadline);
-            Ended::Cancelled(Some(CancelReason::Deadline))
-        }
+        () = expired => Ended::Cancelled(Some(CancelReason::Deadline)),
     }
 }
 
