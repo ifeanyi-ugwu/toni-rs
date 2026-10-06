@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
-use std::future::{Future, poll_fn};
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;

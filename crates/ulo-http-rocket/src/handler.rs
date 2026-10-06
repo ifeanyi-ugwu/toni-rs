@@ -7,7 +7,7 @@ use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http_body::{Body as _, Frame, SizeHint};
+use http_body::{Frame, SizeHint};
 use rocket::data::ByteUnit;
 use rocket::http::{Method, Status};
 use rocket::route::{Handler, Outcome, Route};

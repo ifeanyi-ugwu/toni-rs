@@ -7,7 +7,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http_body::{Body as _, Frame, SizeHint};
+use http_body::{Frame, SizeHint};
 use hyper_util::rt::TokioIo;
 use salvo::http::ResBody;
 use ulo::BoxError;

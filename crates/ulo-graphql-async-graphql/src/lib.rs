@@ -67,7 +67,9 @@ where
         let module = self.module.clone();
         stream::once(async move { request::<C>(&module, req, exec).await })
             .flat_map(move |prepared| match prepared {
-                Ok(request) => schema.execute_stream(request).map(response_of).boxed(),
+                // `execute_stream` borrows the schema for its stream; the session-data form owns a
+                // clone, which a stream outliving this closure needs.
+                Ok(request) => schema.execute_stream_with_session_data(request, Default::default()).map(response_of).boxed(),
                 Err(response) => stream::once(future::ready(response)).boxed(),
             })
             .boxed()
