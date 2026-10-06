@@ -4,8 +4,13 @@
 
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::{Request, Response};
+use ulo_http::Routing;
 
-/// Attach to the host's `Rocket<Build>` in the adapter's conformance host.
+use crate::{ROUTING_HEADER, routing_label};
+
+/// Attach to the host's `Rocket<Build>` in the adapter's conformance host. It reads the
+/// `Option<Routing>` the rocket adapter caches per request and writes [`ROUTING_HEADER`]; a
+/// response the app did not give finds `None` and gets no header.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RoutingFairing;
 
@@ -16,7 +21,8 @@ impl Fairing for RoutingFairing {
     }
 
     async fn on_response<'r>(&self, req: &'r Request<'_>, res: &mut Response<'r>) {
-        let _ = (req, res);
-        todo!()
+        if let Some(routing) = req.local_cache(|| None::<Routing>) {
+            res.set_raw_header(ROUTING_HEADER, routing_label(routing));
+        }
     }
 }

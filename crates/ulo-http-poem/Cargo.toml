@@ -13,6 +13,8 @@ categories = ["web-programming::http-server"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
+bytes.workspace = true
 http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 poem = { workspace = true, features = ["server"] }
-tracing.workspace = true

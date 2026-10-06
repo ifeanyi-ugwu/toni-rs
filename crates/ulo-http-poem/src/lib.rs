@@ -10,15 +10,20 @@
 //! ulo_http_poem::run(app, &embedded, poem::Server::new(TcpListener::bind("0.0.0.0:3000")), route, ulo_tokio::shutdown_signal()).await?;
 //! ```
 //!
-//! `Route::nest` strips the prefix. What it declares: the peer address from `remote_addr`;
-//! upgrades through `take_upgrade`; no miss forwarding; host extensions from
-//! `Request::extensions`; no TLS info; streamed bodies; a dropped body observed at the next failed
-//! write.
+//! `Route::nest` strips the prefix, so the adapter declares `STRIPS_PREFIX: true`; mounting the
+//! endpoint with `Route::at("/api/*path", ..)` instead leaves the prefix on the path and is not
+//! supported. What it declares: the peer address from `remote_addr`; upgrades through
+//! `take_upgrade`; no miss forwarding; host extensions from `Request::extensions`; no TLS info;
+//! streamed bodies; a dropped body observed at the next failed write.
+//!
+//! Built-in forwards: `OriginalPath`, from `req.original_uri()`. The app's response, `Routing`
+//! included, keeps its extensions in poem's response, where a middleware around the endpoint
+//! reads it.
 
 mod endpoint;
 mod run;
 
-use ulo_http::embed::{Embed, EmbedLimits};
+use ulo_http::embed::{Disconnect, Embed, EmbedLimits, OriginalPath};
 
 pub use endpoint::{PoemEndpoint, endpoint};
 pub use run::run;
@@ -29,10 +34,16 @@ pub struct Poem;
 impl Embed for Poem {
     const NAME: &'static str = "poem";
 
+    const STRIPS_PREFIX: bool = true;
+
     type HostRequest<'r> = poem::Request;
 
     fn limits() -> EmbedLimits {
-        todo!()
+        EmbedLimits::NONE.forward_miss(false).tls_info(false).disconnect(Disconnect::AtNextWrite)
+    }
+
+    fn builtin_forwards(embedded: ulo_http::embed::Embedded<Self>) -> ulo_http::embed::Embedded<Self> {
+        embedded.forward(|req: &poem::Request| Some(OriginalPath::from(req.original_uri())))
     }
 }
 

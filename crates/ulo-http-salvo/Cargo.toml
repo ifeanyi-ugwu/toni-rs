@@ -13,6 +13,10 @@ rust-version = "1.92"
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
+bytes.workspace = true
 http.workspace = true
-salvo = { workspace = true, features = ["server", "http1", "http2"] }
-tracing.workspace = true
+http-body.workspace = true
+# The upgrade future salvo leaves in the request's extensions, and its I/O as tokio's traits.
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
+salvo = { workspace = true, features = ["server", "server-handle", "http1", "http2"] }

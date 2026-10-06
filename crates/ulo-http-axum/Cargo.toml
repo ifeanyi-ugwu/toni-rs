@@ -16,4 +16,3 @@ ulo-http = { path = "../ulo-http" }
 axum = { workspace = true, features = ["tokio", "http1", "http2", "original-uri"] }
 http.workspace = true
 tower.workspace = true
-tracing.workspace = true

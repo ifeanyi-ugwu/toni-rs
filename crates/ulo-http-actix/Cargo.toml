@@ -19,5 +19,5 @@ actix-web.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 http.workspace = true
+http-body.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-tracing.workspace = true

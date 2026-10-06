@@ -11,17 +11,21 @@
 //! ulo_http_salvo::run(app, &embedded, salvo::Server::new(acceptor), service, ulo_tokio::shutdown_signal()).await?;
 //! ```
 //!
-//! salvo hands its handler the full path, so the adapter strips `.nested_at` itself; a request it
-//! receives outside the prefix is answered as the app's 404 and logged at `warn` once. What it
-//! declares: the peer address from `Request::remote_addr`; upgrades through `OnUpgrade` left in
-//! the extensions; no miss forwarding; host extensions copied from `Request::extensions`, a value
-//! a middleware put in the `Depot` crossing through a `forward` copy over [`SalvoRequest`]; no TLS
-//! info; streamed bodies; a dropped body observed at the disconnect.
+//! salvo hands its handler the full path, so the adapter declares `STRIPS_PREFIX: false` and the
+//! app strips `.nested_at` itself; a request it receives outside the prefix is answered as the
+//! app's 404 and logged at `warn` once. What it declares: the peer address from
+//! `Request::remote_addr`; upgrades through `OnUpgrade` left in the extensions; no miss
+//! forwarding; host extensions copied from `Request::extensions`, a value a middleware put in the
+//! `Depot` crossing through a `forward` copy over [`SalvoRequest`]; no TLS info; streamed bodies; a
+//! dropped body observed at the disconnect.
+//!
+//! Built-in forwards: `OriginalPath`, from `req.uri().path()`. The app's response, `Routing`
+//! included, goes into salvo's response extensions, where a hoop after the handler reads it.
 
 mod handler;
 mod run;
 
-use ulo_http::embed::{Embed, EmbedLimits};
+use ulo_http::embed::{Embed, EmbedLimits, OriginalPath};
 
 pub use handler::{SalvoHandler, handler};
 pub use run::run;
@@ -32,10 +36,16 @@ pub struct Salvo;
 impl Embed for Salvo {
     const NAME: &'static str = "salvo";
 
+    const STRIPS_PREFIX: bool = false;
+
     type HostRequest<'r> = SalvoRequest<'r>;
 
     fn limits() -> EmbedLimits {
-        todo!()
+        EmbedLimits::NONE.forward_miss(false).tls_info(false)
+    }
+
+    fn builtin_forwards(embedded: ulo_http::embed::Embedded<Self>) -> ulo_http::embed::Embedded<Self> {
+        embedded.forward(|req: &SalvoRequest<'_>| Some(OriginalPath::from(req.request.uri())))
     }
 }
 

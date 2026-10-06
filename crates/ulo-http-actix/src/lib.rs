@@ -18,20 +18,25 @@
 //!
 //! actix's request payload is `!Send` while the app's body is `Send`, so the payload is pumped
 //! through a bounded channel from the worker-local task. `web::scope` leaves the path whole, so the
-//! adapter strips `.nested_at` itself. A `Connection: close` header is mapped onto the response
-//! head's connection-type flag. What it declares: the peer address from `peer_addr`; no upgrades;
-//! no miss forwarding; no host extensions, a value in actix's request store crossing through a
-//! `forward` copy over `HttpRequest`; no TLS info; streamed bodies through the pump; a dropped body
-//! observed at the pump's next failed write.
+//! adapter declares `STRIPS_PREFIX: false` and the app strips `.nested_at` itself. A
+//! `Connection: close` header is mapped onto the response head's connection-type flag. What it
+//! declares: the peer address from `peer_addr`; no upgrades; no miss forwarding; no host
+//! extensions, a value in actix's request store crossing through a `forward` copy over
+//! `HttpRequest`; no TLS info; streamed bodies through the pump; a dropped body observed at the
+//! next failed write.
+//!
+//! Built-in forwards: `OriginalPath`, from `req.path()`. actix's response extensions are its own
+//! store, so of the app's response extensions only `Routing` is copied into them, where an actix
+//! middleware reads it.
 
 mod pump;
 mod run;
 mod service;
 
-use ulo_http::embed::{Embed, EmbedLimits};
+use ulo_http::embed::{Disconnect, Embed, EmbedLimits, OriginalPath};
 
 pub use run::run;
-pub use service::{ActixScope, scope};
+pub use service::{ActixScope, ActixService, scope};
 
 /// The actix-web host.
 pub struct Actix;
@@ -39,10 +44,21 @@ pub struct Actix;
 impl Embed for Actix {
     const NAME: &'static str = "actix";
 
+    const STRIPS_PREFIX: bool = false;
+
     type HostRequest<'r> = actix_web::HttpRequest;
 
     fn limits() -> EmbedLimits {
-        todo!()
+        EmbedLimits::NONE
+            .upgrades(false)
+            .forward_miss(false)
+            .host_extensions(false)
+            .tls_info(false)
+            .disconnect(Disconnect::AtNextWrite)
+    }
+
+    fn builtin_forwards(embedded: ulo_http::embed::Embedded<Self>) -> ulo_http::embed::Embedded<Self> {
+        embedded.forward(|req: &actix_web::HttpRequest| Some(OriginalPath::new(req.path())))
     }
 }
 

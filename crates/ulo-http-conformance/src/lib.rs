@@ -16,8 +16,10 @@
 //! ulo_http_conformance::http_conformance_suite!(AxumHost);
 //! ```
 //!
-//! The suite asserts byte-identical responses wherever a scenario depends on no declared limit,
-//! `Routing` apart. The limits are checked in both directions: a host that passes a scenario it
+//! The suite asserts byte-identical responses wherever a scenario depends on no declared limit:
+//! status, the headers the app writes and the body, compared against the reference host in the
+//! same mode. `Routing` is asserted apart, through the header [`ROUTING_HEADER`] a host's test
+//! middleware writes. The limits are checked in both directions: a host that passes a scenario it
 //! declares unsupported fails, and one declaring `forward_miss` that answers a `Forwardable` 404
 //! itself fails the same way.
 
@@ -25,14 +27,18 @@ use std::future::Future;
 
 use ulo::App;
 use ulo::app::Connected;
+use ulo_http::Routing;
 use ulo_http::embed::EmbedLimits;
 
+mod app;
 pub mod cases;
 mod reference;
+mod wire;
 
 #[cfg(feature = "rocket")]
 pub mod rocket_fairing;
 
+pub use app::{HOST_VALUE_HEADER, HostValue, ORIGIN};
 pub use reference::HyperHost;
 
 /// Where the host mounts the app.
@@ -47,7 +53,23 @@ pub enum Mode {
 /// The prefix a nested host mounts the app under.
 pub const PREFIX: &str = "/api";
 
+/// The response header a host's test middleware writes from the `Routing` in the app's response,
+/// as [`routing_label`] spells it, since the client sees no response extensions.
+pub const ROUTING_HEADER: &str = "x-ulo-routing";
+
 /// One host the suite runs against: the hyper backend, or an embedding adapter's host framework.
+///
+/// What `start` sets up, beyond serving the app:
+///
+/// - nested, the app mounted under [`PREFIX`] with `.nested_at(PREFIX)`; as the fallback, mounted
+///   as the host's fallback with no `.nested_at`;
+/// - a [`HostValue`] from the [`HOST_VALUE_HEADER`] request header, where the request carries it:
+///   on a host declaring `host_extensions: true`, written into the host's own request store by a
+///   host middleware; on one declaring `false`, copied by `Embedded::forward::<HostValue>(..)`;
+/// - on every response carrying a `Routing`, the header [`ROUTING_HEADER`] holding
+///   [`routing_label`] of it, written by a host middleware, or on rocket by
+///   `rocket_fairing::RoutingFairing`;
+/// - the host served through the adapter's `run`, so the app owns the shutdown.
 pub trait Host: Sized + Send + Sync + 'static {
     /// Binds the suite's app, connected and not yet bound, into this host in `mode`, runs
     /// `listen()`, and starts serving it.
@@ -63,10 +85,36 @@ pub trait Host: Sized + Send + Sync + 'static {
     fn stop(self) -> impl Future<Output = ()> + Send;
 }
 
-/// The application every scenario runs: its controllers, error handlers, gateways and
-/// pre-dispatch entries, wired against the app's `Timer`.
+/// The application every scenario runs: its controller, error handler, upgrade handler and
+/// pre-dispatch entries, wired against the app's `Timer`, as a host that can do everything takes
+/// it.
 pub async fn app() -> App<Connected> {
-    todo!()
+    app_for(EmbedLimits::NONE).await
+}
+
+/// The suite's application as a host declaring `limits` takes it: without the upgrade handler
+/// where `upgrades` is `false`, which `prepare` would otherwise refuse.
+pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
+    App::builder(app::SuiteModule { limits })
+        .timer(ulo_tokio::Timer)
+        .wire()
+        .expect("the suite's app wires")
+        .connect()
+        .await
+        .expect("the suite's app connects")
+}
+
+/// How [`ROUTING_HEADER`] spells a `Routing`: `matched <route>`, `options <route>`, `not-found`,
+/// `method-not-allowed` or `unrouted`.
+pub fn routing_label(routing: &Routing) -> String {
+    match routing {
+        Routing::Matched { route, .. } => format!("matched {route}"),
+        Routing::Options { route } => format!("options {route}"),
+        Routing::NotFound => "not-found".to_owned(),
+        Routing::MethodNotAllowed => "method-not-allowed".to_owned(),
+        Routing::Unrouted => "unrouted".to_owned(),
+        _ => "other".to_owned(),
+    }
 }
 
 /// Stamps every scenario in both modes as a `#[tokio::test]` for the host type `$host`. The
