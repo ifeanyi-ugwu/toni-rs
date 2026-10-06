@@ -1054,3 +1054,22 @@ So the first test batch should come before any behavior test, and should simply 
 - compile-fail tests for X24's mismatch and for a gRPC shape mismatch.
 
 Several of the uncertainties in §8 (the `Answer<M>` inference, the six-arm probe with the const-generic turbofish, the anonymous const inside a generic impl) are exactly the kind of thing that fails on first expansion. Finding that out in a five-line test crate is much cheaper than finding it inside a conformance scenario.
+
+## Twenty-second response: the conformance runs
+
+Received 2026-10-07, answering `divergences/race2b-tests2-http.md` (S1–S3) and the three items both
+conformance logs left unchanged. Sign-off pending.
+
+All three proposals are right. S1 needs a precise name for its new field. Of the three items you noted, two should become tests, and one should be documented.
+
+**S1: (a), with the field named for the behavior.** Declaring the difference and asserting it is exactly how `EmbedLimits` already handles hosts that differ. Pinning actix below 4.15 (c) would trade a declared limit for a version trap that breaks on the next `cargo update`. Delaying `stop` (b) would add a second signal to work around one host. Make the field an enum, like `Disconnect`: `drain_pending: DrainPending { Served, Closed }`. It answers whether a request whose head is still arriving when the host's graceful stop begins reaches the app. actix declares `Closed`, the hyper hosts `Served`, and the suite asserts each in both directions. The documentation should state what it means in practice: on actix, a client caught mid-request at the moment of shutdown gets a closed connection rather than an answer.
+
+**S2: accepted.** The `!Send` part is the `HttpServer` builder, not the running server. `run` can do the builder work synchronously (`disable_signals`, `shutdown_timeout`, `.run()`) and then return a `Send` future over the resulting `actix_server::Server` and its handle. Every host's `run` then has the same shape. One sentence for its docs: like actix itself, `run` must be called inside a tokio runtime.
+
+**S3: accepted, and the suite fix matters more than the salvo fix.** A scenario that passes because a client timed out hasn't tested anything: it passed on silence. Make it a suite-wide rule that a request ending by timeout fails the scenario, unless the scenario is explicitly *about* a timeout. Then the salvo fix (closing the listener through the acceptor) is the first thing the rule catches, and it won't be the last kind of thing it catches.
+
+**On the three unchanged items:**
+
+- **The RPC recovery scenario passing vacuously on TCP is a real gap.** A lost TCP connection's `Unavailable`, followed by a reconnect, is one of the most important client behaviors on that link. The harness can test it without touching the link: put a small TCP proxy between client and server, and have `disrupt` cut every connection through it. On UDP there's no connection to lose, so the scenario should be marked not applicable and reported as skipped, not counted as passed. Same rule as S3: nothing passes vacuously.
+- **The HTTP/2 drain shape should observe GOAWAY directly.** An `h2` client sees the GOAWAY frame on the held connection, which is what §9.5 promises. A refused *new* connection is a different, weaker fact. It's worth one more scenario, since GOAWAY is how HTTP/2 clients learn to stop sending.
+- **Rocket's close waiting its full grace for an idle connection is a host limit, so document it.** The design closes idle connections at the start of the drain, and rocket doesn't. Rocket's grace is already set to `drain_timeout`, so shutdown stays bounded. Record it in rocket's row of the limits table, and if the suite can observe it, declare it like S1 so it's asserted rather than merely noted.
