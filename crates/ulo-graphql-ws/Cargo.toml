@@ -18,3 +18,5 @@ ulo-ws = { path = "../ulo-ws" }
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+tracing.workspace = true

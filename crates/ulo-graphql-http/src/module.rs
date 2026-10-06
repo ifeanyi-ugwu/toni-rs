@@ -1,13 +1,38 @@
 //! `GraphqlModule` and its configuration.
 
 use std::borrow::Cow;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
-use ulo::{Module, ModuleDef, ModuleIdentity};
+use ulo::{Bound, Module, ModuleDef, ModuleIdentity};
+use ulo_graphql_ws::GraphqlWs;
+use ulo_graphql_ws::__private::InitTimeout;
+use ulo_transport::prepare::{Failures, zero_bound};
+
+use crate::controller::{EndpointSettings, GraphqlEndpoint};
 
 /// Serves one engine at one path: the engine bound under `dyn Engine`, or `dyn Engine @ Q` once
 /// [`GraphqlConfig::engine`] names a qualifier, so a second `GraphqlModule` at another path serves
 /// a second schema with no GraphQL rule added.
+///
+/// The module registers the endpoint, and with [`GraphqlConfig::subscriptions`] the
+/// graphql-transport-ws gateway, as its own controllers, so the engine binding has to be visible
+/// from it. A module sees its own bindings, its imports' exports and the global modules' exports,
+/// and the module that imports this one is none of those, so the engine is bound in a global
+/// module that exports it. The gateway also needs `WsModule` imported once by the application.
+///
+/// ```ignore
+/// #[module(
+///     global,
+///     imports   = [GraphqlModule::for_root(GraphqlConfig::at("/graphql").subscriptions("/graphql/ws"))],
+///     providers = [
+///         with = |q: Dep<QueryRoot>, s: Dep<SubscriptionRoot>| Schema::new(q, EmptyMutation, s),
+///         AsyncGraphql<ApiSchema, GqlContext> as dyn Engine,
+///     ],
+///     exports   = [dyn Engine],
+/// )]
+/// pub struct ApiModule;
+/// ```
 pub struct GraphqlModule<Q = ()> {
     pub(crate) config: GraphqlConfig<Q>,
 }
@@ -18,14 +43,54 @@ impl<Q: Send + Sync + 'static> GraphqlModule<Q> {
     }
 }
 
+/// The configuration is the identity: the same configuration imported twice is one module, and
+/// two paths are two.
 impl<Q: Send + Sync + 'static> Module for GraphqlModule<Q> {
     fn identity(&self) -> ModuleIdentity {
-        todo!()
+        ModuleIdentity::of_value(self)
     }
 
     fn register(&self, m: &mut ModuleDef<'_>) {
-        let _ = (m, &self.config);
-        todo!()
+        let config = &self.config;
+        let path = normalize(&config.path);
+        let subscriptions = config.subscriptions.as_deref().map(normalize);
+        m.value(EndpointSettings::<Q> {
+            path: path.clone(),
+            subscriptions: subscriptions.clone(),
+            playground: config.playground,
+            _engine: PhantomData,
+        });
+        m.controller::<GraphqlEndpoint<Q>>().at(path);
+        if let Some(subscriptions) = subscriptions {
+            let mut failures = Failures::new();
+            failures.extend(zero_bound(
+                "connection_init_timeout",
+                config.connection_init_timeout,
+                "close every connection before its `connection_init` could arrive",
+            ));
+            m.try_value(failures.into_result().map(|()| InitTimeout(config.connection_init_timeout)));
+            m.controller::<GraphqlWs<Q>>().at(subscriptions);
+        }
+    }
+}
+
+impl<Q> Clone for GraphqlModule<Q> {
+    fn clone(&self) -> Self {
+        GraphqlModule { config: self.config.clone() }
+    }
+}
+
+impl<Q> PartialEq for GraphqlModule<Q> {
+    fn eq(&self, other: &Self) -> bool {
+        self.config == other.config
+    }
+}
+
+impl<Q> Eq for GraphqlModule<Q> {}
+
+impl<Q> Hash for GraphqlModule<Q> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.config.hash(state);
     }
 }
 
@@ -34,19 +99,27 @@ pub struct GraphqlConfig<Q = ()> {
     pub(crate) path: Cow<'static, str>,
     pub(crate) subscriptions: Option<Cow<'static, str>>,
     pub(crate) playground: bool,
+    pub(crate) connection_init_timeout: Bound,
     pub(crate) _engine: PhantomData<fn() -> Q>,
 }
 
 impl GraphqlConfig {
     /// The endpoint at `path`, the engine bound unqualified, the playground on in debug builds.
     pub fn at(path: impl Into<Cow<'static, str>>) -> Self {
-        GraphqlConfig { path: path.into(), subscriptions: None, playground: cfg!(debug_assertions), _engine: PhantomData }
+        GraphqlConfig {
+            path: path.into(),
+            subscriptions: None,
+            playground: cfg!(debug_assertions),
+            connection_init_timeout: Bound::Default,
+            _engine: PhantomData,
+        }
     }
 }
 
 impl<Q> GraphqlConfig<Q> {
-    /// The graphql-transport-ws endpoint's path, which the playground connects its subscriptions
-    /// to.
+    /// Serves graphql-transport-ws at `path`, the gateway `ulo-graphql-ws` writes, mounted by this
+    /// module beside the endpoint; the playground connects its subscriptions to it. The
+    /// application imports `WsModule` once for the gateway to be reachable.
     pub fn subscriptions(mut self, path: impl Into<Cow<'static, str>>) -> Self {
         self.subscriptions = Some(path.into());
         self
@@ -59,8 +132,61 @@ impl<Q> GraphqlConfig<Q> {
         self
     }
 
+    /// How long a subscription connection may go without `connection_init` before it closes with
+    /// 4408: 3 seconds at `Bound::Default`, the reference server's; `Bound::Unbounded` waits
+    /// indefinitely. `Bound::After(Duration::ZERO)` is refused when the application wires.
+    pub fn connection_init_timeout(mut self, timeout: Bound) -> Self {
+        self.connection_init_timeout = timeout;
+        self
+    }
+
     /// Serves the engine bound as `dyn Engine @ E`.
     pub fn engine<E: 'static>(self) -> GraphqlConfig<E> {
-        GraphqlConfig { path: self.path, subscriptions: self.subscriptions, playground: self.playground, _engine: PhantomData }
+        GraphqlConfig {
+            path: self.path,
+            subscriptions: self.subscriptions,
+            playground: self.playground,
+            connection_init_timeout: self.connection_init_timeout,
+            _engine: PhantomData,
+        }
     }
+}
+
+impl<Q> Clone for GraphqlConfig<Q> {
+    fn clone(&self) -> Self {
+        GraphqlConfig {
+            path: self.path.clone(),
+            subscriptions: self.subscriptions.clone(),
+            playground: self.playground,
+            connection_init_timeout: self.connection_init_timeout,
+            _engine: PhantomData,
+        }
+    }
+}
+
+impl<Q> PartialEq for GraphqlConfig<Q> {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.subscriptions == other.subscriptions
+            && self.playground == other.playground
+            && self.connection_init_timeout == other.connection_init_timeout
+    }
+}
+
+impl<Q> Eq for GraphqlConfig<Q> {}
+
+impl<Q> Hash for GraphqlConfig<Q> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+        self.subscriptions.hash(state);
+        self.playground.hash(state);
+        self.connection_init_timeout.hash(state);
+    }
+}
+
+/// `path` with one leading `/` and no trailing one, `/` itself kept: the form the playground
+/// writes and the router joins.
+fn normalize(path: &str) -> String {
+    let trimmed = path.trim_matches('/');
+    format!("/{trimmed}")
 }

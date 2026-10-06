@@ -13,6 +13,7 @@ categories = ["web-programming"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-graphql = { path = "../ulo-graphql" }
-futures-util.workspace = true
-juniper.workspace = true
+futures.workspace = true
+juniper = { workspace = true, features = ["schema-language"] }
 serde_json.workspace = true
+tracing.workspace = true

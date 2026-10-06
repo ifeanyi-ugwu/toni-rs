@@ -13,6 +13,7 @@ categories = ["web-programming::http-server"]
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-graphql = { path = "../ulo-graphql" }
+ulo-graphql-ws = { path = "../ulo-graphql-ws" }
 ulo-http = { path = "../ulo-http" }
 ulo-transport = { path = "../ulo-transport" }
 http.workspace = true
