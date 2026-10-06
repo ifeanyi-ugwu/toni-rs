@@ -7,7 +7,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use ulo::scope::{AllowedIn, Auto, PerExecution, Transient};
-use ulo::{Factory, FromContainer, Key, LookupError, Requirement, Resolver};
+use ulo::{BoxFuture, Dependencies, Factory, FromContainer, Key, LookupError, Requirement, Resolver};
 
 use crate::connection::ConnId;
 
@@ -27,8 +27,8 @@ impl SessionHandle {
 
     /// The session as `T`, `None` when the gateway's session is another type or it has none.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<Session<T>> {
-        let _ = &self.value;
-        todo!()
+        let value = Arc::clone(self.value.as_ref()?).downcast::<T>().ok()?;
+        Some(Session { conn: self.conn, value })
     }
 }
 
@@ -74,9 +74,15 @@ impl<T: Send + Sync + 'static> FromContainer for Session<T> {
         req.dep(Key::of::<SessionHandle, ()>());
     }
 
+    /// A gateway with no session, or a session of another type, answers the lookup of
+    /// `Session<T>` as an input never seeded: `NotFound` with `LookupKind::Input`, naming
+    /// `Session<T>`.
     async fn from_container(r: &Resolver<'_>) -> Result<Self, LookupError> {
-        let _ = r;
-        todo!()
+        let handle = r.dep::<SessionHandle>().await?;
+        match handle.get::<T>() {
+            Some(session) => Ok(session),
+            None => r.input::<Session<T>>().map(|seeded| (*seeded).clone()),
+        }
     }
 }
 
@@ -92,6 +98,21 @@ pub struct SessionFactory {
 pub(crate) enum FactoryKind {
     None,
     Build(Box<dyn Fn() -> Arc<dyn Any + Send + Sync> + Send + Sync>),
+    /// A factory over container reads, run in the connection phase's execution.
+    With { dependencies: Dependencies, build: BuildFn },
+}
+
+/// A session factory's call, erased.
+pub(crate) type BuildFn =
+    Arc<dyn for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<dyn Any + Send + Sync>, LookupError>> + Send + Sync>;
+
+/// Gives a closure the higher-ranked signature of `BuildFn`, which one boxed in place does not
+/// get deduced.
+fn erase_build<F>(f: F) -> BuildFn
+where
+    F: for<'a> Fn(&'a Resolver<'a>) -> BoxFuture<'a, Result<Arc<dyn Any + Send + Sync>, LookupError>> + Send + Sync + 'static,
+{
+    Arc::new(f)
 }
 
 impl SessionFactory {
@@ -112,7 +133,35 @@ impl SessionFactory {
         F: Factory<Args>,
         F::Output: Send + Sync + 'static,
     {
-        let _ = factory;
-        todo!()
+        let mut dependencies = Dependencies::default();
+        F::dependencies(&mut dependencies);
+        let factory = Arc::new(factory);
+        let build = erase_build(move |r| {
+            let factory = Arc::clone(&factory);
+            let built: BoxFuture<'_, Result<Arc<dyn Any + Send + Sync>, LookupError>> = Box::pin(async move {
+                let session: Arc<dyn Any + Send + Sync> = Arc::new(<F as Factory<Args>>::call(&*factory, r).await?);
+                Ok(session)
+            });
+            built
+        });
+        SessionFactory { kind: FactoryKind::With { dependencies, build } }
+    }
+
+    /// What the factory's parameters read, which the connect handler declares so `wire()` checks
+    /// them as it checks a handler's.
+    pub(crate) fn dependencies(&self) -> Dependencies {
+        match &self.kind {
+            FactoryKind::With { dependencies, .. } => dependencies.clone(),
+            FactoryKind::None | FactoryKind::Build(_) => Dependencies::default(),
+        }
+    }
+
+    /// The session for a new connection, read in the connection phase's execution through `r`.
+    pub(crate) async fn build(&self, r: &Resolver<'_>) -> Result<Option<Arc<dyn Any + Send + Sync>>, LookupError> {
+        match &self.kind {
+            FactoryKind::None => Ok(None),
+            FactoryKind::Build(build) => Ok(Some(build())),
+            FactoryKind::With { build, .. } => build(r).await.map(Some),
+        }
     }
 }

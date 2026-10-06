@@ -6,11 +6,16 @@
 //! of the target. Room membership stays local to each process. Delivery is best effort and
 //! ordered per sender within one process.
 
+use std::collections::hash_map::RandomState;
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::{Arc, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures_core::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use ulo::{BoxError, BoxFuture};
 
 use crate::connection::ConnId;
@@ -60,8 +65,22 @@ pub struct NodeId(pub(crate) u128);
 
 impl NodeId {
     /// This process's id, the same for its whole life.
+    ///
+    /// Drawn from the standard library's per-process random hash keys, the process id and the
+    /// clock, so two processes started together on one host still differ.
     pub fn current() -> NodeId {
-        todo!()
+        static CURRENT: OnceLock<NodeId> = OnceLock::new();
+        *CURRENT.get_or_init(|| {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+            let half = |salt: u64| {
+                let mut hasher = RandomState::new().build_hasher();
+                hasher.write_u64(salt);
+                hasher.write_u32(std::process::id());
+                hasher.write_u128(nanos);
+                hasher.finish()
+            };
+            NodeId((u128::from(half(0)) << 64) | u128::from(half(1)))
+        })
     }
 }
 
@@ -72,9 +91,22 @@ impl fmt::Display for NodeId {
 }
 
 /// The adapter for one process, `WsModule::for_root()`'s unless `.broadcast(..)` names another.
+///
+/// A clone shares the channel. A subscriber more than 1024 broadcasts behind skips the ones it
+/// missed, logged at `warn`: delivery is best effort.
 #[derive(Clone, Default)]
 pub struct InMemory {
-    _private: (),
+    inner: Arc<Channel>,
+}
+
+struct Channel {
+    sender: broadcast::Sender<(Target, Bytes)>,
+}
+
+impl Default for Channel {
+    fn default() -> Self {
+        Channel { sender: broadcast::channel(1024).0 }
+    }
 }
 
 impl InMemory {
@@ -84,13 +116,25 @@ impl InMemory {
 }
 
 impl BroadcastAdapter for InMemory {
+    /// With no subscriber there is no member to deliver to, which is not a failure.
     fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
-        let _ = (target, frame);
-        todo!()
+        let _ = self.inner.sender.send((target, frame));
+        Box::pin(async { Ok(()) })
     }
 
     fn subscribe(&self, node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
         let _ = node;
-        todo!()
+        let receiver = self.inner.sender.subscribe();
+        Box::pin(futures_util::stream::unfold(receiver, |mut receiver| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(item) => return Some((item, receiver)),
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::warn!(missed, "a WebSocket broadcast subscriber fell behind and skipped broadcasts");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        }))
     }
 }

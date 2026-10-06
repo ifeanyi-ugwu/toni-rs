@@ -16,8 +16,8 @@
 //! Two transports: [`Ws`] covers message handlers, one execution per message, and [`WsConnect`]
 //! the connection phase, one execution per connection, whose handler `ulo-ws` mounts itself with
 //! the gateway's connect guards. A gateway on the HTTP server's port is reached through the
-//! upgrade hand-off [`WsModule`] registers; one on its own port through [`Server`]. Both run the
-//! same steps at the same moments.
+//! upgrade hand-off [`WsModule`] registers; one declared `port = own` through [`Server`]. Both
+//! run the same steps at the same moments.
 
 mod broadcast;
 mod codec;
@@ -40,7 +40,7 @@ pub use connection::{ConnId, Connection};
 pub use envelope::{Frame, MessageId, Payload};
 pub use gateway::{
     AfterInit, CloseCodeError, ConnectRefused, DisconnectReason, Gateway, GatewayConfig, GatewayRef, GatewaySettings,
-    OnConnect, OnDisconnect, Overflow, Refuse,
+    OnConnect, OnDisconnect, Overflow, Port, Refuse,
 };
 pub use module::WsModule;
 pub use rooms::{Broadcast, BroadcastError, Rooms, RoomsIn};

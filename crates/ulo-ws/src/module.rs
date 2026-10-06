@@ -2,10 +2,15 @@
 
 use std::sync::Arc;
 
-use ulo::{Bound, Module, ModuleDef, ModuleIdentity};
+use bytes::Bytes;
+use futures_core::stream::BoxStream;
+use ulo::{BoxError, BoxFuture, Bound, Meta, Module, ModuleDef, ModuleIdentity};
+use ulo_http::Upgrades;
 use ulo_transport::Count;
 
-use crate::broadcast::{BroadcastAdapter, InMemory};
+use crate::broadcast::{BroadcastAdapter, InMemory, NodeId, Target};
+use crate::handoff::Handoff;
+use crate::rooms::{Hub, Rooms};
 
 /// Imported once per application: registers the gateway hand-off in the HTTP `Upgrades`
 /// metadata, binds [`Rooms`](crate::Rooms) and the broadcast adapter, and carries the defaults
@@ -94,8 +99,38 @@ impl Module for WsModule {
         ModuleIdentity::of_type::<WsModule>()
     }
 
+    /// The module is global, so `Dep<Rooms>` and `Dep<dyn BroadcastAdapter>` resolve in every
+    /// module of the application, and the standalone server finds the application's `Hub` in its
+    /// metadata whichever module imported it.
     fn register(&self, m: &mut ModuleDef<'_>) {
-        let _ = m;
-        todo!()
+        let hub = Arc::new(Hub::new(Arc::clone(&self.adapter)));
+        m.global();
+        m.meta::<Upgrades>().register(Handoff::new(self.defaults.clone(), Arc::clone(&hub)));
+        m.meta::<HubMeta>().hub = Some(Arc::clone(&hub));
+        m.value(Rooms { adapter: Arc::clone(&self.adapter), hub });
+        m.export::<Rooms>();
+        m.value(SharedAdapter(Arc::clone(&self.adapter))).also_as::<dyn BroadcastAdapter>(|adapter| adapter);
+        m.export::<dyn BroadcastAdapter>();
+    }
+}
+
+/// The application's `Hub`, as module metadata the standalone server reads in `prepare`.
+#[derive(Default)]
+pub(crate) struct HubMeta {
+    pub(crate) hub: Option<Arc<Hub>>,
+}
+
+impl Meta for HubMeta {}
+
+/// The configured adapter under a key of its own, bound `also_as` `dyn BroadcastAdapter`.
+struct SharedAdapter(Arc<dyn BroadcastAdapter>);
+
+impl BroadcastAdapter for SharedAdapter {
+    fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
+        self.0.publish(target, frame)
+    }
+
+    fn subscribe(&self, node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
+        self.0.subscribe(node)
     }
 }

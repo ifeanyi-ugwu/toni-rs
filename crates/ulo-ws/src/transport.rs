@@ -6,10 +6,10 @@ use futures_core::stream::BoxStream;
 use http::request::Parts;
 use http::{HeaderMap, Uri};
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
-use ulo_transport::Tracked;
+use ulo_transport::{ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
 
-use crate::connection::Connection;
-use crate::envelope::{Frame, MessageId};
+use crate::connection::{ConnId, Connection};
+use crate::envelope::{Data, Frame, MessageId};
 use crate::gateway::ConnectRefused;
 use crate::session::SessionHandle;
 
@@ -69,6 +69,11 @@ pub struct WsCx {
 
 pub(crate) struct CxInner {
     pub(crate) exec: ExecutionRef,
+    pub(crate) conn: Connection,
+    pub(crate) event: String,
+    pub(crate) id: Option<MessageId>,
+    /// The message's `data`, undecoded until a `Payload<T>` reads it.
+    pub(crate) data: Data,
 }
 
 impl WsCx {
@@ -87,26 +92,33 @@ impl WsCx {
 
     /// The connection the message arrived on.
     pub fn conn(&self) -> &Connection {
-        todo!()
+        &self.inner.conn
     }
 
     /// The event the message named, under the gateway's event field.
     pub fn event(&self) -> &str {
-        todo!()
+        &self.inner.event
     }
 
     /// The message's `id`, echoed on its answer; `None` for a fire-and-forget message.
     pub fn id(&self) -> Option<&MessageId> {
-        todo!()
+        self.inner.id.as_ref()
     }
 
     pub fn app(&self) -> &AppHandle {
-        todo!()
+        self.inner.conn.app()
     }
 
     /// The app's `Timer`, which anything timed inside a reply reads.
     pub fn timer(&self) -> &Arc<dyn Timer> {
-        todo!()
+        self.inner.conn.timer()
+    }
+}
+
+/// The context as a handler parameter, `cx: WsCx`, as `HttpCx` is on HTTP.
+impl FromCall<Ws> for WsCx {
+    async fn from_call(cx: &WsCx) -> Result<Self, ExtractError> {
+        Ok(cx.clone())
     }
 }
 
@@ -126,6 +138,7 @@ pub struct ConnectCx {
 
 pub(crate) struct ConnectInner {
     pub(crate) exec: ExecutionRef,
+    pub(crate) conn: Connection,
 }
 
 impl ConnectCx {
@@ -142,20 +155,20 @@ impl ConnectCx {
     }
 
     pub fn conn(&self) -> &Connection {
-        todo!()
+        &self.inner.conn
     }
 
     /// The upgrade request's head as the client sent it.
     pub fn head(&self) -> &UpgradeHead {
-        todo!()
+        self.inner.conn.head()
     }
 
     pub fn app(&self) -> &AppHandle {
-        todo!()
+        self.inner.conn.app()
     }
 
     pub fn timer(&self) -> &Arc<dyn Timer> {
-        todo!()
+        self.inner.conn.timer()
     }
 }
 
@@ -174,6 +187,14 @@ pub enum Reply {
     None,
     One(Frame),
     Many(Tracked<BoxStream<'static, Result<Frame, BoxError>>>),
+}
+
+/// A reply built by hand, an interceptor's own answer included, as it stands.
+impl IntoReply<Ws> for Reply {
+    fn into_reply(self, cx: &WsCx) -> Result<Reply, IntoReplyError> {
+        let _ = cx;
+        Ok(self)
+    }
 }
 
 impl fmt::Debug for Reply {
@@ -224,6 +245,7 @@ impl std::error::Error for NoHandler {}
 pub struct ConnectionInfo {
     pub(crate) peer: Option<SocketAddr>,
     pub(crate) path: Arc<str>,
+    pub(crate) id: ConnId,
 }
 
 impl ConnectionInfo {
@@ -238,8 +260,8 @@ impl ConnectionInfo {
     }
 
     /// The connection's id, which `Rooms::to_client` addresses.
-    pub fn id(&self) -> crate::connection::ConnId {
-        todo!()
+    pub fn id(&self) -> ConnId {
+        self.id
     }
 }
 
@@ -248,6 +270,8 @@ impl ConnectionInfo {
 #[derive(Clone, Debug)]
 pub struct UpgradeHead {
     pub(crate) parts: Arc<Parts>,
+    /// The name the handshake echoed in `Sec-WebSocket-Protocol`.
+    pub(crate) subprotocol: Option<Arc<str>>,
 }
 
 impl UpgradeHead {
@@ -262,6 +286,6 @@ impl UpgradeHead {
     /// The `Sec-WebSocket-Protocol` the handshake echoed, `None` when the gateway lists none the
     /// client offered.
     pub fn subprotocol(&self) -> Option<&str> {
-        todo!()
+        self.subprotocol.as_deref()
     }
 }

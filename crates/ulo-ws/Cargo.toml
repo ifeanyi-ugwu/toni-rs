@@ -19,13 +19,18 @@ ulo-transport = { path = "../ulo-transport" }
 ulo-ws-macros = { path = "../ulo-ws-macros" }
 bytes.workspace = true
 futures-core.workspace = true
-futures-util.workspace = true
+# `sink`: the connection writes through `SinkExt` on the WebSocket stream.
+futures-util = { workspace = true, features = ["sink"] }
 http.workspace = true
+# The standalone server's response bodies.
+http-body-util.workspace = true
 hyper = { workspace = true, features = ["server", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+# `raw_value`: a message's `id` is echoed byte for byte, and its `data` decoded only when a
+# handler reads it.
+serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tracing.workspace = true
