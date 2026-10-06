@@ -1008,3 +1008,47 @@ The plan is sound and follows 2a's form. Two notes:
 
 - **The spine is what makes the parallel areas safe.** W, R and G each own a contract others call: `Gateway` for GraphQL, `Link` for the brokers, `Method` for the build step. Because the spine writes every new crate's public signatures with `todo!()` bodies, those contracts are frozen before any area starts. That's what lets Q and B begin alongside W and R. Keep it that way.
 - **Two items need an owner:** the shared accept loop of R28 (`ulo-hyper-serve`, consumed by the hyper backend, gRPC and the standalone WebSocket server), and the `#[meta]` transport probe (Q20). Assign both to the spine, since three areas depend on the first and every transport's attribute uses the second.
+
+## Twenty-first response: race 2b's divergences
+
+Received 2026-10-06, answering `DIVERGENCES_2B.md` (U1–U33). Sign-off pending.
+
+Most of this list I'd accept as recommended. Three items deserve a different answer, and one gap in §8 should shape the first batch of tests more than any single entry.
+
+### The "decide before tests" items
+
+| Item | Answer |
+|---|---|
+| U1 | **Accept** all three mechanisms, and amend the four design sentences to say what a handler may *return* rather than which trait a type implements. |
+| U2 | **(b) on both transports.** One deadline rule across four transports. The argument for gRPC (the caller has stopped waiting) is the same one T8 already rejected for HTTP. The grace bounds the handlers, and running them is what lets an application log, count or reshape its timeouts consistently. |
+| U5 | **(b).** The defaulted `Link::max_inflight` restores the tie the twentieth response asked for, and only one link's body changes. |
+| U26 | **Add `Outcome::Failed`, rendered 500.** A 400 tells the client to fix a document it can't fix. |
+| U33 | **All three.** Make `MethodNotAllowed::new` public so the GraphQL 405 goes through the error handlers like every other 405, delete `ulo-ws-tungstenite` and its `exclude` entry, and drop `watchexec-events`. |
+| U4 | **Accept `wire()`.** The rule's point is one report before any socket opens, and `wire()` comes earlier than `prepare`. |
+
+### Three different answers
+
+**U14: replace the spelling read with a type-level probe.** Reading `Stream` out of the return type *as written* is exactly the technique the design ruled out for SSE (2a: "telling it apart would read the return type's spelling, which the design rules out"). The alias case shows why: a stream behind a type alias is mounted as unary and fails at runtime. A probe needs a type, not a value. The generated call closure already exists, so a helper generic over the closure's future output (`fn shape_of<F, Fut, R>(_: &F) where F: Fn(..) -> Fut, Fut: Future<Output = R>`) can autoref-probe `PhantomData<R>` for `R: Stream`. That sees through aliases and opaque `impl Stream` types alike, because both are just bounds on `R`. Probe it before tests: shapes are what the RPC suite pins, and this would also remove the need for an override attribute.
+
+**U24: don't force the engine's module to be global.** Making it `global` with `exports = [dyn Engine]` works, but it puts the engine into every module's view to solve a visibility problem between two specific modules. The narrower fix fits the module system: `GraphqlModule` *imports* the module that binds the engine. Something like `GraphqlConfig::at("/graphql").engine_from(ApiSchemaModule)` makes `GraphqlModule` import that module and read its exported `dyn Engine`. Module identity is by value, so a configured module instance works as an import. The rest of U24 stands: the context resolving in the engine's module, the dependency on `ulo-ws`, and importing `WsModule` once.
+
+**U3: the unread prefix should be refused where it's visible.** "A prefix on a controller with no HTTP route and no gateway is read by nothing and reported by nothing" is the kind of silent no-op the design refuses elsewhere. The mixed controller only rules out refusing a prefix *in general*. A controller whose handlers all belong to transports that ignore prefixes is a visible fault. The smallest mechanism is a `Transport::READS_PREFIX: bool` constant, which the freeze checks against a controller's handlers when `.at(..)` is set. Filing it as a gap is acceptable, but it's small enough to include.
+
+### Everything else
+
+U6, U7, U8, U9, U10, U11, U12, U13, U15, U16, U17, U18, U19, U20, U21, U22, U23, U25, U27, U28, U29, U30, U31 and U32 are accepted as recommended, with their design amendments and filed gaps.
+
+Two notes:
+- **U26's per-operation gap needs one documentation sentence.** Connect guards are the GraphQL gateway's only authorization point. Someone who writes `Ws` guards expecting them to run on every message will find they don't on graphql-transport-ws, and that should be stated where gateways are documented, not discovered.
+- **U22's `Status` passthrough is fine,** since the error handlers still see the `Status` first. Document it next to `with_grpc_code`, as recommended.
+
+### The gap that shapes the first tests
+
+§8 says it plainly: `#[ulo_ws::gateway]`, `#[ulo_ws::message]`, `#[ulo_grpc::method]` and `ulo_build` have **never been expanded**. Their generated code hasn't been type-checked once, and neither has X24's mismatch arm. Everything the compile proved about WebSocket and gRPC handlers covers the hand-written paths only.
+
+So the first test batch should come before any behavior test, and should simply make the compiler see that code:
+- a crate with one attributed gateway and a few `#[message]` handlers (covering each reply kind and `session_with`);
+- a crate with a `build.rs` running `ulo_build`, one proto with all four shapes, and `#[method]` handlers for each;
+- compile-fail tests for X24's mismatch and for a gRPC shape mismatch.
+
+Several of the uncertainties in §8 (the `Answer<M>` inference, the six-arm probe with the const-generic turbofish, the anonymous const inside a generic impl) are exactly the kind of thing that fails on first expansion. Finding that out in a five-line test crate is much cheaper than finding it inside a conformance scenario.
