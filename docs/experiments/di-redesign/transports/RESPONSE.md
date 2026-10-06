@@ -1011,7 +1011,9 @@ The plan is sound and follows 2a's form. Two notes:
 
 ## Twenty-first response: race 2b's divergences
 
-Received 2026-10-06, answering `DIVERGENCES_2B.md` (U1–U33). Sign-off pending.
+Received 2026-10-06, answering `DIVERGENCES_2B.md` (U1–U33). The user signed it off the same day. The
+accepted follow-ups are filed in the workspace gaps ledger; the shape override on `#[message]` is
+dropped, since U14's probe removes its need.
 
 Most of this list I'd accept as recommended. Three items deserve a different answer, and one gap in §8 should shape the first batch of tests more than any single entry.
 
