@@ -86,12 +86,14 @@ pub struct CallError {
     details: Details,
     /// The `WWW-Authenticate` challenge an `Unauthorized` carries, overriding the server's default.
     challenge: Option<String>,
+    /// The gRPC status code this error is sent with in place of its kind's.
+    grpc_code: Option<i32>,
     source: Option<BoxError>,
 }
 
 impl CallError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        CallError { kind, message: message.into(), details: Details::default(), challenge: None, source: None }
+        CallError { kind, message: message.into(), details: Details::default(), challenge: None, grpc_code: None, source: None }
     }
 
     /// `Unauthorized`, carrying its own `WWW-Authenticate` challenge (RFC 9110 requires one on a
@@ -177,6 +179,21 @@ impl CallError {
         self.challenge.as_deref()
     }
 
+    /// Sends this error over gRPC with the canonical status code `code`, `google.rpc.Code`'s number,
+    /// in place of the one its kind maps to. A `Conflict` maps to `ABORTED`, and Google's API
+    /// guidance pairs HTTP 409 with `ALREADY_EXISTS` too: an error naming a resource that exists
+    /// writes `.with_grpc_code(6)`. The kind still decides every other transport's rendering. The
+    /// gRPC transport ignores a code outside 1 to 16, `OK` included.
+    pub fn with_grpc_code(mut self, code: i32) -> Self {
+        self.grpc_code = Some(code);
+        self
+    }
+
+    /// The gRPC status code [`with_grpc_code`](Self::with_grpc_code) set.
+    pub fn grpc_code(&self) -> Option<i32> {
+        self.grpc_code
+    }
+
     /// The domain error this was built from, by type: `err.downcast_ref::<CallError>()?.source_as::<UserError>()`.
     pub fn source_as<E: Error + 'static>(&self) -> Option<&E> {
         self.source.as_deref().and_then(|source| source.downcast_ref::<E>())
@@ -191,6 +208,7 @@ impl CallError {
             message: self.message.clone(),
             details: self.details.clone(),
             challenge: self.challenge.clone(),
+            grpc_code: self.grpc_code,
             source: None,
         }
     }

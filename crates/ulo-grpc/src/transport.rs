@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use tonic::metadata::MetadataMap;
-use ulo::{AppHandle, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
+use tonic::metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue};
+use ulo::{AppHandle, ExecutionRef, Ext, Extensions, Inputs, LookupError, MountedHandler, Timer, Transport};
+use ulo_http::HttpBody;
 use ulo_transport::{ExtractError, FromCall};
 
 /// The gRPC transport, key `"grpc"`: one execution per call. `#[guards(grpc = ..)]` scopes an entry
@@ -35,6 +36,10 @@ pub type Reply = http::Response<tonic::body::Body>;
 
 /// One call's context: `Clone + Send + Sync`, every clone the same call. The execution, the method
 /// path, the request metadata, the peer, and the app's `Timer`.
+///
+/// A guard reads the metadata through it, `cx.metadata().get("authorization")`, and passes data to
+/// the handler through `cx.extensions()`. A streaming reply holds a clone, which keeps the
+/// execution's instances and its cancellation signal alive while the stream runs.
 #[derive(Clone)]
 pub struct GrpcCx {
     pub(crate) inner: Arc<CxInner>,
@@ -42,9 +47,26 @@ pub struct GrpcCx {
 
 pub(crate) struct CxInner {
     pub(crate) exec: ExecutionRef,
+    pub(crate) app: AppHandle,
+    pub(crate) timer: Arc<dyn Timer>,
+    /// The `:path` as the pre-dispatch stage left it.
+    pub(crate) path: Arc<str>,
+    /// The request headers as the pre-dispatch stage left them; the seeded `GrpcMetadata` input is
+    /// what the client sent.
+    pub(crate) metadata: GrpcMetadata,
+    pub(crate) peer: Option<SocketAddr>,
+    /// The matched handler, whose error handlers a stream item's `Err` reaches. `None` in the
+    /// context a failure of the unscoped pre-dispatch sub-step is offered with.
+    pub(crate) handler: Option<MountedHandler<Grpc>>,
+    /// The request body, taken once by the extractor that decodes it.
+    pub(crate) body: Mutex<Option<HttpBody>>,
 }
 
 impl GrpcCx {
+    pub(crate) fn new(inner: CxInner) -> Self {
+        GrpcCx { inner: Arc::new(inner) }
+    }
+
     pub fn exec(&self) -> &ExecutionRef {
         &self.inner.exec
     }
@@ -60,24 +82,29 @@ impl GrpcCx {
 
     /// The path the caller dialled, `/users.v1.UserService/GetUser`.
     pub fn path(&self) -> &str {
-        todo!()
+        &self.inner.path
     }
 
     /// The request metadata.
     pub fn metadata(&self) -> &GrpcMetadata {
-        todo!()
+        &self.inner.metadata
     }
 
     pub fn peer(&self) -> Option<SocketAddr> {
-        todo!()
+        self.inner.peer
     }
 
     pub fn app(&self) -> &AppHandle {
-        todo!()
+        &self.inner.app
     }
 
     pub fn timer(&self) -> &Arc<dyn Timer> {
-        todo!()
+        &self.inner.timer
+    }
+
+    /// The request body, once: the first body-consuming extractor takes it.
+    pub(crate) fn take_body(&self) -> Option<HttpBody> {
+        self.inner.body.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 }
 
@@ -109,13 +136,18 @@ impl GrpcMetadata {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).and_then(|value| value.to_str().ok())
     }
+
+    pub(crate) fn from_headers(headers: &http::HeaderMap) -> Self {
+        GrpcMetadata { map: MetadataMap::from_headers(headers.clone()) }
+    }
 }
 
 /// The caller's address, as an execution input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PeerAddr(pub SocketAddr);
 
-/// A reply message with reply metadata: `Response::new(user).metadata("x-cache", "miss")`.
+/// A reply message with reply metadata: `Response::new(user).metadata("x-cache", "miss")`. Wraps a
+/// reply stream the same way, `Response::new(stream)`, for a streaming method's reply headers.
 #[derive(Debug)]
 pub struct Response<T> {
     pub(crate) message: T,
@@ -128,10 +160,15 @@ impl<T> Response<T> {
     }
 
     /// One ASCII metadata entry on the reply's headers; a key or value that is not valid ASCII
-    /// metadata is dropped and logged at `warn`.
-    pub fn metadata(self, key: &'static str, value: &str) -> Self {
-        let _ = (key, value);
-        todo!()
+    /// metadata is dropped and logged at `warn`. A key written twice carries both values.
+    pub fn metadata(mut self, key: &'static str, value: &str) -> Self {
+        match (MetadataKey::<Ascii>::from_bytes(key.as_bytes()), MetadataValue::<Ascii>::try_from(value)) {
+            (Ok(name), Ok(value)) => {
+                self.metadata.append(name, value);
+            }
+            _ => tracing::warn!(key, "reply metadata dropped: the key or the value is not valid ASCII metadata"),
+        }
+        self
     }
 
     pub fn into_inner(self) -> T {
