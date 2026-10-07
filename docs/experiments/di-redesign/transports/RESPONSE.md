@@ -1288,3 +1288,30 @@ All seven are settled below. For the sixth there's a simpler fix than either opt
 **6. Bind port 0 and read the bound address back.** The race exists because the suites choose a port themselves. The design already avoids that: an endpoint may be `0.0.0.0:0`, and `Link::bound()` reports the address the OS chose, which `App<Bound>::addresses()` collects (that's what R18 added `bound` for). So the TCP and UDP suites, and `deadline_answers.rs`, should bind port 0 and hand the reported address to the client. That closes the race without new API and without retries, and retries would only hide the next startup problem. A way to give `Tcp` an already-bound listener is worth having later for supervisors and embedding, but the suites don't need it.
 
 **7. Yes: wrap at the service.** §2.6 promises that every streaming answer reports its end, and a promise that holds only when the stream was built a particular way is the "it depends on how you built it" inconsistency we've removed everywhere else. The service writes every body, so it's the one place that sees all of them. Wrap any body without an exact length in `Tracked` if it isn't already wrapped. Double reporting can't happen, since the first report wins, as it already does on the post-deadline path. Known-length bodies stay unwrapped, as the 2a decision (H 14) settled, so `Content-Length` is never dropped.
+
+### Addendum to the thirtieth response: adopting a resource someone else made
+
+Received 2026-10-07, answering the user's question whether an already-bound listener should be
+TCP's alone. A design for a deferred item, filed in the workspace gaps ledger; not yet built.
+
+It shouldn't be TCP-only. It belongs one layer down, in ulo-net's Endpoint, which already has the right shape. Endpoint::Inherited is "a socket someone else bound": it just finds that socket through the systemd environment. A pre-bound listener is the same idea with the socket handed over directly, in code.
+
+So add it there, next to the other two:
+
+```rust
+Endpoint::Addr(addr)            // bind it yourself
+Endpoint::Inherited(name)       // a socket the supervisor bound, found through LISTEN_FDS
+Endpoint::listener(std_listener) // a socket the caller bound, handed over directly
+```
+
+Every server that takes an Endpoint then gets it at once, with no per-transport work: the hyper backend, the standalone WebSocket server, the gRPC server (all three bind through ulo-net and the shared accept loop), and the TCP link.
+
+How the rest of the transports fit:
+
+- UDP needs its own variant. A datagram socket isn't a listener: it's a different type with different checks. So it's Endpoint::socket(std_udp_socket) alongside the listener variant. This is the same territory as F306, where activation currently refuses anything but listening TCP sockets. Solving both together makes sense: the activation code learns to tell the two kinds apart, and the direct variant uses the same vetting.
+- Brokers have no listening socket. They connect out, so "already bound" doesn't apply to them. Their equivalent is "already connected": adopting a client the host already holds, like the Nats::from_client(client) idea from the embedding discussion. That's the same principle (the framework uses a resource it didn't create) applied to the resource brokers actually have.
+- Embedded HTTP needs nothing. There, the host owns the socket entirely.
+
+One detail matters for correctness: an endpoint today is a plain value you can clone and compare, but a socket can only be owned once. So the listener variant should be take-once, exactly like an inherited socket is already taken from the activation. The first bind adopts it, a second one is refused with a clear Configure error, and adoption applies the same treatment inheritance does: non-blocking mode and FD_CLOEXEC, so a child process can't leak it.
+
+So "adopt a resource someone else made" becomes one rule across the design: listeners and datagram sockets through Endpoint, broker connections through each link's own constructor, and whole servers through embedding.
