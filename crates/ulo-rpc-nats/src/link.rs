@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use async_nats::connection::State as Connection;
 use async_nats::{Client, ConnectOptions, Event, HeaderMap, Message, ServerAddr, StatusCode, Subscriber};
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -202,12 +203,12 @@ impl Link for Nats {
         if let Some(side) = server {
             side.phase.send_replace(Phase::Closed);
             side.calls.clear();
-            if let Err(error) = side.client.drain().await {
+            if let Err(error) = shut(&side.client).await {
                 failure = Some(error);
             }
         }
         if let Some(client) = client
-            && let Err(error) = client.drain().await
+            && let Err(error) = shut(&client).await
         {
             failure = Some(error);
         }
@@ -216,6 +217,27 @@ impl Link for Nats {
             None => Ok(()),
         }
     }
+}
+
+/// Closes one connection once the server has routed everything it published.
+///
+/// async-nats's `publish` and `drain` only queue a command for the connection's task, and a task
+/// that finds its command channel closed exits without writing what it already took from it. Once
+/// `close` drops the last `Client`, the replies of the calls the drain let finish could be lost
+/// that way. NATS routes one connection's messages in order, so a message to the connection's own
+/// inbox coming back shows every earlier one was routed. Skipped while disconnected: async-nats
+/// writes nothing it queued until it reconnects, and the close drops the connection first.
+async fn shut(client: &Client) -> Result<(), BoxError> {
+    if client.connection_state() == Connection::Connected {
+        let subject = client.new_inbox();
+        let mut echo = client.subscribe(subject.clone()).await?;
+        client.publish(subject, Bytes::new()).await?;
+        if echo.next().await.is_none() {
+            return Err("the connection closed before its last messages were routed".into());
+        }
+    }
+    client.drain().await?;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
