@@ -1265,3 +1265,25 @@ Four of the five are accepted. On the fourth, the cap is in the wrong place, and
 **On the Redis startup failure:** that's now two brokers (NATS in batch 9, Redis now) failing the same way, before any call, each roughly once in a few dozen runs. That pattern points at the shared harness more than at either link. The classic cause is a port race: the harness picks a free port, releases it, and the container binds it a moment later, by which time something else may have taken it. Check how `Broker::start` chooses ports.
 
 Separately, make sure the cause can't be lost again. The error chain exists now, but the runner's output filter is still eating it. Write startup failures to a file that CI uploads as an artifact, or print them with `--nocapture` on failure, so the next occurrence is diagnosable the first time it happens.
+
+## Thirtieth response: the shadowed-port build
+
+Received 2026-10-07, answering `divergences/race2b-tests12.md` (S1–S5) and two questions: the TCP
+and UDP suites' probe-then-release port choice, and an HTTP stream built without `into_reply`
+reporting its end only after a deadline. Sign-off pending.
+
+All seven are settled below. For the sixth there's a simpler fix than either option offered.
+
+**1. Accepted.** The cap has to exist, because a body whose frames are always ready, like an endless SSE stream, looks exactly like a large finished body until you've read it. Bounding "the first poll" at 32 frames is a reasonable line. The rare false positive (a body of 33+ ready frames over 1 MiB, answered after a deadline) is a corner of a corner. Document it in one sentence next to the cap.
+
+**2. Accepted.** 18,865 polls in 300 ms was a busy loop burning a core on every timed-out request that reached this path. That's a real production bug found in passing, and exactly the kind worth fixing without being asked.
+
+**3. Accepted.** Probing the actual port is right, and your reproduction proves why. A registry would have checked the suite's own ports and missed the VS Code helper that actually caused the failure. A probe tests the real condition, a registry tests an assumption about it. Limiting it to macOS, where the shadow can form, is correct too.
+
+**4. Accepted.**
+
+**5. Accepted.** The files in the log and as an artifact give you the cause on the first failure, which is what was missing twice before.
+
+**6. Bind port 0 and read the bound address back.** The race exists because the suites choose a port themselves. The design already avoids that: an endpoint may be `0.0.0.0:0`, and `Link::bound()` reports the address the OS chose, which `App<Bound>::addresses()` collects (that's what R18 added `bound` for). So the TCP and UDP suites, and `deadline_answers.rs`, should bind port 0 and hand the reported address to the client. That closes the race without new API and without retries, and retries would only hide the next startup problem. A way to give `Tcp` an already-bound listener is worth having later for supervisors and embedding, but the suites don't need it.
+
+**7. Yes: wrap at the service.** §2.6 promises that every streaming answer reports its end, and a promise that holds only when the stream was built a particular way is the "it depends on how you built it" inconsistency we've removed everywhere else. The service writes every body, so it's the one place that sees all of them. Wrap any body without an exact length in `Tracked` if it isn't already wrapped. Double reporting can't happen, since the first report wins, as it already does on the post-deadline path. Known-length bodies stay unwrapped, as the 2a decision (H 14) settled, so `Content-Length` is never dropped.
