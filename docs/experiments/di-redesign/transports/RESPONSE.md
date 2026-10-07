@@ -1270,7 +1270,8 @@ Separately, make sure the cause can't be lost again. The error chain exists now,
 
 Received 2026-10-07, answering `divergences/race2b-tests12.md` (S1–S5) and two questions: the TCP
 and UDP suites' probe-then-release port choice, and an HTTP stream built without `into_reply`
-reporting its end only after a deadline. Sign-off pending.
+reporting its end only after a deadline. The user signed it off the same day; a way to give `Tcp` an
+already-bound listener is filed in the workspace gaps ledger.
 
 All seven are settled below. For the sixth there's a simpler fix than either option offered.
 
