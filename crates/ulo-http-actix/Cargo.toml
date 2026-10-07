@@ -11,9 +11,10 @@ keywords = ["ulo", "actix", "embedding", "web"]
 categories = ["web-programming::http-server"]
 
 [features]
-# Turns on actix-web's `http2`, as any crate in an application can, and builds
-# `tests/conformance_http2.rs`, which runs the conformance suite against an h2c host so the
-# adapter's HTTP/2 drain declaration is asserted. The adapter's own code reads no feature.
+# For the conformance suite; enables actix-web's `http2`. Not an application feature: it builds
+# `tests/conformance_http2.rs`, which runs the suite against an h2c host so the adapter's HTTP/2
+# drain declaration is asserted, and the adapter's own code reads no feature. An application
+# serving HTTP/2 enables actix-web's `http2` itself.
 conformance-http2 = ["actix-web/http2"]
 
 [dependencies]

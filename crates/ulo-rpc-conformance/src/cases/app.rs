@@ -79,6 +79,8 @@ pub(crate) struct ProbeState {
     /// The stalled call's execution's reason, written when its handler's future is dropped or
     /// returns.
     stalled: Mutex<Option<Option<CancelReason>>>,
+    /// When the held call's handler returned its answer, which the link then publishes.
+    held_answered: Mutex<Option<Instant>>,
 }
 
 impl Probe {
@@ -104,6 +106,10 @@ impl Probe {
 
     pub(crate) fn stalled(&self) -> Option<Option<CancelReason>> {
         *lock(&self.0.stalled)
+    }
+
+    pub(crate) fn held_answered(&self) -> Option<Instant> {
+        *lock(&self.0.held_answered)
     }
 }
 
@@ -229,6 +235,7 @@ impl CoreController {
     #[ulo_rpc::message("conformance.hold")]
     async fn hold(&self, millis: Payload<u64>) -> Result<u64, Refusal> {
         tokio::time::sleep(Duration::from_millis(millis.0)).await;
+        *lock(&self.probe.0.held_answered) = Some(Instant::now());
         Ok(millis.0)
     }
 }

@@ -17,7 +17,10 @@ const HELD_AFTER_DISRUPT: Duration = Duration::from_secs(3);
 /// On a link declaring `durable_replies` the held call is answered instead, the broker keeping its
 /// reply for the reconnected client. There a `disrupt` that severs nothing would pass, so the
 /// environment's `disrupt` shows the cut itself (`Relay::cut_for` answers how many connections it
-/// closed), and holds the client out until after the reply is published.
+/// closed), and holds the client out until after the reply is published. The scenario then reads
+/// the outage the environment observed, `Broker::outage`, and requires the moment the handler
+/// returned its answer, which the link publishes at once, to fall after the client's connections
+/// closed and before the first reconnection went through.
 pub async fn after_disrupt<B: Broker>() {
     let fixture = Fixture::<B>::start().await;
     let budget = fixture.broker.budget();
@@ -37,7 +40,21 @@ pub async fn after_disrupt<B: Broker>() {
     match (ended, durable) {
         (Err(error), false) if error.kind() == ErrorKind::Unavailable => {}
         (other, false) => panic!("a call waiting on a severed connection fails `Unavailable`, got: {other:?}"),
-        (Ok(answered), true) => assert_eq!(answered, held_ms, "the held call's answer"),
+        (Ok(answered), true) => {
+            assert_eq!(answered, held_ms, "the held call's answer");
+            let outage = fixture.broker.outage().expect(
+                "the link declares `durable_replies`, so `Broker::outage` reports when the client was out",
+            );
+            let reopened = outage.reopened.expect("the client reconnected to receive the answer, so the relay let a connection through");
+            let published = fixture.server.probe.held_answered().expect("the held call's handler answered");
+            assert!(
+                outage.shut <= published && published < reopened,
+                "the held call's answer is published while the client is out: published {:?} after the cut, the client \
+                 reconnecting {:?} after it",
+                published.saturating_duration_since(outage.shut),
+                reopened.saturating_duration_since(outage.shut),
+            );
+        }
         (other, true) => panic!(
             "the link declares `durable_replies`, so a call waiting on a severed connection is answered once the client reconnects, got: {other:?}"
         ),

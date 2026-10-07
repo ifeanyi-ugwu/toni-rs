@@ -19,6 +19,14 @@
 //! partition, is skipped and its caller sees its own `Timeout`. Stopping every instance before
 //! starting the new version anchors it.
 //!
+//! A librdkafka consumer's drop leaves its group and polls until the broker confirms, so the link
+//! drops each consumer on a thread of its own rather than on a runtime worker. The client's
+//! `close` waits for its reply consumer's drop, about a tenth of a second with the broker up. The
+//! server's group and control consumers are dropped when the last reference to them goes, and
+//! `close` does not wait for them: with the broker up the drop ends as quickly, and once the broker
+//! is gone it blocks without bound. That holds the thread and librdkafka's own threads, never the
+//! tokio runtime, whose shutdown does not wait for them, nor the process's exit.
+//!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_kafka::Kafka::brokers("kafka:9092")))
 //! ```

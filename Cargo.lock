@@ -6552,6 +6552,8 @@ dependencies = [
  "ulo-net",
  "ulo-rpc",
  "ulo-rpc-conformance",
+ "ulo-tokio",
+ "ulo-transport",
 ]
 
 [[package]]
@@ -6567,6 +6569,8 @@ dependencies = [
  "ulo-net",
  "ulo-rpc",
  "ulo-rpc-conformance",
+ "ulo-tokio",
+ "ulo-transport",
 ]
 
 [[package]]

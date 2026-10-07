@@ -23,4 +23,4 @@ salvo = { workspace = true, features = ["server", "server-handle", "http1", "htt
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }

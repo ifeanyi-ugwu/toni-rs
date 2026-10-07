@@ -130,10 +130,10 @@ jobs:
   conformance:
     name: rpc conformance (brokers)
     # On push, not on pull requests: each suite starts its broker under Docker
-    # through testcontainers, and the image pulls and the compile of four
+    # through testcontainers, and the image pulls and the compile of five
     # `integration` test targets cost minutes a pull request does not need to
-    # wait on. One crate per step, so a failure names its broker. Kafka is not
-    # here: `make conformance-kafka` runs it by hand.
+    # wait on. One crate per step, so a failure names its broker. The Kafka
+    # suite starts a broker container per scenario, at most four at once.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -144,3 +144,4 @@ jobs:
       - run: cargo test -p ulo-rpc-redis --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-mqtt --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-rabbitmq --features integration --test conformance --locked
+      - run: cargo test -p ulo-rpc-kafka --features integration --test conformance --locked

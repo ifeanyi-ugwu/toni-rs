@@ -1,6 +1,8 @@
 //! The embedding conformance suite against a salvo host, nested under `PREFIX` with
 //! `api/{**rest}` and as the catch-all `{**rest}`.
 
+use std::time::Duration;
+
 use salvo::conn::tcp::TcpAcceptor;
 use salvo::http::HeaderValue;
 use salvo::{Depot, FlowCtrl, Request, Response, Router};
@@ -81,3 +83,22 @@ impl Host for SalvoHost {
 }
 
 ulo_http_conformance::http_conformance_suite!(SalvoHost);
+
+/// A server built over a `Closing` from another embedding's handle would keep its listener open
+/// through this embedding's drain; `run` refuses it.
+#[tokio::test]
+async fn run_refuses_a_closing_from_another_handle() {
+    let server = Embedded::new();
+    let embedded = server.handle();
+    let other = Embedded::new().handle();
+    let app = ulo_http_conformance::app_for(<Salvo as Embed>::limits()).await;
+    let app = app.bind(server).listen().await.expect("the app listens inside salvo");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let acceptor = TcpAcceptor::try_from(listener).expect("salvo adopts the listener");
+    let server = salvo::Server::new(Closing::new(&other, acceptor));
+    let service = salvo::Service::new(Router::new());
+    let run = ulo_http_salvo::run(app, &embedded, server, service, std::future::pending());
+    let served = tokio::time::timeout(Duration::from_secs(5), run).await.expect("`run` answers rather than serving");
+    let error = served.expect_err("`run` refuses a `Closing` built from another handle").to_string();
+    assert!(error.contains("another embedding's handle"), "the refusal names the mismatch, got: {error}");
+}

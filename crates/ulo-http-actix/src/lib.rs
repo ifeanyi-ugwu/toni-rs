@@ -40,6 +40,10 @@
 //! until `shutdown_timeout`, which `run` sets to the drain window, and is then reset; while one is
 //! open, the app's `close` takes the whole window.
 //!
+//! The `conformance-http2` feature is for the conformance suite; it enables actix-web's `http2`
+//! and changes nothing in the adapter. An application serving HTTP/2 enables actix-web's `http2`
+//! itself.
+//!
 //! Built-in forwards: `OriginalPath`, from `req.path()`. actix's response extensions are its own
 //! store, so of the app's response extensions only `Routing` is copied into them, where an actix
 //! middleware reads it.

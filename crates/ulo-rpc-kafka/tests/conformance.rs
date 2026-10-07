@@ -6,16 +6,20 @@
 //! bound before the container starts. `disrupt` cuts the client's relay alone and keeps it shut
 //! while the recovery scenario's held call is answered: the link declares `durable_replies`, and
 //! the reply waits on the reply topic for the client to reconnect.
+//!
+//! At most `PARALLEL` brokers run at once: twenty started together compete for the host's memory,
+//! and a container that runs short can exit before its ready line.
 
 #![cfg(feature = "integration")]
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-use ulo_rpc_conformance::relay::{Relay, reachable};
+use ulo_rpc_conformance::relay::{Outage, Relay, reachable};
 use ulo_rpc_conformance::{Broker, Budget};
 use ulo_rpc_kafka::Kafka;
 
@@ -35,6 +39,8 @@ struct KraftBroker {
 
 impl Broker for KraftBroker {
     type Link = Kafka;
+
+    const PARALLEL: Option<NonZeroUsize> = NonZeroUsize::new(4);
 
     async fn start() -> Self {
         let server = Relay::bind().await;
@@ -93,6 +99,10 @@ impl Broker for KraftBroker {
     async fn disrupt(&self) {
         let severed = self.client.cut_for(OUTAGE).await;
         assert!(severed > 0, "`disrupt` found no client connection to sever");
+    }
+
+    fn outage(&self) -> Option<Outage> {
+        self.client.last_outage()
     }
 
     /// A consumer group takes its partitions a few seconds after `bind`, and a record waits for

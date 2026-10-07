@@ -16,9 +16,26 @@ pub struct Relay {
     addr: SocketAddr,
     /// One task per relayed connection, holding both of its sockets.
     connections: Arc<Mutex<JoinSet<()>>>,
-    /// Until when a connection the relay accepts is closed at once.
-    outage: Arc<StdMutex<Option<Instant>>>,
+    outage: Arc<StdMutex<Window>>,
     accepting: JoinHandle<()>,
+}
+
+/// The last cut: until when a connection the relay accepts is closed at once, and the moments
+/// [`Outage`] reports.
+#[derive(Default)]
+struct Window {
+    until: Option<Instant>,
+    shut: Option<Instant>,
+    reopened: Option<Instant>,
+}
+
+/// When the relay last held its clients out, as [`Relay::last_outage`] reports it.
+#[derive(Clone, Copy, Debug)]
+pub struct Outage {
+    /// When every connection the cut closed had ended.
+    pub shut: Instant,
+    /// When the relay first relayed a connection after `shut`; `None` while it has relayed none.
+    pub reopened: Option<Instant>,
 }
 
 impl Relay {
@@ -38,7 +55,7 @@ impl Relay {
     pub fn listen(listener: TcpListener, upstream: SocketAddr) -> Relay {
         let addr = listener.local_addr().expect("the relay has an address");
         let connections = Arc::new(Mutex::new(JoinSet::new()));
-        let outage = Arc::new(StdMutex::new(None));
+        let outage = Arc::new(StdMutex::new(Window::default()));
         let accepting = tokio::spawn(accept(listener, upstream, Arc::clone(&connections), Arc::clone(&outage)));
         Relay { addr, connections, outage, accepting }
     }
@@ -58,7 +75,7 @@ impl Relay {
     /// as it is accepted, so the client stays disconnected that long. Answers how many open
     /// connections it closed; it returns without waiting for the outage to end.
     pub async fn cut_for(&self, outage: Duration) -> usize {
-        *self.outage.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + outage);
+        *self.window() = Window { until: Some(Instant::now() + outage), shut: None, reopened: None };
         let mut connections = self.connections.lock().await;
         connections.abort_all();
         let mut severed = 0;
@@ -67,7 +84,18 @@ impl Relay {
                 severed += 1;
             }
         }
+        self.window().shut = Some(Instant::now());
         severed
+    }
+
+    /// The last [`cut_for`](Self::cut_for)'s outage, observed: `None` before any cut.
+    pub fn last_outage(&self) -> Option<Outage> {
+        let window = self.window();
+        Some(Outage { shut: window.shut?, reopened: window.reopened })
+    }
+
+    fn window(&self) -> std::sync::MutexGuard<'_, Window> {
+        self.outage.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -93,11 +121,17 @@ pub async fn reachable(addr: SocketAddr, within: Duration) {
 /// Relays each connection to `upstream`, or closes it at once during an outage. An upstream
 /// refusing the relay's connect closes the client's connection, as a refused connect would fail
 /// the client's.
-async fn accept(listener: TcpListener, upstream: SocketAddr, connections: Arc<Mutex<JoinSet<()>>>, outage: Arc<StdMutex<Option<Instant>>>) {
+async fn accept(listener: TcpListener, upstream: SocketAddr, connections: Arc<Mutex<JoinSet<()>>>, outage: Arc<StdMutex<Window>>) {
     while let Ok((mut client, _)) = listener.accept().await {
-        let out = outage.lock().unwrap_or_else(PoisonError::into_inner).is_some_and(|until| Instant::now() < until);
-        if out {
-            continue;
+        {
+            let mut window = outage.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            if window.until.is_some_and(|until| now < until) {
+                continue;
+            }
+            if window.shut.is_some() && window.reopened.is_none() {
+                window.reopened = Some(now);
+            }
         }
         let mut connections = connections.lock().await;
         while connections.try_join_next().is_some() {}

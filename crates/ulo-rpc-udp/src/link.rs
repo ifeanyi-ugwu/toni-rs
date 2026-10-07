@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
 use ulo_net::{Endpoint, EndpointSpec};
@@ -26,6 +26,10 @@ const DELIVERY_QUEUE: usize = 1024;
 /// A server maps each sender's call ids to ids of its own, so two senders never share one, and
 /// writes the sender's id back on its reply. No datagram is retried: a lost request or reply is
 /// the caller's `Timeout`.
+///
+/// A client holds no connection, so `close` ends what stands for one: each socket the client side
+/// bound stops receiving and is released, its reply lane ends, and the calls waiting on it fail
+/// `Unavailable`. A call made afterwards binds a new socket.
 pub struct Udp {
     pub(crate) endpoint: EndpointSpec,
     pub(crate) codec: Codec,
@@ -38,6 +42,8 @@ pub(crate) struct State {
     bound: Mutex<Vec<BoundAddr>>,
     receiving: Mutex<Option<JoinHandle<()>>>,
     next_id: AtomicU64,
+    /// Advanced by `close`; a client socket's reply lane ends when it changes.
+    client_epoch: watch::Sender<u64>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -52,7 +58,12 @@ impl Udp {
             endpoint: endpoint.into(),
             codec: Codec::Json,
             prepared: None,
-            state: Arc::new(State { bound: Mutex::new(Vec::new()), receiving: Mutex::new(None), next_id: AtomicU64::new(1) }),
+            state: Arc::new(State {
+                bound: Mutex::new(Vec::new()),
+                receiving: Mutex::new(None),
+                next_id: AtomicU64::new(1),
+                client_epoch: watch::Sender::new(0),
+            }),
         }
     }
 
@@ -119,23 +130,31 @@ impl Link for Udp {
         let local: SocketAddr = if addr.is_ipv4() { (Ipv4Addr::UNSPECIFIED, 0).into() } else { (Ipv6Addr::UNSPECIFIED, 0).into() };
         let socket = UdpSocket::bind(local).await?;
         socket.connect(addr).await?;
+        // The reply lane holds the socket; sends reach it through a `Weak`, so the socket is
+        // released once the lane ends, at `close` or when the OS reports the server unreachable.
         let socket = Arc::new(socket);
         let codec = self.codec;
-        let sending = Arc::clone(&socket);
+        let sending = Arc::downgrade(&socket);
         let send = Box::new(move |_pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
-            let socket = Arc::clone(&sending);
+            let socket = Weak::clone(&sending);
             Box::pin(async move {
                 let bytes = encode(codec, &frame)?;
+                let socket = socket.upgrade().ok_or("the UDP link's client socket is closed")?;
                 socket.send(&bytes).await?;
                 Ok(())
             })
         });
         let buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
-        let replies = futures_util::stream::unfold((socket, buffer), move |(socket, mut buffer)| async move {
+        let epoch = self.state.client_epoch.subscribe();
+        let replies = futures_util::stream::unfold((socket, buffer, epoch), move |(socket, mut buffer, epoch)| async move {
             loop {
+                let received = tokio::select! {
+                    received = socket.recv(&mut buffer) => received,
+                    () = closed(epoch.clone()) => return None,
+                };
                 // An error here is the OS reporting the server unreachable: the reply lane ends,
                 // and the next call binds a new socket.
-                let len = match socket.recv(&mut buffer).await {
+                let len = match received {
                     Ok(len) => len,
                     Err(error) => {
                         tracing::debug!(%error, "the UDP link's reply lane ended");
@@ -143,7 +162,7 @@ impl Link for Udp {
                     }
                 };
                 match codec.decode_frame(&buffer[..len]) {
-                    Ok(frame) => return Some((frame, (socket, buffer))),
+                    Ok(frame) => return Some((frame, (socket, buffer, epoch))),
                     Err(error) => tracing::debug!(%error, "a reply datagram did not decode and was dropped"),
                 }
             }
@@ -156,6 +175,7 @@ impl Link for Udp {
     async fn drain(&self) {}
 
     async fn close(&self) -> Result<(), BoxError> {
+        self.state.client_epoch.send_modify(|epoch| *epoch += 1);
         let receiving = lock(&self.state.receiving).take();
         if let Some(receiving) = receiving {
             receiving.abort();
@@ -167,6 +187,12 @@ impl Link for Udp {
     fn bound(&self) -> Vec<BoundAddr> {
         lock(&self.state.bound).clone()
     }
+}
+
+/// Resolves once the client epoch moves past the one `epoch` was subscribed at, or the link is
+/// gone.
+async fn closed(mut epoch: watch::Receiver<u64>) {
+    let _ = epoch.changed().await;
 }
 
 /// Every datagram the socket receives, as deliveries, until the link closes. A datagram that does

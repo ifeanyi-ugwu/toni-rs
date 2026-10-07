@@ -13,7 +13,8 @@
 //! ```
 //!
 //! The server is built over [`Closing`], which drops the acceptor it wraps when the drain begins
-//! and so closes its listener; `run`'s parameter type, `salvo::Server<Closing<A>>`, requires it.
+//! and so closes its listener; `run`'s parameter type, `salvo::Server<Closing<A>>`, requires it,
+//! and `run` refuses one built from another embedding's handle.
 //! The rest of the server is configured as usual, `with_http_builder`, `http1_mut`, `http2_mut`
 //! and `fuse_factory` included.
 //!

@@ -39,6 +39,10 @@ const CLOSED: u8 = 2;
 /// share one, and writes the caller's id back on every reply. A connection that closes cancels its
 /// calls in flight `Disconnected`. At the drain the listener closes and every connection receives
 /// `goaway`, while its calls in flight finish.
+///
+/// `close` also ends every connection the link's client side opened: its socket is shut and its
+/// reply lane ends, so the calls waiting on it fail `Unavailable`. A call made afterwards connects
+/// again.
 pub struct Tcp {
     pub(crate) endpoint: EndpointSpec,
     pub(crate) tls: Option<Tls>,
@@ -63,6 +67,10 @@ pub(crate) struct State {
     phase: watch::Sender<u8>,
     next_connection: AtomicU64,
     next_id: AtomicU64,
+    /// Advanced by `close`; a client connection ends when it changes.
+    client_epoch: watch::Sender<u64>,
+    /// The writer of each client connection, which `close` waits for once it has shut the socket.
+    client_writers: Mutex<JoinSet<()>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -86,6 +94,8 @@ impl Tcp {
                 phase: watch::Sender::new(RUNNING),
                 next_connection: AtomicU64::new(0),
                 next_id: AtomicU64::new(1),
+                client_epoch: watch::Sender::new(0),
+                client_writers: Mutex::new(JoinSet::new()),
             }),
         }
     }
@@ -205,7 +215,12 @@ impl Link for Tcp {
         let _ = stream.set_nodelay(true);
         let (reader, writer) = stream.into_split();
         let (queue, queued) = mpsc::channel(WRITE_QUEUE);
-        tokio::spawn(write_frames(writer, queued));
+        let epoch = self.state.client_epoch.subscribe();
+        {
+            let mut writers = lock(&self.state.client_writers);
+            while writers.try_join_next().is_some() {}
+            writers.spawn(write_frames(writer, queued, closed(epoch.clone())));
+        }
         let (codec, limit) = (self.codec, self.limit());
         let send = Box::new(move |_pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
             let queue = queue.clone();
@@ -214,9 +229,13 @@ impl Link for Tcp {
                 queue.send(bytes).await.map_err(|_| BoxError::from("the TCP connection closed"))
             })
         });
-        let replies = futures_util::stream::unfold(Some(reader), move |reader| async move {
-            let mut reader = reader?;
-            let bytes = match read_frame(&mut reader, limit).await {
+        let replies = futures_util::stream::unfold(Some((reader, epoch)), move |state| async move {
+            let (mut reader, epoch) = state?;
+            let read = tokio::select! {
+                read = read_frame(&mut reader, limit) => read,
+                () = closed(epoch.clone()) => return None,
+            };
+            let bytes = match read {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => return None,
                 Err(error) => {
@@ -225,7 +244,7 @@ impl Link for Tcp {
                 }
             };
             match codec.decode_frame(&bytes) {
-                Ok(frame) => Some((frame, Some(reader))),
+                Ok(frame) => Some((frame, Some((reader, epoch)))),
                 Err(error) => {
                     tracing::warn!(%error, "a reply frame did not decode; the TCP connection is dropped");
                     None
@@ -250,10 +269,13 @@ impl Link for Tcp {
 
     async fn close(&self) -> Result<(), BoxError> {
         self.state.phase.send_if_modified(|phase| advance(phase, CLOSED));
+        self.state.client_epoch.send_modify(|epoch| *epoch += 1);
         let accept = lock(&self.state.accept).take();
         if let Some(accept) = accept {
             let _ = accept.await;
         }
+        let mut writers = std::mem::take(&mut *lock(&self.state.client_writers));
+        while writers.join_next().await.is_some() {}
         Ok(())
     }
 
@@ -269,6 +291,12 @@ fn advance(phase: &mut u8, to: u8) -> bool {
     } else {
         false
     }
+}
+
+/// Resolves once the client epoch moves past the one `epoch` was subscribed at, or the link is
+/// gone.
+async fn closed(mut epoch: watch::Receiver<u64>) {
+    let _ = epoch.changed().await;
 }
 
 /// Resolves once the phase reached `at`, or the link holding the sender is gone.
@@ -343,7 +371,7 @@ impl Server {
         let (queue, queued) = mpsc::channel(WRITE_QUEUE);
         // The writer runs apart from this task: the server's calls hold reply paths into its queue
         // after the connection's reader has ended, and it ends when the last of them drops.
-        tokio::spawn(write_frames(writer, queued));
+        tokio::spawn(write_frames(writer, queued, std::future::pending()));
         let connection = self.state.next_connection.fetch_add(1, Ordering::Relaxed);
         lock(&self.state.connections).insert(connection, queue.clone());
         let ids = Arc::new(Mutex::new(Ids::default()));
@@ -506,9 +534,18 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R, limit: u64) -> io::Res
     Ok(Some(body))
 }
 
-/// Writes each queued frame behind its length prefix until the queue's senders are gone.
-async fn write_frames<W: AsyncWrite + Unpin>(mut writer: W, mut queued: mpsc::Receiver<Bytes>) {
-    while let Some(bytes) = queued.recv().await {
+/// Writes each queued frame behind its length prefix until the queue's senders are gone or `stop`
+/// resolves, then shuts the writer.
+async fn write_frames<W: AsyncWrite + Unpin>(mut writer: W, mut queued: mpsc::Receiver<Bytes>, stop: impl Future<Output = ()>) {
+    let mut stop = std::pin::pin!(stop);
+    loop {
+        let bytes = tokio::select! {
+            bytes = queued.recv() => match bytes {
+                Some(bytes) => bytes,
+                None => break,
+            },
+            () = &mut stop => break,
+        };
         let prefix = (bytes.len() as u32).to_be_bytes();
         let written = async {
             writer.write_all(&prefix).await?;

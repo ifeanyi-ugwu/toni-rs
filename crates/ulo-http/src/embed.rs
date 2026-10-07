@@ -28,7 +28,9 @@
 //! `run` wires the host's graceful shutdown, and returns at once: the host's lingering connections
 //! are `close`'s business, since an embedding cannot cut them. `Embedded::close` waits for the
 //! host's future to end, bounded by the core's close bound. A host future that ends before the shutdown began is an
-//! error, and the app shuts down naming the transport.
+//! error, and the app shuts down naming the transport. A host that keeps its listener until its
+//! connections end registers it with [`Handle::listener`], and its adapter's `run` stops the host
+//! once [`Handle::listeners_closed`] resolves.
 
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -334,6 +336,7 @@ impl<A: Embed> Embedded<A> {
             upgrades: A::limits().upgrades,
             prefix: OnceLock::new(),
             outside_warned: AtomicBool::new(false),
+            listeners: Mutex::new(Listeners::default()),
         });
         A::builtin_forwards(Embedded {
             config,
@@ -724,6 +727,16 @@ struct Shared {
     prefix: OnceLock<String>,
     /// A request outside the prefix is logged once, not per request.
     outside_warned: AtomicBool,
+    /// The listeners registered through [`Handle::listener`].
+    listeners: Mutex<Listeners>,
+}
+
+/// What [`Handle::listener`] registered, and who waits for those still open.
+#[derive(Default)]
+struct Listeners {
+    registered: usize,
+    open: usize,
+    waiting: Vec<Waker>,
 }
 
 /// Marks a request whose path lies outside the mount prefix, which routing answers as a miss.
@@ -764,6 +777,10 @@ impl Shared {
 
     fn host(&self) -> MutexGuard<'_, HostSlot> {
         self.host.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn listeners(&self) -> MutexGuard<'_, Listeners> {
+        self.listeners.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The installed host future, or `None` with `waker` registered for the installation.
@@ -858,6 +875,66 @@ impl<A: Embed> Handle<A> {
     /// host's own drain clock takes.
     pub fn app(&self) -> Option<AppHandle> {
         self.shared.app.get().cloned()
+    }
+
+    /// Registers a listener the host's server holds and the adapter closes once
+    /// [`stopping`](Self::stopping) resolves, for a host that keeps its listener until its
+    /// connections end. Dropping the returned [`HostListener`] reports the listener closed, so the
+    /// adapter drops it with the listener.
+    pub fn listener(&self) -> HostListener {
+        let mut listeners = self.shared.listeners();
+        listeners.registered += 1;
+        listeners.open += 1;
+        HostListener { shared: Arc::clone(&self.shared) }
+    }
+
+    /// Resolves once every listener registered through [`listener`](Self::listener) has closed;
+    /// `None` when none was ever registered on this handle. An adapter's `run` awaits it before
+    /// telling the host to stop, so the stop cannot race the listener's close.
+    pub fn listeners_closed(&self) -> Option<ListenersClosed> {
+        let registered = self.shared.listeners().registered;
+        (registered > 0).then(|| ListenersClosed { shared: Arc::clone(&self.shared) })
+    }
+}
+
+/// A listener registered through [`Handle::listener`]; reports it closed when dropped.
+pub struct HostListener {
+    shared: Arc<Shared>,
+}
+
+impl Drop for HostListener {
+    fn drop(&mut self) {
+        let waiting = {
+            let mut listeners = self.shared.listeners();
+            listeners.open -= 1;
+            if listeners.open > 0 {
+                return;
+            }
+            std::mem::take(&mut listeners.waiting)
+        };
+        for waker in waiting {
+            waker.wake();
+        }
+    }
+}
+
+/// What [`Handle::listeners_closed`] returns.
+pub struct ListenersClosed {
+    shared: Arc<Shared>,
+}
+
+impl Future for ListenersClosed {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut listeners = self.shared.listeners();
+        if listeners.open == 0 {
+            return Poll::Ready(());
+        }
+        if !listeners.waiting.iter().any(|waker| waker.will_wake(cx.waker())) {
+            listeners.waiting.push(cx.waker().clone());
+        }
+        Poll::Pending
     }
 }
 

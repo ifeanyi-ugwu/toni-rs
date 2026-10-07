@@ -30,9 +30,12 @@
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use ulo_rpc::Link;
+
+use crate::relay::Outage;
 
 pub mod cases;
 pub mod relay;
@@ -41,10 +44,18 @@ pub mod relay;
 pub trait Broker: Sized + Send + Sync + 'static {
     type Link: Link;
 
+    /// How many scenarios hold an environment at once; `None`, the default, leaves the scenarios
+    /// to libtest's parallelism. An environment heavy enough that starting one per scenario at
+    /// once starves the host, such as a broker container per scenario, bounds it: the stamped
+    /// tests then wait for a slot before `start` and keep it until the scenario has returned and
+    /// dropped its environment.
+    const PARALLEL: Option<NonZeroUsize> = None;
+
     /// Starts the environment for one scenario, so no state leaks between scenarios. Every
     /// scenario uses the same patterns, and on a broker the same default group and control lane,
-    /// and the stamped tests run in parallel, so each start answers a broker or a namespace no
-    /// other scenario shares: a fresh container, or a fresh port on TCP and UDP.
+    /// and the stamped tests run in parallel, up to [`PARALLEL`](Self::PARALLEL) at once, so each
+    /// start answers a broker or a namespace no other scenario shares: a fresh container, or a
+    /// fresh port on TCP and UDP.
     fn start() -> impl Future<Output = Self> + Send;
 
     /// A link for the server, configured for this environment; called once per server instance,
@@ -64,8 +75,16 @@ pub trait Broker: Sized + Send + Sync + 'static {
     /// a link declaring `durable_replies` the waiting call is answered instead, so a `disrupt` that
     /// severed nothing would pass unnoticed: there `disrupt` fails when it closed no connection
     /// (`Relay::cut_for` answers how many), and keeps the client out until the waiting call's
-    /// reply is published, three seconds after it begins.
+    /// reply is published, three seconds after it begins, which [`outage`](Self::outage) shows.
     fn disrupt(&self) -> impl Future<Output = ()> + Send;
+
+    /// The client's outage from the last `disrupt`, observed: when its connections had closed, and
+    /// when the environment first let one through again. A link declaring `durable_replies`
+    /// reports it, and the recovery scenario requires the held call's answer to fall inside it, so
+    /// the reply is shown to wait for a client that was gone. `None`, the default, elsewhere.
+    fn outage(&self) -> Option<Outage> {
+        None
+    }
 
     /// How long this environment takes, which a slow broker raises.
     fn budget(&self) -> Budget {
@@ -161,10 +180,37 @@ macro_rules! conformance_suite {
         );
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
+        static __ULO_RPC_CONFORMANCE_SLOTS: $crate::__private::Slots = $crate::__private::Slots::new();
         $(
             __ulo_rpc_conformance_stamp!($name, async fn $name() {
+                let _slot = __ULO_RPC_CONFORMANCE_SLOTS.hold(<$broker as $crate::Broker>::PARALLEL).await;
                 $crate::cases::$module::$case::<$broker>().await;
             });
         )*
     };
+}
+
+#[doc(hidden)]
+pub mod __private {
+    use std::num::NonZeroUsize;
+    use std::sync::OnceLock;
+
+    use tokio::sync::{Semaphore, SemaphorePermit};
+
+    /// The slots one stamped suite's scenarios share. Each `#[tokio::test]` runs its own runtime;
+    /// tokio's `Semaphore` needs none, so a permit released on one wakes a waiter on another.
+    pub struct Slots(OnceLock<Semaphore>);
+
+    impl Slots {
+        pub const fn new() -> Self {
+            Slots(OnceLock::new())
+        }
+
+        /// A slot when `parallel` bounds the suite, held until the permit drops; `None` otherwise.
+        pub async fn hold(&'static self, parallel: Option<NonZeroUsize>) -> Option<SemaphorePermit<'static>> {
+            let parallel = parallel?;
+            let slots = self.0.get_or_init(|| Semaphore::new(parallel.get()));
+            Some(slots.acquire().await.expect("the suite's slots are never closed"))
+        }
+    }
 }
