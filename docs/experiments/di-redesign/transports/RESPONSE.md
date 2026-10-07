@@ -1073,3 +1073,34 @@ All three proposals are right. S1 needs a precise name for its new field. Of the
 - **The RPC recovery scenario passing vacuously on TCP is a real gap.** A lost TCP connection's `Unavailable`, followed by a reconnect, is one of the most important client behaviors on that link. The harness can test it without touching the link: put a small TCP proxy between client and server, and have `disrupt` cut every connection through it. On UDP there's no connection to lose, so the scenario should be marked not applicable and reported as skipped, not counted as passed. Same rule as S3: nothing passes vacuously.
 - **The HTTP/2 drain shape should observe GOAWAY directly.** An `h2` client sees the GOAWAY frame on the held connection, which is what §9.5 promises. A refused *new* connection is a different, weaker fact. It's worth one more scenario, since GOAWAY is how HTTP/2 clients learn to stop sending.
 - **Rocket's close waiting its full grace for an idle connection is a host limit, so document it.** The design closes idle connections at the start of the drain, and rocket doesn't. Rocket's grace is already set to `drain_timeout`, so shutdown stays bounded. Record it in rocket's row of the limits table, and if the suite can observe it, declare it like S1 so it's asserted rather than merely noted.
+
+## Twenty-third response: the conformance answers and the broker suites
+
+Received 2026-10-07, answering `divergences/race2b-tests3.md` and `divergences/race2b-tests5-brokers.md`
+(eight decisions and three filed gaps). Sign-off pending.
+
+The build is in good shape. I'd take six of the eight as built. On salvo and Kafka recovery I'd choose the alternatives, and one filed gap is really a bug.
+
+**1. Accepted.** Finding the real limit, rather than the expected one, is exactly what the probe was for. A declared and asserted field is the right form, the same as `DrainPending`. A documentation note asserts nothing, and the next rocket version could change the behavior silently.
+
+**2. Take the wrapping acceptor.** Building salvo's server inside `run` breaks the promise embedding rests on: the user keeps their own server setup. Losing `with_http_builder`, `http1_mut`, `http2_mut` and `fuse_factory` means losing HTTP/2 settings and connection protections that a real salvo deployment configures. A public `Closing<A>` acceptor, with `run` taking `salvo::Server<Closing<A>>`, gets the listener closed and keeps every setting. It costs one public type, and that type says exactly what it does.
+
+**3. Declare it as a limit.** Cargo unifies features, so if any crate in an application turns on actix-web's `http2`, the adapter's behavior changes without anyone choosing it. That's a reason to make the limit explicit, not to leave it in a note. Declare it (HTTP/2 drain without GOAWAY, connections reset at `shutdown_timeout`), and run the actix suite once more with `http2` enabled, so the declaration is asserted rather than assumed.
+
+**4. Accepted.** It's the right capability, and the second-instance requirement is what keeps it honest. Accepting `Timeout` there is a fact about the broker, and the extra assertion proves the drain still works rather than letting the scenario pass on silence. That a false declaration on NATS fails is the proof that the assertion bites.
+
+**5. Accepted.** Losing 1 event in 10 during rebalances was a real delivery bug, and committing at `bind` while the group is empty fixes it at the only moment it can be fixed. Document the remaining case (a topic added while the group already runs starts at its end) in the Kafka row.
+
+**6. Take the capability.** Declaring the scenario not applicable hides a stronger property than the one it skips: on Kafka, a severed connection loses *nothing*. A capability such as `durable_replies: bool`, with the scenario asserting that the call is still answered after the cut, turns a skipped test into a passing test of a better guarantee. That's the same rule as before: nothing passes, or gets skipped, on silence.
+
+**7. Accepted.** These weren't design changes but the code catching up with §5.4. A reconnect that quietly lets in-flight calls vanish is the worst outcome, because nothing reports the loss. Dropping lapin's auto-recovery is right for the same reason: a recovery that loses replies is worse than none, and the next call connects again anyway.
+
+**8. Accepted, all of it.** The `drain_http1` wait is a good catch: a test that also passed against a deliberately wrong declaration wasn't testing the declaration. Folding the early-returning `forward_copy` into one scenario removes a pass-on-silence.
+
+**On the gaps:**
+
+- **`RpcClient` never calling `Link::close` is a bug, not a gap.** Every application that uses an RPC client leaks the link at shutdown, which on Kafka means a consumer outliving the app and a 45-second block on drop. The fix fits the lifecycle exactly: `RpcClientModule`'s binding gets an `on_destroy` hook that closes the link. Do it now. It also removes most of each Kafka scenario's runtime.
+- **The rdkafka destroy blocking** will likely mostly disappear once the link is closed before it's dropped. If it remains, drop the consumer on a blocking thread so it can't stall the runtime.
+- **The NATS drain flake (1 in 48)** is a real ordering bug somewhere until shown otherwise. Don't mark the scenario flaky. Loop that scenario a few hundred times with tracing on until it reproduces. A held call left unanswered during a drain is exactly the guarantee §9.5 makes.
+
+The fold list looks complete, with these additions: the salvo acceptor in §3.8, the actix HTTP/2 limit, `durable_replies` next to `holds_unserved` in §5.3, and the client's `Link::close` hook in §5.4.
