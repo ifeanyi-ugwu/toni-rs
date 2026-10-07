@@ -20,7 +20,7 @@ const STOP_SETTLES: Duration = Duration::from_millis(250);
 
 /// A request whose head is half written before the shutdown, answered as the host's
 /// `drain_pending` declares: where `Served`, the head is finished once the host has had
-/// [`STOP_SETTLES`] to apply its stop, and the app answers 503 with `Connection: close`; where
+/// `STOP_SETTLES` to apply its stop, and the app answers 503 with `Connection: close`; where
 /// `Closed`, the head is never finished and the host closes the connection with no answer, since a
 /// head finished before the host processes its stop would reach the app.
 ///
