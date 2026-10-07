@@ -1209,3 +1209,36 @@ Four of the five are accepted. On HTTP's size-hint rule there's a better test, a
 **5. Accepted.**
 
 **On the NATS startup failure:** right to file it, and the fix generalizes. A suite that can fail without saying why produces exactly the kind of one-in-fifty mystery that took a whole investigation last time. Every startup path in both suites should report the underlying error when it fails, not only NATS's.
+
+## Twenty-eighth response: reply construction and lint-clean generated code
+
+Received 2026-10-07, answering `divergences/race2b-tests10.md` (S1–S6), the two questions the batch
+10 fold left (the three gRPC trait names, the lint rule's scope) and RabbitMQ's slowdown. Sign-off
+pending.
+
+Six of the eight are accepted or need only a small note. Items 2 and 3 have a better answer, and item 6 contains a bug worth fixing first.
+
+**1. Accepted.** The three constraints you hit (an alias that can't take constructors, E0119, E0283) leave the contexts as the one place left, and it reads naturally: `cx.reply(..)` uses the transport's own encoding. Unsealed is fine, since letting users implement those traits for their own reply types costs nothing.
+
+**2. Rename. No exception is needed.** The collision only exists because two traits share one method name. These are conversion traits that consume a value, which is exactly what Rust's `Into*` convention is for, and `IntoReply` already follows it. So give each its own method and name the trait after it: `IntoGrpcReply::into_grpc_reply`, `IntoGrpcStream::into_grpc_stream`, `IntoGrpcItem::into_grpc_item`. The principle holds without an exception. An exception would be the first one the naming rules have needed, and this case doesn't justify it.
+
+**3. Bound the buffer, and report the end when the body is written.**
+- **The buffer.** A completed body buffered with no size limit means an error handler that quickly produces a large body makes the server hold all of it in memory. Give the buffer a fixed internal cap, say 1 MiB, documented. A body that exceeds it within the grace counts as streamed: a 504 and the `warn`. No new setting is needed, since this is a rare path and the cap only has to prevent the worst case.
+- **The stream end.** `on_stream_end` means "the transport finished writing". Reporting `Completed` when the body was *read* makes it mean something different on this one path. Have the buffered body carry the `Tracked` outcome through to its write, so it reports `Completed` once written, or `CutOff` if the client leaves first. One meaning everywhere.
+
+**4. Accepted. Pin the clippy job's toolchain.** A job that a new clippy release can turn red on an unrelated change will eventually block a merge for a reason nobody introduced. Pin the stable version that job uses, and bump it deliberately in its own commit, fixing whatever new lints appear there.
+
+**5. State it as a rule, not a list.** The intended scope is *all generated code that compiles in a user's crate*: attribute macros, derives, and build-step output alike. Listing them by name is the same mistake as the first redaction scope. The list goes stale the day someone adds a generator, while the rule covers it automatically. Write the invariant that way, with the current three named only as examples.
+
+**6. The encode failure is a bug, not a gap. Fix it first.** A server-side failure to encode its own reply currently reaches the caller as its own `Timeout`, after waiting out the whole timeout, while the server logs at `debug`. That's the pass-on-silence pattern again, in a production path: a server bug presented as a slow network. Treat it exactly like `FrameTooLarge`: answer `err` `internal` under the same id at once, and log at `error`, since it's the server's own code failing.
+
+`RpcCx` implementing `FromCall<Rpc>` is a real gap too, and small. HTTP and gRPC handlers can take their context as a parameter, so RPC should match. Build both in the next batch.
+
+**7. Accepted.**
+
+**8. Trace it, but separate the machine from the code first.** Swap at 12.5–13.4 GB of 14 points at the host, but "probably the host" is what both previous rounds said, and once it turned out to be real. Two cheap measurements settle it:
+
+- **CI's timings.** CI's runner starts clean every time, so if RabbitMQ is stable there, at around 13 s, across this batch, the local slowdown is the machine.
+- **One local run on a quiet engine,** with every other container stopped and `--report-time` on, compared per scenario with batch 9.
+
+If both point at the host, record it and move on. If CI shows the rise too, the per-scenario comparison will name the scenario that grew.
