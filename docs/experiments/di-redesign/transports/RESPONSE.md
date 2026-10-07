@@ -1104,3 +1104,32 @@ The build is in good shape. I'd take six of the eight as built. On salvo and Kaf
 - **The NATS drain flake (1 in 48)** is a real ordering bug somewhere until shown otherwise. Don't mark the scenario flaky. Loop that scenario a few hundred times with tracing on until it reproduces. A held call left unanswered during a drain is exactly the guarantee §9.5 makes.
 
 The fold list looks complete, with these additions: the salvo acceptor in §3.8, the actix HTTP/2 limit, `durable_replies` next to `holds_unserved` in §5.3, and the client's `Link::close` hook in §5.4.
+
+## Twenty-fourth response: the conformance answers' build
+
+Received 2026-10-07, answering `divergences/race2b-tests6.md` (S1–S7 and its "Not covered" list).
+Sign-off pending.
+
+Six of the seven are accepted. On S1 there's a third option that's better than both.
+
+**S1: neither. Signal through the handle.** The ordering works, and 30 of 30 runs is good evidence. But it depends on how salvo's internal `select!` behaves on a given poll, and that's an implementation detail salvo can change in any minor release without notice. The oneshot alternative fails for the reason you give: two values that must be paired, with nothing enforcing it.
+
+`run` already receives `&handle`, and `Closing::new` already takes `&handle`, so the handle can carry the signal. `Closing::new` registers a "listener closed" notifier in the handle's shared state. `Closing::accept` fires it when it drops the inner acceptor. `run` awaits it on the handle before calling `stop_graceful`. The pairing is enforced by the handle both sides already share, there's no extra parameter, and nothing depends on salvo's poll order. It also closes the gap you noted: `run` can see whether any `Closing` was built from *its* handle, and refuse to start (or log at `warn`) when none was, so a `Closing` built from another embedding's handle stops being silent.
+
+**S2: accepted.** A separate field is right. Folding it into `drain_pending` or `drain_abandoned` would tie an HTTP/2 behavior to HTTP/1.1 observations that only happen to coincide on actix.
+
+**S3: accepted.** The feature enables nothing a user couldn't enable directly. Give it a doc line in the manifest and the crate docs ("for the conformance suite; enables actix-web's `http2`") so nobody mistakes it for an application feature.
+
+**S4: accepted.** Returning a count is what stops a durable link's `disrupt` from passing having severed nothing. It's the same rule that's caught real problems all along.
+
+**S5: accepted.** A tenth of a second with the broker up, and bounded by the destroy hook's timeout without it, is the correct trade.
+
+**S6: move Kafka into the CI broker job now.** Running the suite by hand only was justified at 578 s. At 14–22 s, keeping it manual means a Kafka regression can merge unnoticed, and the drop and close bugs this batch fixed are exactly the kind that would. Update the two comments with it.
+
+**S7: accepted for the fold,** with S1's handle signal replacing the salvo description.
+
+**On what's not covered:**
+
+- **F330 is the same class of bug as F327**, so give it the same priority. The destroy hook now calls `close`, but on TCP and UDP the client's connection stays open, so the hook appears to work and doesn't. It should be fixed in the next batch, not left as a filed gap.
+- **The durable outage can be observed rather than constructed.** The relay knows when it shut and when it reopened, and the handler can record the moment it published. Assert that the publish fell inside the outage. It's a few lines, and it makes the scenario prove what its design only arranges.
+- **The unbounded server-side consumer thread** is acceptable as it stands. The runtime isn't held, and the thread only blocks when the broker has already gone. Document it in the Kafka row with the other drop behavior.
