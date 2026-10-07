@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+// No `package`: the method paths are `/Bare/<Method>`, and prost writes the file `_.rs`.
+
+service Bare {
+  rpc Echo(Word) returns (Word);
+}
+
+message Word {
+  string text = 1;
+}

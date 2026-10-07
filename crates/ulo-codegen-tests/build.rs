@@ -8,8 +8,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for a build script")?);
     ulo_build::configure()
         .file_descriptor_set_path(out_dir.join("codegen.bin"))
-        .compile(&["proto/counter.proto"], &["proto"])?;
-    println!("cargo::rerun-if-changed=proto/counter.proto");
+        .compile(&["proto/counter.proto", "proto/probe.proto", "proto/bare.proto"], &["proto"])?;
+    for proto in ["counter", "probe", "bare"] {
+        println!("cargo::rerun-if-changed=proto/{proto}.proto");
+    }
 
     println!("cargo::rustc-check-cfg=cfg(ulo_snapshot_rustc)");
     if rustc_release().as_deref() == Some(SNAPSHOT_RUSTC) {

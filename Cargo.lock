@@ -5631,10 +5631,15 @@ name = "ulo-codegen-tests"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "http 1.5.0",
+ "hyper-util",
  "prost",
+ "prost-types",
  "tokio",
  "tonic",
+ "tonic-health",
  "tonic-prost",
+ "tonic-reflection",
  "trybuild",
  "ulo",
  "ulo-build",
@@ -5643,6 +5648,7 @@ dependencies = [
  "ulo-rpc",
  "ulo-tokio",
  "ulo-transport",
+ "ulo-ws",
 ]
 
 [[package]]
@@ -6142,6 +6148,7 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
+ "ulo-http-hyper",
  "ulo-hyper-serve",
  "ulo-net",
  "ulo-tokio",

@@ -1,6 +1,7 @@
 //! Programs the transport attributes must refuse, each beside the diagnostic it gets:
-//! metadata of one transport on another transport's handler (X24), and gRPC handlers whose
-//! signatures disagree with their method marker's shape.
+//! metadata of one transport on another transport's handler (X24), on RPC, WebSocket and gRPC
+//! handlers, and gRPC handlers whose signatures disagree with their method marker, in shape or in
+//! message type.
 //!
 //! The `.stderr` snapshots hold rustc's own wording, which changes between releases, so the test
 //! runs only on the compiler that wrote them; `build.rs` sets `ulo_snapshot_rustc` there. On any

@@ -1,0 +1,7 @@
+error[E0599]: no method named `checked` found for struct `ulo_grpc::__private::Checked<(ulo_grpc::__private::Shaped<false>, Number), (ulo_grpc::__private::Shaped<false>, ulo_codegen_tests::pb::Sum)>` in the current scope
+  --> tests/ui/grpc_reply_of_another_message.rs:12:54
+   |
+12 |     async fn add(&self, req: Message<AddRequest>) -> Number {
+   |                                                      ^^^^^^ method not found in `ulo_grpc::__private::Checked<(ulo_grpc::__private::Shaped<false>, Number), (ulo_grpc::__private::Shaped<false>, ulo_codegen_tests::pb::Sum)>`
+   |
+   = note: the method was found for `ulo_grpc::__private::Checked<T, T>`

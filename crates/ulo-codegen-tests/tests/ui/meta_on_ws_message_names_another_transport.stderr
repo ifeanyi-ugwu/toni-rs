@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+  --> tests/ui/meta_on_ws_message_names_another_transport.rs:13:12
+   |
+13 |     #[meta(Timeout::after(Duration::from_secs(5)))]
+   |            ^^^^^^^ expected `()`, found `MetaMismatch<Ws, Http>`
+   |
+   = note: expected unit type `()`
+                 found struct `ulo::__private::MetaMismatch<Ws, ulo_http::Http>`

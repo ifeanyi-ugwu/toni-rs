@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package codegen.probe.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// Well-known types on both sides of a call: `Empty` as `()`, a wrapper as the Rust type it wraps,
+// and `prost_types` messages.
+service Known {
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Upper(google.protobuf.StringValue) returns (google.protobuf.StringValue);
+  rpc Since(google.protobuf.Timestamp) returns (google.protobuf.Duration);
+}
+
+// One method per reply form a handler may write around a stream or a message.
+service Shapes {
+  rpc Watch(Ticks) returns (stream Tick);
+  rpc WatchOrFail(Ticks) returns (stream Tick);
+  rpc WatchOrStatus(Ticks) returns (stream Tick);
+  rpc Lookup(Ticks) returns (Tick);
+  rpc Rescue(Ticks) returns (Tick);
+  rpc Whoami(google.protobuf.Empty) returns (google.protobuf.StringValue);
+}
+
+// Handlers that outlive a caller's deadline, each with a different error handler.
+service Clock {
+  rpc Stall(Ticks) returns (Tick);
+  rpc StallClaimed(Ticks) returns (Tick);
+  rpc StallReshaped(Ticks) returns (Tick);
+  rpc StallStuck(Ticks) returns (Tick);
+  rpc Quick(Ticks) returns (Tick);
+  rpc Drip(Ticks) returns (stream Tick);
+}
+
+// A service behind enhancers and pre-dispatch entries.
+service Vault {
+  rpc Open(Ticks) returns (Tick);
+  rpc Sealed(Ticks) returns (Tick);
+  rpc Fragile(Ticks) returns (Tick);
+}
+
+message Ticks {
+  uint32 count = 1;
+  bool fail = 2;
+}
+
+message Tick {
+  uint32 n = 1;
+}

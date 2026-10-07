@@ -36,6 +36,8 @@ tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# The HTTP server a gateway on the HTTP port is reached through.
+ulo-http-hyper = { path = "../ulo-http-hyper" }
 ulo-tokio = { path = "../ulo-tokio" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 # `connect`: the tests drive each gateway through a real WebSocket client.

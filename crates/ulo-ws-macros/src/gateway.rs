@@ -26,7 +26,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Attribute, Expr, ExprClosure, Ident, ImplItem, ItemImpl, Lit, LitStr, Meta, Token, Type, parenthesized};
 use ulo_handler_codegen::protocol::{Entry, Form};
-use ulo_handler_codegen::util::{check_factory_params, combine};
+use ulo_handler_codegen::util::{check_factory_params, combine, wrap_async};
 
 pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let args: Args = syn::parse2(attr)?;
@@ -212,12 +212,9 @@ impl Args {
                 self.session(key, quote_spanned!(ty.span()=> ::ulo_ws::SessionFactory::default_of::<#ty>()));
             }
             "session_with" => {
-                let mut closure: ExprClosure = input.parse()?;
+                let closure: ExprClosure = input.parse()?;
                 check_factory_params(&closure)?;
-                if !matches!(*closure.body, Expr::Async(_)) {
-                    let body = &closure.body;
-                    closure.body = Box::new(syn::parse_quote!(async move { #body }));
-                }
+                let closure = wrap_async(&closure);
                 self.session(key, quote!(::ulo_ws::SessionFactory::with(#closure)));
             }
             _ => {
@@ -287,7 +284,8 @@ impl Args {
 }
 
 /// The `EnhancerSpec<WsConnect>` call for one connect guard: by type, by value, or by closure in
-/// its scope. A transport key names nothing here: every entry is a connect guard.
+/// its scope, a closure's body wrapped in `async move` as `#[guards]` wraps one. A transport key
+/// names nothing here: every entry is a connect guard.
 fn guard_call(entry: &Entry) -> syn::Result<TokenStream> {
     if let Some(transport) = &entry.transport {
         return Err(syn::Error::new(
@@ -298,10 +296,14 @@ fn guard_call(entry: &Entry) -> syn::Result<TokenStream> {
     Ok(match &entry.form {
         Form::Type(ty) => quote_spanned!(ty.span()=> .guard::<#ty>()),
         Form::Value(expr) => quote_spanned!(expr.span()=> .guard_value(#expr)),
-        Form::With { scope: None, closure } => quote_spanned!(closure.span()=> .guard_with(#closure)),
+        Form::With { scope: None, closure } => {
+            let built = wrap_async(closure);
+            quote_spanned!(closure.span()=> .guard_with(#built))
+        }
         Form::With { scope: Some(scope), closure } => {
             let scope = scope.path();
-            quote_spanned!(closure.span()=> .guard_with_in::<#scope, _, _>(#closure))
+            let built = wrap_async(closure);
+            quote_spanned!(closure.span()=> .guard_with_in::<#scope, _, _>(#built))
         }
     })
 }

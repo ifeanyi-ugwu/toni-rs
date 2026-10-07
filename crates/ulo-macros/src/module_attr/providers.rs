@@ -69,7 +69,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprClosure, Ident, PathArguments, Token, Type, TypeParamBound, bracketed, token};
 
-use crate::enhancers::wrap_async;
+use ulo_handler_codegen::util::wrap_async;
 use crate::module_attr::module_def_param;
 use crate::shared::scope::ScopeArg;
 use crate::shared::{check_factory_params, ulo};

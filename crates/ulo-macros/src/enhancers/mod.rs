@@ -28,8 +28,9 @@ use quote::{quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::{Expr, ExprClosure, Ident, Index, LitStr, ReturnType, Token, Type};
+use syn::{Expr, Ident, Index, LitStr, Token, Type};
 use ulo_handler_codegen::protocol::{EnhancerAttr, Form, HandlerTokens, Role};
+use ulo_handler_codegen::util::wrap_async;
 
 use crate::shared::{ulo, ulo_at};
 
@@ -305,26 +306,3 @@ fn entry_statement(role: Role, form: &Form, handler: &Ident, transport: &Type, v
     }
 }
 
-/// `|u: Ext<CurrentUser>| RoleGuard::require(u)` becomes `|u: Ext<CurrentUser>| async move {
-/// RoleGuard::require(u) }`. An explicit return type moves onto a binding inside the block,
-/// since an `async` block cannot carry one. `#[module]`'s `into` lists share it, so a `with`
-/// entry is written the same way in both places.
-pub(crate) fn wrap_async(closure: &ExprClosure) -> ExprClosure {
-    if closure.asyncness.is_some() || matches!(*closure.body, Expr::Async(_)) {
-        return closure.clone();
-    }
-    let mut wrapped = closure.clone();
-    let body = &closure.body;
-    let new_body: Expr = match &closure.output {
-        ReturnType::Default => syn::parse_quote_spanned! {body.span()=> async move { #body } },
-        ReturnType::Type(_, ty) => syn::parse_quote_spanned! {body.span()=>
-            async move {
-                let __ulo_built: #ty = #body;
-                __ulo_built
-            }
-        },
-    };
-    wrapped.output = ReturnType::Default;
-    wrapped.body = Box::new(new_body);
-    wrapped
-}
