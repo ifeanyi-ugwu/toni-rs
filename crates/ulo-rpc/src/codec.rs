@@ -20,7 +20,7 @@ use ulo::BoxError;
 use ulo_transport::{Detail, Details, ErrorKind, FieldViolation, Link};
 
 use crate::frame::{Data, ErrorBody, Frame};
-use crate::link::Capabilities;
+use crate::link::{Capabilities, FrameUnencodable};
 use crate::transport::CallHeaders;
 
 /// A link's codec, chosen on its builder: `Json` unset, declaring `binary: false`, or `Cbor`,
@@ -48,8 +48,14 @@ impl Codec {
         if capabilities.binary { Codec::Cbor } else { Codec::Json }
     }
 
-    /// One whole frame, as TCP, UDP and Redis carry it and every reply lane does.
-    pub fn encode_frame(self, frame: &Frame) -> Result<Bytes, BoxError> {
+    /// One whole frame, as TCP, UDP and Redis carry it and every reply lane does. A frame whose
+    /// `d` is not an item of this codec, JSON bytes on a CBOR link or bytes that are no JSON on a
+    /// JSON link, fails with [`FrameUnencodable`].
+    pub fn encode_frame(self, frame: &Frame) -> Result<Bytes, FrameUnencodable> {
+        self.write_frame(frame).map_err(|source| FrameUnencodable { codec: self, source })
+    }
+
+    fn write_frame(self, frame: &Frame) -> Result<Bytes, BoxError> {
         let mut out = Vec::new();
         match self {
             Codec::Json => {

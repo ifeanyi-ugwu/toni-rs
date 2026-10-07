@@ -47,7 +47,7 @@ pub use method::{Method, Shape};
 pub use pre_dispatch::PreDispatch;
 pub use server::Server;
 pub use status::{code_for, code_for_http, to_status};
-pub use transport::{Grpc, GrpcCx, GrpcMetadata, PeerAddr, Reply, ReplyItem, ReplyStream, ReplyValue, Response};
+pub use transport::{Grpc, GrpcCx, GrpcMetadata, IntoGrpcItem, IntoGrpcReply, IntoGrpcStream, PeerAddr, Reply, Response};
 pub use ulo_grpc_macros::method;
 
 /// The code `ulo-build` generated for the protobuf package `$package`: its messages, its clients

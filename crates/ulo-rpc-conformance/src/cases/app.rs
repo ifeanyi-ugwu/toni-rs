@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use ulo::app::{Bound as Serving, Connected};
@@ -21,9 +22,9 @@ use ulo::{
     ModuleIdentity, Shape, Shutdown, ShutdownError, Signal, StartupError, injectable, routes,
 };
 use ulo_rpc::{
-    CallHeaders, Capabilities, Inbound, Link, Payload, Reply, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError,
+    CallHeaders, Capabilities, Data, Inbound, Link, Payload, Reply, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError,
 };
-use ulo_transport::{CallError, Classify, ErrorKind};
+use ulo_transport::{CallError, Classify, ErrorKind, Tracked};
 
 use crate::{Broker, report};
 
@@ -48,6 +49,13 @@ pub(crate) const NOBODY: &str = "conformance.nobody";
 pub(crate) const NOBODY_EVENT: &str = "conformance.nobody.event";
 pub(crate) const SUBSTITUTED: &str = "conformance.substituted";
 pub(crate) const SUBSTITUTED_STREAM: &str = "conformance.substituted_stream";
+pub(crate) const UNENCODABLE: &str = "conformance.unencodable";
+pub(crate) const UNENCODABLE_STREAM: &str = "conformance.unencodable_stream";
+pub(crate) const CONTEXT: &str = "conformance.context";
+
+/// A payload no codec reads: not UTF-8, so no JSON text, and a lone CBOR break code, so no CBOR
+/// item. A reply carrying it fails the link's frame encoding.
+const GARBLED: &[u8] = &[0xff];
 
 /// What [`Substitute`] answers a call's `Refusal::Missing` with.
 pub(crate) const SUBSTITUTE: Sum = Sum { sum: 42 };
@@ -265,6 +273,19 @@ impl CoreController {
         Ok(headers.get(HEADER).map(str::to_owned))
     }
 
+    /// Answers with what only the call's own context knows: the pattern it named, the link it
+    /// arrived on and the header it carried.
+    #[ulo_rpc::message("conformance.context")]
+    async fn context(&self, cx: RpcCx) -> Result<(String, String, Option<String>), Refusal> {
+        Ok((cx.pattern().to_owned(), cx.link().name().to_owned(), cx.headers().get(HEADER).map(str::to_owned)))
+    }
+
+    /// Answers with a payload the link's codec cannot encode, the server's own failure.
+    #[ulo_rpc::message("conformance.unencodable")]
+    async fn unencodable(&self) -> Result<Data, Refusal> {
+        Ok(Data::new(GARBLED))
+    }
+
     #[ulo_rpc::event("conformance.event")]
     async fn event(&self, value: Payload<u32>) -> Result<(), Refusal> {
         *lock(&self.probe.0.last_event) = Some(value.0);
@@ -340,6 +361,14 @@ impl StreamController {
     #[error_handlers(value = SubstituteStream)]
     async fn substituted_stream(&self) -> Result<stream::Empty<Result<u32, Refusal>>, Refusal> {
         Err(Refusal::Missing)
+    }
+
+    /// One item, then a payload the link's codec cannot encode.
+    #[ulo_rpc::message("conformance.unencodable_stream")]
+    async fn unencodable_stream(&self, cx: RpcCx) -> Result<Reply, Refusal> {
+        let first = cx.codec().encode(&1u32).expect("a `u32` encodes in every codec");
+        let items: BoxStream<'static, Result<Data, BoxError>> = Box::pin(stream::iter([Ok(first), Ok(Data::new(GARBLED))]));
+        Ok(Reply::Many(Tracked::new(items, cx.exec().clone())))
     }
 
     /// Ticks until the stream is dropped, recording the reason when it is.

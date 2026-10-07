@@ -71,7 +71,7 @@ use ulo_transport::{Admission, CallError, ConnectionAdmission, Permit, Tracked, 
 use crate::__private::HandlerFn;
 use crate::pre_dispatch::StageCx;
 use crate::status::{self, code_for_http};
-use crate::transport::{CxInner, Grpc, GrpcCx, GrpcMetadata, PeerAddr, Reply, ReplyItem};
+use crate::transport::{CxInner, Grpc, GrpcCx, GrpcMetadata, IntoGrpcItem, PeerAddr, Reply};
 
 const GRPC_STATUS: HeaderName = HeaderName::from_static("grpc-status");
 const GRPC_ENCODING: HeaderName = HeaderName::from_static("grpc-encoding");
@@ -352,11 +352,11 @@ pub(crate) fn encode_one<T: prost::Message + Default + Send + 'static>(message: 
 pub(crate) fn encode_stream<S>(stream: S, metadata: MetadataMap, cx: &GrpcCx) -> Reply
 where
     S: Stream + Send + 'static,
-    S::Item: ReplyItem,
+    S::Item: IntoGrpcItem,
 {
     let items = LateItems { stream: Box::pin(stream), cx: cx.clone(), state: Late::Streaming };
     let body = EncodeBody::new_server(
-        ProstEncoder::<<S::Item as ReplyItem>::Message>::new(BufferSettings::default()),
+        ProstEncoder::<<S::Item as IntoGrpcItem>::Message>::new(BufferSettings::default()),
         Tracked::new(items, cx.exec().clone()),
         None,
         SingleMessageCompressionOverride::default(),
@@ -641,16 +641,16 @@ impl<S> LateItems<S> {
 impl<S> Stream for LateItems<S>
 where
     S: Stream,
-    S::Item: ReplyItem,
+    S::Item: IntoGrpcItem,
 {
-    type Item = Result<<S::Item as ReplyItem>::Message, Status>;
+    type Item = Result<<S::Item as IntoGrpcItem>::Message, Status>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
             match &mut this.state {
                 Late::Streaming => match ready!(this.stream.as_mut().poll_next(cx)) {
-                    Some(item) => match item.into_item() {
+                    Some(item) => match item.into_grpc_item() {
                         Ok(message) => return Poll::Ready(Some(Ok(message))),
                         Err(error) => {
                             let original = error.summary();

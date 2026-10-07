@@ -120,16 +120,16 @@ impl GrpcCx {
     ///     }
     /// }
     /// ```
-    pub fn reply<V: ReplyValue>(&self, value: V) -> Reply {
-        value.into_grpc()
+    pub fn reply<V: IntoGrpcReply>(&self, value: V) -> Reply {
+        value.into_grpc_reply()
     }
 
     /// A reply stream, or [`Response`] around one with reply metadata, as a handler returning it is
     /// answered: each `Ok` item written as a message, an `Err` item run through the matched
     /// handler's error handlers on the late path and written in the trailers, which end the
     /// stream.
-    pub fn reply_stream<S: ReplyStream>(&self, stream: S) -> Reply {
-        stream.into_grpc(self)
+    pub fn reply_stream<S: IntoGrpcStream>(&self, stream: S) -> Reply {
+        stream.into_grpc_stream(self)
     }
 
     /// `status` as a trailers-only reply. Answered with `Ok`, it claims the error and ends the
@@ -216,73 +216,73 @@ impl<T> Response<T> {
 /// A reply of one message, what a unary or client-streaming handler returns and
 /// [`GrpcCx::reply`] takes: the message, or [`Response`] around it with reply metadata. `()` is
 /// one too, being prost's `google.protobuf.Empty`.
-pub trait ReplyValue: Send + 'static {
+pub trait IntoGrpcReply: Send + 'static {
     type Message;
-    fn into_grpc(self) -> Reply;
+    fn into_grpc_reply(self) -> Reply;
 }
 
-impl<T: prost::Message + Default + Send + 'static> ReplyValue for T {
+impl<T: prost::Message + Default + Send + 'static> IntoGrpcReply for T {
     type Message = T;
 
-    fn into_grpc(self) -> Reply {
+    fn into_grpc_reply(self) -> Reply {
         dispatch::encode_one(self, MetadataMap::new())
     }
 }
 
-impl<T: prost::Message + Default + Send + 'static> ReplyValue for Response<T> {
+impl<T: prost::Message + Default + Send + 'static> IntoGrpcReply for Response<T> {
     type Message = T;
 
-    fn into_grpc(self) -> Reply {
+    fn into_grpc_reply(self) -> Reply {
         dispatch::encode_one(self.message, self.metadata)
     }
 }
 
 /// A reply stream, what a server-streaming or bidi handler returns and [`GrpcCx::reply_stream`]
-/// takes: any stream of [`ReplyItem`]s, or [`Response`] around one with reply metadata.
-pub trait ReplyStream: Send + 'static {
+/// takes: any stream of [`IntoGrpcItem`]s, or [`Response`] around one with reply metadata.
+pub trait IntoGrpcStream: Send + 'static {
     type Message;
-    fn into_grpc(self, cx: &GrpcCx) -> Reply;
+    fn into_grpc_stream(self, cx: &GrpcCx) -> Reply;
 }
 
-impl<S> ReplyStream for S
+impl<S> IntoGrpcStream for S
 where
     S: Stream + Send + 'static,
-    S::Item: ReplyItem,
+    S::Item: IntoGrpcItem,
 {
-    type Message = <S::Item as ReplyItem>::Message;
+    type Message = <S::Item as IntoGrpcItem>::Message;
 
-    fn into_grpc(self, cx: &GrpcCx) -> Reply {
+    fn into_grpc_stream(self, cx: &GrpcCx) -> Reply {
         dispatch::encode_stream(self, MetadataMap::new(), cx)
     }
 }
 
-impl<S> ReplyStream for Response<S>
+impl<S> IntoGrpcStream for Response<S>
 where
     S: Stream + Send + 'static,
-    S::Item: ReplyItem,
+    S::Item: IntoGrpcItem,
 {
-    type Message = <S::Item as ReplyItem>::Message;
+    type Message = <S::Item as IntoGrpcItem>::Message;
 
-    fn into_grpc(self, cx: &GrpcCx) -> Reply {
+    fn into_grpc_stream(self, cx: &GrpcCx) -> Reply {
         dispatch::encode_stream(self.message, self.metadata, cx)
     }
 }
 
 /// One item of a reply stream: a message, or an error whose kind survives into the error handlers
 /// on the late path, since it converts into a `CallError`.
-pub trait ReplyItem: Send + 'static {
+pub trait IntoGrpcItem: Send + 'static {
     type Message: prost::Message + Default + Send + 'static;
-    fn into_item(self) -> Result<Self::Message, CallError>;
+    fn into_grpc_item(self) -> Result<Self::Message, CallError>;
 }
 
-impl<T, E> ReplyItem for Result<T, E>
+impl<T, E> IntoGrpcItem for Result<T, E>
 where
     T: prost::Message + Default + Send + 'static,
     E: Into<CallError> + Send + 'static,
 {
     type Message = T;
 
-    fn into_item(self) -> Result<T, CallError> {
+    fn into_grpc_item(self) -> Result<T, CallError> {
         self.map_err(Into::into)
     }
 }

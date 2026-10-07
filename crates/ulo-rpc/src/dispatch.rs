@@ -36,7 +36,7 @@ use ulo_transport::{Admission, CallError, Detail, Details, ErrorKind, Permit, Tr
 use crate::__private::{HandlerFn, Kind};
 use crate::codec::Codec;
 use crate::frame::{Data, ErrorBody, Frame};
-use crate::link::{Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, Pattern, ReplyPath};
+use crate::link::{Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, FrameUnencodable, Pattern, ReplyPath};
 use crate::transport::{Body, CallHeaders, CxInner, LinkInfo, NoHandler, Reply, Rpc, RpcCx};
 
 /// The `ErrorInfo` domain of every reason this transport writes.
@@ -492,14 +492,21 @@ async fn cancelled(reply: &ReplyPath, exec: &ExecutionRef, id: u64, reason: Opti
     send(reply, exec, id, Frame::Err { id, error }).await;
 }
 
-/// Sends one frame; `false` when it did not reach the caller. A frame over the link's limit is
-/// replaced by an `err` of kind `internal`; any other failure means the caller is gone, and the
-/// call is cancelled `Disconnected`.
+/// Sends one frame; `false` when it did not reach the caller. A frame over the link's limit, or
+/// one its codec cannot encode, is replaced by an `err` of kind `internal` under the same `id`;
+/// the second is the server's own code failing and is logged at `error`. Any other failure means
+/// the caller is gone, and the call is cancelled `Disconnected`.
 async fn send(reply: &ReplyPath, exec: &ExecutionRef, id: u64, frame: Frame) -> bool {
     match reply.send(frame).await {
         Ok(()) => true,
-        Err(err) if err.is::<FrameTooLarge>() => {
-            let error = ErrorBody::new(ErrorKind::Internal, "the reply is larger than the link carries", Details::new());
+        Err(err) if err.is::<FrameTooLarge>() || err.is::<FrameUnencodable>() => {
+            let message = if err.is::<FrameUnencodable>() {
+                tracing::error!(error = %err, "a reply frame could not be encoded; the call is answered `internal`");
+                "the reply could not be encoded"
+            } else {
+                "the reply is larger than the link carries"
+            };
+            let error = ErrorBody::new(ErrorKind::Internal, message, Details::new());
             if reply.send(Frame::Err { id, error }).await.is_err() {
                 exec.cancel_with(CancelReason::Disconnected);
             }

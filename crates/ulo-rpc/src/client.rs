@@ -37,7 +37,7 @@ use ulo_transport::{Classify, Detail, Details, ErrorKind};
 use crate::codec::Codec;
 use crate::dispatch::reason;
 use crate::frame::{Data, ErrorBody, Frame};
-use crate::link::{FrameTooLarge, Link, NoDestination, Outbound, Pattern, ReplyTo};
+use crate::link::{FrameTooLarge, FrameUnencodable, Link, NoDestination, Outbound, Pattern, ReplyTo};
 use crate::transport::CallHeaders;
 
 /// A client's timeout at `Bound::Default`.
@@ -395,6 +395,8 @@ fn send_error(err: BoxError) -> RpcError {
         RpcError::new(ErrorKind::Unavailable, err.to_string()).with_reason("no_destination")
     } else if err.is::<FrameTooLarge>() {
         RpcError::new(ErrorKind::BadRequest, err.to_string()).with_reason("payload_too_large")
+    } else if err.is::<FrameUnencodable>() {
+        RpcError::new(ErrorKind::Internal, err.to_string())
     } else {
         RpcError::new(ErrorKind::Unavailable, format!("the link refused the frame: {err}"))
     }

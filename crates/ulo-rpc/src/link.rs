@@ -16,6 +16,7 @@ use futures_core::stream::BoxStream;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture, Shape};
 use ulo_transport::Count;
 
+use crate::codec::Codec;
 use crate::frame::Frame;
 
 /// One RPC transport's frame carriage.
@@ -107,9 +108,11 @@ impl ReplyPath {
         ReplyPath { peer: Some(peer), ..self }
     }
 
-    /// Sends one reply frame. A send that fails with [`FrameTooLarge`] is answered by the server
-    /// with an `err` frame of kind `internal` in its place; any other failure means the caller is
-    /// gone, and the call is cancelled `Disconnected`.
+    /// Sends one reply frame. A send that fails with [`FrameTooLarge`] or [`FrameUnencodable`] is
+    /// answered by the server with an `err` frame of kind `internal` under the same `id`, the
+    /// second logged at `error`; any other failure means the caller is gone, and the call is
+    /// cancelled `Disconnected`. A link encoding with [`Codec::encode_frame`] and passing its
+    /// error on with `?` reports an encoding failure as `FrameUnencodable`.
     pub fn send(&self, frame: Frame) -> BoxFuture<'static, Result<(), BoxError>> {
         (self.send)(frame)
     }
@@ -369,3 +372,25 @@ impl fmt::Display for FrameTooLarge {
 }
 
 impl Error for FrameTooLarge {}
+
+/// A frame the link's codec cannot encode, from [`Codec::encode_frame`]: a payload that is not an
+/// item of that codec, such as a `Data` built from JSON bytes and answered on a CBOR link. On a
+/// reply lane it is the server's own failure, which the server answers with an `err` of kind
+/// `internal` and logs at `error`; `RpcClient` answers it `Internal` on a request.
+#[derive(Debug)]
+pub struct FrameUnencodable {
+    pub codec: Codec,
+    pub source: BoxError,
+}
+
+impl fmt::Display for FrameUnencodable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the {:?} codec cannot encode the frame: {}", self.codec, self.source)
+    }
+}
+
+impl Error for FrameUnencodable {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&*self.source)
+    }
+}

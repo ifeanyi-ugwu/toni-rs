@@ -25,8 +25,9 @@ impl TransportMetadata for BodyLimit {
 /// execution is cancelled with `CancelReason::Deadline`. An answer not yet started is dropped, and
 /// the error handlers receive `Timeout` under the server's `timeout_grace`. Their answer is the
 /// response when it is produced within the grace, its body included: a body that ends in time is
-/// written whole, with its exact length. Unclaimed, not answered within the grace, or answered
-/// with a body still open when the grace runs out, an `Sse` among them, it renders 504.
+/// buffered and written whole, with its exact length. Unclaimed, not answered within the grace, or
+/// answered with a body still open when the grace runs out, an `Sse` among them, or one yielding
+/// more than 1 MiB before it ends, it renders 504.
 ///
 /// The most specific declaration wins, as for all metadata, so under a `#[routes]` impl that
 /// declares a timeout, a handler's own declaration decides:

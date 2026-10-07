@@ -39,8 +39,8 @@ pub use codec::Codec;
 pub use extract::{Inbound, Payload};
 pub use frame::{Data, ErrorBody, Frame, PayloadKind};
 pub use link::{
-    Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, Link, NoDestination, Ordering, Outbound, Pattern, ReplyPath,
-    ReplyTo,
+    Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, FrameUnencodable, Link, NoDestination, Ordering, Outbound,
+    Pattern, ReplyPath, ReplyTo,
 };
 pub use server::Server;
 pub use transport::{CallHeaders, LinkInfo, NoHandler, Reply, Rpc, RpcCx};

@@ -1,0 +1,256 @@
+//! The body an error handler answers a timed-out request with, as the backend sees it through
+//! `AppService::call`: buffered up to 1 MiB and no further, and, when it is a stream, its end
+//! reported to `on_stream_end` when the backend has written the buffered copy, not when the
+//! service read it.
+//!
+//! The backend here is the test: it keeps the `AppService` it is handed, and it decides whether
+//! a response body is written to its end or dropped before, which is how a peer leaving reaches
+//! the execution.
+
+use std::convert::Infallible;
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::Duration;
+
+use futures_util::stream;
+use http_body::Body as _;
+use tokio::sync::Notify;
+use ulo::{App, AppHandle, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, StreamOutcome, injectable, routes};
+use ulo_http::{AppService, Backend, BackendLimits, Bytes, ConnInfo, Http, HttpBody, HttpConfig, HttpCx, MB, Request, Response, StatusCode, Timeout};
+use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_transport::{CallError, ErrorKind, IntoReply};
+
+const DEADLINE: Duration = Duration::from_millis(50);
+const GRACE: Duration = Duration::from_secs(2);
+
+/// The chunk the large answers are streamed in.
+const CHUNK: usize = 64 * 1024;
+
+/// How the error handler's stream ended, as its `on_stream_end` callback received it.
+#[derive(Clone, Default)]
+struct Ended(Arc<Mutex<Option<StreamOutcome>>>);
+
+impl Ended {
+    fn get(&self) -> Option<StreamOutcome> {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn timed_out(err: &BoxError) -> bool {
+    err.downcast_ref::<CallError>().is_some_and(|call| call.kind() == ErrorKind::Timeout)
+}
+
+/// Answers a `Timeout` with 503 and `claimed` as a one-item stream, recording its end in [`Ended`].
+struct TrackedOnTimeout;
+
+impl ErrorHandler<Http> for TrackedOnTimeout {
+    async fn handle(&self, err: BoxError, cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let ended = cx.exec().get::<Ended>().await?;
+        let ended = Ended::clone(&ended);
+        cx.exec().on_stream_end(move |outcome| *ended.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome));
+        let body = HttpBody::stream(stream::iter([Ok::<_, Infallible>(Bytes::from_static(b"claimed"))]));
+        let mut response = body.into_reply(cx)?;
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
+/// Answers a `Timeout` with 503 and a stream of `len` bytes, every chunk ready at once.
+struct SizedOnTimeout(usize);
+
+impl ErrorHandler<Http> for SizedOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let len = self.0;
+        let chunks = (0..len).step_by(CHUNK).map(move |start| Ok::<_, Infallible>(Bytes::from(vec![b'x'; CHUNK.min(len - start)])));
+        let mut response = Response::new(HttpBody::stream(stream::iter(chunks)));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
+#[injectable]
+struct Slow;
+
+#[routes]
+#[meta(Timeout::after(DEADLINE))]
+impl Slow {
+    #[ulo_http::get("/tracked")]
+    #[error_handlers(value = TrackedOnTimeout)]
+    async fn tracked(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/at-cap")]
+    #[error_handlers(value = SizedOnTimeout(MB as usize))]
+    async fn at_cap(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/over-cap")]
+    #[error_handlers(value = SizedOnTimeout(MB as usize + 1))]
+    async fn over_cap(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+}
+
+struct Root(Ended);
+
+impl Module for Root {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.value(self.0.clone());
+        m.controller::<Slow>();
+    }
+}
+
+/// A backend that serves nothing itself: it keeps the `AppService`, and the test calls it.
+#[derive(Clone, Default)]
+struct Keeper {
+    svc: Arc<OnceLock<AppService>>,
+    drained: Arc<Notify>,
+}
+
+impl Backend for Keeper {
+    const NAME: &'static str = "keeper";
+
+    fn limits() -> BackendLimits {
+        BackendLimits::NONE
+    }
+
+    async fn bind(&mut self, _listeners: Vec<BoundListener>, _tls: Option<TlsAcceptor>, svc: AppService, _cfg: &HttpConfig) -> Result<(), BoxError> {
+        let _ = self.svc.set(svc);
+        Ok(())
+    }
+
+    async fn serve(&self) -> Result<(), BoxError> {
+        self.drained.notified().await;
+        Ok(())
+    }
+
+    async fn drain(&self) {
+        self.drained.notify_one();
+    }
+
+    async fn close(&self) -> Result<(), BoxError> {
+        Ok(())
+    }
+}
+
+struct Running {
+    svc: AppService,
+    ended: Ended,
+    handle: AppHandle,
+    serving: tokio::task::JoinHandle<()>,
+}
+
+impl Running {
+    async fn start() -> Running {
+        let keeper = Keeper::default();
+        let ended = Ended::default();
+        let server = ulo_http::Server::with_backend("127.0.0.1:0", keeper.clone()).timeout_grace(Bound::After(GRACE));
+        let app = App::builder(Root(ended.clone()))
+            .timer(ulo_tokio::Timer)
+            .wire()
+            .expect("the app wires")
+            .connect()
+            .await
+            .expect("the app connects")
+            .bind(server)
+            .listen()
+            .await
+            .expect("the app listens");
+        let handle = app.handle();
+        let serving = tokio::spawn(async move {
+            let _ = app.serve(std::future::pending::<Signal>()).await;
+        });
+        let svc = keeper.svc.get().cloned().expect("the backend was handed the service");
+        Running { svc, ended, handle, serving }
+    }
+
+    /// `GET path`, answered by the service: the response with its body not yet read.
+    async fn call(&self, path: &str) -> Response {
+        let (head, ()) = http::Request::get(path).body(()).expect("the request builds").into_parts();
+        let req = Request { head, body: HttpBody::empty(), conn: ConnInfo::new(http::Version::HTTP_11), upgrade: None };
+        tokio::time::timeout(DEADLINE + GRACE * 2, self.svc.call(req)).await.expect("the service answered within the grace")
+    }
+
+    async fn stop(self) {
+        let _ = self.handle.close(Signal::new("test")).await;
+        let _ = self.serving.await;
+    }
+}
+
+/// The body's frames read to its end, as a backend writing it does; the body then dropped.
+async fn written(response: Response) -> (StatusCode, Vec<u8>) {
+    let (parts, mut body) = response.into_parts();
+    let mut data = Vec::new();
+    while let Some(frame) = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        if let Ok(bytes) = frame.expect("the body yields no error").into_data() {
+            data.extend_from_slice(&bytes);
+        }
+        if body.is_end_stream() {
+            break;
+        }
+    }
+    drop(body);
+    (parts.status, data)
+}
+
+#[tokio::test]
+async fn a_buffered_stream_reports_completed_once_written() {
+    let running = Running::start().await;
+
+    let response = running.call("/tracked").await;
+    assert_eq!(running.ended.get(), None, "the stream's end was reported before the backend wrote the buffered body");
+    let (status, body) = written(response).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::SERVICE_UNAVAILABLE, b"claimed".as_slice()));
+    assert_eq!(running.ended.get(), Some(StreamOutcome::Completed));
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_buffered_stream_dropped_before_its_write_reports_cut_off() {
+    let running = Running::start().await;
+
+    let response = running.call("/tracked").await;
+    assert_eq!(running.ended.get(), None, "the stream's end was reported before the backend wrote the buffered body");
+    drop(response);
+    match running.ended.get() {
+        Some(StreamOutcome::CutOff(_)) => {}
+        other => panic!("a buffered body the peer left before reported {other:?}, not `CutOff`"),
+    }
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_body_of_exactly_the_cap_is_written_with_its_length() {
+    let running = Running::start().await;
+
+    let response = running.call("/at-cap").await;
+    assert_eq!(response.body().size_hint().exact(), Some(MB), "the buffered body does not carry its exact length");
+    let (status, body) = written(response).await;
+    assert_eq!((status, body.len() as u64), (StatusCode::SERVICE_UNAVAILABLE, MB));
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_body_one_byte_over_the_cap_answers_504() {
+    let running = Running::start().await;
+
+    let (status, _) = written(running.call("/over-cap").await).await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    running.stop().await;
+}

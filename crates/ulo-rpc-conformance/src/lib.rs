@@ -184,8 +184,10 @@ macro_rules! conformance_suite {
         $(const _: fn() = $skip;)*
         $crate::conformance_suite!(@cases $broker;
             unary_round_trip => unary::round_trip,
+            handler_takes_its_context => unary::context_parameter,
             domain_error_envelope => errors::domain_error,
             error_handler_answers_its_own_value => errors::substituted,
+            unencodable_reply_is_internal => errors::unencodable_reply,
             guard_refusal_is_forbidden => errors::guard_refusal,
             panic_is_internal => errors::panic,
             undecodable_payload_is_bad_request => errors::undecodable_payload,

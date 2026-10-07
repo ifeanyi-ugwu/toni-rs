@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures_util::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use ulo::{ExecutionRef, injectable, routes};
-use ulo_rpc::{CallHeaders, Inbound, Payload};
+use ulo_rpc::{CallHeaders, Inbound, Payload, RpcCx};
 
 use crate::derives::Refusal;
 use crate::enhancers::{Allow, Pass, Relay, Tag};
@@ -30,8 +30,8 @@ impl Orders {
     }
 
     #[ulo_rpc::message("orders.find")]
-    async fn find(&self, id: Payload<u64>, headers: CallHeaders, exec: ExecutionRef) -> Result<Order, Refusal> {
-        let _ = (headers, exec);
+    async fn find(&self, id: Payload<u64>, headers: CallHeaders, exec: ExecutionRef, cx: RpcCx) -> Result<Order, Refusal> {
+        let _ = (headers, exec, cx);
         Ok(Order { id: id.0 })
     }
 

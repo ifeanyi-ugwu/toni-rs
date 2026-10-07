@@ -6250,6 +6250,7 @@ dependencies = [
  "ulo",
  "ulo-http-macros",
  "ulo-net",
+ "ulo-tokio",
  "ulo-transport",
 ]
 

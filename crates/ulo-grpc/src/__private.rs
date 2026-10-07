@@ -27,7 +27,7 @@ pub use ulo_transport as transport;
 
 use crate::extract::{Message, Request, Streaming};
 use crate::method::Method;
-use crate::transport::{Grpc, GrpcCx, Reply, ReplyStream, ReplyValue};
+use crate::transport::{Grpc, GrpcCx, IntoGrpcReply, IntoGrpcStream, Reply};
 
 /// A handler's call: extraction, the controller, the handler and the reply probe, run by
 /// `dispatch` after every guard admits.
@@ -163,9 +163,9 @@ impl<T> Checked<T, T> {
 /// `(&&&&&&ReplyProbe::<M, _>::new(out)).answer::<{ streams_reply(M::SHAPE) }>().checked()`.
 ///
 /// Six arms, each one reference deeper than the priority reads, the first that applies winning: a
-/// `Result` of a [`ReplyStream`] whose error converts into a `CallError`, then one whose error
-/// boxes, then a bare [`ReplyStream`]; then the same three over a [`ReplyValue`]. The streams come
-/// first, so a type that is both is answered as a stream. An `Err` becomes
+/// `Result` of an [`IntoGrpcStream`] whose error converts into a `CallError`, then one whose
+/// error boxes, then a bare [`IntoGrpcStream`]; then the same three over an [`IntoGrpcReply`].
+/// The streams come first, so a type that is both is answered as a stream. An `Err` becomes
 /// `BoxError::from(CallError::from(e))` on the first arm of each three and is boxed unchanged on
 /// the second, as `ulo-handler-codegen`'s probe does, so a `tonic::Status` returned as the error
 /// reaches the wire as it stands. The methods take `&self`, which the ranking needs, so the value
@@ -217,7 +217,7 @@ pub trait Value<M: Method> {
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)>;
 }
 
-impl<M: Method, S: ReplyStream, E: Into<CallError>> StreamViaCallError<M> for &&&&&ReplyProbe<M, Result<S, E>> {
+impl<M: Method, S: IntoGrpcStream, E: Into<CallError>> StreamViaCallError<M> for &&&&&ReplyProbe<M, Result<S, E>> {
     type Got = (Shaped<true>, S::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -229,7 +229,7 @@ impl<M: Method, S: ReplyStream, E: Into<CallError>> StreamViaCallError<M> for &&
     }
 }
 
-impl<M: Method, S: ReplyStream, E: Into<BoxError>> StreamViaBoxError<M> for &&&&ReplyProbe<M, Result<S, E>> {
+impl<M: Method, S: IntoGrpcStream, E: Into<BoxError>> StreamViaBoxError<M> for &&&&ReplyProbe<M, Result<S, E>> {
     type Got = (Shaped<true>, S::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -241,7 +241,7 @@ impl<M: Method, S: ReplyStream, E: Into<BoxError>> StreamViaBoxError<M> for &&&&
     }
 }
 
-impl<M: Method, S: ReplyStream> StreamValue<M> for &&&ReplyProbe<M, S> {
+impl<M: Method, S: IntoGrpcStream> StreamValue<M> for &&&ReplyProbe<M, S> {
     type Got = (Shaped<true>, S::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -249,7 +249,7 @@ impl<M: Method, S: ReplyStream> StreamValue<M> for &&&ReplyProbe<M, S> {
     }
 }
 
-impl<M: Method, V: ReplyValue, E: Into<CallError>> ValueViaCallError<M> for &&ReplyProbe<M, Result<V, E>> {
+impl<M: Method, V: IntoGrpcReply, E: Into<CallError>> ValueViaCallError<M> for &&ReplyProbe<M, Result<V, E>> {
     type Got = (Shaped<false>, V::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -261,7 +261,7 @@ impl<M: Method, V: ReplyValue, E: Into<CallError>> ValueViaCallError<M> for &&Re
     }
 }
 
-impl<M: Method, V: ReplyValue, E: Into<BoxError>> ValueViaBoxError<M> for &ReplyProbe<M, Result<V, E>> {
+impl<M: Method, V: IntoGrpcReply, E: Into<BoxError>> ValueViaBoxError<M> for &ReplyProbe<M, Result<V, E>> {
     type Got = (Shaped<false>, V::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -273,7 +273,7 @@ impl<M: Method, V: ReplyValue, E: Into<BoxError>> ValueViaBoxError<M> for &Reply
     }
 }
 
-impl<M: Method, V: ReplyValue> Value<M> for ReplyProbe<M, V> {
+impl<M: Method, V: IntoGrpcReply> Value<M> for ReplyProbe<M, V> {
     type Got = (Shaped<false>, V::Message);
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
@@ -286,12 +286,12 @@ impl<M: Method, V: ReplyValue> Value<M> for ReplyProbe<M, V> {
 pub struct Answer(Box<dyn FnOnce(&GrpcCx) -> Reply + Send>);
 
 impl Answer {
-    fn value<V: ReplyValue>(value: V) -> Answer {
-        Answer(Box::new(move |_: &GrpcCx| value.into_grpc()))
+    fn value<V: IntoGrpcReply>(value: V) -> Answer {
+        Answer(Box::new(move |_: &GrpcCx| value.into_grpc_reply()))
     }
 
-    fn stream<S: ReplyStream>(stream: S) -> Answer {
-        Answer(Box::new(move |cx: &GrpcCx| stream.into_grpc(cx)))
+    fn stream<S: IntoGrpcStream>(stream: S) -> Answer {
+        Answer(Box::new(move |cx: &GrpcCx| stream.into_grpc_stream(cx)))
     }
 }
 

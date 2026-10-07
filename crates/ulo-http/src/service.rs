@@ -22,6 +22,7 @@ use ulo_transport::{Admission, Permit, span};
 use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::cx::{CxInner, HttpCx, MatchedRoute, PathParams};
+use crate::limits::MB;
 use crate::embed::{Forwardable, OriginalPath};
 use crate::miss::{MethodNotAllowed, NoRoute};
 use crate::pre_dispatch::{self, Rest, Stage, StageCx};
@@ -56,8 +57,8 @@ use crate::upgrade::UpgradeHandler;
 ///    dropped, the execution cancelled with `CancelReason::Deadline`, and the error handlers, the
 ///    matched handler's tiers then the global ones, receive `Timeout` under
 ///    `HttpConfig::timeout_grace`, which bounds their answer's body as well: unclaimed, not
-///    answered within the grace, or answered with a body still open when it runs out, it renders
-///    504.
+///    answered within the grace, or answered with a body still open when it runs out or past
+///    1 MiB within it, it renders 504.
 /// 7. The `HttpCx` built from the request as the stage leaves it, and `ulo::dispatch` with the
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
@@ -291,8 +292,9 @@ impl ServiceInner {
     /// none by the end of the grace, the canonical 504 is, and the headers they wrote are dropped.
     /// The grace bounds the body too: it is read under what remains of it and, ending in time,
     /// written whole with its exact length. A body still open when the grace runs out, an `Sse`
-    /// among them, was not a single reply produced in time: it is dropped for the same 504, logged
-    /// at `warn`.
+    /// among them, was not a single reply produced in time, and neither was one that yields more
+    /// than [`BUFFER_CAP`], 1 MiB, before it ends: each is dropped for the same 504, logged at
+    /// `warn`.
     async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {
         let route = MatchedRoute {
             handler: target.handler.clone(),
@@ -310,12 +312,20 @@ impl ServiceInner {
             Ok(response) => response,
             Err(err) => render::render_as_is(err, &self.config),
         };
-        match completed(response, grace.as_mut()).await {
+        match completed(response, exec, grace.as_mut()).await {
             Ok(response) => merge_headers(&cx, response),
             Err(Incomplete::Open) => {
                 tracing::warn!(
                     route = &*target.route,
                     "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+                );
+                render::problem(&render::timed_out(), &self.config)
+            }
+            Err(Incomplete::Oversized) => {
+                tracing::warn!(
+                    route = &*target.route,
+                    limit = BUFFER_CAP,
+                    "an error handler answered a timed-out call with a body larger than the buffer for a reply after the deadline; it was dropped at the deadline"
                 );
                 render::problem(&render::timed_out(), &self.config)
             }
@@ -507,9 +517,16 @@ async fn within<F: Future>(fut: F, mut grace: Option<&mut BoxFuture<'static, ()>
 enum Incomplete {
     /// Its body was still open when the grace ran out.
     Open,
+    /// Its body yielded more than [`BUFFER_CAP`] before it ended.
+    Oversized,
     /// Its body failed while it was read.
     Failed(BoxError),
 }
+
+/// The most `completed` buffers of the error handlers' response to a passed deadline, 1 MiB: a
+/// body past it is answered as a stream is, so an error handler that produces a large body quickly
+/// cannot make the server hold all of it.
+const BUFFER_CAP: u64 = MB;
 
 /// How many ready frames `completed` reads before it yields to the runtime: a body whose frames are
 /// always ready never returns `Pending` itself, and the grace's timer only fires once the runtime
@@ -517,12 +534,16 @@ enum Incomplete {
 const FRAMES_PER_POLL: usize = 32;
 
 /// The error handlers' response to a passed deadline with its body read under what remains of the
-/// grace: a body that ends in time is buffered, its length then exact, its trailers kept. HTTP has
-/// no message boundaries, so a body that completes is HTTP's single reply.
-async fn completed(response: Response, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, Incomplete> {
+/// grace: a body that ends in time, within [`BUFFER_CAP`], is buffered, its length then exact, its
+/// trailers kept. HTTP has no message boundaries, so a body that completes is HTTP's single reply.
+async fn completed(response: Response, exec: &ExecutionRef, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, Incomplete> {
     let (parts, mut body) = response.into_parts();
     if body.is_end_stream() {
         return Ok(Response::from_parts(parts, body));
+    }
+    let hint = body.size_hint();
+    if hint.lower() > BUFFER_CAP {
+        return Err(Incomplete::Oversized);
     }
     let mut data = BytesMut::new();
     let mut trailers = None;
@@ -532,6 +553,7 @@ async fn completed(response: Response, mut grace: Option<&mut BoxFuture<'static,
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(Incomplete::Failed(err))),
                 Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(bytes) if (data.len() + bytes.len()) as u64 > BUFFER_CAP => return Poll::Ready(Err(Incomplete::Oversized)),
                     Ok(bytes) => data.extend_from_slice(&bytes),
                     Err(frame) => {
                         trailers = frame.into_trailers().ok();
@@ -552,13 +574,41 @@ async fn completed(response: Response, mut grace: Option<&mut BoxFuture<'static,
         Poll::Pending
     })
     .await?;
-    Ok(Response::from_parts(parts, HttpBody::new(Buffered { data: Some(data.freeze()).filter(|data| !data.is_empty()), trailers })))
+    // A body of unknown length is a stream, wrapped in `Tracked` as a reply: kept until the
+    // buffered copy is written, so its end is reported then rather than when it was read.
+    let read = hint.exact().is_none().then(|| Read { body, exec: exec.clone() });
+    let data = Some(data.freeze()).filter(|data| !data.is_empty());
+    Ok(Response::from_parts(parts, HttpBody::new(Buffered { data, trailers, read })))
 }
 
 /// A response body read whole: its data in one frame, then its trailers.
 struct Buffered {
     data: Option<Bytes>,
     trailers: Option<HeaderMap>,
+    read: Option<Read>,
+}
+
+/// The stream a [`Buffered`] body was read from, and its execution.
+struct Read {
+    body: HttpBody,
+    exec: ExecutionRef,
+}
+
+/// Reports the stream's end as the buffered copy's write ended: `Completed` once every frame was
+/// handed to the backend, `CutOff` when the backend dropped it before, the peer having left. The
+/// first report stays, so the `Tracked` stream dropped after it, which read its own end, reports
+/// nothing.
+impl Drop for Buffered {
+    fn drop(&mut self) {
+        let Some(Read { body, exec }) = self.read.take() else { return };
+        let outcome = if self.data.is_none() && self.trailers.is_none() {
+            StreamOutcome::Completed
+        } else {
+            StreamOutcome::CutOff(exec.cancel_reason())
+        };
+        exec.report_stream_end(outcome);
+        drop(body);
+    }
 }
 
 impl http_body::Body for Buffered {

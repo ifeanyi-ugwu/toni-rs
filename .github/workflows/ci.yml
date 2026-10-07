@@ -111,8 +111,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Pinned on purpose, and the one pin in this file that is not read from a
-      # manifest. `tests/ui/*.stderr` records rustc's rendering as well as the
+      # Pinned on purpose, one of the two pins in this file that are not read from
+      # a manifest; `generated code lints` holds the other. `tests/ui/*.stderr` records rustc's rendering as well as the
       # attributes' own text, and rustc rewords its half roughly once every three
       # minor versions: on `stable` that arrives as a red build on a pull request
       # that changed nothing related. ulo-codegen-tests' build script sets
@@ -132,7 +132,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to a stable release, so a lint a new clippy adds cannot turn this job red on a
+      # change unrelated to the macros. The pin is bumped deliberately, in a commit of its own
+      # that also fixes whatever new lints the release trips in generated code.
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -140,8 +143,7 @@ jobs:
       # lint it trips fails a user's `clippy -D warnings` on code the user cannot change.
       # ulo-macro-lints expands every one of them and holds almost nothing else, so a warning
       # here names generated code. --no-deps lints that crate alone: the framework's own crates
-      # are compiled, not linted. On `stable`: a lint a new clippy adds reaches users
-      # on that release, and this job is where it shows first.
+      # are compiled, not linted.
       - run: cargo clippy -p ulo-macro-lints --all-targets --no-deps --locked -- -D warnings
 
   conformance:

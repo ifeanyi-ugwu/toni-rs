@@ -2,7 +2,8 @@
 //! response whose body ends within the grace as the error handler wrote it, a `Body::stream` of
 //! one payload included and written with its exact length, and an `Sse`, still open when the grace
 //! runs out, replaced by the canonical 504, none of its events written, with a `warn` line telling
-//! the author why.
+//! the author why; so is a body whose frames are always ready and never end. A body yielding more
+//! than the 1 MiB the server buffers is replaced the same way as soon as it passes the cap.
 //!
 //! The tests run on a current-thread runtime, so the server's tasks emit their events on the test's
 //! thread, where [`Capture`] is the default subscriber. The client is raw HTTP/1.1 over a socket,
@@ -31,11 +32,18 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 const WARNING: &str = "an error handler answered a timed-out call with a stream; the stream was ended at the deadline";
 
+const OVERSIZED: &str =
+    "an error handler answered a timed-out call with a body larger than the buffer for a reply after the deadline; it was dropped at the deadline";
+
+/// What [`LargeOnTimeout`] streams: past the 1 MiB the server buffers after a deadline.
+const LARGE: usize = 1024 * 1024 + 64 * 1024;
+
 fn timed_out(err: &BoxError) -> bool {
     err.downcast_ref::<CallError>().is_some_and(|call| call.kind() == ErrorKind::Timeout)
 }
 
-/// Answers a `Timeout` with an event stream that never ends.
+/// Answers a `Timeout` with an event stream that never ends, one event every 20 ms: far below
+/// the 1 MiB the server buffers by the time the grace runs out.
 struct SseOnTimeout;
 
 impl ErrorHandler<Http> for SseOnTimeout {
@@ -43,8 +51,25 @@ impl ErrorHandler<Http> for SseOnTimeout {
         if !timed_out(&err) {
             return Err(err);
         }
-        let ticks = stream::repeat_with(|| Event::default().data("tick"));
+        let ticks = stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some((Event::default().data("tick"), ()))
+        });
         Ok(Sse::new(ticks).into_reply(cx)?)
+    }
+}
+
+/// Answers a `Timeout` with a body that never ends and whose frames, all empty, are always ready:
+/// it never returns `Pending` and never reaches the buffer's cap, so only the grace ends it, and
+/// only if reading it yields to the runtime, whose timer this current-thread test shares.
+struct SpinningOnTimeout;
+
+impl ErrorHandler<Http> for SpinningOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        Ok(Response::new(HttpBody::stream(stream::repeat_with(|| Ok::<_, Infallible>(Bytes::new())))))
     }
 }
 
@@ -84,6 +109,21 @@ impl ErrorHandler<Http> for StreamedOnTimeout {
     }
 }
 
+/// Answers a `Timeout` with a body of [`LARGE`] bytes in 64 KiB chunks, every one ready at once.
+struct LargeOnTimeout;
+
+impl ErrorHandler<Http> for LargeOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let chunks = stream::iter((0..LARGE / (64 * 1024)).map(|_| Ok::<_, Infallible>(Bytes::from(vec![b'x'; 64 * 1024]))));
+        let mut response = Response::new(HttpBody::stream(chunks));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
 #[injectable]
 struct Slow;
 
@@ -107,6 +147,20 @@ impl Slow {
     #[ulo_http::get("/payload")]
     #[error_handlers(value = StreamedOnTimeout)]
     async fn payload(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/spinning")]
+    #[error_handlers(value = SpinningOnTimeout)]
+    async fn spinning(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/large")]
+    #[error_handlers(value = LargeOnTimeout)]
+    async fn large(&self, exec: ExecutionRef) -> &'static str {
         exec.cancelled().await;
         "late"
     }
@@ -207,6 +261,22 @@ async fn an_event_stream_answered_after_the_route_timeout_is_replaced_by_504_whe
 }
 
 #[tokio::test]
+async fn an_always_ready_body_answered_after_the_route_timeout_is_replaced_by_504_when_the_grace_ends() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let running = Running::start().await;
+
+    let (status, body) = running.get("/spinning").await;
+    assert_eq!(status, "HTTP/1.1 504 Gateway Timeout", "body: {body}");
+    let warned = capture.warnings();
+    assert!(
+        warned.iter().any(|line| line.contains(WARNING) && line.contains("route=/spinning")),
+        "the server logged no warning naming the route: {warned:?}"
+    );
+    running.stop().await;
+}
+
+#[tokio::test]
 async fn a_response_of_known_length_answered_after_the_route_timeout_is_the_response() {
     let capture = Capture::default();
     let _default = tracing::subscriber::set_default(capture.clone());
@@ -234,6 +304,26 @@ async fn a_single_payload_streamed_after_the_route_timeout_is_written_with_its_l
     );
     let warned = capture.warnings();
     assert!(!warned.iter().any(|line| line.contains(WARNING)), "a single payload was logged as a stream: {warned:?}");
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_body_over_the_buffer_answered_after_the_route_timeout_is_replaced_by_504_before_the_grace_ends() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let running = Running::start().await;
+
+    let began = Instant::now();
+    let (status, body) = running.get("/large").await;
+    let took = began.elapsed();
+    assert_eq!(status, "HTTP/1.1 504 Gateway Timeout", "body of {} bytes", body.len());
+    assert!(body.contains("the request did not complete within its time limit"), "body of {} bytes", body.len());
+    assert!(took < DEADLINE + GRACE, "answered after {took:?}, once the {GRACE:?} grace had run out rather than at the buffer's cap");
+    let warned = capture.warnings();
+    assert!(
+        warned.iter().any(|line| line.contains(OVERSIZED) && line.contains("route=/large")),
+        "the server logged no warning naming the route: {warned:?}"
+    );
     running.stop().await;
 }
 

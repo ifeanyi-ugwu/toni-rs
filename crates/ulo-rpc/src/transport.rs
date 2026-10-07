@@ -158,6 +158,13 @@ impl AsRef<ExecutionRef> for RpcCx {
     }
 }
 
+/// The context as a handler parameter, `cx: RpcCx`, as `HttpCx` is on HTTP.
+impl FromCall<Rpc> for RpcCx {
+    async fn from_call(cx: &RpcCx) -> Result<Self, ExtractError> {
+        Ok(cx.clone())
+    }
+}
+
 /// What a handler answers, and what an interceptor's `next.run()` returns: nothing (an event, or
 /// a call answered with an empty `res`), one payload written as `res`, or a stream of payloads
 /// tracked for its end, each written as `item` and the end as `end`. An `Err` item runs
