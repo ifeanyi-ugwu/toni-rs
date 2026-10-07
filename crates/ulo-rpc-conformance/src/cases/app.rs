@@ -403,10 +403,18 @@ impl<L: Link> Module for ClientRoot<L> {
     }
 }
 
-/// The caller's side: an app holding the client, kept alive beside it.
+/// The caller's side: an app holding the client, kept alive beside it until `close`.
 pub(crate) struct Client {
     pub(crate) rpc: RpcClient,
-    _app: App<Connected>,
+    app: App<Connected>,
+}
+
+impl Client {
+    /// Closes the client's app, whose `RpcClientModule` closes the link while the broker is still
+    /// there to answer it.
+    pub(crate) async fn close(self) {
+        let _ = self.app.close(Signal::new("conformance")).await;
+    }
 }
 
 pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
@@ -418,7 +426,7 @@ pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
         .await
         .unwrap_or_else(|error| panic!("the conformance client did not connect: {error}"));
     let rpc = app.get::<RpcClient>().await.unwrap_or_else(|error| panic!("the conformance client has no `RpcClient`: {error}"));
-    Client { rpc: (*rpc).clone(), _app: app }
+    Client { rpc: (*rpc).clone(), app }
 }
 
 /// One scenario's environment: a broker, one server and one client, the server answering.
@@ -447,6 +455,7 @@ impl<B: Broker> Fixture<B> {
 
     pub(crate) async fn stop(self) {
         self.server.stop().await;
+        self.client.close().await;
     }
 }
 

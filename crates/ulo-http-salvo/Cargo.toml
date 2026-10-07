@@ -20,8 +20,6 @@ http-body.workspace = true
 hyper.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
 salvo = { workspace = true, features = ["server", "server-handle", "http1", "http2"] }
-# The signal from the acceptor, once it has closed its listener, to the stop command.
-tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }

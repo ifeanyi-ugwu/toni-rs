@@ -1,13 +1,13 @@
 //! Scenarios: drain. A request still arriving once the app has stopped admitting executions is
-//! answered 503, and the connection closes after it, by `Connection: close` on HTTP/1.1 and
-//! GOAWAY on HTTP/2.
+//! answered 503, and the connection closes after it, by `Connection: close` on HTTP/1.1, and on
+//! HTTP/2 by GOAWAY or at the host's stop deadline as its `drain_http2` declares.
 
 use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::net::TcpStream;
 use ulo::Signal;
-use ulo_http::embed::{DrainAbandoned, DrainPending};
+use ulo_http::embed::{DrainAbandoned, DrainHttp2, DrainPending};
 
 use crate::wire::{Exchange, PATIENCE, Raw, Running, has_header, not_a_timeout, start, status_of};
 use crate::{Host, Mode};
@@ -63,9 +63,11 @@ pub async fn http1<H: Host>(mode: Mode) {
 }
 
 /// A long-lived stream holds an HTTP/2 connection open through the drain, and a request sent
-/// during the drain is not served: the host answers it 503 on the held connection, or refuses the
-/// new connection the client opens after GOAWAY. Either happens within half the drain window; a
-/// request that ends only when the host's own stop deadline cuts it was left waiting in silence.
+/// during the drain is not served. Where the host declares `DrainHttp2::GoAway`, it answers the
+/// request 503 on the held connection, or refuses the new connection the client opens after
+/// GOAWAY; where `Reset`, no GOAWAY tells the client to leave the held connection, so the request
+/// travels on it and is answered 503. Either happens within half the drain window; a request that
+/// ends only when the host's own stop deadline cuts it was left waiting in silence.
 pub async fn http2<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
     let client = reqwest::Client::builder().http2_prior_knowledge().timeout(PATIENCE).build().expect("an HTTP/2 client");
@@ -77,9 +79,16 @@ pub async fn http2<H: Host>(mode: Mode) {
     let held = client.get(host.url("/endless")).send().await.expect("the stream opens");
     let closing = begin_close(&host).await;
     let sent = tokio::time::Instant::now();
-    match client.get(host.url("/hit")).send().await {
-        Ok(response) => assert_eq!(response.status().as_u16(), 503, "an HTTP/2 request during the drain was served"),
-        Err(error) => not_a_timeout(&error, "an HTTP/2 request during the drain"),
+    match (client.get(host.url("/hit")).send().await, H::limits().drain_http2) {
+        (Ok(response), _) => assert_eq!(response.status().as_u16(), 503, "an HTTP/2 request during the drain was served"),
+        (Err(error), DrainHttp2::GoAway) => not_a_timeout(&error, "an HTTP/2 request during the drain"),
+        (Err(error), DrainHttp2::Reset) => {
+            not_a_timeout(&error, "an HTTP/2 request during the drain");
+            panic!(
+                "the host declares `DrainHttp2::Reset`, so the held connection stays open through the drain and carries the \
+                 request to the app's 503, but the request failed: {error}"
+            )
+        }
     }
     let window = host.app.drain_timeout();
     let took = sent.elapsed();
@@ -92,8 +101,11 @@ pub async fn http2<H: Host>(mode: Mode) {
     host.stop().await;
 }
 
-/// An HTTP/2 client holding a connection, a stream open on it, receives GOAWAY with `NO_ERROR`
-/// once the drain begins: its next request on that connection fails as a GOAWAY the host sent.
+/// An HTTP/2 client holds a connection, a stream open on it, through the drain, and the
+/// connection ends as the host's `drain_http2` declares. Where `GoAway`, the client receives
+/// GOAWAY with `NO_ERROR` within the patience: its next request on that connection fails as a
+/// GOAWAY the host sent. Where `Reset`, the connection takes requests until the host's stop
+/// deadline, no sooner than the drain window, and then fails with no GOAWAY received.
 pub async fn goaway<H: Host>(mode: Mode) {
     let host = start::<H>(mode).await;
     let (mut send, _connection) = h2_connect(&host).await;
@@ -112,22 +124,46 @@ pub async fn goaway<H: Host>(mode: Mode) {
     let first = tokio::time::timeout(PATIENCE, held.data()).await.expect("the stream's first event within the patience");
     assert!(first.is_some_and(|chunk| chunk.is_ok()), "the held stream's first event");
 
+    let window = host.app.drain_timeout();
+    let declared = H::limits().drain_http2;
+    let patience = match declared {
+        DrainHttp2::GoAway => PATIENCE,
+        DrainHttp2::Reset => window + PATIENCE,
+    };
+    let started = tokio::time::Instant::now();
     let closing = begin_close(&host).await;
-    let deadline = tokio::time::Instant::now() + PATIENCE;
     let error = loop {
         match send.clone().ready().await {
             Ok(_) => {
                 assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "no GOAWAY reached the client within {PATIENCE:?} of the drain beginning"
+                    started.elapsed() < patience,
+                    "the host declares `{declared:?}` and its connection was neither sent GOAWAY nor ended within {patience:?} of the drain beginning"
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             Err(error) => break error,
         }
     };
-    assert!(error.is_go_away() && error.is_remote(), "the connection failed otherwise than by the host's GOAWAY: {error}");
-    assert_eq!(error.reason(), Some(h2::Reason::NO_ERROR), "the drain's GOAWAY reports an error: {error}");
+    let took = started.elapsed();
+    match declared {
+        DrainHttp2::GoAway => {
+            assert!(
+                error.is_go_away() && error.is_remote(),
+                "the host declares `DrainHttp2::GoAway` and the connection failed otherwise than by its GOAWAY: {error}"
+            );
+            assert_eq!(error.reason(), Some(h2::Reason::NO_ERROR), "the drain's GOAWAY reports an error: {error}");
+        }
+        DrainHttp2::Reset => {
+            assert!(
+                !(error.is_go_away() && error.is_remote()),
+                "the host declares `DrainHttp2::Reset` and sent GOAWAY after {took:?}: declare `GoAway`"
+            );
+            assert!(
+                took >= window,
+                "the host declares `DrainHttp2::Reset` and the connection ended after {took:?} of a {window:?} drain window, before its stop deadline: {error}"
+            );
+        }
+    }
     drop(held);
     drop(send);
     let _ = closing.await;

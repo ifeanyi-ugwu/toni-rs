@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -129,6 +130,7 @@ impl Link for Kafka {
             .ordering(Order::PerPartition)
             .native_backpressure(true)
             .holds_unserved(true)
+            .durable_replies(true)
             .max_frame(Some(MAX_MESSAGE))
     }
 
@@ -171,7 +173,7 @@ impl Link for Kafka {
             .set("enable.auto.commit", "true")
             .set("enable.auto.offset.store", "false")
             .set("auto.offset.reset", "latest");
-        let consumer: Arc<StreamConsumer> = Arc::new(config.create()?);
+        let consumer: Arc<Detached<StreamConsumer>> = Arc::new(Detached::new(config.create()?));
         let names: Vec<&str> = topics.iter().map(String::as_str).collect();
         consumer.subscribe(&names)?;
 
@@ -215,9 +217,11 @@ impl Link for Kafka {
             reply_topic,
             calls: Mutex::new(HashMap::new()),
             closed: Mutex::new(Some(closed)),
+            routing: Mutex::new(None),
         });
         let (frames, replies_out) = mpsc::unbounded_channel();
-        tokio::spawn(route_replies(Arc::clone(&side), replies, frames, closing));
+        let routing = tokio::spawn(route_replies(Arc::clone(&side), replies, frames, closing));
+        *lock(&side.routing) = Some(routing);
         lock(&self.state).client = Some(Arc::clone(&side));
 
         Ok(Outbound {
@@ -266,7 +270,7 @@ impl Link for Kafka {
             }
         }
         if let Some(side) = client {
-            side.close();
+            side.close().await;
         }
         Ok(())
     }
@@ -389,13 +393,13 @@ fn producer(base: &ClientConfig) -> Result<FutureProducer, BoxError> {
 /// A consumer of the control topic assigned every partition from its end, outside any group's
 /// rebalancing, so it reads from `bind` on rather than from a first assignment seconds later. Its
 /// `group.id` is this instance's own and it commits nothing.
-async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<StreamConsumer>, BoxError> {
+async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<Detached<StreamConsumer>>, BoxError> {
     let mut config = base.clone();
     config
         .set("group.id", format!("{group}.control.{}", uuid::Uuid::new_v4().simple()))
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "latest");
-    let consumer: Arc<StreamConsumer> = Arc::new(config.create()?);
+    let consumer: Arc<Detached<StreamConsumer>> = Arc::new(Detached::new(config.create()?));
     let reader = Arc::clone(&consumer);
     // `fetch_metadata` blocks the calling thread.
     let partitions: Vec<i32> = tokio::task::spawn_blocking(move || -> Result<Vec<i32>, BoxError> {
@@ -422,7 +426,7 @@ async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<Stream
 /// The server side of a bound link: the group's consumer, the reply producer, the calls it holds,
 /// and where deliveries go.
 struct ServerSide {
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<Detached<StreamConsumer>>,
     producer: FutureProducer,
     codec: Codec,
     calls: Arc<Calls>,
@@ -550,7 +554,7 @@ async fn request_lane(side: Arc<ServerSide>) {
     }
 }
 
-async fn control_lane(side: Arc<ServerSide>, control: Arc<StreamConsumer>) {
+async fn control_lane(side: Arc<ServerSide>, control: Arc<Detached<StreamConsumer>>) {
     let mut phase = side.phase.subscribe();
     loop {
         let record = tokio::select! {
@@ -621,6 +625,8 @@ struct ClientSide {
     calls: Mutex<HashMap<u64, ClientCall>>,
     /// Stops the reply router at close.
     closed: Mutex<Option<oneshot::Sender<()>>>,
+    /// The reply router, which `close` awaits: it drops the reply consumer as it ends.
+    routing: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 enum ClientCall {
@@ -729,9 +735,15 @@ impl ClientSide {
         }
     }
 
-    fn close(&self) {
+    /// Stops the reply router and waits for it to end, the reply consumer leaving its group while
+    /// the broker is still there to answer.
+    async fn close(&self) {
         if let Some(closed) = lock(&self.closed).take() {
             let _ = closed.send(());
+        }
+        let routing = lock(&self.routing).take();
+        if let Some(routing) = routing {
+            let _ = routing.await;
         }
     }
 }
@@ -775,6 +787,7 @@ async fn route_replies(
             break;
         }
     }
+    let _ = drop_detached(replies).await;
 }
 
 /// Publishes one streamed request's control frames once the server has acknowledged its `open`.
@@ -886,6 +899,49 @@ fn is_terminal(frame: &Frame) -> bool {
 
 fn receiver_stream<T: Send + 'static>(receiver: mpsc::UnboundedReceiver<T>) -> futures_core::stream::BoxStream<'static, T> {
     futures_util::stream::unfold(receiver, |mut receiver| async move { receiver.recv().await.map(|item| (item, receiver)) }).boxed()
+}
+
+/// A value whose drop runs on a thread of its own, for a librdkafka consumer: its drop leaves the
+/// group and polls until librdkafka confirms, about a tenth of a second with the broker up and
+/// without bound once the broker is gone, and on a runtime worker that stalls every task
+/// scheduled there.
+struct Detached<T: Send + 'static>(Option<T>);
+
+impl<T: Send + 'static> Detached<T> {
+    fn new(value: T) -> Self {
+        Detached(Some(value))
+    }
+}
+
+impl<T: Send + 'static> Deref for Detached<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("the value is taken only by the drop")
+    }
+}
+
+impl<T: Send + 'static> Drop for Detached<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            let _ = drop_detached(value);
+        }
+    }
+}
+
+/// Drops `value` on a thread of its own and answers once the drop has finished. Not a
+/// `spawn_blocking` task: a runtime waits for those as it shuts down, and a consumer whose broker
+/// is gone would hold it there. A thread that cannot be spawned drops `value` here.
+fn drop_detached<T: Send + 'static>(value: T) -> oneshot::Receiver<()> {
+    let (done, finished) = oneshot::channel();
+    let spawned = std::thread::Builder::new().name("ulo-kafka-drop".to_owned()).spawn(move || {
+        drop(value);
+        let _ = done.send(());
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "the Kafka link dropped a consumer on its own thread, which could not spawn one");
+    }
+    finished
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

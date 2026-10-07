@@ -241,6 +241,11 @@ pub struct Capabilities {
     /// draining or stopped server then sees its own `Timeout`, and `miss_signal` covers only a
     /// pattern never subscribed.
     pub holds_unserved: bool,
+    /// The broker keeps a reply published while the client's connection is down, and the client
+    /// reads it once it reconnects: a Kafka reply topic. A call waiting when the client loses its
+    /// connection is then answered, rather than failed `Unavailable` as on a link whose replies
+    /// the outage loses.
+    pub durable_replies: bool,
 }
 
 /// Every call shape, for a link that carries them all.
@@ -251,7 +256,8 @@ pub const UNARY_ONLY: &[Shape] = &[Shape::Unary];
 
 impl Capabilities {
     /// A link delivering as `delivery`, carrying every shape, JSON, unordered, with no frame limit,
-    /// no native backpressure, no miss signal and nothing held for a server that has gone.
+    /// no native backpressure, no miss signal, nothing held for a server that has gone and no reply
+    /// kept through a client's outage.
     pub const fn new(delivery: DeliveryMode) -> Self {
         Capabilities {
             binary: false,
@@ -262,6 +268,7 @@ impl Capabilities {
             delivery,
             miss_signal: false,
             holds_unserved: false,
+            durable_replies: false,
         }
     }
 
@@ -291,6 +298,10 @@ impl Capabilities {
 
     pub const fn holds_unserved(self, holds_unserved: bool) -> Self {
         Capabilities { holds_unserved, ..self }
+    }
+
+    pub const fn durable_replies(self, durable_replies: bool) -> Self {
+        Capabilities { durable_replies, ..self }
     }
 }
 

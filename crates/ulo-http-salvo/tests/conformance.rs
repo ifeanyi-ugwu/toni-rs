@@ -11,7 +11,7 @@ use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, routing_label};
-use ulo_http_salvo::{Embedded, Salvo, handler};
+use ulo_http_salvo::{Closing, Embedded, Salvo, handler};
 
 struct SalvoHost {
     base_url: String,
@@ -53,6 +53,7 @@ impl Host for SalvoHost {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the listener's address");
         let acceptor = TcpAcceptor::try_from(listener).expect("salvo adopts the listener");
+        let server = salvo::Server::new(Closing::new(&embedded, acceptor));
         let service = salvo::Service::new(router);
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {
@@ -60,7 +61,7 @@ impl Host for SalvoHost {
                 let _ = stopped.await;
                 Signal::new("suite")
             };
-            let _ = ulo_http_salvo::run(app, &embedded, acceptor, service, signal).await;
+            let _ = ulo_http_salvo::run(app, &embedded, server, service, signal).await;
         });
         SalvoHost { base_url: format!("http://{addr}"), stop, serving }
     }

@@ -57,6 +57,10 @@ jobs:
       # and `compile_fail` reports itself ignored off rustc 1.98.1 and runs in
       # `macro diagnostics`.
       - run: cargo test --workspace --locked
+      # actix-web's `http2` is off in a default build, and any crate in an application can turn
+      # it on, so the actix suite runs once more against an h2c host, where the adapter's
+      # `DrainHttp2::Reset` declaration is asserted.
+      - run: cargo test -p ulo-http-actix --features conformance-http2 --test conformance_http2 --locked
 
   msrv-matrix:
     name: msrv matrix

@@ -3,8 +3,9 @@
 //!
 //! A Kafka client connects wherever the broker's metadata advertises, not where it bootstrapped,
 //! so the broker has one listener for the server and one for the client, each advertising a relay
-//! bound before the container starts. `disrupt` cuts the client's relay alone, which the
-//! recovery scenario, declared not applicable, would need to cost the waiting call its reply.
+//! bound before the container starts. `disrupt` cuts the client's relay alone and keeps it shut
+//! while the recovery scenario's held call is answered: the link declares `durable_replies`, and
+//! the reply waits on the reply topic for the client to reconnect.
 
 #![cfg(feature = "integration")]
 
@@ -22,6 +23,9 @@ use ulo_rpc_kafka::Kafka;
 const SERVER_PORT: u16 = 9092;
 /// The listener the client's link reaches.
 const CLIENT_PORT: u16 = 9095;
+/// How long `disrupt` keeps the client disconnected: longer than the recovery scenario's held call
+/// takes to be answered once `disrupt` begins, three seconds.
+const OUTAGE: Duration = Duration::from_secs(4);
 
 struct KraftBroker {
     server: Relay,
@@ -84,8 +88,11 @@ impl Broker for KraftBroker {
         Kafka::brokers(self.client.addr().to_string())
     }
 
+    /// Holds the client out for `OUTAGE`, past the moment the recovery scenario's held call is
+    /// answered, so its reply is published while the client is disconnected.
     async fn disrupt(&self) {
-        self.client.cut().await;
+        let severed = self.client.cut_for(OUTAGE).await;
+        assert!(severed > 0, "`disrupt` found no client connection to sever");
     }
 
     /// A consumer group takes its partitions a few seconds after `bind`, and a record waits for
@@ -95,6 +102,4 @@ impl Broker for KraftBroker {
     }
 }
 
-ulo_rpc_conformance::conformance_suite!(KraftBroker; not_applicable {
-    recovery_after_disrupt: "the reply topic is durable and librdkafka reconnects by itself, so a severed connection loses no reply and the waiting call is answered",
-});
+ulo_rpc_conformance::conformance_suite!(KraftBroker);

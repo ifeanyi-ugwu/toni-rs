@@ -20,7 +20,9 @@ use crate::link::Link;
 ///
 /// The link connects lazily, on the client's first call, so `connect` does no network I/O for it.
 /// Every timeout runs on the app's `Timer`, which the client reads as `Dep<dyn Timer>`: an app
-/// without one fails `wire()` naming the missing binding.
+/// without one fails `wire()` naming the missing binding. The binding's `on_destroy` hook calls the
+/// link's `close`, so the client's connection ends with the app rather than when the runtime
+/// drops it; a call made after that connects again.
 ///
 /// Each `for_root` is its own module: two clients of one link type are two imports, never one
 /// deduplicated, and diagnostics name either `RpcClientModule`.
@@ -67,10 +69,19 @@ impl<L: Link> Module for RpcClientModule<L> {
             m.try_value(refusal);
         } else {
             let link = Arc::clone(&self.link);
+            let closing = Arc::clone(&self.link);
             let timeout = self.timeout;
             m.singleton(move |timer: Dep<dyn Timer>| {
                 let link = Arc::clone(&link);
                 async move { RpcClient::new(link, timeout, timer.into_arc()) }
+            })
+            .on_destroy(move || {
+                let link = Arc::clone(&closing);
+                async move {
+                    if let Err(error) = link.close().await {
+                        tracing::warn!(%error, link = L::NAME, "the RPC client's link did not close cleanly");
+                    }
+                }
             });
         }
         m.export::<RpcClient>();

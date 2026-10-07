@@ -10,6 +10,12 @@ homepage.workspace = true
 keywords = ["ulo", "actix", "embedding", "web"]
 categories = ["web-programming::http-server"]
 
+[features]
+# Turns on actix-web's `http2`, as any crate in an application can, and builds
+# `tests/conformance_http2.rs`, which runs the conformance suite against an h2c host so the
+# adapter's HTTP/2 drain declaration is asserted. The adapter's own code reads no feature.
+conformance-http2 = ["actix-web/http2"]
+
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http = { path = "../ulo-http" }
@@ -25,3 +31,8 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
+
+[[test]]
+name = "conformance_http2"
+required-features = ["conformance-http2"]
+

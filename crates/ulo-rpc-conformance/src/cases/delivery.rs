@@ -44,4 +44,5 @@ pub async fn two_instances<B: Broker>() {
     if let Some(second) = second {
         second.stop().await;
     }
+    caller.close().await;
 }

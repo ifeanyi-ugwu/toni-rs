@@ -7,8 +7,17 @@
 //! a stopped server's topic exists and a miss is the client's `Timeout` under auto-create; the
 //! group's offsets committed at the topics' end at `bind` where it has none, so a request produced
 //! while no instance consumes, or while a rebalance moves its partition, waits for the next owner
-//! (`holds_unserved`); the drain pauses and commits; an `ssl://` broker entry selects
-//! `security.protocol=SSL` under the `tls` feature.
+//! (`holds_unserved`); a reply published while the client is disconnected waits on its reply
+//! topic for the client to reconnect (`durable_replies`); the drain pauses and commits; an
+//! `ssl://` broker entry selects `security.protocol=SSL` under the `tls` feature.
+//!
+//! Kafka accepts that first commit only while the group has no member, so it anchors a topic only
+//! when the group's first instance binds. A handler added in a deployment that rolls out while
+//! the group runs gets a topic with no committed offset: each assignment of its partitions starts
+//! at their end until a handler there settles a record and the next auto-commit records it. A
+//! request produced to that topic before its first assignment, or while a rebalance moves its
+//! partition, is skipped and its caller sees its own `Timeout`. Stopping every instance before
+//! starting the new version anchors it.
 //!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_kafka::Kafka::brokers("kafka:9092")))

@@ -130,6 +130,12 @@ pub struct EmbedLimits {
     /// by the client. Nothing is refused: on a host declaring `Window`, a client that leaves
     /// mid-response during shutdown makes the app's `close` take the whole drain window.
     pub drain_abandoned: DrainAbandoned,
+    /// What the host's graceful stop does with an HTTP/2 connection. Nothing is refused: on a
+    /// host declaring `Reset`, an HTTP/2 client is sent no GOAWAY, keeps sending on its
+    /// connection, and gets the app's 503s until the host resets the connection at its stop
+    /// deadline; the app's `close` waits for that deadline while any HTTP/2 connection is open.
+    /// A host that serves no HTTP/2 declares what it would do were it enabled.
+    pub drain_http2: DrainHttp2,
 }
 
 impl EmbedLimits {
@@ -144,6 +150,7 @@ impl EmbedLimits {
         disconnect: Disconnect::AtClose,
         drain_pending: DrainPending::Served,
         drain_abandoned: DrainAbandoned::Released,
+        drain_http2: DrainHttp2::GoAway,
     };
 
     pub const fn peer_addr(self, supported: bool) -> Self {
@@ -180,6 +187,10 @@ impl EmbedLimits {
 
     pub const fn drain_abandoned(self, drain_abandoned: DrainAbandoned) -> Self {
         EmbedLimits { drain_abandoned, ..self }
+    }
+
+    pub const fn drain_http2(self, drain_http2: DrainHttp2) -> Self {
+        EmbedLimits { drain_http2, ..self }
     }
 }
 
@@ -221,6 +232,17 @@ pub enum DrainAbandoned {
     Released,
     /// The whole drain window, however soon the host drops the abandoned response.
     Window,
+}
+
+/// What a host's graceful stop does with an HTTP/2 connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainHttp2 {
+    /// The host sends GOAWAY with `NO_ERROR` when its stop begins and closes the connection once
+    /// its streams end, so a client opens a new connection for its next request.
+    GoAway,
+    /// The host sends no GOAWAY. The connection stays open, carrying requests to the draining app,
+    /// until the host's stop deadline, when it is reset.
+    Reset,
 }
 
 /// What the app does with a request no route matches.

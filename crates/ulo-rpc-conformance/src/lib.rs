@@ -60,7 +60,11 @@ pub trait Broker: Sized + Send + Sync + 'static {
     }
 
     /// Severs the client's connection however the environment allows, for the recovery scenario:
-    /// the calls waiting on it fail `Unavailable`, and the client connects again for the next.
+    /// the calls waiting on it fail `Unavailable`, and the client connects again for the next. On
+    /// a link declaring `durable_replies` the waiting call is answered instead, so a `disrupt` that
+    /// severed nothing would pass unnoticed: there `disrupt` fails when it closed no connection
+    /// (`Relay::cut_for` answers how many), and keeps the client out until the waiting call's
+    /// reply is published, three seconds after it begins.
     fn disrupt(&self) -> impl Future<Output = ()> + Send;
 
     /// How long this environment takes, which a slow broker raises.

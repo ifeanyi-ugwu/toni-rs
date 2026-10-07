@@ -7,26 +7,40 @@ use ulo_transport::ErrorKind;
 use crate::Broker;
 use crate::cases::app::{ADD, Add, Fixture, HOLD, Sum, within};
 
-/// How long the call held across the disruption would take, were its connection kept.
-const HELD_MS: u64 = 3_000;
+/// How long after `Broker::disrupt` the held call's handler answers, were its connection kept.
+const HELD_AFTER_DISRUPT: Duration = Duration::from_secs(3);
 
 /// A call waiting when `Broker::disrupt` severs the client's connection fails `Unavailable`, and
 /// calls succeed again within `Budget::recovery`, the client connecting anew. A `disrupt` that
 /// severs nothing lets the held call finish, which fails the scenario.
+///
+/// On a link declaring `durable_replies` the held call is answered instead, the broker keeping its
+/// reply for the reconnected client. There a `disrupt` that severs nothing would pass, so the
+/// environment's `disrupt` shows the cut itself (`Relay::cut_for` answers how many connections it
+/// closed), and holds the client out until after the reply is published.
 pub async fn after_disrupt<B: Broker>() {
     let fixture = Fixture::<B>::start().await;
     let budget = fixture.broker.budget();
+    let durable = fixture.capabilities().durable_replies;
     let rpc = fixture.rpc().clone();
-    let held = tokio::spawn(async move { rpc.request::<_, u64>(HOLD, &HELD_MS).timeout(Duration::from_secs(30)).await });
+    // The handler answers `HELD_AFTER_DISRUPT` after the scenario's settle, so after `disrupt`
+    // however long the environment settles.
+    let held_for = budget.settle + HELD_AFTER_DISRUPT;
+    let held_ms = u64::try_from(held_for.as_millis()).unwrap_or(u64::MAX);
+    let held = tokio::spawn(async move { rpc.request::<_, u64>(HOLD, &held_ms).timeout(Duration::from_secs(60)).await });
     // The held call reaches its handler before the connection is severed.
     tokio::time::sleep(budget.settle).await;
     within(budget.recovery, "`Broker::disrupt`", fixture.broker.disrupt()).await;
-    let lost = within(Duration::from_millis(HELD_MS) + budget.recovery, "the call waiting on the severed connection", held)
+    let ended = within(held_for + budget.recovery, "the call waiting on the severed connection", held)
         .await
         .expect("the held call's task completes");
-    match lost {
-        Err(error) if error.kind() == ErrorKind::Unavailable => {}
-        other => panic!("a call waiting on a severed connection fails `Unavailable`, got: {other:?}"),
+    match (ended, durable) {
+        (Err(error), false) if error.kind() == ErrorKind::Unavailable => {}
+        (other, false) => panic!("a call waiting on a severed connection fails `Unavailable`, got: {other:?}"),
+        (Ok(answered), true) => assert_eq!(answered, held_ms, "the held call's answer"),
+        (other, true) => panic!(
+            "the link declares `durable_replies`, so a call waiting on a severed connection is answered once the client reconnects, got: {other:?}"
+        ),
     }
 
     let deadline = Instant::now() + budget.recovery;
