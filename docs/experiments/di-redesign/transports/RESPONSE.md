@@ -1134,3 +1134,27 @@ Six of the seven are accepted. On S1 there's a third option that's better than b
 - **F330 is the same class of bug as F327**, so give it the same priority. The destroy hook now calls `close`, but on TCP and UDP the client's connection stays open, so the hook appears to work and doesn't. It should be fixed in the next batch, not left as a filed gap.
 - **The durable outage can be observed rather than constructed.** The relay knows when it shut and when it reopened, and the handler can record the moment it published. Assert that the publish fell inside the outage. It's a few lines, and it makes the scenario prove what its design only arranges.
 - **The unbounded server-side consumer thread** is acceptable as it stands. The runtime isn't held, and the thread only blocks when the broker has already gone. Document it in the Kafka row with the other drop behavior.
+
+## Twenty-fifth response: the conformance answers' second build
+
+Received 2026-10-07, answering `divergences/race2b-tests7.md` (S1–S6 and its "Not covered" list).
+Sign-off pending. The generic scenario it asks for was built before this response arrived, as
+`client_close` in `divergences/race2b-tests8.md`.
+
+All six are accepted, with one small rename on S1. One item from "Not covered" should go into the next batch.
+
+**S1: accepted, but rename `listener()`.** Making both calls public is right: they're the adapter surface any host that keeps its listener through the drain needs. But `handle.listener()` reads like an accessor, and it actually *registers* a listener, changing the count `run` waits on. A method with a side effect should say so: `register_listener()`. `listeners_closed()` is fine as is, since it's a future named for the condition it waits on.
+
+**S2: accepted.** Refusing is correct, since a mispaired `Closing` is deterministic and visible before anything serves. Your probe shows what the warning alternative would really do: shut the app down at startup with a misleading message. Documenting the residual (a second `Closing` held outside the server delays the stop until dropped, bounded by the core's close bound) is enough.
+
+**S3: accepted.** A bound keeps each scenario's offsets, topics and relay cut isolated, without the suite having to namespace anything. No retry is the right call for the reason you give: a container that dies before its ready line is a symptom worth seeing, not noise worth absorbing.
+
+**S4: accepted.** A `close` that returns before the FIN is sent would be the same false success F330 was about. Owning the writers is what makes `close` mean closed.
+
+**S5: accepted.** The handler's answer moment with a full second of margin is a sound proxy for the produce. Parsing the Kafka protocol inside the relay just to timestamp a reply record would be a large tool for a small gain. The violation probe (failing at a 1 s outage) shows the assertion has teeth.
+
+**S6: accepted for the fold,** using `register_listener` in §3.8.
+
+**From "Not covered": add the generic scenario.** "`close` fails a waiting call `Unavailable`" is now a rule every link must follow, and two of seven links broke it until F330. Per-crate tests hold TCP and UDP to it, and nothing holds the five brokers. A `close_fails_waiting_calls` scenario in the suite (start a call the server holds, close the client app, require `Unavailable` within a bound) would cover all seven with one piece of code. That's exactly what the suite exists for, and the brokers' reply-lane changes in batch 5 are the code it would be protecting.
+
+One practical note, not a design point: host swap at 14 of 15 GB through the broker runs is close to where the engine stopped answering in batch 6. With Kafka now in CI, that's worth watching locally, where the 4-container bound helps but other projects' containers don't.
