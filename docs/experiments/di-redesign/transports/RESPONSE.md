@@ -1108,7 +1108,8 @@ The fold list looks complete, with these additions: the salvo acceptor in §3.8,
 ## Twenty-fourth response: the conformance answers' build
 
 Received 2026-10-07, answering `divergences/race2b-tests6.md` (S1–S7 and its "Not covered" list).
-Sign-off pending.
+The user signed it off the same day, adding the Kafka suite's bounded concurrency to the batch so
+the CI broker job does not inherit the container-start failure.
 
 Six of the seven are accepted. On S1 there's a third option that's better than both.
 
