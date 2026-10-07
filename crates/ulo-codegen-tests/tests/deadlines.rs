@@ -13,9 +13,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use futures_util::{Stream, StreamExt, future, stream};
-use tonic::codec::{BufferSettings, EncodeBody, SingleMessageCompressionOverride};
 use tonic::{Code, Status};
-use tonic_prost::ProstEncoder;
 use ulo::{BoxError, Bound, Dep, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, injectable, routes};
 use ulo_codegen_tests::probe::clock_client::ClockClient;
 use ulo_codegen_tests::probe::{self, Tick, Ticks};
@@ -56,10 +54,10 @@ struct Claim {
 }
 
 impl ErrorHandler<Grpc> for Claim {
-    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
         let kind = err.downcast_ref::<CallError>().map(CallError::kind);
         self.seen.0.push(format!("offered: {kind:?}"));
-        Ok(Status::unavailable("claimed after the deadline").into_http())
+        Ok(cx.reply_status(Status::unavailable("claimed after the deadline")))
     }
 }
 
@@ -86,24 +84,6 @@ impl ErrorHandler<Grpc> for Stuck {
     }
 }
 
-/// Answers a `Timeout` with the reply body `ticks` encode, as an error handler writes one by hand:
-/// nothing in `ulo_grpc` turns a message or a stream into a `Reply` outside a handler.
-fn encoded<S>(ticks: S) -> Reply
-where
-    S: Stream<Item = Result<Tick, Status>> + Send + 'static,
-{
-    let body = EncodeBody::new_server(
-        ProstEncoder::<Tick>::new(BufferSettings::default()),
-        ticks,
-        None,
-        SingleMessageCompressionOverride::default(),
-        None,
-    );
-    let mut reply = Reply::new(tonic::body::Body::new(body));
-    reply.headers_mut().insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/grpc"));
-    reply
-}
-
 fn timed_out(err: &BoxError) -> bool {
     err.downcast_ref::<CallError>().is_some_and(|call| call.kind() == ErrorKind::Timeout)
 }
@@ -112,11 +92,11 @@ fn timed_out(err: &BoxError) -> bool {
 struct OneOnTimeout;
 
 impl ErrorHandler<Grpc> for OneOnTimeout {
-    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
-        Ok(encoded(stream::once(future::ready(Ok(Tick { n: 7 })))))
+        Ok(cx.reply(Tick { n: 7 }))
     }
 }
 
@@ -124,11 +104,11 @@ impl ErrorHandler<Grpc> for OneOnTimeout {
 struct EndlessOnTimeout;
 
 impl ErrorHandler<Grpc> for EndlessOnTimeout {
-    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
-        Ok(encoded(stream::repeat_with(|| Ok(Tick { n: 1 }))))
+        Ok(cx.reply_stream(stream::repeat_with(|| Ok::<_, CallError>(Tick { n: 1 }))))
     }
 }
 
@@ -136,11 +116,11 @@ impl ErrorHandler<Grpc> for EndlessOnTimeout {
 struct TrickleOnTimeout;
 
 impl ErrorHandler<Grpc> for TrickleOnTimeout {
-    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
-        Ok(encoded(stream::once(future::ready(Ok(Tick { n: 1 }))).chain(stream::pending())))
+        Ok(cx.reply_stream(stream::once(future::ready(Ok::<_, CallError>(Tick { n: 1 }))).chain(stream::pending())))
     }
 }
 

@@ -127,6 +127,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p ulo-codegen-tests --test compile_fail --locked
 
+  generated-lints:
+    name: generated code lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # What the attribute and derive macros and ulo-build write lands in the user's crate, so a
+      # lint it trips fails a user's `clippy -D warnings` on code the user cannot change.
+      # ulo-macro-lints expands every one of them and holds almost nothing else, so a warning
+      # here names generated code. --no-deps lints that crate alone: the framework's own crates
+      # are compiled, not linted. On `stable`: a lint a new clippy adds reaches users
+      # on that release, and this job is where it shows first.
+      - run: cargo clippy -p ulo-macro-lints --all-targets --no-deps --locked -- -D warnings
+
   conformance:
     name: rpc conformance (brokers)
     # On push, not on pull requests: each suite starts its broker under Docker

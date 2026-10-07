@@ -17,13 +17,15 @@ use futures_util::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use ulo::app::{Bound as Serving, Connected};
 use ulo::{
-    App, AppHandle, BoxError, Bound, CancelReason, Dep, ExecutionRef, Guard, Module, ModuleDef, ModuleIdentity, Shape,
-    Shutdown, ShutdownError, Signal, StartupError, injectable, routes,
+    App, AppHandle, BoxError, Bound, CancelReason, Dep, ErrorHandler, ExecutionRef, Guard, Module, ModuleDef,
+    ModuleIdentity, Shape, Shutdown, ShutdownError, Signal, StartupError, injectable, routes,
 };
-use ulo_rpc::{CallHeaders, Capabilities, Inbound, Link, Payload, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError};
-use ulo_transport::{Classify, ErrorKind};
+use ulo_rpc::{
+    CallHeaders, Capabilities, Inbound, Link, Payload, Reply, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError,
+};
+use ulo_transport::{CallError, Classify, ErrorKind};
 
-use crate::Broker;
+use crate::{Broker, report};
 
 pub(crate) const ADD: &str = "conformance.add";
 pub(crate) const ECHO: &str = "conformance.echo";
@@ -44,6 +46,14 @@ pub(crate) const UNTIL_DRAIN: &str = "conformance.until_drain";
 pub(crate) const BYTES: &str = "conformance.bytes";
 pub(crate) const NOBODY: &str = "conformance.nobody";
 pub(crate) const NOBODY_EVENT: &str = "conformance.nobody.event";
+pub(crate) const SUBSTITUTED: &str = "conformance.substituted";
+pub(crate) const SUBSTITUTED_STREAM: &str = "conformance.substituted_stream";
+
+/// What [`Substitute`] answers a call's `Refusal::Missing` with.
+pub(crate) const SUBSTITUTE: Sum = Sum { sum: 42 };
+
+/// The items [`SubstituteStream`] answers a stream's `Refusal::Missing` with.
+pub(crate) const SUBSTITUTE_ITEMS: [u32; 3] = [7, 8, 9];
 
 /// The header the headers scenario sends and reads back.
 pub(crate) const HEADER: &str = "x-conformance";
@@ -141,11 +151,13 @@ impl Drop for Recorder {
 }
 
 /// A handler's own failure: `Conflict` for the domain-error scenario, `BadRequest` for a
-/// streamed item that does not decode.
+/// streamed item that does not decode, `NotFound` for the one an error handler answers with a
+/// value of its own.
 #[derive(Debug)]
 pub(crate) enum Refusal {
     Conflict,
     BadItem,
+    Missing,
 }
 
 impl fmt::Display for Refusal {
@@ -153,6 +165,7 @@ impl fmt::Display for Refusal {
         match self {
             Refusal::Conflict => f.write_str("the conformance resource already exists"),
             Refusal::BadItem => f.write_str("a streamed item did not decode"),
+            Refusal::Missing => f.write_str("the conformance resource does not exist"),
         }
     }
 }
@@ -164,7 +177,38 @@ impl Classify for Refusal {
         match self {
             Refusal::Conflict => ErrorKind::Conflict,
             Refusal::BadItem => ErrorKind::BadRequest,
+            Refusal::Missing => ErrorKind::NotFound,
         }
+    }
+}
+
+/// Whether `err` is a handler's `Refusal::Missing`.
+fn missing(err: &BoxError) -> bool {
+    err.downcast_ref::<CallError>().and_then(|call| call.source_as::<Refusal>()).is_some_and(|refusal| matches!(refusal, Refusal::Missing))
+}
+
+/// Answers a `Refusal::Missing` with [`SUBSTITUTE`], encoded by the link's codec; anything else
+/// passes on.
+struct Substitute;
+
+impl ErrorHandler<Rpc> for Substitute {
+    async fn handle(&self, err: BoxError, cx: &RpcCx) -> Result<Reply, BoxError> {
+        if !missing(&err) {
+            return Err(err);
+        }
+        Ok(cx.reply(&SUBSTITUTE)?)
+    }
+}
+
+/// Answers a `Refusal::Missing` with a stream of [`SUBSTITUTE_ITEMS`]; anything else passes on.
+struct SubstituteStream;
+
+impl ErrorHandler<Rpc> for SubstituteStream {
+    async fn handle(&self, err: BoxError, cx: &RpcCx) -> Result<Reply, BoxError> {
+        if !missing(&err) {
+            return Err(err);
+        }
+        Ok(cx.reply_stream(stream::iter(SUBSTITUTE_ITEMS.map(Ok::<_, Refusal>))))
     }
 }
 
@@ -197,6 +241,12 @@ impl CoreController {
     #[ulo_rpc::message("conformance.conflict")]
     async fn conflict(&self) -> Result<(), Refusal> {
         Err(Refusal::Conflict)
+    }
+
+    #[ulo_rpc::message("conformance.substituted")]
+    #[error_handlers(value = Substitute)]
+    async fn substituted(&self) -> Result<Sum, Refusal> {
+        Err(Refusal::Missing)
     }
 
     #[ulo_rpc::message("conformance.guarded")]
@@ -286,6 +336,12 @@ impl StreamController {
         items.map(|item| item.map(|n| n * 2).map_err(|_| Refusal::BadItem))
     }
 
+    #[ulo_rpc::message("conformance.substituted_stream")]
+    #[error_handlers(value = SubstituteStream)]
+    async fn substituted_stream(&self) -> Result<stream::Empty<Result<u32, Refusal>>, Refusal> {
+        Err(Refusal::Missing)
+    }
+
     /// Ticks until the stream is dropped, recording the reason when it is.
     #[ulo_rpc::message("conformance.ticks")]
     async fn ticks(&self, exec: ExecutionRef) -> impl Stream<Item = Result<u64, Refusal>> {
@@ -366,6 +422,9 @@ pub(crate) struct Server {
     pub(crate) handle: AppHandle,
     pub(crate) probe: Probe,
     serving: tokio::task::JoinHandle<()>,
+    /// How `serve` returned, once it has: a server whose link failed after `listen` stops serving
+    /// here, and [`ready`] reports it.
+    ended: Arc<Mutex<Option<String>>>,
 }
 
 impl Server {
@@ -391,12 +450,22 @@ async fn bound<B: Broker>(broker: &B, probe: Probe, mounts: Mounts) -> Result<Ap
 pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
     let probe = Probe::default();
     let mounts = Mounts::carried(&broker.link().capabilities());
-    let app = bound(broker, probe.clone(), mounts).await.unwrap_or_else(|error| panic!("the conformance server did not start: {error}"));
+    let app = bound(broker, probe.clone(), mounts)
+        .await
+        .unwrap_or_else(|error| panic!("the conformance server did not start: {}", report(&error)));
     let handle = app.handle();
-    let serving = tokio::spawn(async move {
-        let _ = app.serve(std::future::pending::<Signal>()).await;
+    let ended = Arc::new(Mutex::new(None));
+    let serving = tokio::spawn({
+        let ended = Arc::clone(&ended);
+        async move {
+            let outcome = match app.serve(std::future::pending::<Signal>()).await {
+                Ok(shutdown) => format!("it shut down on `{}`", shutdown.signal),
+                Err(error) => format!("its shutdown failed: {}", report(&error)),
+            };
+            *lock(&ended) = Some(outcome);
+        }
     });
-    Server { handle, probe, serving }
+    Server { handle, probe, serving, ended }
 }
 
 /// Asserts that a server mounting `mounts` is refused at startup as a `Configure` error: what a
@@ -404,7 +473,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
 pub(crate) async fn refused_at_startup<B: Broker>(broker: &B, mounts: Mounts) {
     match bound(broker, Probe::default(), mounts).await {
         Err(StartupError::Configure(_)) => {}
-        Err(other) => panic!("expected a `Configure` refusal for {mounts:?}, got: {other}"),
+        Err(other) => panic!("expected a `Configure` refusal for {mounts:?}, got: {}", report(&other)),
         Ok(app) => {
             let _ = app.handle().close(Signal::new("conformance")).await;
             panic!("a server mounting {mounts:?} started on a link whose capabilities exclude it");
@@ -453,11 +522,12 @@ pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
     let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link())) })
         .timer(ulo_tokio::Timer)
         .wire()
-        .unwrap_or_else(|error| panic!("the conformance client did not wire: {error}"))
+        .unwrap_or_else(|error| panic!("the conformance client did not wire: {}", report(&error)))
         .connect()
         .await
-        .unwrap_or_else(|error| panic!("the conformance client did not connect: {error}"));
-    let rpc = app.get::<RpcClient>().await.unwrap_or_else(|error| panic!("the conformance client has no `RpcClient`: {error}"));
+        .unwrap_or_else(|error| panic!("the conformance client did not connect: {}", report(&error)));
+    let rpc =
+        app.get::<RpcClient>().await.unwrap_or_else(|error| panic!("the conformance client has no `RpcClient`: {}", report(&error)));
     Client { rpc: (*rpc).clone(), app }
 }
 
@@ -473,7 +543,7 @@ impl<B: Broker> Fixture<B> {
         let broker = B::start().await;
         let server = server(&broker).await;
         let client = client(&broker).await;
-        ready(&broker, &client.rpc).await;
+        ready(&broker, &client.rpc, &[&server]).await;
         Fixture { broker, server, client }
     }
 
@@ -492,14 +562,24 @@ impl<B: Broker> Fixture<B> {
 }
 
 /// Waits until a unary call succeeds, within the broker's boot budget: a broker subscribes after
-/// `bind` returns on some links, and a consumer group takes its partitions later still.
-pub(crate) async fn ready<B: Broker>(broker: &B, rpc: &RpcClient) {
+/// `bind` returns on some links, and a consumer group takes its partitions later still. On
+/// failure it reports the last call's outcome and how each of `servers` stopped serving, if one
+/// did.
+pub(crate) async fn ready<B: Broker>(broker: &B, rpc: &RpcClient, servers: &[&Server]) {
     let deadline = Instant::now() + broker.budget().boot;
     loop {
         let outcome = rpc.request::<_, Sum>(ADD, &Add { a: 1, b: 2 }).timeout(Duration::from_millis(500)).await;
         match outcome {
             Ok(Sum { sum: 3 }) => return,
-            outcome if Instant::now() >= deadline => panic!("the server did not answer within the boot budget: {outcome:?}"),
+            outcome if Instant::now() >= deadline => {
+                let stopped: Vec<String> = servers.iter().filter_map(|server| lock(&server.ended).clone()).collect();
+                let stopped = if stopped.is_empty() {
+                    "every server still serving".to_owned()
+                } else {
+                    format!("a server stopped serving: {}", stopped.join("; "))
+                };
+                panic!("the server did not answer within the boot budget: {outcome:?}, {stopped}")
+            }
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }

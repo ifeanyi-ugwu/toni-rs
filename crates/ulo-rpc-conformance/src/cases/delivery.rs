@@ -3,7 +3,7 @@
 use ulo_rpc::{DeliveryMode, Link};
 
 use crate::Broker;
-use crate::cases::app::{TALLY, client, eventually, ready, server};
+use crate::cases::app::{Server, TALLY, client, eventually, ready, server};
 
 /// Events the scenario publishes.
 const EVENTS: usize = 10;
@@ -19,7 +19,8 @@ pub async fn two_instances<B: Broker>() {
     let first = server(&broker).await;
     let second = if delivery == DeliveryMode::Addressed { None } else { Some(server(&broker).await) };
     let caller = client(&broker).await;
-    ready(&broker, &caller.rpc).await;
+    let servers: Vec<&Server> = std::iter::once(&first).chain(second.as_ref()).collect();
+    ready(&broker, &caller.rpc, &servers).await;
     let budget = broker.budget();
     // The second instance's subscription settles before the events are published.
     tokio::time::sleep(budget.settle).await;

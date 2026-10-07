@@ -28,6 +28,7 @@
 //! does not arrive in time. A scenario that cannot apply to a host is declared not applicable in
 //! [`http_conformance_suite!`] and reported as ignored; run on that host, it fails.
 
+use std::error::Error;
 use std::future::Future;
 use std::time::Duration;
 
@@ -96,6 +97,23 @@ pub trait Host: Sized + Send + Sync + 'static {
     fn stop(self) -> impl Future<Output = ()> + Send;
 }
 
+/// `error` and every source under it, joined by `: `, for a failure message: a scenario that fails
+/// while its host starts says what failed, the app's wiring, its `listen`, the host's listener or
+/// its launch, and why. A source whose text the message already carries is not repeated.
+pub fn report(error: &(dyn Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let line = cause.to_string();
+        if !text.contains(&line) {
+            text.push_str(": ");
+            text.push_str(&line);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 /// The application every scenario runs: its controller, error handler, upgrade handler and
 /// pre-dispatch entries, wired against the app's `Timer`, as a host that can do everything takes
 /// it.
@@ -110,10 +128,10 @@ pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
         .timer(ulo_tokio::Timer)
         .drain_timeout(DRAIN)
         .wire()
-        .expect("the suite's app wires")
+        .unwrap_or_else(|error| panic!("the suite's app did not wire: {}", report(&error)))
         .connect()
         .await
-        .expect("the suite's app connects")
+        .unwrap_or_else(|error| panic!("the suite's app did not connect: {}", report(&error)))
 }
 
 /// How [`ROUTING_HEADER`] spells a `Routing`: `matched <route>`, `options <route>`, `not-found`,
@@ -175,6 +193,7 @@ macro_rules! http_conformance_suite {
             head_answered_from_get => routing::head,
             extraction_failures => extraction::failures,
             reshaped_error => errors::reshaped,
+            recovered_error => errors::recovered,
             unscoped_entry_answers_preflight => pre_dispatch::preflight,
             sse_error_event => sse::error_event,
             disconnect_mid_stream => disconnect::mid_stream,

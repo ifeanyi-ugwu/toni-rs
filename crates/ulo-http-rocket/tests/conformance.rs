@@ -7,16 +7,16 @@ use rocket::fairing::AdHoc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use ulo::app::Connected;
-use ulo::{App, Signal};
+use ulo::{App, BoxError, Shutdown, Signal};
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_conformance::rocket_fairing::RoutingFairing;
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, report};
 use ulo_http_rocket::{Embedded, Rocket, routes};
 
 struct RocketHost {
     base_url: String,
     stop: oneshot::Sender<()>,
-    serving: JoinHandle<()>,
+    serving: JoinHandle<Result<Shutdown, BoxError>>,
 }
 
 impl Host for RocketHost {
@@ -27,7 +27,8 @@ impl Host for RocketHost {
         }
         .forward(|req: &rocket::Request<'_>| req.local_cache(|| None::<HostValue>).clone());
         let embedded = server.handle();
-        let app = app.bind(server).listen().await.expect("the app listens inside rocket");
+        let app = app.bind(server).listen().await
+            .unwrap_or_else(|error| panic!("the app did not listen inside rocket: {}", report(&error)));
         let figment = rocket::Config::figment()
             .merge(("address", "127.0.0.1"))
             .merge(("port", 0))
@@ -58,9 +59,16 @@ impl Host for RocketHost {
                 let _ = stopped.await;
                 Signal::new("suite")
             };
-            let _ = ulo_http_rocket::run(app, &embedded, host, signal).await;
+            ulo_http_rocket::run(app, &embedded, host, signal).await
         });
-        let port = port.await.expect("rocket lifts off");
+        // A launch that fails never lifts off and drops the sender; `run` answers why.
+        let Ok(port) = port.await else {
+            match serving.await {
+                Ok(Err(error)) => panic!("rocket did not lift off: {}", report(&*error)),
+                Ok(Ok(shutdown)) => panic!("rocket did not lift off; the app shut down on: {}", shutdown.signal),
+                Err(error) => panic!("rocket did not lift off, and its task failed: {}", report(&error)),
+            }
+        };
         RocketHost { base_url: format!("http://127.0.0.1:{port}"), stop, serving }
     }
 

@@ -29,6 +29,7 @@
 //! `holds_unserved`, where an event emitted then has to reach the next instance. A scenario that cannot apply to a link is declared not applicable
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 
+use std::error::Error;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -39,6 +40,23 @@ use crate::relay::Outage;
 
 pub mod cases;
 pub mod relay;
+
+/// `error` and every source under it, joined by `: `, for a failure message: a scenario that fails
+/// while its environment starts says what failed, the broker's container, the server's bind or the
+/// client's connect, and why. A source whose text the message already carries is not repeated.
+pub fn report(error: &(dyn Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let line = cause.to_string();
+        if !text.contains(&line) {
+            text.push_str(": ");
+            text.push_str(&line);
+        }
+        source = cause.source();
+    }
+    text
+}
 
 /// One link's environment for the suite: a broker, or nothing for TCP and UDP.
 pub trait Broker: Sized + Send + Sync + 'static {
@@ -167,6 +185,7 @@ macro_rules! conformance_suite {
         $crate::conformance_suite!(@cases $broker;
             unary_round_trip => unary::round_trip,
             domain_error_envelope => errors::domain_error,
+            error_handler_answers_its_own_value => errors::substituted,
             guard_refusal_is_forbidden => errors::guard_refusal,
             panic_is_internal => errors::panic,
             undecodable_payload_is_bad_request => errors::undecodable_payload,

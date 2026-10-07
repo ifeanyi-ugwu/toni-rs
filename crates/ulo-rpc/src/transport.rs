@@ -2,10 +2,13 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures_core::Stream;
 use futures_core::stream::BoxStream;
+use futures_util::StreamExt;
+use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
-use ulo_transport::{ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
+use ulo_transport::{CallError, ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
 
 use crate::codec::Codec;
 use crate::frame::Data;
@@ -59,10 +62,6 @@ impl RpcCx {
         RpcCx { inner: Arc::new(inner) }
     }
 
-    pub(crate) fn codec(&self) -> Codec {
-        self.inner.codec
-    }
-
     pub(crate) fn take_body(&self) -> Option<Body> {
         self.inner.body.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
@@ -103,6 +102,54 @@ impl RpcCx {
     pub fn timer(&self) -> &Arc<dyn Timer> {
         &self.inner.timer
     }
+
+    /// The link's codec, which decodes the call's payload and encodes its reply.
+    pub fn codec(&self) -> Codec {
+        self.inner.codec
+    }
+
+    /// `value` encoded by the link's codec as the call's one `res`, as a handler returning a
+    /// `Serialize` value is answered: what an error handler claiming an error answers with a value
+    /// of its own. `Reply::None` is the empty answer.
+    ///
+    /// ```ignore
+    /// async fn handle(&self, err: BoxError, cx: &RpcCx) -> Result<Reply, BoxError> {
+    ///     match err.downcast_ref::<CallError>().and_then(|call| call.source_as::<OutOfStock>()) {
+    ///         Some(out) => Ok(cx.reply(&Backorder { sku: out.sku.clone() })?),
+    ///         None => Err(err),
+    ///     }
+    /// }
+    /// ```
+    pub fn reply<T: Serialize + ?Sized>(&self, value: &T) -> Result<Reply, IntoReplyError> {
+        self.codec().encode(value).map(Reply::One).map_err(IntoReplyError::new)
+    }
+
+    /// `items` as the call's reply stream, as a handler returning a stream is answered: each `Ok`
+    /// encoded by the link's codec and written as `item`, the end as `end`. An `Err` item, or an
+    /// item the codec refuses, runs the matched handler's error handlers on the late path and ends
+    /// the stream. A link carrying no streamed reply answers the call `internal`.
+    pub fn reply_stream<S, U, E>(&self, items: S) -> Reply
+    where
+        S: Stream<Item = Result<U, E>> + Send + 'static,
+        U: Serialize + Send + 'static,
+        E: Into<CallError> + Send + 'static,
+    {
+        self.encoded_stream(items.map(|item| item.map_err(|err| BoxError::from(err.into()))))
+    }
+
+    /// A stream of values as `Reply::Many`, each `Ok` encoded by the link's codec; a value the codec
+    /// refuses becomes an `Err` item of kind `Internal` holding the `IntoReplyError`.
+    pub(crate) fn encoded_stream<S, U>(&self, items: S) -> Reply
+    where
+        S: Stream<Item = Result<U, BoxError>> + Send + 'static,
+        U: Serialize + Send + 'static,
+    {
+        let codec = self.codec();
+        let items: BoxStream<'static, Result<Data, BoxError>> = Box::pin(items.map(move |item| {
+            item.and_then(|value| codec.encode(&value).map_err(|err| BoxError::from(CallError::from(IntoReplyError::new(err)))))
+        }));
+        Reply::Many(Tracked::new(items, self.exec().clone()))
+    }
 }
 
 impl AsRef<ExecutionRef> for RpcCx {
@@ -114,7 +161,9 @@ impl AsRef<ExecutionRef> for RpcCx {
 /// What a handler answers, and what an interceptor's `next.run()` returns: nothing (an event, or
 /// a call answered with an empty `res`), one payload written as `res`, or a stream of payloads
 /// tracked for its end, each written as `item` and the end as `end`. An `Err` item runs
-/// `dispatch_late` and is written as `err`, which ends the stream and is reported `CutOff`.
+/// `dispatch_late` and is written as `err`, which ends the stream and is reported `CutOff`. An
+/// error handler builds one from a value with [`RpcCx::reply`] or [`RpcCx::reply_stream`], which
+/// encode with the link's codec.
 pub enum Reply {
     None,
     One(Data),

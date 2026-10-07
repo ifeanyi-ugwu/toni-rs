@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::header::{ALLOW, CONTENT_LENGTH, HeaderName, HeaderValue, UPGRADE};
 use http::{HeaderMap, Method, StatusCode};
 use http_body::{Body as _, Frame, SizeHint};
@@ -55,8 +55,9 @@ use crate::upgrade::UpgradeHandler;
 ///    `Timer`, the scoped entries run. When the timeout passes before an answer, the pipeline is
 ///    dropped, the execution cancelled with `CancelReason::Deadline`, and the error handlers, the
 ///    matched handler's tiers then the global ones, receive `Timeout` under
-///    `HttpConfig::timeout_grace`: unclaimed, not answered within the grace, or answered with a
-///    body of unknown length, it renders 504.
+///    `HttpConfig::timeout_grace`, which bounds their answer's body as well: unclaimed, not
+///    answered within the grace, or answered with a body still open when it runs out, it renders
+///    504.
 /// 7. The `HttpCx` built from the request as the stage leaves it, and `ulo::dispatch` with the
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
@@ -288,9 +289,10 @@ impl ServiceInner {
     /// context built from the head as the scoped sub-step received it, no body and no upgrade.
     /// What they answer, or the error they return rendered as it stands, is the response; with
     /// none by the end of the grace, the canonical 504 is, and the headers they wrote are dropped.
-    /// A response whose body has no known length, an `Sse` among them, is a stream: it is dropped
-    /// unread for the same 504, logged at `warn`. The grace bounds the error handlers, not a body
-    /// they return.
+    /// The grace bounds the body too: it is read under what remains of it and, ending in time,
+    /// written whole with its exact length. A body still open when the grace runs out, an `Sse`
+    /// among them, was not a single reply produced in time: it is dropped for the same 504, logged
+    /// at `warn`.
     async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {
         let route = MatchedRoute {
             handler: target.handler.clone(),
@@ -300,25 +302,28 @@ impl ServiceInner {
         };
         let cx = self.context(exec, head, conn, Some(route), None, None);
         let recovering = ulo::recover(Some(&target.handler), exec, &cx, Box::new(render::timed_out()));
-        let outcome = match self.config.grace() {
-            Some(grace) => match within(recovering, self.timer.sleep(grace)).await {
-                Some(outcome) => outcome,
-                None => return render::problem(&render::timed_out(), &self.config),
-            },
-            None => recovering.await,
+        let mut grace = self.config.grace().map(|grace| self.timer.sleep(grace));
+        let Some(outcome) = within(recovering, grace.as_mut()).await else {
+            return render::problem(&render::timed_out(), &self.config);
         };
         let response = match outcome {
             Ok(response) => response,
             Err(err) => render::render_as_is(err, &self.config),
         };
-        if response.body().size_hint().exact().is_none() {
-            tracing::warn!(
-                route = &*target.route,
-                "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
-            );
-            return render::problem(&render::timed_out(), &self.config);
+        match completed(response, grace.as_mut()).await {
+            Ok(response) => merge_headers(&cx, response),
+            Err(Incomplete::Open) => {
+                tracing::warn!(
+                    route = &*target.route,
+                    "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+                );
+                render::problem(&render::timed_out(), &self.config)
+            }
+            Err(Incomplete::Failed(err)) => {
+                tracing::debug!(error = %err, "the response an error handler answered a timed-out call with failed while it was read");
+                render::problem(&render::timed_out(), &self.config)
+            }
         }
-        merge_headers(&cx, response)
     }
 
     /// The scoped sub-step, `dispatch` after it.
@@ -482,17 +487,99 @@ async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'stat
     .await
 }
 
-/// `fut` raced against `sleep`, polled first: `None` when the sleep wins, `fut` dropped at its
-/// current await.
-async fn within<F: Future>(fut: F, mut sleep: BoxFuture<'static, ()>) -> Option<F::Output> {
+/// `fut` raced against the grace, polled first: `None` when the grace runs out, `fut` dropped at
+/// its current await. With no grace, `fut` runs to its end.
+async fn within<F: Future>(fut: F, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Option<F::Output> {
     let mut fut = pin!(fut);
     poll_fn(move |cx| {
         if let Poll::Ready(output) = fut.as_mut().poll(cx) {
             return Poll::Ready(Some(output));
         }
-        sleep.as_mut().poll(cx).map(|()| None)
+        match grace.as_mut() {
+            Some(sleep) => sleep.as_mut().poll(cx).map(|()| None),
+            None => Poll::Pending,
+        }
     })
     .await
+}
+
+/// Why the error handlers' response to a passed deadline is not written.
+enum Incomplete {
+    /// Its body was still open when the grace ran out.
+    Open,
+    /// Its body failed while it was read.
+    Failed(BoxError),
+}
+
+/// How many ready frames `completed` reads before it yields to the runtime: a body whose frames are
+/// always ready never returns `Pending` itself, and the grace's timer only fires once the runtime
+/// gets to run its driver.
+const FRAMES_PER_POLL: usize = 32;
+
+/// The error handlers' response to a passed deadline with its body read under what remains of the
+/// grace: a body that ends in time is buffered, its length then exact, its trailers kept. HTTP has
+/// no message boundaries, so a body that completes is HTTP's single reply.
+async fn completed(response: Response, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, Incomplete> {
+    let (parts, mut body) = response.into_parts();
+    if body.is_end_stream() {
+        return Ok(Response::from_parts(parts, body));
+    }
+    let mut data = BytesMut::new();
+    let mut trailers = None;
+    poll_fn(|cx| {
+        for _ in 0..FRAMES_PER_POLL {
+            match Pin::new(&mut body).poll_frame(cx) {
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(Incomplete::Failed(err))),
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(bytes) => data.extend_from_slice(&bytes),
+                    Err(frame) => {
+                        trailers = frame.into_trailers().ok();
+                        return Poll::Ready(Ok(()));
+                    }
+                },
+                Poll::Pending => break,
+            }
+            if body.is_end_stream() {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        if grace.as_mut().is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready()) {
+            return Poll::Ready(Err(Incomplete::Open));
+        }
+        // Still ready after `FRAMES_PER_POLL` frames: polled again after the runtime's other work.
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await?;
+    Ok(Response::from_parts(parts, HttpBody::new(Buffered { data: Some(data.freeze()).filter(|data| !data.is_empty()), trailers })))
+}
+
+/// A response body read whole: its data in one frame, then its trailers.
+struct Buffered {
+    data: Option<Bytes>,
+    trailers: Option<HeaderMap>,
+}
+
+impl http_body::Body for Buffered {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(data) = this.data.take() {
+            return Poll::Ready(Some(Ok(Frame::data(data))));
+        }
+        Poll::Ready(this.trailers.take().map(|trailers| Ok(Frame::trailers(trailers))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.data.as_ref().map_or(0, |data| data.len() as u64))
+    }
 }
 
 /// A route's timeout passing after its answer began: the execution is cancelled with `Deadline`,

@@ -16,9 +16,9 @@ use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata};
 use ulo::app::Connected;
 use ulo::{App, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, injectable, routes};
-use ulo_rpc::{Data, Reply, Rpc, RpcClient, RpcClientModule, RpcCx};
+use ulo_rpc::{Reply, Rpc, RpcClient, RpcClientModule, RpcCx};
 use ulo_rpc_tcp::Tcp;
-use ulo_transport::{CallError, ErrorKind, Tracked};
+use ulo_transport::{CallError, ErrorKind};
 
 const DEADLINE: Duration = Duration::from_millis(200);
 const GRACE: Duration = Duration::from_millis(500);
@@ -36,20 +36,19 @@ impl ErrorHandler<Rpc> for EndlessOnTimeout {
         if !timed_out(&err) {
             return Err(err);
         }
-        let ticks = stream::repeat_with(|| Ok(Data::new(&b"1"[..]))).boxed();
-        Ok(Reply::Many(Tracked::new(ticks, cx.exec().clone())))
+        Ok(cx.reply_stream(stream::repeat_with(|| Ok::<_, CallError>(1u64))))
     }
 }
 
-/// Answers a `Timeout` with one reply, the JSON string `"claimed"`.
+/// Answers a `Timeout` with one reply, the string `"claimed"`.
 struct OneOnTimeout;
 
 impl ErrorHandler<Rpc> for OneOnTimeout {
-    async fn handle(&self, err: BoxError, _cx: &RpcCx) -> Result<Reply, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &RpcCx) -> Result<Reply, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
-        Ok(Reply::One(Data::new(&b"\"claimed\""[..])))
+        Ok(cx.reply("claimed")?)
     }
 }
 

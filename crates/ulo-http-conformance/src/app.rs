@@ -19,7 +19,7 @@ use ulo_http::{
     BodyLimit, Cors, Event, Host, Http, HttpBody, HttpCx, Json, PreDispatch, Query, Request, Response, Sse,
     StatusCode, UpgradeHandler, Upgrades,
 };
-use ulo_transport::{CallError, Classify, ErrorKind, Valid, Validate};
+use ulo_transport::{CallError, Classify, ErrorKind, IntoReply, Valid, Validate};
 
 /// The origin the CORS entry admits.
 pub const ORIGIN: &str = "https://suite.example";
@@ -82,6 +82,38 @@ impl fmt::Display for SuiteError {
 
 impl Error for SuiteError {}
 
+/// The error `GET /recover` returns, classified `not_found`, which [`Substitute`] answers with a
+/// value of its own.
+#[derive(Debug, Classify)]
+#[classify(not_found)]
+pub struct Shortage;
+
+impl fmt::Display for Shortage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the suite has none left")
+    }
+}
+
+impl Error for Shortage {}
+
+/// The item [`Substitute`] answers a [`Shortage`] with.
+pub(crate) const SPARE: &str = "spare";
+
+/// `GET /recover`'s error handler: a [`Shortage`] is answered with the JSON item named [`SPARE`],
+/// anything else passes on.
+pub struct Substitute;
+
+impl ErrorHandler<Http> for Substitute {
+    async fn handle(&self, err: BoxError, cx: &HttpCx) -> Result<Response, BoxError> {
+        let short = err.downcast_ref::<Shortage>().is_some()
+            || err.downcast_ref::<CallError>().is_some_and(|call| call.source_as::<Shortage>().is_some());
+        if !short {
+            return Err(err);
+        }
+        Ok(Json(Item { name: SPARE.to_owned() }).into_reply(cx)?)
+    }
+}
+
 #[injectable]
 pub struct Suite;
 
@@ -116,6 +148,12 @@ impl Suite {
     #[ulo_http::get("/fail")]
     fn fail(&self) -> Result<String, SuiteError> {
         Err(SuiteError)
+    }
+
+    #[ulo_http::get("/recover")]
+    #[error_handlers(value = Substitute)]
+    fn recover(&self) -> Result<String, Shortage> {
+        Err(Shortage)
     }
 
     #[ulo_http::get("/sse")]

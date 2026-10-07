@@ -166,7 +166,9 @@ fn shape(kind: Kind, sig: &HandlerSig, output_span: Span, paths: &Paths) -> Toke
 
 /// `let <reply> = ReplyShapeProbe::of(&|| async move { .. });`, the closure calling the handler
 /// with the receiver and every parameter bound to `unreachable!()`, so its future's output is the
-/// handler's output type. The closure is never called; it exists for its type.
+/// handler's output type. The closure is never called; it exists for its type. The `allow`s cover
+/// what the `unreachable!()` bindings trip in the user's crate: rustc's `unreachable_code` and
+/// clippy's `diverging_sub_expression`.
 fn reply_probe(sig: &HandlerSig, reply: &Ident, paths: &Paths) -> TokenStream {
     let this = &paths.this;
     let receiver = Ident::new("__ulo_this", Span::mixed_site());
@@ -183,7 +185,7 @@ fn reply_probe(sig: &HandlerSig, reply: &Ident, paths: &Paths) -> TokenStream {
     let method = &sig.ident;
     let awaited = sig.is_async.then(|| quote!(.await));
     quote! {
-        #[allow(unreachable_code)]
+        #[allow(unreachable_code, clippy::diverging_sub_expression)]
         let #reply = #this::__private::ReplyShapeProbe::of(&|| async move {
             let #receiver: #receiver_ty = ::core::unreachable!();
             #(#bindings)*

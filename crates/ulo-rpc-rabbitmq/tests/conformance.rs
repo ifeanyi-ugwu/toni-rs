@@ -9,7 +9,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
-use ulo_rpc_conformance::Broker;
+use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_conformance::relay::{Relay, reachable};
 use ulo_rpc_rabbitmq::RabbitMq;
 
@@ -30,8 +30,9 @@ impl Broker for RabbitMqBroker {
             .with_wait_for(WaitFor::message_on_stdout("Server startup complete"))
             .start()
             .await
-            .expect("the RabbitMQ container starts");
-        let port = container.get_host_port_ipv4(PORT).await.expect("the AMQP port is mapped");
+            .unwrap_or_else(|error| panic!("the RabbitMQ container did not start: {}", report(&error)));
+        let port = container.get_host_port_ipv4(PORT).await
+            .unwrap_or_else(|error| panic!("the AMQP port is not mapped: {}", report(&error)));
         let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         reachable(server, Duration::from_secs(10)).await;
         RabbitMqBroker { server, relay: Relay::start(server).await, _container: container }

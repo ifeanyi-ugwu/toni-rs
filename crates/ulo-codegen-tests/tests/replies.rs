@@ -1,7 +1,8 @@
 //! What a `#[ulo_grpc::method]` handler may answer past the one form per call shape `grpc.rs`
 //! covers: well-known types on both sides, a proto with no `package`, `Response<S>` around a
 //! stream, the stream arms under a `Result`, a `tonic::Status` returned as the error by a handler
-//! or by an error handler, and `GrpcMetadata` as a parameter.
+//! or by an error handler, an error handler answering a domain error with a message or a stream of
+//! its own, and `GrpcMetadata` as a parameter.
 
 mod support;
 
@@ -16,7 +17,7 @@ use ulo_codegen_tests::probe::known_client::KnownClient;
 use ulo_codegen_tests::probe::shapes_client::ShapesClient;
 use ulo_codegen_tests::probe::{self, Tick, Ticks};
 use ulo_grpc::{Grpc, GrpcCx, GrpcMetadata, Message, Method, Reply, Response};
-use ulo_transport::Classify;
+use ulo_transport::{CallError, Classify};
 
 use support::{Record, Running};
 
@@ -100,6 +101,38 @@ impl ErrorHandler<Grpc> for AsStatus {
     }
 }
 
+/// The message [`Substitute`] answers a [`Refusal`] with.
+const SUBSTITUTE: Tick = Tick { n: 42 };
+
+/// Answers a [`Refusal`] with [`SUBSTITUTE`] and the reply metadata `x-substituted: yes`; anything
+/// else passes on.
+struct Substitute;
+
+impl ErrorHandler<Grpc> for Substitute {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
+        if !refused(&err) {
+            return Err(err);
+        }
+        Ok(cx.reply(Response::new(SUBSTITUTE).metadata("x-substituted", "yes")))
+    }
+}
+
+/// Answers a [`Refusal`] with the ticks `1` to `3`; anything else passes on.
+struct SubstituteStream;
+
+impl ErrorHandler<Grpc> for SubstituteStream {
+    async fn handle(&self, err: BoxError, cx: &GrpcCx) -> Result<Reply, BoxError> {
+        if !refused(&err) {
+            return Err(err);
+        }
+        Ok(cx.reply_stream(ticks(3)))
+    }
+}
+
+fn refused(err: &BoxError) -> bool {
+    err.downcast_ref::<CallError>().and_then(|call| call.source_as::<Refusal>()).is_some()
+}
+
 #[injectable]
 struct ShapesService;
 
@@ -133,6 +166,18 @@ impl ShapesService {
     #[error_handlers(value = AsStatus)]
     fn rescue(&self, req: Message<Ticks>) -> Result<Tick, Refusal> {
         if req.0.fail { Err(Refusal) } else { Ok(Tick { n: req.0.count }) }
+    }
+
+    #[ulo_grpc::method(probe::shapes::Substituted)]
+    #[error_handlers(value = Substitute)]
+    fn substituted(&self, req: Message<Ticks>) -> Result<Tick, Refusal> {
+        if req.0.fail { Err(Refusal) } else { Ok(Tick { n: req.0.count }) }
+    }
+
+    #[ulo_grpc::method(probe::shapes::SubstitutedStream)]
+    #[error_handlers(value = SubstituteStream)]
+    async fn substituted_stream(&self, req: Message<Ticks>) -> Result<impl Stream<Item = Result<Tick, Refusal>>, Refusal> {
+        if req.0.fail { Err(Refusal) } else { Ok(ticks(req.0.count)) }
     }
 
     /// The `x-user` metadata the caller sent.
@@ -275,6 +320,26 @@ async fn a_status_an_error_handler_returns_reaches_the_wire_as_it_stands() {
     let mut client = ShapesClient::new(app.channel().await);
     let status = failed(client.rescue(request(1, true)).await);
     assert_eq!((status.code(), status.message()), (Code::AlreadyExists, "rescued"));
+    app.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_handler_answers_a_domain_error_with_a_message_of_its_own() {
+    let (app, _) = start().await;
+    let mut client = ShapesClient::new(app.channel().await);
+    let reply = client.substituted(request(5, true)).await.unwrap_or_else(|status| panic!("Substituted failed: {status:?}"));
+    assert_eq!(reply.metadata().get("x-substituted").and_then(|value| value.to_str().ok()), Some("yes"));
+    assert_eq!(reply.into_inner(), SUBSTITUTE);
+    app.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_handler_answers_a_domain_error_with_a_stream_of_its_own() {
+    let (app, _) = start().await;
+    let mut client = ShapesClient::new(app.channel().await);
+    let reply =
+        client.substituted_stream(request(5, true)).await.unwrap_or_else(|status| panic!("SubstitutedStream failed: {status:?}"));
+    assert_eq!(collect(reply.into_inner()).await, vec![1, 2, 3]);
     app.stop().await;
 }
 

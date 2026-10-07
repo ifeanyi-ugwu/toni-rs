@@ -9,7 +9,7 @@ use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, routing_label};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, routing_label};
 use ulo_http_poem::{Embedded, Poem, endpoint};
 
 struct PoemHost {
@@ -39,16 +39,18 @@ impl Host for PoemHost {
             Mode::Fallback => Embedded::new(),
         };
         let embedded = server.handle();
-        let app = app.bind(server).listen().await.expect("the app listens inside poem");
+        let app = app.bind(server).listen().await.unwrap_or_else(|error| panic!("the app did not listen inside poem: {}", report(&error)));
         let route = match mode {
             Mode::Nested => Route::new().nest(PREFIX, endpoint(&embedded)),
             Mode::Fallback => Route::new().nest("/", endpoint(&embedded)),
         }
         .around(host_middleware);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
-        let addr = listener.local_addr().expect("the listener's address");
-        listener.set_nonblocking(true).expect("a non-blocking listener");
-        let acceptor = TcpAcceptor::from_std(listener).expect("poem adopts the listener");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("the host did not bind a port: {}", report(&error)));
+        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the host's listener has no address: {}", report(&error)));
+        listener.set_nonblocking(true).unwrap_or_else(|error| panic!("the listener did not turn non-blocking: {}", report(&error)));
+        let acceptor = TcpAcceptor::from_std(listener)
+            .unwrap_or_else(|error| panic!("poem did not adopt the listener: {}", report(&error)));
         let host = poem::Server::new_with_acceptor(acceptor);
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {

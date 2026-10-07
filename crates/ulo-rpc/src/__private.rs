@@ -17,17 +17,16 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_core::Stream;
-use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use serde::Serialize;
 use ulo::{BoxError, BoxFuture, Shape};
-use ulo_transport::{CallError, ErrorKind, IntoReply, IntoReplyError, Tracked};
+use ulo_transport::{CallError, ErrorKind, IntoReply};
 
 pub use ulo_transport as transport;
 pub use ulo_transport::__private::{Param, ViaCall, ViaContainer, controller};
 
 use crate::extract::{Inbound, Payload};
-use crate::frame::{Data, PayloadKind};
+use crate::frame::PayloadKind;
 use crate::transport::{Reply, Rpc, RpcCx};
 
 /// A handler's call: extraction, the controller, the handler and the reply probe, run by
@@ -278,7 +277,7 @@ impl<V: Serialize + Send + 'static> Answer<AsData> for V {
         if TypeId::of::<V>() == TypeId::of::<()>() {
             return Ok(Reply::None);
         }
-        cx.codec().encode(&self).map(Reply::One).map_err(encoding_failed)
+        cx.reply(&self).map_err(|err| BoxError::from(CallError::from(err)))
     }
 }
 
@@ -290,12 +289,7 @@ where
     M: 'static,
 {
     fn answer(self, cx: &RpcCx) -> Result<Reply, BoxError> {
-        let codec = cx.codec();
-        let items: BoxStream<'static, Result<Data, BoxError>> = Box::pin(self.map(move |item| match item {
-            Ok(value) => codec.encode(&value).map_err(encoding_failed),
-            Err(err) => Err(err.into_boxed()),
-        }));
-        Ok(Reply::Many(Tracked::new(items, cx.exec().clone())))
+        Ok(cx.encoded_stream(self.map(|item| item.map_err(ItemError::into_boxed))))
     }
 }
 
@@ -321,12 +315,6 @@ impl ItemError<ItemBoxed> for BoxError {
     fn into_boxed(self) -> BoxError {
         self
     }
-}
-
-/// A value the codec refused reaches the error handlers as a `CallError` of kind `Internal`
-/// holding the `IntoReplyError`, as `ulo-transport`'s probe reports one.
-fn encoding_failed(err: BoxError) -> BoxError {
-    BoxError::from(CallError::from(IntoReplyError::new(err)))
 }
 
 impl RpcHandler {

@@ -9,7 +9,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
-use ulo_rpc_conformance::Broker;
+use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_conformance::relay::{Relay, reachable};
 use ulo_rpc_nats::Nats;
 
@@ -30,8 +30,9 @@ impl Broker for NatsServer {
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
             .start()
             .await
-            .expect("the NATS container starts");
-        let port = container.get_host_port_ipv4(PORT).await.expect("the NATS port is mapped");
+            .unwrap_or_else(|error| panic!("the NATS container did not start: {}", report(&error)));
+        let port = container.get_host_port_ipv4(PORT).await
+            .unwrap_or_else(|error| panic!("the NATS port is not mapped: {}", report(&error)));
         let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         reachable(server, Duration::from_secs(10)).await;
         NatsServer { server, relay: Relay::start(server).await, _container: container }

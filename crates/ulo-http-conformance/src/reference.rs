@@ -8,7 +8,7 @@ use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::embed::EmbedLimits;
 
-use crate::{Host, Mode};
+use crate::{Host, Mode, report};
 
 /// The reference host.
 pub struct HyperHost {
@@ -20,7 +20,11 @@ pub struct HyperHost {
 impl Host for HyperHost {
     async fn start(app: App<Connected>, _mode: Mode) -> Self {
         let server = ulo_http_hyper::Server::new("127.0.0.1:0").h2c(true);
-        let app = app.bind(server).listen().await.expect("the reference host listens");
+        let app = app
+            .bind(server)
+            .listen()
+            .await
+            .unwrap_or_else(|error| panic!("the reference host did not listen: {}", report(&error)));
         let addr = app.addresses().first().map(|bound| bound.addr).expect("the reference host is bound");
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {

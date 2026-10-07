@@ -10,7 +10,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
-use ulo_rpc_conformance::Broker;
+use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_conformance::relay::{Relay, reachable};
 use ulo_rpc_redis::Redis;
 
@@ -31,8 +31,9 @@ impl Broker for RedisServer {
             .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
             .start()
             .await
-            .expect("the Redis container starts");
-        let port = container.get_host_port_ipv4(PORT).await.expect("the Redis port is mapped");
+            .unwrap_or_else(|error| panic!("the Redis container did not start: {}", report(&error)));
+        let port = container.get_host_port_ipv4(PORT).await
+            .unwrap_or_else(|error| panic!("the Redis port is not mapped: {}", report(&error)));
         let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         reachable(server, Duration::from_secs(10)).await;
         RedisServer { server, relay: Relay::start(server).await, _container: container }

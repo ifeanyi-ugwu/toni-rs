@@ -11,7 +11,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-use ulo_rpc_conformance::Broker;
+use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_conformance::relay::{Relay, reachable};
 use ulo_rpc_mqtt::Mqtt;
 
@@ -33,8 +33,9 @@ impl Broker for Mosquitto {
             .with_cmd(["mosquitto", "-c", "/mosquitto-no-auth.conf"])
             .start()
             .await
-            .expect("the Mosquitto container starts");
-        let port = container.get_host_port_ipv4(PORT).await.expect("the MQTT port is mapped");
+            .unwrap_or_else(|error| panic!("the Mosquitto container did not start: {}", report(&error)));
+        let port = container.get_host_port_ipv4(PORT).await
+            .unwrap_or_else(|error| panic!("the MQTT port is not mapped: {}", report(&error)));
         let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         reachable(server, Duration::from_secs(10)).await;
         Mosquitto { server, relay: Relay::start(server).await, _container: container }

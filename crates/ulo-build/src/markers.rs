@@ -6,6 +6,7 @@
 //! For the service `users.v1.UserService` with the method `GetUser`, the appended code is:
 //!
 //! ```text
+//! #[allow(clippy::module_inception)]
 //! pub mod user_service {
 //!     pub struct GetUser;
 //!     impl ::ulo_grpc::Method for GetUser {
@@ -70,6 +71,10 @@ fn markers(service: &Service, build_client: bool) -> String {
     };
     let mut out = String::new();
     let _ = writeln!(out, "\n/// The method markers of `{qualified}`, which `#[ulo_grpc::method(..)]` binds handlers to.");
+    // A wrapper module named as the service, `mod users { include_proto!("users.v1"); }` for the
+    // service `Users`, holds `users::users`, which clippy's `module_inception` would report in
+    // the user's crate on a module the user cannot rename.
+    let _ = writeln!(out, "#[allow(clippy::module_inception)]");
     let _ = writeln!(out, "pub mod {module} {{");
     for method in &service.methods {
         let _ = write!(out, "{}", marker(method, &qualified));

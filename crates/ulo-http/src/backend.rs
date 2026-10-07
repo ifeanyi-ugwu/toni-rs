@@ -112,9 +112,9 @@ pub struct HttpConfig {
     pub challenge: Cow<'static, str>,
     /// Accept HTTP/2 without TLS (prior knowledge).
     pub h2c: bool,
-    /// How long the error handlers may take with the `Timeout` a route timeout offers them before
-    /// the canonical 504 is sent instead: one second for `Bound::Default`, timed by the app's
-    /// `Timer`; `Bound::Unbounded` waits for them.
+    /// How long the error handlers may take with the `Timeout` a route timeout offers them, their
+    /// answer's body read to its end included, before the canonical 504 is sent instead: one
+    /// second for `Bound::Default`, timed by the app's `Timer`; `Bound::Unbounded` waits for them.
     pub timeout_grace: Bound,
     /// How long a request head may take to arrive, from the moment the backend starts reading it,
     /// a clock that also runs while a keep-alive connection waits for its next request: 30

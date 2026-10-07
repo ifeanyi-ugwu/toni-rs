@@ -68,10 +68,10 @@ use ulo_http::stage::{Rest, ScopedStage, Stage};
 use ulo_http::{ConnInfo, HttpBody, Request, Response};
 use ulo_transport::{Admission, CallError, ConnectionAdmission, Permit, Tracked, span};
 
-use crate::__private::{HandlerFn, ReplyItem};
+use crate::__private::HandlerFn;
 use crate::pre_dispatch::StageCx;
 use crate::status::{self, code_for_http};
-use crate::transport::{CxInner, Grpc, GrpcCx, GrpcMetadata, PeerAddr, Reply};
+use crate::transport::{CxInner, Grpc, GrpcCx, GrpcMetadata, PeerAddr, Reply, ReplyItem};
 
 const GRPC_STATUS: HeaderName = HeaderName::from_static("grpc-status");
 const GRPC_ENCODING: HeaderName = HeaderName::from_static("grpc-encoding");
@@ -545,8 +545,8 @@ async fn within<F: Future>(fut: F, grace: Option<&mut BoxFuture<'static, ()>>) -
 /// still open when the grace runs out, dropped unwritten.
 ///
 /// A message is read off its gRPC length prefix, not off the reply's construction: on the wire a
-/// server stream of one message and a unary reply are the same bytes, and an error handler builds
-/// either as a hand-written `tonic::body::Body`.
+/// server stream of one message and a unary reply are the same bytes, and `Reply` is an erased
+/// response, whether `GrpcCx::reply`, `GrpcCx::reply_stream` or a hand-written body built it.
 async fn single(reply: Reply, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, ()> {
     let (parts, mut body) = reply.into_parts();
     if body.is_end_stream() {

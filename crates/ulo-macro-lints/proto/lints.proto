@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package lints.v1;
+
+// One method per call shape.
+service Lints {
+  rpc Unary(Number) returns (Number);
+  rpc Server(Number) returns (stream Number);
+  rpc Client(stream Number) returns (Number);
+  rpc Bidi(stream Number) returns (stream Number);
+}
+
+message Number {
+  int64 value = 1;
+}

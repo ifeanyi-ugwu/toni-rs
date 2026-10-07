@@ -12,7 +12,7 @@ use ulo::app::Connected;
 use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, routing_label};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, routing_label};
 use ulo_http_salvo::{Closing, Embedded, Salvo, handler};
 
 struct SalvoHost {
@@ -46,15 +46,17 @@ impl Host for SalvoHost {
             Mode::Fallback => Embedded::new(),
         };
         let embedded = server.handle();
-        let app = app.bind(server).listen().await.expect("the app listens inside salvo");
+        let app = app.bind(server).listen().await.unwrap_or_else(|error| panic!("the app did not listen inside salvo: {}", report(&error)));
         let path = match mode {
             Mode::Nested => format!("{}/{{**rest}}", PREFIX.trim_start_matches('/')),
             Mode::Fallback => "{**rest}".to_owned(),
         };
         let router = Router::new().hoop(HostHoop).push(Router::with_path(path).goal(handler(&embedded)));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
-        let addr = listener.local_addr().expect("the listener's address");
-        let acceptor = TcpAcceptor::try_from(listener).expect("salvo adopts the listener");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+            .unwrap_or_else(|error| panic!("the host did not bind a port: {}", report(&error)));
+        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the host's listener has no address: {}", report(&error)));
+        let acceptor = TcpAcceptor::try_from(listener)
+            .unwrap_or_else(|error| panic!("salvo did not adopt the listener: {}", report(&error)));
         let server = salvo::Server::new(Closing::new(&embedded, acceptor));
         let service = salvo::Service::new(router);
         let (stop, stopped) = oneshot::channel::<()>();
@@ -92,9 +94,10 @@ async fn run_refuses_a_closing_from_another_handle() {
     let embedded = server.handle();
     let other = Embedded::new().handle();
     let app = ulo_http_conformance::app_for(<Salvo as Embed>::limits()).await;
-    let app = app.bind(server).listen().await.expect("the app listens inside salvo");
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
-    let acceptor = TcpAcceptor::try_from(listener).expect("salvo adopts the listener");
+    let app = app.bind(server).listen().await.unwrap_or_else(|error| panic!("the app did not listen inside salvo: {}", report(&error)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        .unwrap_or_else(|error| panic!("the host did not bind a port: {}", report(&error)));
+    let acceptor = TcpAcceptor::try_from(listener).unwrap_or_else(|error| panic!("salvo did not adopt the listener: {}", report(&error)));
     let server = salvo::Server::new(Closing::new(&other, acceptor));
     let service = salvo::Service::new(Router::new());
     let run = ulo_http_salvo::run(app, &embedded, server, service, std::future::pending());

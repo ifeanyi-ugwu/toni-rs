@@ -11,6 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::report;
+
 /// Forwards every connection made to its address to `upstream`.
 pub struct Relay {
     addr: SocketAddr,
@@ -48,12 +50,14 @@ impl Relay {
     /// address before it knows the upstream one: a Kafka broker advertising the relay as its
     /// listener, say.
     pub async fn bind() -> TcpListener {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("the relay binds a loopback port")
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap_or_else(|error| panic!("the relay did not bind a loopback port: {}", report(&error)))
     }
 
     /// A relay accepting on `listener`, forwarding to `upstream`.
     pub fn listen(listener: TcpListener, upstream: SocketAddr) -> Relay {
-        let addr = listener.local_addr().expect("the relay has an address");
+        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the relay's listener has no address: {}", report(&error)));
         let connections = Arc::new(Mutex::new(JoinSet::new()));
         let outage = Arc::new(StdMutex::new(Window::default()));
         let accepting = tokio::spawn(accept(listener, upstream, Arc::clone(&connections), Arc::clone(&outage)));

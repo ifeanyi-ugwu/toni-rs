@@ -6392,6 +6392,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ulo-macro-lints"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "prost",
+ "serde",
+ "tonic",
+ "tonic-prost",
+ "ulo",
+ "ulo-build",
+ "ulo-grpc",
+ "ulo-http",
+ "ulo-rpc",
+ "ulo-transport",
+ "ulo-ws",
+]
+
+[[package]]
 name = "ulo-macros"
 version = "0.2.0"
 dependencies = [

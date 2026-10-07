@@ -23,6 +23,8 @@ service Shapes {
   rpc Lookup(Ticks) returns (Tick);
   rpc Rescue(Ticks) returns (Tick);
   rpc Whoami(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc Substituted(Ticks) returns (Tick);
+  rpc SubstitutedStream(Ticks) returns (stream Tick);
 }
 
 // Handlers that outlive a caller's deadline, each with a different error handler.

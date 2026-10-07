@@ -1,0 +1,28 @@
+[package]
+name = "ulo-macro-lints"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Every attribute and derive macro the framework exports, expanded in one crate for CI to lint as a user's crate"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Linted only: nothing depends on it, and it is never released.
+publish = false
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-grpc = { path = "../ulo-grpc" }
+ulo-http = { path = "../ulo-http" }
+ulo-rpc = { path = "../ulo-rpc" }
+ulo-transport = { path = "../ulo-transport" }
+ulo-ws = { path = "../ulo-ws" }
+futures-util.workspace = true
+# What the code `ulo-build` writes names.
+prost.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tonic = { workspace = true, features = ["channel", "codegen"] }
+tonic-prost.workspace = true
+
+[build-dependencies]
+ulo-build = { path = "../ulo-build" }

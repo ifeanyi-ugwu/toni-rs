@@ -35,6 +35,7 @@ members = [
     "crates/ulo-grpc-macros",
     "crates/ulo-build",
     "crates/ulo-codegen-tests",
+    "crates/ulo-macro-lints",
     "crates/ulo-graphql",
     "crates/ulo-graphql-http",
     "crates/ulo-graphql-ws",

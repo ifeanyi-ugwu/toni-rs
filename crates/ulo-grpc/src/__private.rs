@@ -20,17 +20,14 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use futures_core::Stream;
-use tonic::metadata::MetadataMap;
 use ulo::{BoxError, BoxFuture, Shape};
 use ulo_transport::{CallError, ErrorKind, IntoReply, IntoReplyError};
 
 pub use ulo_transport as transport;
 
-use crate::dispatch::{encode_one, encode_stream};
 use crate::extract::{Message, Request, Streaming};
 use crate::method::Method;
-use crate::transport::{Grpc, GrpcCx, Reply, Response};
+use crate::transport::{Grpc, GrpcCx, Reply, ReplyStream, ReplyValue};
 
 /// A handler's call: extraction, the controller, the handler and the reply probe, run by
 /// `dispatch` after every guard admits.
@@ -281,79 +278,6 @@ impl<M: Method, V: ReplyValue> Value<M> for ReplyProbe<M, V> {
 
     fn answer<const STREAMED: bool>(&self) -> Checked<Self::Got, (Shaped<STREAMED>, M::Response)> {
         Checked::new(self.take().map(Answer::value))
-    }
-}
-
-/// A handler's reply of one message: the message, or [`Response`] around it with reply metadata.
-/// `()` is one too, being prost's `google.protobuf.Empty`.
-pub trait ReplyValue: Send + 'static {
-    type Message;
-    fn into_grpc(self) -> Reply;
-}
-
-impl<T: prost::Message + Default + Send + 'static> ReplyValue for T {
-    type Message = T;
-
-    fn into_grpc(self) -> Reply {
-        encode_one(self, MetadataMap::new())
-    }
-}
-
-impl<T: prost::Message + Default + Send + 'static> ReplyValue for Response<T> {
-    type Message = T;
-
-    fn into_grpc(self) -> Reply {
-        encode_one(self.message, self.metadata)
-    }
-}
-
-/// A handler's reply of a stream: any stream of [`ReplyItem`]s, or [`Response`] around one with
-/// reply metadata.
-pub trait ReplyStream: Send + 'static {
-    type Message;
-    fn into_grpc(self, cx: &GrpcCx) -> Reply;
-}
-
-impl<S> ReplyStream for S
-where
-    S: Stream + Send + 'static,
-    S::Item: ReplyItem,
-{
-    type Message = <S::Item as ReplyItem>::Message;
-
-    fn into_grpc(self, cx: &GrpcCx) -> Reply {
-        encode_stream(self, MetadataMap::new(), cx)
-    }
-}
-
-impl<S> ReplyStream for Response<S>
-where
-    S: Stream + Send + 'static,
-    S::Item: ReplyItem,
-{
-    type Message = <S::Item as ReplyItem>::Message;
-
-    fn into_grpc(self, cx: &GrpcCx) -> Reply {
-        encode_stream(self.message, self.metadata, cx)
-    }
-}
-
-/// One item of a reply stream: a message, or an error whose kind survives into the error handlers
-/// on the late path, since it converts into a `CallError`.
-pub trait ReplyItem: Send + 'static {
-    type Message: prost::Message + Default + Send + 'static;
-    fn into_item(self) -> Result<Self::Message, CallError>;
-}
-
-impl<T, E> ReplyItem for Result<T, E>
-where
-    T: prost::Message + Default + Send + 'static,
-    E: Into<CallError> + Send + 'static,
-{
-    type Message = T;
-
-    fn into_item(self) -> Result<T, CallError> {
-        self.map_err(Into::into)
     }
 }
 

@@ -119,9 +119,10 @@ impl<B: Backend> Server<B> {
         self
     }
 
-    /// How long the error handlers may take with the `Timeout` a route timeout offers them before
-    /// the canonical 504 is sent instead: `Bound::Default` is one second, `Bound::Unbounded` waits
-    /// for them. `Bound::After(Duration::ZERO)` is refused in `prepare`.
+    /// How long the error handlers may take with the `Timeout` a route timeout offers them, their
+    /// answer's body read to its end included, before the canonical 504 is sent instead:
+    /// `Bound::Default` is one second, `Bound::Unbounded` waits for them.
+    /// `Bound::After(Duration::ZERO)` is refused in `prepare`.
     pub fn timeout_grace(mut self, grace: Bound) -> Self {
         self.config.timeout_grace = grace;
         self

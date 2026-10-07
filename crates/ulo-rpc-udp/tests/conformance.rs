@@ -5,7 +5,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 
-use ulo_rpc_conformance::Broker;
+use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_udp::Udp;
 
 struct Loopback {
@@ -18,8 +18,9 @@ impl Broker for Loopback {
     /// A port the OS hands out and this process releases before the server binds it, so the
     /// client's link can name it.
     async fn start() -> Self {
-        let probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port is free");
-        let addr = probe.local_addr().expect("the probe socket has an address");
+        let probe =
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap_or_else(|error| panic!("no loopback port is free: {}", report(&error)));
+        let addr = probe.local_addr().unwrap_or_else(|error| panic!("the probe socket has no address: {}", report(&error)));
         Loopback { addr }
     }
 

@@ -1,10 +1,13 @@
-//! The RPC conformance suite over the TCP link, each scenario against a server on a port of its
-//! own, the client reaching it through a relay that `disrupt` cuts.
+//! The RPC conformance suite over the TCP link speaking CBOR, each scenario against a server on a
+//! port of its own, the client reaching it through a relay that `disrupt` cuts. The suite's other
+//! stamps run on JSON links, so this one is where a payload encoded with a codec other than the
+//! link's fails.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 
 use ulo_rpc_conformance::{Broker, report};
 use ulo_rpc_conformance::relay::Relay;
+use ulo_rpc::Codec;
 use ulo_rpc_tcp::Tcp;
 
 struct Loopback {
@@ -26,11 +29,11 @@ impl Broker for Loopback {
     }
 
     fn link(&self) -> Tcp {
-        Tcp::new(self.server)
+        Tcp::new(self.server).codec(Codec::Cbor)
     }
 
     fn client_link(&self) -> Tcp {
-        Tcp::new(self.relay.addr())
+        Tcp::new(self.relay.addr()).codec(Codec::Cbor)
     }
 
     async fn disrupt(&self) {

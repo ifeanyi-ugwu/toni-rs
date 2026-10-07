@@ -1,11 +1,14 @@
 //! What a client receives when an error handler answers a request whose route timeout passed: a
-//! response of known length as the error handler wrote it, and an `Sse` replaced by the canonical
-//! 504 at once, none of its events written, with a `warn` line telling the author why.
+//! response whose body ends within the grace as the error handler wrote it, a `Body::stream` of
+//! one payload included and written with its exact length, and an `Sse`, still open when the grace
+//! runs out, replaced by the canonical 504, none of its events written, with a `warn` line telling
+//! the author why.
 //!
 //! The tests run on a current-thread runtime, so the server's tasks emit their events on the test's
 //! thread, where [`Capture`] is the default subscriber. The client is raw HTTP/1.1 over a socket,
 //! reading until the server closes the connection.
 
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -17,7 +20,7 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event as TraceEvent, Level, Metadata};
 use ulo::{App, AppHandle, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, injectable, routes};
-use ulo_http::{Event, Http, HttpBody, HttpCx, Response, Sse, StatusCode, Timeout};
+use ulo_http::{Bytes, Event, Http, HttpBody, HttpCx, Response, Sse, StatusCode, Timeout};
 use ulo_transport::{CallError, ErrorKind, IntoReply};
 
 const DEADLINE: Duration = Duration::from_millis(200);
@@ -59,6 +62,28 @@ impl ErrorHandler<Http> for OneOnTimeout {
     }
 }
 
+/// How long [`StreamedOnTimeout`]'s one payload takes to arrive, well inside the grace.
+const PAYLOAD_DELAY: Duration = Duration::from_millis(50);
+
+/// Answers a `Timeout` with 503 and the body `claimed`, sent through `Body::stream` as one payload
+/// that arrives after [`PAYLOAD_DELAY`].
+struct StreamedOnTimeout;
+
+impl ErrorHandler<Http> for StreamedOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let payload = stream::once(async {
+            tokio::time::sleep(PAYLOAD_DELAY).await;
+            Ok::<_, Infallible>(Bytes::from_static(b"claimed"))
+        });
+        let mut response = Response::new(HttpBody::stream(payload));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
 #[injectable]
 struct Slow;
 
@@ -75,6 +100,13 @@ impl Slow {
     #[ulo_http::get("/answered")]
     #[error_handlers(value = OneOnTimeout)]
     async fn answered(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/payload")]
+    #[error_handlers(value = StreamedOnTimeout)]
+    async fn payload(&self, exec: ExecutionRef) -> &'static str {
         exec.cancelled().await;
         "late"
     }
@@ -123,6 +155,13 @@ impl Running {
     /// `GET path` on a connection of its own, read until the server closes it: the status line
     /// and the body after the headers.
     async fn get(&self, path: &str) -> (String, String) {
+        let (status, _head, body) = self.exchange(path).await;
+        (status, body)
+    }
+
+    /// `GET path` on a connection of its own, read until the server closes it: the status line,
+    /// the head, and the body after the headers.
+    async fn exchange(&self, path: &str) -> (String, String, String) {
         let exchange = async {
             let mut socket = TcpStream::connect(self.addr).await.expect("the client connects");
             let request = format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
@@ -137,7 +176,7 @@ impl Running {
         };
         let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
         let status = head.lines().next().unwrap_or_default().to_owned();
-        (status, body.to_owned())
+        (status, head.to_owned(), body.to_owned())
     }
 
     async fn stop(self) {
@@ -147,7 +186,7 @@ impl Running {
 }
 
 #[tokio::test]
-async fn an_event_stream_answered_after_the_route_timeout_is_replaced_by_504_at_once() {
+async fn an_event_stream_answered_after_the_route_timeout_is_replaced_by_504_when_the_grace_ends() {
     let capture = Capture::default();
     let _default = tracing::subscriber::set_default(capture.clone());
     let running = Running::start().await;
@@ -158,7 +197,7 @@ async fn an_event_stream_answered_after_the_route_timeout_is_replaced_by_504_at_
     assert_eq!(status, "HTTP/1.1 504 Gateway Timeout", "body: {body}");
     assert!(body.contains("the request did not complete within its time limit"), "body: {body}");
     assert!(!body.contains("tick"), "an event of the stream was written: {body}");
-    assert!(took < DEADLINE + GRACE, "answered after {took:?}, not at once after the {DEADLINE:?} route timeout");
+    assert!(took >= DEADLINE + GRACE, "answered after {took:?}, before the {DEADLINE:?} route timeout and the {GRACE:?} grace had passed");
     let warned = capture.warnings();
     assert!(
         warned.iter().any(|line| line.contains(WARNING) && line.contains("route=/streamed")),
@@ -177,6 +216,24 @@ async fn a_response_of_known_length_answered_after_the_route_timeout_is_the_resp
     assert_eq!((status.as_str(), body.as_str()), ("HTTP/1.1 503 Service Unavailable", "claimed"));
     let warned = capture.warnings();
     assert!(!warned.iter().any(|line| line.contains(WARNING)), "a response of known length was logged as a stream: {warned:?}");
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_single_payload_streamed_after_the_route_timeout_is_written_with_its_length() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let running = Running::start().await;
+
+    let (status, head, body) = running.exchange("/payload").await;
+    assert_eq!((status.as_str(), body.as_str()), ("HTTP/1.1 503 Service Unavailable", "claimed"), "head: {head}");
+    let head = head.to_ascii_lowercase();
+    assert!(
+        head.contains("content-length: 7") && !head.contains("transfer-encoding"),
+        "the payload was not written with its exact length: {head}"
+    );
+    let warned = capture.warnings();
+    assert!(!warned.iter().any(|line| line.contains(WARNING)), "a single payload was logged as a stream: {warned:?}");
     running.stop().await;
 }
 

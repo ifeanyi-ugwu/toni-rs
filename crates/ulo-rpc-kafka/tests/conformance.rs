@@ -20,7 +20,7 @@ use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use ulo_rpc_conformance::relay::{Outage, Relay, reachable};
-use ulo_rpc_conformance::{Broker, Budget};
+use ulo_rpc_conformance::{Broker, Budget, report};
 use ulo_rpc_kafka::Kafka;
 
 /// The listener the server's link reaches.
@@ -47,8 +47,8 @@ impl Broker for KraftBroker {
         let client = Relay::bind().await;
         let advertised = format!(
             "SERVER://{},CLIENT://{},BROKER://localhost:9094",
-            server.local_addr().expect("the server relay has an address"),
-            client.local_addr().expect("the client relay has an address"),
+            server.local_addr().unwrap_or_else(|error| panic!("the server relay has no address: {}", report(&error))),
+            client.local_addr().unwrap_or_else(|error| panic!("the client relay has no address: {}", report(&error))),
         );
         let container = GenericImage::new("apache/kafka-native", "3.8.0")
             .with_exposed_port(SERVER_PORT.tcp())
@@ -74,9 +74,10 @@ impl Broker for KraftBroker {
             .with_env_var("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
             .start()
             .await
-            .expect("the Kafka container starts");
+            .unwrap_or_else(|error| panic!("the Kafka container did not start: {}", report(&error)));
         let upstream = async |port: u16| {
-            let port = container.get_host_port_ipv4(port).await.expect("the Kafka listener is mapped");
+            let port = container.get_host_port_ipv4(port).await
+                .unwrap_or_else(|error| panic!("the Kafka listener is not mapped: {}", report(&error)));
             let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
             reachable(addr, Duration::from_secs(10)).await;
             addr
