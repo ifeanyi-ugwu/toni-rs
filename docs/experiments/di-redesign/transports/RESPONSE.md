@@ -1163,7 +1163,7 @@ One practical note, not a design point: host swap at 14 of 15 GB through the bro
 
 Received 2026-10-07, answering `divergences/race2b-tests8.md` (S1–S6) and the open question of a
 stream an error handler answers after a passed deadline (F334 in the workspace gaps ledger).
-Sign-off pending.
+The user signed it off the same day.
 
 The first six are accepted. For the seventh, choose "end it at once" on both transports.
 
