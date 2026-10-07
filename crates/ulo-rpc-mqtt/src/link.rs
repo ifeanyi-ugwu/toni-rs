@@ -10,7 +10,7 @@ use rumqttc::v5::mqttbytes::v5::{Filter, Packet, PubAckReason, PubRecReason, Pub
 use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
 use rumqttc::{Outgoing, Transport};
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
@@ -56,7 +56,7 @@ pub struct Mqtt {
 
 #[derive(Default)]
 pub(crate) struct State {
-    server: Option<(Arc<ServerSide>, AbortHandle)>,
+    server: Option<(Arc<ServerSide>, JoinHandle<()>)>,
     client: Option<(AsyncClient, AbortHandle)>,
 }
 
@@ -171,7 +171,7 @@ impl Link for Mqtt {
             let _ = side.client.try_disconnect();
             return Err(error);
         }
-        lock(&self.state).server = Some((side, task.abort_handle()));
+        lock(&self.state).server = Some((side, task));
         Ok(receiver_stream(inbound))
     }
 
@@ -234,18 +234,34 @@ impl Link for Mqtt {
             let mut state = lock(&self.state);
             (state.server.take(), state.client.take())
         };
-        if let Some((side, task)) = server {
+        if let Some((side, mut task)) = server {
             side.phase.send_replace(Phase::Closed);
             side.calls.clear();
             lock(&side.deliveries).take();
+            // `publish` and `disconnect` only queue requests for the event loop, which writes them
+            // in order and ends once it has written the DISCONNECT, so awaiting it lets the
+            // replies of the calls the drain let finish reach the broker. A connection failing
+            // after `close` ends the loop as well; where neither happens, the core's `close` bound
+            // drops this future and the guard aborts the loop.
+            let abort = AbortOnDrop(task.abort_handle());
             let _ = side.client.disconnect().await;
-            task.abort();
+            let _ = (&mut task).await;
+            drop(abort);
         }
         if let Some((client, task)) = client {
             let _ = client.disconnect().await;
             task.abort();
         }
         Ok(())
+    }
+}
+
+/// Aborts a task when dropped.
+struct AbortOnDrop(AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -331,9 +347,28 @@ struct ServerSide {
 }
 
 impl ServerSide {
-    fn deliver(&self, delivery: Delivery) {
-        if let Some(deliveries) = lock(&self.deliveries).as_ref() {
-            let _ = deliveries.send(delivery);
+    /// `false` once the inbound stream has ended.
+    fn deliver(&self, delivery: Delivery) -> bool {
+        match lock(&self.deliveries).as_ref() {
+            Some(deliveries) => deliveries.send(delivery).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Answers a request or streamed request that arrived once the inbound stream ended `err` of
+    /// kind `unavailable`, as the server answers one during the drain. The broker routes a request
+    /// to this instance until it has processed the drain's UNSUBSCRIBE, which rumqttc queues
+    /// behind the replies already waiting, and dropping it would leave the caller to its own
+    /// `Timeout`. Queued without waiting: this runs on the event loop, which drains the queue.
+    fn refuse(&self, key: &str, reply: String, correlation: Option<Bytes>, pattern: &str) {
+        self.calls.release(key);
+        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+        let sent = self.codec.encode_frame(&Frame::Err { id: 0, error }).map_err(BoxError::from).and_then(|bytes| {
+            let properties = reply_properties(correlation, None);
+            Ok(self.client.try_publish_with_properties(reply, self.qos, false, bytes, properties)?)
+        });
+        if let Err(error) = sent {
+            tracing::warn!(%error, pattern, "the MQTT link could not refuse a request that arrived after the drain");
         }
     }
 
@@ -368,19 +403,30 @@ impl ServerSide {
                 self.deliver(Delivery { frame, reply: None, ack: Ack::none() });
             }
             (Some((reply, correlation)), None) => {
-                let (id, path) = self.hold(key.unwrap_or_else(|| reply.clone()), reply, correlation);
-                let frame = Frame::Req { id, pattern: topic, headers, data: Data::new(publish.payload) };
-                self.deliver(Delivery { frame, reply: Some(path), ack: Ack::none() });
+                let key = key.unwrap_or_else(|| reply.clone());
+                let (id, path) = self.hold(key.clone(), reply.clone(), correlation.clone());
+                let frame = Frame::Req { id, pattern: topic.clone(), headers, data: Data::new(publish.payload) };
+                if !self.deliver(Delivery { frame, reply: Some(path), ack: Ack::none() }) {
+                    self.refuse(&key, reply, correlation, &topic);
+                }
             }
             (Some((reply, correlation)), Some(OPEN)) => {
-                let (id, path) = self.hold(key.unwrap_or_else(|| reply.clone()), reply.clone(), correlation.clone());
+                let key = key.unwrap_or_else(|| reply.clone());
+                // Held until the `open` is delivered, so the caller is not told `opened` for a call
+                // the server never receives.
+                let deliveries = lock(&self.deliveries);
+                let Some(sender) = deliveries.as_ref() else {
+                    drop(deliveries);
+                    return self.refuse(&key, reply, correlation, &topic);
+                };
+                let (id, path) = self.hold(key, reply.clone(), correlation.clone());
                 // The caller holds the request's items until this arrives. Queued without waiting:
                 // this runs on the event loop, which is what drains the queue.
                 let opened = reply_properties(correlation, Some(OPENED));
                 if let Err(error) = self.client.try_publish_with_properties(reply, self.qos, false, Bytes::new(), opened) {
                     tracing::warn!(%error, pattern = topic, "the MQTT link could not acknowledge a streamed request");
                 }
-                self.deliver(Delivery { frame: Frame::Open { id, pattern: topic, headers }, reply: Some(path), ack: Ack::none() });
+                let _ = sender.send(Delivery { frame: Frame::Open { id, pattern: topic, headers }, reply: Some(path), ack: Ack::none() });
             }
             (_, Some(kind)) => {
                 tracing::warn!(pattern = topic, kind, "the MQTT link dropped a request-lane message of an unknown kind");
@@ -415,9 +461,9 @@ impl ServerSide {
     }
 }
 
-/// Polls the server connection until the link closes, which aborts it. On every CONNACK it
-/// subscribes again, rumqttc keeping no subscription across a reconnect: the shared filters while
-/// serving, the control topic always.
+/// Polls the server connection until it has written the DISCONNECT `close` queued, or until the
+/// connection fails after `close`. On every CONNACK it subscribes again, rumqttc keeping no
+/// subscription across a reconnect: the shared filters while serving, the control topic always.
 async fn server_loop(side: Arc<ServerSide>, mut eventloop: EventLoop, ready: oneshot::Sender<Result<(), BoxError>>) {
     let mut ready = Some(ready);
     loop {
@@ -470,10 +516,17 @@ async fn server_loop(side: Arc<ServerSide>, mut eventloop: EventLoop, ready: one
                 }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => side.on_publish(publish),
+            // rumqttc also writes a DISCONNECT of its own on a protocol error, after which the
+            // broker closes the connection and the loop reconnects.
+            Ok(Event::Outgoing(Outgoing::Disconnect)) if *side.phase.borrow() == Phase::Closed => return,
             Ok(_) => {}
             Err(error) => {
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Err(format!("the MQTT link could not connect: {error}").into()));
+                    return;
+                }
+                if *side.phase.borrow() == Phase::Closed {
+                    tracing::debug!(%error, "the MQTT link's connection failed after `close`");
                     return;
                 }
                 tracing::warn!(%error, "the MQTT link lost its connection; reconnecting");
@@ -534,10 +587,21 @@ struct ClientSide {
     /// Held across one publish and its `Outgoing::Publish` event, so the event names that
     /// publish's packet id: rumqttc's `publish` returns before the id is assigned.
     order: tokio::sync::Mutex<()>,
-    /// The waiting publish's packet id, `None` when the connection failed first.
-    outgoing: Mutex<Option<oneshot::Sender<Option<u16>>>>,
-    /// The packet id of each request publish awaiting its PUBACK or PUBREC, and its call.
+    /// The publish waiting for its packet id, which is sent `None` when the connection fails
+    /// first.
+    outgoing: Mutex<Option<Waiting>>,
+    /// The packet id of each request publish awaiting its PUBACK or PUBREC, and its call. The
+    /// event loop writes the entry on the publish's `Outgoing::Publish` event: rumqttc has written
+    /// the packet by then, so the PUBACK can be read before the publishing task runs again, and
+    /// an entry written there would miss it and lose the miss signal.
     pkids: Mutex<HashMap<u16, u64>>,
+}
+
+/// A publish waiting for its `Outgoing::Publish` event.
+struct Waiting {
+    /// The request's call, `None` for an event or a control message.
+    call: Option<u64>,
+    assigned: oneshot::Sender<Option<u16>>,
 }
 
 enum ClientCall {
@@ -641,20 +705,13 @@ impl ClientSide {
     async fn publish(&self, topic: String, properties: PublishProperties, body: Bytes, call: Option<u64>) -> Result<(), BoxError> {
         let _order = self.order.lock().await;
         let (assigned, pkid) = oneshot::channel();
-        *lock(&self.outgoing) = Some(assigned);
+        *lock(&self.outgoing) = Some(Waiting { call, assigned });
         if let Err(error) = self.client.publish_with_properties(topic, self.qos, false, body, properties).await {
             lock(&self.outgoing).take();
             return Err(format!("the MQTT link could not queue a publish: {error}").into());
         }
         match pkid.await {
-            Ok(Some(pkid)) => {
-                if let Some(call) = call
-                    && pkid != 0
-                {
-                    lock(&self.pkids).insert(pkid, call);
-                }
-                Ok(())
-            }
+            Ok(Some(_)) => Ok(()),
             _ => Err("the MQTT link lost its connection before the publish went out".into()),
         }
     }
@@ -756,7 +813,12 @@ async fn client_loop(
                 side.acknowledged(pubrec.pkid, pubrec.reason == PubRecReason::NoMatchingSubscribers, &frames);
             }
             Ok(Event::Outgoing(Outgoing::Publish(pkid))) => {
-                if let Some(assigned) = lock(&side.outgoing).take() {
+                if let Some(Waiting { call, assigned }) = lock(&side.outgoing).take() {
+                    if let Some(call) = call
+                        && pkid != 0
+                    {
+                        lock(&side.pkids).insert(pkid, call);
+                    }
                     let _ = assigned.send(Some(pkid));
                 }
             }
@@ -764,8 +826,8 @@ async fn client_loop(
             Err(error) => {
                 // A clean session drops whatever was queued, so the waiting publish is lost and no
                 // acknowledgment will come for the packets in flight.
-                if let Some(assigned) = lock(&side.outgoing).take() {
-                    let _ = assigned.send(None);
+                if let Some(waiting) = lock(&side.outgoing).take() {
+                    let _ = waiting.assigned.send(None);
                 }
                 lock(&side.pkids).clear();
                 if let Some(ready) = ready.take() {
