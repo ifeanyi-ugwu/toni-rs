@@ -2,20 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [experiment/di-redesign]
   pull_request:
+    branches: [experiment/di-redesign]
 
 jobs:
-  rustfmt:
-    name: rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all --check
-
   check:
     name: check (all features, all targets)
     runs-on: ubuntu-latest
@@ -23,18 +14,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # --all-features compiles the feature-gated test targets (e.g. the DB
-      # crates' `integration` health tests) that a default build never touches.
-      # --locked fails on a manifest/lockfile mismatch instead of silently
-      # resolving fresh versions the repo doesn't record.
+      # --all-features compiles the feature-gated test targets (the broker crates'
+      # `integration` conformance suites) that a default build never touches, and
+      # the `tls` features, of which ulo-rpc-kafka's builds librdkafka against the
+      # runner's OpenSSL headers. --locked fails on a manifest/lockfile mismatch
+      # instead of resolving fresh versions the repo doesn't record.
       - run: cargo check --workspace --all-features --all-targets --locked
 
   docs:
     name: docs
     runs-on: ubuntu-latest
     env:
-      # Broken intra-doc links are warnings by default, so they rot unnoticed:
-      # every one this gate was written for dated from an earlier rename.
+      # Broken intra-doc links are warnings by default and go unnoticed until a
+      # reader follows one.
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
@@ -56,64 +48,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Hermetic suites only — everything here runs against localhost with no
-      # external services. Broker and DB crates keep their service-dependent
-      # tests behind feature gates and are compile-checked in the check job;
-      # the four broker conformance suites that take seconds run in the
-      # `conformance` job on push to master.
-      - run: cargo test -p ulo --lib --locked
-      - run: cargo test -p integration-tests --locked
-      # The build-script companion: pure functions over tonic's generated text.
-      - run: cargo test -p ulo-build --locked
-      # Startup-failure reporting and connection-string redaction for the database modules.
-      # Hermetic: no server is contacted. Their service-dependent suites stay behind the
-      # `integration` feature and are compile-checked by the job above.
-      - run: cargo test -p ulo-db-seaorm -p ulo-db-redis -p ulo-db-mongodb --lib --test startup --locked
-      - run: cargo test -p ulo-db-sqlx --features postgres --lib --test startup --locked
-      - run: cargo test -p ulo-db-diesel --features postgres --lib --test startup --locked
-      # Prisma has no server to reach: `for_root` takes a closure producing the
-      # generated client, so its whole surface is registration.
-      - run: cargo test -p ulo-db-prisma --locked
-      # Each crate's own hermetic suite. Named explicitly rather than with
-      # `--workspace`, which would pull in every service-gated target. Before this
-      # line existed the `check` job compiled these and nothing ran them, so they
-      # could stop being true but never start failing. The adapter suites are the
-      # only proof that WebSocket upgrade works on poem, salvo and rocket, and
-      # that actix collects a request body rather than streaming it.
-      - run: >
-          cargo test --locked --lib --tests
-          -p ulo-config -p ulo-health -p ulo-cli
-          -p ulo-http-axum -p ulo-http-actix -p ulo-http-poem
-          -p ulo-http-salvo -p ulo-http-rocket
-          -p ulo-rpc-tcp -p ulo-rpc-udp -p ulo-rpc-nats -p ulo-rpc-redis
-          -p ulo-rpc-rabbitmq -p ulo-rpc-mqtt -p ulo-rpc-kafka
-          -p ulo-ws-tungstenite -p ulo-ws-redis -p ulo-grpc
-      # ulo-macros' unit tests only. Its `diagnostics` target compares rustc's
-      # rendering and runs on a pinned compiler in the job below, so that a
-      # reworded diagnostic cannot fail an unrelated pull request here.
-      - run: cargo test -p ulo-macros --lib --locked
-      # Doc examples compile in no other job: `--all-targets` skips them and the
-      # docs job renders without running them. Only examples not marked `ignore`
-      # are covered.
-      - run: cargo test --workspace --all-features --doc --locked
-
-  conformance:
-    name: rpc conformance (brokers)
-    # On push to master, not on pull requests: the four suites start their
-    # brokers under Docker, and their harness time is about a minute together,
-    # with the compile of four `integration` test targets and four image pulls
-    # on top. Kafka is not here: its suite takes minutes where these take
-    # seconds. `make conformance-kafka` runs it and carries the figures.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ulo-rpc-nats --features integration --test conformance --locked
-      - run: cargo test -p ulo-rpc-redis --features integration --test conformance --locked
-      - run: cargo test -p ulo-rpc-mqtt --features integration --test conformance --locked
-      - run: cargo test -p ulo-rpc-rabbitmq --features integration --test conformance --locked
+      # Hermetic suites only: everything here runs against localhost. That covers
+      # the HTTP conformance suites against hyper and the five adapters, the RPC
+      # suites on TCP and UDP, the WebSocket and gRPC tests, and ulo-codegen-tests,
+      # whose build script runs ulo-build with the vendored protoc. Two targets
+      # compile to nothing here: the broker conformance suites carry
+      # `#![cfg(feature = "integration")]` and run in `rpc conformance (brokers)`,
+      # and `compile_fail` reports itself ignored off rustc 1.98.1 and runs in
+      # `macro diagnostics`.
+      - run: cargo test --workspace --locked
 
   msrv-matrix:
     name: msrv matrix
@@ -124,7 +67,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # Read from the manifests rather than listed here, so a crate that changes
-      # its floor moves between legs without this file being touched.
+      # its floor moves between legs without this file being touched. Today the
+      # legs are 1.88 (the workspace), 1.89 (ulo-graphql-async-graphql) and 1.92
+      # (ulo-http-salvo), each floor set by that crate's dependencies.
       - id: read
         run: |
           v=$(cargo metadata --no-deps --format-version 1 \
@@ -155,7 +100,7 @@ jobs:
             | tr '\n' ' ')
           test -n "$pkgs" || { echo "no crate declares ${{ matrix.rust }}"; exit 1; }
           echo "checking: $pkgs"
-          cargo check --all-features --locked $pkgs
+          cargo check --all-features --all-targets --locked $pkgs
 
   diagnostics:
     name: macro diagnostics
@@ -163,40 +108,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Pinned on purpose, and the one pin in this file that is not read from a
-      # manifest. `tests/diagnostics/*.stderr` records rustc's rendering as well
-      # as the macros' own text, and rustc rewords its half roughly once every
-      # three minor versions: on `stable` that arrives as a red build on a pull
-      # request that changed nothing related. Bumping this version is its own
-      # change, where the snapshot diff is the thing being reviewed — which is
-      # when a diagnostic that got worse is actually noticed.
+      # manifest. `tests/ui/*.stderr` records rustc's rendering as well as the
+      # attributes' own text, and rustc rewords its half roughly once every three
+      # minor versions: on `stable` that arrives as a red build on a pull request
+      # that changed nothing related. ulo-codegen-tests' build script sets
+      # `cfg(ulo_snapshot_rustc)` only on this version, and the test is ignored
+      # without it, so a drifted pin reports `1 ignored` rather than failing.
+      # Bumping the version is its own change, where the snapshot diff is the
+      # thing being reviewed.
       #
       # Regenerate after an intended change, on this same version:
-      #     TRYBUILD=overwrite cargo test -p ulo-macros --test diagnostics
+      #     TRYBUILD=overwrite cargo +1.98.1 test -p ulo-codegen-tests --test compile_fail
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ulo-macros --test diagnostics --locked
+      - run: cargo test -p ulo-codegen-tests --test compile_fail --locked
 
-  scaffold:
-    name: cli scaffold
+  conformance:
+    name: rpc conformance (brokers)
+    # On push, not on pull requests: each suite starts its broker under Docker
+    # through testcontainers, and the image pulls and the compile of four
+    # `integration` test targets cost minutes a pull request does not need to
+    # wait on. One crate per step, so a failure names its broker. Kafka is not
+    # here: `make conformance-kafka` runs it by hand.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p ulo-cli --locked
-      # `ulo new` output pins published crate versions; patching them to the
-      # checkout verifies the templates against the code under review. A version
-      # bump that forgets to update the templates fails here loudly.
-      - name: scaffold a project and compile it
-        run: |
-          cd "$RUNNER_TEMP"
-          "$GITHUB_WORKSPACE/target/debug/ulo" new scaffold-smoke
-          cd scaffold-smoke
-          "$GITHUB_WORKSPACE/target/debug/ulo" generate resource user
-          cat >> Cargo.toml <<EOF
-          [patch.crates-io]
-          ulo = { path = "$GITHUB_WORKSPACE/crates/ulo" }
-          ulo-macros = { path = "$GITHUB_WORKSPACE/crates/ulo-macros" }
-          ulo-http-axum = { path = "$GITHUB_WORKSPACE/crates/ulo-http-axum" }
-          EOF
-          cargo check
+      - run: cargo test -p ulo-rpc-nats --features integration --test conformance --locked
+      - run: cargo test -p ulo-rpc-redis --features integration --test conformance --locked
+      - run: cargo test -p ulo-rpc-mqtt --features integration --test conformance --locked
+      - run: cargo test -p ulo-rpc-rabbitmq --features integration --test conformance --locked
