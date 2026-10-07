@@ -1,7 +1,7 @@
 //! The body an error handler answers a timed-out request with, as the backend sees it through
-//! `AppService::call`: buffered up to 1 MiB and no further, and, when it is a stream, its end
-//! reported to `on_stream_end` when the backend has written the buffered copy, not when the
-//! service read it.
+//! `AppService::call`: buffered whatever its size when it ends on the first poll, up to 1 MiB and
+//! no further when the server waits on it, and, when it is a stream, its end reported to
+//! `on_stream_end` when the backend has written the buffered copy, not when the service read it.
 //!
 //! The backend here is the test: it keeps the `AppService` it is handed, and it decides whether
 //! a response body is written to its end or dropped before, which is how a peer leaving reaches
@@ -10,10 +10,11 @@
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use http_body::Body as _;
 use tokio::sync::Notify;
 use ulo::{App, AppHandle, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, StreamOutcome, injectable, routes};
@@ -59,17 +60,68 @@ impl ErrorHandler<Http> for TrackedOnTimeout {
     }
 }
 
-/// Answers a `Timeout` with 503 and a stream of `len` bytes, every chunk ready at once.
-struct SizedOnTimeout(usize);
+/// `len` bytes in [`CHUNK`]-sized chunks, every one ready.
+fn chunks(len: usize) -> impl Iterator<Item = Result<Bytes, Infallible>> + Send {
+    (0..len).step_by(CHUNK).map(move |start| Ok(Bytes::from(vec![b'x'; CHUNK.min(len - start)])))
+}
 
-impl ErrorHandler<Http> for SizedOnTimeout {
+/// Answers a `Timeout` with 503 and a stream of `len` bytes that is pending once before its first
+/// chunk, so the server waits on it; every chunk is ready after that.
+struct WaitedOnTimeout(usize);
+
+impl ErrorHandler<Http> for WaitedOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let pending_once = stream::once(tokio::task::yield_now()).filter_map(|()| async { None });
+        let mut response = Response::new(HttpBody::stream(pending_once.chain(stream::iter(chunks(self.0)))));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
+/// Answers a `Timeout` with 503 and a stream of `len` bytes in 512 KiB chunks, every chunk and the
+/// end ready at once: a body produced before it is read.
+struct ReadyOnTimeout(usize);
+
+impl ErrorHandler<Http> for ReadyOnTimeout {
     async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
         let len = self.0;
-        let chunks = (0..len).step_by(CHUNK).map(move |start| Ok::<_, Infallible>(Bytes::from(vec![b'x'; CHUNK.min(len - start)])));
+        let chunks = (0..len).step_by(8 * CHUNK).map(move |start| Ok::<_, Infallible>(Bytes::from(vec![b'x'; (8 * CHUNK).min(len - start)])));
         let mut response = Response::new(HttpBody::stream(stream::iter(chunks)));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
+/// How many times [`CountedOnTimeout`]'s stream was polled.
+static POLLS: AtomicUsize = AtomicUsize::new(0);
+
+/// How long [`CountedOnTimeout`]'s one chunk takes to arrive, well inside the grace.
+const CHUNK_DELAY: Duration = Duration::from_millis(100);
+
+/// Answers a `Timeout` with 503 and a one-chunk stream that is pending for [`CHUNK_DELAY`],
+/// counting its polls in [`POLLS`].
+struct CountedOnTimeout;
+
+impl ErrorHandler<Http> for CountedOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let mut late = Box::pin(stream::once(async {
+            tokio::time::sleep(CHUNK_DELAY).await;
+            Ok::<_, Infallible>(Bytes::from_static(b"late"))
+        }));
+        let counted = stream::poll_fn(move |cx| {
+            POLLS.fetch_add(1, Ordering::Relaxed);
+            late.poll_next_unpin(cx)
+        });
+        let mut response = Response::new(HttpBody::stream(counted));
         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
         Ok(response)
     }
@@ -89,15 +141,29 @@ impl Slow {
     }
 
     #[ulo_http::get("/at-cap")]
-    #[error_handlers(value = SizedOnTimeout(MB as usize))]
+    #[error_handlers(value = WaitedOnTimeout(MB as usize))]
     async fn at_cap(&self, exec: ExecutionRef) -> &'static str {
         exec.cancelled().await;
         "late"
     }
 
     #[ulo_http::get("/over-cap")]
-    #[error_handlers(value = SizedOnTimeout(MB as usize + 1))]
+    #[error_handlers(value = WaitedOnTimeout(MB as usize + 1))]
     async fn over_cap(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/counted")]
+    #[error_handlers(value = CountedOnTimeout)]
+    async fn counted(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/ready")]
+    #[error_handlers(value = ReadyOnTimeout(2 * MB as usize))]
+    async fn ready(&self, exec: ExecutionRef) -> &'static str {
         exec.cancelled().await;
         "late"
     }
@@ -236,7 +302,18 @@ async fn a_buffered_stream_dropped_before_its_write_reports_cut_off() {
 }
 
 #[tokio::test]
-async fn a_body_of_exactly_the_cap_is_written_with_its_length() {
+async fn a_stream_ended_on_the_first_poll_is_written_whatever_its_size() {
+    let running = Running::start().await;
+
+    let response = running.call("/ready").await;
+    assert_eq!(response.body().size_hint().exact(), Some(2 * MB), "the buffered body does not carry its exact length");
+    let (status, body) = written(response).await;
+    assert_eq!((status, body.len() as u64), (StatusCode::SERVICE_UNAVAILABLE, 2 * MB));
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_waited_on_body_of_exactly_the_cap_is_written_with_its_length() {
     let running = Running::start().await;
 
     let response = running.call("/at-cap").await;
@@ -247,10 +324,21 @@ async fn a_body_of_exactly_the_cap_is_written_with_its_length() {
 }
 
 #[tokio::test]
-async fn a_body_one_byte_over_the_cap_answers_504() {
+async fn a_waited_on_body_one_byte_over_the_cap_answers_504() {
     let running = Running::start().await;
 
     let (status, _) = written(running.call("/over-cap").await).await;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_pending_body_is_polled_when_it_wakes_the_reader() {
+    let running = Running::start().await;
+
+    let (status, body) = written(running.call("/counted").await).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::SERVICE_UNAVAILABLE, b"late".as_slice()));
+    let polls = POLLS.load(Ordering::Relaxed);
+    assert!(polls <= 8, "a body pending for {CHUNK_DELAY:?} was polled {polls} times while the server waited on it");
     running.stop().await;
 }

@@ -39,6 +39,7 @@ use ulo_http::embed::EmbedLimits;
 
 mod app;
 pub mod cases;
+mod failures;
 mod reference;
 mod wire;
 
@@ -46,6 +47,7 @@ mod wire;
 pub mod rocket_fairing;
 
 pub use app::{HOST_VALUE_HEADER, HostValue, ORIGIN};
+pub use failures::failures_dir;
 pub use reference::HyperHost;
 
 /// Where the host mounts the app.
@@ -114,6 +116,22 @@ pub fn report(error: &(dyn Error + 'static)) -> String {
     text
 }
 
+/// Fails a scenario whose environment did not start, as `panic!` with the same arguments would,
+/// after writing the message to a file of its own under [`failures_dir`]; the panic names the file.
+/// Every startup path in the suite fails through it, and a [`Host`] implementation's own startup
+/// should too.
+#[macro_export]
+macro_rules! startup_failed {
+    ($($arg:tt)+) => {
+        $crate::__private::startup_failed(::std::format!($($arg)+))
+    };
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::failures::startup_failed;
+}
+
 /// The application every scenario runs: its controller, error handler, upgrade handler and
 /// pre-dispatch entries, wired against the app's `Timer`, as a host that can do everything takes
 /// it.
@@ -128,10 +146,10 @@ pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
         .timer(ulo_tokio::Timer)
         .drain_timeout(DRAIN)
         .wire()
-        .unwrap_or_else(|error| panic!("the suite's app did not wire: {}", report(&error)))
+        .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not wire: {}", report(&error)))
         .connect()
         .await
-        .unwrap_or_else(|error| panic!("the suite's app did not connect: {}", report(&error)))
+        .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not connect: {}", report(&error)))
 }
 
 /// How [`ROUTING_HEADER`] spells a `Routing`: `matched <route>`, `options <route>`, `not-found`,

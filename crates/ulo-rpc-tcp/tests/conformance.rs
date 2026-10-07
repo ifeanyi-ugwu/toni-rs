@@ -3,7 +3,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 
-use ulo_rpc_conformance::{Broker, report};
+use ulo_rpc_conformance::{Broker, report, startup_failed};
 use ulo_rpc_conformance::relay::Relay;
 use ulo_rpc_tcp::Tcp;
 
@@ -19,8 +19,8 @@ impl Broker for Loopback {
     /// relay can name it, and the relay listening on a port of its own.
     async fn start() -> Self {
         let probe = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .unwrap_or_else(|error| panic!("no loopback port is free: {}", report(&error)));
-        let server = probe.local_addr().unwrap_or_else(|error| panic!("the probe socket has no address: {}", report(&error)));
+            .unwrap_or_else(|error| startup_failed!("no loopback port is free: {}", report(&error)));
+        let server = probe.local_addr().unwrap_or_else(|error| startup_failed!("the probe socket has no address: {}", report(&error)));
         drop(probe);
         Loopback { server, relay: Relay::start(server).await }
     }

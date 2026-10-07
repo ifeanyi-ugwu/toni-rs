@@ -2,7 +2,15 @@
 //! `disrupt` can sever the client's connections and nothing else: the server keeps its own, and
 //! the relay keeps accepting, so the client's next connection goes through, at once or after an
 //! outage the environment chooses.
+//!
+//! [`reachable`] and [`unshadowed`] serve a container's published port. On a VM-backed engine
+//! (OrbStack, Docker Desktop) the engine picks that port inside its VM, without seeing the host's
+//! sockets, from a range that overlaps the host's ephemeral one, and forwards it from a wildcard
+//! listener on the host. A host process already listening on `127.0.0.1` at that port, a relay or
+//! an editor's local server, is the more specific match, and a connection to `127.0.0.1` reaches
+//! it instead of the container.
 
+use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -52,12 +60,12 @@ impl Relay {
     pub async fn bind() -> TcpListener {
         TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
-            .unwrap_or_else(|error| panic!("the relay did not bind a loopback port: {}", report(&error)))
+            .unwrap_or_else(|error| crate::startup_failed!("the relay did not bind a loopback port: {}", report(&error)))
     }
 
     /// A relay accepting on `listener`, forwarding to `upstream`.
     pub fn listen(listener: TcpListener, upstream: SocketAddr) -> Relay {
-        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the relay's listener has no address: {}", report(&error)));
+        let addr = listener.local_addr().unwrap_or_else(|error| crate::startup_failed!("the relay's listener has no address: {}", report(&error)));
         let connections = Arc::new(Mutex::new(JoinSet::new()));
         let outage = Arc::new(StdMutex::new(Window::default()));
         let accepting = tokio::spawn(accept(listener, upstream, Arc::clone(&connections), Arc::clone(&outage)));
@@ -118,6 +126,54 @@ impl Drop for Relay {
     }
 }
 
+/// How many times [`unshadowed`] starts an environment before it fails the scenario.
+const SHADOW_ATTEMPTS: usize = 5;
+
+/// Whether a connection to `addr`, a container's port published on `127.0.0.1`, reaches some other
+/// listener on this host. On macOS this binds `127.0.0.1` at that port with `SO_REUSEADDR` for a
+/// moment: the engine's wildcard listener allows it, and a specific listener already there
+/// refuses it. On Linux the kernel refuses a wildcard bind beside a listener on `127.0.0.1`, so the
+/// shadow cannot form, and the same probe would be refused by the engine's own listener: there it
+/// answers `false`.
+pub fn shadowed(addr: SocketAddr) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::net::TcpListener as StdTcpListener;
+        // std sets `SO_REUSEADDR` on a listener it binds on Unix.
+        addr.ip() == Ipv4Addr::LOCALHOST && StdTcpListener::bind(addr).is_err()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = addr;
+        false
+    }
+}
+
+/// Runs `start`, which starts an environment and answers it with the loopback addresses it is
+/// reached at, until no other listener on this host shadows any of them ([`shadowed`]), at most
+/// five times. An environment that is shadowed is dropped, which stops its container, and each
+/// retry is logged on stderr. `what` names the environment in the log and in the failure.
+pub async fn unshadowed<E, F, Fut>(what: &str, mut start: F) -> (E, Vec<SocketAddr>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = (E, Vec<SocketAddr>)>,
+{
+    let mut collisions = Vec::new();
+    for attempt in 1..=SHADOW_ATTEMPTS {
+        let (environment, addrs) = start().await;
+        let shadows: Vec<SocketAddr> = addrs.iter().copied().filter(|addr| shadowed(*addr)).collect();
+        if shadows.is_empty() {
+            return (environment, addrs);
+        }
+        eprintln!(
+            "{what} was published on {shadows:?}, where another listener on this host would receive its connections; starting it again (attempt {attempt} of {SHADOW_ATTEMPTS})"
+        );
+        collisions.extend(shadows);
+        drop(environment);
+    }
+    crate::startup_failed!("{what} was published on a port another listener on this host holds at each of {SHADOW_ATTEMPTS} starts: {collisions:?}")
+}
+
 /// Waits until `addr` accepts a TCP connection, failing the scenario after `within`. A container's
 /// forwarded port can refuse connections for a moment after the broker inside reports ready.
 pub async fn reachable(addr: SocketAddr, within: Duration) {
@@ -125,7 +181,9 @@ pub async fn reachable(addr: SocketAddr, within: Duration) {
     loop {
         match TcpStream::connect(addr).await {
             Ok(_) => return,
-            Err(error) if Instant::now() >= deadline => panic!("{addr} did not accept a connection within {within:?}: {error}"),
+            Err(error) if Instant::now() >= deadline => {
+                crate::startup_failed!("{addr} did not accept a connection within {within:?}: {}", report(&error))
+            }
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }

@@ -291,10 +291,11 @@ impl ServiceInner {
     /// What they answer, or the error they return rendered as it stands, is the response; with
     /// none by the end of the grace, the canonical 504 is, and the headers they wrote are dropped.
     /// The grace bounds the body too: it is read under what remains of it and, ending in time,
-    /// written whole with its exact length. A body still open when the grace runs out, an `Sse`
-    /// among them, was not a single reply produced in time, and neither was one that yields more
-    /// than [`BUFFER_CAP`], 1 MiB, before it ends: each is dropped for the same 504, logged at
-    /// `warn`.
+    /// written whole with its exact length. A body whose end is reached on the first poll is
+    /// already produced and is written whatever its size; one the server waits on is held to
+    /// [`BUFFER_CAP`], 1 MiB. A body still open when the grace runs out, an `Sse` among them, was
+    /// not a single reply produced in time, and neither was a waited-on body that yields more than
+    /// the cap before it ends: each is dropped for the same 504, logged at `warn`.
     async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {
         let route = MatchedRoute {
             handler: target.handler.clone(),
@@ -517,60 +518,74 @@ async fn within<F: Future>(fut: F, mut grace: Option<&mut BoxFuture<'static, ()>
 enum Incomplete {
     /// Its body was still open when the grace ran out.
     Open,
-    /// Its body yielded more than [`BUFFER_CAP`] before it ended.
+    /// Its body did not end on the first poll and yielded more than [`BUFFER_CAP`] before it ended.
     Oversized,
     /// Its body failed while it was read.
     Failed(BoxError),
 }
 
-/// The most `completed` buffers of the error handlers' response to a passed deadline, 1 MiB: a
-/// body past it is answered as a stream is, so an error handler that produces a large body quickly
-/// cannot make the server hold all of it.
+/// The most `completed` buffers of a body it waits on in the error handlers' response to a passed
+/// deadline, 1 MiB: a waited-on body past it is answered as a stream is, so an error handler cannot
+/// make the server accumulate an unbounded body while it waits for the end. A body ended on the
+/// first poll is not held to it: its frames were already produced.
 const BUFFER_CAP: u64 = MB;
 
-/// How many ready frames `completed` reads before it yields to the runtime: a body whose frames are
-/// always ready never returns `Pending` itself, and the grace's timer only fires once the runtime
-/// gets to run its driver.
+/// How many ready frames `completed` reads before it yields to the runtime, the first poll's
+/// included: a body whose frames are always ready never returns `Pending` itself, and the grace's
+/// timer only fires once the runtime gets to run its driver.
 const FRAMES_PER_POLL: usize = 32;
 
 /// The error handlers' response to a passed deadline with its body read under what remains of the
-/// grace: a body that ends in time, within [`BUFFER_CAP`], is buffered, its length then exact, its
-/// trailers kept. HTTP has no message boundaries, so a body that completes is HTTP's single reply.
+/// grace, buffered, its length then exact, its trailers kept. HTTP has no message boundaries, so a
+/// body that completes is HTTP's single reply. A body whose end is reached on the first poll, at
+/// most [`FRAMES_PER_POLL`] frames all ready, is buffered whatever its size: `Full` and any body
+/// produced at once. Any other body is one the server waits on, buffered only within
+/// [`BUFFER_CAP`], the bytes of the first poll counted.
 async fn completed(response: Response, exec: &ExecutionRef, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, Incomplete> {
     let (parts, mut body) = response.into_parts();
     if body.is_end_stream() {
         return Ok(Response::from_parts(parts, body));
     }
     let hint = body.size_hint();
-    if hint.lower() > BUFFER_CAP {
-        return Err(Incomplete::Oversized);
-    }
     let mut data = BytesMut::new();
     let mut trailers = None;
+    let mut waited = false;
     poll_fn(|cx| {
+        let mut pending = false;
         for _ in 0..FRAMES_PER_POLL {
             match Pin::new(&mut body).poll_frame(cx) {
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(Incomplete::Failed(err))),
                 Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                    Ok(bytes) if (data.len() + bytes.len()) as u64 > BUFFER_CAP => return Poll::Ready(Err(Incomplete::Oversized)),
+                    Ok(bytes) if waited && (data.len() + bytes.len()) as u64 > BUFFER_CAP => return Poll::Ready(Err(Incomplete::Oversized)),
                     Ok(bytes) => data.extend_from_slice(&bytes),
                     Err(frame) => {
                         trailers = frame.into_trailers().ok();
                         return Poll::Ready(Ok(()));
                     }
                 },
-                Poll::Pending => break,
+                Poll::Pending => {
+                    pending = true;
+                    break;
+                }
             }
             if body.is_end_stream() {
                 return Poll::Ready(Ok(()));
             }
         }
+        // Not ended on this poll: from here the body is one the server waits on.
+        waited = true;
+        if data.len() as u64 > BUFFER_CAP {
+            return Poll::Ready(Err(Incomplete::Oversized));
+        }
         if grace.as_mut().is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready()) {
             return Poll::Ready(Err(Incomplete::Open));
         }
-        // Still ready after `FRAMES_PER_POLL` frames: polled again after the runtime's other work.
-        cx.waker().wake_by_ref();
+        // A pending body wakes the task itself. One still ready after `FRAMES_PER_POLL` frames is
+        // polled again after the runtime's other work.
+        if !pending {
+            cx.waker().wake_by_ref();
+        }
         Poll::Pending
     })
     .await?;

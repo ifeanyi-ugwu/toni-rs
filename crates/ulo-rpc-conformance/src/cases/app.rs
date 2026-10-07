@@ -481,7 +481,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
     let mounts = Mounts::carried(&broker.link().capabilities());
     let app = bound(broker, probe.clone(), mounts)
         .await
-        .unwrap_or_else(|error| panic!("the conformance server did not start: {}", report(&error)));
+        .unwrap_or_else(|error| crate::startup_failed!("the conformance server did not start: {}", report(&error)));
     let handle = app.handle();
     let ended = Arc::new(Mutex::new(None));
     let serving = tokio::spawn({
@@ -502,7 +502,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
 pub(crate) async fn refused_at_startup<B: Broker>(broker: &B, mounts: Mounts) {
     match bound(broker, Probe::default(), mounts).await {
         Err(StartupError::Configure(_)) => {}
-        Err(other) => panic!("expected a `Configure` refusal for {mounts:?}, got: {}", report(&other)),
+        Err(other) => crate::startup_failed!("expected a `Configure` refusal for {mounts:?}, got: {}", report(&other)),
         Ok(app) => {
             let _ = app.handle().close(Signal::new("conformance")).await;
             panic!("a server mounting {mounts:?} started on a link whose capabilities exclude it");
@@ -551,12 +551,12 @@ pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
     let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link())) })
         .timer(ulo_tokio::Timer)
         .wire()
-        .unwrap_or_else(|error| panic!("the conformance client did not wire: {}", report(&error)))
+        .unwrap_or_else(|error| crate::startup_failed!("the conformance client did not wire: {}", report(&error)))
         .connect()
         .await
-        .unwrap_or_else(|error| panic!("the conformance client did not connect: {}", report(&error)));
+        .unwrap_or_else(|error| crate::startup_failed!("the conformance client did not connect: {}", report(&error)));
     let rpc =
-        app.get::<RpcClient>().await.unwrap_or_else(|error| panic!("the conformance client has no `RpcClient`: {}", report(&error)));
+        app.get::<RpcClient>().await.unwrap_or_else(|error| crate::startup_failed!("the conformance client has no `RpcClient`: {}", report(&error)));
     Client { rpc: (*rpc).clone(), app }
 }
 
@@ -607,7 +607,7 @@ pub(crate) async fn ready<B: Broker>(broker: &B, rpc: &RpcClient, servers: &[&Se
                 } else {
                     format!("a server stopped serving: {}", stopped.join("; "))
                 };
-                panic!("the server did not answer within the boot budget: {outcome:?}, {stopped}")
+                crate::startup_failed!("the server did not answer within the boot budget: {outcome:?}, {stopped}")
             }
             _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }

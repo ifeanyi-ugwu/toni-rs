@@ -12,7 +12,7 @@ use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_actix::{Actix, Embedded, scope};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, routing_label};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, startup_failed, routing_label};
 
 /// The actix-web host. `H2C` listens with `listen_auto_h2c`, which serves HTTP/2 without TLS
 /// beside HTTP/1.1 and exists only where actix-web's `http2` feature is on; otherwise `listen`,
@@ -32,10 +32,10 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
         .forward(|req: &actix_web::HttpRequest| req.extensions().get::<HostValue>().cloned());
         let embedded = server.handle();
         let app = app.bind(server).listen().await
-            .unwrap_or_else(|error| panic!("the app did not listen inside actix-web: {}", report(&error)));
+            .unwrap_or_else(|error| startup_failed!("the app did not listen inside actix-web: {}", report(&error)));
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap_or_else(|error| panic!("the host did not bind a port: {}", report(&error)));
-        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the host's listener has no address: {}", report(&error)));
+            .unwrap_or_else(|error| startup_failed!("the host did not bind a port: {}", report(&error)));
+        let addr = listener.local_addr().unwrap_or_else(|error| startup_failed!("the host's listener has no address: {}", report(&error)));
         let host = actix_web::HttpServer::new({
             let embedded = embedded.clone();
             move || {
@@ -71,7 +71,7 @@ impl<const H2C: bool> Host for ActixHost<H2C> {
             const { assert!(!H2C, "an h2c host needs actix-web's `http2`: `--features conformance-http2`") };
             host.listen(listener)
         };
-        let host = host.unwrap_or_else(|error| panic!("actix-web did not adopt the listener: {}", report(&error)));
+        let host = host.unwrap_or_else(|error| startup_failed!("actix-web did not adopt the listener: {}", report(&error)));
         let (stop, stopped) = oneshot::channel::<()>();
         let signal = async move {
             let _ = stopped.await;

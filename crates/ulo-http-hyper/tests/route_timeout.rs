@@ -2,8 +2,9 @@
 //! response whose body ends within the grace as the error handler wrote it, a `Body::stream` of
 //! one payload included and written with its exact length, and an `Sse`, still open when the grace
 //! runs out, replaced by the canonical 504, none of its events written, with a `warn` line telling
-//! the author why; so is a body whose frames are always ready and never end. A body yielding more
-//! than the 1 MiB the server buffers is replaced the same way as soon as it passes the cap.
+//! the author why; so is a body whose frames are always ready and never end. A body the server
+//! waits on that yields more than the 1 MiB it buffers is replaced the same way as soon as it
+//! passes the cap; a body already produced, a `Full` of 2 MiB, is written whole.
 //!
 //! The tests run on a current-thread runtime, so the server's tasks emit their events on the test's
 //! thread, where [`Capture`] is the default subscriber. The client is raw HTTP/1.1 over a socket,
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::field::{Field, Visit};
@@ -37,6 +38,9 @@ const OVERSIZED: &str =
 
 /// What [`LargeOnTimeout`] streams: past the 1 MiB the server buffers after a deadline.
 const LARGE: usize = 1024 * 1024 + 64 * 1024;
+
+/// What [`FullOnTimeout`] answers: twice the 1 MiB the server buffers of a body it waits on.
+const FULL: usize = 2 * 1024 * 1024;
 
 fn timed_out(err: &BoxError) -> bool {
     err.downcast_ref::<CallError>().is_some_and(|call| call.kind() == ErrorKind::Timeout)
@@ -109,7 +113,8 @@ impl ErrorHandler<Http> for StreamedOnTimeout {
     }
 }
 
-/// Answers a `Timeout` with a body of [`LARGE`] bytes in 64 KiB chunks, every one ready at once.
+/// Answers a `Timeout` with a body of [`LARGE`] bytes in 64 KiB chunks, pending once before the
+/// first, so the server waits on it, and every one ready after that.
 struct LargeOnTimeout;
 
 impl ErrorHandler<Http> for LargeOnTimeout {
@@ -117,8 +122,23 @@ impl ErrorHandler<Http> for LargeOnTimeout {
         if !timed_out(&err) {
             return Err(err);
         }
+        let pending_once = stream::once(tokio::task::yield_now()).filter_map(|()| async { None });
         let chunks = stream::iter((0..LARGE / (64 * 1024)).map(|_| Ok::<_, Infallible>(Bytes::from(vec![b'x'; 64 * 1024]))));
-        let mut response = Response::new(HttpBody::stream(chunks));
+        let mut response = Response::new(HttpBody::stream(pending_once.chain(chunks)));
+        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        Ok(response)
+    }
+}
+
+/// Answers a `Timeout` with 503 and a `Full` body of [`FULL`] bytes.
+struct FullOnTimeout;
+
+impl ErrorHandler<Http> for FullOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        let mut response = Response::new(HttpBody::from_bytes(vec![b'x'; FULL]));
         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
         Ok(response)
     }
@@ -161,6 +181,13 @@ impl Slow {
     #[ulo_http::get("/large")]
     #[error_handlers(value = LargeOnTimeout)]
     async fn large(&self, exec: ExecutionRef) -> &'static str {
+        exec.cancelled().await;
+        "late"
+    }
+
+    #[ulo_http::get("/full")]
+    #[error_handlers(value = FullOnTimeout)]
+    async fn full(&self, exec: ExecutionRef) -> &'static str {
         exec.cancelled().await;
         "late"
     }
@@ -308,7 +335,22 @@ async fn a_single_payload_streamed_after_the_route_timeout_is_written_with_its_l
 }
 
 #[tokio::test]
-async fn a_body_over_the_buffer_answered_after_the_route_timeout_is_replaced_by_504_before_the_grace_ends() {
+async fn a_full_body_over_the_buffer_answered_after_the_route_timeout_is_written_whole() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let running = Running::start().await;
+
+    let (status, head, body) = running.exchange("/full").await;
+    assert_eq!((status.as_str(), body.len()), ("HTTP/1.1 503 Service Unavailable", FULL), "head: {head}");
+    assert!(body.bytes().all(|byte| byte == b'x'), "the body is not the one the error handler answered");
+    assert!(head.to_ascii_lowercase().contains(&format!("content-length: {FULL}")), "the body was not written with its exact length: {head}");
+    let warned = capture.warnings();
+    assert!(!warned.iter().any(|line| line.contains(OVERSIZED)), "a body already produced was refused as oversized: {warned:?}");
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_waited_on_body_over_the_buffer_answered_after_the_route_timeout_is_replaced_by_504_before_the_grace_ends() {
     let capture = Capture::default();
     let _default = tracing::subscriber::set_default(capture.clone());
     let running = Running::start().await;

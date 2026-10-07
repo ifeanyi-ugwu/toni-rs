@@ -24,7 +24,7 @@ impl Host for HyperHost {
             .bind(server)
             .listen()
             .await
-            .unwrap_or_else(|error| panic!("the reference host did not listen: {}", report(&error)));
+            .unwrap_or_else(|error| crate::startup_failed!("the reference host did not listen: {}", report(&error)));
         let addr = app.addresses().first().map(|bound| bound.addr).expect("the reference host is bound");
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {

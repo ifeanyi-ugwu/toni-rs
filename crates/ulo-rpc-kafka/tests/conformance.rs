@@ -19,8 +19,8 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-use ulo_rpc_conformance::relay::{Outage, Relay, reachable};
-use ulo_rpc_conformance::{Broker, Budget, report};
+use ulo_rpc_conformance::relay::{Outage, Relay, reachable, unshadowed};
+use ulo_rpc_conformance::{Broker, Budget, report, startup_failed};
 use ulo_rpc_kafka::Kafka;
 
 /// The listener the server's link reaches.
@@ -47,43 +47,52 @@ impl Broker for KraftBroker {
         let client = Relay::bind().await;
         let advertised = format!(
             "SERVER://{},CLIENT://{},BROKER://localhost:9094",
-            server.local_addr().unwrap_or_else(|error| panic!("the server relay has no address: {}", report(&error))),
-            client.local_addr().unwrap_or_else(|error| panic!("the client relay has no address: {}", report(&error))),
+            server.local_addr().unwrap_or_else(|error| startup_failed!("the server relay has no address: {}", report(&error))),
+            client.local_addr().unwrap_or_else(|error| startup_failed!("the client relay has no address: {}", report(&error))),
         );
-        let container = GenericImage::new("apache/kafka-native", "3.8.0")
-            .with_exposed_port(SERVER_PORT.tcp())
-            .with_exposed_port(CLIENT_PORT.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Kafka Server started"))
-            .with_env_var("CLUSTER_ID", "ulo-rpc-conformance-kafka")
-            .with_env_var("KAFKA_NODE_ID", "1")
-            .with_env_var("KAFKA_PROCESS_ROLES", "broker,controller")
-            .with_env_var("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@localhost:9093")
-            .with_env_var("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
-            .with_env_var("KAFKA_LISTENERS", "SERVER://:9092,CLIENT://:9095,CONTROLLER://:9093,BROKER://:9094")
-            .with_env_var("KAFKA_ADVERTISED_LISTENERS", advertised)
-            .with_env_var(
-                "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                "SERVER:PLAINTEXT,CLIENT:PLAINTEXT,CONTROLLER:PLAINTEXT,BROKER:PLAINTEXT",
-            )
-            .with_env_var("KAFKA_INTER_BROKER_LISTENER_NAME", "BROKER")
-            .with_env_var("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1")
-            .with_env_var("KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS", "1")
-            .with_env_var("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
-            .with_env_var("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
-            // A group's first join otherwise waits three seconds for more members.
-            .with_env_var("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
-            .start()
-            .await
-            .unwrap_or_else(|error| panic!("the Kafka container did not start: {}", report(&error)));
-        let upstream = async |port: u16| {
-            let port = container.get_host_port_ipv4(port).await
-                .unwrap_or_else(|error| panic!("the Kafka listener is not mapped: {}", report(&error)));
-            let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-            reachable(addr, Duration::from_secs(10)).await;
-            addr
-        };
-        let server = Relay::listen(server, upstream(SERVER_PORT).await);
-        let client = Relay::listen(client, upstream(CLIENT_PORT).await);
+        let (container, addrs) = unshadowed("the Kafka container", || {
+            let advertised = advertised.clone();
+            async move {
+                let container = GenericImage::new("apache/kafka-native", "3.8.0")
+                    .with_exposed_port(SERVER_PORT.tcp())
+                    .with_exposed_port(CLIENT_PORT.tcp())
+                    .with_wait_for(WaitFor::message_on_stdout("Kafka Server started"))
+                    .with_env_var("CLUSTER_ID", "ulo-rpc-conformance-kafka")
+                    .with_env_var("KAFKA_NODE_ID", "1")
+                    .with_env_var("KAFKA_PROCESS_ROLES", "broker,controller")
+                    .with_env_var("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@localhost:9093")
+                    .with_env_var("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
+                    .with_env_var("KAFKA_LISTENERS", "SERVER://:9092,CLIENT://:9095,CONTROLLER://:9093,BROKER://:9094")
+                    .with_env_var("KAFKA_ADVERTISED_LISTENERS", advertised)
+                    .with_env_var(
+                        "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
+                        "SERVER:PLAINTEXT,CLIENT:PLAINTEXT,CONTROLLER:PLAINTEXT,BROKER:PLAINTEXT",
+                    )
+                    .with_env_var("KAFKA_INTER_BROKER_LISTENER_NAME", "BROKER")
+                    .with_env_var("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1")
+                    .with_env_var("KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS", "1")
+                    .with_env_var("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
+                    .with_env_var("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
+                    // A group's first join otherwise waits three seconds for more members.
+                    .with_env_var("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
+                    .start()
+                    .await
+                    .unwrap_or_else(|error| startup_failed!("the Kafka container did not start: {}", report(&error)));
+                let mut addrs = Vec::new();
+                for port in [SERVER_PORT, CLIENT_PORT] {
+                    let port = container.get_host_port_ipv4(port).await
+                        .unwrap_or_else(|error| startup_failed!("the Kafka listener is not mapped: {}", report(&error)));
+                    addrs.push(SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+                }
+                (container, addrs)
+            }
+        })
+        .await;
+        for addr in &addrs {
+            reachable(*addr, Duration::from_secs(10)).await;
+        }
+        let server = Relay::listen(server, addrs[0]);
+        let client = Relay::listen(client, addrs[1]);
         KraftBroker { server, client, _container: container }
     }
 

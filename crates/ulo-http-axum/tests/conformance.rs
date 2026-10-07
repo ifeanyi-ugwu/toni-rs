@@ -16,7 +16,7 @@ use ulo::{App, Signal};
 use ulo_http::Routing;
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_axum::{Axum, Embedded, HostLayer};
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, routing_label};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, ROUTING_HEADER, report, startup_failed, routing_label};
 
 struct AxumHost {
     base_url: String,
@@ -46,7 +46,7 @@ impl Host for AxumHost {
         }
         .peer_addr(true);
         let embedded = server.handle();
-        let app = app.bind(server).listen().await.unwrap_or_else(|error| panic!("the app did not listen inside axum: {}", report(&error)));
+        let app = app.bind(server).listen().await.unwrap_or_else(|error| startup_failed!("the app did not listen inside axum: {}", report(&error)));
         let service = HostLayer.layer(embedded.service());
         let router = match mode {
             Mode::Nested => Router::new().nest_service(PREFIX, service),
@@ -54,8 +54,8 @@ impl Host for AxumHost {
         }
         .layer(middleware::from_fn(host_middleware));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
-            .unwrap_or_else(|error| panic!("the host did not bind a port: {}", report(&error)));
-        let addr = listener.local_addr().unwrap_or_else(|error| panic!("the host's listener has no address: {}", report(&error)));
+            .unwrap_or_else(|error| startup_failed!("the host did not bind a port: {}", report(&error)));
+        let addr = listener.local_addr().unwrap_or_else(|error| startup_failed!("the host's listener has no address: {}", report(&error)));
         let serve = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {

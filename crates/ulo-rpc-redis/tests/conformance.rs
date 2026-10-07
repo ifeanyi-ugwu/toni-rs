@@ -10,8 +10,8 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
-use ulo_rpc_conformance::{Broker, report};
-use ulo_rpc_conformance::relay::{Relay, reachable};
+use ulo_rpc_conformance::{Broker, report, startup_failed};
+use ulo_rpc_conformance::relay::{Relay, reachable, unshadowed};
 use ulo_rpc_redis::Redis;
 
 const PORT: u16 = 6379;
@@ -26,15 +26,19 @@ impl Broker for RedisServer {
     type Link = Redis;
 
     async fn start() -> Self {
-        let container = GenericImage::new("redis", "7-alpine")
-            .with_exposed_port(PORT.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
-            .start()
-            .await
-            .unwrap_or_else(|error| panic!("the Redis container did not start: {}", report(&error)));
-        let port = container.get_host_port_ipv4(PORT).await
-            .unwrap_or_else(|error| panic!("the Redis port is not mapped: {}", report(&error)));
-        let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let (container, addrs) = unshadowed("the Redis container", || async {
+            let container = GenericImage::new("redis", "7-alpine")
+                .with_exposed_port(PORT.tcp())
+                .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+                .start()
+                .await
+                .unwrap_or_else(|error| startup_failed!("the Redis container did not start: {}", report(&error)));
+            let port = container.get_host_port_ipv4(PORT).await
+                .unwrap_or_else(|error| startup_failed!("the Redis port is not mapped: {}", report(&error)));
+            (container, vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))])
+        })
+        .await;
+        let server = addrs[0];
         reachable(server, Duration::from_secs(10)).await;
         RedisServer { server, relay: Relay::start(server).await, _container: container }
     }

@@ -61,6 +61,23 @@ jobs:
       # it on, so the actix suite runs once more against an h2c host, where the adapter's
       # `DrainHttp2::Reset` declaration is asserted.
       - run: cargo test -p ulo-http-actix --features conformance-http2 --test conformance_http2 --locked
+      # A conformance suite writes each startup failure, its full error chain included, to a file
+      # under target/conformance-failures/ before the test panics with it. The files are printed
+      # here, so the cause is in the job log whatever else the log keeps, and kept as an artifact.
+      - name: print conformance startup failures
+        if: failure()
+        run: |
+          shopt -s nullglob
+          files=(target/conformance-failures/*)
+          if [ ${#files[@]} -eq 0 ]; then echo "no startup failure was written"; fi
+          for file in "${files[@]}"; do echo "==> $file"; cat "$file"; echo; done
+      - name: upload conformance startup failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-failures-test
+          path: target/conformance-failures/
+          if-no-files-found: ignore
 
   msrv-matrix:
     name: msrv matrix
@@ -164,3 +181,20 @@ jobs:
       - run: cargo test -p ulo-rpc-mqtt --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-rabbitmq --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-kafka --features integration --test conformance --locked
+      # A conformance suite writes each startup failure, its full error chain included, to a file
+      # under target/conformance-failures/ before the test panics with it. The files are printed
+      # here, so the cause is in the job log whatever else the log keeps, and kept as an artifact.
+      - name: print conformance startup failures
+        if: failure()
+        run: |
+          shopt -s nullglob
+          files=(target/conformance-failures/*)
+          if [ ${#files[@]} -eq 0 ]; then echo "no startup failure was written"; fi
+          for file in "${files[@]}"; do echo "==> $file"; cat "$file"; echo; done
+      - name: upload conformance startup failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-failures-brokers
+          path: target/conformance-failures/
+          if-no-files-found: ignore

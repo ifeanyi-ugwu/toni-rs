@@ -10,7 +10,7 @@ use ulo::app::Connected;
 use ulo::{App, BoxError, Shutdown, Signal};
 use ulo_http::embed::{Embed, EmbedLimits};
 use ulo_http_conformance::rocket_fairing::RoutingFairing;
-use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, report};
+use ulo_http_conformance::{HOST_VALUE_HEADER, Host, HostValue, Mode, PREFIX, report, startup_failed};
 use ulo_http_rocket::{Embedded, Rocket, routes};
 
 struct RocketHost {
@@ -28,7 +28,7 @@ impl Host for RocketHost {
         .forward(|req: &rocket::Request<'_>| req.local_cache(|| None::<HostValue>).clone());
         let embedded = server.handle();
         let app = app.bind(server).listen().await
-            .unwrap_or_else(|error| panic!("the app did not listen inside rocket: {}", report(&error)));
+            .unwrap_or_else(|error| startup_failed!("the app did not listen inside rocket: {}", report(&error)));
         let figment = rocket::Config::figment()
             .merge(("address", "127.0.0.1"))
             .merge(("port", 0))
@@ -64,9 +64,9 @@ impl Host for RocketHost {
         // A launch that fails never lifts off and drops the sender; `run` answers why.
         let Ok(port) = port.await else {
             match serving.await {
-                Ok(Err(error)) => panic!("rocket did not lift off: {}", report(&*error)),
-                Ok(Ok(shutdown)) => panic!("rocket did not lift off; the app shut down on: {}", shutdown.signal),
-                Err(error) => panic!("rocket did not lift off, and its task failed: {}", report(&error)),
+                Ok(Err(error)) => startup_failed!("rocket did not lift off: {}", report(&*error)),
+                Ok(Ok(shutdown)) => startup_failed!("rocket did not lift off; the app shut down on: {}", shutdown.signal),
+                Err(error) => startup_failed!("rocket did not lift off, and its task failed: {}", report(&error)),
             }
         };
         RocketHost { base_url: format!("http://127.0.0.1:{port}"), stop, serving }

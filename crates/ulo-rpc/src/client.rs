@@ -611,7 +611,8 @@ impl<Res> Stream for RpcStream<Res> {
 /// kind and details, or the link's own failure mapped one way everywhere. No responders, a lost
 /// link or a broker refusal is `Unavailable`; the client's timeout `Timeout`; an oversized payload
 /// `BadRequest` with `reason: "payload_too_large"`; a binary payload on a JSON link `BadRequest`
-/// with `reason: "binary_unsupported"`, before any I/O. A pattern nothing handles is `Unavailable`
+/// with `reason: "binary_unsupported"`, before any I/O; a request frame the link cannot encode
+/// `Internal`. A pattern nothing handles is `Unavailable`
 /// with `reason: "pattern_unhandled"` or `"no_destination"` where the link signals it, and the
 /// client's `Timeout` where it cannot.
 #[derive(Debug)]
@@ -672,5 +673,66 @@ impl Classify for RpcError {
 
     fn details(&self) -> Details {
         self.details.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::link::{Capabilities, DeliveryMode, Inbound};
+
+    /// A JSON link whose client side encodes its frames as CBOR: a JSON payload's opening `{` is
+    /// a CBOR text string 27 bytes long, which a short payload cannot fill.
+    struct MisencodingLink;
+
+    impl Link for MisencodingLink {
+        const NAME: &'static str = "misencoding";
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::new(DeliveryMode::Addressed)
+        }
+
+        async fn listen(&self, _patterns: &[Pattern]) -> Result<Inbound, BoxError> {
+            Err("this link has no server side".into())
+        }
+
+        async fn connect(&self) -> Result<Outbound, BoxError> {
+            Ok(Outbound {
+                send: Box::new(|_pattern, frame, _reply_to| {
+                    Box::pin(async move { Codec::Cbor.encode_frame(&frame).map(drop).map_err(BoxError::from) })
+                }),
+                replies: Box::pin(futures_util::stream::pending()),
+            })
+        }
+
+        async fn drain(&self) {}
+
+        async fn close(&self) -> Result<(), BoxError> {
+            Ok(())
+        }
+    }
+
+    /// No call here waits on a timeout: the request fails as it is sent.
+    struct NeverExpires;
+
+    impl Timer for NeverExpires {
+        fn sleep(&self, _d: Duration) -> BoxFuture<'static, ()> {
+            Box::pin(std::future::pending())
+        }
+
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_frame_the_link_cannot_encode_is_internal() {
+        let client = RpcClient::new(Arc::new(MisencodingLink), Bound::Unbounded, Arc::new(NeverExpires));
+        let answer = client.request::<_, serde_json::Value>("orders.create", &serde_json::json!({ "id": 1 })).await;
+        let err = answer.expect_err("the link refused to encode the request, so the call must fail");
+        assert_eq!(err.kind(), ErrorKind::Internal, "expected `Internal` for an unencodable request frame, got: {err:?}");
+        assert!(err.message().contains("the Cbor codec cannot encode the frame"), "the message should name the codec's failure, got: {err:?}");
     }
 }

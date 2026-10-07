@@ -11,8 +11,8 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-use ulo_rpc_conformance::{Broker, report};
-use ulo_rpc_conformance::relay::{Relay, reachable};
+use ulo_rpc_conformance::{Broker, report, startup_failed};
+use ulo_rpc_conformance::relay::{Relay, reachable, unshadowed};
 use ulo_rpc_mqtt::Mqtt;
 
 const PORT: u16 = 1883;
@@ -27,16 +27,20 @@ impl Broker for Mosquitto {
     type Link = Mqtt;
 
     async fn start() -> Self {
-        let container = GenericImage::new("eclipse-mosquitto", "2.0.18")
-            .with_exposed_port(PORT.tcp())
-            .with_wait_for(WaitFor::message_on_stderr(" running"))
-            .with_cmd(["mosquitto", "-c", "/mosquitto-no-auth.conf"])
-            .start()
-            .await
-            .unwrap_or_else(|error| panic!("the Mosquitto container did not start: {}", report(&error)));
-        let port = container.get_host_port_ipv4(PORT).await
-            .unwrap_or_else(|error| panic!("the MQTT port is not mapped: {}", report(&error)));
-        let server = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let (container, addrs) = unshadowed("the Mosquitto container", || async {
+            let container = GenericImage::new("eclipse-mosquitto", "2.0.18")
+                .with_exposed_port(PORT.tcp())
+                .with_wait_for(WaitFor::message_on_stderr(" running"))
+                .with_cmd(["mosquitto", "-c", "/mosquitto-no-auth.conf"])
+                .start()
+                .await
+                .unwrap_or_else(|error| startup_failed!("the Mosquitto container did not start: {}", report(&error)));
+            let port = container.get_host_port_ipv4(PORT).await
+                .unwrap_or_else(|error| startup_failed!("the MQTT port is not mapped: {}", report(&error)));
+            (container, vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))])
+        })
+        .await;
+        let server = addrs[0];
         reachable(server, Duration::from_secs(10)).await;
         Mosquitto { server, relay: Relay::start(server).await, _container: container }
     }

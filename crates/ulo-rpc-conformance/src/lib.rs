@@ -39,7 +39,10 @@ use ulo_rpc::Link;
 use crate::relay::Outage;
 
 pub mod cases;
+mod failures;
 pub mod relay;
+
+pub use failures::failures_dir;
 
 /// `error` and every source under it, joined by `: `, for a failure message: a scenario that fails
 /// while its environment starts says what failed, the broker's container, the server's bind or the
@@ -58,6 +61,17 @@ pub fn report(error: &(dyn Error + 'static)) -> String {
     text
 }
 
+/// Fails a scenario whose environment did not start, as `panic!` with the same arguments would,
+/// after writing the message to a file of its own under [`failures_dir`]; the panic names the file.
+/// Every startup path in the suite fails through it, and a [`Broker`] implementation's own startup
+/// should too.
+#[macro_export]
+macro_rules! startup_failed {
+    ($($arg:tt)+) => {
+        $crate::__private::startup_failed(::std::format!($($arg)+))
+    };
+}
+
 /// One link's environment for the suite: a broker, or nothing for TCP and UDP.
 pub trait Broker: Sized + Send + Sync + 'static {
     type Link: Link;
@@ -73,7 +87,9 @@ pub trait Broker: Sized + Send + Sync + 'static {
     /// scenario uses the same patterns, and on a broker the same default group and control lane,
     /// and the stamped tests run in parallel, up to [`PARALLEL`](Self::PARALLEL) at once, so each
     /// start answers a broker or a namespace no other scenario shares: a fresh container, or a
-    /// fresh port on TCP and UDP.
+    /// fresh port on TCP and UDP. A container reached at a port published on the host is started
+    /// through [`relay::unshadowed`], so a host listener on the same port does not answer in its
+    /// place, and a start that fails does so through [`startup_failed!`].
     fn start() -> impl Future<Output = Self> + Send;
 
     /// A link for the server, configured for this environment; called once per server instance,
@@ -223,6 +239,8 @@ macro_rules! conformance_suite {
 #[doc(hidden)]
 pub mod __private {
     use std::num::NonZeroUsize;
+
+    pub use crate::failures::startup_failed;
     use std::sync::OnceLock;
 
     use tokio::sync::{Semaphore, SemaphorePermit};
