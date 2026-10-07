@@ -1158,3 +1158,32 @@ All six are accepted, with one small rename on S1. One item from "Not covered" s
 **From "Not covered": add the generic scenario.** "`close` fails a waiting call `Unavailable`" is now a rule every link must follow, and two of seven links broke it until F330. Per-crate tests hold TCP and UDP to it, and nothing holds the five brokers. A `close_fails_waiting_calls` scenario in the suite (start a call the server holds, close the client app, require `Unavailable` within a bound) would cover all seven with one piece of code. That's exactly what the suite exists for, and the brokers' reply-lane changes in batch 5 are the code it would be protecting.
 
 One practical note, not a design point: host swap at 14 of 15 GB through the broker runs is close to where the engine stopped answering in batch 6. With Kafka now in CI, that's worth watching locally, where the 4-container bound helps but other projects' containers don't.
+
+## Twenty-sixth response: the client-close build, and a stream after a deadline
+
+Received 2026-10-07, answering `divergences/race2b-tests8.md` (S1–S6) and the open question of a
+stream an error handler answers after a passed deadline (F334 in the workspace gaps ledger).
+Sign-off pending.
+
+The first six are accepted. For the seventh, choose "end it at once" on both transports.
+
+**1. Accepted.** A `close` that leaves the link unusable is a failure the "fails waiting calls" rule alone wouldn't catch, and §5.4 promises the reconnect. Asserting it is what makes the scenario test the whole rule.
+
+**2. Accepted, and it's the most valuable finding of the batch.** A broken `close` passing because the core *dropped* the hung hook, ending the connection as a side effect, is a pass on silence of the subtlest kind: the shutdown machinery hid the bug it was supposed to report. Requiring a clean report closes that path in both the scenario and the per-crate tests.
+
+**3. Accepted.** Each kept test now asserts only what the suite can't observe: the clean FIN on TCP, and the socket's release on UDP. That's the right division between the suite and the crates.
+
+**4. Accepted.** `Option<usize>` with `None` on UDP is honest: a link with no connections reports that it can't count, rather than reporting zero.
+
+**5. Accepted.** A bounded flush is what a producer owes its records at close. Losing queued replies to make `close` faster would be the wrong trade.
+
+**6. Accepted for the fold.**
+
+**7. End it at once, on both transports.** The deadline grace exists so an application can *shape* its timeout answer: its own error envelope, its own logging. It was never meant to let the call keep producing output. A stream returned after the deadline breaks that in two ways:
+
+- **It escapes the bound.** The grace bounds the error handler, not the stream it returns, so a streamed answer would run for as long as the stream does, after a deadline whose whole meaning is "stop".
+- **Nobody is reading it.** On gRPC especially, the client has already failed the call as DEADLINE_EXCEEDED locally. Every item sent is work for no one.
+
+So the rule, stated once for every transport: after a deadline, an error handler's answer is delivered if it's a single reply produced within the grace. A streamed answer is ended at once with the canonical timeout. That's what RPC already does, so gRPC changes to match. Log it at `warn` when it happens ("an error handler answered a timed-out call with a stream; the stream was ended at the deadline"), so an author who wrote a streaming timeout answer learns why it never arrives. Check HTTP against the same rule while you're in there: a route timeout's error handler returning an SSE body should behave the same way, and the moved-in sleep from T8 suggests it already does.
+
+**On the RabbitMQ time rise:** trace it. A 50% increase with no known cause is how a real regression hides. The likely suspects are this batch's own changes to close behavior, such as teardown now waiting for connections it used to abandon, which would be a correct cost. But that should be shown, not assumed. One `--report-time` run compared per scenario with batch 7's numbers will point to the scenario that grew.
