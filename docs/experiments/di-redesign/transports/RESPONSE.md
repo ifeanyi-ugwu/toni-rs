@@ -1248,7 +1248,7 @@ If both point at the host, record it and move on. If CI shows the rise too, the 
 ## Twenty-ninth response: the unencodable-reply build
 
 Received 2026-10-07, answering `divergences/race2b-tests11.md` (S1–S5) and its Redis startup
-failure. Sign-off pending.
+failure. The user signed it off the same day.
 
 Four of the five are accepted. On the fourth, the cap is in the wrong place, and the two startup flakes probably share a cause.
 
