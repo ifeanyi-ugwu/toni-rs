@@ -15,9 +15,9 @@ use ulo_transport::Tracked;
 /// the backend observes the peer close the connection or reset the stream.
 pub struct HttpBody {
     inner: UnsyncBoxBody<Bytes, BoxError>,
-    /// A `Tracked` inside reports this body's end, so neither `into_reply` nor the service wraps
-    /// it again. A body rebuilt around this one through [`HttpBody::new`] starts unmarked and is
-    /// wrapped again, and its end is reported once, the first report winning.
+    /// A `Tracked` inside reports this body's end, so the service does not wrap it again. A body
+    /// rebuilt around this one through [`HttpBody::new`] starts unmarked and is wrapped again, and
+    /// its end is reported once, the first report winning.
     tracked: bool,
 }
 
@@ -67,8 +67,14 @@ impl HttpBody {
         HttpBody::new(http_body_util::StreamBody::new(frames)).marked()
     }
 
+    /// Whether this body is a stream whose end `on_stream_end` learns: one of unknown length, or
+    /// one a `Tracked` inside already reports.
+    pub(crate) fn streams(&self) -> bool {
+        self.tracked || self.size_hint().exact().is_none()
+    }
+
     /// This body marked as one a `Tracked` inside reports the end of.
-    pub(crate) fn marked(mut self) -> HttpBody {
+    fn marked(mut self) -> HttpBody {
         self.tracked = true;
         self
     }

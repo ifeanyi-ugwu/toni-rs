@@ -48,19 +48,19 @@ impl<T> WithHeaders<T> {
     }
 }
 
-/// As built. A body of unknown length is wrapped in `Tracked`, as every streaming answer is.
+/// As built.
 impl IntoReply<Http> for Response {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        Ok(self.map(|body| body.tracked(cx.exec().clone())))
+        let _ = cx;
+        Ok(self)
     }
 }
 
-/// 200 with this body and no `Content-Type`. A body of unknown length, `Body::stream(s)`, is
-/// wrapped in `Tracked` with the call's execution, so `on_stream_end` callbacks learn whether it
-/// was written to its end.
+/// 200 with this body and no `Content-Type`.
 impl IntoReply<Http> for HttpBody {
     fn into_reply(self, cx: &HttpCx) -> Result<Response, IntoReplyError> {
-        Ok(Response::new(self.tracked(cx.exec().clone())))
+        let _ = cx;
+        Ok(Response::new(self))
     }
 }
 

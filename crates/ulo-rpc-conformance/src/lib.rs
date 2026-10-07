@@ -28,6 +28,15 @@
 //! without `miss_signal`, and a call reaching a draining server on a link that declares
 //! `holds_unserved`, where an event emitted then has to reach the next instance. A scenario that cannot apply to a link is declared not applicable
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
+//!
+//! A host short of memory bounds how many scenarios hold an environment at once by setting
+//! [`PARALLEL_VAR`], `ULO_CONFORMANCE_PARALLEL`, to a positive integer: the bound is the smaller of
+//! it and the broker's own [`Broker::PARALLEL`], or it alone when the broker declares none. Unset
+//! or empty, it bounds nothing, and libtest's `--test-threads` still applies on top of either.
+//!
+//! ```text
+//! ULO_CONFORMANCE_PARALLEL=6 cargo test -p ulo-rpc-rabbitmq --features integration --test conformance
+//! ```
 
 use std::error::Error;
 use std::future::Future;
@@ -44,6 +53,11 @@ mod failures;
 pub mod relay;
 
 pub use failures::failures_dir;
+
+/// The environment variable through which a host bounds how many scenarios of one suite hold an
+/// environment at once. A value that is not a positive integer fails every scenario through
+/// [`startup_failed!`].
+pub const PARALLEL_VAR: &str = "ULO_CONFORMANCE_PARALLEL";
 
 /// `error` and every source under it, joined by `: `, for a failure message: a scenario that fails
 /// while its environment starts says what failed, the broker's container, the server's bind or the
@@ -80,14 +94,16 @@ pub trait Broker: Sized + Send + Sync + 'static {
 
     /// How many scenarios hold an environment at once; `None`, the default, leaves the scenarios
     /// to libtest's parallelism. An environment heavy enough that starting one per scenario at
-    /// once starves the host, such as a broker container per scenario, bounds it: the stamped
+    /// once starves any host, such as a broker container per scenario, bounds it: the stamped
     /// tests then wait for a slot before `start` and keep it until the scenario has returned and
-    /// dropped its environment.
+    /// dropped its environment. What one host's memory allows is not the broker's to declare;
+    /// that host sets [`PARALLEL_VAR`], and the smaller of the two applies.
     const PARALLEL: Option<NonZeroUsize> = None;
 
     /// Starts the environment for one scenario, so no state leaks between scenarios. Every
     /// scenario uses the same patterns, and on a broker the same default group and control lane,
-    /// and the stamped tests run in parallel, up to [`PARALLEL`](Self::PARALLEL) at once, so each
+    /// and the stamped tests run in parallel, up to the bound [`PARALLEL`](Self::PARALLEL) and
+    /// [`PARALLEL_VAR`] set, so each
     /// start answers a broker or a namespace no other scenario shares: a fresh container, or, on
     /// TCP and UDP, a server link on port 0, whose port the OS chooses at the server's bind and
     /// [`client_link`](Self::client_link) receives. A container reached at a port published on the host is started
@@ -252,6 +268,8 @@ pub mod __private {
 
     use tokio::sync::{Semaphore, SemaphorePermit};
 
+    use crate::PARALLEL_VAR;
+
     /// The slots one stamped suite's scenarios share. Each `#[tokio::test]` runs its own runtime;
     /// tokio's `Semaphore` needs none, so a permit released on one wakes a waiter on another.
     pub struct Slots(OnceLock<Semaphore>);
@@ -261,11 +279,57 @@ pub mod __private {
             Slots(OnceLock::new())
         }
 
-        /// A slot when `parallel` bounds the suite, held until the permit drops; `None` otherwise.
-        pub async fn hold(&'static self, parallel: Option<NonZeroUsize>) -> Option<SemaphorePermit<'static>> {
-            let parallel = parallel?;
+        /// A slot when the broker's `declared` bound or the host's [`PARALLEL_VAR`] bounds the
+        /// suite, the smaller when both do, held until the permit drops; `None` otherwise.
+        pub async fn hold(&'static self, declared: Option<NonZeroUsize>) -> Option<SemaphorePermit<'static>> {
+            let parallel = bound(declared, host_parallel())?;
             let slots = self.0.get_or_init(|| Semaphore::new(parallel.get()));
             Some(slots.acquire().await.expect("the suite's slots are never closed"))
+        }
+    }
+
+    fn bound(declared: Option<NonZeroUsize>, host: Option<NonZeroUsize>) -> Option<NonZeroUsize> {
+        match (declared, host) {
+            (Some(declared), Some(host)) => Some(declared.min(host)),
+            (declared, host) => declared.or(host),
+        }
+    }
+
+    /// [`PARALLEL_VAR`] as the host set it, read once per test binary: `None` unset or empty.
+    fn host_parallel() -> Option<NonZeroUsize> {
+        static HOST: OnceLock<Option<NonZeroUsize>> = OnceLock::new();
+        *HOST.get_or_init(|| match std::env::var(PARALLEL_VAR) {
+            Err(std::env::VarError::NotPresent) => None,
+            Ok(value) if value.trim().is_empty() => None,
+            Ok(value) => match value.trim().parse::<NonZeroUsize>() {
+                Ok(parallel) => Some(parallel),
+                Err(_) => startup_failed(format!("{PARALLEL_VAR} is `{value}`, not a positive integer")),
+            },
+            Err(std::env::VarError::NotUnicode(value)) => startup_failed(format!("{PARALLEL_VAR} is {value:?}, not a positive integer")),
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::num::NonZeroUsize;
+
+        use super::bound;
+
+        fn n(value: usize) -> Option<NonZeroUsize> {
+            NonZeroUsize::new(value)
+        }
+
+        #[test]
+        fn the_smaller_of_two_bounds_applies() {
+            assert_eq!(bound(n(4), n(6)), n(4), "a broker's bound below the host's");
+            assert_eq!(bound(n(6), n(4)), n(4), "a host's bound below the broker's");
+        }
+
+        #[test]
+        fn either_bound_alone_applies() {
+            assert_eq!(bound(n(4), None), n(4), "the broker's bound, the host setting none");
+            assert_eq!(bound(None, n(6)), n(6), "the host's bound, the broker declaring none");
+            assert_eq!(bound(None, None), None, "neither bound");
         }
     }
 }

@@ -157,12 +157,10 @@ async fn keyed_clients_of_one_service_each_reach_their_own_endpoint() {
 
 #[tokio::test]
 async fn connect_does_no_network_io_and_the_first_call_finds_the_endpoint_down() {
-    // A port that was free a moment ago and has no listener now.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .unwrap_or_else(|error| panic!("no free port: {error}"))
-        .port();
-    let app = client_app(vec![Import::Plain(format!("http://127.0.0.1:{port}"))]).await;
+    // Port 0 names no endpoint: nothing can listen on it, binding it choosing another port, so the
+    // TCP connect fails on every OS (refused on Linux, `EADDRNOTAVAIL` on macOS) and no process can
+    // take the port first.
+    let app = client_app(vec![Import::Plain("http://127.0.0.1:0".to_owned())]).await;
     let client = app.get::<KnownGrpc>().await.unwrap_or_else(|error| panic!("the client did not resolve: {error}"));
     assert_eq!(upper(&client, "ada").await.map_err(|status| status.code()), Err(Code::Unavailable));
     let _ = app.close(Signal::new("test")).await;

@@ -27,6 +27,10 @@
 //! since it is neither an answer nor a refusal, and so does a wait for a close or a frame that
 //! does not arrive in time. A scenario that cannot apply to a host is declared not applicable in
 //! [`http_conformance_suite!`] and reported as ignored; run on that host, it fails.
+//!
+//! A host short of memory bounds how many scenarios of one suite run at once by setting
+//! [`PARALLEL_VAR`], `ULO_CONFORMANCE_PARALLEL`, to a positive integer, as the RPC suite reads it.
+//! Unset or empty, it bounds nothing, and libtest's `--test-threads` still applies on top of it.
 
 use std::error::Error;
 use std::future::Future;
@@ -127,9 +131,53 @@ macro_rules! startup_failed {
     };
 }
 
+/// The environment variable through which a host bounds how many scenarios of one suite run at
+/// once; the RPC suite reads the same one. A value that is not a positive integer fails every
+/// scenario through [`startup_failed!`].
+pub const PARALLEL_VAR: &str = "ULO_CONFORMANCE_PARALLEL";
+
 #[doc(hidden)]
 pub mod __private {
+    use std::num::NonZeroUsize;
+    use std::sync::OnceLock;
+
+    use tokio::sync::{Semaphore, SemaphorePermit};
+
     pub use crate::failures::startup_failed;
+    use crate::PARALLEL_VAR;
+
+    /// The slots one stamped suite's scenarios share, both modes counted together. Each
+    /// `#[tokio::test]` runs its own runtime; tokio's `Semaphore` needs none, so a permit released
+    /// on one wakes a waiter on another.
+    pub struct Slots(OnceLock<Semaphore>);
+
+    impl Slots {
+        pub const fn new() -> Self {
+            Slots(OnceLock::new())
+        }
+
+        /// A slot when [`PARALLEL_VAR`] bounds the suite, held until the permit drops; `None`
+        /// otherwise.
+        pub async fn hold(&'static self) -> Option<SemaphorePermit<'static>> {
+            let parallel = host_parallel()?;
+            let slots = self.0.get_or_init(|| Semaphore::new(parallel.get()));
+            Some(slots.acquire().await.expect("the suite's slots are never closed"))
+        }
+    }
+
+    /// [`PARALLEL_VAR`] as the host set it, read once per test binary: `None` unset or empty.
+    fn host_parallel() -> Option<NonZeroUsize> {
+        static HOST: OnceLock<Option<NonZeroUsize>> = OnceLock::new();
+        *HOST.get_or_init(|| match std::env::var(PARALLEL_VAR) {
+            Err(std::env::VarError::NotPresent) => None,
+            Ok(value) if value.trim().is_empty() => None,
+            Ok(value) => match value.trim().parse::<NonZeroUsize>() {
+                Ok(parallel) => Some(parallel),
+                Err(_) => startup_failed(format!("{PARALLEL_VAR} is `{value}`, not a positive integer")),
+            },
+            Err(std::env::VarError::NotUnicode(value)) => startup_failed(format!("{PARALLEL_VAR} is {value:?}, not a positive integer")),
+        })
+    }
 }
 
 /// The application every scenario runs: its controller, error handler, upgrade handler and
@@ -226,12 +274,14 @@ macro_rules! http_conformance_suite {
         );
     };
     (@cases $host:ty; [$($skip:ident),*]; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {
+        static __ULO_HTTP_CONFORMANCE_SLOTS: $crate::__private::Slots = $crate::__private::Slots::new();
         mod nested {
             use super::*;
             // A declared name that is no scenario names no function here.
             $(const _: fn() = $skip;)*
             $(
                 __ulo_http_conformance_stamp!($name, async fn $name() {
+                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold().await;
                     $crate::cases::$module::$case::<$host>($crate::Mode::Nested).await;
                 });
             )*
@@ -240,6 +290,7 @@ macro_rules! http_conformance_suite {
             use super::*;
             $(
                 __ulo_http_conformance_stamp!($name, async fn $name() {
+                    let _slot = super::__ULO_HTTP_CONFORMANCE_SLOTS.hold().await;
                     $crate::cases::$module::$case::<$host>($crate::Mode::Fallback).await;
                 });
             )*

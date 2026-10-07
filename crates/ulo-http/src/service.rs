@@ -68,7 +68,9 @@ use crate::upgrade::UpgradeHandler;
 ///    `ulo_transport::Tracked` unless it already is, so `on_stream_end` learns how every stream
 ///    ended whoever built the response, and the body wrapped so that a drop before its end fires
 ///    `CancelReason::Disconnected`. The request counts against the in-flight bound,
-///    and its execution stays open, until the backend drops that body.
+///    and its execution stays open, until the backend drops that body. A stream the backend never
+///    writes, on a `HEAD` answer or a 1xx, 204 or 304, reports `Completed` instead: such a response
+///    owes the client no body. A status that forbids a body carrying a stream is logged at `warn`.
 ///
 /// A panic while the backend polls the response body ends the body with an error frame, reports
 /// the stream `CutOff` and is logged as `PanicRecovered` with stage `Handler`, so it never
@@ -175,12 +177,17 @@ impl ServiceInner {
         let status = response.status();
         call_span.record(span::HTTP_RESPONSE_STATUS_CODE, status.as_u16());
         // A body the backend never writes is dropped unread, which is not the peer leaving.
-        let unwritten = method == Method::HEAD
-            || status.is_informational()
-            || status == StatusCode::NO_CONTENT
-            || status == StatusCode::NOT_MODIFIED;
+        let unwritten = method == Method::HEAD || forbids_body(status);
         let app = self.app.clone();
-        response.map(|body| HttpBody::new(ExecBody::new(body.tracked(handle.clone()), handle, app, permit, unwritten)))
+        response.map(|body| {
+            let body = if unwritten {
+                call_span.in_scope(|| owes_nothing(&body, status, &handle));
+                body
+            } else {
+                body.tracked(handle.clone())
+            };
+            HttpBody::new(ExecBody::new(body, handle, app, permit, unwritten))
+        })
     }
 
     /// The unscoped sub-step, routing after it.
@@ -266,8 +273,12 @@ impl ServiceInner {
             None => self.scoped(handle.clone(), req, target, params).await,
             Some(after) => self.timed(handle.clone(), req, target, params, after).await,
         };
-        // A stream dropped here is never written, and reports its end however it was built.
-        if head_from_get { without_body(response.map(|body| body.tracked(handle))) } else { response }
+        if head_from_get {
+            owes_nothing(response.body(), response.status(), &handle);
+            without_body(response)
+        } else {
+            response
+        }
     }
 
     /// The scoped sub-step and `dispatch`, raced against the route's timeout.
@@ -460,15 +471,33 @@ fn options(allow: HeaderValue) -> Response {
     response
 }
 
+/// Whether `status` forbids content: 1xx, 204 and 304 (RFC 9110 §6.4.1).
+fn forbids_body(status: StatusCode) -> bool {
+    status.is_informational() || status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED
+}
+
+/// Reports `Completed` for a stream the backend never writes, on a `HEAD` answer or a status that
+/// forbids content: the response owes the client no body, so its head is all it delivers, and a
+/// `CutOff` would read as a client that missed part of it. A status that forbids content carrying
+/// a stream is the handler's mistake and is logged at `warn`; a `HEAD` answer carrying the `GET`
+/// answer's stream is not one. A body of known length reports nothing, as it does when written.
+fn owes_nothing(body: &HttpBody, status: StatusCode, exec: &ExecutionRef) {
+    if !body.streams() {
+        return;
+    }
+    if forbids_body(status) {
+        tracing::warn!(status = status.as_u16(), "a response carried a streaming body its status forbids; the body was discarded");
+    }
+    exec.report_stream_end(StreamOutcome::Completed);
+}
+
 /// `response` without its body: RFC 9110 has a `HEAD` answer carry the `GET` answer's headers and
 /// no content, a known length kept as `Content-Length`. A 1xx or 204 answer must not carry
 /// `Content-Length` (RFC 9110 §8.6), and a 304 may carry only the length a 200 would have had,
 /// which the dropped body does not establish, so none of those gains one.
 fn without_body(response: Response) -> Response {
     let (mut parts, body) = response.into_parts();
-    let carries_length =
-        !(parts.status.is_informational() || parts.status == StatusCode::NO_CONTENT || parts.status == StatusCode::NOT_MODIFIED);
-    if carries_length && !parts.headers.contains_key(CONTENT_LENGTH) {
+    if !forbids_body(parts.status) && !parts.headers.contains_key(CONTENT_LENGTH) {
         if let Some(length) = body.size_hint().exact() {
             parts.headers.insert(CONTENT_LENGTH, HeaderValue::from(length));
         }
@@ -547,11 +576,16 @@ const FRAMES_PER_POLL: usize = 32;
 /// produced at once. Any other body is one the server waits on, buffered only within
 /// [`BUFFER_CAP`], the bytes of the first poll counted.
 async fn completed(response: Response, exec: &ExecutionRef, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, Incomplete> {
-    let (parts, mut body) = response.into_parts();
+    let (parts, body) = response.into_parts();
     if body.is_end_stream() {
         return Ok(Response::from_parts(parts, body));
     }
     let hint = body.size_hint();
+    // Wrapped here rather than by the service: a body this path does not write, still open at the
+    // grace's end, over the cap or failing, is dropped before the service sees it, and reports
+    // `CutOff` through this wrap. A body written as the buffered copy reports through the copy,
+    // which reports first.
+    let mut body = body.tracked(exec.clone());
     let mut data = BytesMut::new();
     let mut trailers = None;
     let mut waited = false;
@@ -594,8 +628,8 @@ async fn completed(response: Response, exec: &ExecutionRef, mut grace: Option<&m
         Poll::Pending
     })
     .await?;
-    // A body of unknown length is a stream, wrapped in `Tracked` as a reply: kept until the
-    // buffered copy is written, so its end is reported then rather than when it was read.
+    // A body of unknown length is a stream: kept until the buffered copy is written, so its end is
+    // reported then rather than when it was read.
     let read = hint.exact().is_none().then(|| Read { body, exec: exec.clone() });
     let data = Some(data.freeze()).filter(|data| !data.is_empty());
     Ok(Response::from_parts(parts, HttpBody::new(Buffered { data, trailers, read })))

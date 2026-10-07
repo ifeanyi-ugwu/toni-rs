@@ -1,7 +1,8 @@
 //! The body an error handler answers a timed-out request with, as the backend sees it through
 //! `AppService::call`: buffered whatever its size when it ends on the first poll, up to 1 MiB and
 //! no further when the server waits on it, and, when it is a stream, its end reported to
-//! `on_stream_end` when the backend has written the buffered copy, not when the service read it.
+//! `on_stream_end` when the backend has written the buffered copy, not when the service read it,
+//! and `CutOff(Deadline)` when the body is dropped for the canonical 504.
 //!
 //! The backend here is the test's `Keeper` (`common`).
 
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use http_body::Body as _;
-use ulo::{App, AppHandle, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, StreamOutcome, injectable, routes};
+use ulo::{App, AppHandle, BoxError, Bound, CancelReason, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, StreamOutcome, injectable, routes};
 use ulo_http::{AppService, Bytes, ConnInfo, Http, HttpBody, HttpCx, MB, Request, Response, StatusCode, Timeout};
 use ulo_transport::{CallError, ErrorKind, IntoReply};
 
@@ -64,14 +65,18 @@ fn chunks(len: usize) -> impl Iterator<Item = Result<Bytes, Infallible>> + Send 
 }
 
 /// Answers a `Timeout` with 503 and a stream of `len` bytes that is pending once before its first
-/// chunk, so the server waits on it; every chunk is ready after that.
+/// chunk, so the server waits on it; every chunk is ready after that. Its end is recorded in
+/// [`Ended`].
 struct WaitedOnTimeout(usize);
 
 impl ErrorHandler<Http> for WaitedOnTimeout {
-    async fn handle(&self, err: BoxError, _cx: &HttpCx) -> Result<Response, BoxError> {
+    async fn handle(&self, err: BoxError, cx: &HttpCx) -> Result<Response, BoxError> {
         if !timed_out(&err) {
             return Err(err);
         }
+        let ended = cx.exec().get::<Ended>().await?;
+        let ended = Ended::clone(&ended);
+        cx.exec().on_stream_end(move |outcome| *ended.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome));
         let pending_once = stream::once(tokio::task::yield_now()).filter_map(|()| async { None });
         let mut response = Response::new(HttpBody::stream(pending_once.chain(stream::iter(chunks(self.0)))));
         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
@@ -278,6 +283,20 @@ async fn a_waited_on_body_one_byte_over_the_cap_answers_504() {
 
     let (status, _) = written(running.call("/over-cap").await).await;
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_body_dropped_for_the_504_reports_its_stream_cut_off_by_the_deadline() {
+    let running = Running::start().await;
+
+    let (status, _) = written(running.call("/over-cap").await).await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        running.ended.get(),
+        Some(StreamOutcome::CutOff(Some(CancelReason::Deadline))),
+        "the error handler's stream dropped over the cap"
+    );
     running.stop().await;
 }
 

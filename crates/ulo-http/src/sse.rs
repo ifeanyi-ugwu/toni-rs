@@ -12,7 +12,7 @@ use futures_core::Stream;
 use http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use serde::Serialize;
 use ulo::{BoxError, BoxFuture, CancelReason, LateOutcome, MountedHandler, StreamOutcome, Timer};
-use ulo_transport::{CallError, IntoReply, IntoReplyError, Tracked};
+use ulo_transport::{CallError, IntoReply, IntoReplyError};
 
 use crate::body::HttpBody;
 use crate::cx::HttpCx;
@@ -26,8 +26,8 @@ use crate::transport::Http;
 /// for the first event. An `Err` item, the first included, takes the late path
 /// (`ulo::dispatch_late`): the error handlers may reshape it or end the stream with
 /// `Err(EndStream)`, and it is written as an `error` event, since a status can no longer change.
-/// The stream is wrapped in `Tracked`, so an `on_stream_end` callback learns whether it completed
-/// or was cut off.
+/// Like every streaming body, it is wrapped in `Tracked` by the service, so an `on_stream_end`
+/// callback learns whether it completed or was cut off.
 ///
 /// ```ignore
 /// Sse::new(self.feed.since(resume).take_until(exec.draining()))
@@ -243,7 +243,7 @@ where
             cx: cx.clone(),
             state: State::Streaming,
         };
-        let mut response = Response::new(HttpBody::stream(Tracked::new(body, cx.exec().clone())).marked());
+        let mut response = Response::new(HttpBody::stream(body));
         let headers = response.headers_mut();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -351,6 +351,8 @@ where
     /// The `error` event for a late error, `Timeout` when the execution's deadline cancelled it.
     fn late(&self, error: CallError) -> Bytes {
         let error = if self.cx.exec().cancel_reason() == Some(CancelReason::Deadline) { render::timed_out() } else { error };
+        // Reported here, ahead of the service's `Tracked`: the stream returns `None` after this
+        // event, which `Tracked` would report `Completed`, and the first report stays.
         self.cx.exec().report_stream_end(StreamOutcome::CutOff(None));
         Bytes::from(render::late_event(&error).encode())
     }
