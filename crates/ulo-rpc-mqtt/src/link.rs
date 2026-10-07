@@ -696,7 +696,7 @@ impl ClientSide {
     }
 }
 
-/// Polls the client connection until the link closes, which aborts it.
+/// Polls the client connection until the link closes, which aborts it, or the connection is lost.
 async fn client_loop(
     side: Arc<ClientSide>,
     mut eventloop: EventLoop,
@@ -772,8 +772,11 @@ async fn client_loop(
                     let _ = ready.send(Err(format!("the MQTT link could not connect: {error}").into()));
                     return;
                 }
-                tracing::warn!(%error, "the MQTT link lost its connection; reconnecting");
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // What the broker routed to the reply topic while the connection was down is gone,
+                // so the reply lane ends here: `RpcClient` fails the calls waiting on it
+                // `Unavailable` and connects again for the next.
+                tracing::warn!(%error, "the MQTT link lost its connection; the calls waiting on it fail");
+                return;
             }
         }
     }

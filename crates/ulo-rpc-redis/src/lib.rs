@@ -1,7 +1,8 @@
 //! The Redis link for `ulo-rpc` (transports DESIGN §5.3): Pub/Sub on each pattern, the whole
 //! frame as the message, replies on a per-client reply channel. At-most-once; ordered per
 //! channel; `FanOut`, documented, the client dropping a second reply for an `id` it already
-//! answered; a `PUBLISH` receiver count of zero maps to `Unavailable`; `rediss://` selects TLS
+//! answered; a `PUBLISH` receiver count of zero maps to `Unavailable`, and so does a call waiting
+//! when the client's Pub/Sub connection drops; `rediss://` selects TLS
 //! under the crate's `tls` feature.
 //!
 //! ```ignore

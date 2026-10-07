@@ -24,8 +24,9 @@
 //! address.
 //!
 //! No scenario passes on silence. The client's own `Timeout` passes only where it is the declared
-//! answer: a scenario about the client's timeout or `deadline-ms`, and a call nothing takes on a
-//! link without `miss_signal`. A scenario that cannot apply to a link is declared not applicable
+//! answer: a scenario about the client's timeout or `deadline-ms`, a call nothing takes on a link
+//! without `miss_signal`, and a call reaching a draining server on a link that declares
+//! `holds_unserved`, where an event emitted then has to reach the next instance. A scenario that cannot apply to a link is declared not applicable
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 
 use std::future::Future;
@@ -34,6 +35,7 @@ use std::time::Duration;
 use ulo_rpc::Link;
 
 pub mod cases;
+pub mod relay;
 
 /// One link's environment for the suite: a broker, or nothing for TCP and UDP.
 pub trait Broker: Sized + Send + Sync + 'static {

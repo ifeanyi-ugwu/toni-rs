@@ -20,4 +20,4 @@ ulo-transport = { path = "../ulo-transport" }
 bytes = { workspace = true, features = ["serde"] }
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "sync", "net", "io-util"] }

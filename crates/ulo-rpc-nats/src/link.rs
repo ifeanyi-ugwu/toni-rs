@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use async_nats::{Client, ConnectOptions, HeaderMap, Message, ServerAddr, StatusCode, Subscriber};
+use async_nats::{Client, ConnectOptions, Event, HeaderMap, Message, ServerAddr, StatusCode, Subscriber};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -148,7 +148,17 @@ impl Link for Nats {
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
-        let client = open(&self.url).await?;
+        // async-nats reconnects by itself and resubscribes the inbox, but what was published to
+        // the inbox while the connection was down is gone, so a disconnect ends the reply lane:
+        // `RpcClient` fails the calls waiting on it `Unavailable` and connects again for the next.
+        let (lost, disconnected) = watch::channel(false);
+        let options = ConnectOptions::new().event_callback(move |event| {
+            if matches!(event, Event::Disconnected) {
+                lost.send_replace(true);
+            }
+            async {}
+        });
+        let client = open_with(&self.url, options).await?;
         self.max_payload.store(client.server_info().max_payload as u64, Ordering::Relaxed);
         let prefix = client.new_inbox();
         let replies = client.subscribe(format!("{prefix}.*")).await?;
@@ -165,7 +175,7 @@ impl Link for Nats {
         });
         lock(&self.state).client = Some(client);
         let (frames, replies_out) = mpsc::unbounded_channel();
-        tokio::spawn(route_replies(Arc::clone(&side), replies, frames));
+        tokio::spawn(route_replies(Arc::clone(&side), replies, frames, disconnected));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
@@ -498,8 +508,22 @@ impl ClientSide {
     }
 }
 
-async fn route_replies(side: Arc<ClientSide>, mut replies: Subscriber, frames: mpsc::UnboundedSender<Frame>) {
-    while let Some(message) = replies.next().await {
+/// Routes the inbox's messages until the connection is lost or the inbox subscription ends;
+/// either ends the reply lane.
+async fn route_replies(
+    side: Arc<ClientSide>,
+    mut replies: Subscriber,
+    frames: mpsc::UnboundedSender<Frame>,
+    mut disconnected: watch::Receiver<bool>,
+) {
+    loop {
+        let message = tokio::select! {
+            _ = disconnected.wait_for(|lost| *lost) => break,
+            message = replies.next() => match message {
+                Some(message) => message,
+                None => break,
+            },
+        };
         let Some(id) = side.id_of(message.subject.as_str()) else { continue };
         // No-responders arrives on the reply subject after the publish returned, so the miss is
         // reported as the reply rather than as the `send` failure.
@@ -645,8 +669,12 @@ fn servers(url: &str) -> Result<Vec<ServerAddr>, BoxError> {
 }
 
 async fn open(url: &str) -> Result<Client, BoxError> {
+    open_with(url, ConnectOptions::new()).await
+}
+
+async fn open_with(url: &str, options: ConnectOptions) -> Result<Client, BoxError> {
     let servers = servers(url)?;
-    Ok(ConnectOptions::new().connect(servers).await?)
+    Ok(options.connect(servers).await?)
 }
 
 /// A queue group name from the root module's path: NATS refuses whitespace and the wildcards in

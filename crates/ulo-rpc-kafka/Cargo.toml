@@ -13,6 +13,9 @@ categories = ["network-programming"]
 [features]
 # `security.protocol=SSL`, selected by an `ssl://` broker entry, through librdkafka's OpenSSL.
 tls = ["rdkafka/ssl"]
+# Builds `tests/conformance.rs`, which starts a Kafka broker in a container per scenario and so
+# needs a running Docker daemon.
+integration = []
 
 [dependencies]
 ulo = { path = "../ulo" }
@@ -24,3 +27,8 @@ rdkafka.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }

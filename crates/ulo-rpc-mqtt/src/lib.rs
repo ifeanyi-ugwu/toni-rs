@@ -4,7 +4,9 @@
 //! CONNACK; `Competing` through `$share/<group>/`, the group the application's root module's full
 //! type path unless `.group(..)` names one, and a CONNACK announcing no shared subscriptions fails
 //! `bind`; PUBACK or PUBREC 0x10 maps to `Unavailable` at QoS 1 and 2, and a miss at QoS 0 is the
-//! client's `Timeout`; the drain unsubscribes; `mqtts://` selects TLS.
+//! client's `Timeout`; a call waiting when the client's connection drops is `Unavailable`, since a
+//! clean session loses what reached the reply topic meanwhile; the drain unsubscribes; `mqtts://`
+//! selects TLS.
 //!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_mqtt::Mqtt::url("mqtt://broker:1883")))

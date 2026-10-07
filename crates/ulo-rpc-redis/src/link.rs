@@ -103,7 +103,7 @@ impl Link for Redis {
             base: uuid::Uuid::new_v4().as_u64_pair().0,
         });
         let (frames, replies) = mpsc::unbounded_channel();
-        let task = tokio::spawn(client_lane(Arc::clone(&side), client, sink, stream, frames));
+        let task = tokio::spawn(client_lane(Arc::clone(&side), sink, stream, frames));
         lock(&self.state).client = Some(task.abort_handle());
 
         Ok(Outbound {
@@ -398,44 +398,27 @@ impl ClientSide {
     }
 }
 
-/// Reads the client's reply channel until the link closes, which aborts it, reconnecting when the
-/// Pub/Sub connection drops.
-async fn client_lane(
-    side: Arc<ClientSide>,
-    client: redis::Client,
-    sink: PubSubSink,
-    mut stream: PubSubStream,
-    frames: mpsc::UnboundedSender<Frame>,
-) {
+/// Reads the client's reply channel until the link closes, which aborts it, or the Pub/Sub
+/// connection drops. A drop ends the reply lane: what was published to the channel while it was
+/// down is gone, so `RpcClient` fails the calls waiting on it `Unavailable` and connects again for
+/// the next.
+async fn client_lane(side: Arc<ClientSide>, sink: PubSubSink, mut stream: PubSubStream, frames: mpsc::UnboundedSender<Frame>) {
     // Dropping the sink ends the subscription, so it lives as long as the stream it pairs with.
-    let mut _sink = sink;
-    loop {
-        while let Some(message) = stream.next().await {
-            let frame = match side.codec.decode_frame(message.get_payload_bytes()) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    tracing::warn!(%error, "the Redis link dropped a reply that does not decode");
-                    continue;
-                }
-            };
-            let Some(wire) = frame.id() else { continue };
-            if frames.send(with_id(frame, wire.wrapping_sub(side.base))).is_err() {
-                return;
+    let _sink = sink;
+    while let Some(message) = stream.next().await {
+        let frame = match side.codec.decode_frame(message.get_payload_bytes()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "the Redis link dropped a reply that does not decode");
+                continue;
             }
-        }
-        tracing::warn!("the Redis link lost its reply subscription; reconnecting");
-        loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            match subscribe(&client, std::slice::from_ref(&side.channel)).await {
-                Ok((sink, next)) => {
-                    _sink = sink;
-                    stream = next;
-                    break;
-                }
-                Err(error) => tracing::debug!(%error, "the Redis link could not reconnect yet"),
-            }
+        };
+        let Some(wire) = frame.id() else { continue };
+        if frames.send(with_id(frame, wire.wrapping_sub(side.base))).is_err() {
+            return;
         }
     }
+    tracing::warn!("the Redis link lost its reply subscription; the calls waiting on it fail");
 }
 
 async fn publish(publisher: &mut ConnectionManager, channel: &str, bytes: &[u8]) -> Result<usize, BoxError> {

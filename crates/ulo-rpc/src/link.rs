@@ -236,6 +236,11 @@ pub struct Capabilities {
     /// A request to a pattern nothing subscribes to is reported to the caller, which then answers
     /// `Unavailable` with `reason: "no_destination"`; without it the caller's own `Timeout`.
     pub miss_signal: bool,
+    /// The broker keeps a request for a pattern a server has subscribed while no instance consumes
+    /// it, and hands it to the next instance: an AMQP queue, a Kafka topic. A caller reaching a
+    /// draining or stopped server then sees its own `Timeout`, and `miss_signal` covers only a
+    /// pattern never subscribed.
+    pub holds_unserved: bool,
 }
 
 /// Every call shape, for a link that carries them all.
@@ -246,7 +251,7 @@ pub const UNARY_ONLY: &[Shape] = &[Shape::Unary];
 
 impl Capabilities {
     /// A link delivering as `delivery`, carrying every shape, JSON, unordered, with no frame limit,
-    /// no native backpressure and no miss signal.
+    /// no native backpressure, no miss signal and nothing held for a server that has gone.
     pub const fn new(delivery: DeliveryMode) -> Self {
         Capabilities {
             binary: false,
@@ -256,6 +261,7 @@ impl Capabilities {
             native_backpressure: false,
             delivery,
             miss_signal: false,
+            holds_unserved: false,
         }
     }
 
@@ -281,6 +287,10 @@ impl Capabilities {
 
     pub const fn miss_signal(self, miss_signal: bool) -> Self {
         Capabilities { miss_signal, ..self }
+    }
+
+    pub const fn holds_unserved(self, holds_unserved: bool) -> Self {
+        Capabilities { holds_unserved, ..self }
     }
 }
 

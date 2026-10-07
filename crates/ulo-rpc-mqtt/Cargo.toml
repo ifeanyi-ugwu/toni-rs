@@ -22,3 +22,13 @@ rumqttc.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+[features]
+# Builds `tests/conformance.rs`, which starts an MQTT broker in a container per scenario and so needs
+# a running Docker daemon.
+integration = []
+
+[dev-dependencies]
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }

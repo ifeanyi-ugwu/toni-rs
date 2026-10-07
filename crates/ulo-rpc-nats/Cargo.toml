@@ -22,3 +22,13 @@ futures-util.workspace = true
 async-nats = { workspace = true, features = ["ring"] }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tracing.workspace = true
+
+[features]
+# Builds `tests/conformance.rs`, which starts a NATS server in a container per scenario and so needs
+# a running Docker daemon.
+integration = []
+
+[dev-dependencies]
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }

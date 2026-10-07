@@ -13,6 +13,9 @@ categories = ["network-programming"]
 [features]
 # `rediss://`, through rustls with the webpki roots.
 tls = ["redis/tokio-rustls-comp", "redis/tls-rustls-webpki-roots"]
+# Builds `tests/conformance.rs`, which starts a Redis server in a container per scenario and so
+# needs a running Docker daemon.
+integration = []
 
 [dependencies]
 ulo = { path = "../ulo" }
@@ -23,3 +26,8 @@ redis = { workspace = true, features = ["connection-manager"] }
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }

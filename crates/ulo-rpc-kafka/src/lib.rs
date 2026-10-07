@@ -5,8 +5,10 @@
 //! refusing with the same error; `Competing` through the consumer group, the application's root
 //! module's full type path unless `.group(..)` names one; the handler topics created at `bind`, so
 //! a stopped server's topic exists and a miss is the client's `Timeout` under auto-create; the
-//! drain pauses and commits; an `ssl://` broker entry selects `security.protocol=SSL` under the
-//! `tls` feature.
+//! group's offsets committed at the topics' end at `bind` where it has none, so a request produced
+//! while no instance consumes, or while a rebalance moves its partition, waits for the next owner
+//! (`holds_unserved`); the drain pauses and commits; an `ssl://` broker entry selects
+//! `security.protocol=SSL` under the `tls` feature.
 //!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_kafka::Kafka::brokers("kafka:9092")))

@@ -84,6 +84,7 @@ impl Link for RabbitMq {
             .ordering(Order::PerQueue)
             .native_backpressure(true)
             .miss_signal(true)
+            .holds_unserved(true)
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
@@ -133,7 +134,10 @@ impl Link for RabbitMq {
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
-        let connection = Connection::connect_uri(uri(&self.url)?, ConnectionProperties::default().enable_auto_recover()).await?;
+        // Not recovered by lapin: a direct reply-to address lives as long as its channel, so the
+        // replies a recovered connection's new channel would wait for are gone. A lost connection
+        // ends the reply lane instead, and `RpcClient` connects again for the next call.
+        let connection = Connection::connect_uri(uri(&self.url)?, ConnectionProperties::default()).await?;
         let channel = connection.create_channel().await?;
         // Confirm mode is what makes a `mandatory` publish's `basic.return` reach the publisher:
         // lapin resolves the publish's confirmation with the returned message.
@@ -563,13 +567,15 @@ impl ClientSide {
     }
 }
 
+/// Routes the direct reply-to deliveries until the consumer ends or fails; either ends the reply
+/// lane, so `RpcClient` fails the calls waiting on it `Unavailable`.
 async fn route_replies(side: Arc<ClientSide>, mut replies: Consumer, frames: mpsc::UnboundedSender<Frame>) {
     while let Some(delivery) = replies.next().await {
         let delivery = match delivery {
             Ok(delivery) => delivery,
             Err(error) => {
-                tracing::warn!(%error, "the RabbitMQ link's reply consumer is recovering");
-                continue;
+                tracing::warn!(%error, "the RabbitMQ link lost its reply consumer; the calls waiting on it fail");
+                break;
             }
         };
         let Some(call) = delivery.properties.correlation_id().as_ref().and_then(|id| side.call_of(id.as_str())) else { continue };

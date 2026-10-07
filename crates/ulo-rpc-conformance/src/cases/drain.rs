@@ -7,9 +7,14 @@ use ulo::Signal;
 use ulo_transport::ErrorKind;
 
 use crate::Broker;
-use crate::cases::app::{ADD, Add, Fixture, HOLD, Sum, UNTIL_DRAIN, eventually, miss_wait, streams, within};
+use crate::cases::app::{ADD, Add, EVENT, Fixture, HOLD, Sum, UNTIL_DRAIN, eventually, miss_wait, server, streams, within};
 
-/// The drain: a new call refused `unavailable`, an in-flight call finishing, a stream ending on `draining()`.
+/// The event emitted during the drain on a link that declares `holds_unserved`.
+const HELD_EVENT: u32 = 11;
+
+/// The drain: a new call refused `unavailable`, an in-flight call finishing, a stream ending on
+/// `draining()`. A link declaring `holds_unserved` answers the new call with the caller's own
+/// `Timeout`, and an event emitted during the drain reaches the next instance.
 pub async fn drain<B: Broker>() {
     let fixture = Fixture::<B>::start().await;
     let capabilities = fixture.capabilities();
@@ -39,9 +44,13 @@ pub async fn drain<B: Broker>() {
     match refused {
         Err(error) if error.kind() == ErrorKind::Unavailable => {}
         // A link without a miss signal declares the caller's own timeout as its answer to a call
-        // nothing takes, as in the unhandled-pattern scenario.
-        Err(error) if error.kind() == ErrorKind::Timeout && !capabilities.miss_signal => {}
+        // nothing takes, as in the unhandled-pattern scenario; a link whose broker holds the call
+        // for the next instance declares it too, and the held event below shows the hold.
+        Err(error) if error.kind() == ErrorKind::Timeout && (!capabilities.miss_signal || capabilities.holds_unserved) => {}
         other => panic!("a call arriving during the drain is refused `Unavailable`, got: {other:?}"),
+    }
+    if capabilities.holds_unserved {
+        fixture.rpc().emit(EVENT, &HELD_EVENT).await.expect("an event during the drain is published");
     }
 
     let held = within(Duration::from_secs(30), "the in-flight call", held).await.expect("the held call's task completes");
@@ -51,5 +60,14 @@ pub async fn drain<B: Broker>() {
         assert!(rest.iter().all(Result::is_ok), "the stream ended on an error rather than cleanly: {rest:?}");
     }
     let _ = closing.await;
+    if capabilities.holds_unserved {
+        let budget = fixture.broker.budget();
+        let next = server(&fixture.broker).await;
+        let probe = next.probe.clone();
+        let held = eventually(budget.boot + budget.settle, || probe.events() > 0).await;
+        next.stop().await;
+        assert!(held, "the event emitted during the drain did not reach the next instance, though the link declares `holds_unserved`");
+        assert_eq!(probe.last_event(), Some(HELD_EVENT));
+    }
     fixture.stop().await;
 }

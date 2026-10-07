@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{Header, Headers, Message, OwnedHeaders, OwnedMessage};
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -128,6 +128,7 @@ impl Link for Kafka {
             .binary(self.codec.binary())
             .ordering(Order::PerPartition)
             .native_backpressure(true)
+            .holds_unserved(true)
             .max_frame(Some(MAX_MESSAGE))
     }
 
@@ -162,6 +163,7 @@ impl Link for Kafka {
         let topics: Vec<String> = patterns.iter().map(|pattern| pattern.as_str().to_owned()).collect();
         create_topics(&base, &topics, self.partitions, self.replication).await?;
         create_topics(&base, &[CONTROL.to_owned()], 1, self.replication).await?;
+        anchor(&base, &group, &topics).await?;
 
         let mut config = base.clone();
         config
@@ -338,6 +340,44 @@ async fn create_topics(base: &ClientConfig, topics: &[String], partitions: i32, 
         }
     }
     Ok(())
+}
+
+/// Commits the end offset of each of `topics`' partitions on which `group` has none committed, so
+/// a partition the group has never consumed starts where the group first bound. Left at
+/// `auto.offset.reset`, such a partition would start at its end each time it is assigned, and a
+/// record produced while no instance consumed it, or while a rebalance moved it, would be skipped.
+/// Kafka accepts a commit from outside a group only while the group is empty, so an instance
+/// joining a running group leaves the offsets to the instances already in it.
+async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(), BoxError> {
+    let mut config = base.clone();
+    config.set("group.id", group).set("enable.auto.commit", "false");
+    let consumer: BaseConsumer = config.create()?;
+    let topics = topics.to_vec();
+    let group = group.to_owned();
+    // Every call below blocks the calling thread.
+    tokio::task::spawn_blocking(move || -> Result<(), BoxError> {
+        let timeout = Timeout::After(Duration::from_secs(10));
+        let mut every = TopicPartitionList::new();
+        for topic in &topics {
+            let metadata = consumer.fetch_metadata(Some(topic), timeout)?;
+            for partition in metadata.topics().iter().filter(|found| found.name() == topic).flat_map(|found| found.partitions()) {
+                every.add_partition(topic, partition.id());
+            }
+        }
+        let committed = consumer.committed_offsets(every, timeout)?;
+        let mut start = TopicPartitionList::new();
+        for unset in committed.elements().into_iter().filter(|element| element.offset() == Offset::Invalid) {
+            let (_, end) = consumer.fetch_watermarks(unset.topic(), unset.partition(), timeout)?;
+            start.add_partition_offset(unset.topic(), unset.partition(), Offset::Offset(end))?;
+        }
+        if start.count() > 0
+            && let Err(error) = consumer.commit(&start, CommitMode::Sync)
+        {
+            tracing::debug!(%error, group, "the Kafka link left the starting offsets to the group's running instances");
+        }
+        Ok(())
+    })
+    .await?
 }
 
 fn producer(base: &ClientConfig) -> Result<FutureProducer, BoxError> {
