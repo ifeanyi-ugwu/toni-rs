@@ -1138,7 +1138,7 @@ Six of the seven are accepted. On S1 there's a third option that's better than b
 ## Twenty-fifth response: the conformance answers' second build
 
 Received 2026-10-07, answering `divergences/race2b-tests7.md` (S1–S6 and its "Not covered" list).
-Sign-off pending. The generic scenario it asks for was built before this response arrived, as
+The user signed it off the same day. The generic scenario it asks for was built before this response arrived, as
 `client_close` in `divergences/race2b-tests8.md`.
 
 All six are accepted, with one small rename on S1. One item from "Not covered" should go into the next batch.

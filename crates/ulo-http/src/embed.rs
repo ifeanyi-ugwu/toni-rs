@@ -29,7 +29,7 @@
 //! are `close`'s business, since an embedding cannot cut them. `Embedded::close` waits for the
 //! host's future to end, bounded by the core's close bound. A host future that ends before the shutdown began is an
 //! error, and the app shuts down naming the transport. A host that keeps its listener until its
-//! connections end registers it with [`Handle::listener`], and its adapter's `run` stops the host
+//! connections end registers it with [`Handle::register_listener`], and its adapter's `run` stops the host
 //! once [`Handle::listeners_closed`] resolves.
 
 use std::borrow::Cow;
@@ -727,11 +727,11 @@ struct Shared {
     prefix: OnceLock<String>,
     /// A request outside the prefix is logged once, not per request.
     outside_warned: AtomicBool,
-    /// The listeners registered through [`Handle::listener`].
+    /// The listeners registered through [`Handle::register_listener`].
     listeners: Mutex<Listeners>,
 }
 
-/// What [`Handle::listener`] registered, and who waits for those still open.
+/// What [`Handle::register_listener`] registered, and who waits for those still open.
 #[derive(Default)]
 struct Listeners {
     registered: usize,
@@ -881,14 +881,14 @@ impl<A: Embed> Handle<A> {
     /// [`stopping`](Self::stopping) resolves, for a host that keeps its listener until its
     /// connections end. Dropping the returned [`HostListener`] reports the listener closed, so the
     /// adapter drops it with the listener.
-    pub fn listener(&self) -> HostListener {
+    pub fn register_listener(&self) -> HostListener {
         let mut listeners = self.shared.listeners();
         listeners.registered += 1;
         listeners.open += 1;
         HostListener { shared: Arc::clone(&self.shared) }
     }
 
-    /// Resolves once every listener registered through [`listener`](Self::listener) has closed;
+    /// Resolves once every listener registered through [`register_listener`](Self::register_listener) has closed;
     /// `None` when none was ever registered on this handle. An adapter's `run` awaits it before
     /// telling the host to stop, so the stop cannot race the listener's close.
     pub fn listeners_closed(&self) -> Option<ListenersClosed> {
@@ -897,7 +897,7 @@ impl<A: Embed> Handle<A> {
     }
 }
 
-/// A listener registered through [`Handle::listener`]; reports it closed when dropped.
+/// A listener registered through [`Handle::register_listener`]; reports it closed when dropped.
 pub struct HostListener {
     shared: Arc<Shared>,
 }

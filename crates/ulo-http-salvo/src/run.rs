@@ -80,7 +80,7 @@ impl<A: Acceptor> Closing<A> {
     pub fn new(handle: &Handle, acceptor: A) -> Self {
         Closing {
             holdings: acceptor.holdings().to_vec(),
-            inner: Some((acceptor, handle.listener())),
+            inner: Some((acceptor, handle.register_listener())),
             stopping: handle.stopping(),
         }
     }
