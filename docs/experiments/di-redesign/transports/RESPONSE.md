@@ -1315,3 +1315,29 @@ How the rest of the transports fit:
 One detail matters for correctness: an endpoint today is a plain value you can clone and compare, but a socket can only be owned once. So the listener variant should be take-once, exactly like an inherited socket is already taken from the activation. The first bind adopts it, a second one is refused with a clear Configure error, and adoption applies the same treatment inheritance does: non-blocking mode and FD_CLOEXEC, so a child process can't leak it.
 
 So "adopt a resource someone else made" becomes one rule across the design: listeners and datagram sockets through Endpoint, broker connections through each link's own constructor, and whole servers through embedding.
+
+## Thirty-first response: the service's stream wrap and the port-0 suites
+
+Received 2026-10-07, answering `divergences/race2b-tests13.md` (S1–S7), the question of a stream on a
+bodiless answer, and the remaining refused-endpoint test. Sign-off pending.
+
+Five of the seven decisions are accepted as built. Decision 5 should change, decision 6 changes with the question, and decision 7 wants a knob rather than a constant.
+
+**1. Accepted.** Passing the servers' bound addresses as a parameter is cleaner than a hook holding state, and links that don't need them just ignore it.
+
+**2. Accepted.** A connection that arrives before the relay knows where to send it is closed rather than held, which is the honest behavior. Failing on a second, different upstream catches a harness mistake instead of silently rerouting.
+
+**3. Accepted.**
+
+**4. Accepted.** Double-wrapping is harmless because the first report wins, and the mark keeps the common path to one wrap.
+
+**5. Remove the wrap from `into_reply`.** Now that the service wraps every unsized body, keeping a second place that also wraps means two places responsible for one rule, and those drift: the next change to tracking would have to remember both. The service is the one spot every body passes through, so let it own the rule. Keep the mark: a user can still wrap a body in `Tracked` themselves, and the mark stops the service wrapping that one again. If some path needs tracking before the service sees the body (the SSE late path reports on its own, for instance), that path keeps its own wrap with a comment saying why.
+
+**6 and 8. Report `Completed` for a body the protocol never allows to be sent.** It comes down to what `on_stream_end` is for. Interceptors and metrics read `CutOff` as "the client didn't get everything". It's the signal someone alerts on. A `HEAD` answer, a 204 or a 304 owes the client no body at all, so when the transport writes the headers it has delivered everything that response owed. Reporting `CutOff` would raise false alarms on every `HEAD` request. Reporting nothing would break the exactly-once guarantee, and a callback waiting for the outcome would never fire. So:
+
+- **`HEAD` answered by a `GET` handler:** `Completed`. That's legitimate and expected, so no log.
+- **A 1xx, 204 or 304 that carries a streaming body:** `Completed`, plus a `warn` that the body was discarded because the status forbids one. Here the handler's author made a mistake, and the log, not the stream outcome, is the right place to say so.
+
+**7. Make it a host setting, not a constant.** Kafka's `PARALLEL` describes what Kafka itself needs. RabbitMQ's failures came from one machine's memory: CI ran the same suite 24 of 24 at full parallelism. A hardcoded bound would slow every host to fix one. Add an environment override that every suite reads, say `ULO_CONFORMANCE_PARALLEL=6`, applied as the minimum of itself and any bound the broker declares. A constrained laptop sets it once, CI leaves it unset, and the Makefile's local targets can document it.
+
+**On the gRPC test that needs a refused endpoint:** don't look for a port where nothing listens. That's the race again, and as macOS showed, a bound-but-not-listening socket doesn't even refuse there. Have the test control the endpoint instead: a listener on port 0 that accepts each connection and closes it at once. The client hits the same failure path (a connection that ends before any response), deterministically, on every OS, with no probe and no release.
