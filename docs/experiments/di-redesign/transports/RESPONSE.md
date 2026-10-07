@@ -1187,3 +1187,25 @@ The first six are accepted. For the seventh, choose "end it at once" on both tra
 So the rule, stated once for every transport: after a deadline, an error handler's answer is delivered if it's a single reply produced within the grace. A streamed answer is ended at once with the canonical timeout. That's what RPC already does, so gRPC changes to match. Log it at `warn` when it happens ("an error handler answered a timed-out call with a stream; the stream was ended at the deadline"), so an author who wrote a streaming timeout answer learns why it never arrives. Check HTTP against the same rule while you're in there: a route timeout's error handler returning an SSE body should behave the same way, and the moved-in sleep from T8 suggests it already does.
 
 **On the RabbitMQ time rise:** trace it. A 50% increase with no known cause is how a real regression hides. The likely suspects are this batch's own changes to close behavior, such as teardown now waiting for connections it used to abandon, which would be a correct cost. But that should be shown, not assumed. One `--report-time` run compared per scenario with batch 7's numbers will point to the scenario that grew.
+
+## Twenty-seventh response: the post-deadline stream build
+
+Received 2026-10-07, answering `divergences/race2b-tests9.md` (S1–S5 and its NATS note). Sign-off
+pending.
+
+Four of the five are accepted. On HTTP's size-hint rule there's a better test, and one of the filed gaps deserves more priority than "filed".
+
+**1. Accepted.** Telling a stream by what reaches the wire is the type-level principle again: judge the reply by its behavior, not by how it was assembled. And as you note, no marker could survive a reply built through the public API. The consequences are the right ones. A second length-prefixed message *is* a stream in gRPC terms, and a body still open at the end of the grace has, by definition, not delivered a single reply in time.
+
+**2. Use completion within the grace instead.** Treating every body without an exact size hint as a stream cuts a genuine single reply that happens to be sent through `Body::stream`. That's a false positive the error handler's author can't see coming. HTTP has no message boundaries, so its natural equivalent of gRPC's "one message" is "a body that finishes". Read the body under the rest of the grace, as gRPC does. If it ends in time, deliver it, buffered, with its now-exact length. If it's still open when the grace ends, answer the 504. SSE never ends, so it's still cut, and the `Body::stream` single payload is delivered. The rule then reads the same across transports, "a single reply produced within the grace", with each transport defining "single" by its own protocol: one message on gRPC, one completed body on HTTP.
+
+**3. Accepted.** `timeout` is what actually happened. `internal` was reporting the side effect.
+
+**4. Prioritize the reply-construction gap; fix the clippy one now.**
+
+- **Error handlers on RPC and gRPC can't build a reply through the public API.** That undercuts much of what the error-handler design was for. The deadline grace, `Timeout` reshaping and the uniform error model all assume a handler can answer with something of its own, and today on two transports it can't, except by returning an error. This should be the next batch's main item: public constructors on each transport's `Reply` (gRPC from a message or a `Status`; RPC through something like `cx.reply(&value)`, which encodes with the link's codec the context already holds), with a conformance scenario per transport where an error handler answers a domain error with its own value.
+- **The clippy warning is in generated code, so every user's handler inherits it.** Add the `allow` to the macro's output now. More generally, generated code should be lint-clean under `clippy -D warnings` in the user's crate. A CI step that runs clippy over a crate expanding every attribute macro would catch the next one before a user does.
+
+**5. Accepted.**
+
+**On the NATS startup failure:** right to file it, and the fix generalizes. A suite that can fail without saying why produces exactly the kind of one-in-fifty mystery that took a whole investigation last time. Every startup path in both suites should report the underlying error when it fails, not only NATS's.
