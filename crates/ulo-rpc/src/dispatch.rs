@@ -7,8 +7,10 @@
 //! execution with `CancelReason::Deadline`, and offers the error handlers, the handler's tiers then
 //! the global ones, a `Timeout` under `Server::timeout_grace`: what they answer, or the error they
 //! return written as it stands, is the reply; unclaimed, or with no answer by the end of the
-//! grace, the call answers `err` of kind `timeout`. A deadline passing once a streamed reply began
-//! ends it with that `err`, offered to no error handler.
+//! grace, the call answers `err` of kind `timeout`. A stream they answer is dropped unread and the
+//! call answers that `err` too, logged at `warn`: the caller stopped waiting at the deadline, and
+//! the grace bounds the error handlers, not a stream they return. A deadline passing once a
+//! streamed reply began ends it with that `err`, offered to no error handler.
 //!
 //! The serve loop routes every frame in arrival order before anything awaits: a `req`, `evt` or
 //! `open` opens its execution and registers its id there, so an `in`, `in_end` or `cancel` the
@@ -387,10 +389,15 @@ async fn answer(
         Outcome::Done(Ok(Reply::One(data))) | Outcome::Expired(Some(Ok(Reply::One(data)))) => {
             send(reply, exec, id, Frame::Res { id, data }).await;
         }
-        // On the expired path the execution is already cancelled, so the stream ends at its first
-        // poll with `timeout`.
-        Outcome::Done(Ok(Reply::Many(stream))) | Outcome::Expired(Some(Ok(Reply::Many(stream)))) => {
-            stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await
+        Outcome::Done(Ok(Reply::Many(stream))) => stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await,
+        Outcome::Expired(Some(Ok(Reply::Many(stream)))) => {
+            drop(stream);
+            tracing::warn!(
+                pattern = cx.pattern(),
+                handler = handler.map(MountedHandler::name),
+                "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+            );
+            send(reply, exec, id, Frame::Err { id, error: timed_out() }).await;
         }
         Outcome::Done(Err(err)) => {
             send(reply, exec, id, Frame::Err { id, error: render(err, exec) }).await;

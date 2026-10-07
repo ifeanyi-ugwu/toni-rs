@@ -1,5 +1,6 @@
 //! What the gRPC tests share: an app serving `ulo_grpc::Server` on an ephemeral port, the two
-//! clients a test calls it through, and a record a handler writes to and a test reads back.
+//! clients a test calls it through, a record a handler writes to and a test reads back, and a
+//! subscriber capturing the `warn` lines the server logs.
 //!
 //! Every wait is bounded by [`WAIT`] and fails the test when it runs out.
 
@@ -7,6 +8,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -15,6 +17,9 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use tokio::sync::watch;
 use tonic::transport::{Channel, Endpoint, Uri};
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record as SpanRecord};
+use tracing::{Event, Level, Metadata};
 use ulo::{App, AppHandle, Module, Signal};
 
 /// The longest any one wait in these tests lasts before it fails the test.
@@ -130,5 +135,68 @@ impl<T: Clone> Record<T> {
         let mut count = self.count.subscribe();
         within(what, count.wait_for(|len| *len >= n)).await.unwrap_or_else(|_| panic!("the record of {what} closed"));
         self.snapshot()
+    }
+}
+
+/// Every `warn` and `error` event on the thread it is the default subscriber of, as its message
+/// followed by `name=value` for each other field. A test on a current-thread runtime installs it
+/// with `tracing::subscriber::set_default`, and the server's tasks then log on that thread.
+#[derive(Clone, Default)]
+pub struct Capture {
+    lines: Arc<Mutex<Vec<String>>>,
+    next_span: Arc<AtomicU64>,
+}
+
+impl Capture {
+    pub fn warnings(&self) -> Vec<String> {
+        self.lines.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.is_span() || *metadata.level() <= Level::WARN
+    }
+
+    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+        Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    fn record(&self, _span: &Id, _values: &SpanRecord<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut line = Line::default();
+        event.record(&mut line);
+        self.lines.lock().unwrap_or_else(PoisonError::into_inner).push(format!("{}{}", line.message, line.fields));
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+#[derive(Default)]
+struct Line {
+    message: String,
+    fields: String,
+}
+
+impl Visit for Line {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_owned();
+        } else {
+            self.fields.push_str(&format!(" {}={value}", field.name()));
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{value:?}");
+        } else {
+            self.fields.push_str(&format!(" {}={value:?}", field.name()));
+        }
     }
 }

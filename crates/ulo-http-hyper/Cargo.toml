@@ -27,4 +27,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 ulo-http-conformance = { path = "../ulo-http-conformance" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+ulo-tokio = { path = "../ulo-tokio" }
+futures-util.workspace = true
+# `net` and `io-util`: the raw HTTP/1.1 client the route-timeout tests read a response with.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }

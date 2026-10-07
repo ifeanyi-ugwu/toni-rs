@@ -33,6 +33,9 @@ service Clock {
   rpc StallStuck(Ticks) returns (Tick);
   rpc Quick(Ticks) returns (Tick);
   rpc Drip(Ticks) returns (stream Tick);
+  rpc StallAnswered(Ticks) returns (Tick);
+  rpc StallStreamed(Ticks) returns (stream Tick);
+  rpc StallTrickled(Ticks) returns (stream Tick);
 }
 
 // A service behind enhancers and pre-dispatch entries.

@@ -6102,6 +6102,7 @@ dependencies = [
  "tonic-health",
  "tonic-prost",
  "tonic-reflection",
+ "tracing",
  "trybuild",
  "ulo",
  "ulo-build",
@@ -6305,6 +6306,7 @@ dependencies = [
 name = "ulo-http-hyper"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "http 1.5.0",
  "hyper 1.11.1",
  "hyper-util",
@@ -6315,6 +6317,7 @@ dependencies = [
  "ulo-http-conformance",
  "ulo-hyper-serve",
  "ulo-net",
+ "ulo-tokio",
  "ulo-transport",
 ]
 
@@ -6553,6 +6556,7 @@ dependencies = [
  "ulo-rpc",
  "ulo-rpc-conformance",
  "ulo-tokio",
+ "ulo-transport",
 ]
 
 [[package]]

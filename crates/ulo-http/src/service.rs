@@ -55,7 +55,8 @@ use crate::upgrade::UpgradeHandler;
 ///    `Timer`, the scoped entries run. When the timeout passes before an answer, the pipeline is
 ///    dropped, the execution cancelled with `CancelReason::Deadline`, and the error handlers, the
 ///    matched handler's tiers then the global ones, receive `Timeout` under
-///    `HttpConfig::timeout_grace`: unclaimed, or not answered within the grace, it renders 504.
+///    `HttpConfig::timeout_grace`: unclaimed, not answered within the grace, or answered with a
+///    body of unknown length, it renders 504.
 /// 7. The `HttpCx` built from the request as the stage leaves it, and `ulo::dispatch` with the
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
@@ -287,6 +288,9 @@ impl ServiceInner {
     /// context built from the head as the scoped sub-step received it, no body and no upgrade.
     /// What they answer, or the error they return rendered as it stands, is the response; with
     /// none by the end of the grace, the canonical 504 is, and the headers they wrote are dropped.
+    /// A response whose body has no known length, an `Sse` among them, is a stream: it is dropped
+    /// unread for the same 504, logged at `warn`. The grace bounds the error handlers, not a body
+    /// they return.
     async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {
         let route = MatchedRoute {
             handler: target.handler.clone(),
@@ -307,6 +311,13 @@ impl ServiceInner {
             Ok(response) => response,
             Err(err) => render::render_as_is(err, &self.config),
         };
+        if response.body().size_hint().exact().is_none() {
+            tracing::warn!(
+                route = &*target.route,
+                "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+            );
+            return render::problem(&render::timed_out(), &self.config);
+        }
         merge_headers(&cx, response)
     }
 

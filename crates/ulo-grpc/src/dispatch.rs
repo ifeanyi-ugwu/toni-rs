@@ -22,7 +22,10 @@
 //! handlers receive `Timeout` under `Server::timeout_grace`, the matched handler's tiers then the
 //! global ones, or the global ones alone when the deadline passed before routing. What they
 //! answer, or the error they return rendered as it stands, is the reply; unclaimed, or with no
-//! answer by the end of the grace, the call answers DEADLINE_EXCEEDED. When the reply comes first,
+//! answer by the end of the grace, the call answers DEADLINE_EXCEEDED. A reply they answer is
+//! delivered only as a single reply: its body is read under the same grace, and one carrying a
+//! second message, or not ended when the grace runs out, is dropped for DEADLINE_EXCEEDED, logged
+//! at `warn` as a stream. When the reply comes first,
 //! the deadline moves into its body, which ends with DEADLINE_EXCEEDED trailers, offered to no
 //! error handler, if the deadline passes while it streams.
 //!
@@ -36,7 +39,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
-use std::future::poll_fn;
+use std::future::{Future, poll_fn};
 use std::net::SocketAddr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -44,7 +47,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use http::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use http::{HeaderMap, StatusCode};
@@ -173,9 +176,10 @@ impl Dispatcher {
 
     /// A deadline that passed before the call answered: the error handlers receive `Timeout`
     /// with a context built from the call's path, metadata and peer, no request. What they answer,
-    /// or the error they return rendered as it stands, is the reply; with none by the end of the
-    /// grace, DEADLINE_EXCEEDED is. `handler` is the handler routing matched, `None` when the
-    /// deadline passed before routing, which leaves the global error handlers alone.
+    /// if it is a single reply ([`single`]), or the error they return rendered as it stands, is the
+    /// reply; with none by the end of the grace, DEADLINE_EXCEEDED is. `handler` is the handler
+    /// routing matched, `None` when the deadline passed before routing, which leaves the global
+    /// error handlers alone.
     async fn expired(
         &self,
         exec: &ExecutionRef,
@@ -184,21 +188,23 @@ impl Dispatcher {
         peer: Option<SocketAddr>,
         handler: Option<MountedHandler<Grpc>>,
     ) -> Response {
-        let cx = self.context(exec, path, metadata, peer, handler.clone(), None);
+        let cx = self.context(exec, Arc::clone(&path), metadata, peer, handler.clone(), None);
         let recovering = ulo::recover(handler.as_ref(), exec, &cx, BoxError::from(status::timed_out()));
-        let outcome = match self.grace {
-            Some(grace) => {
-                let sleep = self.timer.sleep(grace);
-                tokio::select! {
-                    biased;
-                    outcome = recovering => outcome,
-                    () = sleep => return status_response(status::deadline_exceeded()),
-                }
-            }
-            None => recovering.await,
+        let mut grace = self.grace.map(|grace| self.timer.sleep(grace));
+        let Some(outcome) = within(recovering, grace.as_mut()).await else {
+            return status_response(status::deadline_exceeded());
         };
         match outcome {
-            Ok(reply) => reply.map(HttpBody::new),
+            Ok(reply) => match single(reply, grace.as_mut()).await {
+                Ok(reply) => reply,
+                Err(()) => {
+                    tracing::warn!(
+                        path = &*path,
+                        "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+                    );
+                    status_response(status::deadline_exceeded())
+                }
+            },
             Err(err) => status_response(status::render_as_is(err)),
         }
     }
@@ -515,6 +521,96 @@ async fn race(mut pipeline: BoxFuture<'static, Response>, sleep: BoxFuture<'stat
         }
     })
     .await
+}
+
+/// `fut` raced against the grace, polled first: `None` when the grace runs out, `fut` dropped at
+/// its current await. With no grace, `fut` runs to its end.
+async fn within<F: Future>(fut: F, grace: Option<&mut BoxFuture<'static, ()>>) -> Option<F::Output> {
+    match grace {
+        Some(sleep) => {
+            tokio::select! {
+                biased;
+                output = fut => Some(output),
+                () = sleep => None,
+            }
+        }
+        None => Some(fut.await),
+    }
+}
+
+/// The error handlers' reply to a passed deadline, as the response to write when it is a single
+/// reply: a trailers-only status, or a body carrying at most one message that ends within the
+/// grace. The body is read whole and written as read; one failing while it is read answers
+/// DEADLINE_EXCEEDED. `Err` for a stream: a body whose bytes run past its first message, or one
+/// still open when the grace runs out, dropped unwritten.
+///
+/// A message is read off its gRPC length prefix, not off the reply's construction: on the wire a
+/// server stream of one message and a unary reply are the same bytes, and an error handler builds
+/// either as a hand-written `tonic::body::Body`.
+async fn single(reply: Reply, mut grace: Option<&mut BoxFuture<'static, ()>>) -> Result<Response, ()> {
+    let (parts, mut body) = reply.into_parts();
+    if body.is_end_stream() {
+        return Ok(Response::from_parts(parts, HttpBody::new(body)));
+    }
+    let mut data = BytesMut::new();
+    let mut trailers = None;
+    loop {
+        let next = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx));
+        let Some(frame) = within(next, grace.as_deref_mut()).await.ok_or(())? else { break };
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(err) => {
+                tracing::debug!(error = %err, "the reply an error handler answered a timed-out call with failed while it was read");
+                return Ok(status_response(status::deadline_exceeded()));
+            }
+        };
+        match frame.into_data() {
+            Ok(bytes) => {
+                data.extend_from_slice(&bytes);
+                if past_first_message(&data) {
+                    return Err(());
+                }
+            }
+            Err(frame) => {
+                trailers = frame.into_trailers().ok();
+                break;
+            }
+        }
+    }
+    let body = Buffered { data: Some(data.freeze()).filter(|data| !data.is_empty()), trailers };
+    Ok(Response::from_parts(parts, HttpBody::new(body)))
+}
+
+/// Whether `data`, the start of a reply body, holds a byte after its first length-prefixed
+/// message: a compressed-flag byte and a four-byte big-endian length, then that many bytes.
+fn past_first_message(data: &[u8]) -> bool {
+    match data {
+        [_, a, b, c, d, rest @ ..] => rest.len() > u32::from_be_bytes([*a, *b, *c, *d]) as usize,
+        _ => false,
+    }
+}
+
+/// A reply body read whole: its data in one frame, then its trailers.
+struct Buffered {
+    data: Option<Bytes>,
+    trailers: Option<HeaderMap>,
+}
+
+impl http_body::Body for Buffered {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        let this = self.get_mut();
+        if let Some(data) = this.data.take() {
+            return Poll::Ready(Some(Ok(Frame::data(data))));
+        }
+        Poll::Ready(this.trailers.take().map(|trailers| Ok(Frame::trailers(trailers))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers.is_none()
+    }
 }
 
 /// A reply stream's items with the late path for an `Err` item.

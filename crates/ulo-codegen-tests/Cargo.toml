@@ -33,6 +33,8 @@ http.workspace = true
 # A plain HTTP/2 client, which enforces no `grpc-timeout` of its own, for the deadline tests.
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# The events a test captures through a subscriber of its own.
+tracing.workspace = true
 # The clients of the health and reflection services the server answers.
 tonic-health.workspace = true
 tonic-reflection.workspace = true

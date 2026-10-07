@@ -1,8 +1,9 @@
 //! A caller's `grpc-timeout` as the call's deadline: DEADLINE_EXCEEDED when it passes unclaimed,
 //! the error handlers offered a `Timeout` under `Server::timeout_grace` before that, and
 //! DEADLINE_EXCEEDED without them once the grace runs out; the handler's future dropped with the
-//! reason `Deadline`; a deadline passing during a streamed reply; and a `grpc-timeout` off the
-//! specification's grammar ignored.
+//! reason `Deadline`; an error handler's single reply delivered and its stream ended with
+//! DEADLINE_EXCEEDED, nothing of it written; a deadline passing during a streamed reply; and a
+//! `grpc-timeout` off the specification's grammar ignored.
 //!
 //! The calls go through a plain HTTP/2 client: a tonic `Channel` enforces `grpc-timeout` itself
 //! and would answer CANCELLED before the server's answer arrived.
@@ -11,15 +12,17 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{Stream, StreamExt, future, stream};
+use tonic::codec::{BufferSettings, EncodeBody, SingleMessageCompressionOverride};
 use tonic::{Code, Status};
+use tonic_prost::ProstEncoder;
 use ulo::{BoxError, Bound, Dep, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, injectable, routes};
 use ulo_codegen_tests::probe::clock_client::ClockClient;
 use ulo_codegen_tests::probe::{self, Tick, Ticks};
 use ulo_grpc::{Grpc, GrpcCx, Message, Reply};
 use ulo_transport::{CallError, ErrorKind};
 
-use support::{PlainHttp2, Record, Running};
+use support::{Capture, PlainHttp2, Record, Running};
 
 /// The deadline the stalling calls are given, and the grace the server gives their error handlers.
 const DEADLINE: Duration = Duration::from_millis(200);
@@ -27,6 +30,8 @@ const GRACE: Duration = Duration::from_millis(300);
 
 /// Longer than any test runs: a handler sleeping this long is still running at the deadline.
 const FOREVER: Duration = Duration::from_secs(30);
+
+const STREAM_WARNING: &str = "an error handler answered a timed-out call with a stream; the stream was ended at the deadline";
 
 /// What the handlers and error handlers observed, in order.
 #[derive(Clone)]
@@ -81,6 +86,64 @@ impl ErrorHandler<Grpc> for Stuck {
     }
 }
 
+/// Answers a `Timeout` with the reply body `ticks` encode, as an error handler writes one by hand:
+/// nothing in `ulo_grpc` turns a message or a stream into a `Reply` outside a handler.
+fn encoded<S>(ticks: S) -> Reply
+where
+    S: Stream<Item = Result<Tick, Status>> + Send + 'static,
+{
+    let body = EncodeBody::new_server(
+        ProstEncoder::<Tick>::new(BufferSettings::default()),
+        ticks,
+        None,
+        SingleMessageCompressionOverride::default(),
+        None,
+    );
+    let mut reply = Reply::new(tonic::body::Body::new(body));
+    reply.headers_mut().insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/grpc"));
+    reply
+}
+
+fn timed_out(err: &BoxError) -> bool {
+    err.downcast_ref::<CallError>().is_some_and(|call| call.kind() == ErrorKind::Timeout)
+}
+
+/// One `Tick { n: 7 }`.
+struct OneOnTimeout;
+
+impl ErrorHandler<Grpc> for OneOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        Ok(encoded(stream::once(future::ready(Ok(Tick { n: 7 })))))
+    }
+}
+
+/// Ticks without end.
+struct EndlessOnTimeout;
+
+impl ErrorHandler<Grpc> for EndlessOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        Ok(encoded(stream::repeat_with(|| Ok(Tick { n: 1 }))))
+    }
+}
+
+/// One tick, then nothing.
+struct TrickleOnTimeout;
+
+impl ErrorHandler<Grpc> for TrickleOnTimeout {
+    async fn handle(&self, err: BoxError, _cx: &GrpcCx) -> Result<Reply, BoxError> {
+        if !timed_out(&err) {
+            return Err(err);
+        }
+        Ok(encoded(stream::once(future::ready(Ok(Tick { n: 1 }))).chain(stream::pending())))
+    }
+}
+
 #[injectable]
 struct ClockService {
     seen: Dep<Seen>,
@@ -128,6 +191,26 @@ impl ClockService {
             u32::try_from(left.as_millis()).unwrap_or(u32::MAX).saturating_add(1)
         });
         Tick { n: left }
+    }
+
+    #[ulo_grpc::method(probe::clock::StallAnswered)]
+    #[error_handlers(value = OneOnTimeout)]
+    async fn stall_answered(&self, _req: Message<Ticks>, exec: ExecutionRef) -> Tick {
+        self.stall(exec).await
+    }
+
+    #[ulo_grpc::method(probe::clock::StallStreamed)]
+    #[error_handlers(value = EndlessOnTimeout)]
+    async fn stall_streamed(&self, _req: Message<Ticks>, exec: ExecutionRef) -> impl Stream<Item = Result<Tick, CallError>> {
+        let _ = self.stall(exec).await;
+        stream::empty()
+    }
+
+    #[ulo_grpc::method(probe::clock::StallTrickled)]
+    #[error_handlers(value = TrickleOnTimeout)]
+    async fn stall_trickled(&self, _req: Message<Ticks>, exec: ExecutionRef) -> impl Stream<Item = Result<Tick, CallError>> {
+        let _ = self.stall(exec).await;
+        stream::empty()
     }
 
     /// One tick, then nothing until the reply is ended.
@@ -212,6 +295,66 @@ async fn an_error_handler_past_the_grace_is_dropped_for_deadline_exceeded() {
     assert!(seen.0.snapshot().contains(&"stuck handler started".to_owned()), "the error handler was never offered the timeout");
     assert!(took >= DEADLINE + GRACE, "answered after {took:?}, before the deadline and the grace had passed");
     assert!(took < DEADLINE + GRACE + Duration::from_secs(1), "answered after {took:?}: the grace did not bound the error handler");
+    app.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_handler_answering_one_message_within_the_grace_is_the_reply() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let (app, mut client, _) = start().await;
+    let reply = support::within("the stalled call", client.stall_answered(timed(DEADLINE))).await;
+    assert_eq!(reply.map(|reply| reply.into_inner().n).map_err(|status| status.code()), Ok(7));
+    let warned = capture.warnings();
+    assert!(!warned.iter().any(|line| line.contains(STREAM_WARNING)), "a single reply was logged as a stream: {warned:?}");
+    app.stop().await;
+}
+
+/// The failure a server-streaming call ended with: its status when the call failed outright, or
+/// the panic naming what the stream carried instead.
+async fn stream_failed(reply: Result<tonic::Response<tonic::Streaming<Tick>>, Status>) -> Status {
+    match reply {
+        Err(status) => status,
+        Ok(reply) => {
+            let first = support::within("the first item", reply.into_inner().next()).await;
+            panic!("expected the call to fail before any item, got a stream whose first item is {first:?}")
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_error_handler_answering_a_stream_is_ended_at_once_with_deadline_exceeded() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let (app, mut client, _) = start().await;
+    let began = Instant::now();
+    let reply = support::within("the stalled call", client.stall_streamed(timed(DEADLINE))).await;
+    let status = stream_failed(reply).await;
+    let took = began.elapsed();
+    assert_eq!(status.code(), Code::DeadlineExceeded, "{status:?}");
+    assert!(took < DEADLINE + GRACE, "answered after {took:?}, not at once after the {DEADLINE:?} deadline");
+    let warned = capture.warnings();
+    assert!(
+        warned.iter().any(|line| line.contains(STREAM_WARNING) && line.contains("path=/codegen.probe.v1.Clock/StallStreamed")),
+        "the server logged no warning naming the path: {warned:?}"
+    );
+    app.stop().await;
+}
+
+#[tokio::test]
+async fn an_error_handler_reply_still_open_at_the_end_of_the_grace_is_ended_with_deadline_exceeded() {
+    let capture = Capture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let (app, mut client, _) = start().await;
+    let began = Instant::now();
+    let reply = support::within("the stalled call", client.stall_trickled(timed(DEADLINE))).await;
+    let status = stream_failed(reply).await;
+    let took = began.elapsed();
+    assert_eq!(status.code(), Code::DeadlineExceeded, "{status:?}");
+    assert!(took >= DEADLINE + GRACE, "answered after {took:?}, before the deadline and the grace had passed");
+    assert!(took < DEADLINE + GRACE + Duration::from_secs(1), "answered after {took:?}: the grace did not bound the reply");
+    let warned = capture.warnings();
+    assert!(warned.iter().any(|line| line.contains(STREAM_WARNING)), "the server logged no warning: {warned:?}");
     app.stop().await;
 }
 
