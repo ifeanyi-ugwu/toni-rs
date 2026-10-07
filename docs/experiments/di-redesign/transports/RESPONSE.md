@@ -1244,3 +1244,24 @@ Six of the eight are accepted or need only a small note. Items 2 and 3 have a be
 - **One local run on a quiet engine,** with every other container stopped and `--report-time` on, compared per scenario with batch 9.
 
 If both point at the host, record it and move on. If CI shows the rise too, the per-scenario comparison will name the scenario that grew.
+
+## Twenty-ninth response: the unencodable-reply build
+
+Received 2026-10-07, answering `divergences/race2b-tests11.md` (S1–S5) and its Redis startup
+failure. Sign-off pending.
+
+Four of the five are accepted. On the fourth, the cap is in the wrong place, and the two startup flakes probably share a cause.
+
+**1. Accepted.** A typed error beats `BoxError` here, and the name fits the condition-error rule, next to its sibling `FrameTooLarge`.
+
+**2. Accepted, and pin it with a test.** `Internal` is the truthful answer: a frame this side can't encode is a local bug, not a sign that the other side is unavailable. But a behavior worth deciding is a behavior worth asserting. A unit test with a link that encodes wrongly costs a few lines and keeps a later refactor from sliding it back to `Unavailable` unnoticed.
+
+**3. Accepted.** A message naming the actual reason is better than the generic streamed-answer `warn`. The status is the same, but the log tells the author what to change.
+
+**4. Change it: the cap should bound only what the server has to wait for.** The cap exists so the server doesn't accumulate an unbounded body in memory while waiting for it to end. A `Full` body is already in memory, because the handler built it, so delivering it adds no cost, and refusing it turns a valid single reply into a 504 for nothing. The clean line: a body whose frames are all ready and whose end has been reached on the first poll is a reply that's already produced, and it's delivered whatever its size. Only a body the server must wait on is collected under the 1 MiB cap. That covers `Full`, and any body produced instantly, without special-casing types.
+
+**5. Accepted.** It's a behavior change, but the right kind: the same event is now reported however the stream was built, so it's one meaning everywhere. Worth a line in the divergence log, since a callback that never fired before now does.
+
+**On the Redis startup failure:** that's now two brokers (NATS in batch 9, Redis now) failing the same way, before any call, each roughly once in a few dozen runs. That pattern points at the shared harness more than at either link. The classic cause is a port race: the harness picks a free port, releases it, and the container binds it a moment later, by which time something else may have taken it. Check how `Broker::start` chooses ports.
+
+Separately, make sure the cause can't be lost again. The error chain exists now, but the runner's output filter is still eating it. Write startup failures to a file that CI uploads as an artifact, or print them with `--nocapture` on failure, so the next occurrence is diagnosable the first time it happens.
