@@ -1,6 +1,8 @@
-//! The client app's close ends its UDP client side: `RpcClientModule`'s destroy hook calls the
-//! link's `close`, which ends the reply lane of the socket the client bound, releases the socket,
-//! and fails the call waiting on it.
+//! The client app's close releases its UDP client socket: `RpcClientModule`'s destroy hook calls
+//! the link's `close`, which ends the reply lane of the socket the client bound and releases it.
+//! The conformance suite's `client_close` scenario asserts the rest on every link: the waiting call
+//! failing `Unavailable` and a later call connecting again. A UDP environment has no connection
+//! for it to count, which is what the release stands for here.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
@@ -10,12 +12,11 @@ use tokio::net::UdpSocket;
 use ulo::{App, Bound, Module, ModuleDef, ModuleIdentity, Signal};
 use ulo_rpc::{RpcClient, RpcClientModule};
 use ulo_rpc_udp::Udp;
-use ulo_transport::ErrorKind;
 
-/// Longer than any wait below, so a call that ends early ended for the close.
+/// Longer than any wait below, so the call is still waiting at the close.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long the close has to show at the waiting call and at the client's port.
+/// How long the close has to show at the client's port.
 const PATIENCE: Duration = Duration::from_secs(5);
 
 struct ClientRoot {
@@ -35,7 +36,7 @@ impl Module for ClientRoot {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn closing_the_client_app_ends_its_client_side() {
+async fn closing_the_client_app_releases_its_socket() {
     // A peer that reads the call and never answers it.
     let peer = UdpSocket::bind("127.0.0.1:0").await.expect("a loopback port");
     let addr = peer.local_addr().expect("the peer's address");
@@ -47,7 +48,7 @@ async fn closing_the_client_app_ends_its_client_side() {
         .await
         .expect("the client app connects");
     let rpc = (*app.get::<RpcClient>().await.expect("the app holds an `RpcClient`")).clone();
-    let call = tokio::spawn(async move { rpc.request::<String, String>("held", &"x".to_owned()).await });
+    let _call = tokio::spawn(async move { rpc.request::<String, String>("held", &"x".to_owned()).await });
 
     let mut datagram = vec![0u8; 65_536];
     let (_, client) = tokio::time::timeout(PATIENCE, peer.recv_from(&mut datagram))
@@ -55,14 +56,9 @@ async fn closing_the_client_app_ends_its_client_side() {
         .expect("the call's datagram arrives")
         .expect("the peer receives");
 
-    let _ = app.close(Signal::new("client_close")).await;
-
-    let answered = tokio::time::timeout(PATIENCE, call)
-        .await
-        .unwrap_or_else(|_| panic!("the waiting call was still waiting {PATIENCE:?} after its app closed"))
-        .expect("the call's task does not panic");
-    let error = answered.expect_err("no reply was sent, so the call fails");
-    assert_eq!(error.kind(), ErrorKind::Unavailable, "the waiting call fails `Unavailable` at the close, got: {error:?}");
+    if let Err(error) = app.close(Signal::new("client_close")).await {
+        panic!("the client app's close reported a failure: {error}");
+    }
 
     // The client's socket is released: the address it bound, its port on every interface, binds
     // again.

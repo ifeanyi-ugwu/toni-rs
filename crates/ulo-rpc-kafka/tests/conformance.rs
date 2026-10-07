@@ -7,8 +7,8 @@
 //! while the recovery scenario's held call is answered: the link declares `durable_replies`, and
 //! the reply waits on the reply topic for the client to reconnect.
 //!
-//! At most `PARALLEL` brokers run at once: twenty started together compete for the host's memory,
-//! and a container that runs short can exit before its ready line.
+//! At most `PARALLEL` brokers run at once: one per scenario, started together, compete for the
+//! host's memory, and a container that runs short can exit before its ready line.
 
 #![cfg(feature = "integration")]
 
@@ -103,6 +103,10 @@ impl Broker for KraftBroker {
 
     fn outage(&self) -> Option<Outage> {
         self.client.last_outage()
+    }
+
+    async fn client_connections(&self) -> Option<usize> {
+        Some(self.client.open().await)
     }
 
     /// A consumer group takes its partitions a few seconds after `bind`, and a record waits for

@@ -34,7 +34,7 @@ pub struct Redis {
 #[derive(Default)]
 pub(crate) struct State {
     server: Option<(Arc<ServerSide>, AbortHandle)>,
-    client: Option<AbortHandle>,
+    client: Option<(Arc<ClientSide>, AbortHandle)>,
 }
 
 impl Redis {
@@ -95,7 +95,7 @@ impl Link for Redis {
         let channel = format!("ulo:rpc:reply:{}", uuid::Uuid::new_v4().simple());
         let (sink, stream) = subscribe(&client, std::slice::from_ref(&channel)).await?;
         let side = Arc::new(ClientSide {
-            publisher,
+            publisher: Mutex::new(Some(publisher)),
             codec: self.codec,
             channel,
             // Each call's wire id is this base plus its id, so two callers counting from zero do
@@ -104,7 +104,7 @@ impl Link for Redis {
         });
         let (frames, replies) = mpsc::unbounded_channel();
         let task = tokio::spawn(client_lane(Arc::clone(&side), sink, stream, frames));
-        lock(&self.state).client = Some(task.abort_handle());
+        lock(&self.state).client = Some((Arc::clone(&side), task.abort_handle()));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
@@ -146,7 +146,10 @@ impl Link for Redis {
             lock(&side.sink).take();
             task.abort();
         }
-        if let Some(task) = client {
+        if let Some((side, task)) = client {
+            // The `RpcClient` keeps the connection's send half until its next call replaces it,
+            // so the publisher is taken out of it here, closing its connection.
+            lock(&side.publisher).take();
             task.abort();
         }
         Ok(())
@@ -344,7 +347,8 @@ impl Calls {
 /// The client side: one reply channel for every reply. Every server subscribed to a pattern
 /// answers, so a reply may arrive twice; `RpcClient` drops the second.
 struct ClientSide {
-    publisher: ConnectionManager,
+    /// `None` once the link has closed.
+    publisher: Mutex<Option<ConnectionManager>>,
     codec: Codec,
     channel: String,
     base: u64,
@@ -352,7 +356,7 @@ struct ClientSide {
 
 impl ClientSide {
     async fn send(&self, pattern: Pattern, frame: Frame) -> Result<(), BoxError> {
-        let mut publisher = self.publisher.clone();
+        let mut publisher = lock(&self.publisher).clone().ok_or("the Redis link's client is closed")?;
         match frame {
             Frame::Req { id, pattern: named, headers, data } => {
                 let frame = Frame::Req { id: self.wire(id), pattern: named, headers: self.with_reply(headers), data };

@@ -211,7 +211,7 @@ impl Link for Kafka {
 
         let (closed, closing) = oneshot::channel();
         let side = Arc::new(ClientSide {
-            producer: producer(&base)?,
+            producer: Mutex::new(Some(producer(&base)?)),
             codec: self.codec,
             id,
             reply_topic,
@@ -618,7 +618,8 @@ impl Calls {
 /// The client side: the producer, the reply topic every reply lands on, each call's correlation
 /// id `<id>.<call>`.
 struct ClientSide {
-    producer: FutureProducer,
+    /// `None` once the link has closed.
+    producer: Mutex<Option<FutureProducer>>,
     codec: Codec,
     id: String,
     reply_topic: String,
@@ -651,7 +652,7 @@ impl ClientSide {
                 let mut record_headers = OwnedHeaders::new();
                 record_headers = append(record_headers, &headers);
                 let record = FutureRecord::to(pattern.as_str()).key(self.id.as_str()).payload(data.as_bytes()).headers(record_headers);
-                deliver(&self.producer, record, pattern.as_str(), data.len()).await
+                deliver(&self.live_producer()?, record, pattern.as_str(), data.len()).await
             }
             Frame::Open { id, headers, .. } => {
                 let (gate, opened) = oneshot::channel();
@@ -709,7 +710,7 @@ impl ClientSide {
         }
         record_headers = append(record_headers, headers);
         let record = FutureRecord::to(pattern.as_str()).key(self.id.as_str()).payload(body).headers(record_headers);
-        deliver(&self.producer, record, pattern.as_str(), body.len()).await
+        deliver(&self.live_producer()?, record, pattern.as_str(), body.len()).await
     }
 
     async fn produce_control(&self, call: u64, kind: &str, body: &[u8]) -> Result<(), BoxError> {
@@ -718,7 +719,11 @@ impl ClientSide {
             .insert(Header { key: CORRELATION, value: Some(correlation.as_str()) })
             .insert(Header { key: KIND, value: Some(kind) });
         let record = FutureRecord::to(CONTROL).key(correlation.as_str()).payload(body).headers(record_headers);
-        deliver(&self.producer, record, CONTROL, body.len()).await
+        deliver(&self.live_producer()?, record, CONTROL, body.len()).await
+    }
+
+    fn live_producer(&self) -> Result<FutureProducer, BoxError> {
+        lock(&self.producer).clone().ok_or_else(|| "the Kafka link's client is closed".into())
     }
 
     fn enqueue(&self, id: u64, frame: Frame) {
@@ -736,7 +741,9 @@ impl ClientSide {
     }
 
     /// Stops the reply router and waits for it to end, the reply consumer leaving its group while
-    /// the broker is still there to answer.
+    /// the broker is still there to answer, then drops the producer, closing its connections. The
+    /// `RpcClient` keeps the connection's send half until its next call replaces it, so the
+    /// producer is taken out of it here.
     async fn close(&self) {
         if let Some(closed) = lock(&self.closed).take() {
             let _ = closed.send(());
@@ -744,6 +751,10 @@ impl ClientSide {
         let routing = lock(&self.routing).take();
         if let Some(routing) = routing {
             let _ = routing.await;
+        }
+        let producer = lock(&self.producer).take();
+        if let Some(producer) = producer {
+            let _ = drop_detached(producer).await;
         }
     }
 }
@@ -754,6 +765,9 @@ async fn route_replies(
     frames: mpsc::UnboundedSender<Frame>,
     mut closing: oneshot::Receiver<()>,
 ) {
+    // Held detached, so a router dropped before it ends, its client never closed and the runtime
+    // shutting down, still drops the consumer on a thread of its own.
+    let replies = Detached::new(replies);
     loop {
         let record = tokio::select! {
             _ = &mut closing => break,
@@ -787,7 +801,7 @@ async fn route_replies(
             break;
         }
     }
-    let _ = drop_detached(replies).await;
+    let _ = drop_detached(replies.into_inner()).await;
 }
 
 /// Publishes one streamed request's control frames once the server has acknowledged its `open`.
@@ -911,6 +925,11 @@ impl<T: Send + 'static> Detached<T> {
     fn new(value: T) -> Self {
         Detached(Some(value))
     }
+
+    /// The value, for a caller that drops it with [`drop_detached`] and waits for the drop.
+    fn into_inner(mut self) -> T {
+        self.0.take().expect("the value is taken only once")
+    }
 }
 
 impl<T: Send + 'static> Deref for Detached<T> {
@@ -929,9 +948,10 @@ impl<T: Send + 'static> Drop for Detached<T> {
     }
 }
 
-/// Drops `value` on a thread of its own and answers once the drop has finished. Not a
-/// `spawn_blocking` task: a runtime waits for those as it shuts down, and a consumer whose broker
-/// is gone would hold it there. A thread that cannot be spawned drops `value` here.
+/// Drops `value` on a thread of its own and answers once the drop has finished: a consumer, or the
+/// client's producer, whose drop flushes for up to half a second before closing its connections.
+/// Not a `spawn_blocking` task: a runtime waits for those as it shuts down, and a consumer whose
+/// broker is gone would hold it there. A thread that cannot be spawned drops `value` here.
 fn drop_detached<T: Send + 'static>(value: T) -> oneshot::Receiver<()> {
     let (done, finished) = oneshot::channel();
     let spawned = std::thread::Builder::new().name("ulo-kafka-drop".to_owned()).spawn(move || {
@@ -939,7 +959,7 @@ fn drop_detached<T: Send + 'static>(value: T) -> oneshot::Receiver<()> {
         let _ = done.send(());
     });
     if let Err(error) = spawned {
-        tracing::warn!(%error, "the Kafka link dropped a consumer on its own thread, which could not spawn one");
+        tracing::warn!(%error, "the Kafka link could not spawn a thread to drop a librdkafka handle on, and dropped it here");
     }
     finished
 }

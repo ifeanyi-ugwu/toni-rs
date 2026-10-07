@@ -4,6 +4,7 @@
 pub(crate) mod app;
 
 pub mod cancel;
+pub mod client_close;
 pub mod deadlines;
 pub mod delivery;
 pub mod drain;

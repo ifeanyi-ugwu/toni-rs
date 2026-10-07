@@ -51,6 +51,10 @@ impl Broker for Mosquitto {
     async fn disrupt(&self) {
         self.relay.cut().await;
     }
+
+    async fn client_connections(&self) -> Option<usize> {
+        Some(self.relay.open().await)
+    }
 }
 
 ulo_rpc_conformance::conformance_suite!(Mosquitto);

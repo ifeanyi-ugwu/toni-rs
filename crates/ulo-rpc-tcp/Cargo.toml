@@ -24,5 +24,4 @@ tracing.workspace = true
 [dev-dependencies]
 ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }
-ulo-transport = { path = "../ulo-transport" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

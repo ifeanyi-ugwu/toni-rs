@@ -88,6 +88,15 @@ impl Relay {
         severed
     }
 
+    /// How many connections the relay carries now. A relayed connection ends once both of its
+    /// directions have: the client closing its socket ends it when the upstream closes its own in
+    /// turn, as a broker does on reading the end of a connection.
+    pub async fn open(&self) -> usize {
+        let mut connections = self.connections.lock().await;
+        while connections.try_join_next().is_some() {}
+        connections.len()
+    }
+
     /// The last [`cut_for`](Self::cut_for)'s outage, observed: `None` before any cut.
     pub fn last_outage(&self) -> Option<Outage> {
         let window = self.window();

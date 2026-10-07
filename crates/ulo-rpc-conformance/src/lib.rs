@@ -86,6 +86,14 @@ pub trait Broker: Sized + Send + Sync + 'static {
         None
     }
 
+    /// How many connections the client's link holds open through the environment, for the
+    /// client-close scenario, which requires them to end with the client's app and stay ended:
+    /// `Relay::open` counts them where a relay carries the client. `None`, the default, where the
+    /// environment cannot count them; UDP holds no connection to count.
+    fn client_connections(&self) -> impl Future<Output = Option<usize>> + Send {
+        async { None }
+    }
+
     /// How long this environment takes, which a slow broker raises.
     fn budget(&self) -> Budget {
         Budget::default()
@@ -176,6 +184,7 @@ macro_rules! conformance_suite {
             oversized_payload => payloads::oversized,
             drain => drain::drain,
             recovery_after_disrupt => recovery::after_disrupt,
+            client_close => client_close::client_close,
             two_instances => delivery::two_instances,
         );
     };

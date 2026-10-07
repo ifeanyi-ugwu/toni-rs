@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use ulo::app::{Bound as Serving, Connected};
 use ulo::{
     App, AppHandle, BoxError, Bound, CancelReason, Dep, ExecutionRef, Guard, Module, ModuleDef, ModuleIdentity, Shape,
-    Signal, StartupError, injectable, routes,
+    Shutdown, ShutdownError, Signal, StartupError, injectable, routes,
 };
 use ulo_rpc::{CallHeaders, Capabilities, Inbound, Link, Payload, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError};
 use ulo_transport::{Classify, ErrorKind};
@@ -35,6 +35,7 @@ pub(crate) const EVENT: &str = "conformance.event";
 pub(crate) const TALLY: &str = "conformance.tally";
 pub(crate) const STALL: &str = "conformance.stall";
 pub(crate) const HOLD: &str = "conformance.hold";
+pub(crate) const NEVER: &str = "conformance.never";
 pub(crate) const COUNT: &str = "conformance.count";
 pub(crate) const SUM: &str = "conformance.sum";
 pub(crate) const DOUBLE: &str = "conformance.double";
@@ -76,6 +77,8 @@ pub(crate) struct ProbeState {
     /// The ticking stream's execution's reason, written when the stream is dropped.
     cancelled: Mutex<Option<Option<CancelReason>>>,
     stopped: AtomicBool,
+    /// How many calls have reached the handler that never answers.
+    unanswered: AtomicUsize,
     /// The stalled call's execution's reason, written when its handler's future is dropped or
     /// returns.
     stalled: Mutex<Option<Option<CancelReason>>>,
@@ -102,6 +105,10 @@ impl Probe {
 
     pub(crate) fn stopped(&self) -> bool {
         self.0.stopped.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn unanswered(&self) -> usize {
+        self.0.unanswered.load(Ordering::SeqCst)
     }
 
     pub(crate) fn stalled(&self) -> Option<Option<CancelReason>> {
@@ -228,6 +235,18 @@ impl CoreController {
         tokio::select! {
             () = exec.cancelled() => {}
             () = tokio::time::sleep(Duration::from_secs(30)) => {}
+        }
+        Ok(())
+    }
+
+    /// Answers nothing while its server serves: it returns when its execution is cancelled or the
+    /// server drains, so the server's stop does not wait out the drain window for it.
+    #[ulo_rpc::message("conformance.never")]
+    async fn never(&self, exec: ExecutionRef) -> Result<(), Refusal> {
+        self.probe.0.unanswered.fetch_add(1, Ordering::SeqCst);
+        tokio::select! {
+            () = exec.cancelled() => {}
+            () = exec.draining() => {}
         }
         Ok(())
     }
@@ -420,7 +439,13 @@ impl Client {
     /// Closes the client's app, whose `RpcClientModule` closes the link while the broker is still
     /// there to answer it.
     pub(crate) async fn close(self) {
-        let _ = self.app.close(Signal::new("conformance")).await;
+        let _ = self.closed().await;
+    }
+
+    /// Closes the client's app as [`close`](Self::close) does, answering its report: a destroy hook
+    /// that timed out is one of its failures.
+    pub(crate) async fn closed(self) -> Result<Shutdown, ShutdownError> {
+        self.app.close(Signal::new("conformance")).await
     }
 }
 
