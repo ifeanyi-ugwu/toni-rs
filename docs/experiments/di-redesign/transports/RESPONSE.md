@@ -1190,8 +1190,8 @@ So the rule, stated once for every transport: after a deadline, an error handler
 
 ## Twenty-seventh response: the post-deadline stream build
 
-Received 2026-10-07, answering `divergences/race2b-tests9.md` (S1–S5 and its NATS note). Sign-off
-pending.
+Received 2026-10-07, answering `divergences/race2b-tests9.md` (S1–S5 and its NATS note). The user
+signed it off the same day.
 
 Four of the five are accepted. On HTTP's size-hint rule there's a better test, and one of the filed gaps deserves more priority than "filed".
 
