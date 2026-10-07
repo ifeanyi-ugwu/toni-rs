@@ -1213,8 +1213,10 @@ Four of the five are accepted. On HTTP's size-hint rule there's a better test, a
 ## Twenty-eighth response: reply construction and lint-clean generated code
 
 Received 2026-10-07, answering `divergences/race2b-tests10.md` (S1–S6), the two questions the batch
-10 fold left (the three gRPC trait names, the lint rule's scope) and RabbitMQ's slowdown. Sign-off
-pending.
+10 fold left (the three gRPC trait names, the lint rule's scope) and RabbitMQ's slowdown. The user
+signed it off the same day. For item 8, CI's timings were taken first and show no rise (31–46 s
+across batches 7–10); the quiet local run is deferred, since it means stopping the user's own
+containers, and is filed in the workspace gaps ledger.
 
 Six of the eight are accepted or need only a small note. Items 2 and 3 have a better answer, and item 6 contains a bug worth fixing first.
 
