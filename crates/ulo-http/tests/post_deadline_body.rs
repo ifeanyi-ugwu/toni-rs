@@ -3,24 +3,22 @@
 //! no further when the server waits on it, and, when it is a stream, its end reported to
 //! `on_stream_end` when the backend has written the buffered copy, not when the service read it.
 //!
-//! The backend here is the test: it keeps the `AppService` it is handed, and it decides whether
-//! a response body is written to its end or dropped before, which is how a peer leaving reaches
-//! the execution.
+//! The backend here is the test's `Keeper` (`common`).
+
+mod common;
 
 use std::convert::Infallible;
-use std::future::poll_fn;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use http_body::Body as _;
-use tokio::sync::Notify;
 use ulo::{App, AppHandle, BoxError, Bound, ErrorHandler, ExecutionRef, Module, ModuleDef, ModuleIdentity, Signal, StreamOutcome, injectable, routes};
-use ulo_http::{AppService, Backend, BackendLimits, Bytes, ConnInfo, Http, HttpBody, HttpConfig, HttpCx, MB, Request, Response, StatusCode, Timeout};
-use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_http::{AppService, Bytes, ConnInfo, Http, HttpBody, HttpCx, MB, Request, Response, StatusCode, Timeout};
 use ulo_transport::{CallError, ErrorKind, IntoReply};
+
+use common::{Keeper, written};
 
 const DEADLINE: Duration = Duration::from_millis(50);
 const GRACE: Duration = Duration::from_secs(2);
@@ -182,39 +180,6 @@ impl Module for Root {
     }
 }
 
-/// A backend that serves nothing itself: it keeps the `AppService`, and the test calls it.
-#[derive(Clone, Default)]
-struct Keeper {
-    svc: Arc<OnceLock<AppService>>,
-    drained: Arc<Notify>,
-}
-
-impl Backend for Keeper {
-    const NAME: &'static str = "keeper";
-
-    fn limits() -> BackendLimits {
-        BackendLimits::NONE
-    }
-
-    async fn bind(&mut self, _listeners: Vec<BoundListener>, _tls: Option<TlsAcceptor>, svc: AppService, _cfg: &HttpConfig) -> Result<(), BoxError> {
-        let _ = self.svc.set(svc);
-        Ok(())
-    }
-
-    async fn serve(&self) -> Result<(), BoxError> {
-        self.drained.notified().await;
-        Ok(())
-    }
-
-    async fn drain(&self) {
-        self.drained.notify_one();
-    }
-
-    async fn close(&self) -> Result<(), BoxError> {
-        Ok(())
-    }
-}
-
 struct Running {
     svc: AppService,
     ended: Ended,
@@ -242,7 +207,7 @@ impl Running {
         let serving = tokio::spawn(async move {
             let _ = app.serve(std::future::pending::<Signal>()).await;
         });
-        let svc = keeper.svc.get().cloned().expect("the backend was handed the service");
+        let svc = keeper.service();
         Running { svc, ended, handle, serving }
     }
 
@@ -257,22 +222,6 @@ impl Running {
         let _ = self.handle.close(Signal::new("test")).await;
         let _ = self.serving.await;
     }
-}
-
-/// The body's frames read to its end, as a backend writing it does; the body then dropped.
-async fn written(response: Response) -> (StatusCode, Vec<u8>) {
-    let (parts, mut body) = response.into_parts();
-    let mut data = Vec::new();
-    while let Some(frame) = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-        if let Ok(bytes) = frame.expect("the body yields no error").into_data() {
-            data.extend_from_slice(&bytes);
-        }
-        if body.is_end_stream() {
-            break;
-        }
-    }
-    drop(body);
-    (parts.status, data)
 }
 
 #[tokio::test]

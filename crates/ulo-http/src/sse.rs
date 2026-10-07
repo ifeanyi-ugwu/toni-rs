@@ -243,7 +243,7 @@ where
             cx: cx.clone(),
             state: State::Streaming,
         };
-        let mut response = Response::new(HttpBody::stream(Tracked::new(body, cx.exec().clone())));
+        let mut response = Response::new(HttpBody::stream(Tracked::new(body, cx.exec().clone())).marked());
         let headers = response.headers_mut();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));

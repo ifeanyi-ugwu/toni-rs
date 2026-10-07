@@ -18,8 +18,8 @@ pub async fn two_instances<B: Broker>() {
     let delivery = broker.link().capabilities().delivery;
     let first = server(&broker).await;
     let second = if delivery == DeliveryMode::Addressed { None } else { Some(server(&broker).await) };
-    let caller = client(&broker).await;
     let servers: Vec<&Server> = std::iter::once(&first).chain(second.as_ref()).collect();
+    let caller = client(&broker, &servers).await;
     ready(&broker, &caller.rpc, &servers).await;
     let budget = broker.budget();
     // The second instance's subscription settles before the events are published.

@@ -3,29 +3,30 @@
 //! and the binary one assert the startup refusals, and the oversized one the client's refusal
 //! one byte over the datagram. The recovery scenario is declared not applicable.
 
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr};
 
-use ulo_rpc_conformance::{Broker, report, startup_failed};
+use ulo::BoundAddr;
+use ulo_rpc_conformance::{Broker, startup_failed};
 use ulo_rpc_udp::Udp;
 
-struct Loopback {
-    addr: SocketAddr,
-}
+struct Loopback;
 
 impl Broker for Loopback {
     type Link = Udp;
 
-    /// A port the OS hands out and this process releases before the server binds it, so the
-    /// client's link can name it.
     async fn start() -> Self {
-        let probe =
-            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap_or_else(|error| startup_failed!("no loopback port is free: {}", report(&error)));
-        let addr = probe.local_addr().unwrap_or_else(|error| startup_failed!("the probe socket has no address: {}", report(&error)));
-        Loopback { addr }
+        Loopback
     }
 
+    /// Port 0: the OS chooses the server's port as it binds.
     fn link(&self) -> Udp {
-        Udp::new(self.addr)
+        Udp::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+    }
+
+    /// Aimed at the address the server bound.
+    fn client_link(&self, server: &[BoundAddr]) -> Udp {
+        let [bound] = server else { startup_failed!("expected one bound server address, got {server:?}") };
+        Udp::new(bound.addr)
     }
 
     /// UDP holds no connection to sever, and the recovery scenario is declared not applicable.

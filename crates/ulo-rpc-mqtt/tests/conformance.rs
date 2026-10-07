@@ -11,6 +11,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use ulo::BoundAddr;
 use ulo_rpc_conformance::{Broker, report, startup_failed};
 use ulo_rpc_conformance::relay::{Relay, reachable, unshadowed};
 use ulo_rpc_mqtt::Mqtt;
@@ -49,7 +50,7 @@ impl Broker for Mosquitto {
         Mqtt::url(format!("mqtt://{}", self.server))
     }
 
-    fn client_link(&self) -> Mqtt {
+    fn client_link(&self, _server: &[BoundAddr]) -> Mqtt {
         Mqtt::url(format!("mqtt://{}", self.relay.addr()))
     }
 

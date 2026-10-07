@@ -9,6 +9,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
+use ulo::BoundAddr;
 use ulo_rpc_conformance::{Broker, report, startup_failed};
 use ulo_rpc_conformance::relay::{Relay, reachable, unshadowed};
 use ulo_rpc_nats::Nats;
@@ -46,7 +47,7 @@ impl Broker for NatsServer {
         Nats::url(format!("nats://{}", self.server))
     }
 
-    fn client_link(&self) -> Nats {
+    fn client_link(&self, _server: &[BoundAddr]) -> Nats {
         Nats::url(format!("nats://{}", self.relay.addr()))
     }
 

@@ -12,7 +12,7 @@
 
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use tokio::net::{TcpListener, TcpStream};
@@ -21,9 +21,12 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::report;
 
-/// Forwards every connection made to its address to `upstream`.
+/// Forwards every connection made to its address to its upstream.
 pub struct Relay {
     addr: SocketAddr,
+    /// Set once: at the start, or by [`Relay::forward_to`] for a relay started before its upstream
+    /// was bound.
+    upstream: Arc<OnceLock<SocketAddr>>,
     /// One task per relayed connection, holding both of its sockets.
     connections: Arc<Mutex<JoinSet<()>>>,
     outage: Arc<StdMutex<Window>>,
@@ -54,6 +57,20 @@ impl Relay {
         Relay::listen(Relay::bind().await, upstream)
     }
 
+    /// A relay on a loopback port of its own whose upstream is not yet bound, as a server on port 0
+    /// is not until it listens; [`forward_to`](Self::forward_to) names it. A connection accepted
+    /// before that is closed at once, as a refused connect would fail it.
+    pub async fn without_upstream() -> Relay {
+        Relay::accepting(Relay::bind().await, OnceLock::new())
+    }
+
+    /// Forwards every connection accepted from now on to `upstream`. A relay forwards to one
+    /// upstream: naming another than the one it has fails the scenario.
+    pub fn forward_to(&self, upstream: SocketAddr) {
+        let current = *self.upstream.get_or_init(|| upstream);
+        assert_eq!(current, upstream, "the relay at {} already forwards to {current}", self.addr);
+    }
+
     /// A loopback listener for [`Relay::listen`], for an environment that has to name the relay's
     /// address before it knows the upstream one: a Kafka broker advertising the relay as its
     /// listener, say.
@@ -65,11 +82,16 @@ impl Relay {
 
     /// A relay accepting on `listener`, forwarding to `upstream`.
     pub fn listen(listener: TcpListener, upstream: SocketAddr) -> Relay {
+        Relay::accepting(listener, OnceLock::from(upstream))
+    }
+
+    fn accepting(listener: TcpListener, upstream: OnceLock<SocketAddr>) -> Relay {
         let addr = listener.local_addr().unwrap_or_else(|error| crate::startup_failed!("the relay's listener has no address: {}", report(&error)));
+        let upstream = Arc::new(upstream);
         let connections = Arc::new(Mutex::new(JoinSet::new()));
         let outage = Arc::new(StdMutex::new(Window::default()));
-        let accepting = tokio::spawn(accept(listener, upstream, Arc::clone(&connections), Arc::clone(&outage)));
-        Relay { addr, connections, outage, accepting }
+        let accepting = tokio::spawn(accept(listener, Arc::clone(&upstream), Arc::clone(&connections), Arc::clone(&outage)));
+        Relay { addr, upstream, connections, outage, accepting }
     }
 
     /// The address clients connect to.
@@ -189,11 +211,12 @@ pub async fn reachable(addr: SocketAddr, within: Duration) {
     }
 }
 
-/// Relays each connection to `upstream`, or closes it at once during an outage. An upstream
-/// refusing the relay's connect closes the client's connection, as a refused connect would fail
-/// the client's.
-async fn accept(listener: TcpListener, upstream: SocketAddr, connections: Arc<Mutex<JoinSet<()>>>, outage: Arc<StdMutex<Window>>) {
+/// Relays each connection to `upstream`, or closes it at once during an outage or while no
+/// upstream is set. An upstream refusing the relay's connect closes the client's connection, as a
+/// refused connect would fail the client's.
+async fn accept(listener: TcpListener, upstream: Arc<OnceLock<SocketAddr>>, connections: Arc<Mutex<JoinSet<()>>>, outage: Arc<StdMutex<Window>>) {
     while let Ok((mut client, _)) = listener.accept().await {
+        let Some(upstream) = upstream.get().copied() else { continue };
         {
             let mut window = outage.lock().unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();

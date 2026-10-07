@@ -18,7 +18,7 @@ use futures_util::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use ulo::app::{Bound as Serving, Connected};
 use ulo::{
-    App, AppHandle, BoxError, Bound, CancelReason, Dep, ErrorHandler, ExecutionRef, Guard, Module, ModuleDef,
+    App, AppHandle, BoundAddr, BoxError, Bound, CancelReason, Dep, ErrorHandler, ExecutionRef, Guard, Module, ModuleDef,
     ModuleIdentity, Shape, Shutdown, ShutdownError, Signal, StartupError, injectable, routes,
 };
 use ulo_rpc::{
@@ -450,6 +450,8 @@ impl Module for ServerRoot {
 pub(crate) struct Server {
     pub(crate) handle: AppHandle,
     pub(crate) probe: Probe,
+    /// What the app reported bound once it listened, for `Broker::client_link`.
+    pub(crate) addresses: Vec<BoundAddr>,
     serving: tokio::task::JoinHandle<()>,
     /// How `serve` returned, once it has: a server whose link failed after `listen` stops serving
     /// here, and [`ready`] reports it.
@@ -483,6 +485,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
         .await
         .unwrap_or_else(|error| crate::startup_failed!("the conformance server did not start: {}", report(&error)));
     let handle = app.handle();
+    let addresses = app.addresses();
     let ended = Arc::new(Mutex::new(None));
     let serving = tokio::spawn({
         let ended = Arc::clone(&ended);
@@ -494,7 +497,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
             *lock(&ended) = Some(outcome);
         }
     });
-    Server { handle, probe, serving, ended }
+    Server { handle, probe, addresses, serving, ended }
 }
 
 /// Asserts that a server mounting `mounts` is refused at startup as a `Configure` error: what a
@@ -547,8 +550,11 @@ impl Client {
     }
 }
 
-pub(crate) async fn client<B: Broker>(broker: &B) -> Client {
-    let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link())) })
+/// A client over the broker's client link, built once `servers` are bound so it can reach the
+/// addresses they report.
+pub(crate) async fn client<B: Broker>(broker: &B, servers: &[&Server]) -> Client {
+    let addresses: Vec<BoundAddr> = servers.iter().flat_map(|server| server.addresses.iter().cloned()).collect();
+    let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link(&addresses))) })
         .timer(ulo_tokio::Timer)
         .wire()
         .unwrap_or_else(|error| crate::startup_failed!("the conformance client did not wire: {}", report(&error)))
@@ -571,7 +577,7 @@ impl<B: Broker> Fixture<B> {
     pub(crate) async fn start() -> Fixture<B> {
         let broker = B::start().await;
         let server = server(&broker).await;
-        let client = client(&broker).await;
+        let client = client(&broker, &[&server]).await;
         ready(&broker, &client.rpc, &[&server]).await;
         Fixture { broker, server, client }
     }

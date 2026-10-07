@@ -19,6 +19,7 @@ use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use ulo::BoundAddr;
 use ulo_rpc_conformance::relay::{Outage, Relay, reachable, unshadowed};
 use ulo_rpc_conformance::{Broker, Budget, report, startup_failed};
 use ulo_rpc_kafka::Kafka;
@@ -100,7 +101,7 @@ impl Broker for KraftBroker {
         Kafka::brokers(self.server.addr().to_string())
     }
 
-    fn client_link(&self) -> Kafka {
+    fn client_link(&self, _server: &[BoundAddr]) -> Kafka {
         Kafka::brokers(self.client.addr().to_string())
     }
 

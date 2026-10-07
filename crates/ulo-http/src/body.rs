@@ -15,6 +15,10 @@ use ulo_transport::Tracked;
 /// the backend observes the peer close the connection or reset the stream.
 pub struct HttpBody {
     inner: UnsyncBoxBody<Bytes, BoxError>,
+    /// A `Tracked` inside reports this body's end, so neither `into_reply` nor the service wraps
+    /// it again. A body rebuilt around this one through [`HttpBody::new`] starts unmarked and is
+    /// wrapped again, and its end is reported once, the first report winning.
+    tracked: bool,
 }
 
 /// `HttpBody` under the name a response reads with: `Body::stream(s)`.
@@ -29,8 +33,9 @@ impl HttpBody {
         HttpBody::new(http_body_util::Full::new(bytes.into()))
     }
 
-    /// A streaming body: chunked encoding on HTTP/1.1, data frames on HTTP/2. As a reply it is
-    /// wrapped in `ulo_transport::Tracked`, so `on_stream_end` callbacks learn how it ended.
+    /// A streaming body: chunked encoding on HTTP/1.1, data frames on HTTP/2. The service wraps it
+    /// in `ulo_transport::Tracked` however the response holding it was built, so `on_stream_end`
+    /// callbacks learn how it ended.
     pub fn stream<S, E>(stream: S) -> Self
     where
         S: Stream<Item = Result<Bytes, E>> + Send + 'static,
@@ -48,17 +53,35 @@ impl HttpBody {
         B::Error: Into<BoxError>,
     {
         use http_body_util::BodyExt;
-        HttpBody { inner: body.map_err(Into::into).boxed_unsync() }
+        HttpBody { inner: body.map_err(Into::into).boxed_unsync(), tracked: false }
     }
 
     /// This body wrapped in `Tracked`, so the execution's `on_stream_end` callbacks learn whether
-    /// it was written to its end. A body of known length is written whole and returned as it is.
+    /// it was written to its end. A body of known length is written whole, and one already
+    /// wrapped reports its own end: each is returned as it is.
     pub(crate) fn tracked(self, exec: ExecutionRef) -> HttpBody {
-        if self.size_hint().exact().is_some() {
+        if self.tracked || self.size_hint().exact().is_some() {
             return self;
         }
         let frames = Tracked::new(http_body_util::BodyStream::new(self), exec);
-        HttpBody::new(http_body_util::StreamBody::new(frames))
+        HttpBody::new(http_body_util::StreamBody::new(frames)).marked()
+    }
+
+    /// This body marked as one a `Tracked` inside reports the end of.
+    pub(crate) fn marked(mut self) -> HttpBody {
+        self.tracked = true;
+        self
+    }
+
+    /// `wrap(self)` as a body, keeping this body's mark: for a wrapper that passes every frame on.
+    pub(crate) fn rewrapped<B>(self, wrap: impl FnOnce(HttpBody) -> B) -> HttpBody
+    where
+        B: http_body::Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError>,
+    {
+        let tracked = self.tracked;
+        let body = HttpBody::new(wrap(self));
+        if tracked { body.marked() } else { body }
     }
 }
 

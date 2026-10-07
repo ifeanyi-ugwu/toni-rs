@@ -5,7 +5,7 @@
 //! The tests run on a current-thread runtime, so the server's tasks emit their events on the test's
 //! thread, where [`Capture`] is the default subscriber.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -105,7 +105,7 @@ impl Module for ClientRoot {
     }
 }
 
-/// A server on a loopback port and a client app reaching it.
+/// A server on a loopback port the OS chose and a client app reaching it.
 struct Running {
     server: ulo::AppHandle,
     serving: tokio::task::JoinHandle<()>,
@@ -115,9 +115,6 @@ struct Running {
 
 impl Running {
     async fn start() -> Running {
-        let probe = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port is free");
-        let addr: SocketAddr = probe.local_addr().expect("the probe socket has an address");
-        drop(probe);
         let server = App::builder(ServerRoot)
             .timer(ulo_tokio::Timer)
             .wire()
@@ -125,10 +122,14 @@ impl Running {
             .connect()
             .await
             .expect("the server app connects")
-            .bind(ulo_rpc::Server::new(Tcp::new(addr)).timeout_grace(Bound::After(GRACE)))
+            .bind(ulo_rpc::Server::new(Tcp::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))).timeout_grace(Bound::After(GRACE)))
             .listen()
             .await
             .expect("the server listens");
+        let addr = match server.addresses().as_slice() {
+            [bound] => bound.addr,
+            other => panic!("expected the server to report one bound address, got {other:?}"),
+        };
         let handle = server.handle();
         let serving = tokio::spawn(async move {
             let _ = server.serve(std::future::pending::<Signal>()).await;

@@ -3,36 +3,36 @@
 //! stamps run on JSON links, so this one is where a payload encoded with a codec other than the
 //! link's fails.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
+use std::net::{Ipv4Addr, SocketAddr};
 
-use ulo_rpc_conformance::{Broker, report, startup_failed};
+use ulo::BoundAddr;
 use ulo_rpc_conformance::relay::Relay;
+use ulo_rpc_conformance::{Broker, startup_failed};
 use ulo_rpc::Codec;
 use ulo_rpc_tcp::Tcp;
 
 struct Loopback {
-    server: SocketAddr,
     relay: Relay,
 }
 
 impl Broker for Loopback {
     type Link = Tcp;
 
-    /// A port the OS hands out and this process releases before the server binds it, so the
-    /// relay can name it, and the relay listening on a port of its own.
+    /// The relay, listening on a port of its own; it learns the server's address from
+    /// `client_link`, once the server is bound.
     async fn start() -> Self {
-        let probe = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .unwrap_or_else(|error| startup_failed!("no loopback port is free: {}", report(&error)));
-        let server = probe.local_addr().unwrap_or_else(|error| startup_failed!("the probe socket has no address: {}", report(&error)));
-        drop(probe);
-        Loopback { server, relay: Relay::start(server).await }
+        Loopback { relay: Relay::without_upstream().await }
     }
 
+    /// Port 0: the OS chooses the server's port as it binds.
     fn link(&self) -> Tcp {
-        Tcp::new(self.server).codec(Codec::Cbor)
+        Tcp::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).codec(Codec::Cbor)
     }
 
-    fn client_link(&self) -> Tcp {
+    /// Through the relay, aimed at the address the server bound.
+    fn client_link(&self, server: &[BoundAddr]) -> Tcp {
+        let [bound] = server else { startup_failed!("expected one bound server address, got {server:?}") };
+        self.relay.forward_to(bound.addr);
         Tcp::new(self.relay.addr()).codec(Codec::Cbor)
     }
 

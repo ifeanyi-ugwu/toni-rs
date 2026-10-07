@@ -57,15 +57,17 @@ use crate::upgrade::UpgradeHandler;
 ///    dropped, the execution cancelled with `CancelReason::Deadline`, and the error handlers, the
 ///    matched handler's tiers then the global ones, receive `Timeout` under
 ///    `HttpConfig::timeout_grace`, which bounds their answer's body as well: unclaimed, not
-///    answered within the grace, or answered with a body still open when it runs out or past
-///    1 MiB within it, it renders 504.
+///    answered within the grace, or answered with a body still open when it runs out or, one the
+///    server waits on, past 1 MiB within it, it renders 504.
 /// 7. The `HttpCx` built from the request as the stage leaves it, and `ulo::dispatch` with the
 ///    route's call; an error no handler claims rendered as problem details, `Timeout` (504) when
 ///    the execution's cancel reason is `Deadline`.
 /// 8. The response's headers merged with `HttpCx::response_headers`, a `HEAD` answered by a `GET`
 ///    handler stripped of its body, [`Routing`] in its extensions (`Routing::Unrouted` when the
-///    request was answered before routing decided), and the body wrapped so that a drop before
-///    its end fires `CancelReason::Disconnected`. The request counts against the in-flight bound,
+///    request was answered before routing decided), a body of unknown length wrapped in
+///    `ulo_transport::Tracked` unless it already is, so `on_stream_end` learns how every stream
+///    ended whoever built the response, and the body wrapped so that a drop before its end fires
+///    `CancelReason::Disconnected`. The request counts against the in-flight bound,
 ///    and its execution stays open, until the backend drops that body.
 ///
 /// A panic while the backend polls the response body ends the body with an error frame, reports
@@ -178,7 +180,7 @@ impl ServiceInner {
             || status == StatusCode::NO_CONTENT
             || status == StatusCode::NOT_MODIFIED;
         let app = self.app.clone();
-        response.map(|body| HttpBody::new(ExecBody::new(body, handle, app, permit, unwritten)))
+        response.map(|body| HttpBody::new(ExecBody::new(body.tracked(handle.clone()), handle, app, permit, unwritten)))
     }
 
     /// The unscoped sub-step, routing after it.
@@ -261,10 +263,11 @@ impl ServiceInner {
         call_span.record(span::HANDLER, field::display(HandlerName(&target.handler)));
         let timeout = target.timeout;
         let response = match timeout {
-            None => self.scoped(handle, req, target, params).await,
-            Some(after) => self.timed(handle, req, target, params, after).await,
+            None => self.scoped(handle.clone(), req, target, params).await,
+            Some(after) => self.timed(handle.clone(), req, target, params, after).await,
         };
-        if head_from_get { without_body(response) } else { response }
+        // A stream dropped here is never written, and reports its end however it was built.
+        if head_from_get { without_body(response.map(|body| body.tracked(handle))) } else { response }
     }
 
     /// The scoped sub-step and `dispatch`, raced against the route's timeout.
@@ -281,7 +284,7 @@ impl ServiceInner {
         let conn = req.conn.clone();
         let pipeline = self.scoped(exec.clone(), req, Arc::clone(&target), params.clone());
         match race(pipeline, self.timer.sleep(after), &exec).await {
-            Raced::Done(response, deadline) => response.map(|body| HttpBody::new(TimedBody { inner: body, deadline, exec })),
+            Raced::Done(response, deadline) => response.map(|body| body.rewrapped(|inner| TimedBody { inner, deadline, exec })),
             Raced::Expired => self.expired(&exec, head, conn, &target, params).await,
         }
     }
@@ -293,7 +296,9 @@ impl ServiceInner {
     /// The grace bounds the body too: it is read under what remains of it and, ending in time,
     /// written whole with its exact length. A body whose end is reached on the first poll is
     /// already produced and is written whatever its size; one the server waits on is held to
-    /// [`BUFFER_CAP`], 1 MiB. A body still open when the grace runs out, an `Sse` among them, was
+    /// [`BUFFER_CAP`], 1 MiB. The first poll reads at most [`FRAMES_PER_POLL`] frames, so a body of
+    /// 33 or more frames over 1 MiB is one the server waits on and answers 504 even when every
+    /// frame is ready. A body still open when the grace runs out, an `Sse` among them, was
     /// not a single reply produced in time, and neither was a waited-on body that yields more than
     /// the cap before it ends: each is dropped for the same 504, logged at `warn`.
     async fn expired(&self, exec: &ExecutionRef, head: Arc<RequestHead>, conn: ConnInfo, target: &RouteTarget, params: PathParams) -> Response {

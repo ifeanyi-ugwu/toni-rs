@@ -34,6 +34,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use ulo::BoundAddr;
 use ulo_rpc::Link;
 
 use crate::relay::Outage;
@@ -72,7 +73,8 @@ macro_rules! startup_failed {
     };
 }
 
-/// One link's environment for the suite: a broker, or nothing for TCP and UDP.
+/// One link's environment for the suite: a broker, or, for TCP and UDP, the server's own socket,
+/// bound at port 0 and read back.
 pub trait Broker: Sized + Send + Sync + 'static {
     type Link: Link;
 
@@ -86,21 +88,26 @@ pub trait Broker: Sized + Send + Sync + 'static {
     /// Starts the environment for one scenario, so no state leaks between scenarios. Every
     /// scenario uses the same patterns, and on a broker the same default group and control lane,
     /// and the stamped tests run in parallel, up to [`PARALLEL`](Self::PARALLEL) at once, so each
-    /// start answers a broker or a namespace no other scenario shares: a fresh container, or a
-    /// fresh port on TCP and UDP. A container reached at a port published on the host is started
+    /// start answers a broker or a namespace no other scenario shares: a fresh container, or, on
+    /// TCP and UDP, a server link on port 0, whose port the OS chooses at the server's bind and
+    /// [`client_link`](Self::client_link) receives. A container reached at a port published on the host is started
     /// through [`relay::unshadowed`], so a host listener on the same port does not answer in its
     /// place, and a start that fails does so through [`startup_failed!`].
     fn start() -> impl Future<Output = Self> + Send;
 
     /// A link for the server, configured for this environment; called once per server instance,
     /// and for the link's `capabilities`, which the scenarios read to choose what they assert.
-    /// Every link it answers declares the same capabilities.
+    /// Every link it answers declares the same capabilities. A link that binds a socket binds port
+    /// 0, so no two servers, and no other process, contend for one the suite chose.
     fn link(&self) -> Self::Link;
 
-    /// A link for the client, called once per client: the server's link unless the environment
-    /// puts something between the two, such as a proxy `disrupt` cuts. It declares the
-    /// capabilities `link` does.
-    fn client_link(&self) -> Self::Link {
+    /// A link for the client, called once per client, after the scenario's servers are bound:
+    /// `server` holds every address they bound, `App<Bound>::addresses()` in the order they
+    /// started, empty on a broker link, whose servers bind nothing. The server's link unless the
+    /// environment puts something between the two, such as a proxy `disrupt` cuts, or the client
+    /// has to be given the port the server's bind chose. It declares the capabilities `link` does.
+    fn client_link(&self, server: &[BoundAddr]) -> Self::Link {
+        let _ = server;
         self.link()
     }
 

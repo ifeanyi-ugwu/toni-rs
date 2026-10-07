@@ -27,7 +27,8 @@ impl TransportMetadata for BodyLimit {
 /// response when it is produced within the grace, its body included: a body that ends in time is
 /// buffered and written whole, with its exact length. A body whose end is reached on the first
 /// poll, a `Full` among them, is written whatever its size; one the server waits on is buffered up
-/// to 1 MiB. Unclaimed, not answered within the grace, or answered with a body still open when the
+/// to 1 MiB. The first poll reads at most 32 frames, so a body of 33 or more frames over 1 MiB is
+/// one the server waits on and answers 504 even when every frame is ready. Unclaimed, not answered within the grace, or answered with a body still open when the
 /// grace runs out, an `Sse` among them, or a waited-on body yielding more than 1 MiB before it
 /// ends, it renders 504.
 ///
