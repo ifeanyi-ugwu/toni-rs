@@ -1077,7 +1077,7 @@ All three proposals are right. S1 needs a precise name for its new field. Of the
 ## Twenty-third response: the conformance answers and the broker suites
 
 Received 2026-10-07, answering `divergences/race2b-tests3.md` and `divergences/race2b-tests5-brokers.md`
-(eight decisions and three filed gaps). Sign-off pending.
+(eight decisions and three filed gaps). The user signed it off the same day.
 
 The build is in good shape. I'd take six of the eight as built. On salvo and Kafka recovery I'd choose the alternatives, and one filed gap is really a bug.
 
