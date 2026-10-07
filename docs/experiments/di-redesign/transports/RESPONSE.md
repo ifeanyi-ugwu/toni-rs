@@ -1319,7 +1319,7 @@ So "adopt a resource someone else made" becomes one rule across the design: list
 ## Thirty-first response: the service's stream wrap and the port-0 suites
 
 Received 2026-10-07, answering `divergences/race2b-tests13.md` (S1–S7), the question of a stream on a
-bodiless answer, and the remaining refused-endpoint test. Sign-off pending.
+bodiless answer, and the remaining refused-endpoint test. The user signed it off the same day.
 
 Five of the seven decisions are accepted as built. Decision 5 should change, decision 6 changes with the question, and decision 7 wants a knob rather than a constant.
 
