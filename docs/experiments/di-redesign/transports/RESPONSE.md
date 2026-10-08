@@ -1368,3 +1368,37 @@ All of batch 14's decisions are accepted, and S2 is right for a reason worth wri
 **F352. Fix it, with one deadline for both waits.** Accepting the gap would let a call arriving during the drain get `Timeout` instead of the `Unavailable` the design promises. That is pass-on-silence again, this time in what clients see. The drain window covers both the inbound stream's end and the refusals spawned during the drain. Refusals are small and fast, so a separate short bound would add a knob without protecting anything the drain deadline doesn't already protect.
 
 **NATS. Check this before accepting it as a limit.** The NATS protocol processes a connection's messages in order, and it answers a `PING` with a `PONG` only after processing everything sent before it. So *unsubscribe, then flush* closes the window: async-nats's `flush` sends a `PING` and waits for the `PONG`. When the `PONG` arrives, the server has processed the unsubscribe. Every message it routed to this client beforehand was written to the same TCP stream ahead of the `PONG`, so it has already arrived. If async-nats's `flush` behaves as the protocol says, F331 is a missing flush, not a limit. Probe it with the widened-window technique used for F347. If the probe holds, all three broker links confirm their drain and the rule has no exception. If it doesn't, declare it as a capability and assert it in the suite, as `holds_unserved` is, rather than leaving it as a documentation note.
+
+## Thirty-third response: the confirmed drain's sign-offs
+
+Received 2026-10-08, answering `divergences/race2b-tests17.md` (S1–S6) and the open bugs F354,
+F355 and F357. The user signed it off the same day, with two notes for the build: on RPC, matching HTTP moves the `Tracked` wrap out of `Reply::Many` into the dispatcher and keeps HTTP's one exception, a reply the error handlers answer after a passed deadline reporting `CutOff(Deadline)` when dropped; and the larger Receive Maximum is checked against the server's own admission bound, so the excess is refused `unavailable` rather than buffered.
+
+All six decisions are accepted. One name changes, and UDP gets one improvement. Of the three bugs, fix F354 and F357, and document F355 with a mitigation.
+
+### Decisions
+
+**S6. Yes, UDP declares it, but it reads what is already there first.** A datagram the kernel has already received sits readable in the socket's buffer. At close, the server does one final non-blocking read loop until the buffer is empty, answering each request found there `unavailable`. That rescues the datagrams that arrived just before close. What still can't be reached is a datagram arriving after the socket closes. A connected client socket usually learns of that through an ICMP "port unreachable", which surfaces as a refused receive and can map to `Unavailable`. But ICMP is often filtered, so it can't be relied on. So: do the final read, and keep the declaration, which then covers only the truly unreachable case.
+
+**S2. Accepted.** This is what the drain fix was supposed to expose: a stream that ends only when every client leaves meant every shutdown waited out the full deadline. Making TCP and UDP behave like the brokers is the right repair. That the same scenario found F356 shows it earning its place.
+
+**S5. Change RPC to match HTTP, then move the sentence to the core.** The rule should have one meaning everywhere: `on_stream_end` reports the reply actually sent, and a stream thrown away before sending was never a reply. A discarded `Reply::Many` reporting `CutOff` on RPC is the same bug HTTP had, where the discarded stream's report hid the real reply's outcome. Check WebSocket and gRPC against the same rule while you're there, so the core's doc can state it without a per-transport exception.
+
+**S1. Accepted.** The messages are lost either way, and an exact count makes the warning trustworthy.
+
+**S3. Accepted.** The link knows the filters and the core doesn't, so the link is the right place to name them.
+
+**S4. The new scenario is right, but flip the name to a positive capability.** The other capabilities state what a link *does*: `miss_signal`, `holds_unserved`, `durable_replies`. `unconfirmed_drain` states what it lacks, which reads backwards next to them, especially as `unconfirmed_drain: false`. Call it `confirms_drain: bool`, with **`true` as the default**. A new link then gets the strict assertion unless it explicitly declares otherwise. That is the safe default for a test contract: forgetting to declare fails a test rather than quietly loosening one. NATS and UDP declare `false`.
+
+### The open bugs
+
+**F354. Fix it the same way.** It is the same ordering MQTT had, and the fix is proven. That it never happened in a run doesn't matter: it was found by reading, it is real, and the fix is small.
+
+**F355. Document it as a limit tied to Receive Maximum, and make it rarer. Don't declare the capability.** A boolean can't express "confirmed unless more than Receive Maximum requests are outstanding". Declaring `confirms_drain: false` would loosen the MQTT test for every case to cover one corner, which hides more than it reveals. Two mitigations instead:
+
+- The link announces the largest Receive Maximum it can handle in its CONNECT, so the broker has less reason to hold publishes back.
+- The MQTT row documents the remaining condition precisely: a request can still be lost at shutdown only when more requests are outstanding than the broker's flow control allows.
+
+The scenario keeps its strict assertion, at a load below that limit.
+
+**F357. Retry in the link, limited to those three codes.** This differs from the earlier "no retry at bind" decision (U19). There, the broker was unreachable, and retrying would hide a real configuration error. Here, the broker is reachable and its coordinator is still warming up, and librdkafka itself classes these errors as retriable. Retrying only those three codes, within the existing bind timeout, follows the library's own judgment and keeps the one-report-at-startup rule. Asking every deployment's environment to wait for Kafka's internal coordinator first would push a broker detail onto every operator.
