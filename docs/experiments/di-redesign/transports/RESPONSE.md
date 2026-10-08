@@ -1345,7 +1345,7 @@ Five of the seven decisions are accepted as built. Decision 5 should change, dec
 ## Thirty-second response: batch 14's sign-offs and the confirmed drain
 
 Received 2026-10-08, answering `divergences/race2b-tests14.md` (S1–S5) and F351/F352 from the MQTT
-hunts (`race2b-tests15-mqtt.md`, `race2b-tests16-mqtt.md`). The user signed it off the same day, with two notes for the build: F331 records that async-nats removes a subscription locally when it queues the unsubscribe, so the probe decides between the flush and the declared capability; and two of the five broker links (Redis, RabbitMQ, Kafka being the other three beside NATS and MQTT) are not named, so the build checks whether each confirms its drain and reports, changing none of them.
+hunts (`race2b-tests15-mqtt.md`, `race2b-tests16-mqtt.md`). The user signed it off the same day, with two notes for the build: F331 records that async-nats removes a subscription locally when it queues the unsubscribe, so the probe decides between the flush and the declared capability; and the response names three broker links where there are five, Redis, RabbitMQ and Kafka being unnamed, so the build checks whether each confirms its drain and reports, changing none of them.
 
 All of batch 14's decisions are accepted, and S2 is right for a reason worth writing down. On the drain bugs: fix both. The NATS "limit" may not be one.
 
