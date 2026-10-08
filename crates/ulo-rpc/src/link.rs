@@ -249,14 +249,16 @@ pub struct Capabilities {
     /// connection is then answered, rather than failed `Unavailable` as on a link whose replies
     /// the outage loses.
     pub durable_replies: bool,
-    /// The link's drain cannot confirm that nothing more is on its way to the server, and a request
-    /// already on its way can be lost: the NATS client removes a drained subscription before the
-    /// server has processed the unsubscribe and discards what arrives for it afterwards, and UDP
-    /// tells no caller to stop sending, a datagram still in the socket when the server closes being
-    /// dropped. A caller reaching a draining server can then see its own `Timeout` rather than
-    /// `Unavailable`; once the server has closed, a miss is reported as on any link with
+    /// The link's drain returns only once nothing more is on its way to the server, so every
+    /// request that reached it is answered, `Unavailable` once it is draining. `true` unless a link
+    /// declares otherwise, so a link that does not declare it is held to the confirmed drain. A link
+    /// declaring `false` cannot confirm it, and a request already on its way can be lost: the NATS
+    /// client removes a drained subscription before the server has processed the unsubscribe and
+    /// discards what arrives for it afterwards, and a datagram reaching a UDP server after its
+    /// socket closes is dropped. A caller reaching a draining server can then see its own `Timeout`
+    /// rather than `Unavailable`; once the server has closed, a miss is reported as on any link with
     /// `miss_signal`.
-    pub unconfirmed_drain: bool,
+    pub confirms_drain: bool,
 }
 
 /// Every call shape, for a link that carries them all.
@@ -268,8 +270,8 @@ pub const UNARY_ONLY: &[Shape] = &[Shape::Unary];
 impl Capabilities {
     /// A link delivering as `delivery`, carrying every shape, JSON, unordered, with no frame limit,
     /// no native backpressure, no miss signal, nothing held for a server that has gone, no reply
-    /// kept through a client's outage, and a drain that returns once the broker has stopped
-    /// routing to the server.
+    /// kept through a client's outage, and a confirmed drain: `confirms_drain` is the one
+    /// capability `new` sets `true`.
     pub const fn new(delivery: DeliveryMode) -> Self {
         Capabilities {
             binary: false,
@@ -281,7 +283,7 @@ impl Capabilities {
             miss_signal: false,
             holds_unserved: false,
             durable_replies: false,
-            unconfirmed_drain: false,
+            confirms_drain: true,
         }
     }
 
@@ -317,8 +319,8 @@ impl Capabilities {
         Capabilities { durable_replies, ..self }
     }
 
-    pub const fn unconfirmed_drain(self, unconfirmed_drain: bool) -> Self {
-        Capabilities { unconfirmed_drain, ..self }
+    pub const fn confirms_drain(self, confirms_drain: bool) -> Self {
+        Capabilities { confirms_drain, ..self }
     }
 }
 

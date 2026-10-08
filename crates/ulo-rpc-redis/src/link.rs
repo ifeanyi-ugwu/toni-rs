@@ -10,9 +10,10 @@ use tokio::task::AbortHandle;
 use ulo::{AppHandle, BoxError, BoxFuture};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
-    Ack, CallHeaders, Capabilities, Codec, Delivery, DeliveryMode, Frame, Link, NoDestination, Ordering as Order,
+    Ack, CallHeaders, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, Link, NoDestination, Ordering as Order,
     Outbound, Pattern, ReplyPath, ReplyTo,
 };
+use ulo_transport::{Details, ErrorKind};
 
 /// The reserved header a `req` or `open` frame carries in its `h`: the caller's reply channel.
 /// Redis Pub/Sub has no reply address of its own, so the whole frame carries it, and the server
@@ -129,8 +130,11 @@ impl Link for Redis {
         let watched = Arc::clone(&side);
         tokio::spawn(async move {
             let mut count = watched.calls.count.subscribe();
-            let _ = count.wait_for(|held| *held == 0).await;
-            lock(&watched.deliveries).take();
+            while count.wait_for(|held| *held == 0).await.is_ok() {
+                if watched.end_if_idle() {
+                    return;
+                }
+            }
         });
     }
 
@@ -141,8 +145,9 @@ impl Link for Redis {
         };
         if let Some((side, task)) = server {
             side.phase.send_replace(Phase::Closed);
-            side.calls.clear();
+            // Taken before the table is cleared, so no call is held once it is.
             lock(&side.deliveries).take();
+            side.calls.clear();
             lock(&side.sink).take();
             task.abort();
         }
@@ -221,15 +226,21 @@ struct ServerSide {
     sink: Mutex<Option<PubSubSink>>,
     calls: Arc<Calls>,
     phase: watch::Sender<Phase>,
-    /// Taken once draining holds no call, or at close, which ends the inbound stream.
+    /// Taken once draining holds no call, or at close, which ends the inbound stream. Its lock is
+    /// held while a call is held and handed over, and while the drain's watcher checks that no
+    /// call is held and takes it, so the stream never ends between the two.
     deliveries: Mutex<Option<mpsc::UnboundedSender<Delivery>>>,
 }
 
 impl ServerSide {
-    fn deliver(&self, delivery: Delivery) {
-        if let Some(deliveries) = lock(&self.deliveries).as_ref() {
-            let _ = deliveries.send(delivery);
+    /// Ends the inbound stream if no call is held, answering whether it has ended.
+    fn end_if_idle(&self) -> bool {
+        let mut deliveries = lock(&self.deliveries);
+        if !self.calls.is_empty() {
+            return false;
         }
+        deliveries.take();
+        true
     }
 
     async fn on_message(&self, channel: &str, payload: &[u8]) {
@@ -240,7 +251,17 @@ impl ServerSide {
                 return;
             }
         };
+        if let Some((wire, reply)) = self.accept(channel, frame) {
+            self.refuse(wire, &reply, channel).await;
+        }
+    }
+
+    /// Hands `frame` to the server while the inbound stream takes it. A request or streamed
+    /// request it no longer takes comes back as its wire id and reply channel, to be refused.
+    fn accept(&self, channel: &str, frame: Frame) -> Option<(u64, String)> {
+        let deliveries = lock(&self.deliveries);
         if channel == CONTROL {
+            let sender = deliveries.as_ref()?;
             let delivery = match frame {
                 Frame::In { id, data } => self.calls.get(&id.to_string()).map(|(local, path)| (Frame::In { id: local, data }, path)),
                 Frame::InEnd { id } => self.calls.get(&id.to_string()).map(|(local, path)| (Frame::InEnd { id: local }, path)),
@@ -248,33 +269,68 @@ impl ServerSide {
                 _ => None,
             };
             if let Some((frame, path)) = delivery {
-                self.deliver(Delivery { frame, reply: Some(path), ack: Ack::none() });
+                let _ = sender.send(Delivery { frame, reply: Some(path), ack: Ack::none() });
             }
-            return;
+            return None;
         }
         match frame {
             Frame::Evt { headers, data, .. } => {
-                self.deliver(Delivery { frame: Frame::Evt { pattern: channel.to_owned(), headers, data }, reply: None, ack: Ack::none() });
+                if let Some(sender) = deliveries.as_ref() {
+                    let frame = Frame::Evt { pattern: channel.to_owned(), headers, data };
+                    let _ = sender.send(Delivery { frame, reply: None, ack: Ack::none() });
+                }
+                None
             }
             Frame::Req { id, headers, data, .. } => {
                 let (headers, reply) = split_reply(headers);
                 let Some(reply) = reply else {
                     tracing::warn!(channel, "the Redis link dropped a request naming no reply channel");
-                    return;
+                    return None;
                 };
-                let (local, path) = self.hold(id, reply);
-                self.deliver(Delivery { frame: Frame::Req { id: local, pattern: channel.to_owned(), headers, data }, reply: Some(path), ack: Ack::none() });
+                let Some(sender) = deliveries.as_ref() else { return Some((id, reply)) };
+                let (local, path) = self.hold(id, reply.clone());
+                let frame = Frame::Req { id: local, pattern: channel.to_owned(), headers, data };
+                if sender.send(Delivery { frame, reply: Some(path), ack: Ack::none() }).is_ok() {
+                    return None;
+                }
+                self.calls.release(&id.to_string());
+                Some((id, reply))
             }
             Frame::Open { id, headers, .. } => {
                 let (headers, reply) = split_reply(headers);
                 let Some(reply) = reply else {
                     tracing::warn!(channel, "the Redis link dropped a streamed request naming no reply channel");
-                    return;
+                    return None;
                 };
-                let (local, path) = self.hold(id, reply);
-                self.deliver(Delivery { frame: Frame::Open { id: local, pattern: channel.to_owned(), headers }, reply: Some(path), ack: Ack::none() });
+                let Some(sender) = deliveries.as_ref() else { return Some((id, reply)) };
+                let (local, path) = self.hold(id, reply.clone());
+                let frame = Frame::Open { id: local, pattern: channel.to_owned(), headers };
+                if sender.send(Delivery { frame, reply: Some(path), ack: Ack::none() }).is_ok() {
+                    return None;
+                }
+                self.calls.release(&id.to_string());
+                Some((id, reply))
             }
-            other => tracing::warn!(channel, kind = other.kind(), "the Redis link dropped a frame a pattern's channel does not carry"),
+            other => {
+                tracing::warn!(channel, kind = other.kind(), "the Redis link dropped a frame a pattern's channel does not carry");
+                None
+            }
+        }
+    }
+
+    /// Answers a request or streamed request that arrived once the inbound stream ended `err` of
+    /// kind `unavailable`, as the server answers one during the drain. Redis delivers what it
+    /// published before processing the drain's UNSUBSCRIBE, and the server lane may read it after
+    /// the stream ended; dropping it would leave the caller to its own `Timeout`.
+    async fn refuse(&self, wire: u64, reply: &str, channel: &str) {
+        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+        let mut publisher = self.publisher.clone();
+        let refused = match self.codec.encode_frame(&Frame::Err { id: wire, error }) {
+            Ok(bytes) => publish(&mut publisher, reply, &bytes).await.map(|_| ()),
+            Err(error) => Err(BoxError::from(error)),
+        };
+        if let Err(error) = refused {
+            tracing::warn!(%error, channel, "the Redis link could not refuse a request that arrived after the drain");
         }
     }
 
@@ -328,6 +384,10 @@ impl Calls {
 
     fn get(&self, key: &str) -> Option<(u64, ReplyPath)> {
         lock(&self.held).get(key).cloned()
+    }
+
+    fn is_empty(&self) -> bool {
+        lock(&self.held).is_empty()
     }
 
     fn release(&self, key: &str) -> Option<(u64, ReplyPath)> {

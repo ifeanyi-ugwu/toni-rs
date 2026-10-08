@@ -67,14 +67,12 @@ use crate::upgrade::UpgradeHandler;
 ///    request was answered before routing decided), a body of unknown length wrapped in
 ///    `ulo_transport::Tracked` unless it already is, so `on_stream_end` learns how every stream
 ///    ended whoever built the response, and the body wrapped so that a drop before its end fires
-///    `CancelReason::Disconnected`. `on_stream_end` reports the reply actually written: a stream
-///    discarded before the response is sent is not a reply and reports nothing. The request counts
-///    against the in-flight bound, and its execution stays open, until the backend drops that
-///    body. A stream the backend never writes, on a `HEAD` answer or a 1xx, 204 or 304, reports
-///    `Completed` instead, when the service answers: the outcome concerns the body, and such a
-///    response owes the client none. A peer leaving before the head is written is a connection
-///    failure, not an incomplete body. A status that forbids a body carrying a stream is logged at
-///    `warn`.
+///    `CancelReason::Disconnected`. The request counts against the in-flight bound, and its
+///    execution stays open, until the backend drops that body. A stream the backend never writes,
+///    on a `HEAD` answer or a 1xx, 204 or 304, reports `Completed` instead, when the service
+///    answers: the outcome concerns the body, and such a response owes the client none. A peer
+///    leaving before the head is written is a connection failure, not an incomplete body. A status
+///    that forbids a body carrying a stream is logged at `warn`.
 ///
 /// A panic while the backend polls the response body ends the body with an error frame, reports
 /// the stream `CutOff` and is logged as `PanicRecovered` with stage `Handler`, so it never

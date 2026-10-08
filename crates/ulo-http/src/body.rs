@@ -34,10 +34,8 @@ impl HttpBody {
     }
 
     /// A streaming body: chunked encoding on HTTP/1.1, data frames on HTTP/2. The service wraps it
-    /// in `ulo_transport::Tracked` however the response holding it was built, so `on_stream_end`
-    /// callbacks learn how it ended. They report the reply actually written: a stream discarded
-    /// before the response is sent, as one an interceptor replaces with an answer of its own, is
-    /// not a reply and reports nothing.
+    /// in `ulo_transport::Tracked` as it answers, however the response holding it was built, so
+    /// `on_stream_end` callbacks learn how it ended.
     pub fn stream<S, E>(stream: S) -> Self
     where
         S: Stream<Item = Result<Bytes, E>> + Send + 'static,

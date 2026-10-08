@@ -7,9 +7,10 @@
 //! execution with `CancelReason::Deadline`, and offers the error handlers, the handler's tiers then
 //! the global ones, a `Timeout` under `Server::timeout_grace`: what they answer, or the error they
 //! return written as it stands, is the reply; unclaimed, or with no answer by the end of the
-//! grace, the call answers `err` of kind `timeout`. A stream they answer is dropped unread and the
-//! call answers that `err` too, logged at `warn`: the caller stopped waiting at the deadline, and
-//! the grace bounds the error handlers, not a stream they return. A deadline passing once a
+//! grace, the call answers `err` of kind `timeout`. A stream they answer is dropped unread, its
+//! `on_stream_end` reporting `CutOff(Deadline)`, and the call answers that `err` too, logged at
+//! `warn`: the caller stopped waiting at the deadline, and the grace bounds the error handlers, not
+//! a stream they return. A deadline passing once a
 //! streamed reply began ends it with that `err`, offered to no error handler.
 //!
 //! The serve loop routes every frame in arrival order before anything awaits: a `req`, `evt` or
@@ -413,9 +414,14 @@ async fn answer(
         Outcome::Done(Ok(Reply::One(data))) | Outcome::Expired(Some(Ok(Reply::One(data)))) => {
             send(reply, exec, id, Frame::Res { id, data }).await;
         }
-        Outcome::Done(Ok(Reply::Many(stream))) => stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await,
+        Outcome::Done(Ok(Reply::Many(stream))) => {
+            let stream = Tracked::new(stream, exec.clone());
+            stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await;
+        }
         Outcome::Expired(Some(Ok(Reply::Many(stream)))) => {
-            drop(stream);
+            // The error handlers answered with this stream, so it is the reply, dropped unwritten:
+            // tracked for that drop, it reports `CutOff(Deadline)`.
+            drop(Tracked::new(stream, exec.clone()));
             tracing::warn!(
                 pattern = cx.pattern(),
                 handler = handler.map(MountedHandler::name),

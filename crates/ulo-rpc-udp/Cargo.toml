@@ -18,6 +18,7 @@ futures-core.workspace = true
 futures-util.workspace = true
 ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }
+socket2.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "rt", "macros", "time"] }
 tracing.workspace = true
 

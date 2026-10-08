@@ -43,6 +43,14 @@ const DOMAIN: &str = "ulo.rpc";
 /// of 10 KiB would refuse ordinary replies.
 const MAX_INCOMING: u32 = 268_435_455;
 
+/// The Receive Maximum this link announces in its CONNECT, MQTT 5's largest: the QoS 1 and 2
+/// publishes the broker may have unacknowledged to it at once. rumqttc acknowledges a publish as
+/// its event loop reads it, so the window bounds only what is on its way; the server's own
+/// in-flight bound, `Server::max_inflight` when set, refuses what it will not take. MQTT 5 reads
+/// an absent Receive Maximum as 65,535, but Mosquitto 2.0 then applies its own
+/// `max_inflight_messages`, 20 unset, and holds the rest back.
+const RECEIVE_MAXIMUM: u16 = u16::MAX;
+
 /// The MQTT v5 link.
 pub struct Mqtt {
     pub(crate) url: String,
@@ -231,7 +239,10 @@ impl Link for Mqtt {
         // The broker routes requests here until it has processed each UNSUBSCRIBE, and writes
         // every PUBLISH it routed before that ahead of the UNSUBACK, which the event loop reads in
         // order: once every UNSUBACK is in, nothing more is routed here and what was routed has
-        // been delivered. No bound of its own: the core drops this future at the drain's deadline.
+        // been delivered. MQTT 5 §3.10.4 lets a broker deliver after the UNSUBACK a publish it held
+        // back for this instance's flow control, which only more than `RECEIVE_MAXIMUM`
+        // unacknowledged publishes, or a smaller cap the broker applies, would leave it holding.
+        // No bound of its own: the core drops this future at the drain's deadline.
         let unconfirmed = Unconfirmed(Some(Arc::clone(&side)));
         let _ = side.unconfirmed.subscribe().wait_for(|filters| *filters == 0).await;
         unconfirmed.disarm();
@@ -368,6 +379,7 @@ impl Target {
         let mut options = MqttOptions::new(client_id, self.host.clone(), self.port);
         options.set_keep_alive(Duration::from_secs(10));
         options.set_max_packet_size(Some(MAX_INCOMING));
+        options.set_receive_maximum(Some(RECEIVE_MAXIMUM));
         if let Some((user, password)) = &self.credentials {
             options.set_credentials(user.clone(), password.clone());
         }

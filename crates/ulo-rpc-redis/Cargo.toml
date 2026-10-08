@@ -20,6 +20,7 @@ integration = []
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
+ulo-transport = { path = "../ulo-transport" }
 futures-core.workspace = true
 futures-util.workspace = true
 redis = { workspace = true, features = ["connection-manager"] }

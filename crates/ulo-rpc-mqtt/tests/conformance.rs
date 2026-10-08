@@ -3,8 +3,8 @@
 //! 2.x supports MQTT v5 shared subscriptions; the image's `/mosquitto-no-auth.conf` listens on
 //! every interface and allows anonymous clients, which the default configuration does not.
 //!
-//! Beside the suite, four tests drive the link through `Link` directly, for orderings inside it
-//! that no scenario reaches on its own.
+//! Beside the suite, five tests drive the link through `Link` directly, for orderings inside it
+//! that no scenario reaches on its own and for the flow-control window it announces.
 
 #![cfg(feature = "integration")]
 
@@ -200,6 +200,78 @@ async fn a_drain_dropped_before_the_broker_confirms_logs_the_filters() {
         "no `warn` naming the unconfirmed filter `{filter}`: {warnings:?}",
     );
     server.close().await.expect("the server's link closes");
+}
+
+/// The broker puts every request routed to a server instance in flight at once, holding none back
+/// for flow control: the link announces a Receive Maximum of 65,535 in its CONNECT, and Mosquitto
+/// otherwise applies its own `max_inflight_messages`, 20 unset. The server reaches the broker
+/// through a relay that, once armed, forwards nothing the server writes, so no PUBACK reaches the
+/// broker and every request it sends stays unacknowledged.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_broker_holds_back_no_request_for_flow_control() {
+    const FLOODED: &str = "link.flooded";
+    const SENT: usize = 50;
+    let broker = Mosquitto::start().await;
+    let relay = Muting::start(broker.server).await;
+    let server = Mqtt::url(format!("mqtt://{}", relay.addr)).group("flow_control");
+    let mut inbound = server.listen(&[Pattern::from(FLOODED)]).await.expect("the server's link listens");
+    relay.mute();
+    let client = broker.link();
+    let outbound = client.connect().await.expect("the client's link connects");
+
+    for id in 1..=SENT as u64 {
+        let request = Frame::Req { id, pattern: FLOODED.to_owned(), headers: CallHeaders::new(), data: Data::new(Bytes::from_static(b"null")) };
+        (outbound.send)(Pattern::from(FLOODED), request, None).await.expect("the request is published");
+    }
+    let mut received = 0;
+    while received < SENT {
+        match next_frame(&mut inbound).await {
+            Some(Frame::Req { .. }) => received += 1,
+            other => panic!("{received} of {SENT} requests reached the server unacknowledged; then: {other:?}"),
+        }
+    }
+    client.close().await.expect("the client's link closes");
+    server.close().await.expect("the server's link closes");
+}
+
+/// A TCP relay to `target` for one connection that, once muted, forwards what the target sends
+/// and nothing the other side writes.
+struct Muting {
+    addr: SocketAddr,
+    muted: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Muting {
+    async fn start(target: SocketAddr) -> Muting {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.expect("a loopback port");
+        let addr = listener.local_addr().expect("the relay's address");
+        let muted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let outward = Arc::clone(&muted);
+        tokio::spawn(async move {
+            let Ok((inner, _)) = listener.accept().await else { return };
+            let Ok(outer) = tokio::net::TcpStream::connect(target).await else { return };
+            let (mut inner_read, mut inner_write) = inner.into_split();
+            let (mut outer_read, mut outer_write) = outer.into_split();
+            tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut outer_read, &mut inner_write).await;
+            });
+            let mut buffer = vec![0u8; 16 * 1024];
+            while let Ok(read) = inner_read.read(&mut buffer).await {
+                if read == 0 {
+                    return;
+                }
+                if !outward.load(Ordering::Acquire) && outer_write.write_all(&buffer[..read]).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Muting { addr, muted }
+    }
+
+    fn mute(&self) {
+        self.muted.store(true, Ordering::Release);
+    }
 }
 
 /// The process's subscriber, installed by the first test that reads it. A thread-local one would

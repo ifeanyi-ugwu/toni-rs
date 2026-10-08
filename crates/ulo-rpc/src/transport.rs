@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
-use ulo_transport::{CallError, ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
+use ulo_transport::{CallError, ExtractError, FromCall, IntoReply, IntoReplyError};
 
 use crate::codec::Codec;
 use crate::frame::Data;
@@ -148,7 +148,7 @@ impl RpcCx {
         let items: BoxStream<'static, Result<Data, BoxError>> = Box::pin(items.map(move |item| {
             item.and_then(|value| codec.encode(&value).map_err(|err| BoxError::from(CallError::from(IntoReplyError::new(err)))))
         }));
-        Reply::Many(Tracked::new(items, self.exec().clone()))
+        Reply::Many(items)
     }
 }
 
@@ -166,15 +166,18 @@ impl FromCall<Rpc> for RpcCx {
 }
 
 /// What a handler answers, and what an interceptor's `next.run()` returns: nothing (an event, or
-/// a call answered with an empty `res`), one payload written as `res`, or a stream of payloads
-/// tracked for its end, each written as `item` and the end as `end`. An `Err` item runs
-/// `dispatch_late` and is written as `err`, which ends the stream and is reported `CutOff`. An
-/// error handler builds one from a value with [`RpcCx::reply`] or [`RpcCx::reply_stream`], which
-/// encode with the link's codec.
+/// a call answered with an empty `res`), one payload written as `res`, or a stream of payloads,
+/// each written as `item` and the end as `end`. An `Err` item runs `dispatch_late` and is written
+/// as `err`, which ends the stream and is reported `CutOff`. An error handler builds one from a
+/// value with [`RpcCx::reply`] or [`RpcCx::reply_stream`], which encode with the link's codec.
+///
+/// The dispatcher tracks a stream for `on_stream_end` once it writes it as the call's reply. A
+/// stream an interceptor discards, answering something else, was never the reply and reports
+/// nothing.
 pub enum Reply {
     None,
     One(Data),
-    Many(Tracked<BoxStream<'static, Result<Data, BoxError>>>),
+    Many(BoxStream<'static, Result<Data, BoxError>>),
 }
 
 /// A reply already built, an interceptor's or a hand-written one, answered as it stands.

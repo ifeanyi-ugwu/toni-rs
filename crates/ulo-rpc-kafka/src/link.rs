@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -10,7 +10,7 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, StreamConsumer};
-use rdkafka::error::KafkaError;
+use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::message::{Header, Headers, Message, OwnedHeaders, OwnedMessage};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::types::RDKafkaErrorCode;
@@ -352,6 +352,10 @@ async fn create_topics(base: &ClientConfig, topics: &[String], partitions: i32, 
 /// record produced while no instance consumed it, or while a rebalance moved it, would be skipped.
 /// Kafka accepts a commit from outside a group only while the group is empty, so an instance
 /// joining a running group leaves the offsets to the instances already in it.
+///
+/// Reading the committed offsets asks the group's coordinator, which a broker that has just
+/// started, or is moving the coordinator, may not have ready: those three errors are retried
+/// within the call's own timeout (`coordinator_retried`); any other fails `bind` at once.
 async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(), BoxError> {
     let mut config = base.clone();
     config.set("group.id", group).set("enable.auto.commit", "false");
@@ -360,7 +364,7 @@ async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(
     let group = group.to_owned();
     // Every call below blocks the calling thread.
     tokio::task::spawn_blocking(move || -> Result<(), BoxError> {
-        let timeout = Timeout::After(Duration::from_secs(10));
+        let timeout = Timeout::After(ANCHOR_TIMEOUT);
         let mut every = TopicPartitionList::new();
         for topic in &topics {
             let metadata = consumer.fetch_metadata(Some(topic), timeout)?;
@@ -368,7 +372,13 @@ async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(
                 every.add_partition(topic, partition.id());
             }
         }
-        let committed = consumer.committed_offsets(every, timeout)?;
+        let deadline = Instant::now() + ANCHOR_TIMEOUT;
+        let committed = coordinator_retried(
+            deadline,
+            |remaining| consumer.committed_offsets(every.clone(), Timeout::After(remaining)),
+            std::thread::sleep,
+            Instant::now,
+        )?;
         let mut start = TopicPartitionList::new();
         for unset in committed.elements().into_iter().filter(|element| element.offset() == Offset::Invalid) {
             let (_, end) = consumer.fetch_watermarks(unset.topic(), unset.partition(), timeout)?;
@@ -382,6 +392,47 @@ async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(
         Ok(())
     })
     .await?
+}
+
+/// How long each of `anchor`'s broker calls may take, the committed-offsets read with its
+/// retries included.
+const ANCHOR_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The first wait before a retry of a coordinator not yet ready, doubled after each up to
+/// [`RETRY_BACKOFF_MAX`].
+const RETRY_BACKOFF: Duration = Duration::from_millis(100);
+const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+/// `attempt`, given the time left before `deadline`, retried while it fails with one of the
+/// three errors a group coordinator answers while it loads or moves, which librdkafka classes
+/// retriable, and a retry still fits before `deadline`; the last error is returned once one does
+/// not. Any other error is returned at once. `sleep` and `now` are the clock: `anchor` runs on a
+/// blocking thread, where the app's `Timer`, which a link is not handed, would not run either.
+fn coordinator_retried<T>(
+    deadline: Instant,
+    mut attempt: impl FnMut(Duration) -> KafkaResult<T>,
+    mut sleep: impl FnMut(Duration),
+    now: impl Fn() -> Instant,
+) -> KafkaResult<T> {
+    let mut backoff = RETRY_BACKOFF;
+    loop {
+        let outcome = attempt(deadline.saturating_duration_since(now()));
+        match &outcome {
+            Err(KafkaError::MetadataFetch(code)) if coordinator_not_ready(*code) && now() + backoff < deadline => {
+                tracing::debug!(%code, ?backoff, "the Kafka group coordinator is not ready; retrying");
+                sleep(backoff);
+                backoff = (backoff * 2).min(RETRY_BACKOFF_MAX);
+            }
+            _ => return outcome,
+        }
+    }
+}
+
+fn coordinator_not_ready(code: RDKafkaErrorCode) -> bool {
+    matches!(
+        code,
+        RDKafkaErrorCode::NotCoordinator | RDKafkaErrorCode::CoordinatorLoadInProgress | RDKafkaErrorCode::CoordinatorNotAvailable
+    )
 }
 
 fn producer(base: &ClientConfig) -> Result<FutureProducer, BoxError> {
@@ -966,4 +1017,96 @@ fn drop_detached<T: Send + 'static>(value: T) -> oneshot::Receiver<()> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+
+    use super::*;
+
+    /// A clock that `sleep` advances, starting at `start`.
+    struct Clock {
+        now: Cell<Instant>,
+        slept: RefCell<Vec<Duration>>,
+    }
+
+    impl Clock {
+        fn new(start: Instant) -> Self {
+            Clock { now: Cell::new(start), slept: RefCell::new(Vec::new()) }
+        }
+
+        fn sleep(&self, d: Duration) {
+            self.now.set(self.now.get() + d);
+            self.slept.borrow_mut().push(d);
+        }
+    }
+
+    fn failing(code: RDKafkaErrorCode) -> KafkaError {
+        KafkaError::MetadataFetch(code)
+    }
+
+    #[test]
+    fn each_coordinator_error_is_retried_until_the_read_succeeds() {
+        for code in [
+            RDKafkaErrorCode::NotCoordinator,
+            RDKafkaErrorCode::CoordinatorLoadInProgress,
+            RDKafkaErrorCode::CoordinatorNotAvailable,
+        ] {
+            let start = Instant::now();
+            let clock = Clock::new(start);
+            let mut calls = 0;
+            let outcome = coordinator_retried(
+                start + ANCHOR_TIMEOUT,
+                |_| {
+                    calls += 1;
+                    if calls < 3 { Err(failing(code)) } else { Ok(calls) }
+                },
+                |d| clock.sleep(d),
+                || clock.now.get(),
+            );
+            assert_eq!(outcome.ok(), Some(3), "{code:?} was not retried until the read succeeded");
+            assert_eq!(*clock.slept.borrow(), vec![RETRY_BACKOFF, RETRY_BACKOFF * 2], "{code:?}: the waits between attempts");
+        }
+    }
+
+    #[test]
+    fn any_other_error_fails_at_once() {
+        let start = Instant::now();
+        let clock = Clock::new(start);
+        let mut calls = 0;
+        let outcome: KafkaResult<()> = coordinator_retried(
+            start + ANCHOR_TIMEOUT,
+            |_| {
+                calls += 1;
+                Err(failing(RDKafkaErrorCode::BrokerTransportFailure))
+            },
+            |d| clock.sleep(d),
+            || clock.now.get(),
+        );
+        assert!(matches!(outcome, Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure))), "{outcome:?}");
+        assert_eq!(calls, 1, "an error other than the coordinator's three was retried");
+        assert!(clock.slept.borrow().is_empty());
+    }
+
+    #[test]
+    fn retries_stop_before_the_deadline_and_return_the_last_error() {
+        let start = Instant::now();
+        let clock = Clock::new(start);
+        let mut remaining = Vec::new();
+        let outcome: KafkaResult<()> = coordinator_retried(
+            start + ANCHOR_TIMEOUT,
+            |left| {
+                remaining.push(left);
+                Err(failing(RDKafkaErrorCode::CoordinatorLoadInProgress))
+            },
+            |d| clock.sleep(d),
+            || clock.now.get(),
+        );
+        assert!(matches!(outcome, Err(KafkaError::MetadataFetch(RDKafkaErrorCode::CoordinatorLoadInProgress))), "{outcome:?}");
+        let slept: Duration = clock.slept.borrow().iter().sum();
+        assert!(slept < ANCHOR_TIMEOUT, "the retries slept {slept:?}, past the {ANCHOR_TIMEOUT:?} timeout");
+        assert_eq!(remaining.first(), Some(&ANCHOR_TIMEOUT), "the first attempt was not given the whole timeout");
+        assert!(remaining.windows(2).all(|pair| pair[1] < pair[0]), "each attempt was not given what was left: {remaining:?}");
+    }
 }

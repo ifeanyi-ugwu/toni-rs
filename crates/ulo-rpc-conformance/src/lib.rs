@@ -27,8 +27,9 @@
 //! answer: a scenario about the client's timeout or `deadline-ms`, a call nothing takes on a link
 //! without `miss_signal`, a call reaching a draining server on a link that declares
 //! `holds_unserved`, where an event emitted then has to reach the next instance, and a call sent
-//! during the drain on a link that declares `unconfirmed_drain`, where a call sent once the server
-//! has closed has to be refused `Unavailable`. A scenario that cannot apply to a link is declared not applicable
+//! during the drain on a link that declares `confirms_drain(false)`, where a call sent once the
+//! server has closed has to be refused `Unavailable`; a link that does not declare it is held to the
+//! confirmed drain. A scenario that cannot apply to a link is declared not applicable
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 //!
 //! A host short of memory bounds how many scenarios hold an environment at once by setting

@@ -24,7 +24,7 @@ use ulo::{
 use ulo_rpc::{
     CallHeaders, Capabilities, Data, Inbound, Link, Payload, Reply, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError,
 };
-use ulo_transport::{CallError, Classify, ErrorKind, Tracked};
+use ulo_transport::{CallError, Classify, ErrorKind};
 
 use crate::{Broker, report};
 
@@ -368,7 +368,7 @@ impl StreamController {
     async fn unencodable_stream(&self, cx: RpcCx) -> Result<Reply, Refusal> {
         let first = cx.codec().encode(&1u32).expect("a `u32` encodes in every codec");
         let items: BoxStream<'static, Result<Data, BoxError>> = Box::pin(stream::iter([Ok(first), Ok(Data::new(GARBLED))]));
-        Ok(Reply::Many(Tracked::new(items, cx.exec().clone())))
+        Ok(Reply::Many(items))
     }
 
     /// Ticks until the stream is dropped, recording the reason when it is.

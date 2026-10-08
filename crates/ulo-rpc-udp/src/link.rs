@@ -45,6 +45,8 @@ pub struct Udp {
 
 pub(crate) struct State {
     bound: Mutex<Vec<BoundAddr>>,
+    /// The server's socket, read once more by `close` after the receive task has stopped.
+    socket: Mutex<Option<Arc<UdpSocket>>>,
     receiving: Mutex<Option<JoinHandle<()>>>,
     next_id: AtomicU64,
     /// Raised by `drain`.
@@ -69,6 +71,7 @@ impl Udp {
             prepared: None,
             state: Arc::new(State {
                 bound: Mutex::new(Vec::new()),
+                socket: Mutex::new(None),
                 receiving: Mutex::new(None),
                 next_id: AtomicU64::new(1),
                 draining: watch::Sender::new(false),
@@ -107,9 +110,10 @@ impl Link for Udp {
             .ordering(ulo_rpc::Ordering::Unordered)
             .shapes(UNARY_ONLY)
             .miss_signal(true)
-            // Nothing tells a caller to stop sending, and a datagram in the socket at close is
-            // dropped.
-            .unconfirmed_drain(true)
+            // `close` answers what its socket holds; a datagram arriving after the socket closes
+            // reaches no one. A connected client socket may learn of it through an ICMP port
+            // unreachable, which is often filtered, so the link does not rely on it.
+            .confirms_drain(false)
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
@@ -129,6 +133,7 @@ impl Link for Udp {
         }
         let socket = Arc::new(UdpSocket::bind(addr).await?);
         *lock(&self.state.bound) = vec![BoundAddr::new("rpc", socket.local_addr()?)];
+        *lock(&self.state.socket) = Some(Arc::clone(&socket));
         let (deliveries, inbound) = mpsc::channel(DELIVERY_QUEUE);
         let receiving = tokio::spawn(receive(socket, self.codec, Arc::clone(&self.state), deliveries));
         *lock(&self.state.receiving) = Some(receiving);
@@ -190,12 +195,19 @@ impl Link for Udp {
         self.state.draining.send_replace(true);
     }
 
+    /// A server's `close` stops the receive task, then reads what the socket's buffer already
+    /// holds and answers each request found there `err` of kind `unavailable`, so a datagram that
+    /// arrived before the close is answered; one arriving after it is not.
     async fn close(&self) -> Result<(), BoxError> {
         self.state.client_epoch.send_modify(|epoch| *epoch += 1);
         let receiving = lock(&self.state.receiving).take();
         if let Some(receiving) = receiving {
             receiving.abort();
             let _ = receiving.await;
+        }
+        let socket = lock(&self.state.socket).take();
+        if let Some(socket) = socket {
+            final_read(&socket, self.codec).await;
         }
         Ok(())
     }
@@ -252,7 +264,7 @@ async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, delive
             }
         };
         let Some(sender) = deliveries.as_ref() else {
-            refuse(&socket, codec, peer, &frame).await;
+            refuse(&socket, codec, peer, &frame, "the server is draining").await;
             continue;
         };
         let Some(frame) = inward(frame, peer, &ids, &state.next_id) else { continue };
@@ -260,6 +272,44 @@ async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, delive
         if sender.send(Delivery { frame, reply: Some(reply), ack: Ack::none() }).await.is_err() {
             return;
         }
+    }
+}
+
+/// Every datagram the socket's receive buffer holds, read without waiting until it is empty; each
+/// request or streamed request is answered `err` of kind `unavailable`. The read goes through a
+/// duplicate of the socket, not tokio's: tokio tries a read only once its reactor has seen the
+/// socket readable, and a datagram that arrived since its last turn would be left unread.
+async fn final_read(socket: &UdpSocket, codec: Codec) {
+    let duplicate = match socket2::SockRef::from(socket).try_clone().and_then(|duplicate| {
+        duplicate.set_nonblocking(true)?;
+        Ok(std::net::UdpSocket::from(duplicate))
+    }) {
+        Ok(duplicate) => duplicate,
+        Err(error) => {
+            tracing::warn!(%error, "the UDP link could not read its socket at close; requests still in its buffer go unanswered");
+            return;
+        }
+    };
+    let mut buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
+    let mut refused = 0usize;
+    loop {
+        let (len, peer) = match duplicate.recv_from(&mut buffer) {
+            Ok(received) => received,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) if matches!(error.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused) => continue,
+            Err(error) => {
+                tracing::debug!(%error, "the UDP link's read at close failed");
+                break;
+            }
+        };
+        let Ok(frame) = codec.decode_frame(&buffer[..len]) else { continue };
+        if matches!(frame, Frame::Req { .. } | Frame::Open { .. }) {
+            refused += 1;
+        }
+        refuse(socket, codec, peer, &frame, "the server has closed").await;
+    }
+    if refused > 0 {
+        tracing::debug!(refused, "the UDP link answered requests left in its socket at close");
     }
 }
 
@@ -271,11 +321,11 @@ async fn idle(state: &State) {
     let _ = held.wait_for(|held| *held == 0).await;
 }
 
-/// Answers a request or streamed request that arrived once the inbound stream ended, under the
-/// sender's own id; anything else names no call in flight and is dropped.
-async fn refuse(socket: &UdpSocket, codec: Codec, peer: SocketAddr, frame: &Frame) {
+/// Answers a request or streamed request the server will not take, under the sender's own id;
+/// anything else names no call in flight and is dropped.
+async fn refuse(socket: &UdpSocket, codec: Codec, peer: SocketAddr, frame: &Frame, message: &str) {
     let (Frame::Req { id, .. } | Frame::Open { id, .. }) = *frame else { return };
-    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+    let error = ErrorBody::new(ErrorKind::Unavailable, message, Details::new());
     let refused = match encode(codec, &Frame::Err { id, error }) {
         Ok(bytes) => socket.send_to(&bytes, peer).await.map(|_| ()).map_err(BoxError::from),
         Err(error) => Err(error),
