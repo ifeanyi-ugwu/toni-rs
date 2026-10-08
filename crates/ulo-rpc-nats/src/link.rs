@@ -90,6 +90,7 @@ impl Link for Nats {
             .binary(self.codec.binary())
             .ordering(Order::PerPublisher)
             .miss_signal(true)
+            .unconfirmed_drain(true)
             .max_frame((max_payload > 0).then_some(max_payload))
     }
 
@@ -376,8 +377,11 @@ async fn request_lane(side: Arc<ServerSide>, mut subscriber: Subscriber, deliver
                 let now = if changed.is_ok() { *phase.borrow_and_update() } else { Phase::Closed };
                 match now {
                     Phase::Serving => {}
-                    // NATS's drain: the server stops sending to this subscription, what it already
-                    // sent is still delivered, and then the subscriber ends.
+                    // NATS's drain: the server stops sending to this subscription once it has
+                    // processed the UNSUB, and the subscriber ends. async-nats removes the
+                    // subscription on its connection task's next poll, without waiting for the
+                    // server, and discards a message for it that arrives later, which the link
+                    // declares as `unconfirmed_drain`.
                     Phase::Draining => {
                         draining = true;
                         if let Err(error) = subscriber.drain().await {

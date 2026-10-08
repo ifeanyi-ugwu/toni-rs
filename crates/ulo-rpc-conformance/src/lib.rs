@@ -25,8 +25,10 @@
 //!
 //! No scenario passes on silence. The client's own `Timeout` passes only where it is the declared
 //! answer: a scenario about the client's timeout or `deadline-ms`, a call nothing takes on a link
-//! without `miss_signal`, and a call reaching a draining server on a link that declares
-//! `holds_unserved`, where an event emitted then has to reach the next instance. A scenario that cannot apply to a link is declared not applicable
+//! without `miss_signal`, a call reaching a draining server on a link that declares
+//! `holds_unserved`, where an event emitted then has to reach the next instance, and a call sent
+//! during the drain on a link that declares `unconfirmed_drain`, where a call sent once the server
+//! has closed has to be refused `Unavailable`. A scenario that cannot apply to a link is declared not applicable
 //! in [`conformance_suite!`] and reported as ignored; run on that link, it fails.
 //!
 //! A host short of memory bounds how many scenarios hold an environment at once by setting
@@ -243,6 +245,7 @@ macro_rules! conformance_suite {
             binary_payload => payloads::binary,
             oversized_payload => payloads::oversized,
             drain => drain::drain,
+            drain_window => drain::window,
             recovery_after_disrupt => recovery::after_disrupt,
             client_close => client_close::client_close,
             two_instances => delivery::two_instances,

@@ -13,7 +13,10 @@ use tokio::task::{JoinHandle, JoinSet};
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, Tls, TlsAcceptor};
 use ulo_rpc::link::Inbound;
-use ulo_rpc::{Ack, Capabilities, Codec, Delivery, DeliveryMode, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo};
+use ulo_rpc::{
+    Ack, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo,
+};
+use ulo_transport::{Details, ErrorKind};
 
 /// The largest frame unless `max_frame` sets one: twice HTTP's default body limit, room for a
 /// payload HTTP accepts unset with its envelope and its JSON encoding's growth.
@@ -38,7 +41,9 @@ const CLOSED: u8 = 2;
 /// A server maps each connection's call ids to ids of its own, so calls on two connections never
 /// share one, and writes the caller's id back on every reply. A connection that closes cancels its
 /// calls in flight `Disconnected`. At the drain the listener closes and every connection receives
-/// `goaway`, while its calls in flight finish.
+/// `goaway`, while its calls in flight finish. The inbound stream ends once the draining server
+/// holds no call, and a request arriving afterwards, on a connection the caller kept open, is
+/// answered `err` of kind `unavailable` by the link, as the server answers one during the drain.
 ///
 /// `close` also ends every connection the link's client side opened: its socket is shut and its
 /// reply lane ends, so the calls waiting on it fail `Unavailable`. A call made afterwards connects
@@ -67,6 +72,8 @@ pub(crate) struct State {
     phase: watch::Sender<u8>,
     next_connection: AtomicU64,
     next_id: AtomicU64,
+    /// Calls in flight across every connection: ids mapped and not yet forgotten.
+    held: watch::Sender<usize>,
     /// Advanced by `close`; a client connection ends when it changes.
     client_epoch: watch::Sender<u64>,
     /// The writer of each client connection, which `close` waits for once it has shut the socket.
@@ -94,6 +101,7 @@ impl Tcp {
                 phase: watch::Sender::new(RUNNING),
                 next_connection: AtomicU64::new(0),
                 next_id: AtomicU64::new(1),
+                held: watch::Sender::new(0),
                 client_epoch: watch::Sender::new(0),
                 client_writers: Mutex::new(JoinSet::new()),
             }),
@@ -191,9 +199,11 @@ impl Link for Tcp {
         let local = listener.local_addr();
         let listener = TcpListener::from_std(listener.into_std())?;
         *lock(&self.state.bound) = vec![BoundAddr::new("rpc", local).tls(prepared.acceptor.is_some())];
-        let (deliveries, inbound) = mpsc::channel(DELIVERY_QUEUE);
+        let (deliveries, received) = mpsc::channel(DELIVERY_QUEUE);
+        let (forwarded, inbound) = mpsc::channel(DELIVERY_QUEUE);
         let server = Server { acceptor: prepared.acceptor.clone(), codec: self.codec, limit: self.limit(), state: Arc::clone(&self.state) };
         *accept = Some(tokio::spawn(server.accept(listener, deliveries)));
+        tokio::spawn(forward(Arc::clone(&self.state), received, forwarded));
         let inbound = futures_util::stream::unfold(inbound, |mut inbound| async move {
             let delivery = inbound.recv().await?;
             Some((delivery, inbound))
@@ -274,6 +284,10 @@ impl Link for Tcp {
         if let Some(accept) = accept {
             let _ = accept.await;
         }
+        // The connection tasks are gone; each writer ends, shutting its half of the socket, once
+        // its queue's last sender drops, and this map holds one for every connection whose task
+        // was aborted before it could remove its own.
+        lock(&self.state.connections).clear();
         let mut writers = std::mem::take(&mut *lock(&self.state.client_writers));
         while writers.join_next().await.is_some() {}
         Ok(())
@@ -374,7 +388,7 @@ impl Server {
         tokio::spawn(write_frames(writer, queued, std::future::pending()));
         let connection = self.state.next_connection.fetch_add(1, Ordering::Relaxed);
         lock(&self.state.connections).insert(connection, queue.clone());
-        let ids = Arc::new(Mutex::new(Ids::default()));
+        let ids = Arc::new(Mutex::new(Ids::new(Arc::clone(&self.state))));
         let path = reply_path(queue, self.codec, self.limit, Arc::clone(&ids), peer);
         loop {
             let bytes = match read_frame(&mut reader, self.limit).await {
@@ -394,16 +408,24 @@ impl Server {
                 }
             };
             let Some(frame) = self.inward(frame, &ids) else { continue };
+            let cancels = matches!(frame, Frame::Cancel { .. });
             let delivery = Delivery { frame, reply: Some(path.clone()), ack: Ack::none() };
-            if deliveries.send(delivery).await.is_err() {
+            let sent = deliveries.send(delivery).await;
+            if cancels {
+                self.state.held.send_modify(|held| *held = held.saturating_sub(1));
+            }
+            if sent.is_err() {
                 break;
             }
         }
         lock(&self.state.connections).remove(&connection);
         let orphaned = lock(&ids).drain();
+        let count = orphaned.len();
         for id in orphaned {
             let _ = deliveries.send(Delivery { frame: Frame::Cancel { id }, reply: None, ack: Ack::none() }).await;
         }
+        // Released once their `cancel`s are queued, so the inbound stream cannot end before them.
+        self.state.held.send_modify(|held| *held = held.saturating_sub(count));
     }
 
     /// A caller's frame with its id mapped to the server's; `None` for one the server takes no
@@ -424,20 +446,87 @@ impl Server {
     }
 }
 
-/// One connection's calls in flight: the caller's id and the server's, both ways.
-#[derive(Default)]
+/// Hands the connections' deliveries to the server until the draining server holds no call, then
+/// ends the inbound stream and answers what arrives afterwards itself: a request or streamed
+/// request `err` of kind `unavailable`, which also forgets its id. Ending sooner would drop an
+/// item or a `cancel` for a call still held; ending once every connection has closed would hold
+/// the drain to its deadline while a client keeps an idle connection open. A call's count is
+/// released only after its last delivery is queued here, and this reads the queue before it looks
+/// at the count, so nothing queued before the count reached zero is answered by the link.
+async fn forward(state: Arc<State>, mut received: mpsc::Receiver<Delivery>, forwarded: mpsc::Sender<Delivery>) {
+    let mut forwarded = Some(forwarded);
+    loop {
+        let Some(sender) = forwarded.as_ref() else {
+            let Some(delivery) = received.recv().await else { return };
+            refuse(delivery);
+            continue;
+        };
+        tokio::select! {
+            biased;
+            delivery = received.recv() => match delivery {
+                Some(delivery) => {
+                    if let Err(unsent) = sender.send(delivery).await {
+                        forwarded = None;
+                        refuse(unsent.0);
+                    }
+                }
+                None => return,
+            },
+            () = idle(&state) => forwarded = None,
+        }
+    }
+}
+
+/// Resolves once the link is draining and holds no call.
+async fn idle(state: &State) {
+    let mut phase = state.phase.subscribe();
+    let mut held = state.held.subscribe();
+    let _ = phase.wait_for(|phase| *phase >= DRAINING).await;
+    let _ = held.wait_for(|held| *held == 0).await;
+}
+
+/// Answers a request or streamed request the server will not receive as the server answers one
+/// during the drain; anything else names no call in flight and is dropped.
+fn refuse(delivery: Delivery) {
+    let (Frame::Req { id, .. } | Frame::Open { id, .. }) = delivery.frame else { return };
+    let Some(reply) = delivery.reply else { return };
+    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+    tokio::spawn(async move {
+        if let Err(error) = reply.send(Frame::Err { id, error }).await {
+            tracing::debug!(%error, "the TCP link could not refuse a request that arrived after the drain");
+        }
+    });
+}
+
+/// One connection's calls in flight: the caller's id and the server's, both ways, counted in
+/// `State::held`.
 struct Ids {
     by_caller: HashMap<u64, u64>,
     by_server: HashMap<u64, u64>,
+    state: Arc<State>,
 }
 
 impl Ids {
+    fn new(state: Arc<State>) -> Self {
+        Ids { by_caller: HashMap::new(), by_server: HashMap::new(), state }
+    }
+
+    /// Applies the change in calls in flight since `before`.
+    fn counted(&self, before: usize) {
+        let after = self.by_server.len();
+        if after != before {
+            self.state.held.send_modify(|held| *held = (*held + after).saturating_sub(before));
+        }
+    }
+
     fn open(&mut self, caller: u64, next: &AtomicU64) -> u64 {
+        let before = self.by_server.len();
         let server = next.fetch_add(1, Ordering::Relaxed);
         if let Some(stale) = self.by_caller.insert(caller, server) {
             self.by_server.remove(&stale);
         }
         self.by_server.insert(server, caller);
+        self.counted(before);
         server
     }
 
@@ -445,7 +534,8 @@ impl Ids {
         self.by_caller.get(&caller).copied()
     }
 
-    /// The caller cancelled: its call is no longer answered.
+    /// The caller cancelled: its call is no longer answered. Released once the `cancel` is
+    /// queued for the server, by the connection's reader.
     fn cancel(&mut self, caller: u64) -> Option<u64> {
         let server = self.by_caller.remove(&caller)?;
         self.by_server.remove(&server);
@@ -457,12 +547,15 @@ impl Ids {
     }
 
     fn finish(&mut self, server: u64) {
+        let before = self.by_server.len();
         if let Some(caller) = self.by_server.remove(&server) {
             self.by_caller.remove(&caller);
         }
+        self.counted(before);
     }
 
-    /// Every server id still in flight, forgotten.
+    /// Every server id still in flight, forgotten; the reader releases them once their `cancel`s
+    /// are queued.
     fn drain(&mut self) -> Vec<u64> {
         self.by_caller.clear();
         self.by_server.drain().map(|(server, _)| server).collect()

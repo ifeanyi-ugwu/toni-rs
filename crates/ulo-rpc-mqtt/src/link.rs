@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -6,7 +6,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use rumqttc::v5::mqttbytes::QoS as MqttQoS;
-use rumqttc::v5::mqttbytes::v5::{Filter, Packet, PubAckReason, PubRecReason, Publish, PublishProperties, SubscribeReasonCode};
+use rumqttc::v5::mqttbytes::v5::{
+    Filter, Packet, PubAckReason, PubRecReason, Publish, PublishProperties, SubscribeReasonCode, UnsubAck, UnsubAckReason,
+};
 use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
 use rumqttc::{Outgoing, Transport};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -159,6 +161,8 @@ impl Link for Mqtt {
             phase,
             max_packet: Arc::clone(&self.max_packet),
             deliveries: Mutex::new(Some(deliveries)),
+            unsubscribing: Mutex::new(Unsubscribing::default()),
+            unconfirmed: watch::channel(0).0,
         });
 
         let (ready, bound) = oneshot::channel();
@@ -218,10 +222,19 @@ impl Link for Mqtt {
         let Some(side) = server else { return };
         side.phase.send_replace(Phase::Draining);
         for filter in &side.shared {
+            side.unsubscribe_queued(filter);
             if let Err(error) = side.client.unsubscribe(filter.clone()).await {
+                side.unsubscribe_refused();
                 tracing::warn!(%error, filter, "the MQTT link could not unsubscribe");
             }
         }
+        // The broker routes requests here until it has processed each UNSUBSCRIBE, and writes
+        // every PUBLISH it routed before that ahead of the UNSUBACK, which the event loop reads in
+        // order: once every UNSUBACK is in, nothing more is routed here and what was routed has
+        // been delivered. No bound of its own: the core drops this future at the drain's deadline.
+        let unconfirmed = Unconfirmed(Some(Arc::clone(&side)));
+        let _ = side.unconfirmed.subscribe().wait_for(|filters| *filters == 0).await;
+        unconfirmed.disarm();
         let watched = Arc::clone(&side);
         tokio::spawn(async move {
             let mut count = watched.calls.count.subscribe();
@@ -263,6 +276,31 @@ async fn shut(client: &AsyncClient, mut task: JoinHandle<()>) {
     let _abort = AbortOnDrop(task.abort_handle());
     let _ = client.disconnect().await;
     let _ = (&mut task).await;
+}
+
+/// Logs, when the drain's future is dropped before the broker confirmed every UNSUBSCRIBE, the
+/// filters it had not confirmed. The core drops that future at the drain's deadline; the broker
+/// can then still route requests here, and those reaching the event loop after `close` queued its
+/// DISCONNECT go unanswered.
+struct Unconfirmed(Option<Arc<ServerSide>>);
+
+impl Unconfirmed {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Unconfirmed {
+    fn drop(&mut self) {
+        let Some(side) = self.0.take() else { return };
+        let filters = side.unconfirmed_filters();
+        if !filters.is_empty() {
+            tracing::warn!(
+                ?filters,
+                "the drain's deadline passed before the MQTT broker confirmed the unsubscribe; until it does it can route requests to this instance"
+            );
+        }
+    }
 }
 
 /// Aborts a task when dropped.
@@ -355,9 +393,85 @@ struct ServerSide {
     /// held or released, and its frame delivered, under this lock, so the drain cannot end the
     /// stream between the two: a `cancel` releasing the last held call is delivered first.
     deliveries: Mutex<Option<mpsc::UnboundedSender<Delivery>>>,
+    /// The drain's UNSUBSCRIBEs the broker has not acknowledged.
+    unsubscribing: Mutex<Unsubscribing>,
+    /// How many filters `unsubscribing` holds, which the drain waits to reach zero.
+    unconfirmed: watch::Sender<usize>,
+}
+
+/// The drain's UNSUBSCRIBEs, from the request rumqttc queues to the broker's UNSUBACK. The server
+/// side unsubscribes nowhere else, so every `Outgoing::Unsubscribe` its event loop reports is the
+/// drain's, and rumqttc takes requests in the order they were queued.
+#[derive(Default)]
+struct Unsubscribing {
+    /// Filters queued, oldest first, before the event loop has given them a packet id.
+    queued: VecDeque<String>,
+    /// Filters by the packet id of the UNSUBSCRIBE carrying them, awaiting its UNSUBACK.
+    sent: HashMap<u16, String>,
+}
+
+impl Unsubscribing {
+    fn len(&self) -> usize {
+        self.queued.len() + self.sent.len()
+    }
 }
 
 impl ServerSide {
+    fn unsubscribing(&self, change: impl FnOnce(&mut Unsubscribing)) {
+        let mut unsubscribing = lock(&self.unsubscribing);
+        change(&mut unsubscribing);
+        self.unconfirmed.send_replace(unsubscribing.len());
+    }
+
+    /// Before the drain queues the UNSUBSCRIBE for `filter`, so the event loop's report of it
+    /// finds the filter.
+    fn unsubscribe_queued(&self, filter: &str) {
+        self.unsubscribing(|unsubscribing| unsubscribing.queued.push_back(filter.to_owned()));
+    }
+
+    /// The request for the filter queued last never reached the event loop.
+    fn unsubscribe_refused(&self) {
+        self.unsubscribing(|unsubscribing| {
+            unsubscribing.queued.pop_back();
+        });
+    }
+
+    /// The event loop gave the oldest queued UNSUBSCRIBE packet id `pkid`.
+    fn unsubscribe_sent(&self, pkid: u16) {
+        self.unsubscribing(|unsubscribing| {
+            if let Some(filter) = unsubscribing.queued.pop_front() {
+                unsubscribing.sent.insert(pkid, filter);
+            }
+        });
+    }
+
+    /// The broker acknowledged the UNSUBSCRIBE with `unsuback.pkid`. A refusal leaves the broker
+    /// routing to this instance, which nothing can change before close; it is logged.
+    fn unsubscribe_acknowledged(&self, unsuback: &UnsubAck) {
+        self.unsubscribing(|unsubscribing| {
+            let Some(filter) = unsubscribing.sent.remove(&unsuback.pkid) else { return };
+            if let Some(reason) = unsuback.reasons.iter().find(|reason| !matches!(reason, UnsubAckReason::Success | UnsubAckReason::NoSubscriptionExisted)) {
+                tracing::warn!(filter, ?reason, "the MQTT broker refused to unsubscribe the draining server; it can still route requests to this instance");
+            }
+        });
+    }
+
+    /// A CONNACK without a session present: the broker holds no subscription of this client's,
+    /// so nothing the drain waits for is routed here any more.
+    fn session_ended(&self) {
+        self.unsubscribing(|unsubscribing| {
+            unsubscribing.queued.clear();
+            unsubscribing.sent.clear();
+        });
+    }
+
+    fn unconfirmed_filters(&self) -> Vec<String> {
+        let unsubscribing = lock(&self.unsubscribing);
+        let mut filters: Vec<String> = unsubscribing.sent.values().chain(unsubscribing.queued.iter()).cloned().collect();
+        filters.sort();
+        filters
+    }
+
     /// Ends the inbound stream if no call is held, answering whether it has ended.
     fn end_if_idle(&self) -> bool {
         let mut deliveries = lock(&self.deliveries);
@@ -489,6 +603,9 @@ async fn server_loop(side: Arc<ServerSide>, mut eventloop: EventLoop, ready: one
     loop {
         match eventloop.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+                if !connack.session_present {
+                    side.session_ended();
+                }
                 let properties = connack.properties.as_ref();
                 if let Some(max) = properties.and_then(|properties| properties.max_packet_size) {
                     side.max_packet.store(u64::from(max), Ordering::Relaxed);
@@ -536,6 +653,8 @@ async fn server_loop(side: Arc<ServerSide>, mut eventloop: EventLoop, ready: one
                 }
             }
             Ok(Event::Incoming(Packet::Publish(publish))) => side.on_publish(publish),
+            Ok(Event::Outgoing(Outgoing::Unsubscribe(pkid))) => side.unsubscribe_sent(pkid),
+            Ok(Event::Incoming(Packet::UnsubAck(unsuback))) => side.unsubscribe_acknowledged(&unsuback),
             // rumqttc also writes a DISCONNECT of its own on a protocol error, after which the
             // broker closes the connection and the loop reconnects.
             Ok(Event::Outgoing(Outgoing::Disconnect)) if *side.phase.borrow() == Phase::Closed => return,

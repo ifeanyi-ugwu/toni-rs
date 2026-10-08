@@ -52,6 +52,11 @@ pub trait Server: Send + Sync + 'static {
     /// connection stops reading, finishes its messages and then closes with 1001. A connection's
     /// cleanup opens with `Execution::open_terminal(&token, ..)`; clone the token into each
     /// connection task.
+    ///
+    /// The drain window lasts until this future and every other server's have completed and no
+    /// execution is live, and drops the future at the window's deadline. A server answering what
+    /// arrives during the drain without opening an execution, a refusal, waits here for those
+    /// answers to be sent, since the wait for live executions does not cover them.
     fn drain(&self, token: DrainToken) -> impl Future<Output = ()> + Send;
 
     /// Closes the sockets. An error is recorded as `ShutdownFailure::Close` with reason

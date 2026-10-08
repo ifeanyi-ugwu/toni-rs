@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, MountedHandler, Mounted, Shape, TypeName};
@@ -15,7 +15,7 @@ use ulo_transport::{Admission, Count};
 
 use crate::__private::{Kind, RpcHandler};
 use crate::codec::Codec;
-use crate::dispatch::{self, Route, Shared};
+use crate::dispatch::{self, Route, Settling, Shared};
 use crate::frame::PayloadKind;
 use crate::link::{Inbound, Link, Pattern};
 use crate::transport::Rpc;
@@ -35,8 +35,13 @@ const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
 /// handlers.
 ///
 /// `serve` runs each call in its own task and keeps serving the calls in flight once the link's
-/// inbound stream ends; `drain` is `Link::drain`, after which a new call is answered `err` of kind
-/// `unavailable`; `close` aborts what is still running and calls `Link::close`.
+/// inbound stream ends. `drain` calls `Link::drain`, after which a new call is answered `err` of
+/// kind `unavailable`, and then waits until the inbound stream has ended and every such refusal
+/// has been sent, so the core's drain window covers a call the link hands over during it; the
+/// window's deadline bounds that wait. `close` aborts what is still running and calls
+/// `Link::close`; a refusal not yet sent, or a delivery the inbound stream had ready and `serve`
+/// had not read, is logged at `warn` with how many there were, since its caller gets no answer
+/// from this server.
 pub struct Server<L: Link> {
     pub(crate) link: L,
     pub(crate) max_inflight: Count,
@@ -165,6 +170,7 @@ impl<L: Link> ulo::Server for Server<L> {
             calls: Mutex::new(HashMap::new()),
             serial: AtomicU64::new(0),
             unhandled_events: AtomicU64::new(0),
+            settling: watch::Sender::new(Settling::default()),
         }));
         Ok(())
     }
@@ -188,13 +194,15 @@ impl<L: Link> ulo::Server for Server<L> {
         let Some(mut inbound) = self.inbound.lock().unwrap_or_else(PoisonError::into_inner).take() else {
             return Ok(());
         };
+        let _reading = Reading::start(&shared);
         let mut closing = self.closing.subscribe();
         let mut tasks = JoinSet::new();
         loop {
             tokio::select! {
                 biased;
                 () = closed(&mut closing) => {
-                    tasks.shutdown().await;
+                    let unread = unread(&mut inbound);
+                    abandon(&shared, &mut tasks, unread).await;
                     return Ok(());
                 }
                 delivery = inbound.next() => match delivery {
@@ -204,6 +212,7 @@ impl<L: Link> ulo::Server for Server<L> {
                 Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
             }
         }
+        shared.settling.send_modify(|settling| settling.ended = true);
         // The link's own end before the drain is a link failure, which starts the shutdown; after
         // it, the calls in flight finish under the core's drain.
         if !shared.app.is_draining() {
@@ -213,7 +222,7 @@ impl<L: Link> ulo::Server for Server<L> {
             tokio::select! {
                 biased;
                 () = closed(&mut closing) => {
-                    tasks.shutdown().await;
+                    abandon(&shared, &mut tasks, 0).await;
                     return Ok(());
                 }
                 finished = tasks.join_next() => if finished.is_none() {
@@ -228,6 +237,12 @@ impl<L: Link> ulo::Server for Server<L> {
         // its own, and the core's drain waits for it.
         let _ = token;
         self.link.drain().await;
+        // What reaches the server during the drain opens no execution, so the core's wait for
+        // live executions does not cover it. The link ends its inbound stream once nothing more
+        // will arrive; the core drops this future at the drain's deadline.
+        if let Some(shared) = &self.shared {
+            let _ = shared.settling.subscribe().wait_for(Settling::settled).await;
+        }
     }
 
     async fn close(&self) -> Result<(), BoxError> {
@@ -255,6 +270,49 @@ fn grace_of(bound: Bound) -> Option<Duration> {
 /// borrow `wait_for` answers is dropped here, before anything else awaits.
 async fn closed(closing: &mut watch::Receiver<bool>) {
     let _ = closing.wait_for(|closed| *closed).await;
+}
+
+/// Marks the inbound stream read while `serve` runs, and not read once it returns or is dropped,
+/// so a drain does not wait for a stream nothing reads.
+struct Reading(Arc<Shared>);
+
+impl Reading {
+    fn start(shared: &Arc<Shared>) -> Reading {
+        shared.settling.send_modify(|settling| settling.reading = true);
+        Reading(Arc::clone(shared))
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.0.settling.send_modify(|settling| settling.reading = false);
+    }
+}
+
+/// How many deliveries `inbound` has ready, taken and dropped unread. A dropped delivery's `Ack`
+/// settles nothing, so a broker holding unacknowledged messages redelivers it.
+fn unread(inbound: &mut Inbound) -> usize {
+    let mut unread = 0;
+    while let Some(Some(_)) = inbound.next().now_or_never() {
+        unread += 1;
+    }
+    unread
+}
+
+/// `close`'s end of `serve`: aborts every task still running, after logging the refusals not yet
+/// sent and the `unread` deliveries, whose callers this server leaves unanswered. A call still
+/// running was cancelled at the drain's end and is counted in the shutdown's report.
+async fn abandon(shared: &Shared, tasks: &mut JoinSet<()>, unread: usize) {
+    let refusals = shared.settling.borrow().refusals;
+    if refusals > 0 || unread > 0 {
+        tracing::warn!(
+            link = shared.link,
+            refusals_unsent = refusals,
+            deliveries_unread = unread,
+            "the RPC server closed before answering every call that reached it; the drain's deadline passed first"
+        );
+    }
+    tasks.shutdown().await;
 }
 
 /// A handler as a `prepare` failure names it, `` `Invoices::create` ``.

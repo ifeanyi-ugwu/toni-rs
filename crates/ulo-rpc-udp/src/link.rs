@@ -11,7 +11,10 @@ use tokio::task::JoinHandle;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
 use ulo_net::{Endpoint, EndpointSpec};
 use ulo_rpc::link::{Inbound, UNARY_ONLY};
-use ulo_rpc::{Ack, Capabilities, Codec, Delivery, DeliveryMode, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo};
+use ulo_rpc::{
+    Ack, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo,
+};
+use ulo_transport::{Details, ErrorKind};
 
 /// The largest UDP payload over IPv4: 65,535 less the IP and UDP headers. One frame is one
 /// datagram, envelope included.
@@ -25,7 +28,9 @@ const DELIVERY_QUEUE: usize = 1024;
 ///
 /// A server maps each sender's call ids to ids of its own, so two senders never share one, and
 /// writes the sender's id back on its reply. No datagram is retried: a lost request or reply is
-/// the caller's `Timeout`.
+/// the caller's `Timeout`. The inbound stream ends once the draining server holds no call, and the
+/// socket answers a request arriving afterwards `err` of kind `unavailable` itself, as the server
+/// answers one during the drain, until `close`.
 ///
 /// A client holds no connection, so `close` ends what stands for one: each socket the client side
 /// bound stops receiving and is released, its reply lane ends, and the calls waiting on it fail
@@ -42,6 +47,10 @@ pub(crate) struct State {
     bound: Mutex<Vec<BoundAddr>>,
     receiving: Mutex<Option<JoinHandle<()>>>,
     next_id: AtomicU64,
+    /// Raised by `drain`.
+    draining: watch::Sender<bool>,
+    /// Calls in flight: ids mapped and not yet forgotten.
+    held: watch::Sender<usize>,
     /// Advanced by `close`; a client socket's reply lane ends when it changes.
     client_epoch: watch::Sender<u64>,
 }
@@ -62,6 +71,8 @@ impl Udp {
                 bound: Mutex::new(Vec::new()),
                 receiving: Mutex::new(None),
                 next_id: AtomicU64::new(1),
+                draining: watch::Sender::new(false),
+                held: watch::Sender::new(0),
                 client_epoch: watch::Sender::new(0),
             }),
         }
@@ -96,6 +107,9 @@ impl Link for Udp {
             .ordering(ulo_rpc::Ordering::Unordered)
             .shapes(UNARY_ONLY)
             .miss_signal(true)
+            // Nothing tells a caller to stop sending, and a datagram in the socket at close is
+            // dropped.
+            .unconfirmed_drain(true)
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
@@ -172,7 +186,9 @@ impl Link for Udp {
 
     /// UDP has no signal for a sender: the server answers each new call `unavailable` itself, and
     /// the socket keeps receiving so a `cancel` still reaches a call in flight.
-    async fn drain(&self) {}
+    async fn drain(&self) {
+        self.state.draining.send_replace(true);
+    }
 
     async fn close(&self) -> Result<(), BoxError> {
         self.state.client_epoch.send_modify(|epoch| *epoch += 1);
@@ -196,12 +212,25 @@ async fn closed(mut epoch: watch::Receiver<u64>) {
 }
 
 /// Every datagram the socket receives, as deliveries, until the link closes. A datagram that does
-/// not decode carries no id to answer and is dropped.
+/// not decode carries no id to answer and is dropped. Once the link is draining and holds no call,
+/// the inbound stream ends, and a request arriving afterwards is refused here: nothing tells a UDP
+/// caller to stop sending, and the stream ending only at `close` would hold the drain to its
+/// deadline. This loop alone sends deliveries and decides the end between datagrams, so a
+/// `cancel` releasing the last call is queued before the stream ends.
 async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, deliveries: mpsc::Sender<Delivery>) {
-    let ids = Arc::new(Mutex::new(Ids::default()));
+    let ids = Arc::new(Mutex::new(Ids::new(Arc::clone(&state))));
     let mut buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
+    let mut deliveries = Some(deliveries);
     loop {
-        let (len, peer) = match socket.recv_from(&mut buffer).await {
+        let received = tokio::select! {
+            biased;
+            received = socket.recv_from(&mut buffer) => received,
+            () = idle(&state), if deliveries.is_some() => {
+                deliveries = None;
+                continue;
+            }
+        };
+        let (len, peer) = match received {
             Ok(received) => received,
             // A sender's ICMP refusal surfaces here on some platforms; the socket stays usable.
             Err(error) if matches!(error.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused) => {
@@ -222,11 +251,37 @@ async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, delive
                 continue;
             }
         };
+        let Some(sender) = deliveries.as_ref() else {
+            refuse(&socket, codec, peer, &frame).await;
+            continue;
+        };
         let Some(frame) = inward(frame, peer, &ids, &state.next_id) else { continue };
         let reply = reply_path(Arc::clone(&socket), peer, codec, Arc::clone(&ids));
-        if deliveries.send(Delivery { frame, reply: Some(reply), ack: Ack::none() }).await.is_err() {
+        if sender.send(Delivery { frame, reply: Some(reply), ack: Ack::none() }).await.is_err() {
             return;
         }
+    }
+}
+
+/// Resolves once the link is draining and holds no call.
+async fn idle(state: &State) {
+    let mut draining = state.draining.subscribe();
+    let mut held = state.held.subscribe();
+    let _ = draining.wait_for(|draining| *draining).await;
+    let _ = held.wait_for(|held| *held == 0).await;
+}
+
+/// Answers a request or streamed request that arrived once the inbound stream ended, under the
+/// sender's own id; anything else names no call in flight and is dropped.
+async fn refuse(socket: &UdpSocket, codec: Codec, peer: SocketAddr, frame: &Frame) {
+    let (Frame::Req { id, .. } | Frame::Open { id, .. }) = *frame else { return };
+    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+    let refused = match encode(codec, &Frame::Err { id, error }) {
+        Ok(bytes) => socket.send_to(&bytes, peer).await.map(|_| ()).map_err(BoxError::from),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = refused {
+        tracing::debug!(%error, %peer, "the UDP link could not refuse a request that arrived after the drain");
     }
 }
 
@@ -245,20 +300,29 @@ fn inward(frame: Frame, peer: SocketAddr, ids: &Mutex<Ids>, next: &AtomicU64) ->
     })
 }
 
-/// The calls in flight: each sender's id and the server's, both ways.
-#[derive(Default)]
+/// The calls in flight: each sender's id and the server's, both ways, counted in `State::held`.
 struct Ids {
     by_caller: HashMap<(SocketAddr, u64), u64>,
     by_server: HashMap<u64, (SocketAddr, u64)>,
+    state: Arc<State>,
 }
 
 impl Ids {
+    fn new(state: Arc<State>) -> Self {
+        Ids { by_caller: HashMap::new(), by_server: HashMap::new(), state }
+    }
+
+    fn counted(&self) {
+        self.state.held.send_replace(self.by_server.len());
+    }
+
     fn open(&mut self, peer: SocketAddr, caller: u64, next: &AtomicU64) -> u64 {
         let server = next.fetch_add(1, Ordering::Relaxed);
         if let Some(stale) = self.by_caller.insert((peer, caller), server) {
             self.by_server.remove(&stale);
         }
         self.by_server.insert(server, (peer, caller));
+        self.counted();
         server
     }
 
@@ -269,6 +333,7 @@ impl Ids {
     fn cancel(&mut self, peer: SocketAddr, caller: u64) -> Option<u64> {
         let server = self.by_caller.remove(&(peer, caller))?;
         self.by_server.remove(&server);
+        self.counted();
         Some(server)
     }
 
@@ -280,6 +345,7 @@ impl Ids {
         if let Some(caller) = self.by_server.remove(&server) {
             self.by_caller.remove(&caller);
         }
+        self.counted();
     }
 }
 

@@ -25,6 +25,7 @@ use std::time::Duration;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span};
 use ulo::{
@@ -58,6 +59,29 @@ pub(crate) struct Shared {
     pub(crate) serial: AtomicU64,
     /// Events no handler took, counted for the log line each one writes.
     pub(crate) unhandled_events: AtomicU64,
+    /// What `Server::drain` waits for beside the live executions the core waits for.
+    pub(crate) settling: watch::Sender<Settling>,
+}
+
+/// What the drain window waits for that opens no execution: the link's inbound stream read to
+/// its end, since a delivery it holds is a call nobody has answered, and the refusals written
+/// for calls that could not open one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Settling {
+    /// `serve` holds the inbound stream and reads it; a server that never served has nothing to
+    /// wait for.
+    pub(crate) reading: bool,
+    /// The inbound stream returned `None`.
+    pub(crate) ended: bool,
+    /// Refusals spawned and not yet sent.
+    pub(crate) refusals: usize,
+}
+
+impl Settling {
+    /// Nothing that reached the server is left unanswered.
+    pub(crate) fn settled(&self) -> bool {
+        !self.reading || (self.ended && self.refusals == 0)
+    }
 }
 
 /// One pattern's handler.
@@ -162,7 +186,7 @@ fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack
         match answered {
             Some((id, reply)) => {
                 let error = refusal("the server is over its in-flight limit").with(Detail::RetryAfter(shared.admission.shed_retry_after()));
-                tasks.spawn(send_error(reply, id, error));
+                refuse(shared, tasks, reply, id, error);
             }
             // Left unsettled, so a broker redelivers it rather than dropping it.
             None => tracing::warn!(pattern = incoming.pattern.as_str(), link = shared.link, "an event over the in-flight limit was left unacknowledged"),
@@ -176,7 +200,7 @@ fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack
     };
     let Ok(exec) = Execution::open(route.handler.module(), opts) else {
         if let Some((id, reply)) = answered {
-            tasks.spawn(send_error(reply, id, refusal("the server is draining")));
+            refuse(shared, tasks, reply, id, refusal("the server is draining"));
         }
         return;
     };
@@ -229,7 +253,7 @@ fn unhandled(shared: &Arc<Shared>, incoming: Incoming, link: LinkInfo, reply: Op
         return;
     };
     let Ok(exec) = Execution::open(&shared.app.root(), ExecOptions::new()) else {
-        tasks.spawn(send_error(reply, id, refusal("the server is draining")));
+        refuse(shared, tasks, reply, id, refusal("the server is draining"));
         return;
     };
     exec.seed(incoming.headers.clone());
@@ -520,10 +544,25 @@ async fn send(reply: &ReplyPath, exec: &ExecutionRef, id: u64, frame: Frame) -> 
     }
 }
 
-/// A refusal written without an execution: over the in-flight limit, or once the drain began.
-async fn send_error(reply: ReplyPath, id: u64, error: ErrorBody) {
-    if let Err(err) = reply.send(Frame::Err { id, error }).await {
-        tracing::debug!(error = %err, "a refusal could not be sent; the caller is gone");
+/// A refusal written without an execution, over the in-flight limit or once the drain began,
+/// sent from a task of its own and counted in [`Settling::refusals`] until it is sent or dropped.
+fn refuse(shared: &Arc<Shared>, tasks: &mut JoinSet<()>, reply: ReplyPath, id: u64, error: ErrorBody) {
+    shared.settling.send_modify(|settling| settling.refusals += 1);
+    let pending = Refusing(Arc::clone(shared));
+    tasks.spawn(async move {
+        if let Err(err) = reply.send(Frame::Err { id, error }).await {
+            tracing::debug!(error = %err, "a refusal could not be sent; the caller is gone");
+        }
+        drop(pending);
+    });
+}
+
+/// One refusal in [`Settling::refusals`], released when its task ends or is aborted.
+struct Refusing(Arc<Shared>);
+
+impl Drop for Refusing {
+    fn drop(&mut self) {
+        self.0.settling.send_modify(|settling| settling.refusals -= 1);
     }
 }
 

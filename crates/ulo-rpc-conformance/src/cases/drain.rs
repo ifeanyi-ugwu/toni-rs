@@ -4,10 +4,15 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ulo::Signal;
+use ulo_rpc::{Capabilities, RpcError};
 use ulo_transport::ErrorKind;
 
 use crate::Broker;
 use crate::cases::app::{ADD, Add, EVENT, Fixture, HOLD, Sum, UNTIL_DRAIN, eventually, miss_wait, server, streams, within};
+
+/// How long the drain-window scenario waits between its calls, so a link that answers at once is
+/// not flooded for the length of the drain.
+const PACE: Duration = Duration::from_millis(10);
 
 /// The event emitted during the drain on a link that declares `holds_unserved`.
 const HELD_EVENT: u32 = 11;
@@ -70,4 +75,63 @@ pub async fn drain<B: Broker>() {
         assert_eq!(probe.last_event(), Some(HELD_EVENT));
     }
     fixture.stop().await;
+}
+
+/// Calls sent from the drain's first moment until the server has closed, with no call held to
+/// keep the drain open: each is refused `unavailable`, since a link's drain returns only once
+/// nothing more is on its way to the server and the server answers everything that reached it. A
+/// link declaring `unconfirmed_drain` cannot promise that, and may answer one with the caller's
+/// own `Timeout`; a call sent once the server has closed is still `unavailable` there, which shows
+/// the server stopped taking calls. A link without `miss_signal`, or declaring `holds_unserved`,
+/// answers a call nothing takes with the caller's `Timeout`, as in the drain scenario.
+pub async fn window<B: Broker>() {
+    let fixture = Fixture::<B>::start().await;
+    let capabilities = fixture.capabilities();
+    let wait = miss_wait(&fixture.broker);
+
+    let handle = fixture.server.handle.clone();
+    let mut closing = tokio::spawn(async move { handle.close(Signal::new("conformance drain window")).await });
+    let draining = fixture.server.handle.clone();
+    // Polled without a sleep, so the first call leaves as close to the drain's start as it can.
+    let started = within(Duration::from_secs(5), "the server's drain", async {
+        while !draining.is_draining() {
+            tokio::task::yield_now().await;
+        }
+    });
+    started.await;
+
+    let mut during = Vec::new();
+    within(Duration::from_secs(30), "the server's close", async {
+        loop {
+            let answer = fixture.rpc().request::<_, Sum>(ADD, &Add { a: 1, b: 1 }).timeout(wait).await;
+            during.push(answer.map_err(|error| error.kind()));
+            tokio::select! {
+                biased;
+                _ = &mut closing => return,
+                () = tokio::time::sleep(PACE) => {}
+            }
+        }
+    })
+    .await;
+    let after = fixture.rpc().request::<_, Sum>(ADD, &Add { a: 1, b: 1 }).timeout(wait).await;
+
+    for (index, answer) in during.iter().enumerate() {
+        let declared = answer == &Err(ErrorKind::Unavailable) || (answer == &Err(ErrorKind::Timeout) && times_out_during_drain(&capabilities));
+        assert!(declared, "call {index} of {} sent during the drain was not refused `Unavailable`, got: {answer:?}", during.len());
+    }
+    assert_refused_after_close(&capabilities, after);
+    fixture.stop().await;
+}
+
+/// Whether the caller's own `Timeout` is a declared answer for a call reaching a draining server.
+fn times_out_during_drain(capabilities: &Capabilities) -> bool {
+    !capabilities.miss_signal || capabilities.holds_unserved || capabilities.unconfirmed_drain
+}
+
+fn assert_refused_after_close(capabilities: &Capabilities, after: Result<Sum, RpcError>) {
+    match after {
+        Err(error) if error.kind() == ErrorKind::Unavailable => {}
+        Err(error) if error.kind() == ErrorKind::Timeout && (!capabilities.miss_signal || capabilities.holds_unserved) => {}
+        other => panic!("a call sent once the drained server had closed was not refused `Unavailable`, got: {other:?}"),
+    }
 }

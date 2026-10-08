@@ -4,7 +4,9 @@
 //! `Competing` through a queue group, the application's root module's full type path unless
 //! `.group(..)` names one; no-responders maps to `Unavailable`, and so does a call waiting when
 //! the client's connection drops, since async-nats resubscribes the inbox but what was published
-//! to it meanwhile is gone; the drain is NATS's drain protocol; `tls://` selects TLS.
+//! to it meanwhile is gone; the drain is NATS's drain protocol, which async-nats ends without
+//! waiting for the server to stop routing, so a request routed to the draining instance in between
+//! can be lost and its caller sees its own `Timeout` (`unconfirmed_drain`); `tls://` selects TLS.
 //!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_nats::Nats::url("nats://bus:4222")))

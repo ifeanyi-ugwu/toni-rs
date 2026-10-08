@@ -3,12 +3,15 @@
 //! 2.x supports MQTT v5 shared subscriptions; the image's `/mosquitto-no-auth.conf` listens on
 //! every interface and allows anonymous clients, which the default configuration does not.
 //!
-//! Beside the suite, two tests drive the link through `Link` directly, for orderings inside it
+//! Beside the suite, four tests drive the link through `Link` directly, for orderings inside it
 //! that no scenario reaches on its own.
 
 #![cfg(feature = "integration")]
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -16,12 +19,16 @@ use futures_util::{FutureExt, StreamExt};
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Event as TraceEvent, Level, Metadata};
 use ulo::BoundAddr;
 use ulo_rpc_conformance::{Broker, report, startup_failed};
 use ulo_rpc_conformance::relay::{Relay, reachable, unshadowed};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{CallHeaders, Data, Frame, Link, Pattern};
 use ulo_rpc_mqtt::Mqtt;
+use ulo_transport::{Detail, ErrorKind};
 
 const PORT: u16 = 1883;
 
@@ -137,4 +144,128 @@ async fn drain_delivers_the_cancel_that_releases_the_last_call() {
     );
     client.close().await.expect("the client's link closes");
     server.close().await.expect("the server's link closes");
+}
+
+/// A server's drain returns only once the broker has stopped routing to it: a request published
+/// after it returns finds no subscriber, and the broker's PUBACK 0x10 reaches the caller as
+/// `unavailable` with `reason: "no_destination"`. A drain returning while its UNSUBSCRIBE waited
+/// to be written or processed would leave the request routed to the draining server.
+#[tokio::test(flavor = "multi_thread")]
+async fn drain_returns_once_the_broker_stops_routing_to_the_server() {
+    const DRAINED: &str = "link.drained";
+    let broker = Mosquitto::start().await;
+    let server = broker.link().group("drain_confirmed");
+    let mut inbound = server.listen(&[Pattern::from(DRAINED)]).await.expect("the server's link listens");
+    let client = broker.link();
+    let outbound = client.connect().await.expect("the client's link connects");
+    let mut replies = outbound.replies;
+
+    tokio::time::timeout(PATIENCE, server.drain()).await.expect("the drain returns once the broker has confirmed it");
+    let request = Frame::Req { id: 1, pattern: DRAINED.to_owned(), headers: CallHeaders::new(), data: Data::new(Bytes::from_static(b"null")) };
+    (outbound.send)(Pattern::from(DRAINED), request, None).await.expect("the request is published");
+
+    let reply = tokio::time::timeout(PATIENCE, replies.next()).await.ok().flatten();
+    let no_destination = |error: &ulo_rpc::ErrorBody| {
+        error.kind == ErrorKind::Unavailable
+            && error.details.iter().any(|detail| matches!(detail, Detail::ErrorInfo { reason, .. } if reason == "no_destination"))
+    };
+    assert!(
+        matches!(&reply, Some(Frame::Err { id: 1, error }) if no_destination(error)),
+        "a request published once the drain returned was not answered `no_destination`, got: {reply:?}",
+    );
+    assert!(inbound.next().now_or_never().is_none_or(|delivery| delivery.is_none()), "the drained server received the request");
+    client.close().await.expect("the client's link closes");
+    server.close().await.expect("the server's link closes");
+}
+
+/// A drain dropped before the broker confirmed its UNSUBSCRIBEs, as the core drops it at the
+/// drain's deadline, logs the filters the broker had not confirmed. On a current-thread runtime
+/// the event loop cannot run between the drain's first poll and its drop, so nothing is confirmed.
+#[tokio::test]
+async fn a_drain_dropped_before_the_broker_confirms_logs_the_filters() {
+    const UNCONFIRMED: &str = "link.unconfirmed";
+    capture();
+    let broker = Mosquitto::start().await;
+    let server = broker.link().group("drain_unconfirmed");
+    let _inbound = server.listen(&[Pattern::from(UNCONFIRMED)]).await.expect("the server's link listens");
+
+    assert!(server.drain().now_or_never().is_none(), "the drain returned before the event loop could write its UNSUBSCRIBE");
+
+    let warnings = capture().warnings(thread::current().id());
+    let filter = format!("$share/drain_unconfirmed/{UNCONFIRMED}");
+    assert!(
+        warnings.iter().any(|line| {
+            line.starts_with("the drain's deadline passed before the MQTT broker confirmed the unsubscribe") && line.contains(&filter)
+        }),
+        "no `warn` naming the unconfirmed filter `{filter}`: {warnings:?}",
+    );
+    server.close().await.expect("the server's link closes");
+}
+
+/// The process's subscriber, installed by the first test that reads it. A thread-local one would
+/// not do: tracing caches whether a callsite is enabled from the first thread to reach it, and a
+/// test without the subscriber reaching the `warn` first would disable it for the one with it.
+fn capture() -> &'static Capture {
+    static CAPTURE: OnceLock<Capture> = OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture = Capture::default();
+        tracing::subscriber::set_global_default(capture.clone()).expect("no other subscriber is installed");
+        capture
+    })
+}
+
+/// Every `warn` and `error` event, as its message followed by `name=value` for each other field,
+/// with the thread it was emitted on.
+#[derive(Clone, Default)]
+struct Capture {
+    lines: Arc<Mutex<Vec<(ThreadId, String)>>>,
+    next_span: Arc<AtomicU64>,
+}
+
+impl Capture {
+    fn warnings(&self, on: ThreadId) -> Vec<String> {
+        let lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+        lines.iter().filter(|(thread, _)| *thread == on).map(|(_, line)| line.clone()).collect()
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.is_span() || *metadata.level() <= Level::WARN
+    }
+
+    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+        Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &TraceEvent<'_>) {
+        let mut line = Line::default();
+        event.record(&mut line);
+        let line = format!("{}{}", line.message, line.fields);
+        self.lines.lock().unwrap_or_else(PoisonError::into_inner).push((thread::current().id(), line));
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+#[derive(Default)]
+struct Line {
+    message: String,
+    fields: String,
+}
+
+impl Visit for Line {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{value:?}");
+        } else {
+            self.fields.push_str(&format!(" {}={value:?}", field.name()));
+        }
+    }
 }

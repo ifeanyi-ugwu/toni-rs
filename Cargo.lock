@@ -6447,6 +6447,7 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-rpc-macros",
+ "ulo-tokio",
  "ulo-transport",
 ]
 
@@ -6592,6 +6593,7 @@ dependencies = [
  "ulo-rpc",
  "ulo-rpc-conformance",
  "ulo-tokio",
+ "ulo-transport",
 ]
 
 [[package]]
