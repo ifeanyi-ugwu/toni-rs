@@ -38,7 +38,11 @@ pub(crate) async fn load(shared: &Arc<AppShared>, module: Box<dyn Module>) -> Re
         return Ok(shared.module_ref(existing));
     }
 
-    let env = WireEnv { timer: shared.config.timer.clone(), knobs_set: shared.config.knobs_set() };
+    let env = WireEnv {
+        timer: shared.config.timer.clone(),
+        runtime: shared.config.runtime.clone(),
+        knobs_set: shared.config.knobs_set(),
+    };
     let LazyWiring { graph, module: loaded, singletons } = match wire::wire_lazy(&base, module, &env) {
         Ok(wiring) => wiring,
         Err(LazyFailure::Wiring(errors)) => return Err(LoadError::Wiring(errors)),

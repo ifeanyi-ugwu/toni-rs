@@ -19,6 +19,8 @@ ulo-transport-macros = { path = "../ulo-transport-macros" }
 # The runtime-free semaphore behind `Admission`, the one the core already uses.
 async-lock.workspace = true
 futures-core.workspace = true
+# `FuturesUnordered`, which `TaskSet` holds its handles in.
+futures-util.workspace = true
 pin-project-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -14,8 +14,9 @@ use crate::lifecycle::shutdown;
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::redact::{Redacted, redact};
+use crate::runtime::Runtime;
 use crate::signal::Signal;
-use crate::timer::BoxError;
+use crate::timer::{BoxError, Timer};
 use crate::transport::Transport;
 use crate::transport::controller::MountedHandler;
 use crate::transport::handler::HandlerInfo;
@@ -85,6 +86,19 @@ impl AppHandle {
     /// its own clock passes this to it, so the window is set in one place.
     pub fn drain_timeout(&self) -> Duration {
         self.shared.config.drain()
+    }
+
+    /// The app's `Timer`, the object `Dep<dyn Timer>` resolves to; `None` on an app built with
+    /// neither a `Timer` nor a `Runtime`. For code holding an `AppHandle` rather than a `Dep`: a
+    /// link, which `Link::prepare` hands one, or a host embedding the app.
+    pub fn timer(&self) -> Option<&Arc<dyn Timer>> {
+        self.shared.config.timer.as_ref()
+    }
+
+    /// The app's `Runtime`, the object `Dep<dyn Runtime>` resolves to; `None` on an app built
+    /// without one. [`timer`](Self::timer) is then the same object.
+    pub fn runtime(&self) -> Option<&Arc<dyn Runtime>> {
+        self.shared.config.runtime.as_ref()
     }
 
     /// Where the app is in its life (transports DESIGN §11, X13). gRPC health reads it to report

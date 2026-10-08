@@ -23,6 +23,7 @@ use crate::module::{Module, ModuleIdentity, ModuleName};
 use crate::redact::redact;
 use crate::scope::ScopeKind;
 use crate::testing::{CollectionOverride, Override, OverrideTarget, Replacement, TestPlan};
+use crate::runtime::Runtime;
 use crate::timer::{Bound, Timer};
 use crate::transport::controller::{EnhancerDep, HandlerDecl, HandlerRecord, Mount};
 use crate::transport::inputs::Inputs;
@@ -32,6 +33,8 @@ use crate::type_name::TypeName;
 pub(crate) struct WireEnv {
     /// When set, bound under `dyn Timer` as a value in the core's own global module.
     pub(crate) timer: Option<Arc<dyn Timer>>,
+    /// When set, bound beside it under `dyn Runtime`; `timer` is then the same object.
+    pub(crate) runtime: Option<Arc<dyn Runtime>>,
     /// The builder knobs that were set: each is a wiring error without a `Timer` (step 6).
     pub(crate) knobs_set: Vec<&'static str>,
 }
@@ -41,7 +44,7 @@ pub(crate) struct WireEnv {
 pub(crate) fn wire(root: Box<dyn Module>, env: &WireEnv, plan: Option<TestPlan>) -> Result<Graph, WiringErrors> {
     let mut registry = register::register_all(root, plan.as_ref());
     if let Some(timer) = &env.timer {
-        add_timer_module(&mut registry, timer);
+        add_timer_module(&mut registry, timer, env.runtime.as_ref());
     }
     let mut graph = Graph::empty();
     let mut steps = Steps::default();
@@ -166,16 +169,18 @@ fn check(graph: &mut Graph, declared: &Declared, env: &WireEnv, steps: &mut Step
     check_environment(graph, env, declared, &mut steps.environment);
 }
 
-/// The core's own global module, holding the app's `Timer` under `dyn Timer` (§3.9).
+/// The core's own global module, holding the app's `Timer` under `dyn Timer` (§3.9), and the
+/// app's `Runtime` under `dyn Runtime` when one is set.
 struct TimerModule;
 
 /// First in collection order: it imports nothing, and every module sees it as a global.
-fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
-    let identity = ModuleIdentity::of_type::<TimerModule>().label("AppBuilder::timer");
+fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>, runtime: Option<&Arc<dyn Runtime>>) {
+    let label = if runtime.is_some() { "AppBuilder::runtime" } else { "AppBuilder::timer" };
+    let identity = ModuleIdentity::of_type::<TimerModule>().label(label);
     let mut node = ModuleNode::new(identity.clone());
     node.global = true;
-    let key = Key::of::<dyn Timer, ()>();
     let location = Location::caller();
+    let key = Key::of::<dyn Timer, ()>();
     node.bindings.push(BindingRecord::new(
         key,
         type_name::<dyn Timer>(),
@@ -186,6 +191,19 @@ fn add_timer_module(registry: &mut Registry, timer: &Arc<dyn Timer>) {
         location,
     ));
     node.exports.push(ExportRecord { key, reexport: false, location });
+    if let Some(runtime) = runtime {
+        let key = Key::of::<dyn Runtime, ()>();
+        node.bindings.push(BindingRecord::new(
+            key,
+            type_name::<dyn Runtime>(),
+            BindingKind::Single,
+            ScopeKind::Singleton,
+            Recipe::Value(instance_of::<dyn Runtime>(Arc::clone(runtime))),
+            Dependencies::default(),
+            location,
+        ));
+        node.exports.push(ExportRecord { key, reexport: false, location });
+    }
     let index = registry.nodes.len();
     registry.nodes.push(node);
     registry.by_identity.insert(identity, index);
@@ -441,9 +459,14 @@ fn freeze(
 /// since the override's value is not the type the original builds.
 fn apply_overrides(registry: &mut Registry, names: &[ModuleName], overrides: Vec<Override>, errors: &mut Vec<WiringError>) {
     let timer = Key::of::<dyn Timer, ()>();
+    let runtime = Key::of::<dyn Runtime, ()>();
     for ov in overrides {
         if ov.key == timer {
             errors.push(WiringError::TimerOverride { at: ov.location });
+            continue;
+        }
+        if ov.key == runtime {
+            errors.push(WiringError::RuntimeOverride { at: ov.location });
             continue;
         }
         let modules: Vec<usize> = match &ov.target {

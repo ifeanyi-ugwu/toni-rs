@@ -1,17 +1,59 @@
-//! The tokio runtime for `ulo` (transports DESIGN §8): the core's [`Timer`], the OS signal future
-//! [`shutdown_signal`] for `serve`, and [`spawn`] and [`spawn_in`].
+//! The tokio runtime for `ulo` (transports DESIGN §8): the core's [`Runtime`](ulo::Runtime) as
+//! [`Tokio`], its clock alone as [`Timer`], the OS signal future [`shutdown_signal`] for `serve`,
+//! and [`spawn`] and [`spawn_in`].
 //!
 //! ```ignore
-//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?;
+//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio).wire()?;
 //! // ..
 //! app.serve(ulo_tokio::shutdown_signal()).await?;
 //! ```
 
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
-use ulo::{BoxFuture, ExecutionRef, Signal};
+use ulo::{BoxFuture, ExecutionRef, RuntimeTask, Signal, TaskHandle};
+
+/// The app's runtime on tokio: [`Timer`]'s clock, and tasks spawned with `tokio::spawn`, so on
+/// the tokio runtime current where `spawn` is called; it panics outside one, as `tokio::spawn`
+/// does. Set with `AppBuilder::runtime(ulo_tokio::Tokio)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Tokio;
+
+impl ulo::Timer for Tokio {
+    fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
+        ulo::Timer::sleep(&Timer, d)
+    }
+
+    fn now(&self) -> Instant {
+        ulo::Timer::now(&Timer)
+    }
+}
+
+impl ulo::Spawn for Tokio {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
+        TaskHandle::launch(fut, |task| Task(tokio::spawn(task)))
+    }
+}
+
+/// tokio's handle as the core's `RuntimeTask`. A `JoinHandle` resolves only once its future has
+/// been dropped, after an abort as after a return, which is what `poll_ended` requires; dropping
+/// it detaches the task.
+struct Task(JoinHandle<()>);
+
+impl RuntimeTask for Task {
+    fn abort(&mut self) {
+        self.0.abort();
+    }
+
+    fn poll_ended(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        Pin::new(&mut self.0).poll(cx).map(|_| ())
+    }
+
+    fn detach(self: Box<Self>) {}
+}
 
 /// The app's clock on tokio: sleeps through `tokio::time`, and `now()` through
 /// `tokio::time::Instant::now().into_std()`, so a paused test clock (`tokio::time::pause`) drives

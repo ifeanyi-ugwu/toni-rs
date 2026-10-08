@@ -101,7 +101,7 @@ pub(crate) async fn run<F: Future>(
 /// panicked must not be polled again; every caller drops it on the payload.
 ///
 /// The inner future is boxed so the wrapper is `Unpin` and needs no pin projection.
-pub(crate) struct CatchUnwind<F> {
+pub(crate) struct CatchUnwind<F: ?Sized> {
     inner: Pin<Box<F>>,
 }
 
@@ -111,7 +111,14 @@ impl<F> CatchUnwind<F> {
     }
 }
 
-impl<F: Future> Future for CatchUnwind<F> {
+impl<F: ?Sized> CatchUnwind<F> {
+    /// Over a future already boxed, a spawned `BoxFuture`, without boxing it again.
+    pub(crate) fn boxed(inner: Pin<Box<F>>) -> Self {
+        CatchUnwind { inner }
+    }
+}
+
+impl<F: Future + ?Sized> Future for CatchUnwind<F> {
     type Output = Result<F::Output, Box<dyn Any + Send>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

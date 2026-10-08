@@ -6599,11 +6599,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ulo-runtime-conformance"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "ulo",
+ "ulo-transport",
+]
+
+[[package]]
 name = "ulo-tokio"
 version = "0.1.0"
 dependencies = [
  "tokio",
  "ulo",
+ "ulo-runtime-conformance",
 ]
 
 [[package]]
@@ -6612,6 +6622,7 @@ version = "0.1.0"
 dependencies = [
  "async-lock",
  "futures-core",
+ "futures-util",
  "pin-project-lite",
  "serde",
  "serde_json",

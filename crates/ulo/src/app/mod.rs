@@ -28,6 +28,7 @@ use crate::lifecycle::{connect, shutdown};
 use crate::module::Module;
 use crate::module::handle::ModuleRef;
 use crate::redact::{Redacted, redact};
+use crate::runtime::Runtime;
 use crate::signal::Signal;
 use crate::testing::TestPlan;
 use crate::timer::{BoxError, BoxFuture, Defaults, Timer};
@@ -51,8 +52,9 @@ pub struct App<S = Wired> {
     _s: PhantomData<S>,
 }
 
-/// Configures an app before `wire()`: the root module, the `Timer` and the four timing knobs.
-/// Every knob is timed by the `Timer`; set on a builder with none, each is a wiring error.
+/// Configures an app before `wire()`: the root module, the `Timer` or the `Runtime` that carries
+/// one, and the four timing knobs. Every knob is timed by the `Timer`; set on a builder with none,
+/// each is a wiring error.
 pub struct AppBuilder {
     pub(crate) root: Box<dyn Module>,
     pub(crate) config: AppConfig,
@@ -62,7 +64,9 @@ pub struct AppBuilder {
 /// The app's timing configuration. `None` is unset.
 #[derive(Clone, Default)]
 pub(crate) struct AppConfig {
+    /// The clock: the `Runtime`'s own object when one is set.
     pub(crate) timer: Option<Arc<dyn Timer>>,
+    pub(crate) runtime: Option<Arc<dyn Runtime>>,
     pub(crate) drain_timeout: Option<Duration>,
     pub(crate) shutdown_timeout: Option<Duration>,
     pub(crate) hook_timeout: Option<Duration>,
@@ -116,8 +120,21 @@ impl App {
 
 impl AppBuilder {
     /// The app's one clock; bound for services as `Dep<dyn Timer>` in the core's global module.
+    /// It replaces a `Runtime` set before it, which leaves the app with no `Dep<dyn Runtime>`:
+    /// the clock services read and the one the runtime carries are never two.
     pub fn timer(mut self, timer: impl Timer) -> Self {
         self.config.timer = Some(Arc::new(timer));
+        self.config.runtime = None;
+        self
+    }
+
+    /// The app's clock and executor; bound for services as `Dep<dyn Runtime>` in the core's global
+    /// module, and as `Dep<dyn Timer>`, which resolves to the same object. Everything a `Timer`
+    /// alone enables it enables as the clock; it replaces a `Timer` set before it.
+    pub fn runtime(mut self, runtime: impl Runtime) -> Self {
+        let runtime: Arc<dyn Runtime> = Arc::new(runtime);
+        self.config.timer = Some(Arc::clone(&runtime) as Arc<dyn Timer>);
+        self.config.runtime = Some(runtime);
         self
     }
 
@@ -150,7 +167,11 @@ impl AppBuilder {
     /// Builds the graph and validates everything, collecting every error in one pass. No
     /// instances, no I/O.
     pub fn wire(self) -> Result<App<Wired>, StartupError> {
-        let env = wire::WireEnv { timer: self.config.timer.clone(), knobs_set: self.config.knobs_set() };
+        let env = wire::WireEnv {
+            timer: self.config.timer.clone(),
+            runtime: self.config.runtime.clone(),
+            knobs_set: self.config.knobs_set(),
+        };
         let graph = wire::wire(self.root, &env, self.plan)?;
         Ok(App::from_shared(AppShared::new(graph, self.config), Vec::new()))
     }

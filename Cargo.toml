@@ -8,6 +8,7 @@ members = [
     "crates/ulo-transport-macros",
     "crates/ulo-net",
     "crates/ulo-tokio",
+    "crates/ulo-runtime-conformance",
     "crates/ulo-hyper-serve",
     "crates/ulo-http",
     "crates/ulo-http-macros",

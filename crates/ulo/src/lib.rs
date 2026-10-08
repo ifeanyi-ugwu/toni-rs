@@ -1,8 +1,9 @@
 //! The `ulo` core: keys, bindings, injection points, scopes, executions, modules, lifecycle,
 //! errors, and the enhancer traits a transport implements against.
 //!
-//! The core has no async runtime. It uses `std::future`, the [`BoxFuture`] alias and a pluggable
-//! [`Timer`]; transports and runtime adapters bring the executor, sockets, timers and signals.
+//! The core has no async runtime. It uses `std::future`, the [`BoxFuture`] alias, a pluggable
+//! [`Timer`] and a pluggable [`Spawn`], the two together a [`Runtime`]; transports and runtime
+//! adapters bring the executor, sockets, timers and signals.
 //! Every macro expands to calls on the value-level API re-exported here, which integration
 //! crates call directly.
 
@@ -18,6 +19,7 @@ mod lifecycle;
 mod module;
 mod redact;
 mod resolver;
+mod runtime;
 mod signal;
 mod timer;
 mod transport;
@@ -75,6 +77,7 @@ pub use module::{Module, ModuleIdentity, ModuleName};
 pub use redact::{Redacted, Secret};
 pub use resolver::{Entries, Entry, Resolver};
 pub use scope::{AllowedIn, HookCapable, Scope, ScopeKind};
+pub use runtime::{Runtime, RuntimeTask, Spawn, TaskEnd, TaskHandle, ValueHandle, spawn_with};
 pub use signal::Signal;
 pub use timer::{BoxError, BoxFuture, Bound, Timer};
 pub use transport::controller::{Controller, ControllerHandle, Mount, MountedHandler};

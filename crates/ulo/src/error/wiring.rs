@@ -153,6 +153,8 @@ pub enum WiringError {
     OverrideKind { key: KeyName, expected: BindingKind, found: BindingKind, at: &'static Location<'static> },
     /// Step 2, tests: `override_value::<dyn Timer>`. Hint: "set it with `TestApp::timer(..)`".
     TimerOverride { at: &'static Location<'static> },
+    /// Step 2, tests: `override_value::<dyn Runtime>`. Hint: "set it with `TestApp::runtime(..)`".
+    RuntimeOverride { at: &'static Location<'static> },
     /// Step 2, tests: a `replace_module` replacement that does not export a superset of the
     /// original's keys.
     ReplacementMissingExports { original: ModuleName, replacement: ModuleName, missing: Vec<KeyName> },
@@ -249,6 +251,7 @@ impl WiringError {
             WiringError::ImportCycle { .. }
             | WiringError::OverrideModuleAmbiguous { .. }
             | WiringError::TimerOverride { .. }
+            | WiringError::RuntimeOverride { .. }
             | WiringError::ReplacementUnmatched { .. }
             | WiringError::DuplicateReplacement { .. }
             | WiringError::ClosureNeedsExecution { .. }
@@ -286,6 +289,7 @@ impl WiringError {
             | WiringError::OverrideModuleAmbiguous { .. }
             | WiringError::OverrideKind { .. }
             | WiringError::TimerOverride { .. }
+            | WiringError::RuntimeOverride { .. }
             | WiringError::ReplacementMissingExports { .. }
             | WiringError::ReplacementUnmatched { .. }
             | WiringError::DuplicateReplacement { .. }
@@ -337,6 +341,7 @@ impl WiringError {
             WiringError::InputConflict { first, second, .. } => first.module().into_iter().chain(second.module()).collect(),
             WiringError::OverrideKind { .. }
             | WiringError::TimerOverride { .. }
+            | WiringError::RuntimeOverride { .. }
             | WiringError::ClosureNeedsExecution { .. }
             | WiringError::ClosureScopeViolation { .. }
             | WiringError::InputNotSeeded { .. }
@@ -519,6 +524,11 @@ impl WiringError {
                 f,
                 "`override_value::<dyn Timer>` overrides app configuration, not a binding".to_owned(),
                 vec![format!("declared at {}", place(at)), "help: set it with `TestApp::timer(..)`".to_owned()],
+            ),
+            WiringError::RuntimeOverride { at } => tree(
+                f,
+                "`override_value::<dyn Runtime>` overrides app configuration, not a binding".to_owned(),
+                vec![format!("declared at {}", place(at)), "help: set it with `TestApp::runtime(..)`".to_owned()],
             ),
             WiringError::ReplacementMissingExports { original, replacement, missing } => {
                 let original = show_module(original);

@@ -24,6 +24,7 @@ use crate::dependency::Dependencies;
 use crate::error::StartupError;
 use crate::key::Key;
 use crate::module::{Module, ModuleIdentity};
+use crate::runtime::Runtime;
 use crate::timer::{BoxError, Timer};
 
 /// No override is waiting to be scoped.
@@ -107,6 +108,7 @@ impl TestApp {
 impl<S> TestApp<S> {
     /// Replaces the recipe of the binding under `T` with a shared value.
     /// `override_value::<dyn Timer>` is a wiring error: set it with [`timer`](Self::timer).
+    /// `override_value::<dyn Runtime>` is one too: set it with [`runtime`](Self::runtime).
     #[track_caller]
     pub fn override_value<T: ?Sized + Send + Sync + 'static>(self, value: Arc<T>) -> TestApp<Pending> {
         let location = Location::caller();
@@ -195,6 +197,12 @@ impl<S> TestApp<S> {
     /// checks, and that services read as `Dep<dyn Timer>`.
     pub fn timer(self, timer: impl Timer) -> TestApp<Settled> {
         TestApp { builder: self.builder.timer(timer), _s: PhantomData }
+    }
+
+    /// The clock and executor, as [`AppBuilder::runtime`](crate::AppBuilder::runtime) sets them:
+    /// services read it as `Dep<dyn Runtime>`, and as `Dep<dyn Timer>`.
+    pub fn runtime(self, runtime: impl Runtime) -> TestApp<Settled> {
+        TestApp { builder: self.builder.runtime(runtime), _s: PhantomData }
     }
 
     pub fn drain_timeout(self, d: Duration) -> TestApp<Settled> {

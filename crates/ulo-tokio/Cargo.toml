@@ -3,7 +3,7 @@ name = "ulo-tokio"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The tokio runtime for Ulo: the core's Timer, OS shutdown signals and spawn helpers"
+description = "The tokio runtime for Ulo: the core's Runtime and Timer, OS shutdown signals and spawn helpers"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -12,3 +12,7 @@ categories = ["asynchronous"]
 [dependencies]
 ulo = { path = "../ulo" }
 tokio = { workspace = true, features = ["rt", "time", "signal", "macros"] }
+
+[dev-dependencies]
+ulo-runtime-conformance = { path = "../ulo-runtime-conformance" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

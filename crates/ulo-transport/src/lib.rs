@@ -3,8 +3,9 @@
 //! ([`IntoReply`]), the one error model ([`CallError`], [`ErrorKind`], [`Classify`], [`Details`]),
 //! extraction failures ([`ExtractError`]), declarative validation ([`Valid`], [`Validate`]),
 //! declared metadata ([`Metadata`]), load shedding ([`Admission`]), the count a server setting
-//! bounds ([`Count`]), call spans ([`span`]), stream-end tracking ([`Tracked`]) and the one way a
-//! server builds its `prepare` failure ([`prepare`]).
+//! bounds ([`Count`]), call spans ([`span`]), stream-end tracking ([`Tracked`]), the tasks a
+//! server spawns ([`TaskSet`]) and the one way a server builds its `prepare` failure
+//! ([`prepare`]).
 //!
 //! Each transport says only how these look on its wire. A transport's `Cx` implements
 //! `AsRef<ExecutionRef>`, which is how the impls here reach the call's execution.
@@ -15,6 +16,7 @@ mod details;
 mod error;
 mod extract;
 mod reply;
+mod task_set;
 mod tracked;
 mod validate;
 
@@ -30,6 +32,7 @@ pub use details::{Detail, Details, FieldViolation, Link};
 pub use error::{CallError, Classify, ErrorKind};
 pub use extract::{ExtractError, FromCall, Injected};
 pub use reply::{IntoReply, IntoReplyError};
+pub use task_set::TaskSet;
 pub use tracked::Tracked;
 pub use ulo::{MetaTier, Metadata};
 pub use ulo_transport_macros::{Classify, Validate};
