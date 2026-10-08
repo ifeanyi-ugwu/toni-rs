@@ -1341,3 +1341,30 @@ Five of the seven decisions are accepted as built. Decision 5 should change, dec
 **7. Make it a host setting, not a constant.** Kafka's `PARALLEL` describes what Kafka itself needs. RabbitMQ's failures came from one machine's memory: CI ran the same suite 24 of 24 at full parallelism. A hardcoded bound would slow every host to fix one. Add an environment override that every suite reads, say `ULO_CONFORMANCE_PARALLEL=6`, applied as the minimum of itself and any bound the broker declares. A constrained laptop sets it once, CI leaves it unset, and the Makefile's local targets can document it.
 
 **On the gRPC test that needs a refused endpoint:** don't look for a port where nothing listens. That's the race again, and as macOS showed, a bound-but-not-listening socket doesn't even refuse there. Have the test control the endpoint instead: a listener on port 0 that accepts each connection and closes it at once. The client hits the same failure path (a connection that ends before any response), deterministically, on every OS, with no probe and no release.
+
+## Thirty-second response: batch 14's sign-offs and the confirmed drain
+
+Received 2026-10-08, answering `divergences/race2b-tests14.md` (S1–S5) and F351/F352 from the MQTT
+hunts (`race2b-tests15-mqtt.md`, `race2b-tests16-mqtt.md`). The user signed it off the same day, with two notes for the build: F331 records that async-nats removes a subscription locally when it queues the unsubscribe, so the probe decides between the flush and the declared capability; and two of the five broker links (Redis, RabbitMQ, Kafka being the other three beside NATS and MQTT) are not named, so the build checks whether each confirms its drain and reports, changing none of them.
+
+All of batch 14's decisions are accepted, and S2 is right for a reason worth writing down. On the drain bugs: fix both. The NATS "limit" may not be one.
+
+### Batch 14
+
+**S2. Accepted, and no public mark is needed.** The question is what `on_stream_end` reports: the outcome of *the reply*, the body actually written to the client. A stream an interceptor built and then discarded never was the reply. Before, it reported `CutOff`, and because the first report wins, that discarded stream's report hid the real reply's outcome. That was the bug this fixes. Reporting nothing for a body that never reached the client is correct. The exactly-once guarantee was always about the reply, not about every stream someone built. A user's own `Tracked` inside a body is wrapped twice but reports once, so no case needs a public mark. One sentence on `on_stream_end` is enough: "it reports the reply actually written; a stream discarded before the response is sent is not a reply and reports nothing".
+
+**S5. Port 0. My listener suggestion was wrong for this test.** The test asserts that a *down endpoint* answers `Unavailable`. A listener that accepts and then closes tests a different failure, a dropped connection, which tonic correctly reports differently. Port 0 is better than anything I proposed: nothing can ever listen there, so there is nothing to race, and you checked both platforms' actual errors.
+
+**S1. Accepted.** The late path never depended on the wrap, and the outcomes are unchanged.
+
+**S3. Accepted.** A dedicated `HEAD` handler is the same legitimate case as a `GET` handler answering `HEAD`. The method doesn't matter. What matters is whether the status forbids a body, which is why a 204 still warns.
+
+**S4. Accepted, with the reasoning stated in the docs.** The outcome concerns the body, and a bodiless answer owed none. A peer leaving before the head is written is a connection failure, not an incomplete body. Where the transport observes it, it is reported as a disconnect; it does not change what was owed.
+
+### The drain bugs
+
+**F351. Wait for the UNSUBACKs, bounded only by the drain deadline.** A server has only stopped accepting once the broker has stopped routing to it, and the UNSUBACK is the broker's own statement of that. A separate bound would be a second knob for the same window. A slow broker eating the deadline costs less than it seems: in-flight calls drain concurrently under the same deadline anyway, so the wait only lengthens a drain that has nothing else to do. If the deadline arrives first, log at `warn` that the broker had not confirmed the unsubscribe. A slow broker then shows up in the logs rather than as unexplained timeouts.
+
+**F352. Fix it, with one deadline for both waits.** Accepting the gap would let a call arriving during the drain get `Timeout` instead of the `Unavailable` the design promises. That is pass-on-silence again, this time in what clients see. The drain window covers both the inbound stream's end and the refusals spawned during the drain. Refusals are small and fast, so a separate short bound would add a knob without protecting anything the drain deadline doesn't already protect.
+
+**NATS. Check this before accepting it as a limit.** The NATS protocol processes a connection's messages in order, and it answers a `PING` with a `PONG` only after processing everything sent before it. So *unsubscribe, then flush* closes the window: async-nats's `flush` sends a `PING` and waits for the `PONG`. When the `PONG` arrives, the server has processed the unsubscribe. Every message it routed to this client beforehand was written to the same TCP stream ahead of the `PONG`, so it has already arrived. If async-nats's `flush` behaves as the protocol says, F331 is a missing flush, not a limit. Probe it with the widened-window technique used for F347. If the probe holds, all three broker links confirm their drain and the rule has no exception. If it doesn't, declare it as a capability and assert it in the suite, as `holds_unserved` is, rather than leaving it as a documentation note.
