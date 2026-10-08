@@ -1402,3 +1402,55 @@ All six decisions are accepted. One name changes, and UDP gets one improvement. 
 The scenario keeps its strict assertion, at a load below that limit.
 
 **F357. Retry in the link, limited to those three codes.** This differs from the earlier "no retry at bind" decision (U19). There, the broker was unreachable, and retrying would hide a real configuration error. Here, the broker is reachable and its coordinator is still warming up, and librdkafka itself classes these errors as retriable. Retrying only those three codes, within the existing bind timeout, follows the library's own judgment and keeps the one-report-at-startup rule. Asking every deployment's environment to wait for Kafka's internal coordinator first would push a broker detail onto every operator.
+
+## Thirty-fourth response: runtime neutrality
+
+Received 2026-10-08, answering the block on runtime neutrality: the goal stated as a test, the
+branch's runtime dependencies, and seven questions. The user signed it off the same day, with four notes for the build. `ulo-net` is not runtime-free: its TLS goes through `tokio-rustls`, so answer 2's premise holds for its sockets alone, and the build moves its TLS to `futures-rustls` or into the runtime crates and reports which. The forbidden-dependency check walks the whole tree (`cargo tree -i tokio`), since a scan of direct dependencies missed `ulo-net`. The build runs in stages, each compiled, tested and green in CI before the next: the core's `Runtime`, `TaskHandle` and `TaskSet` with `ulo-tokio`; `ulo-http` on `futures-io` with `ulo-net`'s TLS; `ulo-rpc` off tokio with `RpcClient` given its runtime; `ulo-ws` on `async-tungstenite` with `ulo-graphql-ws`; `ulo-smol`, the smol TCP link, the suites taking a runtime and the smol CI job; the CI check. It starts once batch 18 has landed, both touching `ulo-rpc`.
+
+Your audit corrects my table in two places, and the corrections are right. I put the TCP and UDP links on the agnostic side, which only works if the runtime interface includes sockets (question 2 says it shouldn't). And I left out the two hubs that matter most, `ulo-rpc` and `ulo-ws`. Your one-sentence test is better than my framing: an alternative implementation of any plug point has no tokio in its dependency tree. Here are the seven answers.
+
+**1. Spawn: dropping the handle detaches, and abort and completion are explicit.** Cancel-on-drop is tidier in theory, but here it's a trap: every fire-and-forget spawn in the hubs would silently die the moment its handle went out of scope, and a drain built on it would behave differently depending on where a handle happened to be dropped. So one meaning, fixed by the trait:
+
+```rust
+pub trait Spawn: Send + Sync + 'static {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle;
+}
+
+pub struct TaskHandle { /* runtime's handle, erased */ }
+impl TaskHandle {
+    pub fn abort(&self);
+}
+impl Future for TaskHandle {
+    type Output = TaskEnd;   // Finished | Aborted | Panicked
+}
+impl Drop for TaskHandle { /* detaches */ }
+```
+
+- **On tokio** this maps directly onto `JoinHandle`.
+- **On smol**, the adapter keeps the `Task` in an `Option`: `abort` drops it (which cancels), and `Drop` calls `detach()`.
+- **Panics are made uniform** by wrapping every spawned future in a panic catch inside the helper. tokio reports a panic through `JoinError`, while smol re-raises it on await, and a uniform `TaskEnd::Panicked` stops the drain from behaving differently by runtime.
+
+On top of this, put a runtime-free `TaskSet` in `ulo-transport` (spawn into it, `abort_all`, wait for all), which replaces the hubs' `JoinSet`. A typed `spawn_with::<T>` that returns a value can be a helper over a oneshot channel, without widening the trait.
+
+**2. Keep `Runtime` small. Sockets stay out.** You're right about where the other road leads: every runtime-abstraction crate that took on sockets ended at the lowest common denominator, and then grew features to escape it. The TCP and UDP links stay tokio-based behind the runtime-neutral `Link` trait, and a smol TCP link is its own crate. `ulo-net` is already the right seam for that: it works with `std::net` sockets, which belong to no runtime, and each runtime-specific crate adopts them into its own reactor.
+
+**3. `futures-io` as the default, tokio's traits behind a feature.** smol speaks `futures-io` natively, so an outside backend implements the traits its runtime already uses, and the tokio side converts through `tokio-util`'s compatibility layer. hyper chose its own traits for performance reasons that matter for hyper's core I/O, but not for an upgraded connection or a WebSocket stream. Our own traits would add a third set for every implementer to learn, with no gain at this layer.
+
+**4. The hubs follow the same rule as the core: no tokio at all.** Your test sentence decides this one. If `tokio` (even with only `sync`) is in a hub's dependency tree, then every alternative backend's tree contains tokio, and the test fails by definition. `async-channel`, `async-lock` and `futures` cover what `tokio::sync` does here. The CI check is then one rule, the same forbidden-dependency list, for both the core crates and the hubs.
+
+**5. A runtime is never found ambiently. It's given, or taken from the app.** `Handle::try_current` in `RpcClient`'s drop is exactly the hidden coupling this work exists to remove.
+
+- **Inside an app:** the runtime is bound as `Dep<dyn Runtime>`, as the timer already is as `Dep<dyn Timer>`. The client gets it from the module that builds it.
+- **Outside an app:** a client built directly in `main` takes the runtime as an explicit argument.
+- **In a drop:** a drop can't await, so the client spawns its close on the runtime it holds. If it was never given one, it closes synchronously as far as possible and logs at `warn`. It never silently looks for one.
+- **The suites** take their runtime the same way the app does, as already decided.
+
+**6. The proof is right. Don't make the RPC suite wait: build the smol TCP link as part of it.** Without a smol link, the RPC hub's neutrality is a claim nobody has tested, which is exactly the trap this plan exists to avoid. The TCP link is the simplest one, and it's also the evidence that the `Link` trait itself is runtime-free. So the proof is:
+
+- `ulo-smol` next to `ulo-tokio`;
+- a smol TCP link;
+- one CI job running the HTTP suite and the TCP RPC suite on smol;
+- the forbidden-dependency check over the core crates and the hubs.
+
+**7. When: right after the three small fixes, before any new transport work.** F354 and F357 are small and already understood, and F355 is documentation, so close them first. Then do the runtime batch before more transport code is written, because every new direct `tokio::spawn` adds to the cost of moving later. And `ulo-ws`'s move from `tokio-tungstenite` to `async-tungstenite` is the largest single item, so it's better done before WebSocket code grows further.
