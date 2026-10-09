@@ -225,7 +225,7 @@ async fn start() -> Started {
     let ended = Ended(Record::new());
     let gate = Gate { opened: watch::channel(false).0, log: Record::new() };
     let root = Root { ended: ended.clone(), gate: gate.clone() };
-    let app = Running::start(root, ulo_ws::Server::new("127.0.0.1:0")).await;
+    let app = Running::start(root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
     Started { app, ended, gate }
 }
 

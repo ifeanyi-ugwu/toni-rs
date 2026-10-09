@@ -1,7 +1,7 @@
-//! Every task `ulo-ws` starts is spawned on the app's runtime: broadcast delivery and each
-//! gateway's `AfterInit` once the server is bound, then one task per connection and one per
-//! message, here through the hand-off on the HTTP server's port; `ulo-ws-hyper`'s `runtime.rs`
-//! holds the standalone server to the same counts. The app's runtime counts what it is handed.
+//! Every task the standalone server's connections need is spawned on the app's runtime: broadcast
+//! delivery and each gateway's `AfterInit` once the server is bound, then one task per connection
+//! and one per message; only the accept loop and the HTTP/1.1 handshake run on tokio. The app's
+//! runtime counts what it is handed.
 
 mod support;
 
@@ -51,26 +51,26 @@ impl Spawn for Counting {
 struct Inits(Record<String>);
 
 #[injectable]
-struct Shared {
+struct Own {
     inits: Dep<Inits>,
 }
 
 #[routes]
-#[ulo_ws::gateway(path = "/shared")]
-impl Shared {
+#[ulo_ws::gateway(path = "/own", port = own)]
+impl Own {
     #[ulo_ws::message("ping")]
     fn ping(&self) -> &'static str {
         "pong"
     }
 }
 
-impl AfterInit for Shared {
+impl AfterInit for Own {
     async fn after_init(&self, gw: GatewayRef) {
         self.inits.0.push(gw.path().to_owned());
     }
 }
 
-/// `WsModule` and the one gateway, `Shared`.
+/// `WsModule` and the one gateway, `Own`.
 struct Root {
     inits: Inits,
 }
@@ -83,7 +83,7 @@ impl Module for Root {
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.import(WsModule::for_root());
         m.value(self.inits.clone());
-        m.controller::<Shared>();
+        m.controller::<Own>();
     }
 }
 
@@ -107,6 +107,6 @@ async fn spawns_on_the_app_s_runtime(server: impl ulo::Server, path: &str) {
 }
 
 #[tokio::test]
-async fn the_hand_off_spawns_every_task_on_the_app_s_runtime() {
-    spawns_on_the_app_s_runtime(ulo_http_hyper::Server::new("127.0.0.1:0"), "/shared").await;
+async fn the_standalone_server_spawns_every_task_on_the_app_s_runtime() {
+    spawns_on_the_app_s_runtime(ulo_ws_hyper::Server::new("127.0.0.1:0"), "/own").await;
 }

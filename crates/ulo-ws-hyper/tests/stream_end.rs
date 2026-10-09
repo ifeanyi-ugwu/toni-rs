@@ -131,7 +131,7 @@ impl Module for Root {
 async fn call(event: &'static str, frames: usize) -> (Vec<serde_json::Value>, Option<StreamOutcome>) {
     let (sender, mut reported) = mpsc::unbounded_channel();
     outcomes().insert(event, sender);
-    let app = Running::start(Root, ulo_ws::Server::new("127.0.0.1:0")).await;
+    let app = Running::start(Root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
     let mut socket = app.connect("/streams", &[]).await;
     send_json(&mut socket, &json!({ "event": event, "id": "m" })).await;
     let mut written = Vec::new();

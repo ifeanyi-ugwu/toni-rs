@@ -11,11 +11,12 @@ use ulo_transport::Count;
 use crate::broadcast::{BroadcastAdapter, InMemory, NodeId, Target};
 use crate::handoff::Handoff;
 use crate::rooms::{Hub, Rooms};
+use crate::table::GatewayDefaults;
 
 /// Imported once per application: registers the gateway hand-off in the HTTP `Upgrades`
 /// metadata, binds [`Rooms`](crate::Rooms) and the broadcast adapter, and carries the defaults
-/// for the gateways on the HTTP server's port that `Server` (feature `tokio-server`) carries for those on
-/// its own port.
+/// for the gateways on the HTTP server's port that a standalone server, `ulo_ws_hyper::Server`,
+/// carries for those on its own port.
 ///
 /// ```ignore
 /// #[module(imports = [ulo_ws::WsModule::for_root().broadcast(ulo_ws_redis::Redis::url("redis://cache:6379"))])]
@@ -28,24 +29,13 @@ use crate::rooms::{Hub, Rooms};
 #[derive(Clone)]
 pub struct WsModule {
     pub(crate) adapter: Arc<dyn BroadcastAdapter>,
-    pub(crate) defaults: Defaults,
-}
-
-/// The settings a gateway on the HTTP server's port reads where its attribute leaves one unset.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Defaults {
-    pub(crate) message_limit: Option<u64>,
-    pub(crate) max_connections: Count,
-    pub(crate) max_inflight: Count,
-    pub(crate) max_outbound: Count,
-    pub(crate) ping_interval: Bound,
-    pub(crate) pong_timeout: Bound,
+    pub(crate) defaults: GatewayDefaults,
 }
 
 impl WsModule {
     /// The in-memory broadcast adapter and every default unset.
     pub fn for_root() -> Self {
-        WsModule { adapter: Arc::new(InMemory::new()), defaults: Defaults::default() }
+        WsModule { adapter: Arc::new(InMemory::new()), defaults: GatewayDefaults::default() }
     }
 
     /// The broadcast adapter in place of the in-memory one, as configuration: a second module

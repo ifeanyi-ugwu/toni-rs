@@ -6,72 +6,60 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use http::StatusCode;
-use http::header::{CONTENT_TYPE, HeaderValue};
-use ulo::{AppHandle, BoxError, BoxFuture, DrainToken, Runtime, Spawn};
+use ulo::{AppHandle, BoxError, BoxFuture, DrainToken, Spawn};
 use ulo_http::{HttpBody, Request, Response, UpgradeHandler};
 use ulo_transport::prepare::Failures;
 
-use crate::connection::{Accept, Answer, Tracker, answer};
-use crate::gateway::{GatewayRuntime, Port, build_table, check_defaults, same_path};
-use crate::module::Defaults;
+use crate::connection::{Handshake, Refusal};
+use crate::gateway::{GatewayRuntime, Port, build_table, check_defaults};
 use crate::rooms::Hub;
+use crate::table::{GatewayDefaults, GatewayTable};
 use crate::transport::{Ws, WsConnect};
 
 /// The hand-off itself, carrying `WsModule`'s defaults for the gateways it serves: those whose
 /// settings name `Port::Http`, the default.
 pub(crate) struct Handoff {
-    pub(crate) defaults: Defaults,
+    pub(crate) defaults: GatewayDefaults,
     hub: Arc<Hub>,
-    state: Arc<Mutex<State>>,
-    tracker: Arc<Tracker>,
-}
-
-/// What `prepare` built.
-#[derive(Default)]
-struct State {
-    gateways: Vec<Arc<GatewayRuntime>>,
-    app: Option<AppHandle>,
-    /// The app's runtime, which every connection and its tasks run on. `listen()` refuses an app
-    /// that binds a transport with none, so `prepare` always finds it.
-    runtime: Option<Arc<dyn Runtime>>,
+    /// What `prepare` built: the gateways on the HTTP server's port, served through the same
+    /// table a standalone server serves through.
+    table: Arc<Mutex<Option<GatewayTable>>>,
 }
 
 impl Handoff {
-    pub(crate) fn new(defaults: Defaults, hub: Arc<Hub>) -> Self {
-        Handoff { defaults, hub, state: Arc::new(Mutex::new(State::default())), tracker: Tracker::new() }
+    pub(crate) fn new(defaults: GatewayDefaults, hub: Arc<Hub>) -> Self {
+        Handoff { defaults, hub, table: Arc::new(Mutex::new(None)) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    fn table(&self) -> Option<GatewayTable> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 
 impl UpgradeHandler for Handoff {
     fn paths(&self, app: &AppHandle) -> Vec<Cow<'static, str>> {
         let _ = app;
-        self.lock().gateways.iter().map(|gateway| Cow::Owned(gateway.path.to_string())).collect()
+        self.table().map(|table| table.paths().map(|path| Cow::Owned(path.to_owned())).collect()).unwrap_or_default()
     }
 
     fn upgrade(&self, req: Request) -> BoxFuture<'static, Response> {
-        let state = Arc::clone(&self.state);
-        let hub = Arc::clone(&self.hub);
-        let tracker = Arc::clone(&self.tracker);
+        let table = self.table();
         Box::pin(async move {
-            let (gateway, app, runtime) = {
-                let state = state.lock().unwrap_or_else(PoisonError::into_inner);
-                let gateway = state.gateways.iter().find(|gateway| same_path(&gateway.path, req.path())).cloned();
-                (gateway, state.app.clone(), state.runtime.clone())
-            };
-            let (Some(gateway), Some(app), Some(runtime)) = (gateway, app, runtime) else {
+            let Some(table) = table.filter(|table| table.gateway_for(req.path()).is_some()) else {
                 return plain(StatusCode::NOT_FOUND, "no gateway at this path");
             };
             let Request { head, conn, upgrade, .. } = req;
             let Some(upgrade) = upgrade else {
                 return plain(StatusCode::BAD_REQUEST, "this request cannot be upgraded to a WebSocket");
             };
-            let accept = Accept { gateway, hub, app, runtime, tracker };
-            let upgraded = async move { upgrade.await };
-            respond(answer(accept, head, conn.peer, upgraded).await)
+            match table.handshake(head, conn.peer).await {
+                Handshake::Switch(switch) => {
+                    let response = switch.response().map(|()| HttpBody::empty());
+                    switch.serve(upgrade);
+                    response
+                }
+                Handshake::Refuse(refusal) => refusal.into_response().map(HttpBody::from_bytes),
+            }
         })
     }
 
@@ -80,39 +68,40 @@ impl UpgradeHandler for Handoff {
     fn prepare(&self, app: &AppHandle) -> Result<(), BoxError> {
         let connects = app.mounted::<WsConnect>()?;
         let messages = app.mounted::<Ws>()?;
+        // `mounted` refuses an app with no runtime, so this finds one.
+        let runtime = app.runtime().cloned().ok_or("the WebSocket hand-off was prepared on an app with no runtime")?;
         let mut failures = Failures::new();
         check_defaults("WsModule", &self.defaults, &mut failures);
         let gateways = build_table(&connects, &messages, Port::Http, &self.defaults, &mut failures);
-        self.hub.record_gateways(&gateways);
-        let mut state = self.lock();
-        state.gateways = gateways;
-        state.app = Some(app.clone());
-        state.runtime = app.runtime().cloned();
-        drop(state);
+        let table = GatewayTable::new(gateways, Arc::clone(&self.hub), app.clone(), runtime);
+        *self.table.lock().unwrap_or_else(PoisonError::into_inner) = Some(table);
         failures.into_result()
     }
 
     /// Starts broadcast delivery and each gateway's `AfterInit` on its own task.
     fn bound(&self, app: &AppHandle) {
         let _ = app;
-        let (gateways, runtime) = {
-            let state = self.lock();
-            (state.gateways.clone(), state.runtime.clone())
-        };
-        if let Some(runtime) = runtime {
-            self.hub.start(&*runtime);
-            after_init(&gateways, &*runtime);
+        if let Some(table) = self.table() {
+            table.start();
         }
     }
 
     fn drain(&self, token: DrainToken) -> BoxFuture<'_, ()> {
-        Box::pin(self.tracker.drain(token))
+        let table = self.table();
+        Box::pin(async move {
+            if let Some(table) = table {
+                table.drain(token).await;
+            }
+        })
     }
 
     fn close(&self) -> BoxFuture<'_, ()> {
+        let table = self.table();
         Box::pin(async move {
-            self.tracker.close().await;
-            self.hub.stop();
+            match table {
+                Some(table) => table.close().await,
+                None => self.hub.stop(),
+            }
         })
     }
 }
@@ -133,27 +122,7 @@ pub(crate) fn after_init(gateways: &[Arc<GatewayRuntime>], runtime: &dyn Spawn) 
     }
 }
 
-fn respond(answer: Answer) -> Response {
-    match answer {
-        Answer::Switch(headers) => {
-            let mut response = Response::new(HttpBody::empty());
-            *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-            response.headers_mut().extend(headers);
-            response
-        }
-        Answer::Refuse { status, reason, headers } => {
-            let mut response = plain(status, reason);
-            for (name, value) in headers {
-                response.headers_mut().insert(name, value);
-            }
-            response
-        }
-    }
-}
-
-fn plain(status: StatusCode, text: impl Into<String>) -> Response {
-    let mut response = Response::new(HttpBody::from_bytes(text.into()));
-    *response.status_mut() = status;
-    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
-    response
+/// A refusal written as the handshake's are.
+fn plain(status: StatusCode, reason: &str) -> Response {
+    Refusal::new(status, reason).into_response().map(HttpBody::from_bytes)
 }

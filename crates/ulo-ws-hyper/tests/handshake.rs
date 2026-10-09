@@ -197,7 +197,7 @@ impl Module for Root {
 }
 
 async fn start() -> Running {
-    Running::start(Root, ulo_ws::Server::new("127.0.0.1:0")).await
+    Running::start(Root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await
 }
 
 /// `which` asked on `socket`: the subprotocol the connection's `UpgradeHead` carries.

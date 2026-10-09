@@ -90,9 +90,9 @@ impl<T: Transport> Mounted<'_, T> {
     }
 
     /// The mounted handlers of another marker `U` (X20), for a server whose transport mounts
-    /// handlers under two markers: `ulo_ws::Server` reads its message handlers through
-    /// [`handlers`](Self::handlers) and the connect handlers `ulo-ws` mounts under `WsConnect`
-    /// here, pairing them by controller. Empty when no handler of `U` mounted.
+    /// handlers under two markers: `ulo_ws::GatewayTable::own_port` reads the message handlers
+    /// through [`handlers`](Self::handlers) and the connect handlers `ulo-ws` mounts under
+    /// `WsConnect` here, pairing them by controller. Empty when no handler of `U` mounted.
     pub fn handlers_of<U: Transport>(&self) -> Vec<MountedHandler<U>> {
         mounted_handlers::<U>(&self.app)
     }

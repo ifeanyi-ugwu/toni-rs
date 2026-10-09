@@ -238,7 +238,7 @@ impl Module for Root {
 
 async fn start() -> (Running, Ends) {
     let ends = Ends(Record::new());
-    let app = Running::start(Root { ends: ends.clone() }, ulo_ws::Server::new("127.0.0.1:0")).await;
+    let app = Running::start(Root { ends: ends.clone() }, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
     (app, ends)
 }
 

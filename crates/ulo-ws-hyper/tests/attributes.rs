@@ -225,7 +225,7 @@ impl Running {
             .connect()
             .await
             .unwrap_or_else(|error| panic!("the gateway app did not connect: {error}"))
-            .bind(ulo_ws::Server::new("127.0.0.1:0"))
+            .bind(ulo_ws_hyper::Server::new("127.0.0.1:0"))
             .listen()
             .await
             .unwrap_or_else(|error| panic!("the gateway app did not listen: {error}"));

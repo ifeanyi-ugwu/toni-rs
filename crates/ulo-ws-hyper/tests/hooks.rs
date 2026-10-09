@@ -122,7 +122,7 @@ async fn start() -> Started {
     let departures = Departures(Record::new());
     let inits = Inits(Record::new());
     let root = Root { departures: departures.clone(), inits: inits.clone() };
-    let app = Running::start(root, ulo_ws::Server::new("127.0.0.1:0")).await;
+    let app = Running::start(root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
     Started { app, departures, inits }
 }
 

@@ -27,7 +27,7 @@ use crate::__private::{HandlerFn, Hooks, WsHandler};
 use crate::codec::Codec;
 use crate::connection::Connection;
 use crate::envelope::Frame;
-use crate::module::Defaults;
+use crate::table::GatewayDefaults;
 use crate::session::SessionFactory;
 use crate::transport::{ConnectCx, ConnectReply, Ws, WsConnect};
 
@@ -103,8 +103,9 @@ pub trait Gateway: GatewayConfig {
 }
 
 /// What a gateway attribute declares. A limit left at `Count::Default` or `Bound::Default`, and a
-/// `message_limit` left `None`, takes the default of `ulo_ws::Server` for a gateway on its own
-/// port and of `WsModule` for one on the HTTP server's port.
+/// `message_limit` left `None`, takes the standalone server's default for a gateway on its own
+/// port (its [`GatewayDefaults`](crate::GatewayDefaults)) and `WsModule`'s for one on the HTTP
+/// server's port.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct GatewaySettings {
@@ -125,8 +126,8 @@ pub struct GatewaySettings {
     pub overflow: Overflow,
     pub ping_interval: Bound,
     pub pong_timeout: Bound,
-    /// Which server serves the gateway: the HTTP server's port, the default, or the standalone
-    /// `ulo_ws::Server`, `port = own` on the attribute.
+    /// Which server serves the gateway: the HTTP server's port, the default, or a standalone
+    /// server such as `ulo_ws_hyper::Server`, `port = own` on the attribute.
     pub port: Port,
 }
 
@@ -238,8 +239,10 @@ pub enum Overflow {
 
 /// Which server serves a gateway. `Http`, the default, is the upgrade hand-off `WsModule`
 /// registers on the HTTP server's port and on an embedding host declaring `upgrades`; `Own`,
-/// `port = own` on the attribute, is `ulo_ws::Server` on a port of its own. Each serves only the
-/// gateways naming it, so no gateway is reachable on a port its author did not choose.
+/// `port = own` on the attribute, is a standalone server on a port of its own, such as
+/// `ulo_ws_hyper::Server`, serving through
+/// [`GatewayTable::own_port`](crate::GatewayTable::own_port). Each serves only the gateways
+/// naming it, so no gateway is reachable on a port its author did not choose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Port {
     #[default]
@@ -611,7 +614,7 @@ pub(crate) struct Limits {
 }
 
 impl Limits {
-    fn resolve(settings: &GatewaySettings, defaults: &Defaults) -> Self {
+    fn resolve(settings: &GatewaySettings, defaults: &GatewayDefaults) -> Self {
         let message_limit = settings.message_limit.or(defaults.message_limit).unwrap_or(DEFAULT_MESSAGE_LIMIT);
         Limits {
             message_limit: usize::try_from(message_limit).unwrap_or(usize::MAX),
@@ -686,7 +689,7 @@ pub(crate) fn build_table(
     connects: &[MountedHandler<WsConnect>],
     messages: &[MountedHandler<Ws>],
     port: Port,
-    defaults: &Defaults,
+    defaults: &GatewayDefaults,
     failures: &mut Failures,
 ) -> Vec<Arc<GatewayRuntime>> {
     let mut table: Vec<Arc<GatewayRuntime>> = Vec::new();
@@ -757,7 +760,7 @@ pub(crate) fn build_table(
 }
 
 /// The zero refusals of a server's or a module's defaults, `owner` naming which.
-pub(crate) fn check_defaults(owner: &str, defaults: &Defaults, failures: &mut Failures) {
+pub(crate) fn check_defaults(owner: &str, defaults: &GatewayDefaults, failures: &mut Failures) {
     let settings = GatewaySettings {
         message_limit: defaults.message_limit,
         max_connections: defaults.max_connections,

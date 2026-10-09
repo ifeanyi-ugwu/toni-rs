@@ -6693,6 +6693,27 @@ dependencies = [
  "futures-io",
  "futures-util",
  "http 1.5.0",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "ulo",
+ "ulo-http",
+ "ulo-http-hyper",
+ "ulo-tokio",
+ "ulo-transport",
+ "ulo-ws-macros",
+]
+
+[[package]]
+name = "ulo-ws-hyper"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http 1.5.0",
  "http-body-util",
  "hyper 1.11.1",
  "hyper-util",
@@ -6704,13 +6725,11 @@ dependencies = [
  "tracing",
  "ulo",
  "ulo-http",
- "ulo-http-hyper",
  "ulo-hyper-serve",
  "ulo-net",
  "ulo-tokio",
  "ulo-transport",
  "ulo-ws",
- "ulo-ws-macros",
 ]
 
 [[package]]

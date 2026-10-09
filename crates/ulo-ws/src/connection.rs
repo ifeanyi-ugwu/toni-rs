@@ -26,7 +26,7 @@ use futures_core::stream::BoxStream;
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::future::{self, Either};
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use http::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE, WWW_AUTHENTICATE};
+use http::header::{CONNECTION, CONTENT_TYPE, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE, WWW_AUTHENTICATE};
 use http::request::Parts;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
 use serde::{Deserialize, Serialize};
@@ -406,38 +406,119 @@ pub(crate) struct Accept {
     pub(crate) tracker: Arc<Tracker>,
 }
 
-/// The answer to an upgrade request, which each server writes as its own response type.
-pub(crate) enum Answer {
-    /// The 101, its headers.
-    Switch(Vec<(HeaderName, HeaderValue)>),
-    /// A refusal before the upgrade.
-    Refuse { status: StatusCode, reason: String, headers: Vec<(HeaderName, HeaderValue)> },
+/// A server's answer to one upgrade request, from
+/// [`GatewayTable::handshake`](crate::GatewayTable::handshake).
+pub enum Handshake {
+    /// Write [`Switch::response`], the 101, then hand the upgraded stream to [`Switch::serve`].
+    Switch(Switch),
+    /// Write [`Refusal::into_response`]; the request is not upgraded.
+    Refuse(Refusal),
 }
 
-impl Answer {
-    fn refuse(status: StatusCode, reason: impl Into<String>) -> Answer {
-        Answer::Refuse { status, reason: reason.into(), headers: Vec::new() }
+/// An upgrade request the handshake refused: its status, a reason for the body, and the headers
+/// the status calls for (`Allow` on a 405, `Sec-WebSocket-Version` on a 426, `WWW-Authenticate`
+/// on a 401).
+#[derive(Debug)]
+pub struct Refusal {
+    status: StatusCode,
+    reason: String,
+    headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+impl Refusal {
+    pub(crate) fn new(status: StatusCode, reason: impl Into<String>) -> Refusal {
+        Refusal { status, reason: reason.into(), headers: Vec::new() }
+    }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// The response to write: the status, the reason as a `text/plain; charset=utf-8` body, and
+    /// the refusal's headers.
+    pub fn into_response(self) -> http::Response<String> {
+        let mut response = http::Response::new(self.reason);
+        *response.status_mut() = self.status;
+        response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+        for (name, value) in self.headers {
+            response.headers_mut().insert(name, value);
+        }
+        response
     }
 }
 
-/// Answers one upgrade request on `accept`'s gateway: the RFC 6455 handshake checks, the
-/// subprotocol negotiation, the connection phase before the 101 under `refuse = handshake`, and a
-/// task, run by `accept.tracker`, that awaits `upgrade` once the 101 is written and runs the
-/// connection.
-pub(crate) async fn answer<Io, U>(accept: Accept, head: Parts, peer: Option<SocketAddr>, upgrade: U) -> Answer
-where
-    U: Future<Output = Result<Io, BoxError>> + Send + 'static,
-    Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let handshake = match check_handshake(&head, accept.gateway.settings()) {
-        Ok(handshake) => handshake,
-        Err(refusal) => return refusal,
+/// An upgrade request the handshake accepted, with what the connection needs once upgraded.
+///
+/// Dropped without [`serve`](Self::serve), as when writing the 101 fails, a connection the
+/// connection phase admitted under `refuse = handshake` leaves the rooms; `on_disconnect` does
+/// not run, the connection never having opened.
+pub struct Switch {
+    accept: Accept,
+    head: Arc<Parts>,
+    peer: Option<SocketAddr>,
+    protocol: Option<Arc<str>>,
+    headers: Vec<(HeaderName, HeaderValue)>,
+    /// The connection phase's admission under `refuse = handshake`, taken by `serve`.
+    admitted: Option<Admitted>,
+}
+
+impl Switch {
+    /// The 101 to write: `Upgrade`, `Connection`, `Sec-WebSocket-Accept` and the subprotocol
+    /// chosen, if any. No extension is negotiated.
+    pub fn response(&self) -> http::Response<()> {
+        let mut response = http::Response::new(());
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        response.headers_mut().extend(self.headers.iter().cloned());
+        response
+    }
+
+    /// The connection driver: once `upgraded` yields the upgraded stream, runs the gateway on it
+    /// until the connection ends, as a task on the app's runtime that the table's drain and close
+    /// reach. The connection takes a slot under `max_connections` (closing with 1013 over it),
+    /// runs the connection phase unless the handshake ran it, then reads messages until it
+    /// closes, and `on_disconnect` runs for a connection that connected.
+    ///
+    /// `upgraded` may resolve only once the 101 has been written, as hyper's upgrade does; a
+    /// server holding the stream already passes `async move { Ok(io) }`. An `Err` ends the
+    /// connection before it opens, logged at `debug`.
+    pub fn serve<Io, U>(mut self, upgraded: U)
+    where
+        U: Future<Output = Result<Io, BoxError>> + Send + 'static,
+        Io: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let admitted = self.admitted.take();
+        let accept = self.accept.clone();
+        let tracker = Arc::clone(&accept.tracker);
+        let runtime = Arc::clone(&accept.runtime);
+        let (head, peer, protocol) = (Arc::clone(&self.head), self.peer, self.protocol.clone());
+        tracker.spawn(&*runtime, run(accept, head, peer, protocol, upgraded, admitted));
+    }
+}
+
+impl Drop for Switch {
+    fn drop(&mut self) {
+        if let Some(admitted) = self.admitted.take() {
+            self.accept.hub.unregister(admitted.conn.id());
+        }
+    }
+}
+
+/// Decides one upgrade request on `accept`'s gateway: the RFC 6455 handshake checks, the
+/// subprotocol negotiation, and the connection phase before the 101 under `refuse = handshake`.
+pub(crate) async fn handshake(accept: Accept, head: Parts, peer: Option<SocketAddr>) -> Handshake {
+    let checked = match check_handshake(&head, accept.gateway.settings()) {
+        Ok(checked) => checked,
+        Err(refusal) => return Handshake::Refuse(refusal),
     };
     if accept.tracker.is_draining() {
-        return Answer::refuse(StatusCode::SERVICE_UNAVAILABLE, "the server is shutting down");
+        return Handshake::Refuse(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "the server is shutting down"));
     }
     let head = Arc::new(head);
-    let protocol: Option<Arc<str>> = handshake.protocol.as_deref().map(Arc::from);
+    let protocol: Option<Arc<str>> = checked.protocol.as_deref().map(Arc::from);
     let admitted = match accept.gateway.settings().refuse {
         Refuse::Close => None,
         Refuse::Handshake => match connect(&accept, Arc::clone(&head), peer, protocol.clone()).await {
@@ -447,14 +528,11 @@ where
                 if refused.status() == StatusCode::UNAUTHORIZED {
                     headers.push((WWW_AUTHENTICATE, HeaderValue::from_static("Bearer")));
                 }
-                return Answer::Refuse { status: refused.status(), reason: refused.reason().to_owned(), headers };
+                return Handshake::Refuse(Refusal { status: refused.status(), reason: refused.reason().to_owned(), headers });
             }
         },
     };
-    let tracker = Arc::clone(&accept.tracker);
-    let runtime = Arc::clone(&accept.runtime);
-    tracker.spawn(&*runtime, run(accept, head, peer, protocol, upgrade, admitted));
-    Answer::Switch(handshake.headers)
+    Handshake::Switch(Switch { accept, head, peer, protocol, headers: checked.headers, admitted })
 }
 
 /// The connection after its 101: the slot under `max_connections`, the connection phase unless
@@ -528,7 +606,7 @@ impl Drop for Slot {
     }
 }
 
-struct Handshake {
+struct Checked {
     headers: Vec<(HeaderName, HeaderValue)>,
     protocol: Option<String>,
 }
@@ -537,29 +615,29 @@ struct Handshake {
 /// the first of the gateway's subprotocols the client offered. No extension is negotiated, so a
 /// client offering `permessage-deflate` is answered without `Sec-WebSocket-Extensions`
 /// (§9.1).
-fn check_handshake(head: &Parts, settings: &GatewaySettings) -> Result<Handshake, Answer> {
+fn check_handshake(head: &Parts, settings: &GatewaySettings) -> Result<Checked, Refusal> {
     if head.method != Method::GET {
-        return Err(Answer::Refuse {
+        return Err(Refusal {
             status: StatusCode::METHOD_NOT_ALLOWED,
             reason: "a WebSocket handshake is a GET".to_owned(),
             headers: vec![(http::header::ALLOW, HeaderValue::from_static("GET"))],
         });
     }
     if head.version < Version::HTTP_11 {
-        return Err(Answer::refuse(StatusCode::BAD_REQUEST, "a WebSocket handshake is HTTP/1.1"));
+        return Err(Refusal::new(StatusCode::BAD_REQUEST, "a WebSocket handshake is HTTP/1.1"));
     }
     if !has_token(&head.headers, &CONNECTION, "upgrade") || !has_token(&head.headers, &UPGRADE, "websocket") {
-        return Err(Answer::refuse(StatusCode::BAD_REQUEST, "a WebSocket handshake carries `Connection: Upgrade` and `Upgrade: websocket`"));
+        return Err(Refusal::new(StatusCode::BAD_REQUEST, "a WebSocket handshake carries `Connection: Upgrade` and `Upgrade: websocket`"));
     }
     if head.headers.get(SEC_WEBSOCKET_VERSION).map(HeaderValue::as_bytes) != Some(b"13".as_slice()) {
-        return Err(Answer::Refuse {
+        return Err(Refusal {
             status: StatusCode::UPGRADE_REQUIRED,
             reason: "the WebSocket version is 13".to_owned(),
             headers: vec![(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"))],
         });
     }
     let Some(key) = head.headers.get(SEC_WEBSOCKET_KEY).filter(|key| !key.is_empty()) else {
-        return Err(Answer::refuse(StatusCode::BAD_REQUEST, "a WebSocket handshake carries `Sec-WebSocket-Key`"));
+        return Err(Refusal::new(StatusCode::BAD_REQUEST, "a WebSocket handshake carries `Sec-WebSocket-Key`"));
     };
     let offered: Vec<&str> = head
         .headers
@@ -576,12 +654,12 @@ fn check_handshake(head: &Parts, settings: &GatewaySettings) -> Result<Handshake
     ];
     match HeaderValue::from_str(&derive_accept_key(key.as_bytes())) {
         Ok(accept) => headers.push((SEC_WEBSOCKET_ACCEPT, accept)),
-        Err(_) => return Err(Answer::refuse(StatusCode::BAD_REQUEST, "`Sec-WebSocket-Key` is malformed")),
+        Err(_) => return Err(Refusal::new(StatusCode::BAD_REQUEST, "`Sec-WebSocket-Key` is malformed")),
     }
     if let Some(value) = protocol.as_deref().and_then(|name| HeaderValue::from_str(name).ok()) {
         headers.push((SEC_WEBSOCKET_PROTOCOL, value));
     }
-    Ok(Handshake { headers, protocol })
+    Ok(Checked { headers, protocol })
 }
 
 /// Whether a comma-separated header `name` lists `token`, ignoring case.
