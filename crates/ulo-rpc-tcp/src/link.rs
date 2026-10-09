@@ -42,7 +42,7 @@ const CLOSED: u8 = 2;
 /// A server maps each connection's call ids to ids of its own, so calls on two connections never
 /// share one, and writes the caller's id back on every reply. A connection that closes cancels its
 /// calls in flight `Disconnected`. At the drain the listener closes and every connection receives
-/// `goaway`, while its calls in flight finish. The inbound stream ends once the draining server
+/// `goaway`, one registered after the drain began included, while its calls in flight finish. The inbound stream ends once the draining server
 /// holds no call, and a request arriving afterwards, on a connection the caller kept open, is
 /// answered `err` of kind `unavailable` by the link, as the server answers one during the drain.
 ///
@@ -389,6 +389,14 @@ impl Server {
         tokio::spawn(write_frames(writer, queued, std::future::pending()));
         let connection = self.state.next_connection.fetch_add(1, Ordering::Relaxed);
         lock(&self.state.connections).insert(connection, queue.clone());
+        // A connection accepted before the drain and registered after it, its TLS handshake
+        // finishing late, missed the drain's `goaway`: it sends its own. The drain advances the
+        // phase before it reads this map, so one of the two always reaches it.
+        if *self.state.phase.borrow() >= DRAINING
+            && let Ok(goaway) = self.codec.encode_frame(&Frame::Goaway)
+        {
+            let _ = queue.try_send(goaway);
+        }
         let ids = Arc::new(Mutex::new(Ids::new(Arc::clone(&self.state))));
         let path = reply_path(queue, self.codec, self.limit, Arc::clone(&ids), peer);
         loop {
@@ -491,7 +499,7 @@ async fn idle(state: &State) {
 fn refuse(delivery: Delivery) {
     let (Frame::Req { id, .. } | Frame::Open { id, .. }) = delivery.frame else { return };
     let Some(reply) = delivery.reply else { return };
-    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
     tokio::spawn(async move {
         if let Err(error) = reply.send(Frame::Err { id, error }).await {
             tracing::debug!(%error, "the TCP link could not refuse a request that arrived after the drain");

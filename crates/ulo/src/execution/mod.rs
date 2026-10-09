@@ -229,9 +229,7 @@ impl Execution {
     /// runs; the callbacks after it still run.
     ///
     /// It reports the reply actually written; a stream discarded before the response is sent is
-    /// not a reply and reports nothing. On WebSocket and gRPC a reply stream is tracked where it is
-    /// built, so one an interceptor discards there reports `CutOff`, and the first report an
-    /// execution receives is the one kept.
+    /// not a reply and reports nothing. The first report an execution receives is the one kept.
     pub fn on_stream_end(&self, f: impl FnOnce(StreamOutcome) + Send + 'static) {
         self.shared.on_stream_end(Box::new(f));
     }

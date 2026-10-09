@@ -1,7 +1,8 @@
 //! `on_stream_end` reports the reply the dispatcher writes. A stream an interceptor discards was
 //! never the reply and reports nothing, so it cannot hide the outcome of the reply that replaced
 //! it; a stream the error handlers answer after the deadline was the reply, dropped unwritten, and
-//! reports `CutOff(Deadline)`.
+//! reports `CutOff(Deadline)`. A stream on a link that carries no streamed reply is never written:
+//! the call is answered `err` of kind `internal`, and the stream reports nothing.
 //!
 //! Each handler registers a callback that sends the outcome on a channel the test holds the other
 //! end of. The callback owns the channel's only sender, so the channel closes when the execution
@@ -21,7 +22,7 @@ use ulo::{
     App, AppHandle, BoxError, CancelReason, ErrorHandler, ExecutionRef, Interceptor, Module, ModuleDef, ModuleIdentity, Next, Signal,
     StreamOutcome, injectable, routes,
 };
-use ulo_rpc::link::Inbound;
+use ulo_rpc::link::{Inbound, UNARY_ONLY};
 use ulo_rpc::{Ack, CallHeaders, Capabilities, Data, Delivery, DeliveryMode, Frame, Link, Outbound, Pattern, Reply, ReplyPath, Rpc, RpcCx};
 use ulo_transport::{Classify, ErrorKind};
 
@@ -29,6 +30,7 @@ const DISCARDED: &str = "stream_end.discarded";
 const REPLACED: &str = "stream_end.replaced";
 const WRITTEN: &str = "stream_end.written";
 const EXPIRED: &str = "stream_end.expired";
+const UNCARRIED: &str = "stream_end.uncarried";
 
 /// How long a test waits for the execution to end; it ends as soon as the reply is written.
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -132,7 +134,26 @@ impl Streams {
     }
 }
 
-struct Root;
+/// Mounted on the unary link, whose server refuses a streamed handler at startup.
+#[injectable]
+struct Unary;
+
+#[routes]
+impl Unary {
+    /// A unary handler whose interceptor answers a stream, which only a link carrying streamed
+    /// replies can write.
+    #[ulo_rpc::message("stream_end.uncarried")]
+    #[interceptors(value = AnswerStream)]
+    async fn uncarried(&self, exec: ExecutionRef) -> Result<u32, Late> {
+        report_for(UNCARRIED, &exec);
+        Ok(0)
+    }
+}
+
+/// `Streams`, or `Unary` alone when `unary`.
+struct Root {
+    unary: bool,
+}
 
 impl Module for Root {
     fn identity(&self) -> ModuleIdentity {
@@ -140,22 +161,31 @@ impl Module for Root {
     }
 
     fn register(&self, m: &mut ModuleDef<'_>) {
-        m.controller::<Streams>();
+        if self.unary {
+            m.controller::<Unary>();
+        } else {
+            m.controller::<Streams>();
+        }
     }
 }
 
-/// A link whose inbound stream the test feeds.
-struct Scripted(Mutex<Option<Inbound>>);
+/// A link whose inbound stream the test feeds, carrying every shape or, `unary`, one payload each
+/// way.
+struct Scripted {
+    inbound: Mutex<Option<Inbound>>,
+    unary: bool,
+}
 
 impl Link for Scripted {
     const NAME: &'static str = "scripted";
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::new(DeliveryMode::Addressed).miss_signal(true)
+        let capabilities = Capabilities::new(DeliveryMode::Addressed).miss_signal(true);
+        if self.unary { capabilities.shapes(UNARY_ONLY) } else { capabilities }
     }
 
     async fn listen(&self, _patterns: &[Pattern]) -> Result<Inbound, BoxError> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take().ok_or_else(|| "the scripted link listened twice".into())
+        self.inbound.lock().unwrap_or_else(PoisonError::into_inner).take().ok_or_else(|| "the scripted link listened twice".into())
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
@@ -177,16 +207,21 @@ struct Running {
 
 impl Running {
     async fn start() -> Running {
+        Running::on(false).await
+    }
+
+    /// The server over a link carrying every shape, or, `unary`, unary calls alone.
+    async fn on(unary: bool) -> Running {
         let (deliveries, mut receiver) = mpsc::unbounded_channel::<Delivery>();
         let inbound: Inbound = Box::pin(stream::poll_fn(move |cx| receiver.poll_recv(cx)));
-        let app = App::builder(Root)
+        let app = App::builder(Root { unary })
             .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the app wires")
             .connect()
             .await
             .expect("the app connects")
-            .bind(ulo_rpc::Server::new(Scripted(Mutex::new(Some(inbound)))))
+            .bind(ulo_rpc::Server::new(Scripted { inbound: Mutex::new(Some(inbound)), unary }))
             .listen()
             .await
             .expect("the server binds");
@@ -282,3 +317,15 @@ async fn a_stream_the_error_handlers_answer_after_the_deadline_reports_cut_off()
     running.stop().await;
 }
 
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stream_the_link_cannot_carry_reports_nothing() {
+    let running = Running::on(true).await;
+    let (frames, outcome) = running.call(UNCARRIED, CallHeaders::new()).await;
+    assert!(
+        matches!(frames.as_slice(), [Frame::Err { id: 1, error }] if error.kind == ErrorKind::Internal),
+        "the stream the link cannot carry was not answered `internal`: {frames:?}",
+    );
+    assert_eq!(outcome, None, "a stream that was never written reported its end");
+    running.stop().await;
+}

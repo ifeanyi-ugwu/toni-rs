@@ -24,7 +24,7 @@ use ulo::{
 use ulo_rpc::{
     CallHeaders, Capabilities, Data, Inbound, Link, Payload, Reply, Rpc, RpcClient, RpcClientModule, RpcCx, RpcError,
 };
-use ulo_transport::{CallError, Classify, ErrorKind};
+use ulo_transport::{CallError, Classify, Count, ErrorKind};
 
 use crate::{Broker, report};
 
@@ -52,6 +52,8 @@ pub(crate) const SUBSTITUTED_STREAM: &str = "conformance.substituted_stream";
 pub(crate) const UNENCODABLE: &str = "conformance.unencodable";
 pub(crate) const UNENCODABLE_STREAM: &str = "conformance.unencodable_stream";
 pub(crate) const CONTEXT: &str = "conformance.context";
+pub(crate) const BOUNDED: &str = "conformance.bounded";
+pub(crate) const BOUNDED_TOO: &str = "conformance.bounded_too";
 
 /// A payload no codec reads: not UTF-8, so no JSON text, and a lone CBOR break code, so no CBOR
 /// item. A reply carrying it fails the link's frame encoding.
@@ -102,6 +104,9 @@ pub(crate) struct ProbeState {
     stalled: Mutex<Option<Option<CancelReason>>>,
     /// When the held call's handler returned its answer, which the link then publishes.
     held_answered: Mutex<Option<Instant>>,
+    /// The bounded handlers' calls running now, and the most that ran at once.
+    bounded: AtomicUsize,
+    bounded_peak: AtomicUsize,
 }
 
 impl Probe {
@@ -135,6 +140,20 @@ impl Probe {
 
     pub(crate) fn held_answered(&self) -> Option<Instant> {
         *lock(&self.0.held_answered)
+    }
+
+    /// The most calls the two bounded handlers ran at once.
+    pub(crate) fn bounded_peak(&self) -> usize {
+        self.0.bounded_peak.load(Ordering::SeqCst)
+    }
+
+    /// Counts one bounded call running for `millis`.
+    async fn bounded(&self, millis: u64) -> u64 {
+        let now = self.0.bounded.fetch_add(1, Ordering::SeqCst) + 1;
+        self.0.bounded_peak.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(millis)).await;
+        self.0.bounded.fetch_sub(1, Ordering::SeqCst);
+        millis
     }
 }
 
@@ -328,6 +347,18 @@ impl CoreController {
         *lock(&self.probe.0.held_answered) = Some(Instant::now());
         Ok(millis.0)
     }
+
+    /// Holds for the given milliseconds, counted with [`bounded_too`](Self::bounded_too) for the
+    /// in-flight scenario: two patterns, so a window kept per pattern shows.
+    #[ulo_rpc::message("conformance.bounded")]
+    async fn bounded(&self, millis: Payload<u64>) -> Result<u64, Refusal> {
+        Ok(self.probe.bounded(millis.0).await)
+    }
+
+    #[ulo_rpc::message("conformance.bounded_too")]
+    async fn bounded_too(&self, millis: Payload<u64>) -> Result<u64, Refusal> {
+        Ok(self.probe.bounded(millis.0).await)
+    }
 }
 
 #[injectable]
@@ -465,23 +496,28 @@ impl Server {
     }
 }
 
-async fn bound<B: Broker>(broker: &B, probe: Probe, mounts: Mounts) -> Result<App<Serving>, StartupError> {
+async fn bound<B: Broker>(broker: &B, probe: Probe, mounts: Mounts, max_inflight: Count) -> Result<App<Serving>, StartupError> {
     App::builder(ServerRoot { probe, mounts })
         .runtime(ulo_tokio::Tokio::current())
         .drain_timeout(DRAIN)
         .wire()?
         .connect()
         .await?
-        .bind(ulo_rpc::Server::new(broker.link()))
+        .bind(ulo_rpc::Server::new(broker.link()).max_inflight(max_inflight))
         .listen()
         .await
 }
 
 /// A server mounting what the link carries, serving until stopped.
 pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
+    server_bounded(broker, Count::Default).await
+}
+
+/// [`server`] with its `max_inflight` set.
+pub(crate) async fn server_bounded<B: Broker>(broker: &B, max_inflight: Count) -> Server {
     let probe = Probe::default();
     let mounts = Mounts::carried(&broker.link().capabilities());
-    let app = bound(broker, probe.clone(), mounts)
+    let app = bound(broker, probe.clone(), mounts, max_inflight)
         .await
         .unwrap_or_else(|error| crate::startup_failed!("the conformance server did not start: {}", report(&error)));
     let handle = app.handle();
@@ -503,7 +539,7 @@ pub(crate) async fn server<B: Broker>(broker: &B) -> Server {
 /// Asserts that a server mounting `mounts` is refused at startup as a `Configure` error: what a
 /// link's capabilities exclude is refused in `prepare`, before anything binds.
 pub(crate) async fn refused_at_startup<B: Broker>(broker: &B, mounts: Mounts) {
-    match bound(broker, Probe::default(), mounts).await {
+    match bound(broker, Probe::default(), mounts, Count::Default).await {
         Err(StartupError::Configure(_)) => {}
         Err(other) => crate::startup_failed!("expected a `Configure` refusal for {mounts:?}, got: {}", report(&other)),
         Ok(app) => {
@@ -575,8 +611,13 @@ pub(crate) struct Fixture<B: Broker> {
 
 impl<B: Broker> Fixture<B> {
     pub(crate) async fn start() -> Fixture<B> {
+        Fixture::start_bounded(Count::Default).await
+    }
+
+    /// [`start`](Self::start) with the server's `max_inflight` set.
+    pub(crate) async fn start_bounded(max_inflight: Count) -> Fixture<B> {
         let broker = B::start().await;
-        let server = server(&broker).await;
+        let server = server_bounded(&broker, max_inflight).await;
         let client = client(&broker, &[&server]).await;
         ready(&broker, &client.rpc, &[&server]).await;
         Fixture { broker, server, client }

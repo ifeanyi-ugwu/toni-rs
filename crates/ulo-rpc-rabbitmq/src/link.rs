@@ -43,9 +43,8 @@ const CONTROL: &str = "ulo.rpc.control";
 /// the channel it publishes requests on.
 const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 
-/// The per-consumer prefetch when the server's `max_inflight` is `Count::Default` or
-/// `Count::Unlimited`.
-const DEFAULT_PREFETCH: u16 = 64;
+/// The channel's prefetch when the server's `max_inflight` is `Count::Unlimited`.
+const UNLIMITED_PREFETCH: u16 = 64;
 
 /// The RabbitMQ link.
 pub struct RabbitMq {
@@ -64,7 +63,7 @@ pub(crate) struct State {
 impl RabbitMq {
     /// The link on `url`, `amqp://..` or `amqps://..`, parsed in `prepare` and connected lazily.
     pub fn url(url: impl Into<String>) -> Self {
-        RabbitMq { url: url.into(), codec: Codec::Json, prefetch: DEFAULT_PREFETCH, state: Mutex::new(State::default()) }
+        RabbitMq { url: url.into(), codec: Codec::Json, prefetch: UNLIMITED_PREFETCH, state: Mutex::new(State::default()) }
     }
 
     /// `Codec::Cbor` carries raw bytes and declares `binary: true`; JSON unset.
@@ -93,13 +92,16 @@ impl Link for RabbitMq {
         Ok(())
     }
 
-    /// The unacknowledged deliveries each pattern's consumer takes at once (`basic.qos` with
-    /// `global = false`): `Count::Max(n)` gives n, capped at AMQP's 65 535, and `Default` or
-    /// `Unlimited` 64, since AMQP's own unlimited, 0, would hand an instance its whole queue.
+    /// The unacknowledged deliveries the pattern consumers take at once, together (`basic.qos`
+    /// with `global = true`, which RabbitMQ reads as one window shared by every consumer on the
+    /// channel): the server's bound, 1,024 at `Count::Default`, capped at AMQP's 65 535, so the
+    /// broker holds a request the server has no place for rather than delivering it to be
+    /// refused. `Unlimited` gives 64, since AMQP's own unlimited, 0, would hand an instance its
+    /// whole queue.
     fn max_inflight(&mut self, calls: Count) {
-        self.prefetch = match calls {
-            Count::Max(calls) => u16::try_from(calls).unwrap_or(u16::MAX),
-            _ => DEFAULT_PREFETCH,
+        self.prefetch = match calls.max_inflight() {
+            Some(calls) => u16::try_from(calls).unwrap_or(u16::MAX),
+            None => UNLIMITED_PREFETCH,
         };
     }
 
@@ -227,13 +229,15 @@ fn uri(url: &str) -> Result<AMQPUri, BoxError> {
     url.parse::<AMQPUri>().map_err(|error| format!("the RabbitMQ link's url does not parse: {error}").into())
 }
 
-/// Declares a queue per pattern and consumes each under the prefetch, per consumer under
-/// RabbitMQ's reading of `global = false`, then this instance's own
-/// queue on the control exchange, on a channel of its own: lapin's topology replay after a
-/// reconnect cannot redeclare a server-named queue, and a failed replay closes its channel.
+/// Declares a queue per pattern and consumes each under the prefetch, one window for every
+/// pattern under RabbitMQ's reading of `global = true`, then this instance's own queue on the
+/// control exchange, on a channel of its own: lapin's topology replay after a reconnect cannot
+/// redeclare a server-named queue, and a failed replay closes its channel. The control consumer
+/// acknowledges nothing and is outside the window, so a request's items and `cancel` reach the
+/// server while the window is full.
 async fn subscribe(connection: &Connection, patterns: &[Pattern], prefetch: u16) -> Result<(Channel, Vec<Consumer>, Consumer), BoxError> {
     let channel = connection.create_channel().await?;
-    channel.basic_qos(prefetch, BasicQosOptions { global: false }).await?;
+    channel.basic_qos(prefetch, BasicQosOptions { global: true }).await?;
     let mut consumers = Vec::with_capacity(patterns.len());
     for pattern in patterns {
         channel.queue_declare(pattern.as_str().into(), QueueDeclareOptions::default(), FieldTable::default()).await?;

@@ -15,7 +15,22 @@
 //! than the broker's flow control allows, the announced 65,535 or a smaller cap the broker applies
 //! itself: MQTT 5 §3.10.4 lets the broker deliver a publish it held back after the UNSUBACK, and
 //! one read after `close` has queued the DISCONNECT gets no answer, its caller seeing its own
-//! `Timeout`.
+//! `Timeout`. Publishes the broker queued for the instance behind a full window are dropped with
+//! its session as it ends; the 65,535 Receive Maximum keeps that window as wide as MQTT 5 allows,
+//! which keeps the case rare.
+//!
+//! The link refuses work over the server's bound rather than holding it at the broker: over
+//! `Server::max_inflight`, 1,024 unset, a request is answered `unavailable` with a `RetryAfter`
+//! detail, as on TCP, UDP, NATS and Redis. Holding it instead, the acknowledgement sent once the
+//! handler completes and a Receive Maximum equal to the bound, needs the broker to pass an
+//! unacknowledged shared-subscription message to another member when the holder's session ends,
+//! which MQTT 5 §4.8.2 only recommends. Mosquitto 2.0.18 does not: in a probe of 60 runs, over a
+//! clean DISCONNECT, an UNSUBSCRIBE then DISCONNECT, an aborted event loop, a killed process and a
+//! keep-alive timeout, at Receive Maximum 65,535 and 4, no unacknowledged QoS 1 message reached
+//! another member once its holder was gone, and held work would leave with the instance. The
+//! behaviour is the broker's, not the protocol's: EMQX or HiveMQ may pass the message on, and an
+//! opt-in for such a broker, declared only once the conformance drain scenario has run against it,
+//! is not built.
 //!
 //! ```ignore
 //! app.bind(ulo_rpc::Server::new(ulo_rpc_mqtt::Mqtt::url("mqtt://broker:1883")))

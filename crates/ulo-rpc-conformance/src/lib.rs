@@ -250,6 +250,7 @@ macro_rules! conformance_suite {
             recovery_after_disrupt => recovery::after_disrupt,
             client_close => client_close::client_close,
             two_instances => delivery::two_instances,
+            over_the_bound => admission::over_the_bound,
         );
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {

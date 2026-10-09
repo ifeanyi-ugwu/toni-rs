@@ -7,11 +7,10 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use futures_core::Stream;
-use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use serde::Serialize;
 use ulo::{BoxError, BoxFuture, Mount, Transport};
-use ulo_transport::{CallError, ErrorKind, IntoReply, Tracked};
+use ulo_transport::{CallError, ErrorKind, IntoReply};
 
 pub use ulo_transport as transport;
 
@@ -287,8 +286,7 @@ where
                 Err(BoxError::from(err))
             }
         });
-        let frames: BoxStream<'static, Result<crate::envelope::Frame, BoxError>> = Box::pin(frames);
-        Ok(Reply::Many(Tracked::new(frames, cx.exec().clone())))
+        Ok(Reply::Many(Box::pin(frames)))
     }
 }
 

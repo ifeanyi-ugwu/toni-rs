@@ -3,6 +3,7 @@
 
 pub(crate) mod app;
 
+pub mod admission;
 pub mod cancel;
 pub mod client_close;
 pub mod deadlines;

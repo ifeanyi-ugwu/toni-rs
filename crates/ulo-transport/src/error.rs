@@ -228,7 +228,7 @@ impl<E: Classify> From<E> for CallError {
 
 pub(crate) const INTERNAL_MESSAGE: &str = "internal error";
 const FORBIDDEN_MESSAGE: &str = "forbidden";
-const CLOSED_MESSAGE: &str = "the application is shutting down";
+const CLOSED_MESSAGE: &str = "the server is shutting down";
 
 /// Bounded, in case a chain of `Redacted` and constructor errors loops back on itself.
 const MAX_DEPTH: usize = 32;

@@ -67,10 +67,12 @@ impl<L: Link> Server<L> {
         }
     }
 
-    /// Calls in flight at once: unbounded at `Count::Default`; over it a call is refused
-    /// `unavailable`. `Count::Max(0)` is refused in `prepare`. `prepare` hands it to the link
-    /// through `Link::max_inflight`, so on AMQP the per-consumer prefetch follows it, 64 under
-    /// `Default` or `Unlimited`.
+    /// Calls in flight at once: 1,024 at `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at
+    /// `Count::Unlimited`. `Count::Max(0)` is refused in `prepare`. `prepare` hands it to the link
+    /// through `Link::max_inflight`. A link declaring `native_backpressure` stops taking requests
+    /// from its broker at the bound, AMQP through its prefetch and Kafka by pausing its
+    /// partitions, so they wait in the broker; on every other link a request over the bound is
+    /// refused `unavailable` with a `RetryAfter` detail.
     pub fn max_inflight(mut self, calls: Count) -> Self {
         self.max_inflight = calls;
         self
@@ -166,10 +168,7 @@ impl<L: Link> ulo::Server for Server<L> {
         let Some(runtime) = runtime else {
             return Ok(());
         };
-        let limit = match self.max_inflight {
-            Count::Max(calls) => Some(calls as usize),
-            Count::Default | Count::Unlimited => None,
-        };
+        let limit = self.max_inflight.max_inflight();
         self.shared = Some(Arc::new(Shared {
             app: mounted.app().clone(),
             timer: Arc::clone(mounted.timer()),

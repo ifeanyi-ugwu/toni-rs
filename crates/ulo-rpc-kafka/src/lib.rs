@@ -8,7 +8,9 @@
 //! group's offsets committed at the topics' end at `bind` where it has none, so a request produced
 //! while no instance consumes, or while a rebalance moves its partition, waits for the next owner
 //! (`holds_unserved`); a reply published while the client is disconnected waits on its reply
-//! topic for the client to reconnect (`durable_replies`); the drain pauses and commits; an
+//! topic for the client to reconnect (`durable_replies`); at the server's `max_inflight`, 1,024
+//! unset, the group consumer pauses its partitions until a request settles, so requests over the
+//! bound wait in their topics rather than being refused; the drain pauses and commits; an
 //! `ssl://` broker entry selects `security.protocol=SSL` under the `tls` feature.
 //!
 //! Kafka accepts that first commit only while the group has no member, so it anchors a topic only
@@ -21,7 +23,9 @@
 //!
 //! A librdkafka consumer's drop leaves its group and polls until the broker confirms, so the link
 //! drops each consumer on a thread of its own rather than on a runtime worker, a client's reply
-//! consumer included when its client is dropped unclosed. The client's `close` waits for its reply
+//! consumer included when its client is dropped unclosed. `bind`'s blocking calls, the metadata
+//! and offset reads and the starting commit, run on threads of their own the same way, and the
+//! wait between retries of an unready coordinator runs on the app's `Timer`. The client's `close` waits for its reply
 //! consumer's drop, about a tenth of a second with the broker up, and then for its producer's,
 //! which closes the client's last connection. The server's group and control consumers are dropped
 //! when the last reference to them goes, and `close` does not wait for them: with the broker up the

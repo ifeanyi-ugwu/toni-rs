@@ -1,8 +1,9 @@
 //! The RabbitMQ link for `ulo-rpc`, AMQP 0-9-1 (transports DESIGN §5.3): a queue per pattern
 //! through the default exchange, the payload as the body with AMQP headers, replies through
 //! `reply_to` and `correlation_id`. At-least-once with the ack after the handler completes, so
-//! handlers must be idempotent; ordered per queue with a single consumer; `Competing`; a
-//! per-consumer prefetch following the server's `max_inflight`, 64 when it sets no bound; the
+//! handlers must be idempotent; ordered per queue with a single consumer; `Competing`; one
+//! prefetch window for every pattern following the server's `max_inflight`, 1,024 unset and 64
+//! under `Count::Unlimited`, so a request over the bound waits in its queue; the
 //! client channel in confirm mode with `mandatory` publishes, so `basic.return` maps to
 //! `Unavailable`; an unhandled event is `basic.reject`ed without requeue; a call waiting when the
 //! client's connection drops is `Unavailable`, since a direct reply-to address dies with its

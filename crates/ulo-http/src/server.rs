@@ -87,8 +87,8 @@ impl<B: Backend> Server<B> {
     }
 
     /// The server's in-flight bound: over it a request is answered 503 with `Retry-After`.
-    /// `Count::Default`, the value unset, bounds nothing, as `Count::Unlimited` does.
-    /// `Count::Max(0)` is refused in `prepare`.
+    /// `Count::Default`, the value unset, is 1,024 requests (`Count::DEFAULT_MAX_INFLIGHT`);
+    /// `Count::Unlimited` bounds nothing. `Count::Max(0)` is refused in `prepare`.
     pub fn max_inflight(mut self, requests: Count) -> Self {
         self.config.max_inflight = requests;
         self

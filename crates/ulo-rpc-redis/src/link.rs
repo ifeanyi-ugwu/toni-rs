@@ -323,7 +323,7 @@ impl ServerSide {
     /// published before processing the drain's UNSUBSCRIBE, and the server lane may read it after
     /// the stream ended; dropping it would leave the caller to its own `Timeout`.
     async fn refuse(&self, wire: u64, reply: &str, channel: &str) {
-        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
         let mut publisher = self.publisher.clone();
         let refused = match self.codec.encode_frame(&Frame::Err { id: wire, error }) {
             Ok(bytes) => publish(&mut publisher, reply, &bytes).await.map(|_| ()),

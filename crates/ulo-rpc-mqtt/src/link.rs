@@ -46,9 +46,10 @@ const MAX_INCOMING: u32 = 268_435_455;
 /// The Receive Maximum this link announces in its CONNECT, MQTT 5's largest: the QoS 1 and 2
 /// publishes the broker may have unacknowledged to it at once. rumqttc acknowledges a publish as
 /// its event loop reads it, so the window bounds only what is on its way; the server's own
-/// in-flight bound, `Server::max_inflight` when set, refuses what it will not take. MQTT 5 reads
-/// an absent Receive Maximum as 65,535, but Mosquitto 2.0 then applies its own
-/// `max_inflight_messages`, 20 unset, and holds the rest back.
+/// in-flight bound, `Server::max_inflight`, refuses what it will not take. MQTT 5 reads an absent
+/// Receive Maximum as 65,535, but Mosquitto 2.0 then applies its own `max_inflight_messages`, 20
+/// unset, and holds the rest back, and what it holds back is dropped with the session when the
+/// instance leaves. The crate doc says why the link refuses rather than holds work at the broker.
 const RECEIVE_MAXIMUM: u16 = u16::MAX;
 
 /// The MQTT v5 link.
@@ -500,7 +501,7 @@ impl ServerSide {
     /// behind the replies already waiting, and dropping it would leave the caller to its own
     /// `Timeout`. Queued without waiting: this runs on the event loop, which drains the queue.
     fn refuse(&self, reply: String, correlation: Option<Bytes>, pattern: &str) {
-        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is draining", Details::new());
+        let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
         let sent = self.codec.encode_frame(&Frame::Err { id: 0, error }).map_err(BoxError::from).and_then(|bytes| {
             let properties = reply_properties(correlation, None);
             Ok(self.client.try_publish_with_properties(reply, self.qos, false, bytes, properties)?)

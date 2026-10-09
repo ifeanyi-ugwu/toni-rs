@@ -68,7 +68,8 @@ impl WsModule {
         self
     }
 
-    /// Messages in flight per connection, over which the connection stops reading.
+    /// Messages in flight per connection, over which the connection stops reading: 1,024 at
+    /// `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`), none at `Count::Unlimited`.
     pub fn max_inflight(mut self, messages: Count) -> Self {
         self.defaults.max_inflight = messages;
         self

@@ -36,9 +36,12 @@ pub trait Link: Send + Sync + 'static {
     }
 
     /// The server's in-flight bound, `Server::max_inflight` as set, called from `Server::prepare`
-    /// beside [`prepare`](Self::prepare). A link whose broker paces deliveries itself sets its own
-    /// window from it, so the broker stops delivering where the server would refuse: AMQP's
-    /// prefetch. Every other link ignores it.
+    /// beside [`prepare`](Self::prepare); `Count::max_inflight` reads it, 1,024 at `Default`. A
+    /// link declaring `native_backpressure` stops taking requests from its broker at that bound,
+    /// so they wait in the broker where the server would refuse them: AMQP's prefetch, Kafka
+    /// pausing its partitions. The server frees a call's place before it settles the call's
+    /// [`Ack`], so a link that counts a request in flight until its `Ack` settles, or is dropped,
+    /// never hands over one past the bound. Every other link ignores it.
     fn max_inflight(&mut self, calls: Count) {
         let _ = calls;
     }
@@ -233,7 +236,10 @@ pub struct Capabilities {
     pub ordering: Ordering,
     /// The call shapes the link carries; a handler of another shape is refused in `prepare`.
     pub shapes: &'static [Shape],
-    /// The broker paces deliveries itself: AMQP prefetch, Kafka pause.
+    /// The broker paces deliveries itself, AMQP through its prefetch and Kafka by pausing
+    /// partitions: over `Server::max_inflight` the link stops taking requests, which wait in the
+    /// broker. On a link without it the server refuses a request over the bound `unavailable`
+    /// with a `RetryAfter` detail.
     pub native_backpressure: bool,
     pub delivery: DeliveryMode,
     /// A request to a pattern nothing subscribes to is reported to the caller, which then answers

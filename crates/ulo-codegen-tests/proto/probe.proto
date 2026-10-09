@@ -40,6 +40,16 @@ service Clock {
   rpc StallTrickled(Ticks) returns (stream Tick);
 }
 
+// Reply streams whose end `on_stream_end` reports, one method per case.
+service Ends {
+  rpc Discarded(Ticks) returns (stream Tick);
+  rpc Replaced(Ticks) returns (stream Tick);
+  rpc Written(Ticks) returns (stream Tick);
+  rpc Failed(Ticks) returns (stream Tick);
+  rpc Expired(Ticks) returns (stream Tick);
+  rpc Abandoned(Ticks) returns (stream Tick);
+}
+
 // A service behind enhancers and pre-dispatch entries.
 service Vault {
   rpc Open(Ticks) returns (Tick);

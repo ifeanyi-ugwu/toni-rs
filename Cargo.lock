@@ -6486,6 +6486,7 @@ dependencies = [
  "ulo",
  "ulo-rpc",
  "ulo-rpc-conformance",
+ "ulo-transport",
  "uuid",
 ]
 

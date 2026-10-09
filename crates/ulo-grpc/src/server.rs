@@ -111,14 +111,16 @@ impl Server {
         self
     }
 
-    /// Calls in flight across the server: unbounded at `Count::Default`; over it a call is
-    /// answered UNAVAILABLE, which clients treat as retryable. `Count::Max(0)` is refused.
+    /// Calls in flight across the server: 1,024 at `Count::Default` (`Count::DEFAULT_MAX_INFLIGHT`),
+    /// none at `Count::Unlimited`; over it a call is answered UNAVAILABLE, which clients treat as
+    /// retryable. `Count::Max(0)` is refused.
     pub fn max_inflight(mut self, calls: Count) -> Self {
         self.max_inflight = calls;
         self
     }
 
-    /// Calls in flight per connection, refused UNAVAILABLE over it. `Count::Max(0)` is refused.
+    /// Calls in flight per connection, refused UNAVAILABLE over it: no bound of its own at
+    /// `Count::Default`, the server's `max_inflight` alone. `Count::Max(0)` is refused.
     pub fn max_per_connection(mut self, calls: Count) -> Self {
         self.max_per_connection = calls;
         self
@@ -341,7 +343,7 @@ impl ulo::Server for Server {
             routes,
             builtins,
             stage,
-            admission: Admission::new(limit(self.max_inflight)),
+            admission: Admission::new(self.max_inflight.max_inflight()),
             per_connection: limit(self.max_per_connection),
             grace: match self.timeout_grace {
                 Bound::Default => Some(DEFAULT_TIMEOUT_GRACE),

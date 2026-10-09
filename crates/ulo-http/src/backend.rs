@@ -103,7 +103,8 @@ pub struct HttpConfig {
     /// The body limit a route without `#[meta(BodyLimit(..))]` takes: 2 MiB unset.
     pub body_limit: u64,
     /// The server's in-flight bound; over it a request is answered 503 with `Retry-After`.
-    /// `Count::Default`, the value unset, bounds nothing, as `Count::Unlimited` does.
+    /// `Count::Default`, the value unset, is `Count::DEFAULT_MAX_INFLIGHT` requests, 1,024;
+    /// `Count::Unlimited` bounds nothing.
     pub max_inflight: Count,
     /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per connection: excess streams are refused with
     /// `RST_STREAM(REFUSED_STREAM)` by the backend. `Count::Default` leaves the backend's own
@@ -155,10 +156,7 @@ impl HttpConfig {
 
     /// `max_inflight` as `Admission` takes it; `None` admits every request.
     pub(crate) fn inflight_limit(&self) -> Option<usize> {
-        match self.max_inflight {
-            Count::Max(requests) => Some(usize::try_from(requests).unwrap_or(usize::MAX)),
-            Count::Default | Count::Unlimited => None,
-        }
+        self.max_inflight.max_inflight()
     }
 
     /// `timeout_grace` as a duration; `None` for `Bound::Unbounded`.

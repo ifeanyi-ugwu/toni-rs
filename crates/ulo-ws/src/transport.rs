@@ -6,7 +6,7 @@ use futures_core::stream::BoxStream;
 use http::request::Parts;
 use http::{HeaderMap, Uri};
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
-use ulo_transport::{ExtractError, FromCall, IntoReply, IntoReplyError, Tracked};
+use ulo_transport::{ExtractError, FromCall, IntoReply, IntoReplyError};
 
 use crate::connection::{ConnId, Connection};
 use crate::envelope::{Data, Frame, MessageId};
@@ -181,14 +181,16 @@ impl AsRef<ExecutionRef> for ConnectCx {
 }
 
 /// What a message handler answers, and what an interceptor's `next.run()` returns: nothing, one
-/// frame, or a stream of frames tracked for its end (transports DESIGN §4.1). A single answer is
-/// written `{"id","data"}`, each streamed item likewise and the end `{"id","complete":true}`; an
-/// `Err` item runs `dispatch_late` and is written `{"id","error":{..}}`, which ends the stream and
-/// is reported `CutOff`.
+/// frame, or a stream of frames (transports DESIGN §4.1). A single answer is written
+/// `{"id","data"}`, each streamed item likewise and the end `{"id","complete":true}`; an `Err` item
+/// runs `dispatch_late` and is written `{"id","error":{..}}`, which ends the stream. The
+/// dispatcher tracks a stream for its end once it writes it as the message's reply: a stream an
+/// interceptor discards reports nothing to `on_stream_end`, and the one written reports
+/// `Completed` at its `complete`, `CutOff` otherwise.
 pub enum Reply {
     None,
     One(Frame),
-    Many(Tracked<BoxStream<'static, Result<Frame, BoxError>>>),
+    Many(BoxStream<'static, Result<Frame, BoxError>>),
 }
 
 /// A reply built by hand, an interceptor's own answer included, as it stands.

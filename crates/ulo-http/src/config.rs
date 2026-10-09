@@ -8,7 +8,7 @@
 //!
 //! ulo_http_hyper::Server::new(Endpoint::inherited("http"))
 //!     .tls(Tls::from_pem_files("cert.pem", "key.pem"))
-//!     .max_inflight(Count::Max(1024))
+//!     .max_inflight(Count::Max(256))
 //!     .header_timeout(Bound::After(Duration::from_secs(10)))
 //! ```
 //!

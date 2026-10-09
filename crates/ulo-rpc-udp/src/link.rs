@@ -264,7 +264,7 @@ async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, delive
             }
         };
         let Some(sender) = deliveries.as_ref() else {
-            refuse(&socket, codec, peer, &frame, "the server is draining").await;
+            refuse(&socket, codec, peer, &frame).await;
             continue;
         };
         let Some(frame) = inward(frame, peer, &ids, &state.next_id) else { continue };
@@ -306,7 +306,7 @@ async fn final_read(socket: &UdpSocket, codec: Codec) {
         if matches!(frame, Frame::Req { .. } | Frame::Open { .. }) {
             refused += 1;
         }
-        refuse(socket, codec, peer, &frame, "the server has closed").await;
+        refuse(socket, codec, peer, &frame).await;
     }
     if refused > 0 {
         tracing::debug!(refused, "the UDP link answered requests left in its socket at close");
@@ -323,9 +323,9 @@ async fn idle(state: &State) {
 
 /// Answers a request or streamed request the server will not take, under the sender's own id;
 /// anything else names no call in flight and is dropped.
-async fn refuse(socket: &UdpSocket, codec: Codec, peer: SocketAddr, frame: &Frame, message: &str) {
+async fn refuse(socket: &UdpSocket, codec: Codec, peer: SocketAddr, frame: &Frame) {
     let (Frame::Req { id, .. } | Frame::Open { id, .. }) = *frame else { return };
-    let error = ErrorBody::new(ErrorKind::Unavailable, message, Details::new());
+    let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
     let refused = match encode(codec, &Frame::Err { id, error }) {
         Ok(bytes) => socket.send_to(&bytes, peer).await.map(|_| ()).map_err(BoxError::from),
         Err(error) => Err(error),

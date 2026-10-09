@@ -204,7 +204,7 @@ fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack
     };
     let Ok(exec) = Execution::open(route.handler.module(), opts) else {
         if let Some((id, reply)) = answered {
-            refuse(shared, tasks, reply, id, refusal("the server is draining"));
+            refuse(shared, tasks, reply, id, refusal("the server is shutting down"));
         }
         return;
     };
@@ -228,7 +228,7 @@ fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack
         ack,
         deadline,
         _registered: registered,
-        _permit: permit,
+        permit,
     };
     tasks.spawn(call.run().instrument(call_span));
 }
@@ -257,7 +257,7 @@ fn unhandled(shared: &Arc<Shared>, incoming: Incoming, link: LinkInfo, reply: Op
         return;
     };
     let Ok(exec) = Execution::open(&shared.app.root(), ExecOptions::new()) else {
-        refuse(shared, tasks, reply, id, refusal("the server is draining"));
+        refuse(shared, tasks, reply, id, refusal("the server is shutting down"));
         return;
     };
     exec.seed(incoming.headers.clone());
@@ -293,12 +293,12 @@ struct Call {
     ack: Ack,
     deadline: Option<Duration>,
     _registered: Option<Registered>,
-    _permit: Permit,
+    permit: Permit,
 }
 
 impl Call {
     async fn run(self) {
-        let Call { shared, route, exec, cx, arrived, answered, ack, deadline, _registered, _permit } = self;
+        let Call { shared, route, exec, cx, arrived, answered, ack, deadline, _registered, permit } = self;
         let handle = exec.handle();
         let mut deadline = deadline.map(|after| shared.timer.sleep(after));
         let outcome = match mismatch(arrived, &route, cx.pattern()) {
@@ -327,9 +327,16 @@ impl Call {
                     outcome => outcome,
                 };
                 answer(&shared, Some(&route.handler), &handle, &cx, &reply, id, outcome, &mut deadline).await;
+                // Freed before the settlement: a link declaring `native_backpressure` lets its
+                // broker hand over the next request once the `Ack` settles, and that request must
+                // find the place free.
+                drop(permit);
                 ack.ack();
             }
-            None => settle_event(&shared, cx.pattern(), &handle, outcome, ack),
+            None => {
+                drop(permit);
+                settle_event(&shared, cx.pattern(), &handle, outcome, ack);
+            }
         }
         drop(exec);
     }
@@ -415,7 +422,6 @@ async fn answer(
             send(reply, exec, id, Frame::Res { id, data }).await;
         }
         Outcome::Done(Ok(Reply::Many(stream))) => {
-            let stream = Tracked::new(stream, exec.clone());
             stream_reply(shared, handler, exec, cx, reply, id, stream, deadline).await;
         }
         Outcome::Expired(Some(Ok(Reply::Many(stream)))) => {
@@ -444,7 +450,9 @@ async fn answer(
 
 /// A streamed reply: every `Ok` item as `item`, the clean end as `end`. An `Err` item runs the
 /// error handlers on the late path and is written as `err`, which ends the stream, unless they
-/// answer `EndStream`. The stream is dropped once its end is written, which reports it.
+/// answer `EndStream`. The stream is tracked once the link is known to carry it, and dropped once
+/// its end is written, which reports it. On a link that carries no streamed reply the call is
+/// answered `err` of kind `internal`, and the stream, never the reply, reports nothing.
 #[allow(clippy::too_many_arguments)]
 async fn stream_reply(
     shared: &Shared,
@@ -453,14 +461,16 @@ async fn stream_reply(
     cx: &RpcCx,
     reply: &ReplyPath,
     id: u64,
-    mut stream: Tracked<BoxStream<'static, Result<Data, BoxError>>>,
+    stream: BoxStream<'static, Result<Data, BoxError>>,
     deadline: &mut Option<BoxFuture<'static, ()>>,
 ) {
     if !shared.capabilities.shapes.iter().any(|shape| matches!(shape, Shape::ServerStreaming | Shape::Bidi)) {
+        drop(stream);
         let error = ErrorBody::new(ErrorKind::Internal, format!("the {} link carries no streamed reply", shared.link), Details::new());
         send(reply, exec, id, Frame::Err { id, error }).await;
         return;
     }
+    let mut stream = Tracked::new(stream, exec.clone());
     loop {
         match until_ended(exec, deadline, stream.next()).await {
             Ended::Done(Some(Ok(data))) => {

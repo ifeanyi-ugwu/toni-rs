@@ -1070,6 +1070,9 @@ async fn message(conn: Connection, flight: Arc<Flight>, event: Option<(MountedHa
             }
         }
         Ok(Reply::Many(stream)) => {
+            // Tracked here, where it is written as the reply: a stream an interceptor discarded
+            // never reaches this arm and reports nothing.
+            let stream = Tracked::new(stream, handle.clone());
             let handler = event.as_ref().map(|(mounted, _)| mounted);
             pump(stream, handler, &handle, &cx, id.as_ref(), &outbound, codec).instrument(call_span).await;
         }

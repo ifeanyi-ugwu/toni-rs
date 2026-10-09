@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -10,19 +11,20 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, StreamConsumer};
-use rdkafka::error::{KafkaError, KafkaResult};
+use rdkafka::error::KafkaError;
 use rdkafka::message::{Header, Headers, Message, OwnedHeaders, OwnedMessage};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::util::Timeout;
 use rdkafka::{Offset, TopicPartitionList};
 use tokio::sync::{mpsc, oneshot, watch};
-use ulo::{AppHandle, BoxError, BoxFuture};
+use ulo::{AppHandle, BoxError, BoxFuture, Timer};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, Frame, FrameTooLarge, Link, NoDestination,
     Ordering as Order, Outbound, Pattern, ReplyPath, ReplyTo,
 };
+use ulo_transport::Count;
 
 /// The header naming a record's frame kind where the record alone does not tell it: `open` on a
 /// pattern's topic, `in`, `in_end` and `cancel` on the control topic, `opened` on the reply topic.
@@ -61,6 +63,10 @@ pub struct Kafka {
     pub(crate) replication: i32,
     /// The root module's full type path, written by `prepare` when no `group` is set.
     pub(crate) default_group: Option<String>,
+    /// The server's in-flight bound, from `Link::max_inflight`; `None` for no bound.
+    pub(crate) max_inflight: Option<usize>,
+    /// The app's clock, from `prepare`, which times the anchor's retries.
+    pub(crate) timer: Option<Arc<dyn Timer>>,
     pub(crate) state: Mutex<State>,
 }
 
@@ -83,6 +89,8 @@ impl Kafka {
             partitions: 1,
             replication: 1,
             default_group: None,
+            max_inflight: Count::Default.max_inflight(),
+            timer: None,
             state: Mutex::new(State::default()),
         }
     }
@@ -148,7 +156,14 @@ impl Link for Kafka {
             Some(_) => {}
             None => self.default_group = Some(format!("{:#}", app.root().name())),
         }
+        self.timer = app.timer().cloned();
         Ok(())
+    }
+
+    /// The bound at which the request lane pauses its partitions, so a request over it waits in
+    /// its topic: `Count::max_inflight`'s reading, 1,024 at `Default`.
+    fn max_inflight(&mut self, calls: Count) {
+        self.max_inflight = calls.max_inflight();
     }
 
     async fn listen(&self, patterns: &[Pattern]) -> Result<Inbound, BoxError> {
@@ -165,7 +180,8 @@ impl Link for Kafka {
         let topics: Vec<String> = patterns.iter().map(|pattern| pattern.as_str().to_owned()).collect();
         create_topics(&base, &topics, self.partitions, self.replication).await?;
         create_topics(&base, &[CONTROL.to_owned()], 1, self.replication).await?;
-        anchor(&base, &group, &topics).await?;
+        let timer = self.timer.clone().ok_or("the Kafka link has no timer: `listen` ran before `prepare`, or on an app with none")?;
+        anchor(&base, &group, &topics, &timer).await?;
 
         let mut config = base.clone();
         config
@@ -189,6 +205,8 @@ impl Link for Kafka {
             calls: Arc::new(Calls::new()),
             phase,
             deliveries: Mutex::new(Some(deliveries)),
+            inflight: Arc::new(watch::channel(0).0),
+            limit: self.max_inflight,
         });
         tokio::spawn(request_lane(Arc::clone(&side)));
         tokio::spawn(control_lane(Arc::clone(&side), control));
@@ -237,14 +255,7 @@ impl Link for Kafka {
         let server = lock(&self.state).server.clone();
         let Some(side) = server else { return };
         side.phase.send_replace(Phase::Draining);
-        match side.consumer.assignment() {
-            Ok(assignment) => {
-                if let Err(error) = side.consumer.pause(&assignment) {
-                    tracing::warn!(%error, "the Kafka link could not pause its partitions");
-                }
-            }
-            Err(error) => tracing::warn!(%error, "the Kafka link could not read its assignment"),
-        }
+        pause(&side.consumer);
         if let Err(error) = side.consumer.commit_consumer_state(CommitMode::Async) {
             tracing::debug!(%error, "the Kafka link had no offset to commit at the drain");
         }
@@ -355,30 +366,41 @@ async fn create_topics(base: &ClientConfig, topics: &[String], partitions: i32, 
 ///
 /// Reading the committed offsets asks the group's coordinator, which a broker that has just
 /// started, or is moving the coordinator, may not have ready: those three errors are retried
-/// within the call's own timeout (`coordinator_retried`); any other fails `bind` at once.
-async fn anchor(base: &ClientConfig, group: &str, topics: &[String]) -> Result<(), BoxError> {
+/// within the call's own timeout (`coordinator_retried`), waiting on the app's `timer` between
+/// attempts; any other fails `bind` at once. Each broker call blocks its thread and runs on one
+/// of its own ([`blocking`]).
+async fn anchor(base: &ClientConfig, group: &str, topics: &[String], timer: &Arc<dyn Timer>) -> Result<(), BoxError> {
     let mut config = base.clone();
     config.set("group.id", group).set("enable.auto.commit", "false");
-    let consumer: BaseConsumer = config.create()?;
+    let consumer: Arc<Detached<BaseConsumer>> = Arc::new(Detached::new(config.create()?));
+    let timeout = Timeout::After(ANCHOR_TIMEOUT);
+    let reader = Arc::clone(&consumer);
     let topics = topics.to_vec();
-    let group = group.to_owned();
-    // Every call below blocks the calling thread.
-    tokio::task::spawn_blocking(move || -> Result<(), BoxError> {
-        let timeout = Timeout::After(ANCHOR_TIMEOUT);
+    let every = blocking(move || -> Result<TopicPartitionList, BoxError> {
         let mut every = TopicPartitionList::new();
         for topic in &topics {
-            let metadata = consumer.fetch_metadata(Some(topic), timeout)?;
+            let metadata = reader.fetch_metadata(Some(topic), timeout)?;
             for partition in metadata.topics().iter().filter(|found| found.name() == topic).flat_map(|found| found.partitions()) {
                 every.add_partition(topic, partition.id());
             }
         }
-        let deadline = Instant::now() + ANCHOR_TIMEOUT;
-        let committed = coordinator_retried(
-            deadline,
-            |remaining| consumer.committed_offsets(every.clone(), Timeout::After(remaining)),
-            std::thread::sleep,
-            Instant::now,
-        )?;
+        Ok(every)
+    })
+    .await??;
+    let deadline = timer.now() + ANCHOR_TIMEOUT;
+    let committed = coordinator_retried(
+        deadline,
+        |remaining| {
+            let reader = Arc::clone(&consumer);
+            let every = every.clone();
+            async move { blocking(move || reader.committed_offsets(every, Timeout::After(remaining)).map_err(BoxError::from)).await? }
+        },
+        |backoff| timer.sleep(backoff),
+        || timer.now(),
+    )
+    .await?;
+    let group = group.to_owned();
+    blocking(move || -> Result<(), BoxError> {
         let mut start = TopicPartitionList::new();
         for unset in committed.elements().into_iter().filter(|element| element.offset() == Offset::Invalid) {
             let (_, end) = consumer.fetch_watermarks(unset.topic(), unset.partition(), timeout)?;
@@ -406,21 +428,25 @@ const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// `attempt`, given the time left before `deadline`, retried while it fails with one of the
 /// three errors a group coordinator answers while it loads or moves, which librdkafka classes
 /// retriable, and a retry still fits before `deadline`; the last error is returned once one does
-/// not. Any other error is returned at once. `sleep` and `now` are the clock: `anchor` runs its
-/// broker calls on a blocking thread, where the app's `Timer`, an async clock, cannot be awaited.
-fn coordinator_retried<T>(
+/// not. Any other error is returned at once. `sleep` and `now` are the clock, the app's `Timer`
+/// in `anchor`.
+async fn coordinator_retried<T, A, S>(
     deadline: Instant,
-    mut attempt: impl FnMut(Duration) -> KafkaResult<T>,
-    mut sleep: impl FnMut(Duration),
+    mut attempt: impl FnMut(Duration) -> A,
+    mut sleep: impl FnMut(Duration) -> S,
     now: impl Fn() -> Instant,
-) -> KafkaResult<T> {
+) -> Result<T, BoxError>
+where
+    A: Future<Output = Result<T, BoxError>>,
+    S: Future<Output = ()>,
+{
     let mut backoff = RETRY_BACKOFF;
     loop {
-        let outcome = attempt(deadline.saturating_duration_since(now()));
+        let outcome = attempt(deadline.saturating_duration_since(now())).await;
         match &outcome {
-            Err(KafkaError::MetadataFetch(code)) if coordinator_not_ready(*code) && now() + backoff < deadline => {
-                tracing::debug!(%code, ?backoff, "the Kafka group coordinator is not ready; retrying");
-                sleep(backoff);
+            Err(error) if coordinator_not_ready(error) && now() + backoff < deadline => {
+                tracing::debug!(%error, ?backoff, "the Kafka group coordinator is not ready; retrying");
+                sleep(backoff).await;
                 backoff = (backoff * 2).min(RETRY_BACKOFF_MAX);
             }
             _ => return outcome,
@@ -428,11 +454,34 @@ fn coordinator_retried<T>(
     }
 }
 
-fn coordinator_not_ready(code: RDKafkaErrorCode) -> bool {
+fn coordinator_not_ready(error: &BoxError) -> bool {
     matches!(
-        code,
-        RDKafkaErrorCode::NotCoordinator | RDKafkaErrorCode::CoordinatorLoadInProgress | RDKafkaErrorCode::CoordinatorNotAvailable
+        error.downcast_ref::<KafkaError>(),
+        Some(KafkaError::MetadataFetch(
+            RDKafkaErrorCode::NotCoordinator | RDKafkaErrorCode::CoordinatorLoadInProgress | RDKafkaErrorCode::CoordinatorNotAvailable
+        ))
     )
+}
+
+/// Runs `call` on a thread of its own and answers its result: a librdkafka call that blocks its
+/// thread, kept off the runtime's workers as a consumer's drop is ([`Detached`]). Not a
+/// `spawn_blocking` task, which needs tokio's runtime and which a runtime waits for as it shuts
+/// down. A thread that cannot be spawned runs `call` here; a call that panics is an error.
+async fn blocking<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> Result<T, BoxError> {
+    let (done, answered) = oneshot::channel();
+    let call = Arc::new(Mutex::new(Some(call)));
+    let on_thread = Arc::clone(&call);
+    let spawned = std::thread::Builder::new().name("ulo-kafka-blocking".to_owned()).spawn(move || {
+        if let Some(call) = lock(&on_thread).take() {
+            let _ = done.send(call());
+        }
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "the Kafka link could not spawn a thread for a blocking call, and made it here");
+        let call = lock(&call).take().ok_or("the Kafka link's blocking call was taken twice")?;
+        return Ok(call());
+    }
+    answered.await.map_err(|_| BoxError::from("the Kafka link's blocking call panicked"))
 }
 
 fn producer(base: &ClientConfig) -> Result<FutureProducer, BoxError> {
@@ -453,7 +502,7 @@ async fn control_consumer(base: &ClientConfig, group: &str) -> Result<Arc<Detach
     let consumer: Arc<Detached<StreamConsumer>> = Arc::new(Detached::new(config.create()?));
     let reader = Arc::clone(&consumer);
     // `fetch_metadata` blocks the calling thread.
-    let partitions: Vec<i32> = tokio::task::spawn_blocking(move || -> Result<Vec<i32>, BoxError> {
+    let partitions: Vec<i32> = blocking(move || -> Result<Vec<i32>, BoxError> {
         let metadata = reader.fetch_metadata(Some(CONTROL), Timeout::After(Duration::from_secs(10)))?;
         Ok(metadata
             .topics()
@@ -484,6 +533,11 @@ struct ServerSide {
     phase: watch::Sender<Phase>,
     /// Taken once draining holds no call, or at close, which ends the inbound stream.
     deliveries: Mutex<Option<mpsc::UnboundedSender<Delivery>>>,
+    /// The records of the group's topics handed over and not yet settled: each is counted until
+    /// its `Ack` settles or is dropped, which the server does only after freeing the call's place.
+    inflight: Arc<watch::Sender<usize>>,
+    /// `Link::max_inflight`'s bound, at which the request lane pauses the assignment.
+    limit: Option<usize>,
 }
 
 impl ServerSide {
@@ -506,11 +560,13 @@ impl ServerSide {
         let topic = pattern.clone();
         // Stored once the handler completes and committed by the next auto-commit, for a
         // rejected event too, so it cannot loop on redelivery. Unsettled, a restarted group
-        // reads the record again.
+        // reads the record again. Counted in flight until settled or dropped.
+        let counted = InFlight::new(Arc::clone(&self.inflight));
         let ack = Ack::new(move |_accepted| {
             if let Err(error) = consumer.store_offset(&topic, partition, offset) {
                 tracing::warn!(%error, topic, "the Kafka link could not store an offset");
             }
+            drop(counted);
         });
         match (reply, kind.as_deref()) {
             (None, None) => self.deliver(Delivery { frame: Frame::Evt { pattern, headers: call_headers, data }, reply: None, ack }),
@@ -579,7 +635,9 @@ impl ServerSide {
 }
 
 /// The group consumer's records until the drain, which pauses the partitions and leaves the
-/// consumer to the acknowledgments still owed.
+/// consumer to the acknowledgments still owed. At the server's in-flight bound the lane pauses
+/// the assignment until a record settles ([`at_bound`]), so the requests over it wait in their
+/// topics.
 async fn request_lane(side: Arc<ServerSide>) {
     let mut phase = side.phase.subscribe();
     let consumer = Arc::clone(&side.consumer);
@@ -596,12 +654,103 @@ async fn request_lane(side: Arc<ServerSide>) {
             record = consumer.recv() => record.map(|record| record.detach()),
         };
         match record {
-            Ok(record) => side.on_request(record).await,
+            Ok(record) => {
+                side.on_request(record).await;
+                if !at_bound(&side, &mut phase).await {
+                    break;
+                }
+            }
             Err(error) => {
                 tracing::warn!(%error, "the Kafka link's consumer failed a read; retrying");
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
+    }
+}
+
+/// Holds the request lane while the records in flight reach the server's bound: the assignment
+/// paused, then resumed once one settles. `pause` is local to librdkafka and drops the records it
+/// fetched ahead, so the paused partitions resume from the next record the lane has not read. The
+/// consumer is still read meanwhile, which serves a rebalance; a record from a partition assigned
+/// since the pause is kept here, the new assignment paused in turn, and handed over once there is
+/// room. `false` once the server drains or closes, the partitions left paused for the drain.
+async fn at_bound(side: &ServerSide, phase: &mut watch::Receiver<Phase>) -> bool {
+    let Some(limit) = side.limit else { return true };
+    if *side.inflight.borrow() < limit {
+        return true;
+    }
+    pause(&side.consumer);
+    let mut inflight = side.inflight.subscribe();
+    let mut kept = VecDeque::new();
+    loop {
+        if *inflight.borrow_and_update() < limit {
+            match kept.pop_front() {
+                Some(record) => {
+                    side.on_request(record).await;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let record = tokio::select! {
+            changed = phase.changed() => {
+                if changed.is_err() || *phase.borrow() != Phase::Serving {
+                    return false;
+                }
+                continue;
+            }
+            _ = inflight.changed() => continue,
+            record = side.consumer.recv() => record.map(|record| record.detach()),
+        };
+        match record {
+            Ok(record) => {
+                pause(&side.consumer);
+                kept.push_back(record);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the Kafka link's consumer failed a read while paused; retrying");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    if *phase.borrow() == Phase::Serving {
+        match side.consumer.assignment() {
+            Ok(assignment) => {
+                if let Err(error) = side.consumer.resume(&assignment) {
+                    tracing::warn!(%error, "the Kafka link could not resume its partitions");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "the Kafka link could not read its assignment"),
+        }
+    }
+    true
+}
+
+/// Pauses every partition currently assigned to `consumer`.
+fn pause(consumer: &StreamConsumer) {
+    match consumer.assignment() {
+        Ok(assignment) => {
+            if let Err(error) = consumer.pause(&assignment) {
+                tracing::warn!(%error, "the Kafka link could not pause its partitions");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "the Kafka link could not read its assignment"),
+    }
+}
+
+/// One record counted in [`ServerSide::inflight`] until dropped.
+struct InFlight(Arc<watch::Sender<usize>>);
+
+impl InFlight {
+    fn new(count: Arc<watch::Sender<usize>>) -> Self {
+        count.send_modify(|count| *count += 1);
+        InFlight(count)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count = count.saturating_sub(1));
     }
 }
 
@@ -1022,6 +1171,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::future::{Ready, ready};
+
+    use futures_util::FutureExt;
 
     use super::*;
 
@@ -1036,14 +1188,33 @@ mod tests {
             Clock { now: Cell::new(start), slept: RefCell::new(Vec::new()) }
         }
 
-        fn sleep(&self, d: Duration) {
+        fn sleep(&self, d: Duration) -> Ready<()> {
             self.now.set(self.now.get() + d);
             self.slept.borrow_mut().push(d);
+            ready(())
         }
     }
 
-    fn failing(code: RDKafkaErrorCode) -> KafkaError {
-        KafkaError::MetadataFetch(code)
+    fn failing(code: RDKafkaErrorCode) -> BoxError {
+        BoxError::from(KafkaError::MetadataFetch(code))
+    }
+
+    /// `coordinator_retried` run to its end: every attempt and sleep here is ready at once.
+    fn retried<T>(
+        deadline: Instant,
+        mut attempt: impl FnMut(Duration) -> Result<T, BoxError>,
+        clock: &Clock,
+    ) -> Result<T, BoxError> {
+        coordinator_retried(deadline, |left| ready(attempt(left)), |d| clock.sleep(d), || clock.now.get())
+            .now_or_never()
+            .expect("every attempt and sleep is ready at once")
+    }
+
+    fn code_of(outcome: &Result<(), BoxError>) -> Option<RDKafkaErrorCode> {
+        match outcome.as_ref().err().and_then(|error| error.downcast_ref::<KafkaError>()) {
+            Some(KafkaError::MetadataFetch(code)) => Some(*code),
+            _ => None,
+        }
     }
 
     #[test]
@@ -1056,14 +1227,13 @@ mod tests {
             let start = Instant::now();
             let clock = Clock::new(start);
             let mut calls = 0;
-            let outcome = coordinator_retried(
+            let outcome = retried(
                 start + ANCHOR_TIMEOUT,
                 |_| {
                     calls += 1;
                     if calls < 3 { Err(failing(code)) } else { Ok(calls) }
                 },
-                |d| clock.sleep(d),
-                || clock.now.get(),
+                &clock,
             );
             assert_eq!(outcome.ok(), Some(3), "{code:?} was not retried until the read succeeded");
             assert_eq!(*clock.slept.borrow(), vec![RETRY_BACKOFF, RETRY_BACKOFF * 2], "{code:?}: the waits between attempts");
@@ -1075,16 +1245,15 @@ mod tests {
         let start = Instant::now();
         let clock = Clock::new(start);
         let mut calls = 0;
-        let outcome: KafkaResult<()> = coordinator_retried(
+        let outcome: Result<(), BoxError> = retried(
             start + ANCHOR_TIMEOUT,
             |_| {
                 calls += 1;
                 Err(failing(RDKafkaErrorCode::BrokerTransportFailure))
             },
-            |d| clock.sleep(d),
-            || clock.now.get(),
+            &clock,
         );
-        assert!(matches!(outcome, Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure))), "{outcome:?}");
+        assert_eq!(code_of(&outcome), Some(RDKafkaErrorCode::BrokerTransportFailure), "{outcome:?}");
         assert_eq!(calls, 1, "an error other than the coordinator's three was retried");
         assert!(clock.slept.borrow().is_empty());
     }
@@ -1094,16 +1263,15 @@ mod tests {
         let start = Instant::now();
         let clock = Clock::new(start);
         let mut remaining = Vec::new();
-        let outcome: KafkaResult<()> = coordinator_retried(
+        let outcome: Result<(), BoxError> = retried(
             start + ANCHOR_TIMEOUT,
             |left| {
                 remaining.push(left);
                 Err(failing(RDKafkaErrorCode::CoordinatorLoadInProgress))
             },
-            |d| clock.sleep(d),
-            || clock.now.get(),
+            &clock,
         );
-        assert!(matches!(outcome, Err(KafkaError::MetadataFetch(RDKafkaErrorCode::CoordinatorLoadInProgress))), "{outcome:?}");
+        assert_eq!(code_of(&outcome), Some(RDKafkaErrorCode::CoordinatorLoadInProgress), "{outcome:?}");
         let slept: Duration = clock.slept.borrow().iter().sum();
         assert!(slept < ANCHOR_TIMEOUT, "the retries slept {slept:?}, past the {ANCHOR_TIMEOUT:?} timeout");
         assert_eq!(remaining.first(), Some(&ANCHOR_TIMEOUT), "the first attempt was not given the whole timeout");

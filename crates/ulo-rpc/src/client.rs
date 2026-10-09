@@ -94,6 +94,27 @@ impl Conn {
     fn send(&self, pattern: &Pattern, frame: Frame, reply_to: Option<ReplyTo>) -> BoxFuture<'static, Result<(), BoxError>> {
         (self.send)(pattern.clone(), frame, reply_to)
     }
+
+    /// Registers call `id` for its replies: `false`, registering nothing, once the reply lane has
+    /// ended or a `goaway` arrived. Checked under the lock [`ended`](Self::ended) clears under, so
+    /// a call registered here is answered by the lane or failed by its end, never left waiting on
+    /// a lane that has already gone.
+    fn register(&self, id: u64, waiting: Waiting) -> bool {
+        let mut pending = self.pending();
+        if !self.open.load(Ordering::Acquire) {
+            return false;
+        }
+        pending.insert(id, waiting);
+        true
+    }
+
+    /// The reply lane's end: no new call goes over the connection, and every call waiting on it
+    /// fails `Unavailable`.
+    fn ended(&self) {
+        let mut pending = self.pending();
+        self.open.store(false, Ordering::Release);
+        pending.clear();
+    }
 }
 
 impl RpcClient {
@@ -267,10 +288,7 @@ impl Spec {
             Request::One(payload) => Request::One(Ok(payload?)),
             stream => stream,
         };
-        let conn = inner.connection().await?;
-        let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let (waiting, replies) = mpsc::unbounded();
-        conn.pending().insert(id, waiting.clone());
+        let (conn, id, waiting, replies) = inner.register().await?;
         let mut pending = Pending { conn: Arc::clone(&conn), id, pattern: pattern.clone(), settled: false };
         let text = pattern.as_str().to_owned();
         let sent = match request {
@@ -298,6 +316,22 @@ impl Spec {
 }
 
 impl ClientInner {
+    /// A connection with a new call registered on it, and where its replies arrive. A connection
+    /// whose reply lane ends between [`connection`](Self::connection) handing it over and the
+    /// registration is replaced once by a new one; a second that ends as fast fails the call
+    /// `Unavailable`.
+    async fn register(&self) -> Result<(Arc<Conn>, u64, Waiting, UnboundedReceiver<Result<Frame, RpcError>>), RpcError> {
+        for _ in 0..2 {
+            let conn = self.connection().await?;
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let (waiting, replies) = mpsc::unbounded();
+            if conn.register(id, waiting.clone()) {
+                return Ok((conn, id, waiting, replies));
+            }
+        }
+        Err(lost())
+    }
+
     async fn connection(&self) -> Result<Arc<Conn>, RpcError> {
         let mut slot = self.conn.lock().await;
         if let Some(conn) = slot.as_ref().filter(|conn| conn.open.load(Ordering::Acquire)) {
@@ -339,8 +373,7 @@ async fn route_replies(conn: Weak<Conn>, mut replies: BoxStream<'static, Frame>)
         }
     }
     if let Some(conn) = conn.upgrade() {
-        conn.open.store(false, Ordering::Release);
-        conn.pending().clear();
+        conn.ended();
     }
 }
 
@@ -795,6 +828,61 @@ mod tests {
         async fn close(&self) -> Result<(), BoxError> {
             Ok(())
         }
+    }
+
+    /// A link whose first connection's reply lane ends at once, as a server closing does, and
+    /// whose later ones stay open; it counts its connections.
+    struct EndingLink(Arc<AtomicU64>);
+
+    impl Link for EndingLink {
+        const NAME: &'static str = "ending";
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::new(DeliveryMode::Addressed)
+        }
+
+        async fn listen(&self, _patterns: &[Pattern]) -> Result<Inbound, BoxError> {
+            Err("this link has no server side".into())
+        }
+
+        async fn connect(&self) -> Result<Outbound, BoxError> {
+            let first = self.0.fetch_add(1, Ordering::Relaxed) == 0;
+            let replies: BoxStream<'static, Frame> =
+                if first { Box::pin(futures_util::stream::empty()) } else { Box::pin(futures_util::stream::pending()) };
+            Ok(Outbound { send: Box::new(|_pattern, _frame, _reply_to| Box::pin(async { Ok(()) })), replies })
+        }
+
+        async fn drain(&self) {}
+
+        async fn close(&self) -> Result<(), BoxError> {
+            Ok(())
+        }
+    }
+
+    /// F364: a call handed a connection whose reply lane then ended, before the call registered,
+    /// waited for its own timeout, since the lane had already failed every call registered on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_call_is_not_registered_on_a_connection_whose_reply_lane_ended() {
+        let connects = Arc::new(AtomicU64::new(0));
+        let link = EndingLink(Arc::clone(&connects));
+        let client = RpcClient::of_module(Arc::new(link), Bound::Unbounded, Arc::new(ulo_tokio::Tokio::current()));
+        let handed = client.inner.connection().await.expect("the first connection opens");
+        // The reply lane's task runs once this task yields, and ends with its empty stream.
+        for _ in 0..100 {
+            if !handed.open.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(!handed.open.load(Ordering::Acquire), "the first connection's reply lane did not end");
+
+        let (waiting, _replies) = mpsc::unbounded();
+        assert!(!handed.register(1, waiting), "a call was registered on a connection whose reply lane had ended");
+        assert!(handed.pending().is_empty(), "the ended connection holds a call no reply can reach");
+
+        let (conn, _, _, _) = client.inner.register().await.expect("the call registers on a new connection");
+        assert!(!Arc::ptr_eq(&conn, &handed), "the call was registered on the ended connection");
+        assert_eq!(connects.load(Ordering::Relaxed), 2, "the call did not go over a new connection");
     }
 
     #[tokio::test]

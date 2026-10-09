@@ -29,6 +29,14 @@
 //! the deadline moves into its body, which ends with DEADLINE_EXCEEDED trailers, offered to no
 //! error handler, if the deadline passes while it streams.
 //!
+//! A reply stream reports its end where the dispatcher writes it, at the frames of the body
+//! ([`CallBody`]): `encode_stream` marks the reply it builds, and the outermost body of a marked
+//! reply reports `Completed` once it writes trailers carrying `grpc-status: 0`, and `CutOff` for
+//! trailers with any other status, an `Err` item's included, or for a drop before its trailers,
+//! once, whichever comes first. A marked reply an interceptor discards is never written and reports
+//! nothing; one the error handlers answered after a passed deadline was the reply and, dropped
+//! unwritten, reports `CutOff(Deadline)`.
+//!
 //! The dispatcher is built on tonic's codec layer, the pieces `tonic::server::Grpc` composes:
 //! `tonic::Streaming::new_request` decodes a request in the extractors, after the guards have
 //! admitted, and `EncodeBody::new_server` encodes a reply into the response every interceptor
@@ -66,7 +74,7 @@ use ulo::{
 };
 use ulo_http::stage::{Rest, ScopedStage, Stage};
 use ulo_http::{ConnInfo, HttpBody, Request, Response};
-use ulo_transport::{Admission, CallError, ConnectionAdmission, Permit, Tracked, span};
+use ulo_transport::{Admission, CallError, ConnectionAdmission, Permit, span};
 
 use crate::__private::HandlerFn;
 use crate::pre_dispatch::StageCx;
@@ -171,7 +179,8 @@ impl Dispatcher {
         if let Some(code) = response.headers().get(GRPC_STATUS) {
             record_status(&call_span, Code::from_bytes(code.as_bytes()));
         }
-        response.map(|body| HttpBody::new(CallBody::new(body, handle, deadline, call_span, permit)))
+        let tracked = response.extensions().get::<Streamed>().is_some();
+        response.map(|body| HttpBody::new(CallBody::new(body, handle, deadline, call_span, permit, tracked)))
     }
 
     /// A deadline that passed before the call answered: the error handlers receive `Timeout`
@@ -195,16 +204,25 @@ impl Dispatcher {
             return status_response(status::deadline_exceeded());
         };
         match outcome {
-            Ok(reply) => match single(reply, grace.as_mut()).await {
-                Ok(reply) => reply,
-                Err(()) => {
-                    tracing::warn!(
-                        path = &*path,
-                        "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
-                    );
-                    status_response(status::deadline_exceeded())
+            Ok(reply) => {
+                let streamed = reply.extensions().get::<Streamed>().is_some();
+                let written = match single(reply, grace.as_mut()).await {
+                    Ok(reply) => reply,
+                    Err(()) => {
+                        tracing::warn!(
+                            path = &*path,
+                            "an error handler answered a timed-out call with a stream; the stream was ended at the deadline"
+                        );
+                        status_response(status::deadline_exceeded())
+                    }
+                };
+                // The error handlers answered with this stream, so it was the reply: dropped
+                // unwritten, or replaced by a status, it reports `CutOff(Deadline)`.
+                if streamed && written.extensions().get::<Streamed>().is_none() {
+                    exec.report_stream_end(StreamOutcome::CutOff(exec.cancel_reason()));
                 }
-            },
+                written
+            }
             Err(err) => status_response(status::render_as_is(err)),
         }
     }
@@ -345,10 +363,11 @@ pub(crate) fn encode_one<T: prost::Message + Default + Send + 'static>(message: 
     with_metadata(tonic::body::Body::new(body), metadata)
 }
 
-/// A stream as a reply, wrapped in `Tracked`. An `Err` item runs the matched handler's error
-/// handlers through `ulo::dispatch_late` and, unless they end the stream with `EndStream`, is
-/// written as the trailers `grpc-status`, `grpc-message` and `grpc-status-details-bin`, which end
-/// the stream: once data frames are sent, the status travels in the trailers.
+/// A stream as a reply, marked [`Streamed`] for [`CallBody`] to report its end once it is written.
+/// An `Err` item runs the matched handler's error handlers through `ulo::dispatch_late` and,
+/// unless they end the stream with `EndStream`, is written as the trailers `grpc-status`,
+/// `grpc-message` and `grpc-status-details-bin`, which end the stream: once data frames are sent,
+/// the status travels in the trailers.
 pub(crate) fn encode_stream<S>(stream: S, metadata: MetadataMap, cx: &GrpcCx) -> Reply
 where
     S: Stream + Send + 'static,
@@ -357,13 +376,20 @@ where
     let items = LateItems { stream: Box::pin(stream), cx: cx.clone(), state: Late::Streaming };
     let body = EncodeBody::new_server(
         ProstEncoder::<<S::Item as IntoGrpcItem>::Message>::new(BufferSettings::default()),
-        Tracked::new(items, cx.exec().clone()),
+        items,
         None,
         SingleMessageCompressionOverride::default(),
         None,
     );
-    with_metadata(tonic::body::Body::new(body), metadata)
+    let mut reply = with_metadata(tonic::body::Body::new(body), metadata);
+    reply.extensions_mut().insert(Streamed);
+    reply
 }
+
+/// In a reply's extensions: the reply is a stream `encode_stream` built, whose end the outermost
+/// body reports.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Streamed;
 
 fn with_metadata(body: tonic::body::Body, metadata: MetadataMap) -> Reply {
     let mut reply = Reply::new(body);
@@ -631,9 +657,9 @@ enum Late {
 }
 
 impl<S> LateItems<S> {
-    /// The status that ends the stream for `error`, the stream reported cut off.
+    /// The status that ends the stream for `error`; its non-zero trailers report the stream cut
+    /// off.
     fn failed(&self, error: BoxError) -> Status {
-        self.cx.exec().report_stream_end(StreamOutcome::CutOff(None));
         status::render(error, self.cx.exec())
     }
 }
@@ -704,6 +730,11 @@ where
 /// carries the deadline a reply answered before, and records the trailers' `grpc-status` on the
 /// span. A drop before the body's end is the caller abandoning the call, which fires
 /// `CancelReason::ClientCancelled`.
+///
+/// For a reply `encode_stream` marked it reports the stream's end, once: `Completed` as it writes
+/// trailers carrying `grpc-status: 0`; `CutOff` with the execution's reason as it writes trailers
+/// carrying any other status, as the body ends without trailers or fails, or as it is dropped
+/// before any of those.
 struct CallBody {
     inner: HttpBody,
     exec: ExecutionRef,
@@ -711,18 +742,40 @@ struct CallBody {
     call_span: Span,
     _permit: Permit,
     ended: bool,
+    /// The reply is a marked stream whose end is still to be reported.
+    tracking: bool,
 }
 
 impl CallBody {
-    fn new(inner: HttpBody, exec: ExecutionRef, deadline: Option<BoxFuture<'static, ()>>, call_span: Span, permit: Permit) -> Self {
+    fn new(
+        inner: HttpBody,
+        exec: ExecutionRef,
+        deadline: Option<BoxFuture<'static, ()>>,
+        call_span: Span,
+        permit: Permit,
+        tracked: bool,
+    ) -> Self {
         let ended = inner.is_end_stream();
-        CallBody { inner, exec, deadline, call_span, _permit: permit, ended }
+        let mut body = CallBody { inner, exec, deadline, call_span, _permit: permit, ended, tracking: tracked };
+        if ended {
+            body.report(false);
+        }
+        body
+    }
+
+    /// Reports the marked stream's end, once: `Completed` when `clean`, `CutOff` otherwise.
+    fn report(&mut self, clean: bool) {
+        if std::mem::take(&mut self.tracking) {
+            let outcome = if clean { StreamOutcome::Completed } else { StreamOutcome::CutOff(self.exec.cancel_reason()) };
+            self.exec.report_stream_end(outcome);
+        }
     }
 
     /// Ends the body with `status` in its trailers, the rest of the reply dropped unwritten.
     fn end_with(&mut self, status: Status) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
         self.ended = true;
         self.deadline = None;
+        self.report(status.code() == Code::Ok);
         record_status(&self.call_span, status.code());
         drop(std::mem::take(&mut self.inner));
         let mut trailers = HeaderMap::new();
@@ -763,15 +816,21 @@ impl http_body::Body for CallBody {
         match &polled {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(trailers) = frame.trailers_ref() {
-                    if let Some(code) = trailers.get(GRPC_STATUS) {
-                        record_status(&this.call_span, Code::from_bytes(code.as_bytes()));
+                    let code = trailers.get(GRPC_STATUS).map(|code| Code::from_bytes(code.as_bytes()));
+                    if let Some(code) = code {
+                        record_status(&this.call_span, code);
                     }
                     this.ended = true;
+                    this.report(code == Some(Code::Ok));
                 } else if this.inner.is_end_stream() {
                     this.ended = true;
+                    this.report(false);
                 }
             }
-            Poll::Ready(Some(Err(_)) | None) => this.ended = true,
+            Poll::Ready(Some(Err(_)) | None) => {
+                this.ended = true;
+                this.report(false);
+            }
             Poll::Pending => {}
         }
         if this.ended {
@@ -790,10 +849,11 @@ impl http_body::Body for CallBody {
 }
 
 impl Drop for CallBody {
-    // Runs before `inner` drops, so a `Tracked` stream inside reports the reason.
+    // The reason is written before the report, which reads it.
     fn drop(&mut self) {
         if !self.ended {
             self.exec.cancel_with(CancelReason::ClientCancelled);
         }
+        self.report(false);
     }
 }

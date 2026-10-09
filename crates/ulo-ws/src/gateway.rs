@@ -590,7 +590,6 @@ pub(crate) fn mount<G: GatewayConfig>(m: &mut Mount<'_>, handler: ConnectHandler
 const DEFAULT_MESSAGE_LIMIT: u64 = 64 * 1024 * 1024;
 /// tungstenite's frame ceiling, lowered to the message limit when that is smaller.
 const FRAME_LIMIT: u64 = 16 * 1024 * 1024;
-const DEFAULT_MAX_INFLIGHT: usize = 64;
 const DEFAULT_MAX_OUTBOUND: usize = 1024;
 const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(30);
 
@@ -618,7 +617,7 @@ impl Limits {
             message_limit: usize::try_from(message_limit).unwrap_or(usize::MAX),
             frame_limit: usize::try_from(message_limit.min(FRAME_LIMIT)).unwrap_or(usize::MAX),
             max_connections: count(settings.max_connections, defaults.max_connections, None),
-            max_inflight: count(settings.max_inflight, defaults.max_inflight, Some(DEFAULT_MAX_INFLIGHT)).unwrap_or(usize::MAX),
+            max_inflight: count(settings.max_inflight, defaults.max_inflight, Count::Default.max_inflight()).unwrap_or(usize::MAX),
             max_outbound: count(settings.max_outbound, defaults.max_outbound, Some(DEFAULT_MAX_OUTBOUND)),
             ping_interval: bound(settings.ping_interval, defaults.ping_interval),
             pong_timeout: bound(settings.pong_timeout, defaults.pong_timeout),
