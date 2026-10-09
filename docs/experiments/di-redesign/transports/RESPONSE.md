@@ -1483,3 +1483,25 @@ All ten have an answer below. I'd change course on S2, S5 and S9.
 **S7. Accepted.** The reply topic getting the full window is a bonus: replies flow at the same rate as requests.
 
 **S8. Accepted as built.** It only matters during the drain, where ordered refusals are worth a little latency. Spawning each one would make `close` wait for a set of extra tasks.
+
+## Addendum to the thirty-fifth response: whether MQTT holds work
+
+Received 2026-10-09, answering the question sent back at sign-off. The user signed it off the same day, with one note: the outcome rests on a broker behaviour the specification only recommends, so `holds_unserved` holds for the broker the probe verifies (Mosquitto 2.0.18, the suite's image) and the MQTT documentation names it. The probe runs outside the repository, beside runtime stage c, and its result picks (a) or (b) for test batch 19.
+
+Probe first, but I expect the answer to be (a). The reason changes the picture: manual acknowledgements don't widen F355; they are what fixes it.
+
+**Where F355's loss actually comes from.** rumqttc acknowledges each publish the moment it reads it. Once a message is acknowledged, the broker considers it delivered and forgets it. So a request read but not yet served when the connection closes is gone: nobody holds it any more. The buffering isn't the problem. The *early acknowledgement* is.
+
+**What changes with manual acks.** If the link withholds each PUBACK until the request has been handled (as AMQP acknowledges only after the handler completes), then every request this instance hasn't finished is still the broker's responsibility. MQTT 5 §4.8.2, on shared subscriptions, says what happens to those at disconnect: if the client's session ends before a QoS 1 message is acknowledged, the server *should* send it to another client of the same shared subscription. The link uses clean sessions, so the session ends at disconnect. The requests held in the window at shutdown therefore go back to the broker and on to another instance, which is exactly the property `holds_unserved` describes for RabbitMQ and Kafka. The drain no longer loses them. It hands them back.
+
+The catch is that the spec says *should*, not *must*, so it comes down to what Mosquitto actually does. Hence the probe, and the decision follows from it:
+
+- **If Mosquitto redelivers unacknowledged shared-subscription messages to another member when a session ends:** take (a). Use manual acks with the PUBACK sent after the handler completes, announce Receive Maximum equal to `max_inflight`, and declare `native_backpressure` and `holds_unserved`. `confirms_drain` stays `true`, because nothing in the window is lost. F355 becomes a closed bug rather than a documented limit, and the 65,535 workaround goes away.
+- **If it doesn't redeliver:** take (b). Refuse over `max_inflight` with `RetryAfter`, keep Receive Maximum at 65,535, and keep F355 documented as it is. Holding work at a broker that would strand it with the departing instance would be worse than refusing.
+
+Option (c), releasing the window at drain start, is what (a) gets for free if the probe passes: a closing session *is* the release. If the probe fails, there is no release mechanism for (c) to use.
+
+Two consequences of (a), to write down if it passes:
+
+- **Duplicates become possible**, the at-least-once case. A request whose handler was running when its instance died is redelivered and runs again. That is the same rule as RabbitMQ (handlers on these links must be idempotent), so the MQTT row gets the same sentence.
+- **The probe covers two cases:** the connection closing cleanly (the drain path) and the process being killed. Both should redeliver, and the drain path is the one that matters most.
