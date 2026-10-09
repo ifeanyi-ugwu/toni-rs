@@ -215,7 +215,7 @@ impl Running {
     async fn start() -> Running {
         let server = ulo_http_hyper::Server::new("127.0.0.1:0").timeout_grace(Bound::After(GRACE));
         let app = App::builder(Root)
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the app wires")
             .connect()

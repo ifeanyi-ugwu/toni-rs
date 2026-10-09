@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use async_tungstenite::tungstenite::Message;
 use bytes::Bytes;
 use serde::de::{self, DeserializeOwned, DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
-use tokio_tungstenite::tungstenite::Message;
 use ulo::BoxError;
 use ulo_transport::{CallError, Details, ExtractError, FieldViolation, FromCall, IntoReply, IntoReplyError, Validate};
 

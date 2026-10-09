@@ -361,6 +361,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-broadcast"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "435a87a52755b8f27fcf321ac4f04b2802e337c8c4872923137471ec39c37532"
+dependencies = [
+ "event-listener 5.4.1",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,6 +601,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "async-tungstenite"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3b465d66478a9bb84abed46695c44a58e34f3e8d0abfb2e958218d420969049"
+dependencies = [
+ "atomic-waker",
+ "futures-core",
+ "futures-io",
+ "futures-task",
+ "futures-util",
+ "log",
+ "pin-project-lite",
+ "tungstenite",
 ]
 
 [[package]]
@@ -6171,9 +6199,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "ulo",
  "ulo-graphql",
+ "ulo-http-hyper",
+ "ulo-tokio",
  "ulo-transport",
  "ulo-ws",
 ]
@@ -6653,8 +6684,13 @@ dependencies = [
 name = "ulo-ws"
 version = "0.1.0"
 dependencies = [
+ "async-broadcast",
+ "async-tungstenite",
  "bytes",
+ "event-listener 5.4.1",
+ "futures-channel",
  "futures-core",
+ "futures-io",
  "futures-util",
  "http 1.5.0",
  "http-body-util",
@@ -6673,6 +6709,7 @@ dependencies = [
  "ulo-net",
  "ulo-tokio",
  "ulo-transport",
+ "ulo-ws",
  "ulo-ws-macros",
 ]
 

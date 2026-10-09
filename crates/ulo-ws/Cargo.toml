@@ -10,36 +10,60 @@ homepage.workspace = true
 keywords = ["ulo", "websocket", "gateway", "framework"]
 categories = ["web-programming::websocket", "asynchronous"]
 
+[features]
+# `Server`, the standalone server for gateways declared `port = own`: an HTTP/1.1 server over
+# hyper and `ulo-hyper-serve`'s accept loop, which run on tokio. A gateway on the HTTP server's
+# port needs none of it.
+tokio-server = [
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:ulo-hyper-serve",
+    "dep:ulo-net",
+    "ulo-http/tokio-io",
+]
+
 [dependencies]
 ulo = { path = "../ulo" }
-# `tokio-io`: the gateway reads `Upgraded` through tokio's traits until stage d moves it to async-tungstenite.
-ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
-ulo-hyper-serve = { path = "../ulo-hyper-serve" }
-ulo-net = { path = "../ulo-net" }
+ulo-http = { path = "../ulo-http" }
+ulo-hyper-serve = { path = "../ulo-hyper-serve", optional = true }
+ulo-net = { path = "../ulo-net", optional = true }
 ulo-transport = { path = "../ulo-transport" }
 ulo-ws-macros = { path = "../ulo-ws-macros" }
+# The in-memory adapter's channel: a sender that never waits and a subscriber that falls behind
+# skipping the oldest, without a runtime.
+async-broadcast.workspace = true
+# `handshake`: the accept key the 101 carries. `futures-03-sink`: the connection writes through
+# `SinkExt` on the WebSocket stream.
+async-tungstenite = { workspace = true, features = ["handshake", "futures-03-sink"] }
 bytes.workspace = true
+# The wake-ups of the outbound queue, the read loop and the drain, without a runtime.
+event-listener.workspace = true
+# A hand-written gateway's inbox.
+futures-channel.workspace = true
 futures-core.workspace = true
-# `sink`: the connection writes through `SinkExt` on the WebSocket stream.
+# The I/O traits a connection is read and written through.
+futures-io.workspace = true
+# `sink`: `SinkExt` on the WebSocket stream.
 futures-util = { workspace = true, features = ["sink"] }
 http.workspace = true
-# The standalone server's response bodies.
-http-body-util.workspace = true
-hyper = { workspace = true, features = ["server", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+# `tokio-server`: the standalone server's response bodies.
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["server", "http1"], optional = true }
+hyper-util = { workspace = true, features = ["tokio"], optional = true }
 rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive"] }
 # `raw_value`: a message's `id` is echoed byte for byte, and its `data` decoded only when a
 # handler reads it.
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = ["sync", "macros", "rt"] }
-tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# The standalone server, which most tests serve their gateways on.
+ulo-ws = { path = ".", features = ["tokio-server"] }
 # The HTTP server a gateway on the HTTP port is reached through.
 ulo-http-hyper = { path = "../ulo-http-hyper" }
 ulo-tokio = { path = "../ulo-tokio" }
-tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 # `connect`: the tests drive each gateway through a real WebSocket client.
 tokio-tungstenite = { workspace = true, features = ["connect"] }

@@ -35,7 +35,7 @@ pub enum StartupError {
     /// Every failure a server's `prepare` reported, collected across every server before any
     /// binds, so a configuration error is always reported before a port conflict.
     Configure(ConfigureErrors),
-    /// A transport's own error, or the core's `TimerMissing`. The one type name it prints,
+    /// A transport's own error, or the core's `RuntimeMissing`. The one type name it prints,
     /// `transport`, has nothing to collide with and prints short.
     Bind { transport: TypeName, source: Redacted },
 }
@@ -90,22 +90,30 @@ impl From<ConfigureErrors> for StartupError {
     }
 }
 
-/// `listen()`'s refusal of an app that binds a transport with no `Timer` (§9.5), stored in
-/// `StartupError::Bind`'s `source` like a transport's error; `source.downcast_ref::<TimerMissing>()`
-/// tells it from a port already taken.
+/// `listen()`'s refusal of an app that binds a transport with no `Runtime` (§9.5), stored in
+/// `StartupError::Bind`'s `source` like a transport's error;
+/// `source.downcast_ref::<RuntimeMissing>()` tells it from a port already taken.
+///
+/// Every transport spawns its connections and calls on the app's runtime and times them on its
+/// clock, so an app given `.timer(..)` alone is refused too; one that binds no transport, a job
+/// or a CLI command, needs only the clock.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct TimerMissing {
+pub struct RuntimeMissing {
     pub transport: TypeName,
 }
 
-impl fmt::Display for TimerMissing {
+impl fmt::Display for RuntimeMissing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "transport `{}` is bound on an app with no `Timer`; set one with `.timer(..)`", self.transport)
+        write!(
+            f,
+            "transport `{}` is bound on an app with no `Runtime`; set one with `.runtime(..)`, which sets the app's timer too",
+            self.transport
+        )
     }
 }
 
-impl Error for TimerMissing {}
+impl Error for RuntimeMissing {}
 
 /// A failure in the connect phase, on `StartupError::Connect` from `connect` and on
 /// `LoadError::Connect` from `load`.

@@ -1,6 +1,9 @@
-//! The runtime the RPC transport is given, never looked for: the server refuses an app with none,
-//! and a client built outside an app closes its link from a task on the runtime it holds when it
-//! is dropped, or, when that runtime drops the task unrun, releases its connection and warns.
+//! The runtime the RPC transport is given, never looked for: `listen()` refuses an RPC server on an
+//! app with none, `RpcClientModule` fails `wire()` on one naming `.runtime(..)`, and a client
+//! built outside an app closes its link from a task on the runtime it holds when it is dropped,
+//! or, when that runtime drops the task unrun, releases its connection and warns. A client built
+//! outside an app takes its default timeout from `RpcClient::timeout`, as a module's takes it from
+//! `RpcClientModule::timeout`.
 //!
 //! The [`Capture`] installed as the global subscriber tells one test's events from another's by
 //! the thread, for the reason `drain_window.rs` gives: tracing caches a callsite's interest from
@@ -16,9 +19,10 @@ use tokio::sync::Notify;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event as TraceEvent, Level, Metadata};
-use ulo::{App, BoxError, Module, ModuleDef, ModuleIdentity, StartupError};
+use ulo::{App, Bound, BoxError, Module, ModuleDef, ModuleIdentity, RuntimeMissing, StartupError};
 use ulo_rpc::link::Inbound;
-use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient};
+use ulo_rpc::{Capabilities, DeliveryMode, Link, Outbound, Pattern, RpcClient, RpcClientModule};
+use ulo_transport::ErrorKind;
 use ulo_tokio::Tokio;
 
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -91,7 +95,7 @@ impl Module for Root {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_server_refuses_an_app_with_no_runtime() {
+async fn listen_refuses_an_rpc_server_on_an_app_with_no_runtime() {
     let bound = App::builder(Root)
         .timer(ulo_tokio::Timer)
         .wire()
@@ -102,14 +106,70 @@ async fn the_server_refuses_an_app_with_no_runtime() {
         .bind(ulo_rpc::Server::new(Observed(Arc::default())))
         .listen()
         .await;
-    let Err(StartupError::Configure(errors)) = bound else {
-        panic!("an RPC server on an app with a timer and no runtime was not refused in `prepare`");
+    let Err(StartupError::Bind { source, .. }) = bound else {
+        panic!("an RPC server on an app with a timer and no runtime was not refused at `listen()`");
+    };
+    assert!(source.downcast_ref::<RuntimeMissing>().is_some(), "the refusal is not the core's `RuntimeMissing`: {source}");
+    let text = source.to_string();
+    assert!(text.contains("set one with `.runtime(..)`"), "the refusal does not name the missing `.runtime(..)`: {text}");
+}
+
+/// Imports one `RpcClientModule` over a link that never replies.
+struct WithClient;
+
+impl Module for WithClient {
+    fn identity(&self) -> ModuleIdentity {
+        ModuleIdentity::of_type::<Self>()
+    }
+
+    fn register(&self, m: &mut ModuleDef<'_>) {
+        m.import(RpcClientModule::for_root(Observed(Arc::default())));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_client_module_on_an_app_with_a_timer_alone_fails_wiring_naming_runtime() {
+    let wired = App::builder(WithClient).timer(ulo_tokio::Timer).wire();
+    let Err(StartupError::Wiring(errors)) = wired else {
+        panic!("an `RpcClientModule` on an app with a timer alone wired");
     };
     let text = errors.to_string();
+    assert!(text.contains("missing dependency `dyn Runtime`"), "the wiring error does not name `dyn Runtime`: {text}");
     assert!(
-        text.contains("the RPC server is bound on an app with no runtime") && text.contains("set one with `.runtime(..)`"),
-        "the refusal does not name the missing `.runtime(..)`: {text}"
+        text.contains("help: set one on the app with `.runtime(..)`"),
+        "the wiring error does not name `.runtime(..)`: {text}"
     );
+}
+
+/// How long a request on `client`, over a link that never replies, waited on the paused clock
+/// before it failed `Timeout`; `None` if it had not answered after a minute.
+async fn timed_out_after(client: RpcClient) -> Option<Duration> {
+    let started = tokio::time::Instant::now();
+    let call = client.request::<_, u32>("runtime.request", &1u32);
+    let answered = tokio::time::timeout(Duration::from_secs(60), call).await.ok()?;
+    let error = answered.expect_err("a link that never replies answered a request");
+    assert_eq!(error.kind(), ErrorKind::Timeout, "the request failed other than by its timeout: {error}");
+    Some(started.elapsed())
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_client_built_outside_an_app_times_out_at_its_own_timeout() {
+    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
+    let default = timed_out_after(client.clone()).await;
+    assert_eq!(default, Some(Duration::from_secs(5)), "a client from `RpcClient::new` with no `timeout`");
+    let shorter = timed_out_after(client.clone().timeout(Bound::After(Duration::from_millis(250)))).await;
+    assert_eq!(shorter, Some(Duration::from_millis(250)), "`RpcClient::timeout(Bound::After(250 ms))`");
+    let unbounded = timed_out_after(client.clone().timeout(Bound::Unbounded)).await;
+    assert_eq!(unbounded, None, "`RpcClient::timeout(Bound::Unbounded)` timed a request out");
+    let again = timed_out_after(client).await;
+    assert_eq!(again, Some(Duration::from_secs(5)), "the client whose clones were given timeouts kept its own");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[should_panic(expected = "`RpcClient::timeout(Bound::After(Duration::ZERO))` on the observed link would time out every call")]
+async fn a_zero_client_timeout_is_refused_where_it_is_written() {
+    let client = RpcClient::new(Observed(Arc::default()), Arc::new(Tokio::current()));
+    let _ = client.timeout(Bound::After(Duration::ZERO));
 }
 
 #[tokio::test(flavor = "current_thread")]

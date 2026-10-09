@@ -4,7 +4,7 @@
 //! ```ignore
 //! let server = ulo_http_salvo::Embedded::new().nested_at("/api");
 //! let embedded = server.handle();
-//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?.connect().await?.bind(server).listen().await?;
+//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio::current()).wire()?.connect().await?.bind(server).listen().await?;
 //!
 //! let router = salvo::Router::new().push(salvo::Router::with_path("api/{**rest}").goal(ulo_http_salvo::handler(&embedded)));
 //! let acceptor = salvo::conn::TcpListener::new("0.0.0.0:8080").bind().await;

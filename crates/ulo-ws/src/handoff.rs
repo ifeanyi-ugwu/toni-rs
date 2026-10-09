@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use http::StatusCode;
 use http::header::{CONTENT_TYPE, HeaderValue};
-use ulo::{AppHandle, BoxError, BoxFuture, DrainToken, Timer};
+use ulo::{AppHandle, BoxError, BoxFuture, DrainToken, Runtime, Spawn};
 use ulo_http::{HttpBody, Request, Response, UpgradeHandler};
 use ulo_transport::prepare::Failures;
 
@@ -26,14 +26,14 @@ pub(crate) struct Handoff {
     tracker: Arc<Tracker>,
 }
 
-/// What `prepare` built and the first upgrade resolved.
+/// What `prepare` built.
 #[derive(Default)]
 struct State {
     gateways: Vec<Arc<GatewayRuntime>>,
     app: Option<AppHandle>,
-    /// The app's `Timer`, bound as `dyn Timer`, resolved at the first upgrade since `prepare` and
-    /// `bound` cannot await.
-    timer: Option<Arc<dyn Timer>>,
+    /// The app's runtime, which every connection and its tasks run on. `listen()` refuses an app
+    /// that binds a transport with none, so `prepare` always finds it.
+    runtime: Option<Arc<dyn Runtime>>,
 }
 
 impl Handoff {
@@ -57,33 +57,19 @@ impl UpgradeHandler for Handoff {
         let hub = Arc::clone(&self.hub);
         let tracker = Arc::clone(&self.tracker);
         Box::pin(async move {
-            let (gateway, app, timer) = {
+            let (gateway, app, runtime) = {
                 let state = state.lock().unwrap_or_else(PoisonError::into_inner);
                 let gateway = state.gateways.iter().find(|gateway| same_path(&gateway.path, req.path())).cloned();
-                (gateway, state.app.clone(), state.timer.clone())
+                (gateway, state.app.clone(), state.runtime.clone())
             };
-            let (Some(gateway), Some(app)) = (gateway, app) else {
+            let (Some(gateway), Some(app), Some(runtime)) = (gateway, app, runtime) else {
                 return plain(StatusCode::NOT_FOUND, "no gateway at this path");
-            };
-            let timer = match timer {
-                Some(timer) => timer,
-                None => match app.get::<dyn Timer>().await {
-                    Ok(timer) => {
-                        let timer = timer.into_arc();
-                        state.lock().unwrap_or_else(PoisonError::into_inner).timer = Some(Arc::clone(&timer));
-                        timer
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "the WebSocket hand-off found no `Timer`");
-                        return plain(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-                    }
-                },
             };
             let Request { head, conn, upgrade, .. } = req;
             let Some(upgrade) = upgrade else {
                 return plain(StatusCode::BAD_REQUEST, "this request cannot be upgraded to a WebSocket");
             };
-            let accept = Accept { gateway, hub, app, timer, tracker };
+            let accept = Accept { gateway, hub, app, runtime, tracker };
             let upgraded = async move { upgrade.await };
             respond(answer(accept, head, conn.peer, upgraded).await)
         })
@@ -101,6 +87,7 @@ impl UpgradeHandler for Handoff {
         let mut state = self.lock();
         state.gateways = gateways;
         state.app = Some(app.clone());
+        state.runtime = app.runtime().cloned();
         drop(state);
         failures.into_result()
     }
@@ -108,9 +95,14 @@ impl UpgradeHandler for Handoff {
     /// Starts broadcast delivery and each gateway's `AfterInit` on its own task.
     fn bound(&self, app: &AppHandle) {
         let _ = app;
-        self.hub.start();
-        let gateways = self.lock().gateways.clone();
-        after_init(&gateways);
+        let (gateways, runtime) = {
+            let state = self.lock();
+            (state.gateways.clone(), state.runtime.clone())
+        };
+        if let Some(runtime) = runtime {
+            self.hub.start(&*runtime);
+            after_init(&gateways, &*runtime);
+        }
     }
 
     fn drain(&self, token: DrainToken) -> BoxFuture<'_, ()> {
@@ -125,18 +117,19 @@ impl UpgradeHandler for Handoff {
     }
 }
 
-/// Each gateway's `AfterInit`, spawned: the server does not wait for it. A failure is logged.
-pub(crate) fn after_init(gateways: &[Arc<GatewayRuntime>]) {
+/// Each gateway's `AfterInit`, spawned on `runtime` and detached: the server does not wait for
+/// it. A failure is logged.
+pub(crate) fn after_init(gateways: &[Arc<GatewayRuntime>], runtime: &dyn Spawn) {
     for gateway in gateways {
         let Some(hook) = gateway.handler.after_init.clone() else { continue };
         let module = gateway.connect.module().clone();
         let reference = gateway.reference();
         let path = Arc::clone(&gateway.path);
-        tokio::spawn(async move {
+        drop(runtime.spawn(Box::pin(async move {
             if let Err(error) = hook(module, reference).await {
                 tracing::warn!(%error, gateway = %path, "after_init failed");
             }
-        });
+        })));
     }
 }
 

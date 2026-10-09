@@ -4,7 +4,7 @@
 //! ```ignore
 //! let server = ulo_http_rocket::Embedded::new().nested_at("/api");
 //! let embedded = server.handle();
-//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?.connect().await?.bind(server).listen().await?;
+//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio::current()).wire()?.connect().await?.bind(server).listen().await?;
 //!
 //! let rocket = rocket::build().mount("/api", ulo_http_rocket::routes(&embedded));
 //! ulo_http_rocket::run(app, &embedded, rocket, ulo_tokio::shutdown_signal()).await?;

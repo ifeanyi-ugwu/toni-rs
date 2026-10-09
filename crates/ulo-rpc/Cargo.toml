@@ -32,4 +32,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 ulo-tokio = { path = "../ulo-tokio" }
-tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+# `test-util`: the client timeout tests run on a paused clock.
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }

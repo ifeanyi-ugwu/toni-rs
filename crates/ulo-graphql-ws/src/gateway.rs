@@ -213,13 +213,15 @@ impl<Q: Send + Sync + 'static> Gateway for GraphqlWs<Q> {
             };
             let state = Arc::clone(&session.state);
             let timer = Arc::clone(conn.timer());
-            let conn = conn.clone();
-            tokio::spawn(async move {
+            let watched = conn.clone();
+            // Detached, on the app's runtime: it ends with the timeout, closing the connection
+            // unless it was acknowledged first.
+            drop(conn.runtime().spawn(Box::pin(async move {
                 timer.sleep(after).await;
                 if !state.is_acknowledged() {
-                    conn.close(4408, "Connection initialisation timeout").await;
+                    watched.close(4408, "Connection initialisation timeout").await;
                 }
-            });
+            })));
         }
         Ok(())
     }
@@ -329,7 +331,9 @@ impl<Q: Send + Sync + 'static> GraphqlWs<Q> {
             }
             Admission::Open(exec, seq) => {
                 let stream = Tracked::new(self.engine.subscribe(request, exec.handle()), exec.handle());
-                tokio::spawn(run(conn.clone(), Arc::clone(&session.state), id, seq, exec, stream));
+                // Detached, on the app's runtime: the operation ends with its stream, its
+                // cancellation or the drain.
+                drop(conn.runtime().spawn(Box::pin(run(conn.clone(), Arc::clone(&session.state), id, seq, exec, stream))));
             }
         }
     }

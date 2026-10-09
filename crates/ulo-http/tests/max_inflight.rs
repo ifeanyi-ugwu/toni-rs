@@ -72,7 +72,7 @@ impl Running {
         let keeper = Keeper::default();
         let gate = Gate::default();
         let app = App::builder(Root(gate.clone()))
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the app wires")
             .connect()

@@ -20,7 +20,7 @@ use std::time::Duration;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, ConfigureErrors, LookupError, Shutdown, ShutdownError, StartupError, TimerMissing};
+use crate::error::{Closed, ConfigureErrors, LookupError, RuntimeMissing, Shutdown, ShutdownError, StartupError};
 use crate::execution::{ExecOptions, Execution};
 use crate::graph::{ModuleId, wire};
 use crate::lifecycle::phase::Phase as Stage;
@@ -215,15 +215,15 @@ impl App<Connected> {
     /// 2. `bind` on each server in order. When one fails, those already bound are closed before
     ///    the error returns, so a refused app holds no sockets.
     ///
-    /// Refuses an app that binds a transport with no `Timer` before either step:
-    /// `StartupError::Bind` carrying `TimerMissing` in its `source`.
+    /// Refuses an app that binds a transport with no `Runtime` before either step, one given
+    /// `.timer(..)` alone included: `StartupError::Bind` carrying `RuntimeMissing` in its `source`.
     pub async fn listen(mut self) -> Result<App<Bound>, StartupError> {
         let mut queued = std::mem::take(&mut self.servers);
-        if self.shared.config.timer.is_none()
+        if self.shared.config.runtime.is_none()
             && let Some(server) = queued.first()
         {
             let transport = server.transport_name();
-            let refusal = TimerMissing { transport };
+            let refusal = RuntimeMissing { transport };
             let text = refusal.to_string();
             return Err(StartupError::Bind { transport, source: Redacted::from_parts(Box::new(refusal), text) });
         }

@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role};
-use ulo::{App, AppHandle, Module, Server, Signal};
+use ulo::{App, AppHandle, Module, Runtime, Server, Signal};
 
 pub type Socket = WebSocketStream<TcpStream>;
 
@@ -48,8 +48,13 @@ pub struct Running {
 impl Running {
     /// `root` wired, connected and bound to `server`, which must listen on one address.
     pub async fn start(root: impl Module, server: impl Server) -> Running {
+        Running::start_on(root, server, ulo_tokio::Tokio::current()).await
+    }
+
+    /// [`start`](Self::start) with `runtime` as the app's runtime.
+    pub async fn start_on(root: impl Module, server: impl Server, runtime: impl Runtime) -> Running {
         let app = App::builder(root)
-            .timer(ulo_tokio::Timer)
+            .runtime(runtime)
             .drain_timeout(Duration::from_secs(4))
             .wire()
             .unwrap_or_else(|error| panic!("the app did not wire: {error}"))

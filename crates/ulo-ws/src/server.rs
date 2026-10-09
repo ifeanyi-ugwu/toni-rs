@@ -1,20 +1,25 @@
 //! The standalone WebSocket server for gateways on their own port (transports DESIGN §3.5): an
 //! HTTP/1.1 server over `ulo-hyper-serve` with upgrades, answering 404 off the gateway paths and
-//! the 101 on them.
+//! the 101 on them. Behind the `tokio-server` feature: hyper's connection and `ulo-hyper-serve`'s
+//! accept loop run on tokio, while each connection after its 101, and every task it starts, runs
+//! on the app's runtime.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures_util::future::{self, Either};
 use http::StatusCode;
 use http::header::{CONTENT_TYPE, HeaderValue};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use ulo::{AppHandle, Bound, BoundAddr, BoxError, DrainToken, Mounted, Timer, Transport};
+use ulo::{AppHandle, Bound, BoundAddr, BoxError, DrainToken, Mounted, Runtime, Transport};
+use ulo_http::Upgraded;
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
 use ulo_net::rustls::ServerConfig;
 use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls};
@@ -78,7 +83,7 @@ pub(crate) struct Routes {
     gateways: Vec<Arc<GatewayRuntime>>,
     hub: Arc<Hub>,
     app: AppHandle,
-    timer: Arc<dyn Timer>,
+    runtime: Arc<dyn Runtime>,
     tracker: Arc<Tracker>,
     http1: http1::Builder,
 }
@@ -281,7 +286,7 @@ impl ulo::Server for Server {
             gateways,
             hub,
             app: mounted.app().clone(),
-            timer: Arc::clone(mounted.timer()),
+            runtime: Arc::clone(mounted.runtime()),
             tracker: Arc::clone(&self.tracker),
             http1,
         });
@@ -300,8 +305,8 @@ impl ulo::Server for Server {
         let config = ServeConfig { handshake_timeout: connection_timeout(self.handshake_timeout) };
         let serve = Serve::new(listeners, tls, &config)?;
         self.bound = addrs.into_iter().map(|addr| BoundAddr::new(<Ws as Transport>::KEY, addr).tls(secure)).collect();
-        routes.hub.start();
-        after_init(&routes.gateways);
+        routes.hub.start(&*routes.runtime);
+        after_init(&routes.gateways, &*routes.runtime);
         self.running = Some(Running { serve, routes });
         Ok(())
     }
@@ -351,21 +356,17 @@ async fn connection(accepted: Accepted, routes: Arc<Routes>) {
         let routes = Arc::clone(&service_routes);
         async move { Ok::<_, Infallible>(routes.respond(req, peer).await) }
     });
-    let mut served = std::pin::pin!(routes.http1.serve_connection(TokioIo::new(io), service).with_upgrades());
-    let mut shutting_down = false;
-    loop {
-        tokio::select! {
-            result = served.as_mut() => {
-                if let Err(error) = result {
-                    tracing::debug!(peer = ?peer, %error, "WebSocket server connection ended with an error");
-                }
-                break;
-            }
-            () = draining.wait(), if !shutting_down => {
-                shutting_down = true;
-                served.as_mut().graceful_shutdown();
-            }
+    let mut served = pin!(routes.http1.serve_connection(TokioIo::new(io), service).with_upgrades());
+    // The connection first: once it has ended, a graceful shutdown would have nothing to stop.
+    let result = match future::select(served.as_mut(), pin!(draining.wait())).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => {
+            served.as_mut().graceful_shutdown();
+            served.await
         }
+    };
+    if let Err(error) = result {
+        tracing::debug!(peer = ?peer, %error, "WebSocket server connection ended with an error");
     }
 }
 
@@ -376,12 +377,12 @@ impl Routes {
         };
         let pending = hyper::upgrade::on(&mut req);
         let (head, _body) = req.into_parts();
-        let upgraded = async move { pending.await.map(TokioIo::new).map_err(BoxError::from) };
+        let upgraded = async move { pending.await.map(|io| Upgraded::from_tokio(TokioIo::new(io))).map_err(BoxError::from) };
         let accept = Accept {
             gateway,
             hub: Arc::clone(&self.hub),
             app: self.app.clone(),
-            timer: Arc::clone(&self.timer),
+            runtime: Arc::clone(&self.runtime),
             tracker: Arc::clone(&self.tracker),
         };
         match answer(accept, head, peer, upgraded).await {

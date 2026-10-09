@@ -14,8 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures_core::stream::BoxStream;
+use async_broadcast::{InactiveReceiver, RecvError, Sender};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 use ulo::{BoxError, BoxFuture};
 
 use crate::connection::ConnId;
@@ -99,13 +99,19 @@ pub struct InMemory {
     inner: Arc<Channel>,
 }
 
+/// `async-broadcast` in overflow mode: the sender never waits, and a full queue drops its oldest
+/// broadcast, which a subscriber that had not read it learns as `Overflowed`.
 struct Channel {
-    sender: broadcast::Sender<(Target, Bytes)>,
+    sender: Sender<(Target, Bytes)>,
+    /// Keeps the channel open while no subscriber is active; it holds no broadcast.
+    _open: InactiveReceiver<(Target, Bytes)>,
 }
 
 impl Default for Channel {
     fn default() -> Self {
-        Channel { sender: broadcast::channel(1024).0 }
+        let (mut sender, receiver) = async_broadcast::broadcast(1024);
+        sender.set_overflow(true);
+        Channel { sender, _open: receiver.deactivate() }
     }
 }
 
@@ -118,21 +124,24 @@ impl InMemory {
 impl BroadcastAdapter for InMemory {
     /// With no subscriber there is no member to deliver to, which is not a failure.
     fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
-        let _ = self.inner.sender.send((target, frame));
+        // `Inactive` when no subscriber is active. In overflow mode a full queue drops its oldest
+        // broadcast rather than refusing this one.
+        let _ = self.inner.sender.try_broadcast((target, frame));
         Box::pin(async { Ok(()) })
     }
 
     fn subscribe(&self, node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
         let _ = node;
-        let receiver = self.inner.sender.subscribe();
+        // Starts at the next broadcast, as a subscriber joining late should.
+        let receiver = self.inner.sender.new_receiver();
         Box::pin(futures_util::stream::unfold(receiver, |mut receiver| async move {
             loop {
-                match receiver.recv().await {
+                match receiver.recv_direct().await {
                     Ok(item) => return Some((item, receiver)),
-                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    Err(RecvError::Overflowed(missed)) => {
                         tracing::warn!(missed, "a WebSocket broadcast subscriber fell behind and skipped broadcasts");
                     }
-                    Err(broadcast::error::RecvError::Closed) => return None,
+                    Err(RecvError::Closed) => return None,
                 }
             }
         }))

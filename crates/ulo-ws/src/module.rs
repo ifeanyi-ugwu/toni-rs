@@ -14,7 +14,7 @@ use crate::rooms::{Hub, Rooms};
 
 /// Imported once per application: registers the gateway hand-off in the HTTP `Upgrades`
 /// metadata, binds [`Rooms`](crate::Rooms) and the broadcast adapter, and carries the defaults
-/// for the gateways on the HTTP server's port that [`Server`](crate::Server) carries for those on
+/// for the gateways on the HTTP server's port that `Server` (feature `tokio-server`) carries for those on
 /// its own port.
 ///
 /// ```ignore

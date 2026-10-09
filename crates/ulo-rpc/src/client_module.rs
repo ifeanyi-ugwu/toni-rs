@@ -21,9 +21,9 @@ use crate::link::Link;
 /// The link connects lazily, on the client's first call, so `connect` does no network I/O for it.
 /// The client spawns its tasks on the app's runtime, which also times its calls, reading it as
 /// `Dep<dyn Runtime>`: an app without one, `.timer(..)` alone included, fails `wire()` naming the
-/// missing binding. The binding's `on_destroy` hook calls the
-/// link's `close`, so the client's connection ends with the app rather than when the runtime
-/// drops it; a call made after that connects again.
+/// missing binding and `.runtime(..)`. The binding's `on_destroy` hook calls the link's `close`,
+/// so the client's connection ends with the app rather than when the runtime drops it; a call
+/// made after that connects again.
 ///
 /// Each `for_root` is its own module: two clients of one link type are two imports, never one
 /// deduplicated, and diagnostics name either `RpcClientModule`.

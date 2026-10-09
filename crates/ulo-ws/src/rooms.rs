@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use ulo::{BoxError, TypeName};
+use ulo::{BoxError, Spawn, TaskHandle, TypeName};
 use ulo_transport::{Classify, ErrorKind};
 
 use crate::broadcast::{Audience, BroadcastAdapter, NodeId, Target};
@@ -34,7 +34,7 @@ pub(crate) struct Hub {
     members: Mutex<HashMap<ConnId, Member>>,
     /// Each prepared gateway's path under its controller's type, for `Rooms::gateway::<G>()`.
     paths: Mutex<HashMap<TypeName, Arc<str>>>,
-    delivery: Mutex<Option<tokio::task::AbortHandle>>,
+    delivery: Mutex<Option<TaskHandle>>,
 }
 
 struct Member {
@@ -96,22 +96,22 @@ impl Hub {
         members.get(&id).map(|member| member.rooms.iter().cloned().collect()).unwrap_or_default()
     }
 
-    /// Starts delivering what the adapter carries to this process's members, once; the task
-    /// lives until [`stop`](Self::stop). Called from a server's `bind` or the hand-off's `bound`,
-    /// inside the runtime.
-    pub(crate) fn start(self: &Arc<Self>) {
+    /// Starts delivering what the adapter carries to this process's members, once, as a task on
+    /// `runtime`, the app's; the task lives until [`stop`](Self::stop). Called from a server's
+    /// `bind` or the hand-off's `bound`.
+    pub(crate) fn start(self: &Arc<Self>, runtime: &dyn Spawn) {
         let mut delivery = self.delivery.lock().unwrap_or_else(PoisonError::into_inner);
         if delivery.is_some() {
             return;
         }
         let hub = Arc::clone(self);
-        let task = tokio::spawn(async move {
+        let task = runtime.spawn(Box::pin(async move {
             let mut carried = hub.adapter.subscribe(hub.node);
             while let Some((target, frame)) = carried.next().await {
                 hub.deliver(&target, &frame);
             }
-        });
-        *delivery = Some(task.abort_handle());
+        }));
+        *delivery = Some(task);
     }
 
     pub(crate) fn stop(&self) {

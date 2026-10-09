@@ -6,7 +6,7 @@ use crate::app::load;
 use crate::app::shared::AppShared;
 use crate::binding::Qualifier;
 use crate::dependency::Dep;
-use crate::error::{Closed, DispatchStage, LoadError, LookupError, Shutdown, ShutdownError, TimerMissing};
+use crate::error::{Closed, DispatchStage, LoadError, LookupError, RuntimeMissing, Shutdown, ShutdownError};
 use crate::execution::notify::Draining;
 use crate::execution::{ExecOptions, Execution};
 use crate::lifecycle::phase::Phase as Stage;
@@ -132,9 +132,9 @@ impl AppHandle {
     /// an `AppHandle` alone: the upgrade handler on the HTTP server's port finds a same-port
     /// gateway's handlers through it.
     ///
-    /// Refused as `listen()` refuses a transport on an app with no `Timer`, since a handler's call
-    /// needs the clock its deadlines run on.
-    pub fn mounted<T: Transport>(&self) -> Result<Vec<MountedHandler<T>>, TimerMissing> {
+    /// Refused as `listen()` refuses a transport on an app with no `Runtime`, since a handler's
+    /// call runs on it and needs the clock its deadlines run on.
+    pub fn mounted<T: Transport>(&self) -> Result<Vec<MountedHandler<T>>, RuntimeMissing> {
         mounted_parts::<T>(self).map(|(handlers, _)| handlers)
     }
 

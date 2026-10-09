@@ -6,7 +6,7 @@
 //! ```ignore
 //! let server = ulo_http_actix::Embedded::new().nested_at("/api");
 //! let embedded = server.handle();
-//! let app = App::builder(AppModule).timer(ulo_tokio::Timer).wire()?.connect().await?.bind(server).listen().await?;
+//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio::current()).wire()?.connect().await?.bind(server).listen().await?;
 //!
 //! let host = {
 //!     let embedded = embedded.clone();

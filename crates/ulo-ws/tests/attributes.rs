@@ -219,7 +219,7 @@ struct Running {
 impl Running {
     async fn start() -> Running {
         let app: App<Serving> = App::builder(Root)
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .unwrap_or_else(|error| panic!("the gateway app did not wire: {error}"))
             .connect()

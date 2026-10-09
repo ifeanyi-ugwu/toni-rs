@@ -3,10 +3,12 @@ use std::error::Error;
 use std::fmt;
 use std::panic::Location;
 
-use crate::key::{BindingKind, KeyName, role_spelling};
+use crate::key::{BindingKind, Key, KeyName, role_spelling};
 use crate::module::{ModuleName, colliding_names};
 use crate::redact::Redacted;
+use crate::runtime::Runtime;
 use crate::scope::ScopeKind;
+use crate::timer::Timer;
 use crate::type_name::{TypeName, short_type_name};
 
 /// Every failure `wire()` found, one entry each, in the order the six steps of §10.1 found
@@ -575,13 +577,15 @@ impl WiringError {
                 )
             }
             WiringError::Missing { key, consumer, module, near } => {
+                let builder = builder_help(key.key());
                 let key = show(key);
                 let module = show_module(module);
-                let help = match near {
-                    Some((bound, exporter)) => {
+                let help = match (builder, near) {
+                    (Some(help), _) => help.to_owned(),
+                    (None, Some((bound, exporter))) => {
                         format!("help: {} exports `{}`; the injection point reads `{key}`", show_module(exporter), show(bound))
                     }
-                    None => format!("help: import a module that exports `{key}`, or provide it in {module}"),
+                    (None, None) => format!("help: import a module that exports `{key}`, or provide it in {module}"),
                 };
                 tree(f, format!("missing dependency `{key}`"), vec![format!("needed by {consumer} in {module}"), help])
             }
@@ -792,6 +796,18 @@ struct Rendered<'a> {
 impl fmt::Display for Rendered<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.render(f, self.full)
+    }
+}
+
+/// The help for a missing key that the app's builder sets rather than a module: the core's own
+/// module binds `dyn Runtime` from `.runtime(..)`, and `dyn Timer` from either call.
+fn builder_help(key: Key) -> Option<&'static str> {
+    if key == Key::of::<dyn Runtime, ()>() {
+        Some("help: set one on the app with `.runtime(..)`, which sets its timer too")
+    } else if key == Key::of::<dyn Timer, ()>() {
+        Some("help: set one on the app with `.timer(..)`, or with `.runtime(..)`, which sets both")
+    } else {
+        None
     }
 }
 

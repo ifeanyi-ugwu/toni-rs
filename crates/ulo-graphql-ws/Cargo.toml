@@ -18,5 +18,12 @@ ulo-ws = { path = "../ulo-ws" }
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
+
+[dev-dependencies]
+# The HTTP server whose port the gateway is reached on, through `WsModule`'s hand-off.
+ulo-http-hyper = { path = "../ulo-http-hyper" }
+ulo-tokio = { path = "../ulo-tokio" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# `connect`: the tests speak graphql-transport-ws through a real WebSocket client.
+tokio-tungstenite = { workspace = true, features = ["connect"] }

@@ -5,35 +5,37 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::future::{Future, pending};
+use std::future::{Future, poll_fn};
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 
+use async_tungstenite::WebSocketStream;
+use async_tungstenite::tungstenite::error::ProtocolError;
+use async_tungstenite::tungstenite::handshake::derive_accept_key;
+use async_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use async_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
+use async_tungstenite::tungstenite::{Error as WsError, Message};
 use bytes::Bytes;
+use event_listener::{Event, EventListener};
+use futures_channel::mpsc;
 use futures_core::stream::BoxStream;
+use futures_io::{AsyncRead, AsyncWrite};
+use futures_util::future::{self, Either};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use http::header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE, WWW_AUTHENTICATE};
 use http::request::Parts;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Notify, mpsc, watch};
-use tokio::task::JoinSet;
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::error::ProtocolError;
-use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
-use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tracing::Instrument;
 use ulo::{
     AppHandle, BoxError, BoxFuture, CancelReason, Closed, DrainToken, ExecOptions, Execution, ExecutionRef, LateOutcome,
-    ModuleRef, MountedHandler, Timer, Transport,
+    ModuleRef, MountedHandler, Runtime, Spawn, TaskHandle, Timer, Transport,
 };
-use ulo_transport::{CallError, ErrorKind, Tracked, span};
+use ulo_transport::{CallError, ErrorKind, TaskSet, Tracked, span};
 
 use crate::__private::HandlerFn;
 use crate::broadcast::NodeId;
@@ -46,6 +48,7 @@ use crate::gateway::{
 use crate::rooms::{BroadcastError, Hub};
 use crate::session::SessionHandle;
 use crate::transport::{ConnectCx, ConnectInner, ConnectReply, ConnectionInfo, CxInner, NoHandler, Reply, UpgradeHead, Ws, WsConnect, WsCx};
+use crate::watch::Watch;
 
 /// A connection's id, unique across every process sharing a broadcast adapter: the process's
 /// [`NodeId`] and a counter. `Rooms::to_client(id)` addresses it, and `except([id])` leaves it out.
@@ -86,6 +89,7 @@ pub(crate) struct ConnInner {
     pub(crate) gateway: Arc<GatewayRuntime>,
     pub(crate) app: AppHandle,
     pub(crate) timer: Arc<dyn Timer>,
+    pub(crate) runtime: Arc<dyn Runtime>,
 }
 
 impl Connection {
@@ -157,6 +161,11 @@ impl Connection {
         &self.inner.timer
     }
 
+    /// The app's `Runtime`, which a hand-written gateway spawns its own tasks on.
+    pub fn runtime(&self) -> &Arc<dyn Runtime> {
+        &self.inner.runtime
+    }
+
     pub(crate) fn app(&self) -> &AppHandle {
         &self.inner.app
     }
@@ -180,12 +189,15 @@ pub(crate) struct Gone;
 
 /// A connection's outbound queue, written by its message tasks, its broadcasts and
 /// `Connection::send`, and drained by its read loop, which owns the socket.
+///
+/// An `Event` keeps no permit for a waiter that has not registered yet, so each waiter registers
+/// its listener before it reads the state it waits on.
 pub(crate) struct Outbound {
     state: Mutex<OutState>,
     /// Wakes the read loop to write.
-    wake: Notify,
+    wake: Event,
     /// Wakes the stream pumps waiting for room.
-    space: Notify,
+    space: Event,
     limit: Option<usize>,
     overflow: Overflow,
 }
@@ -201,8 +213,8 @@ impl Outbound {
     pub(crate) fn new(limit: Option<usize>, overflow: Overflow) -> Self {
         Outbound {
             state: Mutex::new(OutState { queue: VecDeque::new(), close: None, closed: false }),
-            wake: Notify::new(),
-            space: Notify::new(),
+            wake: Event::new(),
+            space: Event::new(),
             limit,
             overflow,
         }
@@ -229,14 +241,14 @@ impl Outbound {
                     state.queue.clear();
                     state.close = Some((1008, "slow consumer".to_owned()));
                     drop(state);
-                    self.wake.notify_one();
+                    self.wake.notify(1);
                     return Err(Gone);
                 }
             }
         }
         state.queue.push_back(message);
         drop(state);
-        self.wake.notify_one();
+        self.wake.notify(1);
         Ok(())
     }
 
@@ -246,8 +258,7 @@ impl Outbound {
     pub(crate) async fn push_wait(&self, message: Message) -> Result<(), Gone> {
         let mut message = Some(message);
         loop {
-            let mut room = pin!(self.space.notified());
-            room.as_mut().enable();
+            let room = self.space.listen();
             {
                 let mut state = self.lock();
                 if state.closed || state.close.is_some() {
@@ -258,7 +269,7 @@ impl Outbound {
                         state.queue.push_back(message);
                     }
                     drop(state);
-                    self.wake.notify_one();
+                    self.wake.notify(1);
                     return Ok(());
                 }
             }
@@ -272,7 +283,7 @@ impl Outbound {
             state.close = Some((code, truncated(reason)));
         }
         drop(state);
-        self.wake.notify_one();
+        self.wake.notify(1);
     }
 
     /// Everything queued, and the close requested after it, if any.
@@ -284,7 +295,7 @@ impl Outbound {
             state.closed = true;
         }
         drop(state);
-        self.space.notify_waiters();
+        self.space.notify(usize::MAX);
         (queue, close)
     }
 
@@ -293,7 +304,7 @@ impl Outbound {
         state.closed = true;
         state.queue.clear();
         drop(state);
-        self.space.notify_waiters();
+        self.space.notify(usize::MAX);
     }
 }
 
@@ -307,70 +318,67 @@ pub(crate) enum Phase {
 /// The connections one server or the hand-off runs: their tasks, the drain signal they watch,
 /// and the drain token their cleanups open terminal executions with.
 pub(crate) struct Tracker {
-    phase: watch::Sender<Phase>,
-    token: watch::Sender<Option<DrainToken>>,
-    tasks: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
+    phase: Watch<Phase>,
+    token: Watch<Option<DrainToken>>,
+    tasks: Mutex<HashMap<u64, TaskHandle>>,
     next: AtomicU64,
-    live: watch::Sender<usize>,
+    live: Watch<usize>,
 }
 
 impl Tracker {
     pub(crate) fn new() -> Arc<Tracker> {
         Arc::new(Tracker {
-            phase: watch::channel(Phase::Serving).0,
-            token: watch::channel(None).0,
+            phase: Watch::new(Phase::Serving),
+            token: Watch::new(None),
             tasks: Mutex::new(HashMap::new()),
             next: AtomicU64::new(0),
-            live: watch::channel(0).0,
+            live: Watch::new(0),
         })
     }
 
     pub(crate) fn is_draining(&self) -> bool {
-        *self.phase.borrow() == Phase::Draining
+        self.phase.read(|phase| *phase == Phase::Draining)
     }
 
-    fn phase(&self) -> watch::Receiver<Phase> {
-        self.phase.subscribe()
-    }
-
-    /// Runs `fut` on its own task until it ends or [`close`](Self::close) aborts it.
-    pub(crate) fn spawn(self: &Arc<Self>, fut: impl Future<Output = ()> + Send + 'static) {
+    /// Runs `fut` as a task on `runtime` until it ends or [`close`](Self::close) aborts it.
+    pub(crate) fn spawn(self: &Arc<Self>, runtime: &dyn Spawn, fut: impl Future<Output = ()> + Send + 'static) {
         let key = self.next.fetch_add(1, Ordering::Relaxed);
-        self.live.send_modify(|live| *live += 1);
+        self.live.modify(|live| *live += 1);
         let guard = TaskGuard { tracker: Arc::clone(self), key };
         // Spawned under the lock, so a task that ends at once removes its entry only after the
-        // entry is in.
+        // entry is in; a runtime's `spawn` does not poll the task before it returns.
         let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
-        let task = tokio::spawn(async move {
+        let task = runtime.spawn(Box::pin(async move {
             let _guard = guard;
             fut.await;
-        });
-        tasks.insert(key, task.abort_handle());
+        }));
+        tasks.insert(key, task);
     }
 
     /// Raises the drain: idle connections close with 1001 at once, busy ones stop reading,
     /// finish their messages and then close. Returns once every connection has ended.
     pub(crate) async fn drain(&self, token: DrainToken) {
-        self.token.send_replace(Some(token));
-        self.phase.send_replace(Phase::Draining);
-        let _ = self.live.subscribe().wait_for(|live| *live == 0).await;
+        self.token.modify(|slot| *slot = Some(token));
+        self.phase.modify(|phase| *phase = Phase::Draining);
+        self.live.wait_for(|live| *live == 0).await;
     }
 
     /// Aborts every connection left and returns once their tasks have ended.
     pub(crate) async fn close(&self) {
-        let handles: Vec<tokio::task::AbortHandle> =
-            self.tasks.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect();
-        for handle in handles {
-            handle.abort();
+        // Taken out of the lock before aborting: an abort may drop a task's future on this
+        // thread, and its guard takes the same lock.
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap_or_else(PoisonError::into_inner));
+        for task in tasks.values() {
+            task.abort();
         }
-        let _ = self.live.subscribe().wait_for(|live| *live == 0).await;
+        drop(tasks);
+        self.live.wait_for(|live| *live == 0).await;
     }
 
     /// The drain's token, once the drain has begun.
     async fn token(&self) -> Option<DrainToken> {
-        let mut token = self.token.subscribe();
-        let ready = token.wait_for(Option::is_some).await.ok()?;
-        ready.clone()
+        self.token.wait_for(Option::is_some).await;
+        self.token.read(Clone::clone)
     }
 }
 
@@ -382,7 +390,7 @@ struct TaskGuard {
 impl Drop for TaskGuard {
     fn drop(&mut self) {
         self.tracker.tasks.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.key);
-        self.tracker.live.send_modify(|live| *live = live.saturating_sub(1));
+        self.tracker.live.modify(|live| *live = live.saturating_sub(1));
     }
 }
 
@@ -392,7 +400,9 @@ pub(crate) struct Accept {
     pub(crate) gateway: Arc<GatewayRuntime>,
     pub(crate) hub: Arc<Hub>,
     pub(crate) app: AppHandle,
-    pub(crate) timer: Arc<dyn Timer>,
+    /// The app's runtime: every task a connection starts, the connection's own included, runs
+    /// on it, and its `Timer` half keeps the connection's clocks.
+    pub(crate) runtime: Arc<dyn Runtime>,
     pub(crate) tracker: Arc<Tracker>,
 }
 
@@ -442,7 +452,8 @@ where
         },
     };
     let tracker = Arc::clone(&accept.tracker);
-    tracker.spawn(run(accept, head, peer, protocol, upgrade, admitted));
+    let runtime = Arc::clone(&accept.runtime);
+    tracker.spawn(&*runtime, run(accept, head, peer, protocol, upgrade, admitted));
     Answer::Switch(handshake.headers)
 }
 
@@ -633,7 +644,8 @@ async fn connect(accept: &Accept, head: Arc<Parts>, peer: Option<SocketAddr>, pr
             hub: Arc::clone(&accept.hub),
             gateway: Arc::clone(gateway),
             app: accept.app.clone(),
-            timer: Arc::clone(&accept.timer),
+            timer: Arc::clone(&accept.runtime) as Arc<dyn Timer>,
+            runtime: Arc::clone(&accept.runtime),
         }),
     };
     accept.hub.register(id, Arc::clone(gateway), outbound);
@@ -671,17 +683,32 @@ where
     if send_close(ws, code, reason).await.is_err() {
         return;
     }
-    let mut deadline = accept.gateway.limits.pong_timeout.map(|after| accept.timer.sleep(after));
+    let mut deadline = accept.gateway.limits.pong_timeout.map(|after| accept.runtime.sleep(after));
+    let mut turn = 0usize;
     loop {
-        tokio::select! {
-            next = ws.next() => match next {
-                None | Some(Err(_)) => return,
-                Some(Ok(Message::Close(_))) => {
-                    let _ = ws.flush().await;
+        // Each turn polls the other branch first, so neither is favoured: a client that keeps
+        // sending cannot hold the wait past its deadline.
+        let first = turn;
+        turn = turn.wrapping_add(1);
+        let next = poll_fn(|cx| {
+            for branch in [first, first.wrapping_add(1)] {
+                if branch % 2 == 0 {
+                    if let Poll::Ready(next) = ws.poll_next_unpin(cx) {
+                        return Poll::Ready(Some(next));
+                    }
+                } else if poll_sleep(&mut deadline, cx).is_ready() {
+                    return Poll::Ready(None);
                 }
-                Some(Ok(_)) => {}
-            },
-            () = sleeping(&mut deadline) => return,
+            }
+            Poll::Pending
+        })
+        .await;
+        match next {
+            None | Some(None | Some(Err(_))) => return,
+            Some(Some(Ok(Message::Close(_)))) => {
+                let _ = ws.flush().await;
+            }
+            Some(Some(Ok(_))) => {}
         }
     }
 }
@@ -694,12 +721,22 @@ where
     ws.close(Some(frame)).await
 }
 
-/// Resolves when `sleep` does; pending forever when there is none.
-async fn sleeping(sleep: &mut Option<BoxFuture<'static, ()>>) {
+/// Ready when `sleep` has ended; pending forever when there is none.
+fn poll_sleep(sleep: &mut Option<BoxFuture<'static, ()>>, cx: &mut Context<'_>) -> Poll<()> {
     match sleep {
-        Some(sleep) => sleep.await,
-        None => pending().await,
+        Some(sleep) => sleep.as_mut().poll(cx),
+        None => Poll::Pending,
     }
+}
+
+/// Ready, and spent, once `listener` has been notified.
+fn poll_listener(listener: &mut Option<EventListener>, cx: &mut Context<'_>) -> Poll<()> {
+    let Some(heard) = listener else { return Poll::Pending };
+    if Pin::new(heard).poll(cx).is_pending() {
+        return Poll::Pending;
+    }
+    *listener = None;
+    Poll::Ready(())
 }
 
 /// A connection's messages in flight, shared with their tasks.
@@ -711,7 +748,8 @@ struct Flight {
     /// Messages not yet finished, a streamed answer still writing included: the drain waits for
     /// them.
     busy: AtomicUsize,
-    progress: Notify,
+    /// Wakes the read loop, which registers before it reads the counts.
+    progress: Event,
     calls: Mutex<HashMap<u64, (Option<MessageId>, ExecutionRef)>>,
     next: AtomicU64,
 }
@@ -724,12 +762,12 @@ impl Flight {
 
     fn handled(&self) {
         self.handling.fetch_sub(1, Ordering::AcqRel);
-        self.progress.notify_one();
+        self.progress.notify(1);
     }
 
     fn finished(&self) {
         self.busy.fetch_sub(1, Ordering::AcqRel);
-        self.progress.notify_one();
+        self.progress.notify(1);
     }
 
     fn handling(&self) -> usize {
@@ -808,21 +846,32 @@ where
     let limits = &gateway.limits;
     let outbound = Arc::clone(&conn.inner.outbound);
     let flight = Arc::new(Flight::default());
-    let mut tasks: JoinSet<()> = JoinSet::new();
+    let mut tasks = TaskSet::new(Arc::clone(&accept.runtime) as Arc<dyn Spawn>);
     let inbox = match (&gateway.handler.messages, &admitted.instance) {
         (Messages::Raw { on_message, .. }, Some(instance)) => {
             Some(raw_inbox(&mut tasks, conn.clone(), Arc::clone(instance), Arc::clone(on_message), Arc::clone(&flight)))
         }
         _ => None,
     };
-    let mut phase = accept.tracker.phase();
-    let mut draining = *phase.borrow() == Phase::Draining;
+    let mut draining = false;
     let mut closing: Option<DisconnectReason> = None;
     let mut close_deadline: Option<BoxFuture<'static, ()>> = None;
-    let mut ping = limits.ping_interval.map(|every| accept.timer.sleep(every));
+    let mut ping = limits.ping_interval.map(|every| accept.runtime.sleep(every));
     let mut pong: Option<BoxFuture<'static, ()>> = None;
+    // Each listener is registered before the state it watches is read, kept until it is heard,
+    // and registered again on the next turn.
+    let mut woken: Option<EventListener> = None;
+    let mut progressed: Option<EventListener> = None;
+    let mut phase_changed: Option<EventListener> = None;
+    let mut turn = 0usize;
 
     let why = loop {
+        woken.get_or_insert_with(|| outbound.wake.listen());
+        progressed.get_or_insert_with(|| flight.progress.listen());
+        if !draining {
+            phase_changed.get_or_insert_with(|| accept.tracker.phase.changed());
+            draining = accept.tracker.is_draining();
+        }
         let (queued, close) = outbound.take();
         if write(&mut ws, queued).await.is_err() {
             break closing.unwrap_or(DisconnectReason::Lost);
@@ -839,11 +888,39 @@ where
                 break why;
             }
             closing = Some(why);
-            close_deadline = limits.pong_timeout.map(|after| accept.timer.sleep(after));
+            close_deadline = limits.pong_timeout.map(|after| accept.runtime.sleep(after));
         }
         let reading = closing.is_some() || (!draining && flight.handling() < limits.max_inflight);
-        tokio::select! {
-            next = ws.next(), if reading => match next {
+        let joining = !tasks.is_empty();
+        // Each turn starts at the next branch, so a branch that is always ready cannot starve the
+        // others. Every branch's future is dropped before its event is handled.
+        let first = turn;
+        turn = turn.wrapping_add(1);
+        let event = {
+            let mut joined = pin!(tasks.join_next());
+            poll_fn(|cx| {
+                for step in 0..BRANCHES {
+                    let ready = match (first.wrapping_add(step)) % BRANCHES {
+                        0 if reading => ws.poll_next_unpin(cx).map(Turn::Read),
+                        1 => poll_listener(&mut woken, cx).map(|()| Turn::Woken),
+                        2 => poll_listener(&mut progressed, cx).map(|()| Turn::Woken),
+                        3 if !draining => poll_listener(&mut phase_changed, cx).map(|()| Turn::Woken),
+                        4 if closing.is_none() => poll_sleep(&mut ping, cx).map(|()| Turn::Ping),
+                        5 => poll_sleep(&mut pong, cx).map(|()| Turn::PongMissed),
+                        6 => poll_sleep(&mut close_deadline, cx).map(|()| Turn::CloseDeadline),
+                        7 if joining => joined.as_mut().poll(cx).map(|_| Turn::Woken),
+                        _ => Poll::Pending,
+                    };
+                    if ready.is_ready() {
+                        return ready;
+                    }
+                }
+                Poll::Pending
+            })
+            .await
+        };
+        match event {
+            Turn::Read(next) => match next {
                 None => break closing.unwrap_or(DisconnectReason::Lost),
                 Some(Ok(Message::Text(text))) if closing.is_none() => {
                     let frame = Frame::Text(text.as_str().to_owned());
@@ -867,7 +944,7 @@ where
                             None => (1005, String::new()),
                         };
                         closing = Some(DisconnectReason::ClientClose { code, reason });
-                        close_deadline = limits.pong_timeout.map(|after| accept.timer.sleep(after));
+                        close_deadline = limits.pong_timeout.map(|after| accept.runtime.sleep(after));
                     }
                 }
                 Some(Ok(_)) => {}
@@ -883,32 +960,40 @@ where
                     };
                 }
             },
-            () = outbound.wake.notified() => {}
-            () = flight.progress.notified() => {}
-            changed = phase.changed(), if !draining => {
-                draining = changed.is_err() || *phase.borrow() == Phase::Draining;
-            }
-            () = sleeping(&mut ping), if ping.is_some() && closing.is_none() => {
+            Turn::Woken => {}
+            Turn::Ping => {
                 if ws.send(Message::Ping(Bytes::new())).await.is_err() {
                     break DisconnectReason::Lost;
                 }
-                ping = limits.ping_interval.map(|every| accept.timer.sleep(every));
+                ping = limits.ping_interval.map(|every| accept.runtime.sleep(every));
                 if pong.is_none() {
-                    pong = limits.pong_timeout.map(|after| accept.timer.sleep(after));
+                    pong = limits.pong_timeout.map(|after| accept.runtime.sleep(after));
                 }
             }
-            () = sleeping(&mut pong), if pong.is_some() => break DisconnectReason::Lost,
-            () = sleeping(&mut close_deadline), if close_deadline.is_some() => {
-                break closing.clone().unwrap_or(DisconnectReason::Lost);
-            }
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+            Turn::PongMissed => break DisconnectReason::Lost,
+            Turn::CloseDeadline => break closing.clone().unwrap_or(DisconnectReason::Lost),
         }
     };
     outbound.shut();
     flight.disconnected();
     drop(inbox);
-    tasks.shutdown().await;
+    tasks.abort_all();
+    tasks.join_all().await;
     why
+}
+
+/// How many branches the read loop's wait polls.
+const BRANCHES: usize = 8;
+
+/// What ended one turn of the read loop's wait.
+enum Turn {
+    Read(Option<Result<Message, WsError>>),
+    /// A queued message or close, a message's progress, the drain, or a message task's end:
+    /// the next turn reads the state again.
+    Woken,
+    Ping,
+    PongMissed,
+    CloseDeadline,
 }
 
 /// The close code to send, if any, and the reason, for a read error. A connection reset without
@@ -939,10 +1024,10 @@ where
 
 /// One data message: to a hand-written gateway's inbox, or through the envelope to its handler.
 /// A frame of the kind the gateway's codec does not read closes the connection with 1003.
-fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut JoinSet<()>, inbox: Option<&mpsc::UnboundedSender<Frame>>) {
+fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut TaskSet, inbox: Option<&mpsc::UnboundedSender<Frame>>) {
     if let Some(inbox) = inbox {
         flight.begin();
-        if inbox.send(frame).is_err() {
+        if inbox.unbounded_send(frame).is_err() {
             flight.handled();
             flight.finished();
         }
@@ -985,15 +1070,15 @@ fn received(frame: Frame, conn: &Connection, flight: &Arc<Flight>, tasks: &mut J
 /// A hand-written gateway's messages, handed to `on_message` one at a time in order. A panic in
 /// `on_message` is logged and closes the connection with 1011.
 fn raw_inbox(
-    tasks: &mut JoinSet<()>,
+    tasks: &mut TaskSet,
     conn: Connection,
     instance: Instance,
     on_message: crate::gateway::MessageFn,
     flight: Arc<Flight>,
 ) -> mpsc::UnboundedSender<Frame> {
-    let (sender, mut receiver) = mpsc::unbounded_channel::<Frame>();
+    let (sender, mut receiver) = mpsc::unbounded::<Frame>();
     tasks.spawn(async move {
-        while let Some(frame) = receiver.recv().await {
+        while let Some(frame) = receiver.next().await {
             let handled = AssertUnwindSafe(on_message(Arc::clone(&instance), conn.clone(), frame)).catch_unwind().await;
             if handled.is_err() {
                 tracing::error!(gateway = %conn.inner.gateway.path, "a hand-written gateway's on_message panicked; the connection closes with 1011");
@@ -1094,10 +1179,11 @@ async fn pump(
     codec: Codec,
 ) {
     loop {
-        let next = tokio::select! {
-            biased;
-            () = exec.cancelled() => return,
-            item = stream.next() => item,
+        // The cancellation is polled before the stream, so a cancelled message writes no further
+        // item.
+        let next = match future::select(pin!(exec.cancelled()), stream.next()).await {
+            Either::Left(_) => return,
+            Either::Right((item, _)) => item,
         };
         let last = match next {
             Some(Ok(frame)) => match envelope::data(codec, id, &frame) {

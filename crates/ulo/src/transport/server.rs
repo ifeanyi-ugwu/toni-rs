@@ -4,11 +4,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::app::AppHandle;
-use crate::error::TimerMissing;
+use crate::error::RuntimeMissing;
 use crate::graph::scopes::input_reads;
 use crate::key::{BindingKind, Key};
 use crate::module::handle::ModuleRef;
 use crate::module::meta::Meta;
+use crate::runtime::Runtime;
 use crate::timer::{BoxError, BoxFuture, Timer};
 use crate::transport::Transport;
 use crate::transport::controller::MountedHandler;
@@ -80,6 +81,7 @@ pub struct Mounted<'a, T: Transport> {
     pub(crate) handlers: &'a [MountedHandler<T>],
     pub(crate) app: AppHandle,
     pub(crate) timer: Arc<dyn Timer>,
+    pub(crate) runtime: Arc<dyn Runtime>,
 }
 
 impl<T: Transport> Mounted<'_, T> {
@@ -99,10 +101,16 @@ impl<T: Transport> Mounted<'_, T> {
         &self.app
     }
 
-    /// The app's `Timer`, which enforces the per-call deadlines a transport accepts. `listen()`
-    /// refuses a transport on an app without one, so it is always present here.
+    /// The app's `Timer`, which enforces the per-call deadlines a transport accepts: the
+    /// [`runtime`](Self::runtime)'s clock.
     pub fn timer(&self) -> &Arc<dyn Timer> {
         &self.timer
+    }
+
+    /// The app's `Runtime`, which a transport spawns its connections and calls on. `listen()`
+    /// refuses a transport on an app without one, so it is always present here.
+    pub fn runtime(&self) -> &Arc<dyn Runtime> {
+        &self.runtime
     }
 
     /// Every module's metadata of type `M`, with a handle to the module that wrote it, in
@@ -221,16 +229,16 @@ pub(crate) trait ErasedServer: Send + Sync + 'static {
     fn bound(&self) -> Vec<BoundAddr>;
 }
 
-/// The graph's handlers for `T`, typed again, and the app's `Timer`. `listen()` refuses a
-/// transport on an app with no `Timer` before preparing it; this answers the same refusal rather
-/// than handing a server a clock it does not have.
+/// The graph's handlers for `T`, typed again, and the app's `Runtime`. `listen()` refuses a
+/// transport on an app with no `Runtime` before preparing it; this answers the same refusal rather
+/// than handing a server a runtime it does not have.
 pub(crate) fn mounted_parts<T: Transport>(
     app: &AppHandle,
-) -> Result<(Vec<MountedHandler<T>>, Arc<dyn Timer>), TimerMissing> {
-    let Some(timer) = app.shared.config.timer.clone() else {
-        return Err(TimerMissing { transport: TypeName::of::<T>() });
+) -> Result<(Vec<MountedHandler<T>>, Arc<dyn Runtime>), RuntimeMissing> {
+    let Some(runtime) = app.shared.config.runtime.clone() else {
+        return Err(RuntimeMissing { transport: TypeName::of::<T>() });
     };
-    Ok((mounted_handlers::<T>(app), timer))
+    Ok((mounted_handlers::<T>(app), runtime))
 }
 
 /// The graph's handlers for `T`, typed again, in mount order.
@@ -254,15 +262,17 @@ impl<S: Server> ErasedServer for S {
 
     fn prepare<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {
         Box::pin(async move {
-            let (handlers, timer) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
-            <S as Server>::prepare(self, Mounted { handlers: &handlers, app: app.clone(), timer }).await
+            let (handlers, runtime) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
+            let timer = Arc::clone(&runtime) as Arc<dyn Timer>;
+            <S as Server>::prepare(self, Mounted { handlers: &handlers, app: app.clone(), timer, runtime }).await
         })
     }
 
     fn bind<'a>(&'a mut self, app: &'a AppHandle) -> BoxFuture<'a, Result<(), BoxError>> {
         Box::pin(async move {
-            let (handlers, timer) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
-            <S as Server>::bind(self, Mounted { handlers: &handlers, app: app.clone(), timer }).await
+            let (handlers, runtime) = mounted_parts::<S::Transport>(app).map_err(BoxError::from)?;
+            let timer = Arc::clone(&runtime) as Arc<dyn Timer>;
+            <S as Server>::bind(self, Mounted { handlers: &handlers, app: app.clone(), timer, runtime }).await
         })
     }
 

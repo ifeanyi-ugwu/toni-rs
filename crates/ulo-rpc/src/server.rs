@@ -26,11 +26,10 @@ const DEFAULT_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
 
 /// The RPC server over link `L`: `app.bind(ulo_rpc::Server::new(ulo_rpc_tcp::Tcp::new("0.0.0.0:7000")))`.
 ///
-/// `prepare` calls `Link::prepare` and `Link::max_inflight`, refuses an app with no runtime
-/// (`AppBuilder::runtime`), two handlers for one pattern, a handler whose shape the link's
-/// capabilities do not carry (a streamed shape on UDP), an `#[event]` handler with a streamed
-/// shape, a `Binary` payload on a link declaring `binary: false`, `max_inflight(Count::Max(0))` and
-/// `timeout_grace(Bound::After(Duration::ZERO))`. `bind` calls `Link::listen` with every mounted
+/// `prepare` calls `Link::prepare` and `Link::max_inflight`, and refuses two handlers for one
+/// pattern, a handler whose shape the link's capabilities do not carry (a streamed shape on UDP),
+/// an `#[event]` handler with a streamed shape, a `Binary` payload on a link declaring
+/// `binary: false`, `max_inflight(Count::Max(0))` and `timeout_grace(Bound::After(Duration::ZERO))`. `bind` calls `Link::listen` with every mounted
 /// pattern. Over the in-flight limit a call is answered `err` of kind `unavailable`. A pattern is
 /// its own, so a controller's `.at(prefix)` does not apply to it, and `wire()` refuses a prefix on
 /// a controller whose handlers are all RPC handlers.
@@ -96,13 +95,6 @@ impl<L: Link> ulo::Server for Server<L> {
         if let Err(error) = self.link.prepare(mounted.app()).await {
             failures.push_error(error);
         }
-        let runtime = mounted.app().runtime().cloned();
-        if runtime.is_none() {
-            failures.push(Failure::plain(
-                "the RPC server is bound on an app with no runtime, which it spawns every call on; \
-                 set one with `.runtime(..)`, which sets the app's timer too",
-            ));
-        }
         self.link.max_inflight(self.max_inflight);
         failures.extend(zero_count("max_inflight", self.max_inflight, "shed every call"));
         failures.extend(zero_bound(
@@ -164,15 +156,11 @@ impl<L: Link> ulo::Server for Server<L> {
             }
         }
         failures.into_result()?;
-        // An app with no runtime was refused above, so `into_result` returned.
-        let Some(runtime) = runtime else {
-            return Ok(());
-        };
         let limit = self.max_inflight.max_inflight();
         self.shared = Some(Arc::new(Shared {
             app: mounted.app().clone(),
             timer: Arc::clone(mounted.timer()),
-            runtime,
+            runtime: Arc::clone(mounted.runtime()),
             routes,
             codec: Codec::of(&capabilities),
             capabilities,

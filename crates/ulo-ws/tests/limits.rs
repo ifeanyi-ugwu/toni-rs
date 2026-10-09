@@ -1,6 +1,7 @@
 //! The gateway attribute's limits, each on a gateway of its own on the standalone server:
 //! `message_limit` after reassembly, `max_connections`, `max_inflight`, `max_outbound` under both
-//! overflow policies, and keep-alive, where a Pong that misses `pong_timeout` ends the connection.
+//! overflow policies and under a streamed answer, which waits for room rather than overflowing,
+//! and keep-alive, where a Pong that misses `pong_timeout` ends the connection.
 //! The counts are written as integer literals, which the attribute rewrites to `Count::Max`, and
 //! once as an expression.
 //!
@@ -11,14 +12,14 @@ mod support;
 
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt, stream};
 use serde_json::json;
 use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame as WireFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use ulo::{Dep, Module, ModuleDef, ModuleIdentity, injectable, routes};
-use ulo_transport::Count;
+use ulo_transport::{CallError, Count};
 use ulo_ws::{Connection, DisconnectReason, Frame, OnDisconnect, Payload, WsCx};
 
 use support::{Record, Running, Socket, close_frame, hang_up, next_json, next_message, send_json, within};
@@ -115,6 +116,11 @@ impl Strict {
     #[ulo_ws::message("burst")]
     async fn burst(&self, n: Payload<u32>, cx: WsCx) {
         burst(cx.conn(), n.0).await;
+    }
+
+    #[ulo_ws::message("count")]
+    async fn count(&self, up_to: Payload<u32>) -> impl Stream<Item = Result<u32, CallError>> {
+        stream::iter((1..=up_to.0).map(Ok))
     }
 
     #[ulo_ws::message("echo")]
@@ -321,6 +327,26 @@ async fn an_outbound_queue_over_its_limit_closes_with_slow_consumer() {
     hang_up(socket).await;
     let ends = ended.0.at_least(1, "the slow consumer's end").await;
     assert_eq!(ends, vec![("/strict".to_owned(), DisconnectReason::ServerClose { code: 1008 })]);
+    app.stop().await;
+}
+
+#[tokio::test]
+async fn a_streamed_answer_longer_than_max_outbound_waits_for_room_and_is_written_whole() {
+    let Started { app, ended, .. } = start().await;
+    let mut socket = app.connect("/strict", &[]).await;
+    send_json(&mut socket, &json!({ "event": "count", "id": 1, "data": 50 })).await;
+    for n in 1..=50 {
+        assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": n }), "item {n} of the stream");
+    }
+    assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "complete": true }));
+    send_json(&mut socket, &json!({ "event": "echo", "id": 2, "data": "after" })).await;
+    assert_eq!(next_json(&mut socket).await, json!({ "id": 2, "data": "after" }), "the connection outlived the stream");
+    hang_up(socket).await;
+    let ends = ended.0.at_least(1, "the connection's end").await;
+    assert!(
+        !ends.iter().any(|(_, why)| matches!(why, DisconnectReason::ServerClose { .. })),
+        "the server closed the connection: {ends:?}"
+    );
     app.stop().await;
 }
 

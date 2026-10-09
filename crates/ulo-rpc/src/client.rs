@@ -43,6 +43,14 @@ use crate::transport::CallHeaders;
 /// A client's timeout at `Bound::Default`.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn timeout_of(timeout: Bound) -> Option<Duration> {
+    match timeout {
+        Bound::Default => Some(DEFAULT_TIMEOUT),
+        Bound::After(after) => Some(after),
+        Bound::Unbounded => None,
+    }
+}
+
 /// A client of one link, bound by `RpcClientModule` as `Dep<RpcClient, Billing>` under the
 /// module's qualifier, or built outside an app with [`RpcClient::new`]. Cheap to clone. Its tasks
 /// and every timeout run on the runtime it was given, the app's inside an app; dropping a pending
@@ -51,6 +59,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub struct RpcClient {
     pub(crate) inner: Arc<ClientInner>,
+    /// Every call's timeout unless the call sets its own; `None` for `Bound::Unbounded`. Held by
+    /// the handle, so [`timeout`](Self::timeout) on one clone leaves the others' as they were.
+    timeout: Option<Duration>,
 }
 
 type Connect = Box<dyn Fn() -> BoxFuture<'static, Result<Outbound, BoxError>> + Send + Sync>;
@@ -64,9 +75,6 @@ pub(crate) struct ClientInner {
     /// module's client leaves it to the module's destroy hook.
     close: Option<Close>,
     codec: Codec,
-    /// The module's timeout, five seconds for a client built by [`RpcClient::new`]; `None` for
-    /// `Bound::Unbounded`.
-    timeout: Option<Duration>,
     runtime: Arc<dyn Runtime>,
     /// Held across `connect`, so concurrent first calls share one connection.
     conn: async_lock::Mutex<Option<Arc<Conn>>>,
@@ -119,10 +127,11 @@ impl Conn {
 
 impl RpcClient {
     /// A client of `link` outside an app, its tasks spawned on `runtime`, which also times its
-    /// calls: five seconds each unless the call sets its own.
+    /// calls: five seconds each unless [`timeout`](Self::timeout) or the call sets another.
     ///
     /// ```ignore
-    /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()));
+    /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()))
+    ///     .timeout(Bound::After(Duration::from_secs(2)));
     /// ```
     ///
     /// The client owns the link. Once its last clone and the last call it made are dropped, it
@@ -146,11 +155,6 @@ impl RpcClient {
 
     fn build<L: Link>(link: Arc<L>, timeout: Bound, runtime: Arc<dyn Runtime>, close: Option<Close>) -> Self {
         let codec = Codec::of(&link.capabilities());
-        let timeout = match timeout {
-            Bound::Default => Some(DEFAULT_TIMEOUT),
-            Bound::After(after) => Some(after),
-            Bound::Unbounded => None,
-        };
         let connect: Connect = Box::new(move || {
             let link = Arc::clone(&link);
             Box::pin(async move { link.connect().await })
@@ -161,12 +165,32 @@ impl RpcClient {
                 connect,
                 close,
                 codec,
-                timeout,
                 runtime,
                 conn: async_lock::Mutex::new(None),
                 next_id: AtomicU64::new(1),
             }),
+            timeout: timeout_of(timeout),
         }
+    }
+
+    /// Every call's timeout unless the call sets its own, as `RpcClientModule::timeout` sets it
+    /// for a module's client: five seconds at `Bound::Default`, `Bound::Unbounded` for none. This
+    /// handle and the clones made from it after carry it; clones made before keep theirs, sharing
+    /// the connection all the same.
+    ///
+    /// # Panics
+    ///
+    /// On `Bound::After(Duration::ZERO)`, which would time out every call, as `RpcClientModule`
+    /// refuses it when the app wires.
+    pub fn timeout(mut self, timeout: Bound) -> Self {
+        assert!(
+            timeout != Bound::After(Duration::ZERO),
+            "`RpcClient::timeout(Bound::After(Duration::ZERO))` on the {} link would time out every call; \
+             write `Bound::Unbounded` to turn the timeout off",
+            self.inner.link
+        );
+        self.timeout = timeout_of(timeout);
+        self
     }
 
     /// A request answered by one reply.
@@ -245,7 +269,7 @@ pub(crate) struct Spec {
     pattern: Pattern,
     request: Request,
     headers: CallHeaders,
-    /// The call's own timeout, in place of the module's.
+    /// The call's own timeout, in place of the client's.
     timeout: Option<Duration>,
     within: Option<ExecutionRef>,
 }
@@ -260,12 +284,12 @@ impl Spec {
         Spec { client: client.clone(), pattern: Pattern::from(pattern), request, headers: CallHeaders::new(), timeout: None, within: None }
     }
 
-    /// The wait the call is bounded by: its own timeout or the module's, and the calling
+    /// The wait the call is bounded by: its own timeout or the client's, and the calling
     /// execution's remaining time when that is shorter. Stamps `deadline-ms` with that remaining
     /// time; refuses a call whose execution's deadline has passed, before any I/O.
     fn limit(&mut self) -> Result<Option<Duration>, RpcError> {
         let inner = &self.client.inner;
-        let own = self.timeout.or(inner.timeout);
+        let own = self.timeout.or(self.client.timeout);
         let Some(deadline) = self.within.as_ref().and_then(ExecutionRef::deadline) else {
             return Ok(own);
         };
@@ -566,7 +590,7 @@ impl<Res> Call<Res> {
         self
     }
 
-    /// This call's timeout in place of the module's.
+    /// This call's timeout in place of the client's.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.spec.timeout = Some(timeout);
         self
@@ -651,7 +675,7 @@ impl<Res> StreamCall<Res> {
         self
     }
 
-    /// The longest wait for each reply frame, the module's timeout unset.
+    /// The longest wait for each reply frame, the client's timeout unset.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.spec.timeout = Some(timeout);
         self

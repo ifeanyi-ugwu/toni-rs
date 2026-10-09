@@ -181,7 +181,7 @@ pub mod __private {
 }
 
 /// The application every scenario runs: its controller, error handler, upgrade handler and
-/// pre-dispatch entries, wired against the app's `Timer`, as a host that can do everything takes
+/// pre-dispatch entries, wired against the app's runtime, as a host that can do everything takes
 /// it.
 pub async fn app() -> App<Connected> {
     app_for(EmbedLimits::NONE).await
@@ -191,7 +191,7 @@ pub async fn app() -> App<Connected> {
 /// where `upgrades` is `false`, which `prepare` would otherwise refuse.
 pub async fn app_for(limits: EmbedLimits) -> App<Connected> {
     App::builder(app::SuiteModule { limits })
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .drain_timeout(DRAIN)
         .wire()
         .unwrap_or_else(|error| crate::startup_failed!("the suite's app did not wire: {}", report(&error)))
