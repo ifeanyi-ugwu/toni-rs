@@ -1549,3 +1549,28 @@ With that, stage e's proof can claim what we wanted: a smol application calling 
 **S7. Accepted,** provided the wiring error names `.runtime(..)`, so a timer-only app learns what to change.
 
 **F364.** Right to keep hunting rather than mark it flaky. Something that fails once in 43 runs is a race with a narrow window, the same kind as the earlier drain bugs. The full output from the loop is what will find it.
+
+## The standalone WebSocket server and a WebSocket suite
+
+Received 2026-10-09, from a conversation the user had with the chat about where the runtime work leaves
+`ulo-ws`, forwarded as the direction to build. Its account of `ulo-net` as already runtime-free
+predates runtime stage b, which ended its TLS at rustls's `ServerConfig`; the `Upgraded` and
+`hyper-util` points are stage b's, built. Runtime stage d built the standalone server behind a
+`tokio-server` feature of `ulo-ws` before this reached it, so the split below builds as its own stage.
+
+**`ulo_ws::Server` moves out of `ulo-ws`, into a runtime-specific crate of its own.** It is the standalone server for `port = own` gateways. It owns sockets: it accepts connections, runs the HTTP/1.1 upgrade handshake over hyper, and drives the listeners and the drain through `ulo-hyper-serve`. Owning sockets means needing a reactor, and needing a reactor means being tied to a runtime, so under the no-tokio rule for hubs it can't stay in `ulo-ws`. Split along the line HTTP already uses:
+
+| Crate | Holds | Runtime |
+| --- | --- | --- |
+| `ulo-ws` (the hub) | gateways, sessions, rooms, the envelope, connection hooks, the HTTP-port hand-off, and the connection driver over `futures-io` | none |
+| `ulo-ws-hyper` (new) | `Server` for `port = own` gateways: listeners, handshake, drain | tokio, through `ulo-hyper-serve` |
+
+This mirrors `ulo-http` versus `ulo-http-hyper` exactly: the hub knows the protocol, and the server crate knows sockets. For users, the only change is the import: `ulo_ws_hyper::Server::new(addr)` instead of `ulo_ws::Server::new(addr)`. Gateways, `port = own`, `WsModule` and everything else are unchanged.
+
+**What the hub exposes, so any server is mostly socket code.** A server that isn't on hyper is the same job as one that isn't on tokio: implement the core's `Server` trait (prepare, bind, serve, drain, close), accept connections however it likes, and hand each upgraded connection to the hub's driver. For that to be easy rather than merely possible, the hub hands out the policy too, so a community server can't get it subtly wrong:
+
+- **The connection driver:** given an upgraded `futures-io` stream and the request head, the gateway runs on it. The HTTP-port hand-off already does exactly this internally.
+- **The handshake decisions, as a function:** given a request head, find the gateway for that path, choose the subprotocol, decide whether `refuse = handshake` applies, and return either the 101's headers or the refusal (405, 400, 426, 503). A server then writes those bytes and never reimplements RFC 6455's rules or the gateway's settings.
+- **The gateway table,** built from `Mounted`'s handlers as `ulo-ws-hyper` builds it, so `port = own` and the per-gateway limits mean the same thing on every server.
+
+**A WebSocket conformance suite.** HTTP and RPC each have one, and that is how an outside backend or link proves itself; WebSocket has none. A community server could only claim to handle the handshake refusals, close codes, keep-alive, the 1001 drain and `on_disconnect` correctly. A WebSocket suite in the same shape as the others (a Host-like trait, `ulo-ws-hyper` as the reference, scenarios for each of those behaviours) turns that claim into a test anyone can run. It is worth building with the split, while the reference server is being touched anyway.
