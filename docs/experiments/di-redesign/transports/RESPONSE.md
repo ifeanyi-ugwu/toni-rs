@@ -1505,3 +1505,13 @@ Two consequences of (a), to write down if it passes:
 
 - **Duplicates become possible**, the at-least-once case. A request whose handler was running when its instance died is redelivered and runs again. That is the same rule as RabbitMQ (handlers on these links must be idempotent), so the MQTT row gets the same sentence.
 - **The probe covers two cases:** the connection closing cleanly (the drain path) and the process being killed. Both should redeliver, and the drain path is the one that matters most.
+
+*The probe's outcome, 2026-10-09:* (a) fails, so (b) applies. Mosquitto 2.0.18, the suite's image and
+command, never passed an unacknowledged QoS 1 message from a shared subscription to another member
+once the member holding it was gone. That held in 60 runs: five each of a clean DISCONNECT,
+UNSUBSCRIBE then DISCONNECT (the link's own path), an aborted event loop, a killed process and a
+connection found dead by keep-alive, at Receive Maximum 65,535 and 4. A persistent-session control
+showed the messages were left unacknowledged and are held in the member's session, not the group's,
+and leave with it; messages queued for the member behind a full window were dropped the same way. No
+shared-subscription setting exists in 2.0.18 to change this. Batch 19 builds (b): over `max_inflight`
+the MQTT link refuses with `RetryAfter`, Receive Maximum stays at 65,535, and F355 stays documented.
