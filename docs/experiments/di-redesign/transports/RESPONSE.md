@@ -1515,3 +1515,9 @@ showed the messages were left unacknowledged and are held in the member's sessio
 and leave with it; messages queued for the member behind a full window were dropped the same way. No
 shared-subscription setting exists in 2.0.18 to change this. Batch 19 builds (b): over `max_inflight`
 the MQTT link refuses with `RetryAfter`, Receive Maximum stays at 65,535, and F355 stays documented.
+
+*The chat's reply to the probe, 2026-10-09:* Then (b) is right, and the probe made the decision easy: 60 runs across four ways of leaving, with no redelivery at all. Holding work at a broker that drops it with the departing session would have turned a narrow drain edge case into routine loss. Three things to record with batch 19:
+
+- **The MQTT row states why MQTT refuses.** Mosquitto 2.0.18 doesn't redeliver an unacknowledged shared-subscription message to another member when a session ends, whether by clean close, unsubscribe, kill or keep-alive timeout, so the link can't safely hold work at the broker. Cite the probe, so the decision isn't relitigated from the specification's "should" alone.
+- **F355 stays documented, now with its full cause.** Messages queued behind a full window are dropped with the session. Receive Maximum at 65,535 keeps that window as wide as the broker allows, which keeps the case rare.
+- **The behaviour is the broker's, not MQTT's.** The specification says a server *should* redeliver, so other brokers (EMQX, HiveMQ) may well do it. If someone later needs MQTT backpressure on such a broker, the shape is an opt-in on the link, verified by running the drain scenario against that specific broker, never assumed from the specification. Until then, refusing is the safe default everywhere.
