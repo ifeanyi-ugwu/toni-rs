@@ -1,4 +1,4 @@
-# Divergences: runtime neutrality, stage d: `ulo-ws` on `async-tungstenite` and the app's runtime, the standalone server behind `tokio-server`, `ulo-graphql-ws` off tokio, the core's `RuntimeMissing`, and `RpcClient::timeout`
+# Divergences: runtime neutrality, stage d: `ulo-ws` on `async-tungstenite` and the app's runtime, the standalone server split into `ulo-ws-hyper`, `ulo-graphql-ws` off tokio, the core's `RuntimeMissing`, and `RpcClient::timeout`
 
 The thirty-fourth response splits runtime neutrality into six stages; this is the fourth. It also
 builds S1, S2 and S7 of the thirty-sixth response. At default features, `ulo-ws`,
@@ -8,8 +8,11 @@ every task on the app's `Runtime` (a connection, its messages, a hand-written ga
 broadcast delivery, `AfterInit`), races its futures without a runtime, and wakes its queues
 through `event-listener`; its in-memory broadcast adapter is `async-broadcast`. The standalone
 server, whose accept loop and HTTP/1.1 handshake are hyper's and `ulo-hyper-serve`'s on tokio,
-sits behind a default-off `tokio-server` feature; once a connection is upgraded it runs on the
-app's runtime like one on the HTTP server's port. `ulo-graphql-ws` spawns its two tasks through
+is a crate of its own, `ulo-ws-hyper`, as the ruling forwarded during the build directs ("The
+standalone WebSocket server and a WebSocket suite", `RESPONSE.md`). It serves through what
+`ulo-ws` now exposes: a `GatewayTable`, its handshake decision, and the connection driver
+`Switch::serve`, which the hand-off on the HTTP server's port uses too; once a connection is
+upgraded it runs on the app's runtime on either path. `ulo-graphql-ws` spawns its two tasks through
 the new `Connection::runtime`. `listen()` refuses an app that binds any transport with no runtime
 as `RuntimeMissing`, which replaces `TimerMissing`, and the RPC server's own refusal is gone.
 `RpcClient` gains `.timeout(Bound)`, and a wiring error for a missing `dyn Runtime` names
@@ -27,7 +30,14 @@ tests/max_inflight.rs, tests/post_deadline_body.rs, tests/stream_end.rs}`;
 `crates/ulo-http-hyper/tests/route_timeout.rs`; `crates/ulo-http-conformance/src/lib.rs`;
 `crates/ulo-http-{axum,actix,poem,rocket,salvo}/src/lib.rs` (doc only);
 `crates/ulo-codegen-tests/tests/{grpc.rs, support/mod.rs}`; F362 appended and F367 filed in the
-workspace's `FRAMEWORK_GAPS.md`. The tree is `9d8b42dc` plus this stage.
+workspace's `FRAMEWORK_GAPS.md`. The tree is `9d8b42dc` plus this stage. `32bfc5d1` holds the
+stage before the split, with the standalone server behind a `tokio-server` feature of `ulo-ws`;
+the split, on top of `644dc439`, adds `crates/ulo-ws/src/table.rs`, `crates/ulo-ws/tests/table.rs`
+and the crate `crates/ulo-ws-hyper` (`Cargo.toml`, `src/lib.rs`, moved from
+`crates/ulo-ws/src/server.rs`, and `tests/`), changes `crates/ulo-ws/{Cargo.toml, src/lib.rs,
+src/connection.rs, src/gateway.rs, src/handoff.rs, src/module.rs, tests/runtime.rs}` and
+`crates/ulo/src/transport/server.rs` (doc only), and moves six test files (the section "The
+split").
 
 ## The signatures
 
@@ -44,8 +54,8 @@ impl<T: Transport> Mounted<'_, T> {
 }
 
 // ulo_ws
-#[cfg(feature = "tokio-server")]
-pub struct Server { /* unchanged */ }                    // was unconditional
+// `Server` is removed; it is `ulo_ws_hyper::Server`, whose signatures and `ulo-ws`'s serving
+// surface are in the section "The split".
 impl Connection {
     pub fn runtime(&self) -> &Arc<dyn Runtime>;          // new, beside `timer`
 }
@@ -60,8 +70,7 @@ impl RpcClient {
 `.timer(..)`"; `RuntimeMissing`'s is "transport `T` is bound on an app with no `Runtime`; set one
 with `.runtime(..)`, which sets the app's timer too". `App<Connected>::listen`, `Server`,
 `WiringError` and every `ulo-ws` type besides `Server` and `Connection` are unchanged in shape.
-`ulo_ws::Server` compiles only with `ulo-ws`'s `tokio-server` feature. No handler, module or
-controller signature changes, and no macro's output changes.
+No handler, module or controller signature changes, and no macro's output changes.
 
 Private: in the core, `mounted_parts` answers the runtime in place of the timer and refuses with
 `RuntimeMissing`, `Mounted` carries both, and `wiring.rs` gains `builder_help`. In `ulo-ws`,
@@ -73,18 +82,24 @@ the default timeout moved from `ClientInner` to the `RpcClient` handle, with a `
 Dependencies:
 
 - **`ulo-ws`** loses `tokio` (`sync`, `macros`, `rt`), `tokio-tungstenite` and its unconditional
-  `ulo-http/tokio-io`, with the comment that named stage d. It gains `async-tungstenite` 0.33
-  (`handshake`, `futures-03-sink`), `async-broadcast` 0.7, `event-listener`, `futures-channel` and
-  `futures-io`. `hyper`, `hyper-util`, `http-body-util`, `ulo-hyper-serve` and `ulo-net` become
-  optional, enabled with `ulo-http/tokio-io` by `tokio-server`. Its dev-dependencies gain
-  `ulo-ws` itself with `tokio-server`, and tokio's `macros` and `sync`, which the normal
-  dependency used to supply.
+  `ulo-http/tokio-io`, with the comment that named stage d, and `hyper`, `hyper-util`,
+  `http-body-util`, `ulo-hyper-serve` and `ulo-net`, which the standalone server took to
+  `ulo-ws-hyper`. It gains `async-tungstenite` 0.33 (`handshake`, `futures-03-sink`),
+  `async-broadcast` 0.7, `event-listener`, `futures-channel` and `futures-io`. Its
+  dev-dependencies gain tokio's `macros`, `sync` and `io-util`, the first two once supplied by the
+  normal dependency, and `ulo-http` with `tokio-io` for `tests/table.rs`'s pipe.
+- **`ulo-ws-hyper`** (new) depends on `ulo`, `ulo-ws`, `ulo-http` with `tokio-io`,
+  `ulo-hyper-serve`, `ulo-net`, `ulo-transport`, `bytes`, `futures-util`, `http`,
+  `http-body-util`, `hyper` (`server`, `http1`), `hyper-util` (`tokio`) and `tracing`; its
+  dev-dependencies are what the moved tests read (`ulo-tokio`, `futures-util` with `sink`,
+  `rmp-serde`, `serde`, `serde_json`, `tokio`, `tokio-tungstenite`).
 - **`ulo-graphql-ws`** loses `tokio`; it gains dev-dependencies on `ulo-http-hyper`, `ulo-tokio`,
   `tokio` and `tokio-tungstenite` for its first test.
 - **`ulo-rpc`**'s tokio dev-dependency gains `test-util`.
 - **The workspace** gains `async-broadcast = "0.7"` and
-  `async-tungstenite = { version = "0.33", default-features = false }`; `Cargo.lock` gains those
-  two packages and no other, every dependency of theirs being in the lock already.
+  `async-tungstenite = { version = "0.33", default-features = false }`, and the member
+  `crates/ulo-ws-hyper`; `Cargo.lock` gains those two packages and `ulo-ws-hyper`, and no other,
+  every dependency of theirs being in the lock already.
 
 ## Decisions
 
@@ -93,7 +108,7 @@ Dependencies:
 | Use | Where | Replacement |
 | --- | --- | --- |
 | `tokio_tungstenite::WebSocketStream`, `tungstenite` types | `connection.rs`, `envelope.rs` | `async_tungstenite::WebSocketStream` and its `tungstenite` re-export, the same tungstenite 0.28 (decision 2) |
-| `tokio::io::{AsyncRead, AsyncWrite}` | `answer`, `run`, `serve`, `refuse`, `write` bounds | `futures_io::{AsyncRead, AsyncWrite}`; the hand-off's `Upgraded` implements them, and the standalone server wraps hyper's upgrade as `Upgraded::from_tokio(TokioIo::new(io))` |
+| `tokio::io::{AsyncRead, AsyncWrite}` | the handshake's, `run`, `serve`, `refuse`, `write` bounds | `futures_io::{AsyncRead, AsyncWrite}`; the hand-off's `Upgraded` implements them, and `ulo-ws-hyper` wraps hyper's upgrade as `Upgraded::from_tokio(TokioIo::new(io))` |
 | `tokio::spawn`, `AbortHandle` map | `Tracker::spawn`, `close` | `runtime.spawn(..)` into a map of `TaskHandle`s. `close` takes the map out of its lock before aborting, since an abort may drop a task's future on the calling thread and its guard takes that lock |
 | `tokio::spawn`, `AbortHandle` | `Hub::start`, `stop` | `runtime.spawn(..)`, the `TaskHandle` kept and aborted at `stop` |
 | `tokio::spawn` | `after_init` | `runtime.spawn(..)`, the handle dropped, which detaches |
@@ -101,12 +116,12 @@ Dependencies:
 | `tokio::select!` unbiased, eight branches | `serve` | a `poll_fn` over eight branches, each turn starting at the next branch (decision 5) |
 | `tokio::select!` unbiased, two branches | `refuse` | a `poll_fn` alternating which branch is polled first |
 | `tokio::select!` biased: cancellation, item | `pump` | `future::select(pin!(exec.cancelled()), stream.next())`, which polls its first future first |
-| `tokio::select!` unbiased: connection, drain | `server.rs` `connection` | `future::select(served, draining.wait())`, then `graceful_shutdown` and the connection to its end (decision 5) |
+| `tokio::select!` unbiased: connection, drain | the standalone server's `connection`, now in `ulo-ws-hyper` | `future::select(served, draining.wait())`, then `graceful_shutdown` and the connection to its end (decision 5) |
 | `Notify` with `notify_one`, `notify_waiters`, `enable` | `Outbound::wake`, `Outbound::space`, `Flight::progress` | `event_listener::Event`, each waiter registering its listener before it reads the state it waits on (decision 4) |
 | `watch::Sender` with `subscribe`, `borrow`, `wait_for` | `Tracker::{phase, token, live}` | a private `Watch` over a `std` mutex and an `event-listener` event, as `ulo-rpc`'s (decision 4) |
 | `mpsc::unbounded_channel` | a hand-written gateway's inbox | `futures_channel::mpsc::unbounded`, `unbounded_send`, the receiver read with `StreamExt::next` |
 | `broadcast::channel(1024)` | `InMemory` | `async-broadcast` in overflow mode (decision 3) |
-| `hyper_util::rt::{TokioIo, TokioTimer}`, `ulo-hyper-serve` | `server.rs` | unchanged, behind `tokio-server` (decision 6) |
+| `hyper_util::rt::{TokioIo, TokioTimer}`, `ulo-hyper-serve` | the standalone server | unchanged, in `ulo-ws-hyper` (decision 6) |
 | `#[tokio::test]`, `tokio::time`, `tokio-tungstenite`'s client | tests | unchanged, dev-dependencies |
 
 ### 2. `async-tungstenite` 0.33, not the newest 0.35
@@ -171,27 +186,22 @@ Dependencies:
   When both are ready the connection has ended, and a graceful shutdown of an ended connection
   stops nothing, so the order changes no outcome.
 
-### 6. The standalone server: (a), behind `tokio-server`
+### 6. The standalone server: a crate of its own, by ruling
 
 - **How it is built:** an HTTP/1.1 server over `ulo-hyper-serve`, whose accept loop adopts
   `ulo-net`'s listeners into tokio, handshakes TLS through `tokio-rustls` and spawns each
   connection into a tokio `JoinSet`, and over hyper's `http1::Builder` driven through
   `TokioIo` and `TokioTimer`. That is the HTTP backend's arrangement in `ulo-http-hyper`.
-- **(b), a socket the caller supplies through `ulo-net`'s `std::net` types and an async adapter
-  from the runtime crate,** needs each runtime crate to provide an accept, a read and a write: a
-  socket interface beside `Runtime`, which answer 2 keeps out. The server would also need an
-  HTTP/1.1 parser for the upgrade request and TLS on `futures-io`, a second `ulo-hyper-serve`.
-- **(a), as built:** `Server` and its module compile with `ulo-ws`'s `tokio-server` feature,
-  which enables hyper, hyper-util, http-body-util, `ulo-hyper-serve`, `ulo-net` and
-  `ulo-http/tokio-io`. What runs on tokio is the accept and the handshake up to the 101: the
-  upgraded I/O crosses into `ulo-ws` as a `futures-io` stream, and the connection's task and every
-  task it starts are spawned on the app's runtime from `Mounted::runtime()`, as on the HTTP port.
-- **A feature, not a crate:** the server uses `Accept`, `Tracker`, `answer`, `build_table`,
-  `check_defaults`, the `Hub` and `HubMeta`, all crate-private. A crate of its own would need
-  them as a doc-hidden SPI. `ulo-ws`'s own tests serve most gateways on this server; they enable
-  the feature through a dev-dependency of `ulo-ws` on itself.
-- **The name** follows `ulo-http`'s `tokio-io`: it names the runtime it brings. A smol
-  standalone server, which stage e does not include, would sit beside it. See S2.
+- **The brief left the place open,** naming (a), a tokio piece behind a feature or in a tokio
+  crate, and (b), a socket the caller supplies through `ulo-net`'s `std::net` types with an async
+  adapter from the runtime crate. (b) needs each runtime crate to provide an accept, a read and a
+  write, a socket interface beside `Runtime`, which answer 2 keeps out, and an HTTP/1.1 parser and
+  TLS on `futures-io`, a second `ulo-hyper-serve`. The first build took (a) as a default-off
+  `tokio-server` feature of `ulo-ws` (`32bfc5d1`).
+- **The ruling forwarded during the build** settles it as (a) in a crate: `ulo-ws-hyper`, as
+  `ulo-http-hyper` is to `ulo-http`, with the policy the server needs exposed by `ulo-ws`. The
+  section "The split" records what was built; the feature, and `ulo-ws`'s dev-dependency on
+  itself that enabled it in its tests, are gone.
 
 ### 7. The hand-off, the reply tracking and the bound
 
@@ -312,15 +322,17 @@ error: wiring failed with 1 error
     `.timeout(Bound::After(250 ms))`, not within a minute after `.timeout(Bound::Unbounded)`, and
     at 5 s again on the client whose clones were given those timeouts.
   - `a_zero_client_timeout_is_refused_where_it_is_written` (S2): the panic, by its message.
-- **`crates/ulo-ws/tests/runtime.rs`, two,** on an app whose runtime counts what it is handed:
-  on the standalone server and through the hand-off, broadcast delivery and `AfterInit` are the
-  two tasks spawned at bind, the connection is the third once its 101 arrives, and its message
-  the fourth.
+- **`runtime.rs`, one test in each WebSocket crate,** on an app whose runtime counts what it is
+  handed: `crates/ulo-ws/tests/runtime.rs` through the hand-off and
+  `crates/ulo-ws-hyper/tests/runtime.rs` on the standalone server. On both, broadcast delivery and
+  `AfterInit` are the two tasks spawned at bind, the connection is the third once its 101 arrives,
+  and its message the fourth. Before the split they were one file in `ulo-ws`.
 - **`crates/ulo-ws/tests/broadcast.rs`, two,** on `InMemory` alone: a subscriber receives, in
   order, what is published after it subscribed and not the publish made before with no
   subscriber; one 1,030 broadcasts behind receives broadcast 6 first, then up to 1,029, then the
   next one published.
-- **`crates/ulo-ws/tests/limits.rs`, one new,**
+- **`crates/ulo-ws-hyper/tests/limits.rs`, one new,** written in `ulo-ws` before the split moved
+  the file,
   `a_streamed_answer_longer_than_max_outbound_waits_for_room_and_is_written_whole`: on the
   `max_outbound = 1` gateway, a 50-item stream arrives whole and in order with `complete`, the
   connection then answers an `echo`, and the server closed nothing.
@@ -331,8 +343,8 @@ error: wiring failed with 1 error
     four and the init watch); after `next`, `next` and `complete`, six.
   - `the_init_timeout_closes_the_connection_from_the_app_s_runtime`: at a 100 ms init timeout the
     connection closes with 4408 "Connection initialisation timeout", and five tasks were spawned.
-- **Changed:** `ulo-ws`'s test support gains `Running::start_on(root, server, runtime)`;
-  `start` delegates to it with `Tokio::current()`.
+- **Changed:** the WebSocket test support gains `Running::start_on(root, server, runtime)`;
+  `start` delegates to it with `Tokio::current()`. The split's own tests are in "The split".
 
 ### Before and after
 
@@ -340,7 +352,9 @@ Each break rewrote one or more spans through `runtime-d/brk.py`, which asserts e
 once, runs the target, writes every file back byte for byte and compares hashes; every restore
 reported `ok`, and the tree's diff hash was the same before and after each round. The specs are in
 `runtime-d/specs/`, the full output of each run in `runtime-d/broken/`. "Ambient tokio" breaks add
-`tokio` to the crate's dependencies and call `tokio::spawn` in place of the runtime.
+`tokio` to the crate's dependencies and call `tokio::spawn` in place of the runtime. The first
+five rows ran before the split, against the tests then in `ulo-ws`; "The split" records them run
+again where the tests now are.
 
 | Break | Target | Result |
 | --- | --- | --- |
@@ -361,6 +375,204 @@ reported `ok`, and the tree's diff hash was the same before and after each round
 | a subscription's task on ambient tokio | same | the subscription test failed at its count, 5 against 6; the init test passed |
 | the restored tree | every target above | every test passed; `ulo-ws` and `ulo-graphql-ws` three runs each |
 
+## The split
+
+The ruling forwarded during the build, recorded in `RESPONSE.md` as "The standalone WebSocket
+server and a WebSocket suite" (`644dc439`), moves `ulo_ws::Server` into a crate of its own,
+`ulo-ws-hyper`, and has `ulo-ws` expose the connection driver, the handshake decision and the
+gateway table, so that any server is mostly socket code. It builds here on top of `32bfc5d1`. The
+WebSocket suite it names is not built.
+
+### Signatures
+
+```rust
+// ulo_ws: the serving surface, all new
+#[derive(Clone)]
+pub struct GatewayTable { /* private */ }
+impl GatewayTable {
+    pub fn own_port(server: &str, mounted: &Mounted<'_, Ws>, defaults: &GatewayDefaults, failures: &mut Failures) -> GatewayTable;
+    pub fn paths(&self) -> impl Iterator<Item = &str>;
+    pub fn start(&self);
+    pub async fn handshake(&self, head: http::request::Parts, peer: Option<SocketAddr>) -> Handshake;
+    pub async fn drain(&self, token: DrainToken);
+    pub async fn close(&self);
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GatewayDefaults { /* private */ }             // was the crate-private `Defaults`
+impl GatewayDefaults {
+    pub fn message_limit(self, bytes: u64) -> Self;
+    pub fn max_connections(self, connections: Count) -> Self;
+    pub fn max_inflight(self, messages: Count) -> Self;
+    pub fn max_outbound(self, messages: Count) -> Self;
+    pub fn ping_interval(self, interval: Bound) -> Self;
+    pub fn pong_timeout(self, timeout: Bound) -> Self;
+}
+
+pub enum Handshake {
+    Switch(Switch),
+    Refuse(Refusal),
+}
+
+pub struct Switch { /* private */ }
+impl Switch {
+    pub fn response(&self) -> http::Response<()>;
+    pub fn serve<Io, U>(self, upgraded: U)
+    where
+        U: Future<Output = Result<Io, BoxError>> + Send + 'static,
+        Io: futures_io::AsyncRead + futures_io::AsyncWrite + Unpin + Send + 'static;
+}
+impl Drop for Switch {}                                  // releases an admitted, unserved connection
+
+#[derive(Debug)]
+pub struct Refusal { /* private */ }
+impl Refusal {
+    pub fn status(&self) -> http::StatusCode;
+    pub fn reason(&self) -> &str;
+    pub fn into_response(self) -> http::Response<String>;
+}
+
+// ulo_ws: removed
+// pub struct Server
+
+// ulo_ws_hyper, new crate; `Server` is `ulo_ws::Server` as it was, moved
+pub struct Server { /* private */ }
+impl Server {
+    pub fn new(endpoint: impl Into<EndpointSpec>) -> Self;
+    pub fn endpoint(self, endpoint: impl Into<EndpointSpec>) -> Self;
+    pub fn tls(self, tls: Tls) -> Self;
+    pub fn header_timeout(self, timeout: Bound) -> Self;
+    pub fn handshake_timeout(self, timeout: Bound) -> Self;
+    pub fn message_limit(self, bytes: u64) -> Self;
+    pub fn max_connections(self, connections: Count) -> Self;
+    pub fn max_inflight(self, messages: Count) -> Self;
+    pub fn max_outbound(self, messages: Count) -> Self;
+    pub fn ping_interval(self, interval: Bound) -> Self;
+    pub fn pong_timeout(self, timeout: Bound) -> Self;
+}
+impl ulo::Server for Server { type Transport = ulo_ws::Ws; /* .. */ }
+```
+
+`Server`'s fields were `pub(crate)` in `ulo-ws`, read by nothing outside the server; in
+`ulo-ws-hyper` they are private, its six gateway settings held as one `GatewayDefaults`. Its
+builder methods and their defaults are unchanged. Private, in `ulo-ws`: `answer` and its `Answer`
+became `handshake` answering `Handshake`, the RFC 6455 check's result is `Checked`, and the
+hand-off holds a `GatewayTable` in place of its own tracker, gateways and runtime.
+
+### Decisions
+
+#### 13. The handshake decision carries the connection phase to the driver
+
+- **Why the decision is async and answers a value with a lifetime:** under `refuse = handshake`
+  the connection phase, the connect guards and `OnConnect`, runs before the 101, and the
+  connection it admits (registered in the rooms, its session built) is the one the driver then
+  serves. `Switch` carries it from `handshake` to `serve`.
+- **What it decides:** the gateway at the path (404 when none), RFC 6455 §4.2.1's checks (405,
+  400, 426), 503 once the table's drain has begun, the subprotocol, the accept key, and the
+  connection phase's refusal (401 with `WWW-Authenticate: Bearer`, or 403) under
+  `refuse = handshake`. These are the checks `answer` made, in its order.
+- **What a server writes:** `Switch::response()`, an `http::Response<()>`, and
+  `Refusal::into_response()`, an `http::Response<String>` carrying the `text/plain; charset=utf-8`
+  type and the refusal's headers; each server maps the body to its own type. Both servers wrote
+  that response by hand before, each with its own `plain`.
+- **A `Switch` dropped unserved,** as when writing the 101 fails, unregisters the connection the
+  connection phase admitted, which `run` did when the upgrade future failed; neither runs
+  `on_disconnect`, the connection never having opened. See S8.
+
+#### 14. The driver takes a future of the stream
+
+- `Switch::serve(upgraded)` takes a future that yields the upgraded stream, and spawns the
+  connection's task on the app's runtime under the table's tracker before the future resolves.
+  hyper hands over an upgraded connection only once the 101 has been written, and the hand-off's
+  `OnUpgrade` is such a future too, so a driver taking a stream would have each server spawn the wait
+  itself, outside the tracker the drain counts. A server holding the stream passes
+  `async move { Ok(io) }`; `tests/table.rs` does. See S7.
+- What the driver runs is `run`, unchanged: the slot under `max_connections` (1013 over it), the
+  connection phase unless the handshake ran it, the read loop with batch 19's per-connection
+  `max_inflight` and F358's tracking, keep-alive, the 1001 drain and `on_disconnect`.
+
+#### 15. The gateway table
+
+- `GatewayTable::own_port` is the standalone server's `prepare` step as it was: zero defaults
+  checked under the server's name, the `port = own` gateways built from `Mounted`'s handlers and
+  `handlers_of::<WsConnect>()`, a server with none refused, the hub taken from `WsModule`'s
+  metadata or an in-memory one of its own. It pushes onto the caller's `Failures`, so a server's
+  own failures (endpoints, TLS, its timeouts) are reported in the same `Configure` error, and
+  builds the table either way. See S9.
+- The table owns the connection tracker, so its `drain` and `close` reach every connection served
+  through it, and its `start` is broadcast delivery and `AfterInit`, as `bind` and the hand-off's
+  `bound` called them.
+- **The hand-off serves through the same table,** built in its `prepare` from
+  `AppHandle::mounted` with `WsModule`'s defaults. It still answers 404 off its paths and 400 for
+  a request its host cannot upgrade before the handshake runs, so a request that cannot be
+  upgraded never reaches the connection phase. See S10.
+- **`GatewayDefaults`** is what `WsModule` and the standalone server carry for what a gateway's
+  attribute leaves unset; a server on another stack builds one with the same builder methods. See
+  S11.
+
+#### 16. `ulo-ws-hyper` is thin
+
+- `prepare` checks its two timeouts, calls `GatewayTable::own_port`, resolves endpoints and loads
+  TLS; `bind` binds and calls `table.start()`; each request is `table.handshake`, its response
+  written, and on a 101 `switch.serve` over hyper's upgrade wrapped as
+  `Upgraded::from_tokio(TokioIo::new(io))`; `drain` and `close` join the accept loop's with the
+  table's. A failure the table pushes now follows the server's timeout failures in the
+  `Configure` report instead of preceding them. See S12.
+- What runs on tokio is unchanged from the first build: the accept loop, TLS and the HTTP/1.1
+  exchange up to the 101.
+
+#### 17. A WebSocket suite can drive the surface
+
+The suite is not built. Its Host-like trait would supply what `tests/table.rs`'s `TableServer`
+and pipe supply: a server that builds a `GatewayTable` in `prepare` and calls `handshake` and
+`serve`, and a client end of a stream. Nothing in the surface names hyper, tokio or a socket.
+
+### The moved tests
+
+From `crates/ulo-ws/tests/` to `crates/ulo-ws-hyper/tests/`, each test unchanged but its
+`ulo_ws::Server::new` read as `ulo_ws_hyper::Server::new`:
+
+| File | Tests |
+| --- | --- |
+| `attributes.rs` | 11 |
+| `handshake.rs` | 10 |
+| `hooks.rs` | 8 |
+| `limits.rs` | 10, this stage's streamed-answer test among them |
+| `messages.rs` | 9 |
+| `stream_end.rs` | 3 |
+| `runtime.rs` | 1, the standalone half of this stage's `runtime.rs` |
+| `support/mod.rs` | copied, as `ulo-ws`'s `handoff.rs` and `runtime.rs` still use it |
+
+`ulo-ws` keeps `handoff.rs` (9), `broadcast.rs` (2), `runtime.rs` (1, the hand-off half) and the
+new `table.rs` (3).
+
+### The split's new tests
+
+`crates/ulo-ws/tests/table.rs`, three, over a test-local `TableServer` that implements the core's
+`Server` with no socket, building its `GatewayTable` in `prepare` and handing it to the test, and a
+`tokio::io::duplex` pipe whose client end runs `tokio-tungstenite` past the HTTP exchange:
+
+- `a_server_without_hyper_serves_a_gateway_through_the_table`: a head built by hand is answered
+  `Switch`, its response 101 with RFC 6455 §1.3's sample `Sec-WebSocket-Accept`; `serve` over the
+  pipe's server end, and an `echo` message is answered.
+- `the_handshake_refuses_a_head_with_the_status_and_headers_rfc_6455_names`: no gateway at the
+  path 404; POST 405 with `Allow: GET`; HTTP/1.0 400; version 12 426 with
+  `Sec-WebSocket-Version: 13`; `Upgrade: h2c` 400; each `text/plain; charset=utf-8` with a reason.
+- `a_switch_dropped_unserved_takes_its_admitted_connection_out_of_the_rooms`: on a
+  `refuse = handshake` gateway whose `OnConnect` joins a room, the connection is in the room once
+  `handshake` answers, and in none once the `Switch` is dropped.
+
+| Break | Target | Result |
+| --- | --- | --- |
+| `Switch`'s drop releasing nothing | `ulo-ws --test table` | the drop test failed; two passed |
+| `Refusal::into_response` without its content type | same | the refusal test failed; two passed |
+| `Switch::serve` spawning nothing | same | the serving test failed, the client's send meeting a broken pipe, the server's end dropped unserved; two passed |
+| `Tracker::spawn` on ambient tokio | `ulo-ws-hyper --test runtime` | failed at the connection's count |
+| a message's task on ambient tokio | same | failed at the message's count |
+| broadcast delivery on ambient tokio | `ulo-ws --test runtime` | the hand-off test failed at bind |
+| `take` no longer wakes `space` | `ulo-ws-hyper --test limits` | the 50-item stream failed after 5 s; nine passed |
+| the restored tree | `ulo-ws --test table` | 3 passed, three runs |
+
 ## Left for the transports DESIGN fold
 
 Line numbers are those read on `9d8b42dc`.
@@ -368,11 +580,14 @@ Line numbers are those read on `9d8b42dc`.
 - §0, principle 6 (line 14), and the core DESIGN's principle 3 (line 11): `TimerMissing` in the
   list of condition-named errors is `RuntimeMissing`.
 - §1's crate table: `fw-ws`'s row (line 32) gains "no runtime: every task on the app's
-  `Runtime`; `Server` behind the `tokio-server` feature"; `fw-graphql-ws`'s (line 41) spawns on
-  the app's runtime through `Connection::runtime`.
-- §3.5 (line 489): `fw_ws::Server` is behind `tokio-server`; after the 101 the connection runs
-  on the app's runtime. §3.7 (line 554) stays true of the three servers, the WebSocket one under
-  its feature.
+  `Runtime`; `GatewayTable`, the handshake decision and the connection driver for any server", and
+  loses `Server`; a new `fw-ws-hyper` row holds the standalone server, tokio-bound through
+  `fw-hyper-serve`; `fw-graphql-ws`'s (line 41) spawns on the app's runtime through
+  `Connection::runtime`.
+- §3.5 (line 489): the standalone server is `fw_ws_hyper::Server::new(endpoint)`, serving through
+  `GatewayTable::own_port`, `GatewayTable::handshake` and `Switch::serve`, as the hand-off serves
+  through the same table; after the 101 the connection runs on the app's runtime. §3.7 (line 554)
+  stays true of the three servers, the WebSocket one in `fw-ws-hyper`.
 - §3.8's example (line 613) and the core DESIGN's §9.4 example (line 864) bind a server with
   `.timer(fw_tokio::Timer)`, which `listen()` now refuses: `.runtime(fw_tokio::Tokio::current())`.
 - §4.1: `Connection::runtime()` beside `Connection::timer()`; the read loop's wait (decision 5)
@@ -385,16 +600,19 @@ Line numbers are those read on `9d8b42dc`.
   `listen()` does not refuse an app without a runtime, and the RPC server ... refuses one in its
   own `prepare`" reads: `listen()` refuses an app that binds a transport with no runtime as
   `RuntimeMissing`, `.timer(..)` alone staying valid for an app that binds none. The runtime
-  table (line 1224): `fw-ws`, `fw-graphql-ws` and `fw-graphql-http` move to the runtime-free row
-  at default features; `fw-ws`'s `tokio-server` joins the tokio-bound row beside
-  `fw-hyper-serve`.
+  table (line 1224): `fw-ws`, `fw-graphql-ws` and `fw-graphql-http` move to the runtime-free row;
+  `fw-ws-hyper` joins the tokio-bound row beside `fw-hyper-serve` and `fw-http-hyper`.
 - §10's failure table (line 1354): the RPC server's own row becomes the core's: an app binding
   any transport with no runtime, at `listen`, `StartupError::Bind` with `RuntimeMissing`. The core
   DESIGN's §9.5 (line 922), §10.2 (lines 981, 1011-1014), the paragraphs at lines 1183 and 1191,
   the failure table (line 1276) and the API table (line 1368) name `TimerMissing` and the
   timer-only condition.
 - §11's SPI table: `RuntimeMissing`, `Mounted::runtime`, `Connection::runtime`,
-  `RpcClient::timeout`; X20's row (line 1287) and paragraph (line 746) read `RuntimeMissing`.
+  `RpcClient::timeout`, and `fw-ws`'s `GatewayTable`, `GatewayDefaults`, `Handshake`, `Switch` and
+  `Refusal`; X20's row (line 1287) and paragraph (line 746) read `RuntimeMissing`, and its
+  `fw_ws::Server` reading two markers is `GatewayTable::own_port`.
+- §10's configure table (lines 1346 and 1347) names `fw_ws::Server`: `fw_ws_hyper::Server`.
+- Decision 25 (line 1418) names `fw_ws::Server`: `fw_ws_hyper::Server`.
 - Decision 49 (line 1442) is superseded: the refusal is the core's, at `listen()`.
 
 ## Needs sign-off
@@ -405,11 +623,10 @@ Decision 2: 0.33 keeps tungstenite 0.28, the protocol library the branch already
 stage changes the I/O traits and not the protocol. The alternative is 0.35, with tungstenite 0.30
 and the tests' client moved to match, in this stage or as its own change.
 
-### S2. The standalone server behind a default-off `tokio-server` feature of `ulo-ws`
+### S2. Closed by the ruling
 
-Decision 6: option (a). An app serving a `port = own` gateway enables the feature; `ulo-ws`'s
-tests enable it through a dev-dependency on the crate itself. The alternatives are the server in
-a crate of its own over a doc-hidden SPI, a feature with another name, or option (b).
+The first build's feature of `ulo-ws` is replaced by the crate `ulo-ws-hyper`, as the ruling
+directs; the split's own open points are S7 to S12.
 
 ### S3. `RpcClient::timeout` lives on the handle and panics on zero
 
@@ -436,11 +653,78 @@ Decision 10: the help line changes for any binding reading `dyn Runtime` or `dyn
 `RpcClientModule`'s client. The alternative is a refusal written by the module, which cannot see
 the app's builder.
 
+### S7. The driver takes a future of the stream
+
+Decision 14: `Switch::serve` spawns at once and awaits the stream inside the tracked task. The
+alternative is a driver taking the stream itself, each server then spawning the wait for hyper's
+upgrade on its own, outside the drain's count, or `serve` as an `async fn` the server awaits.
+
+### S8. A `Switch` dropped unserved releases its admitted connection
+
+Decision 13: the `Drop` keeps a server that fails to write the 101 from leaving a connection in the
+rooms. The alternative is an explicit `Switch::abandon`, with a dropped `Switch` leaking the
+membership.
+
+### S9. `GatewayTable::own_port` takes the server's name and the caller's `Failures`
+
+Decision 15: one `Configure` report holds the table's failures beside the server's, and the
+messages name the server as before. The alternatives are a `Result<GatewayTable, BoxError>`,
+reported separately from the server's own, or a name-free message.
+
+### S10. The hand-off checks the path and the upgrade before the handshake
+
+Decision 15: a request its host cannot upgrade is answered 400 before the connection phase can
+run, as before. The alternative is the table's decision first, which runs `refuse = handshake`'s
+guards and `OnConnect` for a request that is then refused 400.
+
+### S11. `GatewayDefaults` is a public builder
+
+Decision 15: a server on another stack carries the same six settings. The alternative is
+`own_port` taking the settings as arguments, or a server carrying none.
+
+### S12. The order of the standalone server's `Configure` failures
+
+Decision 16: the server's timeout failures now come before the table's. The alternative is a
+second `Failures` merged after the table's, to keep the old order; no test reads the order.
+
 ## Verification
 
 Full, unfiltered output of every run is in the session scratchpad, `runtime-d/`: `tree/`,
-`suites/` (with `summary.txt`), `verify/` (`final/` for the last pass), `broken/`, `specs/` and
-`runs/`.
+`suites/` (with `summary.txt`), `verify/` (`final/` for the pass before the split, `split/` for
+the pass after it), `broken/`, `specs/`, `runs/` and `split/`.
+
+### After the split
+
+- **The tree checks** (`tree/split/`, `tree/split-target-all/`): stdout is empty for `ulo-ws`,
+  `ulo-graphql-ws`, `ulo-graphql-http`, `ulo`, `ulo-transport`, `ulo-net`, `ulo-http` and
+  `ulo-rpc`, with and without `--target all`, the exits as below; `ulo-ws-hyper` prints tokio
+  (17 lines), through hyper, `hyper-util`, `ulo-hyper-serve`'s `tokio-rustls` and `ulo-http`'s
+  `tokio-io`, which `ulo-ws-hyper` enables; that is the
+  check reporting on the final tree. The default normal trees of `ulo-ws`, `ulo-graphql-ws` and
+  `ulo-graphql-http` hold no `tokio`, `async-std`, `smol`, `async-io`, `hyper`,
+  `ulo-hyper-serve` or `ulo-ws-hyper` package.
+- **Tests:** `cargo test --workspace --no-fail-fast --locked` with the OpenSSL flags: 536 passed,
+  0 failed, 68 ignored across 140 test binaries: the 533 below and `table.rs`'s three; the two
+  ignored added are the doc examples of `table.rs` and `ulo-ws-hyper`'s crate doc. Per crate:
+  `ulo-ws` 15 passed, 4 ignored; `ulo-ws-hyper` 52, 1 ignored, three runs; `ulo-ws`'s `table.rs`
+  three runs; `ulo-graphql-ws` 2.
+- `cargo check --workspace --all-targets` with and without `--all-features`, and `cargo +1.88
+  check --workspace --all-targets --exclude ulo-http-salvo --exclude ulo-graphql-async-graphql`:
+  exit 0, the 17 known warnings and no other. `cargo +1.88 check -p <crate> --all-targets
+  --locked` alone for `ulo-ws`, `ulo-ws-hyper`, `ulo-graphql-ws` and `ulo-graphql-http`: each exit
+  0.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib` for `ulo`, `ulo-ws`, `ulo-ws-hyper` and
+  `ulo-graphql-ws`: each exits 0.
+- `cargo +1.98.1 clippy` over `ulo`, `ulo-ws`, `ulo-ws-hyper` and `ulo-graphql-ws` with
+  `--all-targets --no-deps --locked`: exit 0, 79 warning locations, none on a line the split
+  changed or in a file it added. The first pass found two, the hand-off's
+  `async move { upgrade.await }`, written before the split as it stood and now `upgrade`, and
+  `table.rs`'s case tuple, now a `Case` alias.
+- **Not rerun:** the broker suites and the HTTP adapters' crates alone, the split changing no RPC
+  or HTTP code; the workspace run covers the adapters' conformance tests.
+- **Containers:** the user's four, untouched.
+
+### Before the split, on `32bfc5d1`'s tree
 
 - **The tree checks, first against violations.** On `9d8b42dc`, `cargo tree -p <crate> -e normal
   -i tokio` printed tokio for `ulo-ws` (18 lines), `ulo-graphql-ws` (20) and `ulo-graphql-http`
