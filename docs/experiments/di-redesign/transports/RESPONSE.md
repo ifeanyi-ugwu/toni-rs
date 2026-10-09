@@ -1454,3 +1454,32 @@ On top of this, put a runtime-free `TaskSet` in `ulo-transport` (spawn into it, 
 - the forbidden-dependency check over the core crates and the hubs.
 
 **7. When: right after the three small fixes, before any new transport work.** F354 and F357 are small and already understood, and F355 is documentation, so close them first. Then do the runtime batch before more transport code is written, because every new direct `tokio::spawn` adds to the cost of moving later. And `ulo-ws`'s move from `tokio-tungstenite` to `async-tungstenite` is the largest single item, so it's better done before WebSocket code grows further.
+
+## Thirty-fifth response: finishing the stream-end rule, and a bounded default
+
+Received 2026-10-09, answering `divergences/race2b-tests18.md` (S1–S10). The user signed it off the same day, with one question sent back to the chat first: whether MQTT is among the links that hold work under S9, withholding acknowledgments rather than refusing. The rest builds as test batch 19 once runtime stage c has landed and before stage d, S1 changing `ulo-ws`, which stage d rewrites; the 1,024 default applies to every transport's `max_inflight`, HTTP included.
+
+All ten have an answer below. I'd change course on S2, S5 and S9.
+
+**S1. Apply it.** It is the same change already approved for RPC's identical type, for the same reason. Nothing is published yet, so this approval satisfies the stop rule for public types.
+
+**S2. (b), with the trailers deciding the outcome.** §2.6 already defines a gRPC stream's clean end as the protocol's own end marker: trailers with `grpc-status: 0`. So `Completed` belongs after the trailers, which is exactly where (b) puts it. A frame-level `Tracked` at the dispatcher sees the trailers, so it can report `Completed` on status 0 and `CutOff` on any other status, an error item included, since that ends in non-zero trailers. Nothing is lost compared with (a). The ordering against `CallBody`'s own end and drop is real work, but it reduces to one rule: report once, at the trailers or at the drop, whichever comes first. (a) would report `Completed` before the transport finished writing, which contradicts the definition on the one transport where the end marker is most explicit.
+
+**S3. No exception once S1 and S2 land.** Both are decided now. Build them in the same batch, and write the core sentence with no exception. If they land separately, the interim exception is fine as long as it names the open item, so it gets removed.
+
+**S9. No unbounded default. This is the most important item here.** `Count::Default` is supposed to mean "the framework's default", and a default of *no bound* means a load spike becomes a memory spike with nothing pushing back. On brokers it is worse: the broker is designed to be the buffer, and an unbounded consumer drains the queue into one process's memory, defeating the backpressure the broker provides. Two changes:
+
+- **Give `Default` a real bound** on every transport's `max_inflight`, say 1,024 in-flight calls, with `Unlimited` as the explicit opt-out. Do this on HTTP too, so the vocabulary means the same thing everywhere. It changes a default before release, which is when that is free.
+- **Over the limit, brokers that hold work stop pulling instead of refusing.** §5.3 already says to use the broker's flow control where it exists: stop consuming, or pause partitions, until there is room. Requests then wait in the broker, where they belong, instead of being answered `unavailable`. Links that can't hold work (TCP, UDP, fan-out brokers) keep refusing with `RetryAfter`.
+
+**S10. Yes, in the runtime batch, but keep blocking work off `Runtime`.** Moving the backoff to the app's timer is right once links get `Dep<dyn Runtime>`. For the blocking calls, don't add `spawn_blocking` to `Runtime`. The Kafka crate already runs its consumer drops on plain threads (the `Detached` decision), so it runs its blocking calls the same way. `Runtime` stays at timing and spawning, and the one crate that needs blocking threads owns them.
+
+**S4. Accepted.** No `Default` is right, since there is no meaningful default delivery mode.
+
+**S5. Wrap only after the capability check passes.** The reply that link actually writes is the single `err internal`. The stream it was about to write never becomes the reply, which is exactly the discarded-stream case, so it should report nothing.
+
+**S6. Accepted, but unify the text.** The duplicate socket is a reasonable defence based on tokio's source. The refusal kind is the same either way, so make the message the same too: "the server is shutting down", the wording HTTP already uses. Clients and logs then see one phrase for one condition.
+
+**S7. Accepted.** The reply topic getting the full window is a bonus: replies flow at the same rate as requests.
+
+**S8. Accepted as built.** It only matters during the drain, where ordered refusals are worth a little latency. Spawning each one would make `close` wait for a set of extra tasks.
