@@ -12,7 +12,8 @@ rust-version = "1.92"
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: hyper's upgraded I/O reaches `Upgraded` through tokio's traits.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 bytes.workspace = true
 http.workspace = true
 http-body.workspace = true

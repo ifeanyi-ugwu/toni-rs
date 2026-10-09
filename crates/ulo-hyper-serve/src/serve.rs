@@ -13,6 +13,7 @@ use tokio_rustls::TlsAcceptor;
 use ulo::BoxError;
 use ulo_http::ConnInfo;
 use ulo_net::BoundListener;
+use ulo_net::rustls::ServerConfig;
 
 use crate::handshake::handshake;
 use crate::listener::{Inner, Io, Listener};
@@ -72,9 +73,11 @@ pub struct Serve {
 }
 
 impl Serve {
-    /// Adopts `listeners` into the runtime, each with `tls` when the server has TLS. Fails when
-    /// the runtime cannot register a listener; call it inside the runtime, from a server's `bind`.
-    pub fn new(listeners: Vec<BoundListener>, tls: Option<TlsAcceptor>, config: &ServeConfig) -> io::Result<Serve> {
+    /// Adopts `listeners` into the runtime, each accepting TLS under `tls`, the configuration a
+    /// server's `Tls::load` built, when the server has TLS. Fails when the runtime cannot register
+    /// a listener; call it inside the runtime, from a server's `bind`.
+    pub fn new(listeners: Vec<BoundListener>, tls: Option<Arc<ServerConfig>>, config: &ServeConfig) -> io::Result<Serve> {
+        let tls = tls.map(TlsAcceptor::from);
         let listeners = listeners
             .into_iter()
             .map(|listener| -> io::Result<Listener> {

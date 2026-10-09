@@ -8,7 +8,6 @@ use std::sync::Arc;
 use rustls::ServerConfig;
 use rustls_pki_types::pem::{self, PemObject};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::TlsAcceptor;
 
 /// A server's TLS certificate chain and private key, loaded with rustls.
 ///
@@ -38,9 +37,10 @@ impl Tls {
         Tls { source: Source::Pem { cert: cert.into(), key: key.into() } }
     }
 
-    /// Reads and parses the certificate and key, checks that they match, and builds the acceptor
-    /// with `alpn` as the protocols offered, in preference order.
-    pub fn load(&self, alpn: &[&[u8]]) -> Result<TlsAcceptor, TlsError> {
+    /// Reads and parses the certificate and key, checks that they match, and builds the server
+    /// configuration with `alpn` as the protocols offered, in preference order. The server's
+    /// runtime crate builds its acceptor from it.
+    pub fn load(&self, alpn: &[&[u8]]) -> Result<Arc<ServerConfig>, TlsError> {
         let (certs, key) = match &self.source {
             Source::PemFiles { cert, key } => (
                 certificates(&read(cert)?).map_err(|reason| TlsError::Certificate(in_file(cert, reason)))?,
@@ -61,7 +61,7 @@ impl Tls {
             .with_single_cert(certs, key)
             .map_err(TlsError::Rustls)?;
         config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
-        Ok(TlsAcceptor::from(Arc::new(config)))
+        Ok(Arc::new(config))
     }
 }
 

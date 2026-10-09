@@ -40,7 +40,7 @@ impl salvo::Handler for SalvoHandler {
         let upgrade = req.extensions_mut().remove::<hyper::upgrade::OnUpgrade>().map(|pending| {
             OnUpgrade::new(async move {
                 let upgraded = pending.await?;
-                Ok::<_, BoxError>(Upgraded::new(TokioIo::new(upgraded)))
+                Ok::<_, BoxError>(Upgraded::from_tokio(TokioIo::new(upgraded)))
             })
         });
         let body = HttpBody::new(req.take_body());

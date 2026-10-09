@@ -4,10 +4,12 @@
 
 use std::borrow::Cow;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ulo::{Bound, BoxError};
-use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_net::BoundListener;
+use ulo_net::rustls::ServerConfig;
 use ulo_transport::Count;
 
 use crate::limits::MB;
@@ -25,11 +27,13 @@ pub trait Backend: Send + Sync + 'static {
     fn limits() -> BackendLimits;
 
     /// Takes the listeners the server bound and starts accepting on them, without serving yet.
-    /// All-or-nothing: an error closes whatever this call opened.
+    /// All-or-nothing: an error closes whatever this call opened. `tls` is the loaded TLS
+    /// configuration when the server has one, ALPN offering `h2` then `http/1.1`; the backend
+    /// builds its acceptor from it with its runtime's TLS crate.
     fn bind(
         &mut self,
         listeners: Vec<BoundListener>,
-        tls: Option<TlsAcceptor>,
+        tls: Option<Arc<ServerConfig>>,
         svc: AppService,
         cfg: &HttpConfig,
     ) -> impl Future<Output = Result<(), BoxError>> + Send;

@@ -12,7 +12,8 @@ categories = ["web-programming::http-server"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: hyper's upgraded I/O reaches `Upgraded` through tokio's traits.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 # The accept loop, the TLS handshake and the drain, shared with the gRPC and WebSocket servers.
 ulo-hyper-serve = { path = "../ulo-hyper-serve" }
 ulo-net = { path = "../ulo-net" }
@@ -31,3 +32,5 @@ ulo-tokio = { path = "../ulo-tokio" }
 futures-util.workspace = true
 # `net` and `io-util`: the raw HTTP/1.1 client the route-timeout tests read a response with.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+# The TLS client `tests/tls.rs` connects with.
+tokio-rustls.workspace = true

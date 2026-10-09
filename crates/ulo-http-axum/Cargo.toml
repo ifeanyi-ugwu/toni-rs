@@ -12,9 +12,13 @@ categories = ["web-programming::http-server"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: hyper's upgraded I/O reaches `Upgraded` through tokio's traits.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 axum = { workspace = true, features = ["tokio", "http1", "http2", "original-uri"] }
 http.workspace = true
+# The upgrade future axum's server leaves in the request's extensions, and its I/O as tokio's traits.
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
 tower.workspace = true
 
 [dev-dependencies]

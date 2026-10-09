@@ -13,7 +13,7 @@ pub(crate) fn request(req: http::Request<Incoming>, conn: &ConnInfo) -> Request 
     let upgrade = head.extensions.remove::<hyper::upgrade::OnUpgrade>().map(|pending| {
         OnUpgrade::new(async move {
             let upgraded = pending.await?;
-            Ok::<_, BoxError>(Upgraded::new(TokioIo::new(upgraded)))
+            Ok::<_, BoxError>(Upgraded::from_tokio(TokioIo::new(upgraded)))
         })
     });
     let mut info = conn.clone();

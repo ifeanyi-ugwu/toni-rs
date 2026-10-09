@@ -33,7 +33,7 @@ impl poem::Endpoint for PoemEndpoint {
         let upgrade = req.take_upgrade().ok().map(|pending| {
             OnUpgrade::new(async move {
                 let upgraded = pending.await.map_err(|error| BoxError::from(error.to_string()))?;
-                Ok::<_, BoxError>(Upgraded::new(upgraded))
+                Ok::<_, BoxError>(Upgraded::from_tokio(upgraded))
             })
         });
         let body: BoxBody<Bytes, io::Error> = req.take_body().into();

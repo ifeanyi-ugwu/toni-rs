@@ -14,7 +14,8 @@ use tonic_health::ServingStatus;
 use ulo::{Bound, BoundAddr, BoxError, DrainToken, Mounted, Transport, TypeName};
 use ulo_http::stage::Stage;
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
-use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls, TlsAcceptor};
+use ulo_net::rustls::ServerConfig;
+use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::prepare::{Failure, Failures, Names, zero_bound, zero_count};
 use ulo_transport::{Admission, Count};
 
@@ -63,7 +64,7 @@ pub struct Server {
 /// What `prepare` built for `bind`.
 pub(crate) struct Prepared {
     endpoints: Vec<Endpoint>,
-    tls: Option<TlsAcceptor>,
+    tls: Option<Arc<ServerConfig>>,
     dispatcher: Arc<Dispatcher>,
     health: GrpcHealth,
     /// Every service a handler's path names, which health reports.
@@ -321,7 +322,7 @@ impl ulo::Server for Server {
         let tls = match &self.tls {
             None => None,
             Some(tls) => match tls.load(&[b"h2".as_slice()]) {
-                Ok(acceptor) => Some(acceptor),
+                Ok(config) => Some(config),
                 Err(error) => {
                     failures.push(error.to_string());
                     None

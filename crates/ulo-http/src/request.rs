@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use http::request::Parts;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, Method, Uri};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use futures_io::{AsyncRead, AsyncWrite};
 use ulo::{BoxError, BoxFuture};
 
 use crate::body::HttpBody;
@@ -133,7 +133,13 @@ impl fmt::Debug for OnUpgrade {
     }
 }
 
-/// An upgraded connection's I/O, whatever the backend's type.
+/// An upgraded connection's I/O, whatever the backend's type, as `futures-io`'s `AsyncRead` and
+/// `AsyncWrite`.
+///
+/// With the `tokio-io` feature it is also built from and implements tokio's traits, both through
+/// `tokio-util`'s `compat` layer: a backend whose upgraded I/O is tokio's hands it to
+/// `Upgraded::from_tokio`, and an upgrade handler written against tokio reads and writes it
+/// through tokio's traits, whichever of the two built it.
 pub struct Upgraded {
     io: Pin<Box<dyn Io>>,
 }
@@ -146,10 +152,17 @@ impl Upgraded {
     pub fn new(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) -> Self {
         Upgraded { io: Box::pin(io) }
     }
+
+    /// An upgraded connection whose I/O implements tokio's traits.
+    #[cfg(feature = "tokio-io")]
+    pub fn from_tokio(io: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static) -> Self {
+        use tokio_util::compat::TokioAsyncReadCompatExt;
+        Upgraded::new(io.compat())
+    }
 }
 
 impl AsyncRead for Upgraded {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
         self.io.as_mut().poll_read(cx, buf)
     }
 }
@@ -163,7 +176,35 @@ impl AsyncWrite for Upgraded {
         self.io.as_mut().poll_flush(cx)
     }
 
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.io.as_mut().poll_close(cx)
+    }
+}
+
+// Each call wraps the boxed I/O in a fresh `Compat`, which holds nothing across reads and writes
+// besides a seek position these impls never use.
+#[cfg(feature = "tokio-io")]
+impl tokio::io::AsyncRead for Upgraded {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<io::Result<()>> {
+        use tokio_util::compat::FuturesAsyncReadCompatExt;
+        tokio::io::AsyncRead::poll_read(Pin::new(&mut self.io.as_mut().compat()), cx, buf)
+    }
+}
+
+#[cfg(feature = "tokio-io")]
+impl tokio::io::AsyncWrite for Upgraded {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        use tokio_util::compat::FuturesAsyncWriteCompatExt;
+        tokio::io::AsyncWrite::poll_write(Pin::new(&mut self.io.as_mut().compat_write()), cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        use tokio_util::compat::FuturesAsyncWriteCompatExt;
+        tokio::io::AsyncWrite::poll_flush(Pin::new(&mut self.io.as_mut().compat_write()), cx)
+    }
+
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.io.as_mut().poll_shutdown(cx)
+        use tokio_util::compat::FuturesAsyncWriteCompatExt;
+        tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut self.io.as_mut().compat_write()), cx)
     }
 }

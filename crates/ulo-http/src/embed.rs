@@ -44,7 +44,6 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use bytes::Bytes;
-use hyper_util::rt::TokioIo;
 use ulo::{AppHandle, Bound, BoxError, BoxFuture, DrainToken, Mounted, Phase, TypeName};
 use ulo_transport::Count;
 use ulo_transport::prepare::{Failure, Failures};
@@ -54,7 +53,7 @@ use crate::backend::HttpConfig;
 use crate::body::HttpBody;
 use crate::pre_dispatch::{Entry, PreDispatch, Step, Supply};
 use crate::render;
-use crate::request::{ConnInfo, OnUpgrade, Request, Upgraded};
+use crate::request::{ConnInfo, OnUpgrade, Request};
 use crate::response::Response;
 use crate::router::pattern::Pattern;
 use crate::server::{PreparedApp, prepare_app, upgrades_bound, upgrades_close, upgrades_drain};
@@ -94,6 +93,16 @@ pub trait Embed: Send + Sync + 'static {
         Self: Sized,
     {
         embedded
+    }
+
+    /// Takes the host's upgrade future out of a request's extensions, for [`Service`]'s
+    /// `tower::Service` impl, which hands it to the app as [`Request::upgrade`] when the host
+    /// declares `upgrades`. A hyper-based host stores hyper's `OnUpgrade` there, and its adapter
+    /// converts it, as axum's does. `None`, the default, takes nothing; an adapter that builds the
+    /// app's request itself for [`Service::respond`] sets `upgrade` there instead.
+    fn take_upgrade(extensions: &mut http::Extensions) -> Option<OnUpgrade> {
+        let _ = extensions;
+        None
     }
 }
 
@@ -720,7 +729,7 @@ struct Shared {
     /// Fired when `serve` ends, with or without the host future.
     finished: Notice,
     app: OnceLock<AppHandle>,
-    /// `A::limits().upgrades`: whether a hyper upgrade future in the request is taken.
+    /// `A::limits().upgrades`: whether the upgrade future `Embed::take_upgrade` finds is handed on.
     upgrades: bool,
     /// The normalized `.nested_at` prefix, set at `prepare`; read only when the host leaves the
     /// prefix on the path (`Embed::STRIPS_PREFIX == false`).
@@ -959,8 +968,8 @@ impl Future for Stopping {
 /// Each tower request becomes the app's [`Request`]: its parts as they arrive, extensions
 /// included, with what each [`Embedded::forward`] copy read off them added, its body as an
 /// `HttpBody`, the connection from a `ConnInfo` in its extensions (an adapter's layer puts the
-/// host's connection there; without one only the HTTP version is known), and hyper's upgrade
-/// future when the request carries one and the host declares `upgrades`. The response is the
+/// host's connection there; without one only the HTTP version is known), and the upgrade future
+/// [`Embed::take_upgrade`] finds when the host declares `upgrades`. The response is the
 /// app's, problem details for an error, with [`Routing`](crate::Routing) in its extensions; the
 /// service never fails.
 pub struct Service<A: Embed> {
@@ -1049,13 +1058,7 @@ impl<A: Embed> Service<A> {
         B: http_body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
-        let pending = head.extensions.remove::<hyper::upgrade::OnUpgrade>();
-        let upgrade = pending.filter(|_| self.shared.upgrades).map(|pending| {
-            OnUpgrade::new(async move {
-                let upgraded = pending.await?;
-                Ok::<_, BoxError>(Upgraded::new(TokioIo::new(upgraded)))
-            })
-        });
+        let upgrade = A::take_upgrade(&mut head.extensions).filter(|_| self.shared.upgrades);
         let conn = head.extensions.get::<ConnInfo>().cloned().unwrap_or_else(|| ConnInfo::new(head.version));
         Request { head, body: HttpBody::new(body), conn, upgrade }
     }

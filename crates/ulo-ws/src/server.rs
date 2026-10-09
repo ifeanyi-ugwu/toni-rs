@@ -16,7 +16,8 @@ use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use ulo::{AppHandle, Bound, BoundAddr, BoxError, DrainToken, Mounted, Timer, Transport};
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
-use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls, TlsAcceptor};
+use ulo_net::rustls::ServerConfig;
+use ulo_net::{Activation, ActivationError, Endpoint, EndpointSpec, ListenerName, Tls};
 use ulo_transport::Count;
 use ulo_transport::prepare::{Failures, zero_bound};
 
@@ -62,7 +63,7 @@ pub struct Server {
 /// What `prepare` built for `bind`.
 pub(crate) struct Prepared {
     endpoints: Vec<Endpoint>,
-    tls: Option<TlsAcceptor>,
+    tls: Option<Arc<ServerConfig>>,
     routes: Arc<Routes>,
 }
 
@@ -256,7 +257,7 @@ impl ulo::Server for Server {
         let tls = match &self.tls {
             None => None,
             Some(tls) => match tls.load(&[b"http/1.1".as_slice()]) {
-                Ok(acceptor) => Some(acceptor),
+                Ok(config) => Some(config),
                 Err(error) => {
                     failures.push(error.to_string());
                     None

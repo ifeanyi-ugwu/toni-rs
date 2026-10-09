@@ -10,6 +10,11 @@ homepage.workspace = true
 keywords = ["ulo", "http", "web", "framework"]
 categories = ["web-programming::http-server", "asynchronous"]
 
+[features]
+# `Upgraded` built from and implementing tokio's I/O traits as well as `futures-io`'s, for a
+# backend, an embedding adapter or an upgrade handler written against tokio.
+tokio-io = ["dep:tokio", "dep:tokio-util"]
+
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-http-macros = { path = "../ulo-http-macros" }
@@ -17,25 +22,28 @@ ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
 futures-core.workspace = true
+# The I/O traits an upgraded connection implements.
+futures-io.workspace = true
 futures-util.workspace = true
 headers.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
-# The upgrade future a hyper-based host stores on a request, taken by `embed::Service`, and its
-# I/O as tokio's traits.
-hyper.workspace = true
-hyper-util = { workspace = true, features = ["tokio"] }
 multer.workspace = true
 percent-encoding.workspace = true
 pin-project-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-# The I/O traits an upgraded connection implements. Every clock is the app's `Timer`.
-tokio = { workspace = true, features = ["io-util"] }
+# `tokio-io`: tokio's I/O traits on `Upgraded`, through `tokio-util`'s `compat` layer. Every
+# clock is the app's `Timer`.
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, features = ["compat"], optional = true }
 tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 ulo-tokio = { path = "../ulo-tokio" }
-tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
+# `futures-io`'s extension traits, through which `tests/upgraded.rs` drives an `Upgraded`.
+futures.workspace = true
+# `io-util`: tokio's extension traits, for the same tests' `tokio-io` cases.
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync", "io-util"] }

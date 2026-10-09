@@ -1,10 +1,10 @@
 //! The accept loop every socket-owning `ulo` server shares (transports DESIGN §3.7): the HTTP
 //! backend over hyper, the gRPC server and the standalone WebSocket server.
 //!
-//! [`Serve`] takes the listeners `ulo-net` bound and an optional TLS acceptor, accepts on every
-//! listener, performs each TLS handshake under [`ServeConfig::handshake_timeout`], and spawns one
-//! task per accepted connection into a `JoinSet`, handing the connection to a closure the
-//! consumer supplies. The closure is where the three servers differ: it drives hyper's `auto`,
+//! [`Serve`] takes the listeners `ulo-net` bound and an optional TLS configuration, accepts on
+//! every listener, performs each TLS handshake through `tokio-rustls` under
+//! [`ServeConfig::handshake_timeout`], and spawns one task per accepted connection into a
+//! `JoinSet`, handing the connection to a closure the consumer supplies. The closure is where the three servers differ: it drives hyper's `auto`,
 //! `http2` or `http1` builder over [`Accepted::io`], and starts the connection's graceful shutdown
 //! when [`Accepted::draining`] resolves.
 //!

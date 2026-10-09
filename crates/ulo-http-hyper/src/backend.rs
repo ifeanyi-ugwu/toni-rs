@@ -8,7 +8,8 @@ use hyper_util::server::conn::auto;
 use ulo::BoxError;
 use ulo_http::{AppService, Backend, BackendLimits, HttpConfig};
 use ulo_hyper_serve::{Accepted, Serve, ServeConfig};
-use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_net::BoundListener;
+use ulo_net::rustls::ServerConfig;
 use ulo_transport::Count;
 
 use crate::convert;
@@ -79,7 +80,7 @@ impl Backend for Hyper {
     async fn bind(
         &mut self,
         listeners: Vec<BoundListener>,
-        tls: Option<TlsAcceptor>,
+        tls: Option<Arc<ServerConfig>>,
         svc: AppService,
         cfg: &HttpConfig,
     ) -> Result<(), BoxError> {

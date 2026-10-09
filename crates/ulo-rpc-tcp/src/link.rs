@@ -10,8 +10,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_rustls::TlsAcceptor;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
-use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, Tls, TlsAcceptor};
+use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, Tls};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link, Outbound, Pattern, ReplyPath, ReplyTo,
@@ -164,7 +165,7 @@ impl Link for Tcp {
         }
         let acceptor = match &self.tls {
             Some(tls) => match tls.load(&[]) {
-                Ok(acceptor) => Some(acceptor),
+                Ok(config) => Some(TlsAcceptor::from(config)),
                 Err(error) => {
                     problems.push(error.to_string());
                     None

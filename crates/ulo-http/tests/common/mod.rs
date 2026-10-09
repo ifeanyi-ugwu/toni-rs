@@ -10,7 +10,8 @@ use http_body::Body as _;
 use tokio::sync::Notify;
 use ulo::BoxError;
 use ulo_http::{AppService, Backend, BackendLimits, HttpConfig, Response, StatusCode};
-use ulo_net::{BoundListener, TlsAcceptor};
+use ulo_net::BoundListener;
+use ulo_net::rustls::ServerConfig;
 
 /// Keeps the `AppService` it is handed at `bind`.
 #[derive(Clone, Default)]
@@ -33,7 +34,7 @@ impl Backend for Keeper {
         BackendLimits::NONE
     }
 
-    async fn bind(&mut self, _listeners: Vec<BoundListener>, _tls: Option<TlsAcceptor>, svc: AppService, _cfg: &HttpConfig) -> Result<(), BoxError> {
+    async fn bind(&mut self, _listeners: Vec<BoundListener>, _tls: Option<Arc<ServerConfig>>, svc: AppService, _cfg: &HttpConfig) -> Result<(), BoxError> {
         let _ = self.svc.set(svc);
         Ok(())
     }

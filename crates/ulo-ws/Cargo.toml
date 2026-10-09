@@ -12,7 +12,8 @@ categories = ["web-programming::websocket", "asynchronous"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: the gateway reads `Upgraded` through tokio's traits until stage d moves it to async-tungstenite.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 ulo-hyper-serve = { path = "../ulo-hyper-serve" }
 ulo-net = { path = "../ulo-net" }
 ulo-transport = { path = "../ulo-transport" }

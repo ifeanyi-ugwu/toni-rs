@@ -16,7 +16,8 @@ rocket = ["dep:rocket"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: the echo upgrade handler reads `Upgraded` through tokio's traits.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 ulo-http-hyper = { path = "../ulo-http-hyper" }
 ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }

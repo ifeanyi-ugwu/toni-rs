@@ -27,7 +27,10 @@
 mod layer;
 mod run;
 
+use hyper_util::rt::TokioIo;
+use ulo::BoxError;
 use ulo_http::embed::{Embed, EmbedLimits};
+use ulo_http::{OnUpgrade, Upgraded};
 
 pub use layer::{HostLayer, HostService};
 pub use run::run;
@@ -44,6 +47,15 @@ impl Embed for Axum {
 
     fn limits() -> EmbedLimits {
         EmbedLimits::NONE.peer_addr(false).forward_miss(false).tls_info(false)
+    }
+
+    /// Hyper's `OnUpgrade`, which axum's server leaves in a request's extensions.
+    fn take_upgrade(extensions: &mut http::Extensions) -> Option<OnUpgrade> {
+        let pending = extensions.remove::<hyper::upgrade::OnUpgrade>()?;
+        Some(OnUpgrade::new(async move {
+            let upgraded = pending.await?;
+            Ok::<_, BoxError>(Upgraded::from_tokio(TokioIo::new(upgraded)))
+        }))
     }
 }
 

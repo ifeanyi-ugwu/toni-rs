@@ -44,7 +44,7 @@ pub struct Server<B: Backend> {
 /// What `prepare` built for `bind`.
 pub(crate) struct Prepared {
     pub(crate) endpoints: Vec<ulo_net::Endpoint>,
-    pub(crate) tls: Option<ulo_net::TlsAcceptor>,
+    pub(crate) tls: Option<Arc<ulo_net::rustls::ServerConfig>>,
     pub(crate) service: AppService,
 }
 
@@ -402,7 +402,7 @@ impl<B: Backend> ulo::Server for Server<B> {
                 None
             }
             Some(tls) => match tls.load(&[b"h2".as_slice(), b"http/1.1".as_slice()]) {
-                Ok(acceptor) => Some(acceptor),
+                Ok(config) => Some(config),
                 Err(error) => {
                     failures.push(error.to_string());
                     None

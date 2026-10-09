@@ -12,7 +12,8 @@ categories = ["web-programming::http-server"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-ulo-http = { path = "../ulo-http" }
+# `tokio-io`: poem's upgraded I/O implements tokio's traits.
+ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 bytes.workspace = true
 http.workspace = true
 http-body.workspace = true
