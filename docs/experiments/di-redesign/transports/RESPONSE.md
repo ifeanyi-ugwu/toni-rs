@@ -1521,3 +1521,31 @@ the MQTT link refuses with `RetryAfter`, Receive Maximum stays at 65,535, and F3
 - **The MQTT row states why MQTT refuses.** Mosquitto 2.0.18 doesn't redeliver an unacknowledged shared-subscription message to another member when a session ends, whether by clean close, unsubscribe, kill or keep-alive timeout, so the link can't safely hold work at the broker. Cite the probe, so the decision isn't relitigated from the specification's "should" alone.
 - **F355 stays documented, now with its full cause.** Messages queued behind a full window are dropped with the session. Receive Maximum at 65,535 keeps that window as wide as the broker allows, which keeps the case rare.
 - **The behaviour is the broker's, not MQTT's.** The specification says a server *should* redeliver, so other brokers (EMQX, HiveMQ) may well do it. If someone later needs MQTT backpressure on such a broker, the shape is an opt-in on the link, verified by running the drain scenario against that specific broker, never assumed from the specification. Until then, refusing is the safe default everywhere.
+
+## Thirty-sixth response: the runtime-free RPC hub's sign-offs
+
+Received 2026-10-09, answering `divergences/runtime-c.md` (S1–S8) and F363. The user signed it off the same day, with three notes for the build. The core check the response calls `NoTimer` is `TimerMissing` in the code, and S1 replaces it with a core `RuntimeMissing` refused at `listen()` for an app that binds any transport, `.timer(..)` alone staying valid for an app that binds none. S1, S2 (`RpcClient::timeout`) and S7 (the wiring error naming `.runtime(..)`) build in runtime stage d, which rewrites `ulo-ws` and moves every transport's test apps from `.timer(..)` to `.runtime(..)` anyway; F363 and S8 build in stage e. F364's count at sign-off was one failure in 162 runs.
+
+Most of these are accepted. F363's fix belongs in a different place than proposed, and S1 is better as a core check. Putting the handoff in the right place also answers S8.
+
+**F363. Fix it, but inside the link, not the client.** A handoff onto the *client's* runtime doesn't help when that runtime is smol and the link needs tokio's reactor: the link's futures would just fail on a different executor. What a tokio-based link needs is *its own* runtime, so make the link carry it. Each tokio link captures a tokio handle when it is constructed (the way `Tokio::current()` does, plus an explicit `with_handle(h)` form) and runs its I/O there internally, handing results back over a channel. The link is then self-contained: callable from smol, from tokio, from a plain thread. The hub stays runtime-free, and the client doesn't need to know what its link runs on.
+
+This also settles **S8**. The links' 26 `tokio::spawn` calls are exactly the calls that panic off a tokio thread. Spawning on the link's own captured handle instead gives each of them a home, without handing the link the app. Do both in stage e.
+
+With that, stage e's proof can claim what we wanted: a smol application calling through a tokio link, and a smol server, both working.
+
+**S5. Accepted, including removing the unit form.** Capturing the handle once and failing clearly at that one call is better than failing later on some thread that has no runtime. Nothing is published, so the spelling change costs nothing.
+
+**S3. Accepted.** "A client can't exist without a runtime" is a stronger guarantee than the branch it replaces. A runtime that has already shut down, with a `warn` and the connection still released, is the only honest case left, and the test covers it.
+
+**S1. Make it a core check.** A runtime is now a core concept, exactly as the timer was. The timer was already required at `listen()`, and `Runtime` includes `Timer`. So generalise that check rather than adding a flag to `Server`: an app that binds any transport needs a runtime, refused at `listen()` with a core error naming `.runtime(..)`. Every transport now spawns through the runtime, so there is no server for which the flag would be false. `.timer(..)` alone stays valid for standalone apps (jobs and CLIs that only need a clock).
+
+**S2. Accepted, plus one builder method.** One constructor taking the link and the runtime is right. Add `.timeout(Bound)` on the client too, matching `RpcClientModule::timeout`. A client built directly in `main` shouldn't be stuck with the 5-second default when the module-built one isn't.
+
+**S4. Accepted.** In-flight calls keeping the link alive until they end is the correct ownership, and the last drop closing it is what F327 asked for.
+
+**S6. Accepted.** Building the watch from the primitive the other crates use, already in the lockfile, is the minimal choice. The register-before-read ordering is the detail that makes it correct.
+
+**S7. Accepted,** provided the wiring error names `.runtime(..)`, so a timer-only app learns what to change.
+
+**F364.** Right to keep hunting rather than mark it flaky. Something that fails once in 43 runs is a race with a narrow window, the same kind as the earlier drain bugs. The full output from the loop is what will find it.
