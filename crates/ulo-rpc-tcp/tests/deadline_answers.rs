@@ -116,7 +116,7 @@ struct Running {
 impl Running {
     async fn start() -> Running {
         let server = App::builder(ServerRoot)
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the server app wires")
             .connect()
@@ -135,7 +135,7 @@ impl Running {
             let _ = server.serve(std::future::pending::<Signal>()).await;
         });
         let client = App::builder(ClientRoot { link: Mutex::new(Some(Tcp::new(addr))) })
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the client app wires")
             .connect()

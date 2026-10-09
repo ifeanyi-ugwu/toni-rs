@@ -2,11 +2,11 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures_channel::mpsc::UnboundedReceiver;
 use futures_core::Stream;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use serde::Serialize;
-use tokio::sync::mpsc::UnboundedReceiver;
 use ulo::{AppHandle, BoxError, ExecutionRef, Ext, Extensions, Inputs, LookupError, Timer, Transport};
 use ulo_transport::{CallError, ExtractError, FromCall, IntoReply, IntoReplyError};
 

@@ -77,7 +77,7 @@ impl Module for ClientRoot {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_holding_no_call_stops_without_waiting_out_its_drain() {
     let server = App::builder(ServerRoot)
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .drain_timeout(DRAIN)
         .wire()
         .expect("the server wires")
@@ -93,7 +93,7 @@ async fn a_server_holding_no_call_stops_without_waiting_out_its_drain() {
     let serving = tokio::spawn(async move { server.serve(std::future::pending::<Signal>()).await });
 
     let client = App::builder(ClientRoot { link: Mutex::new(Some(Tcp::new(addr))) })
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .wire()
         .expect("the client wires")
         .connect()

@@ -406,8 +406,8 @@ const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// `attempt`, given the time left before `deadline`, retried while it fails with one of the
 /// three errors a group coordinator answers while it loads or moves, which librdkafka classes
 /// retriable, and a retry still fits before `deadline`; the last error is returned once one does
-/// not. Any other error is returned at once. `sleep` and `now` are the clock: `anchor` runs on a
-/// blocking thread, where the app's `Timer`, which a link is not handed, would not run either.
+/// not. Any other error is returned at once. `sleep` and `now` are the clock: `anchor` runs its
+/// broker calls on a blocking thread, where the app's `Timer`, an async clock, cannot be awaited.
 fn coordinator_retried<T>(
     deadline: Instant,
     mut attempt: impl FnMut(Duration) -> KafkaResult<T>,

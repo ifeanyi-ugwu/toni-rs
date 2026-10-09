@@ -77,7 +77,9 @@ async-trait = "0.1.86"
 axum = { version = "0.8", default-features = false }
 bytes = "1"
 ciborium = "0.2"
+event-listener = "5.4"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-channel = "0.3"
 futures-core = "0.3"
 futures-io = "0.3"
 futures-timer = "3"

@@ -19,27 +19,28 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use futures_channel::mpsc::{self, UnboundedSender};
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
-use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::sync::watch;
-use tokio::task::JoinSet;
+use futures_util::future::{Either, select};
 use tracing::{Instrument, Span};
 use ulo::{
     AppHandle, BoxError, BoxFuture, CancelReason, EndStream, ExecOptions, Execution, ExecutionRef, LateOutcome,
-    MountedHandler, Shape, Timer, Transport,
+    MountedHandler, Runtime, Shape, Timer, Transport,
 };
-use ulo_transport::{Admission, CallError, Detail, Details, ErrorKind, Permit, Tracked, span};
+use ulo_transport::{Admission, CallError, Detail, Details, ErrorKind, Permit, TaskSet, Tracked, span};
 
 use crate::__private::{HandlerFn, Kind};
 use crate::codec::Codec;
 use crate::frame::{Data, ErrorBody, Frame};
 use crate::link::{Ack, Capabilities, Delivery, DeliveryMode, FrameTooLarge, FrameUnencodable, Pattern, ReplyPath};
 use crate::transport::{Body, CallHeaders, CxInner, LinkInfo, NoHandler, Reply, Rpc, RpcCx};
+use crate::watch::Watch;
 
 /// The `ErrorInfo` domain of every reason this transport writes.
 pub(crate) const DOMAIN: &str = "ulo.rpc";
@@ -48,6 +49,8 @@ pub(crate) const DOMAIN: &str = "ulo.rpc";
 pub(crate) struct Shared {
     pub(crate) app: AppHandle,
     pub(crate) timer: Arc<dyn Timer>,
+    /// What every call's task is spawned on.
+    pub(crate) runtime: Arc<dyn Runtime>,
     pub(crate) routes: HashMap<String, Route>,
     pub(crate) codec: Codec,
     pub(crate) capabilities: Capabilities,
@@ -61,7 +64,7 @@ pub(crate) struct Shared {
     /// Events no handler took, counted for the log line each one writes.
     pub(crate) unhandled_events: AtomicU64,
     /// What `Server::drain` waits for beside the live executions the core waits for.
-    pub(crate) settling: watch::Sender<Settling>,
+    pub(crate) settling: Watch<Settling>,
 }
 
 /// What the drain window waits for that opens no execution: the link's inbound stream read to
@@ -128,7 +131,7 @@ struct Incoming {
 
 /// Routes one delivery, in arrival order: a call is opened and spawned into `tasks`; a frame for a
 /// call in flight reaches it at once.
-pub(crate) fn accept(shared: &Arc<Shared>, delivery: Delivery, tasks: &mut JoinSet<()>) {
+pub(crate) fn accept(shared: &Arc<Shared>, delivery: Delivery, tasks: &mut TaskSet) {
     let Delivery { frame, reply, ack } = delivery;
     match frame {
         Frame::Req { id, pattern, headers, data } => {
@@ -142,7 +145,7 @@ pub(crate) fn accept(shared: &Arc<Shared>, delivery: Delivery, tasks: &mut JoinS
         Frame::Open { id, pattern, headers } => {
             // Unbounded: the reserved `credit` frame is the window a bound needs, and blocking here
             // would stall every call on the link behind one slow handler.
-            let (feed, items) = mpsc::unbounded_channel();
+            let (feed, items) = mpsc::unbounded();
             let incoming =
                 Incoming { id: Some(id), arrived: Arrived::Open, pattern, headers, body: Body::Stream(items), feed: Some(feed) };
             start(shared, incoming, reply, ack, tasks);
@@ -150,7 +153,7 @@ pub(crate) fn accept(shared: &Arc<Shared>, delivery: Delivery, tasks: &mut JoinS
         Frame::In { id, data } => {
             let feed = shared.calls().get(&id).and_then(|live| live.inbound.clone());
             if let Some(feed) = feed {
-                let _ = feed.send(data);
+                let _ = feed.unbounded_send(data);
             }
             ack.ack();
         }
@@ -175,7 +178,7 @@ pub(crate) fn accept(shared: &Arc<Shared>, delivery: Delivery, tasks: &mut JoinS
     }
 }
 
-fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack: Ack, tasks: &mut JoinSet<()>) {
+fn start(shared: &Arc<Shared>, incoming: Incoming, reply: Option<ReplyPath>, ack: Ack, tasks: &mut TaskSet) {
     let link = LinkInfo { name: shared.link, peer: reply.as_ref().and_then(ReplyPath::peer_addr) };
     // An event's reply path carries its peer and nothing else.
     let reply = if incoming.arrived == Arrived::Evt { None } else { reply };
@@ -246,7 +249,7 @@ fn context(shared: &Shared, exec: ExecutionRef, pattern: &str, headers: CallHead
 /// A request or streamed request naming a pattern nothing handles: the global error handlers
 /// receive `Unavailable` whose source is [`NoHandler`], answered `reason: "pattern_unhandled"`
 /// when none claims it. An event is logged, counted and rejected, so a broker cannot loop it.
-fn unhandled(shared: &Arc<Shared>, incoming: Incoming, link: LinkInfo, reply: Option<ReplyPath>, ack: Ack, tasks: &mut JoinSet<()>) {
+fn unhandled(shared: &Arc<Shared>, incoming: Incoming, link: LinkInfo, reply: Option<ReplyPath>, ack: Ack, tasks: &mut TaskSet) {
     let Some((id, reply)) = incoming.id.zip(reply).filter(|_| incoming.arrived != Arrived::Evt) else {
         let count = shared.unhandled_events.fetch_add(1, Ordering::Relaxed) + 1;
         tracing::warn!(pattern = incoming.pattern.as_str(), link = shared.link, unhandled = count, "an event no handler takes was rejected");
@@ -348,14 +351,11 @@ enum Outcome {
 async fn expired(shared: &Shared, handler: &MountedHandler<Rpc>, exec: &ExecutionRef, cx: &RpcCx) -> Option<Result<Reply, BoxError>> {
     let recovering = ulo::recover(Some(handler), exec, cx, BoxError::from(timeout_error()));
     match shared.grace {
-        Some(grace) => {
-            let sleep = shared.timer.sleep(grace);
-            tokio::select! {
-                biased;
-                outcome = recovering => Some(outcome),
-                () = sleep => None,
-            }
-        }
+        // The recovery is polled before the grace's sleep.
+        Some(grace) => match select(pin!(recovering), shared.timer.sleep(grace)).await {
+            Either::Left((outcome, _)) => Some(outcome),
+            Either::Right(_) => None,
+        },
         None => Some(recovering.await),
     }
 }
@@ -552,8 +552,8 @@ async fn send(reply: &ReplyPath, exec: &ExecutionRef, id: u64, frame: Frame) -> 
 
 /// A refusal written without an execution, over the in-flight limit or once the drain began,
 /// sent from a task of its own and counted in [`Settling::refusals`] until it is sent or dropped.
-fn refuse(shared: &Arc<Shared>, tasks: &mut JoinSet<()>, reply: ReplyPath, id: u64, error: ErrorBody) {
-    shared.settling.send_modify(|settling| settling.refusals += 1);
+fn refuse(shared: &Arc<Shared>, tasks: &mut TaskSet, reply: ReplyPath, id: u64, error: ErrorBody) {
+    shared.settling.modify(|settling| settling.refusals += 1);
     let pending = Refusing(Arc::clone(shared));
     tasks.spawn(async move {
         if let Err(err) = reply.send(Frame::Err { id, error }).await {
@@ -568,7 +568,7 @@ struct Refusing(Arc<Shared>);
 
 impl Drop for Refusing {
     fn drop(&mut self) {
-        self.0.settling.send_modify(|settling| settling.refusals -= 1);
+        self.0.settling.modify(|settling| settling.refusals -= 1);
     }
 }
 
@@ -649,22 +649,22 @@ enum Ended<T> {
     Cancelled(Option<CancelReason>),
 }
 
-/// `fut` raced against the execution's cancellation and its deadline. A deadline that passes
-/// cancels the execution `Deadline`, so every later race ends on the cancellation, which is
-/// polled first, and the expired sleep is never polled again.
+/// `fut` raced against the execution's cancellation and its deadline, polled in that order:
+/// the cancellation, `fut`, the deadline. A deadline that passes cancels the execution `Deadline`,
+/// so every later race ends on the cancellation, which is polled first, and the expired sleep is
+/// never polled again.
 ///
-/// The cancellation is written inside the expiry branch's own future, before `select!` drops
+/// The cancellation is written inside the expiry branch's own future, before the race drops
 /// `fut`: a handler's future dropped at the deadline reads `Deadline` from its execution.
 async fn until_ended<F: Future>(exec: &ExecutionRef, deadline: &mut Option<BoxFuture<'static, ()>>, fut: F) -> Ended<F::Output> {
     let expired = async {
         expiry(deadline).await;
         exec.cancel_with(CancelReason::Deadline);
     };
-    tokio::select! {
-        biased;
-        () = exec.cancelled() => Ended::Cancelled(exec.cancel_reason()),
-        out = fut => Ended::Done(out),
-        () = expired => Ended::Cancelled(Some(CancelReason::Deadline)),
+    match select(pin!(exec.cancelled()), select(pin!(fut), pin!(expired))).await {
+        Either::Left(_) => Ended::Cancelled(exec.cancel_reason()),
+        Either::Right((Either::Left((out, _)), _)) => Ended::Done(out),
+        Either::Right((Either::Right(_), _)) => Ended::Cancelled(Some(CancelReason::Deadline)),
     }
 }
 

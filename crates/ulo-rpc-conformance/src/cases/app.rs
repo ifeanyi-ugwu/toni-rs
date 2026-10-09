@@ -467,7 +467,7 @@ impl Server {
 
 async fn bound<B: Broker>(broker: &B, probe: Probe, mounts: Mounts) -> Result<App<Serving>, StartupError> {
     App::builder(ServerRoot { probe, mounts })
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .drain_timeout(DRAIN)
         .wire()?
         .connect()
@@ -555,7 +555,7 @@ impl Client {
 pub(crate) async fn client<B: Broker>(broker: &B, servers: &[&Server]) -> Client {
     let addresses: Vec<BoundAddr> = servers.iter().flat_map(|server| server.addresses.iter().cloned()).collect();
     let app = App::builder(ClientRoot { link: Mutex::new(Some(broker.client_link(&addresses))) })
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .wire()
         .unwrap_or_else(|error| crate::startup_failed!("the conformance client did not wire: {}", report(&error)))
         .connect()

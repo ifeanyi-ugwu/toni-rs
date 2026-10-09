@@ -12,7 +12,7 @@ impl Harness for OnTokio {
     type Runtime = Tokio;
 
     fn runtime() -> Tokio {
-        Tokio
+        Tokio::current()
     }
 
     fn block_on<F: Future>(fut: F) -> F::Output {

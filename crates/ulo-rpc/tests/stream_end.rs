@@ -180,7 +180,7 @@ impl Running {
         let (deliveries, mut receiver) = mpsc::unbounded_channel::<Delivery>();
         let inbound: Inbound = Box::pin(stream::poll_fn(move |cx| receiver.poll_recv(cx)));
         let app = App::builder(Root)
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .wire()
             .expect("the app wires")
             .connect()

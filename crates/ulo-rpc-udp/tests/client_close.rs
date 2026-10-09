@@ -41,7 +41,7 @@ async fn closing_the_client_app_releases_its_socket() {
     let peer = UdpSocket::bind("127.0.0.1:0").await.expect("a loopback port");
     let addr = peer.local_addr().expect("the peer's address");
     let app = App::builder(ClientRoot { link: Mutex::new(Some(Udp::new(addr))) })
-        .timer(ulo_tokio::Timer)
+        .runtime(ulo_tokio::Tokio::current())
         .wire()
         .expect("the client app wires")
         .connect()

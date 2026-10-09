@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ulo::{Bound, BoxError, Dep, Module, ModuleDef, ModuleIdentity, Timer};
+use ulo::{Bound, BoxError, Dep, Module, ModuleDef, ModuleIdentity, Runtime};
 
 use crate::client::RpcClient;
 use crate::link::Link;
@@ -19,8 +19,9 @@ use crate::link::Link;
 /// ```
 ///
 /// The link connects lazily, on the client's first call, so `connect` does no network I/O for it.
-/// Every timeout runs on the app's `Timer`, which the client reads as `Dep<dyn Timer>`: an app
-/// without one fails `wire()` naming the missing binding. The binding's `on_destroy` hook calls the
+/// The client spawns its tasks on the app's runtime, which also times its calls, reading it as
+/// `Dep<dyn Runtime>`: an app without one, `.timer(..)` alone included, fails `wire()` naming the
+/// missing binding. The binding's `on_destroy` hook calls the
 /// link's `close`, so the client's connection ends with the app rather than when the runtime
 /// drops it; a call made after that connects again.
 ///
@@ -71,9 +72,9 @@ impl<L: Link> Module for RpcClientModule<L> {
             let link = Arc::clone(&self.link);
             let closing = Arc::clone(&self.link);
             let timeout = self.timeout;
-            m.singleton(move |timer: Dep<dyn Timer>| {
+            m.singleton(move |runtime: Dep<dyn Runtime>| {
                 let link = Arc::clone(&link);
-                async move { RpcClient::new(link, timeout, timer.into_arc()) }
+                async move { RpcClient::of_module(link, timeout, runtime.into_arc()) }
             })
             .on_destroy(move || {
                 let link = Arc::clone(&closing);

@@ -17,15 +17,19 @@ ulo-transport = { path = "../ulo-transport" }
 # `serde` so `Bytes` and `Payload<Bytes>` travel as a CBOR byte string.
 bytes = { workspace = true, features = ["serde"] }
 ciborium.workspace = true
+# No runtime here, as in the core: tasks are spawned through the app's `Runtime`, and these are
+# the runtime-free primitives in place of `tokio::sync`. The client's connection lock.
+async-lock.workspace = true
+# The server's close signal and drain state, the primitive `async-lock` is built on.
+event-listener.workspace = true
+# A streamed request's items and each call's reply frames.
+futures-channel.workspace = true
 futures-core.workspace = true
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
-# Spawning per-delivery tasks and the client's reply router; transports may depend on tokio, the
-# core may not (transports DESIGN §0.5).
-tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 tracing.workspace = true
 
 [dev-dependencies]
 ulo-tokio = { path = "../ulo-tokio" }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

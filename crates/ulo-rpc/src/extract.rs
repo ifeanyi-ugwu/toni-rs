@@ -7,6 +7,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_core::stream::BoxStream;
+use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use ulo_transport::{ExtractError, FromCall};
 
@@ -79,7 +80,7 @@ impl<T: DeserializeOwned + Send + 'static> FromCall<Rpc> for Inbound<T> {
             let cx = cx.clone();
             async move {
                 let mut receiver = receiver?;
-                let data = receiver.recv().await?;
+                let data = receiver.next().await?;
                 match decode::<T>(&cx, &data) {
                     Ok(item) => Some((Ok(item), Some(receiver))),
                     Err(err) => Some((Err(err), None)),

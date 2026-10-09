@@ -8,11 +8,11 @@
 //!     .await
 //! ```
 //!
-//! One task per connection routes the link's reply lane to the calls waiting on it, by `id`. A
-//! reply for an id no call waits on any more, a second reply on a `FanOut` link or one arriving
-//! after its call gave up, is dropped. A lost reply lane fails every call waiting on it
-//! `Unavailable`, and the next call connects again; a `goaway` lets the calls in flight finish and
-//! sends the next call over a new connection.
+//! One task per connection, spawned on the client's runtime, routes the link's reply lane to the
+//! calls waiting on it, by `id`. A reply for an id no call waits on any more, a second reply on a
+//! `FanOut` link or one arriving after its call gave up, is dropped. A lost reply lane fails every
+//! call waiting on it `Unavailable`, and the next call connects again; a `goaway` lets the calls in
+//! flight finish and sends the next call over a new connection.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -25,13 +25,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures_core::Stream;
 use futures_core::stream::BoxStream;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use ulo::{Bound, BoxError, BoxFuture, CancelReason, ExecutionRef, Timer};
+use ulo::{Bound, BoxError, BoxFuture, CancelReason, ExecutionRef, Runtime, Timer};
 use ulo_transport::{Classify, Detail, Details, ErrorKind};
 
 use crate::codec::Codec;
@@ -43,10 +43,11 @@ use crate::transport::CallHeaders;
 /// A client's timeout at `Bound::Default`.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A client of one link, bound by `RpcClientModule`: `Dep<RpcClient, Billing>` under the module's
-/// qualifier. Cheap to clone. Every timeout runs on the app's `Timer`; dropping a pending request
-/// or a stream sends `cancel`. There is no ambient execution: a call made inside one forwards its
-/// deadline and cancellation with [`Call::within`].
+/// A client of one link, bound by `RpcClientModule` as `Dep<RpcClient, Billing>` under the
+/// module's qualifier, or built outside an app with [`RpcClient::new`]. Cheap to clone. Its tasks
+/// and every timeout run on the runtime it was given, the app's inside an app; dropping a pending
+/// request or a stream sends `cancel`, spawned on that runtime. There is no ambient execution: a
+/// call made inside one forwards its deadline and cancellation with [`Call::within`].
 #[derive(Clone)]
 pub struct RpcClient {
     pub(crate) inner: Arc<ClientInner>,
@@ -54,15 +55,21 @@ pub struct RpcClient {
 
 type Connect = Box<dyn Fn() -> BoxFuture<'static, Result<Outbound, BoxError>> + Send + Sync>;
 
+type Close = Box<dyn Fn() -> BoxFuture<'static, Result<(), BoxError>> + Send + Sync>;
+
 pub(crate) struct ClientInner {
     link: &'static str,
     connect: Connect,
+    /// The link's `close`, for a client that owns its link, one built by [`RpcClient::new`]; a
+    /// module's client leaves it to the module's destroy hook.
+    close: Option<Close>,
     codec: Codec,
-    /// The module's timeout; `None` for `Bound::Unbounded`.
+    /// The module's timeout, five seconds for a client built by [`RpcClient::new`]; `None` for
+    /// `Bound::Unbounded`.
     timeout: Option<Duration>,
-    timer: Arc<dyn Timer>,
+    runtime: Arc<dyn Runtime>,
     /// Held across `connect`, so concurrent first calls share one connection.
-    conn: tokio::sync::Mutex<Option<Arc<Conn>>>,
+    conn: async_lock::Mutex<Option<Arc<Conn>>>,
     next_id: AtomicU64,
 }
 
@@ -72,6 +79,8 @@ struct Conn {
     pending: Mutex<HashMap<u64, Waiting>>,
     /// False once the reply lane ended or the server sent `goaway`: no new call goes over it.
     open: AtomicBool,
+    /// The client's runtime, which a dropped call's `cancel` is spawned on.
+    runtime: Arc<dyn Runtime>,
 }
 
 /// Where the reply frames of one call go, and a streamed request's pump reports its failure.
@@ -88,7 +97,33 @@ impl Conn {
 }
 
 impl RpcClient {
-    pub(crate) fn new<L: Link>(link: Arc<L>, timeout: Bound, timer: Arc<dyn Timer>) -> Self {
+    /// A client of `link` outside an app, its tasks spawned on `runtime`, which also times its
+    /// calls: five seconds each unless the call sets its own.
+    ///
+    /// ```ignore
+    /// let billing = RpcClient::new(ulo_rpc_tcp::Tcp::new("billing:7000"), Arc::new(ulo_tokio::Tokio::current()));
+    /// ```
+    ///
+    /// The client owns the link. Once its last clone and the last call it made are dropped, it
+    /// releases its connection and spawns the link's `close` on `runtime`. A runtime that drops
+    /// that task before it finishes, as one that has shut down does, leaves the link's close
+    /// undone, logged at `warn`.
+    pub fn new<L: Link>(link: L, runtime: Arc<dyn Runtime>) -> Self {
+        let link = Arc::new(link);
+        let closing = Arc::clone(&link);
+        let close: Close = Box::new(move || {
+            let link = Arc::clone(&closing);
+            Box::pin(async move { link.close().await })
+        });
+        RpcClient::build(link, Bound::Default, runtime, Some(close))
+    }
+
+    /// `RpcClientModule`'s client, whose link the module's destroy hook closes.
+    pub(crate) fn of_module<L: Link>(link: Arc<L>, timeout: Bound, runtime: Arc<dyn Runtime>) -> Self {
+        RpcClient::build(link, timeout, runtime, None)
+    }
+
+    fn build<L: Link>(link: Arc<L>, timeout: Bound, runtime: Arc<dyn Runtime>, close: Option<Close>) -> Self {
         let codec = Codec::of(&link.capabilities());
         let timeout = match timeout {
             Bound::Default => Some(DEFAULT_TIMEOUT),
@@ -103,10 +138,11 @@ impl RpcClient {
             inner: Arc::new(ClientInner {
                 link: L::NAME,
                 connect,
+                close,
                 codec,
                 timeout,
-                timer,
-                conn: tokio::sync::Mutex::new(None),
+                runtime,
+                conn: async_lock::Mutex::new(None),
                 next_id: AtomicU64::new(1),
             }),
         }
@@ -212,7 +248,7 @@ impl Spec {
         let Some(deadline) = self.within.as_ref().and_then(ExecutionRef::deadline) else {
             return Ok(own);
         };
-        let remaining = deadline.saturating_duration_since(inner.timer.now());
+        let remaining = deadline.saturating_duration_since(inner.runtime.now());
         if remaining.is_zero() {
             return Err(RpcError::new(ErrorKind::Timeout, "the calling execution's deadline has passed"));
         }
@@ -233,7 +269,7 @@ impl Spec {
         };
         let conn = inner.connection().await?;
         let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let (waiting, replies) = mpsc::unbounded_channel();
+        let (waiting, replies) = mpsc::unbounded();
         conn.pending().insert(id, waiting.clone());
         let mut pending = Pending { conn: Arc::clone(&conn), id, pattern: pattern.clone(), settled: false };
         let text = pattern.as_str().to_owned();
@@ -245,7 +281,8 @@ impl Spec {
             Request::Stream(items) => {
                 let opened = conn.send(&pattern, Frame::Open { id, pattern: text, headers }, Some(ReplyTo { id })).await;
                 if opened.is_ok() {
-                    tokio::spawn(pump(Arc::clone(&conn), pattern, id, items, waiting));
+                    // Detached: the pump stops once the call has ended.
+                    drop(inner.runtime.spawn(Box::pin(pump(Arc::clone(&conn), pattern, id, items, waiting))));
                 }
                 opened
             }
@@ -255,7 +292,8 @@ impl Spec {
             pending.settled = true;
             return Err(send_error(err));
         }
-        Ok(Exchange { replies, pending, codec: inner.codec, timer: Arc::clone(&inner.timer), within })
+        let timer: Arc<dyn Timer> = inner.runtime.clone();
+        Ok(Exchange { replies, pending, codec: inner.codec, timer, within, _client: client.clone() })
     }
 }
 
@@ -268,8 +306,14 @@ impl ClientInner {
         let Outbound { send, replies } = (self.connect)().await.map_err(|err| {
             RpcError::new(ErrorKind::Unavailable, format!("the {} link could not connect: {err}", self.link))
         })?;
-        let conn = Arc::new(Conn { send, pending: Mutex::new(HashMap::new()), open: AtomicBool::new(true) });
-        tokio::spawn(route_replies(Arc::downgrade(&conn), replies));
+        let conn = Arc::new(Conn {
+            send,
+            pending: Mutex::new(HashMap::new()),
+            open: AtomicBool::new(true),
+            runtime: Arc::clone(&self.runtime),
+        });
+        // Detached: it ends with the reply lane, or at the next frame once the connection is gone.
+        drop(self.runtime.spawn(Box::pin(route_replies(Arc::downgrade(&conn), replies))));
         *slot = Some(Arc::clone(&conn));
         Ok(conn)
     }
@@ -291,7 +335,7 @@ async fn route_replies(conn: Weak<Conn>, mut replies: BoxStream<'static, Frame>)
             if ends { pending.remove(&id) } else { pending.get(&id).cloned() }
         };
         if let Some(waiting) = waiting {
-            let _ = waiting.send(Ok(frame));
+            let _ = waiting.unbounded_send(Ok(frame));
         }
     }
     if let Some(conn) = conn.upgrade() {
@@ -310,17 +354,17 @@ async fn pump(conn: Arc<Conn>, pattern: Pattern, id: u64, mut items: BoxStream<'
         let data = match item {
             Ok(data) => data,
             Err(err) => {
-                let _ = waiting.send(Err(err));
+                let _ = waiting.unbounded_send(Err(err));
                 return;
             }
         };
         if let Err(err) = conn.send(&pattern, Frame::In { id, data }, None).await {
-            let _ = waiting.send(Err(send_error(err)));
+            let _ = waiting.unbounded_send(Err(send_error(err)));
             return;
         }
     }
     if let Err(err) = conn.send(&pattern, Frame::InEnd { id }, None).await {
-        let _ = waiting.send(Err(send_error(err)));
+        let _ = waiting.unbounded_send(Err(send_error(err)));
     }
 }
 
@@ -340,12 +384,50 @@ impl Drop for Pending {
             return;
         }
         let cancel = self.conn.send(&self.pattern, Frame::Cancel { id: self.id }, None);
-        // Outside a runtime there is nothing to send it from; the server's own deadline or the
-        // connection's end stops the call instead.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                let _ = cancel.await;
-            });
+        drop(self.conn.runtime.spawn(Box::pin(async move {
+            let _ = cancel.await;
+        })));
+    }
+}
+
+/// A client that owns its link closes it from a task on its runtime, a drop being unable to
+/// await. Its connection is released as its fields drop, whatever the runtime does with the task.
+impl Drop for ClientInner {
+    fn drop(&mut self) {
+        let Some(close) = &self.close else { return };
+        let closing = close();
+        let link = self.link;
+        let unfinished = Unfinished { link, finished: false };
+        drop(self.runtime.spawn(Box::pin(async move {
+            let closed = closing.await;
+            unfinished.finish();
+            if let Err(error) = closed {
+                tracing::warn!(%error, link, "the RPC client's link did not close cleanly");
+            }
+        })));
+    }
+}
+
+/// The link's close spawned by a dropped client, reported at `warn` if its task is dropped
+/// before the close finished: a runtime that has shut down drops a task it is handed unrun.
+struct Unfinished {
+    link: &'static str,
+    finished: bool,
+}
+
+impl Unfinished {
+    fn finish(mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        if !self.finished {
+            tracing::warn!(
+                link = self.link,
+                "the RPC client was dropped and its runtime dropped the link's close before it finished; its connection was released"
+            );
         }
     }
 }
@@ -357,11 +439,13 @@ struct Exchange {
     codec: Codec,
     timer: Arc<dyn Timer>,
     within: Option<ExecutionRef>,
+    /// Keeps a client that owns its link from closing it while this call is under way.
+    _client: RpcClient,
 }
 
 impl Exchange {
     async fn single<Res: DeserializeOwned>(mut self) -> Result<Res, RpcError> {
-        match self.replies.recv().await {
+        match self.replies.next().await {
             Some(Ok(Frame::Res { data, .. })) => {
                 self.pending.settled = true;
                 decode(self.codec, &data)
@@ -402,7 +486,7 @@ fn send_error(err: BoxError) -> RpcError {
     }
 }
 
-/// `work` bounded by `limit` on the app's `Timer` and by the calling execution's cancellation.
+/// `work` bounded by `limit` on the client's runtime and by the calling execution's cancellation.
 async fn bounded<T>(
     timer: &dyn Timer,
     limit: Option<Duration>,
@@ -424,10 +508,11 @@ async fn bounded<T>(
             None => std::future::pending().await,
         }
     };
-    tokio::select! {
-        out = work => out,
-        () = expired => Err(RpcError::new(ErrorKind::Timeout, "the call timed out")),
-        reason = cancelled => Err(match reason {
+    // Unbiased: when more than one is ready, one is picked at random.
+    futures_util::select! {
+        out = work.fuse() => out,
+        () = expired.fuse() => Err(RpcError::new(ErrorKind::Timeout, "the call timed out")),
+        reason = cancelled.fuse() => Err(match reason {
             Some(CancelReason::Deadline) => RpcError::new(ErrorKind::Timeout, "the calling execution's deadline passed"),
             _ => RpcError::new(ErrorKind::Unavailable, "the calling execution was cancelled"),
         }),
@@ -470,9 +555,9 @@ impl<Res: DeserializeOwned + Send + 'static> IntoFuture for Call<Res> {
         let mut spec = self.spec;
         Box::pin(async move {
             let limit = spec.limit()?;
-            let timer = Arc::clone(&spec.client.inner.timer);
+            let runtime = Arc::clone(&spec.client.inner.runtime);
             let within = spec.within.clone();
-            bounded(&*timer, limit, within.as_ref(), async move { spec.open().await?.single::<Res>().await }).await
+            bounded(&*runtime, limit, within.as_ref(), async move { spec.open().await?.single::<Res>().await }).await
         })
     }
 }
@@ -503,9 +588,9 @@ impl IntoFuture for Emit {
         let mut spec = self.spec;
         Box::pin(async move {
             let limit = spec.limit()?;
-            let timer = Arc::clone(&spec.client.inner.timer);
+            let runtime = Arc::clone(&spec.client.inner.runtime);
             let within = spec.within.clone();
-            bounded(&*timer, limit, within.as_ref(), async move {
+            bounded(&*runtime, limit, within.as_ref(), async move {
                 let Spec { client, pattern, request, headers, .. } = spec;
                 let data = match request {
                     Request::One(payload) => payload?,
@@ -553,9 +638,9 @@ impl<Res: DeserializeOwned + Send + 'static> IntoFuture for StreamCall<Res> {
         let mut spec = self.spec;
         Box::pin(async move {
             let limit = spec.limit()?;
-            let timer = Arc::clone(&spec.client.inner.timer);
+            let runtime = Arc::clone(&spec.client.inner.runtime);
             let within = spec.within.clone();
-            let exchange = bounded(&*timer, limit, within.as_ref(), spec.open()).await?;
+            let exchange = bounded(&*runtime, limit, within.as_ref(), spec.open()).await?;
             Ok(RpcStream { items: replies::<Res>(exchange, limit) })
         })
     }
@@ -569,7 +654,7 @@ fn replies<Res: DeserializeOwned + Send + 'static>(exchange: Exchange, per_frame
         let timer = Arc::clone(&exchange.timer);
         let within = exchange.within.clone();
         let codec = exchange.codec;
-        let next = bounded(&*timer, per_frame, within.as_ref(), async { Ok(exchange.replies.recv().await) }).await;
+        let next = bounded(&*timer, per_frame, within.as_ref(), async { Ok(exchange.replies.next().await) }).await;
         match next {
             Ok(Some(Ok(Frame::Item { data, .. }))) => Some((decode(codec, &data), Some(exchange))),
             // A server whose handler answered one value: the stream is that value.
@@ -678,8 +763,6 @@ impl Classify for RpcError {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
     use crate::link::{Capabilities, DeliveryMode, Inbound};
 
@@ -714,22 +797,9 @@ mod tests {
         }
     }
 
-    /// No call here waits on a timeout: the request fails as it is sent.
-    struct NeverExpires;
-
-    impl Timer for NeverExpires {
-        fn sleep(&self, _d: Duration) -> BoxFuture<'static, ()> {
-            Box::pin(std::future::pending())
-        }
-
-        fn now(&self) -> Instant {
-            Instant::now()
-        }
-    }
-
     #[tokio::test]
     async fn a_request_frame_the_link_cannot_encode_is_internal() {
-        let client = RpcClient::new(Arc::new(MisencodingLink), Bound::Unbounded, Arc::new(NeverExpires));
+        let client = RpcClient::of_module(Arc::new(MisencodingLink), Bound::Unbounded, Arc::new(ulo_tokio::Tokio::current()));
         let answer = client.request::<_, serde_json::Value>("orders.create", &serde_json::json!({ "id": 1 })).await;
         let err = answer.expect_err("the link refused to encode the request, so the call must fail");
         assert_eq!(err.kind(), ErrorKind::Internal, "expected `Internal` for an unencodable request frame, got: {err:?}");

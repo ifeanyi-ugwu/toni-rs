@@ -3,7 +3,7 @@
 //! and [`spawn`] and [`spawn_in`].
 //!
 //! ```ignore
-//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio).wire()?;
+//! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio::current()).wire()?;
 //! // ..
 //! app.serve(ulo_tokio::shutdown_signal()).await?;
 //! ```
@@ -13,28 +13,51 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 use ulo::{BoxFuture, ExecutionRef, RuntimeTask, Signal, TaskHandle};
 
-/// The app's runtime on tokio: [`Timer`]'s clock, and tasks spawned with `tokio::spawn`, so on
-/// the tokio runtime current where `spawn` is called; it panics outside one, as `tokio::spawn`
-/// does. Set with `AppBuilder::runtime(ulo_tokio::Tokio)`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Tokio;
+/// The app's runtime on one tokio runtime, held by its `Handle`: tasks are spawned on that
+/// runtime, and sleeps registered with its timer, from whichever thread asks, a worker of another
+/// runtime or a plain thread with none, as a client's drop may run on. Set with
+/// `AppBuilder::runtime(ulo_tokio::Tokio::current())`, or given to a client built outside an app.
+///
+/// The runtime must outlive what is spawned through it: once it has shut down, a task spawned on
+/// it is dropped without running, and the handle answers `Aborted`.
+#[derive(Clone, Debug)]
+pub struct Tokio {
+    handle: Handle,
+}
 
+impl Tokio {
+    /// The tokio runtime current on the calling thread. Panics outside one, at this call, as
+    /// `Handle::current` does; nothing after it looks for a runtime.
+    pub fn current() -> Tokio {
+        Tokio { handle: Handle::current() }
+    }
+
+    pub fn from_handle(handle: Handle) -> Tokio {
+        Tokio { handle }
+    }
+}
+
+/// Each method enters the held runtime, so a sleep is created against its timer and `now` reads
+/// its clock, a paused one included, wherever it is called.
 impl ulo::Timer for Tokio {
     fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
+        let _entered = self.handle.enter();
         ulo::Timer::sleep(&Timer, d)
     }
 
     fn now(&self) -> Instant {
+        let _entered = self.handle.enter();
         ulo::Timer::now(&Timer)
     }
 }
 
 impl ulo::Spawn for Tokio {
     fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle {
-        TaskHandle::launch(fut, |task| Task(tokio::spawn(task)))
+        TaskHandle::launch(fut, |task| Task(self.handle.spawn(task)))
     }
 }
 

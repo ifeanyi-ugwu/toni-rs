@@ -138,7 +138,7 @@ impl Running {
         *lock(&script.inbound) = Some(Box::pin(stream::poll_fn(move |cx| receiver.poll_recv(cx))));
         *lock(&script.sender) = Some(sender);
         let app = App::builder(Root)
-            .timer(ulo_tokio::Timer)
+            .runtime(ulo_tokio::Tokio::current())
             .drain_timeout(drain)
             .wire()
             .expect("the app wires")

@@ -55,7 +55,7 @@ async fn an_app_without_a_clock_hands_out_neither() {
 
 #[tokio::test]
 async fn a_timer_after_a_runtime_replaces_it() {
-    let app = connect(App::builder(Empty).runtime(Tokio).timer(ulo_tokio::Timer)).await;
+    let app = connect(App::builder(Empty).runtime(Tokio::current()).timer(ulo_tokio::Timer)).await;
     assert!(app.get::<dyn Runtime>().await.is_err(), "`Dep<dyn Runtime>` after `.timer(..)` replaced the runtime");
     assert!(app.handle().runtime().is_none(), "`AppHandle::runtime` after `.timer(..)` replaced the runtime");
     app.close(Signal::new("test")).await.expect("the app did not close");
@@ -63,16 +63,16 @@ async fn a_timer_after_a_runtime_replaces_it() {
 
 #[tokio::test]
 async fn a_runtime_after_a_timer_replaces_it() {
-    let app = connect(App::builder(Empty).timer(ulo_tokio::Timer).runtime(Tokio)).await;
+    let app = connect(App::builder(Empty).timer(ulo_tokio::Timer).runtime(Tokio::current())).await;
     let runtime = app.get::<dyn Runtime>().await.expect("`Dep<dyn Runtime>` after `.runtime(..)`");
     let timer = app.get::<dyn Timer>().await.expect("`Dep<dyn Timer>` after `.runtime(..)`");
     assert_eq!(address(&*timer), address(&*runtime), "`Dep<dyn Timer>` is the timer `.runtime(..)` replaced");
     app.close(Signal::new("test")).await.expect("the app did not close");
 }
 
-#[test]
-fn overriding_the_runtime_is_refused() {
-    let wired = TestApp::of(Empty).runtime(Tokio).override_value::<dyn Runtime>(Arc::new(Tokio)).wire();
+#[tokio::test]
+async fn overriding_the_runtime_is_refused() {
+    let wired = TestApp::of(Empty).runtime(Tokio::current()).override_value::<dyn Runtime>(Arc::new(Tokio::current())).wire();
     let Err(StartupError::Wiring(errors)) = wired else {
         panic!("an override of `dyn Runtime` wired");
     };

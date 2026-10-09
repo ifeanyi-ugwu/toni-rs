@@ -10,7 +10,7 @@
 //!
 //! impl ulo_runtime_conformance::Harness for OnTokio {
 //!     type Runtime = ulo_tokio::Tokio;
-//!     fn runtime() -> ulo_tokio::Tokio { ulo_tokio::Tokio }
+//!     fn runtime() -> ulo_tokio::Tokio { ulo_tokio::Tokio::current() }
 //!     fn block_on<F: Future>(fut: F) -> F::Output { /* a runtime of its own per test */ }
 //! }
 //!
@@ -32,7 +32,8 @@ pub mod cases;
 pub trait Harness {
     type Runtime: Runtime;
 
-    /// A runtime value; each scenario takes its own.
+    /// A runtime value; each scenario takes its own, built inside the future `block_on` runs, so
+    /// a runtime that captures the executor it runs on finds it.
     fn runtime() -> Self::Runtime;
 
     /// Runs `fut` to its end from a plain `#[test]` thread, on an executor that runs the tasks
@@ -63,9 +64,9 @@ macro_rules! runtime_suite {
         $(
             #[test]
             fn $name() {
-                <$harness as $crate::Harness>::block_on($crate::cases::$module::$case(
-                    <$harness as $crate::Harness>::runtime(),
-                ));
+                <$harness as $crate::Harness>::block_on(async {
+                    $crate::cases::$module::$case(<$harness as $crate::Harness>::runtime()).await
+                });
             }
         )*
     };

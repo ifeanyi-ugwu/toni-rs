@@ -27,6 +27,7 @@ mod extract;
 mod frame;
 mod server;
 mod transport;
+mod watch;
 
 pub mod link;
 
