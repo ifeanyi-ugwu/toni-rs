@@ -17,8 +17,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::util::Timeout;
 use rdkafka::{Offset, TopicPartitionList};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture, Timer};
+use ulo_tokio::Tokio;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, Frame, FrameTooLarge, Link, NoDestination,
@@ -54,8 +56,14 @@ const MAX_MESSAGE: u64 = 1_000_000;
 const DELIVERY_TIMEOUT: &str = "30000";
 
 /// The Kafka link.
+///
+/// The link's clients and tasks live on the tokio runtime it holds, the one current where it was
+/// built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may be
+/// polled on any executor or on a plain thread. A link built outside a runtime and given none
+/// refuses in `prepare` and in `connect`.
 pub struct Kafka {
     pub(crate) brokers: String,
+    pub(crate) runtime: Option<Tokio>,
     pub(crate) group: Option<String>,
     pub(crate) reply_topic: Option<String>,
     pub(crate) codec: Codec,
@@ -83,6 +91,7 @@ impl Kafka {
     pub fn brokers(brokers: impl Into<String>) -> Self {
         Kafka {
             brokers: brokers.into(),
+            runtime: Tokio::try_current(),
             group: None,
             reply_topic: None,
             codec: Codec::Json,
@@ -127,7 +136,20 @@ impl Kafka {
         self.replication = replication;
         self
     }
+
+    /// The tokio runtime the link's clients and tasks run on, in place of the one current where
+    /// it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the Kafka link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for Kafka {
     const NAME: &'static str = "kafka";
@@ -143,6 +165,7 @@ impl Link for Kafka {
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
+        self.runtime()?;
         Brokers::parse(&self.brokers)?;
         if self.partitions < 1 || self.replication < 1 {
             return Err(format!(
@@ -172,29 +195,36 @@ impl Link for Kafka {
             .clone()
             .or_else(|| self.default_group.clone())
             .ok_or("the Kafka link's group is unset: `listen` ran before `prepare`")?;
+        let runtime = self.runtime()?;
         let base = Brokers::parse(&self.brokers)?.config();
-
-        // Created here, not on the first produce, so a stopped server's topic still exists and a
-        // miss is the caller's `Timeout` whether or not the broker auto-creates topics; the
-        // consumer also gets its partitions at once rather than after a metadata refresh.
-        let topics: Vec<String> = patterns.iter().map(|pattern| pattern.as_str().to_owned()).collect();
-        create_topics(&base, &topics, self.partitions, self.replication).await?;
-        create_topics(&base, &[CONTROL.to_owned()], 1, self.replication).await?;
         let timer = self.timer.clone().ok_or("the Kafka link has no timer: `listen` ran before `prepare`, or on an app with none")?;
-        anchor(&base, &group, &topics, &timer).await?;
+        let topics: Vec<String> = patterns.iter().map(|pattern| pattern.as_str().to_owned()).collect();
+        let (partitions, replication) = (self.partitions, self.replication);
+        let (consumer, control, producer) = runtime
+            .run(async move {
+                // Created here, not on the first produce, so a stopped server's topic still exists
+                // and a miss is the caller's `Timeout` whether or not the broker auto-creates
+                // topics; the consumer also gets its partitions at once rather than after a
+                // metadata refresh.
+                create_topics(&base, &topics, partitions, replication).await?;
+                create_topics(&base, &[CONTROL.to_owned()], 1, replication).await?;
+                anchor(&base, &group, &topics, &timer).await?;
 
-        let mut config = base.clone();
-        config
-            .set("group.id", &group)
-            .set("enable.auto.commit", "true")
-            .set("enable.auto.offset.store", "false")
-            .set("auto.offset.reset", "latest");
-        let consumer: Arc<Detached<StreamConsumer>> = Arc::new(Detached::new(config.create()?));
-        let names: Vec<&str> = topics.iter().map(String::as_str).collect();
-        consumer.subscribe(&names)?;
+                let mut config = base.clone();
+                config
+                    .set("group.id", &group)
+                    .set("enable.auto.commit", "true")
+                    .set("enable.auto.offset.store", "false")
+                    .set("auto.offset.reset", "latest");
+                let consumer: Arc<Detached<StreamConsumer>> = Arc::new(Detached::new(config.create()?));
+                let names: Vec<&str> = topics.iter().map(String::as_str).collect();
+                consumer.subscribe(&names)?;
 
-        let control = control_consumer(&base, &group).await?;
-        let producer = producer(&base)?;
+                let control = control_consumer(&base, &group).await?;
+                let producer = producer(&base)?;
+                Ok::<_, BoxError>((consumer, control, producer))
+            })
+            .await??;
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
@@ -202,35 +232,47 @@ impl Link for Kafka {
             consumer,
             producer,
             codec: self.codec,
+            runtime: runtime.clone(),
             calls: Arc::new(Calls::new()),
             phase,
             deliveries: Mutex::new(Some(deliveries)),
             inflight: Arc::new(watch::channel(0).0),
             limit: self.max_inflight,
         });
-        tokio::spawn(request_lane(Arc::clone(&side)));
-        tokio::spawn(control_lane(Arc::clone(&side), control));
+        runtime.handle().spawn(request_lane(Arc::clone(&side)));
+        runtime.handle().spawn(control_lane(Arc::clone(&side), control));
         lock(&self.state).server = Some(side);
         Ok(receiver_stream(inbound))
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
+        let runtime = self.runtime()?;
         let base = Brokers::parse(&self.brokers)?.config();
         let id = uuid::Uuid::new_v4().simple().to_string();
         let reply_topic = self.reply_topic.clone().unwrap_or_else(|| format!("ulo.rpc.reply.{id}"));
-        create_topics(&base, std::slice::from_ref(&reply_topic), self.partitions, self.replication).await?;
+        let (partitions, replication) = (self.partitions, self.replication);
+        let (replies, producer) = {
+            let reply_topic = reply_topic.clone();
+            runtime
+                .run(async move {
+                    create_topics(&base, std::slice::from_ref(&reply_topic), partitions, replication).await?;
 
-        // One group per reply topic reads every partition of it; `earliest` keeps a reply that
-        // lands before the group's first assignment.
-        let mut config = base.clone();
-        config.set("group.id", &reply_topic).set("enable.auto.commit", "true").set("auto.offset.reset", "earliest");
-        let replies: StreamConsumer = config.create()?;
-        replies.subscribe(&[reply_topic.as_str()])?;
+                    // One group per reply topic reads every partition of it; `earliest` keeps a
+                    // reply that lands before the group's first assignment.
+                    let mut config = base.clone();
+                    config.set("group.id", &reply_topic).set("enable.auto.commit", "true").set("auto.offset.reset", "earliest");
+                    let replies: StreamConsumer = config.create()?;
+                    replies.subscribe(&[reply_topic.as_str()])?;
+                    Ok::<_, BoxError>((replies, producer(&base)?))
+                })
+                .await??
+        };
 
         let (closed, closing) = oneshot::channel();
         let side = Arc::new(ClientSide {
-            producer: Mutex::new(Some(producer(&base)?)),
+            producer: Mutex::new(Some(producer)),
             codec: self.codec,
+            runtime: runtime.clone(),
             id,
             reply_topic,
             calls: Mutex::new(HashMap::new()),
@@ -238,14 +280,15 @@ impl Link for Kafka {
             routing: Mutex::new(None),
         });
         let (frames, replies_out) = mpsc::unbounded_channel();
-        let routing = tokio::spawn(route_replies(Arc::clone(&side), replies, frames, closing));
+        let routing = runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, closing));
         *lock(&side.routing) = Some(routing);
         lock(&self.state).client = Some(Arc::clone(&side));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
                 let side = Arc::clone(&side);
-                Box::pin(async move { side.send(pattern, frame).await })
+                let sent = runtime.run(async move { side.send(pattern, frame).await });
+                Box::pin(async move { sent.await? })
             }),
             replies: receiver_stream(replies_out),
         })
@@ -260,7 +303,7 @@ impl Link for Kafka {
             tracing::debug!(%error, "the Kafka link had no offset to commit at the drain");
         }
         let watched = Arc::clone(&side);
-        tokio::spawn(async move {
+        side.runtime.handle().spawn(async move {
             let mut count = watched.calls.count.subscribe();
             let _ = count.wait_for(|held| *held == 0).await;
             lock(&watched.deliveries).take();
@@ -529,6 +572,8 @@ struct ServerSide {
     consumer: Arc<Detached<StreamConsumer>>,
     producer: FutureProducer,
     codec: Codec,
+    /// The link's runtime, which every reply is produced from.
+    runtime: Tokio,
     calls: Arc<Calls>,
     phase: watch::Sender<Phase>,
     /// Taken once draining holds no call, or at close, which ends the inbound stream.
@@ -614,6 +659,7 @@ impl ServerSide {
         let producer = self.producer.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
+        let runtime = self.runtime.clone();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
             let producer = producer.clone();
@@ -621,13 +667,14 @@ impl ServerSide {
             let reply = reply.clone();
             let correlation = correlation.clone();
             let released = released.clone();
-            Box::pin(async move {
+            let sent = runtime.run(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&frame)?;
                 produce(&producer, &reply, correlation.as_deref(), None, &CallHeaders::new(), &bytes).await
-            })
+            });
+            Box::pin(async move { sent.await? })
         });
         let id = self.calls.hold(key, path.clone());
         (id, path)
@@ -821,6 +868,8 @@ struct ClientSide {
     /// `None` once the link has closed.
     producer: Mutex<Option<FutureProducer>>,
     codec: Codec,
+    /// The link's runtime, which a streamed request's pump is spawned on.
+    runtime: Tokio,
     id: String,
     reply_topic: String,
     calls: Mutex<HashMap<u64, ClientCall>>,
@@ -858,7 +907,7 @@ impl ClientSide {
                 let (gate, opened) = oneshot::channel();
                 let (queue, queued) = mpsc::unbounded_channel();
                 lock(&self.calls).insert(id, ClientCall::Streaming { gate: Some(gate), queue });
-                tokio::spawn(pump(Arc::clone(self), id, opened, queued));
+                self.runtime.handle().spawn(pump(Arc::clone(self), id, opened, queued));
                 let sent = self.produce_request(&pattern, id, &headers, Some(OPEN), &[]).await;
                 if sent.is_err() {
                     lock(&self.calls).remove(&id);

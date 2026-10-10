@@ -18,6 +18,7 @@ ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }
 # `serde` lets the binary scenario send and receive `Bytes` as raw bytes.
 bytes = { workspace = true, features = ["serde"] }
+futures-executor.workspace = true
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "sync", "net", "io-util"] }

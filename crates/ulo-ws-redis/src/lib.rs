@@ -16,6 +16,12 @@
 //! newline, then the encoded broadcast. A process subscribes to its node's channel and
 //! `ulo:ws:all`, and pattern-subscribes to `ulo:ws:room:*`, filtering rooms against its own
 //! members on delivery, since the adapter learns of no membership change.
+//!
+//! The adapter's connections and its subscription task live on the tokio runtime it holds, the one
+//! current where it was built or the one [`Redis::with_handle`] names, so `publish` and the
+//! subscription's stream may be polled on any executor. An adapter built outside a runtime and
+//! given none fails each publish and ends its subscription at once, logged at `error`, naming
+//! `.with_handle(..)`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +30,10 @@ use bytes::Bytes;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, mpsc};
 use ulo::{BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_ws::{Audience, BroadcastAdapter, NodeId, Target};
 
 /// How long a lost subscription waits before connecting again.
@@ -36,15 +44,29 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 pub struct Redis {
     pub(crate) url: String,
+    runtime: Option<Tokio>,
     publisher: Arc<Mutex<Option<MultiplexedConnection>>>,
 }
 
 impl Redis {
     /// The adapter on `url`, `redis://host:6379` or `rediss://host:6380`.
     pub fn url(url: impl Into<String>) -> Self {
-        Redis { url: url.into(), publisher: Arc::new(Mutex::new(None)) }
+        Redis { url: url.into(), runtime: Tokio::try_current(), publisher: Arc::new(Mutex::new(None)) }
+    }
+
+    /// The tokio runtime the adapter's connections and subscription run on, in place of the one
+    /// current where it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
     }
 }
+
+const NO_RUNTIME: &str = "the Redis broadcast adapter has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 fn channel(target: &Target) -> String {
     match &target.audience {
@@ -68,29 +90,43 @@ fn decode(message: &[u8]) -> Option<(Target, Bytes)> {
 }
 
 impl BroadcastAdapter for Redis {
-    /// A failed publish drops the cached connection, so the next publish connects again.
+    /// A failed publish drops the cached connection, so the next publish connects again. The
+    /// connection and the `PUBLISH` run on the adapter's runtime: redis times each answer on
+    /// tokio's clock.
     fn publish(&self, target: Target, frame: Bytes) -> BoxFuture<'static, Result<(), BoxError>> {
+        let runtime = self.runtime();
         let url = self.url.clone();
         let publisher = Arc::clone(&self.publisher);
         Box::pin(async move {
-            let message = encode(&target, &frame)?;
-            let mut cached = publisher.lock().await;
-            let mut connection = match cached.take() {
-                Some(connection) => connection,
-                None => redis::Client::open(url.as_str())?.get_multiplexed_async_connection().await?,
-            };
-            redis::cmd("PUBLISH").arg(channel(&target)).arg(message.as_slice()).query_async::<i64>(&mut connection).await?;
-            *cached = Some(connection);
-            Ok(())
+            let published = runtime?.run(async move {
+                let message = encode(&target, &frame)?;
+                let mut cached = publisher.lock().await;
+                let mut connection = match cached.take() {
+                    Some(connection) => connection,
+                    None => redis::Client::open(url.as_str())?.get_multiplexed_async_connection().await?,
+                };
+                redis::cmd("PUBLISH").arg(channel(&target)).arg(message.as_slice()).query_async::<i64>(&mut connection).await?;
+                *cached = Some(connection);
+                Ok::<_, BoxError>(())
+            });
+            published.await?
         })
     }
 
-    /// Runs the subscription on its own task, reconnecting after a second when Redis goes away;
+    /// Runs the subscription on its own task on the adapter's runtime, reconnecting after a second
+    /// when Redis goes away;
     /// broadcasts published while it is away are lost, as Pub/Sub delivers to subscribers present.
     fn subscribe(&self, node: NodeId) -> BoxStream<'static, (Target, Bytes)> {
         let (sender, receiver) = mpsc::unbounded_channel::<(Target, Bytes)>();
+        let runtime = match self.runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::error!(%error, "the Redis broadcast subscription did not start; no broadcast reaches this process");
+                return Box::pin(futures_util::stream::empty());
+            }
+        };
         let url = self.url.clone();
-        tokio::spawn(async move {
+        runtime.handle().spawn(async move {
             while !sender.is_closed() {
                 if let Err(error) = listen(&url, node, &sender).await {
                     tracing::warn!(%error, "the Redis broadcast subscription failed; reconnecting");

@@ -1,6 +1,7 @@
 //! The tokio runtime for `ulo` (transports DESIGN §8): the core's [`Runtime`](ulo::Runtime) as
 //! [`Tokio`], its clock alone as [`Timer`], the OS signal future [`shutdown_signal`] for `serve`,
-//! and [`spawn`] and [`spawn_in`].
+//! and [`spawn`] and [`spawn_in`]. A tokio-based RPC link holds a `Tokio` of its own and runs its
+//! I/O there through [`Tokio::run`].
 //!
 //! ```ignore
 //! let app = App::builder(AppModule).runtime(ulo_tokio::Tokio::current()).wire()?;
@@ -21,6 +22,7 @@ use ulo::{BoxFuture, ExecutionRef, RuntimeTask, Signal, TaskHandle};
 /// runtime, and sleeps registered with its timer, from whichever thread asks, a worker of another
 /// runtime or a plain thread with none, as a client's drop may run on. Set with
 /// `AppBuilder::runtime(ulo_tokio::Tokio::current())`, or given to a client built outside an app.
+/// A tokio-based RPC link holds one of its own, whatever runtime the app was given.
 ///
 /// The runtime must outlive what is spawned through it: once it has shut down, a task spawned on
 /// it is dropped without running, and the handle answers `Aborted`.
@@ -38,6 +40,68 @@ impl Tokio {
 
     pub fn from_handle(handle: Handle) -> Tokio {
         Tokio { handle }
+    }
+
+    /// The tokio runtime current on the calling thread, `None` outside one.
+    pub fn try_current() -> Option<Tokio> {
+        Handle::try_current().ok().map(|handle| Tokio { handle })
+    }
+
+    pub fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
+    /// `fut` run as a task on the held runtime, its output answered to whichever executor awaits
+    /// the returned future: a tokio worker, another runtime's, or a plain thread with none. What a
+    /// tokio-based RPC link does with tokio's reactor, timer or spawner goes through here, so the
+    /// link's futures do not depend on the caller's executor.
+    ///
+    /// The task is spawned when the answer is first polled, so answers created in order and
+    /// awaited in order run in order. Dropping the answer aborts the task. A panic in the task
+    /// resumes where the answer is awaited. A runtime that has shut down drops the task unrun,
+    /// answered as `Err(Stopped)`.
+    pub fn run<F>(&self, fut: F) -> impl Future<Output = Result<F::Output, Stopped>> + Send + 'static
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let handle = self.handle.clone();
+        async move {
+            match Aborting(handle.spawn(fut)).await {
+                Ok(output) => Ok(output),
+                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                Err(_) => Err(Stopped),
+            }
+        }
+    }
+}
+
+/// [`Tokio::run`]'s answer when the runtime it holds has shut down before the task finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the tokio runtime the task was spawned on has shut down")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// A task's `JoinHandle` that aborts the task when dropped.
+struct Aborting<T>(JoinHandle<T>);
+
+impl<T> Future for Aborting<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0).poll(cx)
+    }
+}
+
+impl<T> Drop for Aborting<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

@@ -6,9 +6,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_net::{Endpoint, EndpointSpec};
 use ulo_rpc::link::{Inbound, UNARY_ONLY};
 use ulo_rpc::{
@@ -24,6 +26,9 @@ const MAX_DATAGRAM: u64 = 65_507;
 /// own buffer then drops what it cannot hold, as UDP does.
 const DELIVERY_QUEUE: usize = 1024;
 
+/// Reply frames read ahead of the client; a full queue holds the reply socket's reader back.
+const REPLY_QUEUE: usize = 64;
+
 /// The UDP link: a server binds its endpoint, a client sends to it.
 ///
 /// A server maps each sender's call ids to ids of its own, so two senders never share one, and
@@ -35,9 +40,15 @@ const DELIVERY_QUEUE: usize = 1024;
 /// A client holds no connection, so `close` ends what stands for one: each socket the client side
 /// bound stops receiving and is released, its reply lane ends, and the calls waiting on it fail
 /// `Unavailable`. A call made afterwards binds a new socket.
+///
+/// The link's sockets and tasks live on the tokio runtime it holds, the one current where it was
+/// built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may be
+/// polled on any executor or on a plain thread. A link built outside a runtime and given none
+/// refuses in `prepare` and in `connect`.
 pub struct Udp {
     pub(crate) endpoint: EndpointSpec,
     pub(crate) codec: Codec,
+    pub(crate) runtime: Option<Tokio>,
     /// Set by `prepare`.
     pub(crate) prepared: Option<SocketAddr>,
     pub(crate) state: Arc<State>,
@@ -68,6 +79,7 @@ impl Udp {
         Udp {
             endpoint: endpoint.into(),
             codec: Codec::Json,
+            runtime: Tokio::try_current(),
             prepared: None,
             state: Arc::new(State {
                 bound: Mutex::new(Vec::new()),
@@ -87,6 +99,17 @@ impl Udp {
         self
     }
 
+    /// The tokio runtime the link's sockets and tasks run on, in place of the one current where
+    /// it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
+
     /// The endpoint as written on both sides: `resolve` would turn an address `ulo dev --listen`
     /// holds as a TCP socket into that socket, which a datagram socket cannot be.
     fn address(&self) -> Result<SocketAddr, BoxError> {
@@ -99,6 +122,8 @@ impl Udp {
         }
     }
 }
+
+const NO_RUNTIME: &str = "the UDP link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for Udp {
     const NAME: &'static str = "udp";
@@ -118,6 +143,7 @@ impl Link for Udp {
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
+        self.runtime()?;
         self.prepared = Some(self.address()?);
         Ok(())
     }
@@ -131,11 +157,13 @@ impl Link for Udp {
         if lock(&self.state.receiving).is_some() {
             return Err("the UDP link is already listening".into());
         }
-        let socket = Arc::new(UdpSocket::bind(addr).await?);
+        let runtime = self.runtime()?;
+        let socket = Arc::new(runtime.run(UdpSocket::bind(addr)).await??);
         *lock(&self.state.bound) = vec![BoundAddr::new("rpc", socket.local_addr()?)];
         *lock(&self.state.socket) = Some(Arc::clone(&socket));
         let (deliveries, inbound) = mpsc::channel(DELIVERY_QUEUE);
-        let receiving = tokio::spawn(receive(socket, self.codec, Arc::clone(&self.state), deliveries));
+        let handle = runtime.handle().clone();
+        let receiving = runtime.handle().spawn(receive(socket, self.codec, Arc::clone(&self.state), deliveries, handle));
         *lock(&self.state.receiving) = Some(receiving);
         let inbound = futures_util::stream::unfold(inbound, |mut inbound| async move {
             let delivery = inbound.recv().await?;
@@ -146,45 +174,37 @@ impl Link for Udp {
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
         let addr = self.address()?;
+        let runtime = self.runtime()?;
         let local: SocketAddr = if addr.is_ipv4() { (Ipv4Addr::UNSPECIFIED, 0).into() } else { (Ipv6Addr::UNSPECIFIED, 0).into() };
-        let socket = UdpSocket::bind(local).await?;
-        socket.connect(addr).await?;
+        let socket = runtime
+            .run(async move {
+                let socket = UdpSocket::bind(local).await?;
+                socket.connect(addr).await?;
+                Ok::<_, io::Error>(socket)
+            })
+            .await??;
         // The reply lane holds the socket; sends reach it through a `Weak`, so the socket is
         // released once the lane ends, at `close` or when the OS reports the server unreachable.
         let socket = Arc::new(socket);
         let codec = self.codec;
         let sending = Arc::downgrade(&socket);
+        let on = runtime.clone();
         let send = Box::new(move |_pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
             let socket = Weak::clone(&sending);
-            Box::pin(async move {
+            let sent = on.run(async move {
                 let bytes = encode(codec, &frame)?;
                 let socket = socket.upgrade().ok_or("the UDP link's client socket is closed")?;
                 socket.send(&bytes).await?;
-                Ok(())
-            })
+                Ok::<_, BoxError>(())
+            });
+            Box::pin(async move { sent.await? })
         });
-        let buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
         let epoch = self.state.client_epoch.subscribe();
-        let replies = futures_util::stream::unfold((socket, buffer, epoch), move |(socket, mut buffer, epoch)| async move {
-            loop {
-                let received = tokio::select! {
-                    received = socket.recv(&mut buffer) => received,
-                    () = closed(epoch.clone()) => return None,
-                };
-                // An error here is the OS reporting the server unreachable: the reply lane ends,
-                // and the next call binds a new socket.
-                let len = match received {
-                    Ok(len) => len,
-                    Err(error) => {
-                        tracing::debug!(%error, "the UDP link's reply lane ended");
-                        return None;
-                    }
-                };
-                match codec.decode_frame(&buffer[..len]) {
-                    Ok(frame) => return Some((frame, (socket, buffer, epoch))),
-                    Err(error) => tracing::debug!(%error, "a reply datagram did not decode and was dropped"),
-                }
-            }
+        let (frames, replies) = mpsc::channel(REPLY_QUEUE);
+        runtime.handle().spawn(read_replies(socket, epoch, codec, frames));
+        let replies = futures_util::stream::unfold(replies, |mut replies| async move {
+            let frame = replies.recv().await?;
+            Some((frame, replies))
         });
         Ok(Outbound { send, replies: Box::pin(replies) })
     }
@@ -207,7 +227,8 @@ impl Link for Udp {
         }
         let socket = lock(&self.state.socket).take();
         if let Some(socket) = socket {
-            final_read(&socket, self.codec).await;
+            let codec = self.codec;
+            self.runtime()?.run(async move { final_read(&socket, codec).await }).await?;
         }
         Ok(())
     }
@@ -223,13 +244,43 @@ async fn closed(mut epoch: watch::Receiver<u64>) {
     let _ = epoch.changed().await;
 }
 
+/// Reads the client socket's reply datagrams into `frames` until the link closes, the reply lane
+/// is dropped, or the OS reports the server unreachable; the socket is released as this returns.
+async fn read_replies(socket: Arc<UdpSocket>, epoch: watch::Receiver<u64>, codec: Codec, frames: mpsc::Sender<Frame>) {
+    let mut buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
+    loop {
+        let received = tokio::select! {
+            received = socket.recv(&mut buffer) => received,
+            () = closed(epoch.clone()) => return,
+            () = frames.closed() => return,
+        };
+        // An error here is the OS reporting the server unreachable: the reply lane ends, and the
+        // next call binds a new socket.
+        let len = match received {
+            Ok(len) => len,
+            Err(error) => {
+                tracing::debug!(%error, "the UDP link's reply lane ended");
+                return;
+            }
+        };
+        match codec.decode_frame(&buffer[..len]) {
+            Ok(frame) => {
+                if frames.send(frame).await.is_err() {
+                    return;
+                }
+            }
+            Err(error) => tracing::debug!(%error, "a reply datagram did not decode and was dropped"),
+        }
+    }
+}
+
 /// Every datagram the socket receives, as deliveries, until the link closes. A datagram that does
 /// not decode carries no id to answer and is dropped. Once the link is draining and holds no call,
 /// the inbound stream ends, and a request arriving afterwards is refused here: nothing tells a UDP
 /// caller to stop sending, and the stream ending only at `close` would hold the drain to its
 /// deadline. This loop alone sends deliveries and decides the end between datagrams, so a
 /// `cancel` releasing the last call is queued before the stream ends.
-async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, deliveries: mpsc::Sender<Delivery>) {
+async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, deliveries: mpsc::Sender<Delivery>, handle: Handle) {
     let ids = Arc::new(Mutex::new(Ids::new(Arc::clone(&state))));
     let mut buffer = vec![0u8; MAX_DATAGRAM as usize + 1];
     let mut deliveries = Some(deliveries);
@@ -268,7 +319,7 @@ async fn receive(socket: Arc<UdpSocket>, codec: Codec, state: Arc<State>, delive
             continue;
         };
         let Some(frame) = inward(frame, peer, &ids, &state.next_id) else { continue };
-        let reply = reply_path(Arc::clone(&socket), peer, codec, Arc::clone(&ids));
+        let reply = reply_path(Arc::clone(&socket), peer, codec, Arc::clone(&ids), handle.clone());
         if sender.send(Delivery { frame, reply: Some(reply), ack: Ack::none() }).await.is_err() {
             return;
         }
@@ -400,13 +451,14 @@ impl Ids {
 }
 
 /// Replies to one sender, under its own id; the mapping is forgotten once a reply ends the call.
-fn reply_path(socket: Arc<UdpSocket>, peer: SocketAddr, codec: Codec, ids: Arc<Mutex<Ids>>) -> ReplyPath {
+fn reply_path(socket: Arc<UdpSocket>, peer: SocketAddr, codec: Codec, ids: Arc<Mutex<Ids>>, handle: Handle) -> ReplyPath {
+    let runtime = Tokio::from_handle(handle);
     ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
         let socket = Arc::clone(&socket);
         let ids = Arc::clone(&ids);
-        Box::pin(async move {
+        let sent = runtime.run(async move {
             let Some(server) = frame.id() else {
-                return Err("a reply frame carries no id".into());
+                return Err(BoxError::from("a reply frame carries no id"));
             };
             let Some(caller) = lock(&ids).caller(server) else {
                 return Err("the call is no longer in flight".into());
@@ -418,7 +470,8 @@ fn reply_path(socket: Arc<UdpSocket>, peer: SocketAddr, codec: Codec, ids: Arc<M
                 lock(&ids).finish(server);
             }
             Ok(())
-        })
+        });
+        Box::pin(async move { sent.await? })
     })
     .peer(peer)
 }

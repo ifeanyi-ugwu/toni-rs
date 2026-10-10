@@ -251,6 +251,7 @@ macro_rules! conformance_suite {
             client_close => client_close::client_close,
             two_instances => delivery::two_instances,
             over_the_bound => admission::over_the_bound,
+            client_on_a_thread_without_a_runtime => threads::plain_thread,
         );
     };
     (@cases $broker:ty; $($name:ident => $module:ident :: $case:ident),* $(,)?) => {

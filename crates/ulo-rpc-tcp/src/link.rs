@@ -7,11 +7,14 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::TlsAcceptor;
 use ulo::{AppHandle, BoundAddr, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_net::{Activation, ActivationError, BoundListener, Endpoint, EndpointSpec, Tls};
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
@@ -33,6 +36,9 @@ const WRITE_QUEUE: usize = 64;
 /// Deliveries queued for the server; a full queue holds each connection's reader back.
 const DELIVERY_QUEUE: usize = 1024;
 
+/// Reply frames read ahead of the client; a full queue holds the connection's reader back.
+const REPLY_QUEUE: usize = 64;
+
 const RUNNING: u8 = 0;
 const DRAINING: u8 = 1;
 const CLOSED: u8 = 2;
@@ -49,11 +55,17 @@ const CLOSED: u8 = 2;
 /// `close` also ends every connection the link's client side opened: its socket is shut and its
 /// reply lane ends, so the calls waiting on it fail `Unavailable`. A call made afterwards connects
 /// again.
+///
+/// The link's sockets and tasks live on the tokio runtime it holds, the one current where it was
+/// built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may be
+/// polled on any executor or on a plain thread. A link built outside a runtime and given none
+/// refuses in `prepare` and in `connect`.
 pub struct Tcp {
     pub(crate) endpoint: EndpointSpec,
     pub(crate) tls: Option<Tls>,
     pub(crate) codec: Codec,
     pub(crate) max_frame: Option<u64>,
+    pub(crate) runtime: Option<Tokio>,
     /// Set by `prepare`.
     pub(crate) prepared: Option<Prepared>,
     pub(crate) state: Arc<State>,
@@ -94,6 +106,7 @@ impl Tcp {
             tls: None,
             codec: Codec::Json,
             max_frame: None,
+            runtime: Tokio::try_current(),
             prepared: None,
             state: Arc::new(State {
                 bound: Mutex::new(Vec::new()),
@@ -130,10 +143,23 @@ impl Tcp {
         self
     }
 
+    /// The tokio runtime the link's sockets and tasks run on, in place of the one current where
+    /// it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
     fn limit(&self) -> u64 {
         self.max_frame.unwrap_or(DEFAULT_MAX_FRAME).min(u64::from(u32::MAX))
     }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the TCP link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for Tcp {
     const NAME: &'static str = "tcp";
@@ -149,6 +175,9 @@ impl Link for Tcp {
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
         let mut problems = Vec::new();
+        if self.runtime.is_none() {
+            problems.push(NO_RUNTIME.to_owned());
+        }
         let endpoint = match self.endpoint.resolve() {
             Ok(endpoint) => Some(endpoint),
             Err(error) => {
@@ -192,19 +221,31 @@ impl Link for Tcp {
         let Some(prepared) = &self.prepared else {
             return Err("the TCP link listens once `prepare` has resolved its endpoint".into());
         };
+        let runtime = self.runtime()?;
+        let handle = runtime.handle();
         let mut accept = lock(&self.state.accept);
         if accept.is_some() {
             return Err("the TCP link is already listening".into());
         }
         let listener = BoundListener::bind(&prepared.endpoint)?;
         let local = listener.local_addr();
-        let listener = TcpListener::from_std(listener.into_std())?;
+        let listener = {
+            // Registered with the link's runtime, whose tasks accept on it.
+            let _entered = handle.enter();
+            TcpListener::from_std(listener.into_std())?
+        };
         *lock(&self.state.bound) = vec![BoundAddr::new("rpc", local).tls(prepared.acceptor.is_some())];
         let (deliveries, received) = mpsc::channel(DELIVERY_QUEUE);
         let (forwarded, inbound) = mpsc::channel(DELIVERY_QUEUE);
-        let server = Server { acceptor: prepared.acceptor.clone(), codec: self.codec, limit: self.limit(), state: Arc::clone(&self.state) };
-        *accept = Some(tokio::spawn(server.accept(listener, deliveries)));
-        tokio::spawn(forward(Arc::clone(&self.state), received, forwarded));
+        let server = Server {
+            acceptor: prepared.acceptor.clone(),
+            codec: self.codec,
+            limit: self.limit(),
+            state: Arc::clone(&self.state),
+            handle: handle.clone(),
+        };
+        *accept = Some(handle.spawn(server.accept(listener, deliveries)));
+        handle.spawn(forward(Arc::clone(&self.state), received, forwarded, handle.clone()));
         let inbound = futures_util::stream::unfold(inbound, |mut inbound| async move {
             let delivery = inbound.recv().await?;
             Some((delivery, inbound))
@@ -222,7 +263,8 @@ impl Link for Tcp {
         if self.tls.is_some() {
             return Err("the TCP link's client side speaks no TLS; `Tcp::tls` sets a server's certificate".into());
         }
-        let stream = TcpStream::connect(addr).await?;
+        let runtime = self.runtime()?;
+        let stream = runtime.run(TcpStream::connect(addr)).await??;
         let _ = stream.set_nodelay(true);
         let (reader, writer) = stream.into_split();
         let (queue, queued) = mpsc::channel(WRITE_QUEUE);
@@ -230,9 +272,11 @@ impl Link for Tcp {
         {
             let mut writers = lock(&self.state.client_writers);
             while writers.try_join_next().is_some() {}
-            writers.spawn(write_frames(writer, queued, closed(epoch.clone())));
+            writers.spawn_on(write_frames(writer, queued, closed(epoch.clone())), runtime.handle());
         }
         let (codec, limit) = (self.codec, self.limit());
+        let (frames, replies) = mpsc::channel(REPLY_QUEUE);
+        runtime.handle().spawn(read_replies(reader, epoch, codec, limit, frames));
         let send = Box::new(move |_pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
             let queue = queue.clone();
             Box::pin(async move {
@@ -240,27 +284,9 @@ impl Link for Tcp {
                 queue.send(bytes).await.map_err(|_| BoxError::from("the TCP connection closed"))
             })
         });
-        let replies = futures_util::stream::unfold(Some((reader, epoch)), move |state| async move {
-            let (mut reader, epoch) = state?;
-            let read = tokio::select! {
-                read = read_frame(&mut reader, limit) => read,
-                () = closed(epoch.clone()) => return None,
-            };
-            let bytes = match read {
-                Ok(Some(bytes)) => bytes,
-                Ok(None) => return None,
-                Err(error) => {
-                    tracing::debug!(%error, "the TCP connection's reply lane ended");
-                    return None;
-                }
-            };
-            match codec.decode_frame(&bytes) {
-                Ok(frame) => Some((frame, Some((reader, epoch)))),
-                Err(error) => {
-                    tracing::warn!(%error, "a reply frame did not decode; the TCP connection is dropped");
-                    None
-                }
-            }
+        let replies = futures_util::stream::unfold(replies, |mut replies| async move {
+            let frame = replies.recv().await?;
+            Some((frame, replies))
         });
         Ok(Outbound { send, replies: Box::pin(replies) })
     }
@@ -314,6 +340,37 @@ async fn closed(mut epoch: watch::Receiver<u64>) {
     let _ = epoch.changed().await;
 }
 
+/// Reads one client connection's reply frames into `frames` until the connection ends, the link
+/// closes, or the reply lane is dropped.
+async fn read_replies(mut reader: OwnedReadHalf, epoch: watch::Receiver<u64>, codec: Codec, limit: u64, frames: mpsc::Sender<Frame>) {
+    loop {
+        let read = tokio::select! {
+            read = read_frame(&mut reader, limit) => read,
+            () = closed(epoch.clone()) => return,
+            () = frames.closed() => return,
+        };
+        let bytes = match read {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::debug!(%error, "the TCP connection's reply lane ended");
+                return;
+            }
+        };
+        match codec.decode_frame(&bytes) {
+            Ok(frame) => {
+                if frames.send(frame).await.is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a reply frame did not decode; the TCP connection is dropped");
+                return;
+            }
+        }
+    }
+}
+
 /// Resolves once the phase reached `at`, or the link holding the sender is gone.
 async fn reached(phase: &mut watch::Receiver<u8>, at: u8) {
     let _ = phase.wait_for(|phase| *phase >= at).await;
@@ -326,6 +383,8 @@ struct Server {
     codec: Codec,
     limit: u64,
     state: Arc<State>,
+    /// The link's runtime, which every connection's tasks are spawned on.
+    handle: Handle,
 }
 
 impl Server {
@@ -340,7 +399,7 @@ impl Server {
                 () = reached(&mut phase, DRAINING) => break,
                 accepted = listener.accept() => match accepted {
                     Ok((stream, peer)) => {
-                        connections.spawn(self.clone().connection(stream, peer, deliveries.clone()));
+                        connections.spawn_on(self.clone().connection(stream, peer, deliveries.clone()), &self.handle);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "the TCP link could not accept a connection");
@@ -386,7 +445,7 @@ impl Server {
         let (queue, queued) = mpsc::channel(WRITE_QUEUE);
         // The writer runs apart from this task: the server's calls hold reply paths into its queue
         // after the connection's reader has ended, and it ends when the last of them drops.
-        tokio::spawn(write_frames(writer, queued, std::future::pending()));
+        self.handle.spawn(write_frames(writer, queued, std::future::pending()));
         let connection = self.state.next_connection.fetch_add(1, Ordering::Relaxed);
         lock(&self.state.connections).insert(connection, queue.clone());
         // A connection accepted before the drain and registered after it, its TLS handshake
@@ -462,12 +521,12 @@ impl Server {
 /// the drain to its deadline while a client keeps an idle connection open. A call's count is
 /// released only after its last delivery is queued here, and this reads the queue before it looks
 /// at the count, so nothing queued before the count reached zero is answered by the link.
-async fn forward(state: Arc<State>, mut received: mpsc::Receiver<Delivery>, forwarded: mpsc::Sender<Delivery>) {
+async fn forward(state: Arc<State>, mut received: mpsc::Receiver<Delivery>, forwarded: mpsc::Sender<Delivery>, handle: Handle) {
     let mut forwarded = Some(forwarded);
     loop {
         let Some(sender) = forwarded.as_ref() else {
             let Some(delivery) = received.recv().await else { return };
-            refuse(delivery);
+            refuse(delivery, &handle);
             continue;
         };
         tokio::select! {
@@ -476,7 +535,7 @@ async fn forward(state: Arc<State>, mut received: mpsc::Receiver<Delivery>, forw
                 Some(delivery) => {
                     if let Err(unsent) = sender.send(delivery).await {
                         forwarded = None;
-                        refuse(unsent.0);
+                        refuse(unsent.0, &handle);
                     }
                 }
                 None => return,
@@ -496,11 +555,11 @@ async fn idle(state: &State) {
 
 /// Answers a request or streamed request the server will not receive as the server answers one
 /// during the drain; anything else names no call in flight and is dropped.
-fn refuse(delivery: Delivery) {
+fn refuse(delivery: Delivery, handle: &Handle) {
     let (Frame::Req { id, .. } | Frame::Open { id, .. }) = delivery.frame else { return };
     let Some(reply) = delivery.reply else { return };
     let error = ErrorBody::new(ErrorKind::Unavailable, "the server is shutting down", Details::new());
-    tokio::spawn(async move {
+    handle.spawn(async move {
         if let Err(error) = reply.send(Frame::Err { id, error }).await {
             tracing::debug!(%error, "the TCP link could not refuse a request that arrived after the drain");
         }

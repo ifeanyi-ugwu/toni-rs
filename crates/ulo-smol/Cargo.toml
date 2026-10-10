@@ -1,9 +1,9 @@
 [package]
-name = "ulo-tokio"
+name = "ulo-smol"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "The tokio runtime for Ulo: the core's Runtime and Timer, OS shutdown signals and spawn helpers"
+description = "The smol runtime for Ulo: the core's Runtime on an async-executor Executor and async-io's timers"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,9 +11,10 @@ categories = ["asynchronous"]
 
 [dependencies]
 ulo = { path = "../ulo" }
-tokio = { workspace = true, features = ["rt", "time", "signal", "macros"] }
+async-executor.workspace = true
+async-io.workspace = true
 
 [dev-dependencies]
 ulo-runtime-conformance = { path = "../ulo-runtime-conformance" }
-futures-executor.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+async-io.workspace = true
+futures.workspace = true

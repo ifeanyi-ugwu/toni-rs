@@ -166,7 +166,7 @@ jobs:
   conformance:
     name: rpc conformance (brokers)
     # On push, not on pull requests: each suite starts its broker under Docker
-    # through testcontainers, and the image pulls and the compile of five
+    # through testcontainers, and the image pulls and the compile of six
     # `integration` test targets cost minutes a pull request does not need to
     # wait on. One crate per step, so a failure names its broker. The Kafka
     # suite starts a broker container per scenario, at most four at once.
@@ -181,6 +181,8 @@ jobs:
       - run: cargo test -p ulo-rpc-mqtt --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-rabbitmq --features integration --test conformance --locked
       - run: cargo test -p ulo-rpc-kafka --features integration --test conformance --locked
+      # Broadcast across two processes through the WebSocket transport's Redis adapter.
+      - run: cargo test -p ulo-ws-redis --features integration --test integration --locked
       # A conformance suite writes each startup failure, its full error chain included, to a file
       # under target/conformance-failures/ before the test panics with it. The files are printed
       # here, so the cause is in the job log whatever else the log keeps, and kept as an artifact.

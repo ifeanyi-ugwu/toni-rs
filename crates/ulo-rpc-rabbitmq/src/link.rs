@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -15,6 +16,7 @@ use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Consumer
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_rpc::link::Inbound;
 use ulo_transport::Count;
 use ulo_rpc::{
@@ -47,23 +49,36 @@ const REPLY_TO: &str = "amq.rabbitmq.reply-to";
 const UNLIMITED_PREFETCH: u16 = 64;
 
 /// The RabbitMQ link.
+///
+/// The link's connections and tasks live on the tokio runtime it holds, the one current where it
+/// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
+/// be polled on any executor or on a plain thread. A link built outside a runtime and given none
+/// refuses in `prepare` and in `connect`.
 pub struct RabbitMq {
     pub(crate) url: String,
     pub(crate) codec: Codec,
     pub(crate) prefetch: u16,
+    pub(crate) runtime: Option<Tokio>,
     pub(crate) state: Mutex<State>,
 }
 
 #[derive(Default)]
 pub(crate) struct State {
     server: Option<Arc<ServerSide>>,
-    client: Option<Connection>,
+    /// The client side's connection, closed on the runtime it was opened on.
+    client: Option<(Connection, Tokio)>,
 }
 
 impl RabbitMq {
     /// The link on `url`, `amqp://..` or `amqps://..`, parsed in `prepare` and connected lazily.
     pub fn url(url: impl Into<String>) -> Self {
-        RabbitMq { url: url.into(), codec: Codec::Json, prefetch: UNLIMITED_PREFETCH, state: Mutex::new(State::default()) }
+        RabbitMq {
+            url: url.into(),
+            codec: Codec::Json,
+            prefetch: UNLIMITED_PREFETCH,
+            runtime: Tokio::try_current(),
+            state: Mutex::new(State::default()),
+        }
     }
 
     /// `Codec::Cbor` carries raw bytes and declares `binary: true`; JSON unset.
@@ -72,7 +87,19 @@ impl RabbitMq {
         self
     }
 
+    /// The tokio runtime the link's connections and tasks run on, in place of the one current
+    /// where it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the RabbitMQ link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for RabbitMq {
     const NAME: &'static str = "rabbitmq";
@@ -88,6 +115,7 @@ impl Link for RabbitMq {
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
+        self.runtime()?;
         uri(&self.url)?;
         Ok(())
     }
@@ -106,70 +134,85 @@ impl Link for RabbitMq {
     }
 
     async fn listen(&self, patterns: &[Pattern]) -> Result<Inbound, BoxError> {
-        let connection = Connection::connect_uri(uri(&self.url)?, ConnectionProperties::default().enable_auto_recover()).await?;
-        match subscribe(&connection, patterns, self.prefetch).await {
-            Ok((channel, consumers, control)) => {
-                let (phase, _) = watch::channel(Phase::Serving);
-                let (deliveries, inbound) = mpsc::unbounded_channel();
-                let side = Arc::new(ServerSide {
-                    connection,
-                    channel,
-                    codec: self.codec,
-                    runtime: Handle::current(),
-                    calls: Arc::new(Calls::new()),
-                    phase,
-                    tags: consumers.iter().map(Consumer::tag).collect(),
-                    deliveries: Mutex::new(Some(deliveries)),
-                });
-                for consumer in consumers {
-                    tokio::spawn(request_lane(Arc::clone(&side), consumer));
+        let runtime = self.runtime()?;
+        let (uri, patterns, prefetch) = (uri(&self.url)?, patterns.to_vec(), self.prefetch);
+        let (connection, channel, consumers, control) = runtime
+            .run(async move {
+                let connection = Connection::connect_uri(uri, ConnectionProperties::default().enable_auto_recover()).await?;
+                match subscribe(&connection, &patterns, prefetch).await {
+                    Ok((channel, consumers, control)) => Ok((connection, channel, consumers, control)),
+                    Err(error) => {
+                        let _ = connection.close(200, "bind failed".into()).await;
+                        Err(error)
+                    }
                 }
-                tokio::spawn(control_lane(Arc::clone(&side), control));
-                lock(&self.state).server = Some(side);
-                Ok(receiver_stream(inbound))
-            }
-            Err(error) => {
-                let _ = connection.close(200, "bind failed".into()).await;
-                Err(error)
-            }
+            })
+            .await??;
+        let (phase, _) = watch::channel(Phase::Serving);
+        let (deliveries, inbound) = mpsc::unbounded_channel();
+        let side = Arc::new(ServerSide {
+            connection,
+            channel,
+            codec: self.codec,
+            runtime: runtime.clone(),
+            calls: Arc::new(Calls::new()),
+            phase,
+            tags: consumers.iter().map(Consumer::tag).collect(),
+            deliveries: Mutex::new(Some(deliveries)),
+        });
+        let handle = runtime.handle();
+        for consumer in consumers {
+            handle.spawn(request_lane(Arc::clone(&side), consumer));
         }
+        handle.spawn(control_lane(Arc::clone(&side), control));
+        lock(&self.state).server = Some(side);
+        Ok(receiver_stream(inbound))
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
         // Not recovered by lapin: a direct reply-to address lives as long as its channel, so the
         // replies a recovered connection's new channel would wait for are gone. A lost connection
         // ends the reply lane instead, and `RpcClient` connects again for the next call.
-        let connection = Connection::connect_uri(uri(&self.url)?, ConnectionProperties::default()).await?;
-        let channel = connection.create_channel().await?;
-        // Confirm mode is what makes a `mandatory` publish's `basic.return` reach the publisher:
-        // lapin resolves the publish's confirmation with the returned message.
-        channel.confirm_select(ConfirmSelectOptions::default()).await?;
-        channel
-            .exchange_declare(CONTROL.into(), ExchangeKind::Fanout, ExchangeDeclareOptions::default(), FieldTable::default())
-            .await?;
-        let replies = channel
-            .basic_consume(
-                REPLY_TO.into(),
-                "".into(),
-                BasicConsumeOptions { no_ack: true, ..Default::default() },
-                FieldTable::default(),
-            )
-            .await?;
+        let runtime = self.runtime()?;
+        let uri = uri(&self.url)?;
+        let (connection, channel, replies) = runtime
+            .run(async move {
+                let connection = Connection::connect_uri(uri, ConnectionProperties::default()).await?;
+                let channel = connection.create_channel().await?;
+                // Confirm mode is what makes a `mandatory` publish's `basic.return` reach the
+                // publisher: lapin resolves the publish's confirmation with the returned message.
+                channel.confirm_select(ConfirmSelectOptions::default()).await?;
+                channel
+                    .exchange_declare(CONTROL.into(), ExchangeKind::Fanout, ExchangeDeclareOptions::default(), FieldTable::default())
+                    .await?;
+                let replies = channel
+                    .basic_consume(
+                        REPLY_TO.into(),
+                        "".into(),
+                        BasicConsumeOptions { no_ack: true, ..Default::default() },
+                        FieldTable::default(),
+                    )
+                    .await?;
+                Ok::<_, BoxError>((connection, channel, replies))
+            })
+            .await??;
 
         let side = Arc::new(ClientSide {
             channel,
             codec: self.codec,
+            runtime: runtime.clone(),
             id: uuid::Uuid::new_v4().simple().to_string(),
             calls: Mutex::new(HashMap::new()),
         });
-        lock(&self.state).client = Some(connection);
+        lock(&self.state).client = Some((connection, runtime.clone()));
         let (frames, replies_out) = mpsc::unbounded_channel();
-        tokio::spawn(route_replies(Arc::clone(&side), replies, frames));
+        runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
                 let side = Arc::clone(&side);
-                Box::pin(async move { side.send(pattern, frame).await })
+                let sent = runtime.run(async move { side.send(pattern, frame).await });
+                Box::pin(async move { sent.await? })
             }),
             replies: receiver_stream(replies_out),
         })
@@ -179,13 +222,19 @@ impl Link for RabbitMq {
         let server = lock(&self.state).server.clone();
         let Some(side) = server else { return };
         side.phase.send_replace(Phase::Draining);
-        for tag in &side.tags {
-            if let Err(error) = side.channel.basic_cancel(tag.clone(), BasicCancelOptions::default()).await {
-                tracing::warn!(%error, consumer = tag.as_str(), "the RabbitMQ link could not cancel a consumer");
-            }
-        }
+        let cancelling = Arc::clone(&side);
+        let _ = side
+            .runtime
+            .run(async move {
+                for tag in &cancelling.tags {
+                    if let Err(error) = cancelling.channel.basic_cancel(tag.clone(), BasicCancelOptions::default()).await {
+                        tracing::warn!(%error, consumer = tag.as_str(), "the RabbitMQ link could not cancel a consumer");
+                    }
+                }
+            })
+            .await;
         let watched = Arc::clone(&side);
-        tokio::spawn(async move {
+        side.runtime.handle().spawn(async move {
             let mut count = watched.calls.count.subscribe();
             let _ = count.wait_for(|held| *held == 0).await;
             lock(&watched.deliveries).take();
@@ -202,12 +251,13 @@ impl Link for RabbitMq {
             side.phase.send_replace(Phase::Closed);
             side.calls.clear();
             lock(&side.deliveries).take();
-            if let Err(error) = side.connection.close(200, "close".into()).await {
+            let closing = Arc::clone(&side);
+            if let Err(error) = close_on(&side.runtime, async move { closing.connection.close(200, "close".into()).await }).await {
                 failure = Some(error);
             }
         }
-        if let Some(connection) = client
-            && let Err(error) = connection.close(200, "close".into()).await
+        if let Some((connection, runtime)) = client
+            && let Err(error) = close_on(&runtime, async move { connection.close(200, "close".into()).await }).await
         {
             failure = Some(error);
         }
@@ -223,6 +273,11 @@ enum Phase {
     Serving,
     Draining,
     Closed,
+}
+
+/// A connection's `close` run on the link's runtime.
+async fn close_on(runtime: &Tokio, close: impl Future<Output = lapin::Result<()>> + Send + 'static) -> Result<(), BoxError> {
+    Ok(runtime.run(close).await??)
 }
 
 fn uri(url: &str) -> Result<AMQPUri, BoxError> {
@@ -270,9 +325,9 @@ struct ServerSide {
     connection: Connection,
     channel: Channel,
     codec: Codec,
-    /// Where an `Ack`'s settlement runs: `Ack::ack` and `reject` are synchronous, and lapin's
-    /// acknowledgment is a future.
-    runtime: Handle,
+    /// The link's runtime, which every reply is published from and where an `Ack`'s settlement
+    /// runs: `Ack::ack` and `reject` are synchronous, and lapin's acknowledgment is a future.
+    runtime: Tokio,
     calls: Arc<Calls>,
     phase: watch::Sender<Phase>,
     /// The pattern consumers' tags, cancelled by the drain.
@@ -296,7 +351,7 @@ impl ServerSide {
         let reply_to = delivery.properties.reply_to().as_ref().map(|reply| reply.as_str().to_owned());
         let correlation = delivery.properties.correlation_id().as_ref().map(|id| id.as_str().to_owned());
         let acker = delivery.acker;
-        let runtime = self.runtime.clone();
+        let runtime = self.runtime.handle().clone();
         // Settled once the handler completes, so the queue redelivers a call whose server died
         // mid-handler: at-least-once.
         let ack = Ack::new(move |accepted| {
@@ -354,6 +409,7 @@ impl ServerSide {
         let channel = self.channel.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
+        let runtime = self.runtime.clone();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
             let channel = channel.clone();
@@ -361,13 +417,14 @@ impl ServerSide {
             let reply = reply.clone();
             let correlation = correlation.clone();
             let released = released.clone();
-            Box::pin(async move {
+            let sent = runtime.run(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&frame)?;
                 publish_reply(&channel, reply, correlation, None, &bytes).await
-            })
+            });
+            Box::pin(async move { sent.await? })
         });
         let id = self.calls.hold(key, path.clone());
         (id, path)
@@ -450,6 +507,8 @@ impl Calls {
 struct ClientSide {
     channel: Channel,
     codec: Codec,
+    /// The link's runtime, which a streamed request's pump is spawned on.
+    runtime: Tokio,
     id: String,
     calls: Mutex<HashMap<u64, ClientCall>>,
 }
@@ -491,7 +550,7 @@ impl ClientSide {
                 let (gate, opened) = oneshot::channel();
                 let (queue, queued) = mpsc::unbounded_channel();
                 lock(&self.calls).insert(id, ClientCall::Streaming { gate: Some(gate), queue });
-                tokio::spawn(pump(Arc::clone(self), id, opened, queued));
+                self.runtime.handle().spawn(pump(Arc::clone(self), id, opened, queued));
                 let sent = self.publish_request(&pattern, id, &headers, Some(OPEN), &[]).await;
                 if sent.is_err() {
                     lock(&self.calls).remove(&id);

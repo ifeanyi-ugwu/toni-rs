@@ -20,6 +20,7 @@ integration = []
 [dependencies]
 ulo = { path = "../ulo" }
 ulo-rpc = { path = "../ulo-rpc" }
+ulo-tokio = { path = "../ulo-tokio" }
 ulo-transport = { path = "../ulo-transport" }
 bytes.workspace = true
 futures-core.workspace = true
@@ -30,6 +31,7 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+futures-executor.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }

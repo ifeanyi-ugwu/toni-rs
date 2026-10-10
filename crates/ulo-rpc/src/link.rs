@@ -5,6 +5,11 @@
 //! [`RpcClient`](crate::RpcClient) its client side, [`Link::connect`]; routing, execution, the
 //! four shapes, deadlines and cancellation are `ulo-rpc`'s. What differs per link is declared in
 //! [`Capabilities`] and asserted by `ulo-rpc-conformance`.
+//!
+//! The futures and streams a link hands out are polled on whatever executor drives the server or
+//! the client, which need not be the runtime the link's I/O belongs to: a link tied to one runs
+//! its I/O and its tasks on that runtime itself and hands the results back. The conformance suite
+//! calls a client from a plain thread that no runtime runs.
 
 use std::error::Error;
 use std::fmt;

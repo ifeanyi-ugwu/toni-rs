@@ -19,6 +19,24 @@ futures-util.workspace = true
 # `tokio-rustls-comp`: `rediss://` connects over TLS.
 redis = { workspace = true, features = ["tokio-rustls-comp"] }
 serde_json.workspace = true
+ulo-tokio = { path = "../ulo-tokio" }
 # `time`: the reconnect delay of a lost subscription.
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing.workspace = true
+
+[features]
+# Builds `tests/integration.rs`, which starts a Redis server in a container and so needs a running
+# Docker daemon.
+integration = []
+
+[dev-dependencies]
+# The relay helpers that start a container on a port no host listener shadows.
+ulo-rpc-conformance = { path = "../ulo-rpc-conformance" }
+ulo-ws-hyper = { path = "../ulo-ws-hyper" }
+futures-executor.workspace = true
+# `sink`: the test writes through `SinkExt` on each client's socket.
+futures-util = { workspace = true, features = ["sink"] }
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+# `connect`: the test drives each instance's gateway through a real WebSocket client.
+tokio-tungstenite = { workspace = true, features = ["connect"] }

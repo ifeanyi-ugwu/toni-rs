@@ -8,6 +8,7 @@ members = [
     "crates/ulo-transport-macros",
     "crates/ulo-net",
     "crates/ulo-tokio",
+    "crates/ulo-smol",
     "crates/ulo-runtime-conformance",
     "crates/ulo-hyper-serve",
     "crates/ulo-http",
@@ -73,6 +74,8 @@ actix-service = "2"
 actix-web = { version = "4", default-features = false }
 anyhow = "1.0.95"
 async-broadcast = "0.7"
+async-executor = "1.14"
+async-io = "2.6"
 async-graphql = { version = "7", default-features = false }
 async-lock = "3.4"
 async-nats = { version = "0.46", default-features = false }
@@ -85,6 +88,7 @@ event-listener = "5.4"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-channel = "0.3"
 futures-core = "0.3"
+futures-executor = "0.3"
 futures-io = "0.3"
 futures-timer = "3"
 futures-util = "0.3"

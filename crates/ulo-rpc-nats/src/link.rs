@@ -6,8 +6,10 @@ use async_nats::connection::State as Connection;
 use async_nats::{Client, ConnectOptions, Event, HeaderMap, Message, ServerAddr, StatusCode, Subscriber};
 use bytes::Bytes;
 use futures_util::StreamExt;
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use ulo::{AppHandle, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link,
@@ -36,10 +38,18 @@ const CONTROL: &str = "ulo.rpc.control";
 const DOMAIN: &str = "ulo.rpc";
 
 /// The NATS link.
+///
+/// The link's connections and tasks live on the tokio runtime it holds, the one current where it
+/// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
+/// be polled on any executor or on a plain thread: each connection is opened there and its task
+/// runs there, and a publish, a subscription, a flush or a drain reaches that task through
+/// async-nats's command channel. A link built outside a runtime and given none refuses in
+/// `prepare` and in `connect`.
 pub struct Nats {
     pub(crate) url: String,
     pub(crate) group: Option<String>,
     pub(crate) codec: Codec,
+    pub(crate) runtime: Option<Tokio>,
     /// The root module's full type path, written by `prepare` when no `group` is set.
     pub(crate) default_group: Option<String>,
     /// The server's `max_payload` from its `INFO`, zero until a connection reads it.
@@ -62,6 +72,7 @@ impl Nats {
             url: url.into(),
             group: None,
             codec: Codec::Json,
+            runtime: Tokio::try_current(),
             default_group: None,
             max_payload: Arc::new(AtomicU64::new(0)),
             state: Mutex::new(State::default()),
@@ -79,7 +90,20 @@ impl Nats {
         self.codec = codec;
         self
     }
+
+    /// The tokio runtime the link's connections and tasks run on, in place of the one current
+    /// where it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the NATS link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for Nats {
     const NAME: &'static str = "nats";
@@ -95,6 +119,7 @@ impl Link for Nats {
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
+        self.runtime()?;
         servers(&self.url)?;
         match &self.group {
             Some(group) => check_group(group)?,
@@ -109,7 +134,8 @@ impl Link for Nats {
             .clone()
             .or_else(|| self.default_group.clone())
             .ok_or("the NATS link's queue group is unset: `listen` ran before `prepare`")?;
-        let client = open(&self.url).await?;
+        let runtime = self.runtime()?;
+        let client = runtime.run(open(self.url.clone())).await??;
         self.max_payload.store(client.server_info().max_payload as u64, Ordering::Relaxed);
 
         // Every subscription is made before any lane starts, so a failure leaves nothing
@@ -141,10 +167,11 @@ impl Link for Nats {
         let (phase, _) = watch::channel(Phase::Serving);
         let side = Arc::new(ServerSide { client, codec: self.codec, calls: Arc::new(Calls::new()), phase });
         let (deliveries, inbound) = mpsc::unbounded_channel();
+        let handle = runtime.handle();
         for subscriber in lanes {
-            tokio::spawn(request_lane(Arc::clone(&side), subscriber, deliveries.clone()));
+            handle.spawn(request_lane(Arc::clone(&side), subscriber, deliveries.clone()));
         }
-        tokio::spawn(control_lane(Arc::clone(&side), control, deliveries));
+        handle.spawn(control_lane(Arc::clone(&side), control, deliveries));
         lock(&self.state).server = Some(side);
         Ok(receiver_stream(inbound))
     }
@@ -153,6 +180,7 @@ impl Link for Nats {
         // async-nats reconnects by itself and resubscribes the inbox, but what was published to
         // the inbox while the connection was down is gone, so a disconnect ends the reply lane:
         // `RpcClient` fails the calls waiting on it `Unavailable` and connects again for the next.
+        let runtime = self.runtime()?;
         let (lost, disconnected) = watch::channel(false);
         let options = ConnectOptions::new().event_callback(move |event| {
             if matches!(event, Event::Disconnected) {
@@ -160,7 +188,7 @@ impl Link for Nats {
             }
             async {}
         });
-        let client = open_with(&self.url, options).await?;
+        let client = runtime.run(open_with(self.url.clone(), options)).await??;
         self.max_payload.store(client.server_info().max_payload as u64, Ordering::Relaxed);
         let prefix = client.new_inbox();
         let replies = client.subscribe(format!("{prefix}.*")).await?;
@@ -171,13 +199,14 @@ impl Link for Nats {
         let side = Arc::new(ClientSide {
             client: client.clone(),
             codec: self.codec,
+            runtime: runtime.clone(),
             prefix,
             max_payload: Arc::clone(&self.max_payload),
             calls: Mutex::new(HashMap::new()),
         });
         lock(&self.state).client = Some(client);
         let (frames, replies_out) = mpsc::unbounded_channel();
-        tokio::spawn(route_replies(Arc::clone(&side), replies, frames, disconnected));
+        runtime.handle().spawn(route_replies(Arc::clone(&side), replies, frames, disconnected));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
@@ -428,6 +457,8 @@ async fn control_lane(side: Arc<ServerSide>, mut subscriber: Subscriber, deliver
 struct ClientSide {
     client: Client,
     codec: Codec,
+    /// The link's runtime, which a streamed request's pump is spawned on.
+    runtime: Tokio,
     prefix: String,
     max_payload: Arc<AtomicU64>,
     calls: Mutex<HashMap<u64, ClientCall>>,
@@ -468,7 +499,7 @@ impl ClientSide {
                 let (gate, opened) = oneshot::channel();
                 let (queue, queued) = mpsc::unbounded_channel();
                 lock(&self.calls).insert(id, ClientCall::Streaming { pattern: pattern.clone(), gate: Some(gate), queue });
-                tokio::spawn(pump(self.client.clone(), self.reply_subject(id), opened, queued));
+                self.runtime.handle().spawn(pump(self.client.clone(), self.reply_subject(id), opened, queued));
                 let sent = publish(&self.client, pattern.to_string(), Some(self.reply_subject(id)), &headers, Some(OPEN), Bytes::new()).await;
                 if sent.is_err() {
                     lock(&self.calls).remove(&id);
@@ -694,12 +725,14 @@ fn servers(url: &str) -> Result<Vec<ServerAddr>, BoxError> {
     Ok(servers)
 }
 
-async fn open(url: &str) -> Result<Client, BoxError> {
+/// A connection opened, and its task started, on the runtime polling this: `Tokio::run` for the
+/// link.
+async fn open(url: String) -> Result<Client, BoxError> {
     open_with(url, ConnectOptions::new()).await
 }
 
-async fn open_with(url: &str, options: ConnectOptions) -> Result<Client, BoxError> {
-    let servers = servers(url)?;
+async fn open_with(url: String, options: ConnectOptions) -> Result<Client, BoxError> {
+    let servers = servers(&url)?;
     Ok(options.connect(servers).await?)
 }
 

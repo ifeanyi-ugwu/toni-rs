@@ -11,9 +11,11 @@ use rumqttc::v5::mqttbytes::v5::{
 };
 use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
 use rumqttc::{Outgoing, Transport};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use ulo::{AppHandle, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Data, Delivery, DeliveryMode, ErrorBody, Frame, FrameTooLarge, Link,
@@ -53,11 +55,18 @@ const MAX_INCOMING: u32 = 268_435_455;
 const RECEIVE_MAXIMUM: u16 = u16::MAX;
 
 /// The MQTT v5 link.
+///
+/// The link's connections and tasks live on the tokio runtime it holds, the one current where it
+/// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
+/// be polled on any executor or on a plain thread: each connection's event loop runs there, and a
+/// publish, an unsubscribe or a disconnect reaches it through rumqttc's request channel. A link
+/// built outside a runtime and given none refuses in `prepare` and in `connect`.
 pub struct Mqtt {
     pub(crate) url: String,
     pub(crate) group: Option<String>,
     pub(crate) qos: QoS,
     pub(crate) codec: Codec,
+    pub(crate) runtime: Option<Tokio>,
     /// The root module's full type path, written by `prepare` when no `group` is set.
     pub(crate) default_group: Option<String>,
     /// The CONNACK's Maximum Packet Size, zero until a connection reads one.
@@ -80,6 +89,7 @@ impl Mqtt {
             group: None,
             qos: QoS::AtLeastOnce,
             codec: Codec::Json,
+            runtime: Tokio::try_current(),
             default_group: None,
             max_packet: Arc::new(AtomicU64::new(0)),
             state: Mutex::new(State::default()),
@@ -105,7 +115,20 @@ impl Mqtt {
         self.codec = codec;
         self
     }
+
+    /// The tokio runtime the link's connections and tasks run on, in place of the one current
+    /// where it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the MQTT link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 /// An MQTT quality of service.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -142,6 +165,7 @@ impl Link for Mqtt {
     }
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
+        self.runtime()?;
         Target::parse(&self.url)?;
         match &self.group {
             Some(group) => check_group(group)?,
@@ -156,6 +180,7 @@ impl Link for Mqtt {
             .clone()
             .or_else(|| self.default_group.clone())
             .ok_or("the MQTT link's group is unset: `listen` ran before `prepare`")?;
+        let runtime = self.runtime()?;
         let target = Target::parse(&self.url)?;
         let (client, eventloop) = AsyncClient::new(target.options(client_id()), 64);
         let shared: Vec<String> = patterns.iter().map(|pattern| format!("$share/{group}/{pattern}")).collect();
@@ -165,6 +190,7 @@ impl Link for Mqtt {
             client,
             codec: self.codec,
             qos: self.qos.wire(),
+            runtime: runtime.clone(),
             shared,
             calls: Arc::new(Calls::new()),
             phase,
@@ -175,7 +201,7 @@ impl Link for Mqtt {
         });
 
         let (ready, bound) = oneshot::channel();
-        let task = tokio::spawn(server_loop(Arc::clone(&side), eventloop, ready));
+        let task = runtime.handle().spawn(server_loop(Arc::clone(&side), eventloop, ready));
         // `bind`'s outcome waits for the first CONNACK and the SUBACK of every subscription, so a
         // broker without shared subscriptions, or one refusing a filter, fails `bind`.
         let outcome = bound.await.unwrap_or_else(|_| Err("the MQTT link's event loop ended before the broker answered".into()));
@@ -189,6 +215,7 @@ impl Link for Mqtt {
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
+        let runtime = self.runtime()?;
         let target = Target::parse(&self.url)?;
         let id = client_id();
         let reply_topic = format!("ulo/rpc/reply/{id}");
@@ -197,6 +224,7 @@ impl Link for Mqtt {
             client,
             codec: self.codec,
             qos: self.qos.wire(),
+            runtime: runtime.clone(),
             id,
             reply_topic,
             max_packet: Arc::clone(&self.max_packet),
@@ -208,7 +236,7 @@ impl Link for Mqtt {
         });
         let (frames, replies) = mpsc::unbounded_channel();
         let (ready, subscribed) = oneshot::channel();
-        let task = tokio::spawn(client_loop(Arc::clone(&side), eventloop, frames, ready));
+        let task = runtime.handle().spawn(client_loop(Arc::clone(&side), eventloop, frames, ready));
         // The reply subscription is in place before the first request can be published.
         let outcome = subscribed.await.unwrap_or_else(|_| Err("the MQTT link's event loop ended before the broker answered".into()));
         if let Err(error) = outcome {
@@ -248,7 +276,7 @@ impl Link for Mqtt {
         let _ = side.unconfirmed.subscribe().wait_for(|filters| *filters == 0).await;
         unconfirmed.disarm();
         let watched = Arc::clone(&side);
-        tokio::spawn(async move {
+        side.runtime.handle().spawn(async move {
             let mut count = watched.calls.count.subscribe();
             while count.wait_for(|held| *held == 0).await.is_ok() {
                 if watched.end_if_idle() {
@@ -397,6 +425,8 @@ struct ServerSide {
     client: AsyncClient,
     codec: Codec,
     qos: MqttQoS,
+    /// The link's runtime, which the drain's watcher is spawned on.
+    runtime: Tokio,
     /// The `$share/<group>/<pattern>` filters, unsubscribed by the drain.
     shared: Vec<String>,
     calls: Arc<Calls>,
@@ -736,6 +766,8 @@ struct ClientSide {
     client: AsyncClient,
     codec: Codec,
     qos: MqttQoS,
+    /// The link's runtime, which a streamed request's pump is spawned on.
+    runtime: Tokio,
     id: String,
     reply_topic: String,
     max_packet: Arc<AtomicU64>,
@@ -799,7 +831,7 @@ impl ClientSide {
                 let (gate, opened) = oneshot::channel();
                 let (queue, queued) = mpsc::unbounded_channel();
                 lock(&self.calls).insert(id, ClientCall::Streaming { pattern: pattern.clone(), gate: Some(gate), queue });
-                tokio::spawn(pump(Arc::clone(self), id, opened, queued));
+                self.runtime.handle().spawn(pump(Arc::clone(self), id, opened, queued));
                 let properties = self.request_properties(id, &headers, Some(OPEN));
                 let sent = self.publish(pattern.to_string(), properties, Bytes::new(), Some(id)).await;
                 if sent.is_err() {

@@ -5,9 +5,11 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use redis::aio::{ConnectionManager, PubSubSink, PubSubStream};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use ulo::{AppHandle, BoxError, BoxFuture};
+use ulo_tokio::Tokio;
 use ulo_rpc::link::Inbound;
 use ulo_rpc::{
     Ack, CallHeaders, Capabilities, Codec, Delivery, DeliveryMode, ErrorBody, Frame, Link, NoDestination, Ordering as Order,
@@ -26,9 +28,15 @@ const REPLY: &str = "ulo-reply";
 const CONTROL: &str = "ulo:rpc:control";
 
 /// The Redis link.
+///
+/// The link's connections and tasks live on the tokio runtime it holds, the one current where it
+/// was built or the one [`with_handle`](Self::with_handle) names, so its futures and streams may
+/// be polled on any executor or on a plain thread. A link built outside a runtime and given none
+/// refuses in `prepare` and in `connect`.
 pub struct Redis {
     pub(crate) url: String,
     pub(crate) codec: Codec,
+    pub(crate) runtime: Option<Tokio>,
     pub(crate) state: Mutex<State>,
 }
 
@@ -42,7 +50,7 @@ impl Redis {
     /// The link on `url`, `redis://host:6379` or `rediss://host:6380`, parsed in `prepare` and
     /// connected lazily. `rediss://` needs the crate's `tls` feature.
     pub fn url(url: impl Into<String>) -> Self {
-        Redis { url: url.into(), codec: Codec::Json, state: Mutex::new(State::default()) }
+        Redis { url: url.into(), codec: Codec::Json, runtime: Tokio::try_current(), state: Mutex::new(State::default()) }
     }
 
     /// `Codec::Cbor` carries raw bytes and declares `binary: true`; JSON unset.
@@ -50,7 +58,20 @@ impl Redis {
         self.codec = codec;
         self
     }
+
+    /// The tokio runtime the link's connections and tasks run on, in place of the one current
+    /// where it was built.
+    pub fn with_handle(mut self, handle: Handle) -> Self {
+        self.runtime = Some(Tokio::from_handle(handle));
+        self
+    }
+
+    fn runtime(&self) -> Result<Tokio, BoxError> {
+        self.runtime.clone().ok_or_else(|| NO_RUNTIME.into())
+    }
 }
+
+const NO_RUNTIME: &str = "the Redis link has no tokio runtime: build it inside one, or give it one with `.with_handle(..)`";
 
 impl Link for Redis {
     const NAME: &'static str = "redis";
@@ -61,17 +82,27 @@ impl Link for Redis {
 
     async fn prepare(&mut self, app: &AppHandle) -> Result<(), BoxError> {
         let _ = app;
+        self.runtime()?;
         client(&self.url)?;
         Ok(())
     }
 
     async fn listen(&self, patterns: &[Pattern]) -> Result<Inbound, BoxError> {
+        let runtime = self.runtime()?;
         let client = client(&self.url)?;
-        let publisher = ConnectionManager::new(client.clone()).await?;
         let patterns: Vec<String> = patterns.iter().map(|pattern| pattern.as_str().to_owned()).collect();
-        // Subscribed before `listen` returns, so a failure leaves nothing subscribed and the first
-        // call after `bind` finds the server listening.
-        let (sink, stream) = subscribe(&client, &server_channels(&patterns, true)).await?;
+        let (publisher, sink, stream) = {
+            let (client, channels) = (client.clone(), server_channels(&patterns, true));
+            runtime
+                .run(async move {
+                    let publisher = ConnectionManager::new(client.clone()).await?;
+                    // Subscribed before `listen` returns, so a failure leaves nothing subscribed
+                    // and the first call after `bind` finds the server listening.
+                    let (sink, stream) = subscribe(&client, &channels).await?;
+                    Ok::<_, BoxError>((publisher, sink, stream))
+                })
+                .await??
+        };
 
         let (phase, _) = watch::channel(Phase::Serving);
         let (deliveries, inbound) = mpsc::unbounded_channel();
@@ -79,22 +110,32 @@ impl Link for Redis {
             client,
             publisher,
             codec: self.codec,
+            runtime: runtime.clone(),
             patterns,
             sink: Mutex::new(Some(sink)),
             calls: Arc::new(Calls::new()),
             phase,
             deliveries: Mutex::new(Some(deliveries)),
         });
-        let task = tokio::spawn(server_lane(Arc::clone(&side), stream));
+        let task = runtime.handle().spawn(server_lane(Arc::clone(&side), stream));
         lock(&self.state).server = Some((side, task.abort_handle()));
         Ok(receiver_stream(inbound))
     }
 
     async fn connect(&self) -> Result<Outbound, BoxError> {
+        let runtime = self.runtime()?;
         let client = client(&self.url)?;
-        let publisher = ConnectionManager::new(client.clone()).await?;
         let channel = format!("ulo:rpc:reply:{}", uuid::Uuid::new_v4().simple());
-        let (sink, stream) = subscribe(&client, std::slice::from_ref(&channel)).await?;
+        let (publisher, sink, stream) = {
+            let channel = channel.clone();
+            runtime
+                .run(async move {
+                    let publisher = ConnectionManager::new(client.clone()).await?;
+                    let (sink, stream) = subscribe(&client, std::slice::from_ref(&channel)).await?;
+                    Ok::<_, BoxError>((publisher, sink, stream))
+                })
+                .await??
+        };
         let side = Arc::new(ClientSide {
             publisher: Mutex::new(Some(publisher)),
             codec: self.codec,
@@ -104,13 +145,14 @@ impl Link for Redis {
             base: uuid::Uuid::new_v4().as_u64_pair().0,
         });
         let (frames, replies) = mpsc::unbounded_channel();
-        let task = tokio::spawn(client_lane(Arc::clone(&side), sink, stream, frames));
+        let task = runtime.handle().spawn(client_lane(Arc::clone(&side), sink, stream, frames));
         lock(&self.state).client = Some((Arc::clone(&side), task.abort_handle()));
 
         Ok(Outbound {
             send: Box::new(move |pattern: Pattern, frame: Frame, _reply_to: Option<ReplyTo>| -> BoxFuture<'static, Result<(), BoxError>> {
                 let side = Arc::clone(&side);
-                Box::pin(async move { side.send(pattern, frame).await })
+                let sent = runtime.run(async move { side.send(pattern, frame).await });
+                Box::pin(async move { sent.await? })
             }),
             replies: receiver_stream(replies),
         })
@@ -123,12 +165,15 @@ impl Link for Redis {
         let sink = lock(&side.sink).clone();
         if let Some(mut sink) = sink
             && !side.patterns.is_empty()
-            && let Err(error) = sink.unsubscribe(&side.patterns).await
         {
-            tracing::warn!(%error, "the Redis link could not unsubscribe its patterns");
+            let patterns = side.patterns.clone();
+            let unsubscribed = side.runtime.run(async move { sink.unsubscribe(&patterns).await.map_err(BoxError::from) }).await;
+            if let Err(error) = unsubscribed.unwrap_or_else(|stopped| Err(stopped.into())) {
+                tracing::warn!(%error, "the Redis link could not unsubscribe its patterns");
+            }
         }
         let watched = Arc::clone(&side);
-        tokio::spawn(async move {
+        side.runtime.handle().spawn(async move {
             let mut count = watched.calls.count.subscribe();
             while count.wait_for(|held| *held == 0).await.is_ok() {
                 if watched.end_if_idle() {
@@ -222,6 +267,8 @@ struct ServerSide {
     client: redis::Client,
     publisher: ConnectionManager,
     codec: Codec,
+    /// The link's runtime, which every reply is published from.
+    runtime: Tokio,
     patterns: Vec<String>,
     sink: Mutex<Option<PubSubSink>>,
     calls: Arc<Calls>,
@@ -340,6 +387,7 @@ impl ServerSide {
         let publisher = self.publisher.clone();
         let codec = self.codec;
         let calls = Arc::clone(&self.calls);
+        let runtime = self.runtime.clone();
         let key = wire.to_string();
         let released = key.clone();
         let path = ReplyPath::new(move |frame: Frame| -> BoxFuture<'static, Result<(), BoxError>> {
@@ -347,14 +395,15 @@ impl ServerSide {
             let calls = Arc::clone(&calls);
             let reply = reply.clone();
             let released = released.clone();
-            Box::pin(async move {
+            let sent = runtime.run(async move {
                 if is_terminal(&frame) {
                     calls.release(&released);
                 }
                 let bytes = codec.encode_frame(&with_id(frame, wire))?;
                 publish(&mut publisher, &reply, &bytes).await?;
-                Ok(())
-            })
+                Ok::<_, BoxError>(())
+            });
+            Box::pin(async move { sent.await? })
         });
         let local = self.calls.hold(key, path.clone());
         (local, path)

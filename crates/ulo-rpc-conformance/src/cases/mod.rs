@@ -16,4 +16,5 @@ pub mod misses;
 pub mod payloads;
 pub mod recovery;
 pub mod streams;
+pub mod threads;
 pub mod unary;
