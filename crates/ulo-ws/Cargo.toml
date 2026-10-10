@@ -40,6 +40,8 @@ serde_json = { workspace = true, features = ["raw_value"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# The WebSocket conformance suite, which `tests/conformance.rs` runs against the hand-off.
+ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 # `tokio-io`: `tests/table.rs` hands the driver one end of a tokio pipe through `Upgraded::from_tokio`.
 ulo-http = { path = "../ulo-http", features = ["tokio-io"] }
 # The HTTP server a gateway on the HTTP port is reached through.

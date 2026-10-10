@@ -1,6 +1,7 @@
-//! `on_stream_end` reports the reply the dispatcher writes. A stream an interceptor discards was
-//! never the reply and reports nothing, so it cannot hide the outcome of the reply that replaced
-//! it.
+//! `on_stream_end` reports the reply the dispatcher writes: a stream an interceptor puts in place of
+//! the one it discarded reports its own end. A written stream reporting `Completed` and a discarded
+//! one reporting nothing are the WebSocket conformance suite's `stream_end` scenarios
+//! (`tests/conformance.rs`).
 //!
 //! Each handler registers a callback that sends the outcome on a channel the test holds the other
 //! end of. The callback owns the channel's only sender, so the channel closes when the message's
@@ -24,9 +25,7 @@ use ulo_ws::{Frame, Reply, Ws, WsCx, WsModule};
 
 use support::{Running, hang_up, next_json, send_json};
 
-const DISCARDED: &str = "discarded";
 const REPLACED: &str = "replaced";
-const WRITTEN: &str = "written";
 
 /// How long a test waits for the message's execution to end; it ends once the reply is written.
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -66,16 +65,6 @@ fn ticks() -> impl Stream<Item = Result<u32, Late>> {
     stream::iter([Ok(1), Ok(2)])
 }
 
-/// Runs the message, drops the stream it answers and answers one frame instead.
-struct AnswerOne;
-
-impl Interceptor<Ws> for AnswerOne {
-    async fn intercept(&self, _cx: &WsCx, next: Next<'_, Ws>) -> Result<Reply, BoxError> {
-        drop(next.run().await?);
-        Ok(Reply::One(Frame::text("0")))
-    }
-}
-
 /// Runs the message, drops the stream it answers and answers a stream of its own.
 struct AnswerStream;
 
@@ -92,23 +81,10 @@ struct Streams;
 #[routes]
 #[ulo_ws::gateway(path = "/streams", port = own)]
 impl Streams {
-    #[ulo_ws::message("discarded")]
-    #[interceptors(value = AnswerOne)]
-    fn discarded(&self, exec: ExecutionRef) -> impl Stream<Item = Result<u32, Late>> {
-        report_for(DISCARDED, &exec);
-        ticks()
-    }
-
     #[ulo_ws::message("replaced")]
     #[interceptors(value = AnswerStream)]
     fn replaced(&self, exec: ExecutionRef) -> impl Stream<Item = Result<u32, Late>> {
         report_for(REPLACED, &exec);
-        ticks()
-    }
-
-    #[ulo_ws::message("written")]
-    fn written(&self, exec: ExecutionRef) -> impl Stream<Item = Result<u32, Late>> {
-        report_for(WRITTEN, &exec);
         ticks()
     }
 }
@@ -152,23 +128,9 @@ async fn call(event: &'static str, frames: usize) -> (Vec<serde_json::Value>, Op
 }
 
 #[tokio::test]
-async fn a_stream_an_interceptor_discards_reports_nothing() {
-    let (frames, outcome) = call(DISCARDED, 1).await;
-    assert_eq!(frames, vec![json!({ "id": "m", "data": 0 })], "the interceptor's answer was not the reply");
-    assert_eq!(outcome, None, "the stream the interceptor discarded reported its end");
-}
-
-#[tokio::test]
 async fn the_stream_replacing_a_discarded_one_reports_its_own_end() {
     let (frames, outcome) = call(REPLACED, 3).await;
     let expected = vec![json!({ "id": "m", "data": 1 }), json!({ "id": "m", "data": 2 }), json!({ "id": "m", "complete": true })];
     assert_eq!(frames, expected, "the interceptor's stream was not the reply");
     assert_eq!(outcome, Some(StreamOutcome::Completed), "the reply's own end was not what the execution reported");
-}
-
-#[tokio::test]
-async fn a_written_stream_reports_completed() {
-    let (frames, outcome) = call(WRITTEN, 3).await;
-    assert_eq!(frames.last(), Some(&json!({ "id": "m", "complete": true })), "the stream was not written to its end: {frames:?}");
-    assert_eq!(outcome, Some(StreamOutcome::Completed));
 }

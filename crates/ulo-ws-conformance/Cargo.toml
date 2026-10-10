@@ -1,0 +1,26 @@
+[package]
+name = "ulo-ws-conformance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The conformance suite every Ulo WebSocket server runs, ulo-ws-hyper's standalone server as the reference"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# A dev-dependency of the WebSocket server crates and of nothing else. Cargo strips dev-dependencies
+# when publishing them, so this never needs a crates.io release.
+publish = false
+
+[dependencies]
+ulo = { path = "../ulo" }
+ulo-transport = { path = "../ulo-transport" }
+ulo-ws = { path = "../ulo-ws" }
+# The suite's client: `handshake` for the key and the accept value it derives. No runtime feature:
+# the client runs over the host's `futures-io` stream.
+async-tungstenite = { workspace = true, features = ["handshake"] }
+# The records a scenario waits on, woken without a runtime.
+event-listener.workspace = true
+futures-io.workspace = true
+# `io`: the upgrade request written and its response read over the host's stream.
+futures-util = { workspace = true, features = ["io"] }
+serde_json.workspace = true

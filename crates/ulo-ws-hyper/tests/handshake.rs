@@ -1,6 +1,8 @@
-//! What a gateway decides before its first message: the subprotocol the 101 echoes, a refusal
-//! before the upgrade under `refuse = handshake`, connect guards written by value and by closure,
-//! and the session `session = T` creates before those guards run.
+//! What a gateway decides before its first message, past the WebSocket conformance suite's
+//! handshake scenarios (`tests/conformance.rs`): a gateway refusing a connection that agreed no
+//! subprotocol, a gateway listing none echoing none, a refusal before the upgrade taking no
+//! `max_connections` slot, connect guards written by value and by closure, and the session
+//! `session = T` creates before those guards run.
 
 mod support;
 
@@ -37,19 +39,6 @@ impl OnConnect for Versioned {
         }
         Err(ConnectRefused::code(SUBPROTOCOL_NOT_ACCEPTABLE, "no subprotocol agreed")
             .unwrap_or_else(|error| panic!("4406 is a close code a frame carries: {error}")))
-    }
-}
-
-/// Lists a subprotocol and proceeds without one.
-#[injectable]
-struct Lenient;
-
-#[routes]
-#[ulo_ws::gateway(path = "/lenient", port = own, subprotocols = ["v1.chat"])]
-impl Lenient {
-    #[ulo_ws::message("which")]
-    fn which(&self, head: Dep<UpgradeHead>) -> Option<String> {
-        head.subprotocol().map(str::to_owned)
     }
 }
 
@@ -188,7 +177,6 @@ impl Module for Root {
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.value(Allowlist(vec!["t1", "t2"]));
         m.controller::<Versioned>();
-        m.controller::<Lenient>();
         m.controller::<Unversioned>();
         m.controller::<Strict>();
         m.controller::<Gated>();
@@ -207,31 +195,6 @@ async fn which(socket: &mut support::Socket) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn the_101_echoes_the_first_listed_subprotocol_the_client_offered() {
-    let app = start().await;
-    for (offered, chosen) in [("v1.chat, v2.chat", "v2.chat"), ("v1.chat", "v1.chat"), ("other, v1.chat", "v1.chat")] {
-        let mut answer = upgrade(app.addr, "/versioned", &[("Sec-WebSocket-Protocol", offered)]).await;
-        assert_eq!(answer.status, 101, "offered {offered:?}: {}", answer.body);
-        assert_eq!(answer.header("sec-websocket-protocol"), Some(chosen), "offered {offered:?}");
-        let mut socket = answer.socket.take().unwrap_or_else(|| panic!("a 101 carries a socket"));
-        assert_eq!(which(&mut socket).await, json!({ "id": 1, "data": chosen }));
-        hang_up(socket).await;
-    }
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn offers_spread_over_two_header_lines_are_read_as_one_list() {
-    let app = start().await;
-    let answer = upgrade(app.addr, "/versioned", &[("Sec-WebSocket-Protocol", "other"), ("Sec-WebSocket-Protocol", "v1.chat")]).await;
-    assert_eq!(answer.header("sec-websocket-protocol"), Some("v1.chat"));
-    if let Some(socket) = answer.socket {
-        hang_up(socket).await;
-    }
-    app.stop().await;
-}
-
-#[tokio::test]
 async fn no_offered_subprotocol_gets_a_101_without_one_and_the_gateway_refuses() {
     let app = start().await;
     for headers in [&[("Sec-WebSocket-Protocol", "graphql-ws")][..], &[][..]] {
@@ -246,17 +209,6 @@ async fn no_offered_subprotocol_gets_a_101_without_one_and_the_gateway_refuses()
 }
 
 #[tokio::test]
-async fn a_gateway_that_does_not_refuse_proceeds_without_a_subprotocol() {
-    let app = start().await;
-    let mut answer = upgrade(app.addr, "/lenient", &[("Sec-WebSocket-Protocol", "graphql-ws")]).await;
-    assert_eq!(answer.header("sec-websocket-protocol"), None);
-    let mut socket = answer.socket.take().unwrap_or_else(|| panic!("expected a 101, got {}", answer.status));
-    assert_eq!(which(&mut socket).await, json!({ "id": 1, "data": null }));
-    hang_up(socket).await;
-    app.stop().await;
-}
-
-#[tokio::test]
 async fn a_gateway_listing_no_subprotocol_echoes_none() {
     let app = start().await;
     let mut answer = upgrade(app.addr, "/unversioned", &[("Sec-WebSocket-Protocol", "v1.chat")]).await;
@@ -264,25 +216,6 @@ async fn a_gateway_listing_no_subprotocol_echoes_none() {
     let mut socket = answer.socket.take().unwrap_or_else(|| panic!("expected a 101, got {}", answer.status));
     assert_eq!(which(&mut socket).await, json!({ "id": 1, "data": null }));
     hang_up(socket).await;
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn refuse_handshake_answers_a_guard_refusal_403_before_the_upgrade() {
-    let app = start().await;
-    let answer = upgrade(app.addr, "/strict", &[("x-user", "ada")]).await;
-    assert_eq!(answer.status, 403, "body: {}", answer.body);
-    assert!(answer.socket.is_none());
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn refuse_handshake_answers_an_unauthorized_refusal_401_with_a_challenge() {
-    let app = start().await;
-    let answer = upgrade(app.addr, "/strict", &[("x-token", "open")]).await;
-    assert_eq!(answer.status, 401, "body: {}", answer.body);
-    assert_eq!(answer.header("www-authenticate"), Some("Bearer"));
-    assert_eq!(answer.body, "who are you?");
     app.stop().await;
 }
 

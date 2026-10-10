@@ -21,6 +21,7 @@ members = [
     "crates/ulo-http-conformance",
     "crates/ulo-ws",
     "crates/ulo-ws-hyper",
+    "crates/ulo-ws-conformance",
     "crates/ulo-ws-macros",
     "crates/ulo-ws-redis",
     "crates/ulo-rpc",

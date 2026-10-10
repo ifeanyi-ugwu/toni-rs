@@ -29,6 +29,8 @@ hyper-util = { workspace = true, features = ["tokio"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# The WebSocket conformance suite, which `tests/conformance.rs` runs against the server.
+ulo-ws-conformance = { path = "../ulo-ws-conformance" }
 ulo-tokio = { path = "../ulo-tokio" }
 # `sink`: the tests write through `SinkExt` on the client's socket.
 futures-util = { workspace = true, features = ["sink"] }

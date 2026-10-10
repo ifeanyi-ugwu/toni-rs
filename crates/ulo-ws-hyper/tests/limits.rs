@@ -1,28 +1,24 @@
-//! The gateway attribute's limits, each on a gateway of its own on the standalone server:
-//! `message_limit` after reassembly, `max_connections`, `max_inflight`, `max_outbound` under both
-//! overflow policies and under a streamed answer, which waits for room rather than overflowing,
-//! and keep-alive, where a Pong that misses `pong_timeout` ends the connection.
-//! The counts are written as integer literals, which the attribute rewrites to `Count::Max`, and
-//! once as an expression.
+//! The gateway attribute's limits past what the WebSocket conformance suite pins, each on a gateway
+//! of its own on the standalone server: one frame over `message_limit`, `max_inflight` of two, and
+//! `max_outbound` under both overflow policies, the slow consumer's Close written before anything
+//! queued. The suite (`tests/conformance.rs`) runs a message over the limit after reassembly,
+//! `max_connections`, `max_inflight` of one, a streamed answer under `max_outbound`, and
+//! keep-alive. The counts are written as integer literals, which the attribute rewrites to
+//! `Count::Max`, and once as an expression.
 //!
 //! The outbound tests run on the current-thread runtime `#[tokio::test]` builds, so a handler's
 //! sends all reach the queue before the connection's loop next runs.
 
 mod support;
 
-use std::time::Duration;
-
-use futures_util::{SinkExt, Stream, StreamExt, stream};
 use serde_json::json;
 use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::protocol::frame::Frame as WireFrame;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use ulo::{Dep, Module, ModuleDef, ModuleIdentity, injectable, routes};
-use ulo_transport::{CallError, Count};
+use ulo_transport::Count;
 use ulo_ws::{Connection, DisconnectReason, Frame, OnDisconnect, Payload, WsCx};
 
-use support::{Record, Running, Socket, close_frame, hang_up, next_json, next_message, send_json, within};
+use support::{Record, Running, close_frame, hang_up, next_json, next_message, send_json};
 
 /// Why each connection on a gateway ended, as (gateway path, reason).
 #[derive(Clone)]
@@ -60,29 +56,6 @@ async fn burst(conn: &Connection, n: u32) {
 }
 
 #[injectable]
-struct Serial {
-    gate: Dep<Gate>,
-}
-
-#[routes]
-#[ulo_ws::gateway(path = "/serial", port = own, max_inflight = 1)]
-impl Serial {
-    #[ulo_ws::message("hold")]
-    async fn hold(&self) -> &'static str {
-        self.gate.hold().await
-    }
-
-    #[ulo_ws::message("open")]
-    fn open(&self) -> &'static str {
-        self.gate.open("opened by a message");
-        "opened"
-    }
-
-    #[ulo_ws::message("noop")]
-    fn noop(&self) {}
-}
-
-#[injectable]
 struct Parallel {
     gate: Dep<Gate>,
 }
@@ -116,11 +89,6 @@ impl Strict {
     #[ulo_ws::message("burst")]
     async fn burst(&self, n: Payload<u32>, cx: WsCx) {
         burst(cx.conn(), n.0).await;
-    }
-
-    #[ulo_ws::message("count")]
-    async fn count(&self, up_to: Payload<u32>) -> impl Stream<Item = Result<u32, CallError>> {
-        stream::iter((1..=up_to.0).map(Ok))
     }
 
     #[ulo_ws::message("echo")]
@@ -162,25 +130,6 @@ impl Small {
     }
 }
 
-#[injectable]
-struct Heartbeat {
-    ended: Dep<Ended>,
-}
-
-#[routes]
-#[ulo_ws::gateway(
-    path = "/heartbeat",
-    port = own,
-    ping_interval = ulo::Bound::After(Duration::from_millis(100)),
-    pong_timeout = ulo::Bound::After(Duration::from_millis(150)),
-)]
-impl Heartbeat {
-    #[ulo_ws::message("echo")]
-    fn echo(&self, text: Payload<String>) -> String {
-        text.0
-    }
-}
-
 macro_rules! record_ends {
     ($($gateway:ty),*) => {$(
         impl OnDisconnect for $gateway {
@@ -191,7 +140,7 @@ macro_rules! record_ends {
     )*};
 }
 
-record_ends!(Strict, Lossy, Small, Heartbeat);
+record_ends!(Strict, Lossy, Small);
 
 struct Root {
     ended: Ended,
@@ -206,12 +155,10 @@ impl Module for Root {
     fn register(&self, m: &mut ModuleDef<'_>) {
         m.value(self.ended.clone());
         m.value(self.gate.clone());
-        m.controller::<Serial>();
         m.controller::<Parallel>();
         m.controller::<Strict>();
         m.controller::<Lossy>();
         m.controller::<Small>();
-        m.controller::<Heartbeat>();
     }
 }
 
@@ -227,11 +174,6 @@ async fn start() -> Started {
     let root = Root { ended: ended.clone(), gate: gate.clone() };
     let app = Running::start(root, ulo_ws_hyper::Server::new("127.0.0.1:0")).await;
     Started { app, ended, gate }
-}
-
-async fn exchange(socket: &mut Socket, event: &str, id: u32) -> serde_json::Value {
-    send_json(socket, &json!({ "event": event, "id": id })).await;
-    next_json(socket).await
 }
 
 #[tokio::test]
@@ -250,39 +192,6 @@ async fn a_message_over_the_limit_closes_with_1009() {
 }
 
 #[tokio::test]
-async fn the_message_limit_counts_a_message_after_reassembly() {
-    let Started { app, .. } = start().await;
-    let mut socket = app.connect("/small", &[]).await;
-    // Two fragments, the first 80 bytes and the second the rest: each under the 128-byte limit,
-    // together over it.
-    let message = json!({ "event": "echo", "id": 1, "data": "y".repeat(140) }).to_string();
-    let (first, rest) = message.split_at(80);
-    let fragments = [
-        WireFrame::message(first.as_bytes().to_vec(), OpCode::Data(Data::Text), false),
-        WireFrame::message(rest.as_bytes().to_vec(), OpCode::Data(Data::Continue), true),
-    ];
-    for fragment in fragments {
-        socket.send(Message::Frame(fragment)).await.unwrap_or_else(|error| panic!("sending a fragment failed: {error}"));
-    }
-    assert_eq!(close_frame(&mut socket).await.map(|(code, _)| code), Some(1009));
-    hang_up(socket).await;
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn an_integer_max_connections_admits_that_many_and_closes_the_next_with_1013() {
-    let Started { app, .. } = start().await;
-    let mut first = app.connect("/small", &[]).await;
-    let mut second = app.connect("/small", &[]).await;
-    assert_eq!(close_frame(&mut second).await, Some((1013, "too many connections".to_owned())));
-    hang_up(second).await;
-    send_json(&mut first, &json!({ "event": "echo", "id": 1, "data": "still here" })).await;
-    assert_eq!(next_json(&mut first).await, json!({ "id": 1, "data": "still here" }));
-    hang_up(first).await;
-    app.stop().await;
-}
-
-#[tokio::test]
 async fn max_inflight_of_two_runs_a_second_message_beside_the_first() {
     let Started { app, gate, .. } = start().await;
     let mut socket = app.connect("/parallel", &[]).await;
@@ -293,27 +202,6 @@ async fn max_inflight_of_two_runs_a_second_message_beside_the_first() {
     assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": "held" }));
     assert_eq!(gate.log.snapshot(), vec!["hold started", "opened by a message", "hold done"]);
     hang_up(socket).await;
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn max_inflight_of_one_reads_nothing_more_until_the_message_in_flight_is_answered() {
-    let Started { app, gate, .. } = start().await;
-    let mut socket = app.connect("/serial", &[]).await;
-    send_json(&mut socket, &json!({ "event": "hold", "id": 1 })).await;
-    gate.log.at_least(1, "`hold` starting").await;
-    send_json(&mut socket, &json!({ "event": "open", "id": 2 })).await;
-    // A round trip on a second connection, which has a message in flight of its own to spend:
-    // had the first connection kept reading, `open` would have run by the time it completes.
-    let mut other = app.connect("/serial", &[]).await;
-    assert_eq!(exchange(&mut other, "noop", 9).await, json!({ "id": 9, "complete": true }));
-    gate.open("opened by the test");
-
-    assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": "held" }));
-    assert_eq!(next_json(&mut socket).await, json!({ "id": 2, "data": "opened" }));
-    assert_eq!(gate.log.snapshot(), vec!["hold started", "opened by the test", "hold done", "opened by a message"]);
-    hang_up(socket).await;
-    hang_up(other).await;
     app.stop().await;
 }
 
@@ -331,26 +219,6 @@ async fn an_outbound_queue_over_its_limit_closes_with_slow_consumer() {
 }
 
 #[tokio::test]
-async fn a_streamed_answer_longer_than_max_outbound_waits_for_room_and_is_written_whole() {
-    let Started { app, ended, .. } = start().await;
-    let mut socket = app.connect("/strict", &[]).await;
-    send_json(&mut socket, &json!({ "event": "count", "id": 1, "data": 50 })).await;
-    for n in 1..=50 {
-        assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": n }), "item {n} of the stream");
-    }
-    assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "complete": true }));
-    send_json(&mut socket, &json!({ "event": "echo", "id": 2, "data": "after" })).await;
-    assert_eq!(next_json(&mut socket).await, json!({ "id": 2, "data": "after" }), "the connection outlived the stream");
-    hang_up(socket).await;
-    let ends = ended.0.at_least(1, "the connection's end").await;
-    assert!(
-        !ends.iter().any(|(_, why)| matches!(why, DisconnectReason::ServerClose { .. })),
-        "the server closed the connection: {ends:?}"
-    );
-    app.stop().await;
-}
-
-#[tokio::test]
 async fn drop_oldest_keeps_the_newest_messages_and_the_connection() {
     let Started { app, .. } = start().await;
     let mut socket = app.connect("/lossy", &[]).await;
@@ -361,50 +229,6 @@ async fn drop_oldest_keeps_the_newest_messages_and_the_connection() {
     assert_eq!(next_message(&mut socket).await, Message::text("5"));
     send_json(&mut socket, &json!({ "event": "echo", "id": 2, "data": "after" })).await;
     assert_eq!(next_json(&mut socket).await, json!({ "id": 2, "data": "after" }));
-    hang_up(socket).await;
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn a_pong_that_misses_pong_timeout_ends_the_connection_as_lost() {
-    let Started { app, ended, .. } = start().await;
-    let mut socket = app.connect("/heartbeat", &[]).await;
-    let ping = within("the first keep-alive Ping", socket.next()).await;
-    assert!(matches!(ping, Some(Ok(Message::Ping(_)))), "expected a Ping, got {ping:?}");
-    // The client answers a Ping on its next poll. It does not poll again until the server has
-    // given up on the Pong.
-    let ends = ended.0.at_least(1, "the end of a connection whose Pong never came").await;
-    assert_eq!(ends, vec![("/heartbeat".to_owned(), DisconnectReason::Lost)]);
-    // The Pong goes out late, and the server ends the connection without a Close frame.
-    let ending = within("the connection's end", async {
-        loop {
-            match socket.next().await {
-                Some(Ok(Message::Ping(_))) => continue,
-                other => return other,
-            }
-        }
-    })
-    .await;
-    assert!(!matches!(ending, Some(Ok(Message::Close(_)))), "a lost connection is dropped, not closed: {ending:?}");
-    app.stop().await;
-}
-
-#[tokio::test]
-async fn a_client_answering_each_ping_outlives_the_pong_timeout() {
-    let Started { app, ended, .. } = start().await;
-    let mut socket = app.connect("/heartbeat", &[]).await;
-    // Three Pings, 100 ms apart, each answered as the next poll begins: longer than the 150 ms a
-    // Pong may take.
-    let mut pings = 0;
-    while pings < 3 {
-        match within("a keep-alive Ping", socket.next()).await {
-            Some(Ok(Message::Ping(_))) => pings += 1,
-            other => panic!("expected a Ping, got {other:?}"),
-        }
-    }
-    send_json(&mut socket, &json!({ "event": "echo", "id": 1, "data": "alive" })).await;
-    assert_eq!(next_json(&mut socket).await, json!({ "id": 1, "data": "alive" }));
-    assert_eq!(ended.0.snapshot(), Vec::new(), "the connection was ended while its client answered every Ping");
     hang_up(socket).await;
     app.stop().await;
 }

@@ -6704,7 +6704,22 @@ dependencies = [
  "ulo-http-hyper",
  "ulo-tokio",
  "ulo-transport",
+ "ulo-ws-conformance",
  "ulo-ws-macros",
+]
+
+[[package]]
+name = "ulo-ws-conformance"
+version = "0.1.0"
+dependencies = [
+ "async-tungstenite",
+ "event-listener 5.4.1",
+ "futures-io",
+ "futures-util",
+ "serde_json",
+ "ulo",
+ "ulo-transport",
+ "ulo-ws",
 ]
 
 [[package]]
@@ -6730,6 +6745,7 @@ dependencies = [
  "ulo-tokio",
  "ulo-transport",
  "ulo-ws",
+ "ulo-ws-conformance",
 ]
 
 [[package]]
