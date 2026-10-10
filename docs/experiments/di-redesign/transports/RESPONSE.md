@@ -1574,3 +1574,77 @@ This mirrors `ulo-http` versus `ulo-http-hyper` exactly: the hub knows the proto
 - **The gateway table,** built from `Mounted`'s handlers as `ulo-ws-hyper` builds it, so `port = own` and the per-gateway limits mean the same thing on every server.
 
 **A WebSocket conformance suite.** HTTP and RPC each have one, and that is how an outside backend or link proves itself; WebSocket has none. A community server could only claim to handle the handshake refusals, close codes, keep-alive, the 1001 drain and `on_disconnect` correctly. A WebSocket suite in the same shape as the others (a Host-like trait, `ulo-ws-hyper` as the reference, scenarios for each of those behaviours) turns that claim into a test anyone can run. It is worth building with the split, while the reference server is being touched anyway.
+
+## Thirty-seventh response: the WebSocket hub and its server split
+
+Received 2026-10-10, answering `divergences/runtime-d.md` (S1–S12 across stage d and the split) and
+F367. The user signed it off the same day. S3, S4, S8 and S12 build as test batch 20 once runtime stage e1 has landed; F367 joins stage e1 with its two-process Redis test; the `async-tungstenite` 0.35 bump is a change of its own, after stage e.
+
+Ten of the twelve are accepted as built. S3 should stop panicking, S4 should share one copy, and S8 has a missing hook.
+
+**S7. Accepted.** A future of the stream is the honest signature, since hyper only produces the stream after the 101 is written. Spawning inside the tracker at once is the right detail, because a connection that is mid-upgrade at shutdown must count against the drain like any other.
+
+**S8. Accepted, but check whether the hooks stay paired.** Releasing rooms and the connection count on drop is right. The question is whether the connection phase ran `on_connect` before the `Switch` existed. If it did, dropping an unserved `Switch` must also run `on_disconnect` (with `Lost`). Connection hooks are paired: a connection that ran `on_connect` always gets `on_disconnect`, so a gateway that registers presence on connect doesn't leak it when the 101 fails to write. If `on_connect` hasn't run yet at that point, there is nothing to pair, and the drop as built is complete. Either way, a test where the 101's write fails would pin it.
+
+**S1. Yes, a separate change.** A dependency bump inside a refactor makes a regression impossible to attribute. Moving to `async-tungstenite` 0.35 and tungstenite 0.30 on its own, with the WebSocket suite as its check, is exactly what the suite is for.
+
+**S3. The zero timeout mustn't panic, least of all at the call.** A panic when a request is made happens late, under traffic, in code that did nothing wrong, and the transports follow the core's rule that the framework doesn't panic. Refuse it where it is written: make the builder `timeout(self, bound: Bound) -> Result<Self, ZeroTimeout>`, with the same wording the module path uses, so `RpcClient::new(link, rt).timeout(b)?` fails at the line that made the mistake. The rest of S3 (the timeout stored per handle, clones keeping their own, the connection shared) is the normal builder behaviour, so that part is fine.
+
+**S4. Share it through `__private`, not a second copy.** Two copies of a subtle concurrency primitive (the register-before-read ordering is exactly what drifts) means a fix applied to one and missed in the other. Making it public API is the wrong cure, but the workspace already has the right boundary: `ulo-transport`'s doc-hidden `__private` module, which sibling crates and generated code use, and which we used for `Carried`. Put `Watch` there.
+
+**S5. Accepted.** A rotating start is fair and deterministic, which makes failures reproducible.
+
+**S6. Accepted, and better than asked.** Every binding that reads the runtime gets the hint, not only one module.
+
+**S9 and S10. Accepted.** One report for the server's failures and the table's together. And the hand-off keeps cheap refusals ahead of the connection phase, so a request that can't be upgraded costs nothing.
+
+**S11. Accepted.**
+
+**S12. Accepted.** Nothing depends on the order, but make it deterministic and leave it, so reports don't shuffle between runs.
+
+**F367. Yes, in stage e with the links, plus a real-Redis test.** It is the same problem as the links (a spawn on whatever tokio runtime happens to be current), so the same fix applies. And broadcast across processes has never run against an actual Redis. Give `ulo-ws-redis` a container test like the RPC broker suites: two processes, a room, a broadcast from one reaching members on the other. Multi-process broadcast is the whole reason the crate exists, so it shouldn't stay untested.
+
+The plan's order is right: the WebSocket suite (d3) next, with `ulo-ws-hyper` as its reference, then stage e.
+
+## Thirty-eighth response: the WebSocket suite, and what proves stage e
+
+Received 2026-10-10, answering `divergences/runtime-d3.md` (S1–S7, F368) and the question of what
+"the HTTP suite on smol" requires. The user signed it off the same day. F368's documentation, S5's observable acceptance and S7's brief correction build in test batch 20; the listener plug point in `ulo-hyper-serve` with a tokio and a smol listener crate is runtime stage e2; the smol TCP link, the suites taking a runtime and the smol CI job are stage e3.
+
+F368 should take option (a), S7 is confirmed, and S5 needs its assumption removed.
+
+**F368. (a): the HTTP server answers its own drain on its port.** Option (b)'s side effect decides it. It would take upgrade requests out of the HTTP server's load shedding, and new WebSocket connections are exactly what should be shed first under overload: each one is long-lived, and accepting it commits resources for its whole lifetime. On the HTTP port, a gateway is the HTTP server's guest, and the host's admission and drain policy applies to everything arriving on that port. The client gets a 503 either way, and a browser can't read a refused handshake's body anyway, so only the body's format differs. Document it in two places: the hand-off's docs ("on the HTTP port, the HTTP server's drain and load shedding answer first"), and the scenario, where the status-only assertion carries a comment pointing to that rule.
+
+**S7. `unimplemented` is the intended answer.** It was settled in the RPC discussion: a WebSocket gateway knows for certain that no handler exists for an event, so it answers what is true. `NotFound` would describe a missing resource, not a missing handler. The brief was wrong and the code is right, so correct the brief.
+
+**S5. Don't rely on in-order accepts; make acceptance observable.** A conformance suite exists to judge other people's servers, so it can't assume one particular server's accept order. A server that accepts out of order would fail the scenario while doing nothing wrong. The scenario's subject is "a handshake on an accepted connection during the drain answers 503", so prove the connection is accepted first: send an ordinary request on it before the drain starts (a request for a path with no gateway, answered 404), then send the upgrade request on the same connection once the drain has begun. That works whatever order the server accepts in. If a host's server closes connections after a refusal, that is a host property it declares, as the other suites' hosts declare theirs, so the assumption is stated rather than hidden in timing.
+
+**S1. Accepted.** The suite owning the lifecycle means every host is tested through the same listen, serve and drain, which is the point of a conformance suite.
+
+**S2. Accepted.** A macro is fine for nine gateways. If `port = ..` ever accepts an expression, it can go away.
+
+**S3. Accepted.** On the HTTP port, a path with no gateway really does belong to the HTTP app, so its 404 is that app's answer. The drain case is F368.
+
+**S6. Accepted.** The suite allows what the protocol allows, and the stricter order stays pinned where it is an implementation choice.
+
+**A smol host is the proof.** Until one passes, "runtime-neutral" is a claim about the suite rather than a fact. That is the same reason the smol TCP link is in stage e: both suites get their first non-tokio host there.
+
+### What "the HTTP suite on smol" requires
+
+**Choose (a), but build it by making `ulo-hyper-serve` itself runtime-neutral rather than writing a second server beside it.**
+
+**Why (b) and (c) aren't enough.** The promise is "pick your runtime", and for most users that means serving HTTP on the runtime they picked. A proof where the sockets stay on tokio shows the hubs are clean, which is worth knowing, but leaves the main promise untested. With (b) or (c) alone, the honest claim would be "the hubs are runtime-neutral, and serving on smol needs a backend someone else writes", a much weaker statement than the one this work set out to make.
+
+**Why hyper-based, and how.** hyper 1.x's server is already runtime-neutral except at two edges: the I/O traits its connections use (`hyper::rt::Read` and `Write`), and the executor and timer it uses for HTTP/2 and header timeouts. Those are exactly the edges the design already abstracts. Everything `ulo-hyper-serve` does (the accept loop, the per-connection tracking, the graceful drain through hyper's own `graceful_shutdown`, the handshake timeout) is runtime-neutral logic, except how a listener accepts and how a connection is read and written. So:
+
+- `ulo-hyper-serve` takes a listener as a plug point: a small trait with an `accept()` returning a stream that implements hyper's I/O traits. Spawning goes through the app's `Runtime`, and timeouts through its `Timer`, as everywhere else.
+- Two small listener crates supply it. The tokio one is what exists today, extracted. The smol one is built on `async-net` sockets, with `futures-rustls` for TLS. Both adopt `ulo-net`'s std sockets, so endpoints, port 0 and socket activation work identically on both runtimes.
+- Everything built on `ulo-hyper-serve` gets smol for free: the hyper HTTP backend and the standalone WebSocket server. gRPC stays tokio-only, because tonic is.
+
+That is one server implementation instead of two that drift apart. The runtime is chosen by which listener is passed, the same shape as the rest of the design: a runtime-neutral core with runtime-specific edges.
+
+The proof then becomes real: one CI job runs the HTTP suite, the WebSocket suite (both hosts) and the TCP RPC suite on smol, with smol sockets. The pipe host from (c) is worth adding to that job too. It is cheap, and it isolates the hub from any socket code, so a failure there points straight at the hub.
+
+**On ordering:** this is the largest item in stage e. For an earlier checkpoint, run (b) and (c) first; they find hub problems cheaply. But don't write "runtime-neutral" in the docs until (a) passes.
+
+**F367:** yes, in stage e with the links, as decided above, with its real-Redis test (two processes, one room, a broadcast reaching across).
