@@ -126,9 +126,9 @@ other two suites', and were each run once (the section "The tests").
   problem document before any upgrade handler sees it (F368, S3).
 - **Every other scenario** asserts the same on both, the 405's `Allow`, the 426's
   `Sec-WebSocket-Version` and each refusal's plain-text reason included.
-- **An unknown event** is asserted as kind `unimplemented`, which the brief names `NotFound`:
-  transports DESIGN §4.2 and §12 and `message` in `crates/ulo-ws/src/connection.rs` give
-  `Unimplemented`, its source `NoHandler`. See S7.
+- **An unknown event** is asserted as kind `unimplemented`: transports DESIGN §4.2 and §12 and
+  `message` in `crates/ulo-ws/src/connection.rs` give `Unimplemented`, its source `NoHandler`.
+  The brief named `NotFound`, which the thirty-eighth response's S7 rules wrong. See S7.
 
 ### 6. Absences read after a positive signal
 
@@ -401,6 +401,10 @@ the suite requiring a host's executor to be current-thread.
 
 Decision 5: the brief names `NotFound`; the design and the code say `unimplemented`, and the suite
 follows them.
+
+*Settled by the thirty-eighth response:* `unimplemented` is the intended answer, a gateway knowing
+for certain that no handler exists for the event; `NotFound` would describe a missing resource.
+The brief's `NotFound` was wrong.
 
 ## Verification
 
